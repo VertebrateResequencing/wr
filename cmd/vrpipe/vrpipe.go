@@ -4,7 +4,7 @@ import (
     "fmt"
     "time"
     "log"
-    "github.com/iwanbk/gobeanstalk"
+    "github.com/sb10/gobeanstalk"
 )
 
 const (
@@ -32,12 +32,15 @@ func beanstalkAdd(beanstalk *gobeanstalk.Conn, tubename string, jobBody string, 
     fmt.Printf("Added job %d\n", job)
 }
 
-func beanstalkReserve(beanstalk *gobeanstalk.Conn, tubename string) *gobeanstalk.Job {
+func beanstalkReserve(beanstalk *gobeanstalk.Conn, tubename string, timeout time.Duration) *gobeanstalk.Job {
     _, err := beanstalk.Watch(tubename)
     if err != nil {
         log.Fatal(err)
     }
-    job, err := beanstalk.Reserve()
+    job, err := beanstalk.Reserve(timeout)
+    if err == gobeanstalk.ErrTimedOut {
+        return nil
+    }
     if err != nil {
         log.Fatal(err)
     }
@@ -67,11 +70,16 @@ func main() {
     beanstalkAdd(beanstalk, tubeDES, "test job 1", 30)
     beanstalkAdd(beanstalk, tubeDES, "test job 2", 40)
     
-    job := beanstalkReserve(beanstalk, tubeDES);
-    beanstalkJobStats(beanstalk, job);
-    beanstalkJobDelete(beanstalk, job);
-    job = beanstalkReserve(beanstalk, tubeDES);
-    beanstalkJobStats(beanstalk, job);
-    beanstalkJobDelete(beanstalk, job);
+    var job *gobeanstalk.Job;
+    for {
+        job = beanstalkReserve(beanstalk, tubeDES, 5*time.Second)
+        if job == nil {
+            break
+        }
+        beanstalkJobStats(beanstalk, job);
+        beanstalkJobDelete(beanstalk, job);
+    }
+    
+    fmt.Printf("All done.\n")
 }
 
