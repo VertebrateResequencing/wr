@@ -8,6 +8,7 @@ import (
     "time"
     "log"
     "github.com/sb10/gobeanstalk"
+    "gopkg.in/yaml.v2"
 )
 
 // Conn represents a connection to both the job queue daemon (beanstalkd)
@@ -17,11 +18,45 @@ type Conn struct {
     tube string
 }
 
+// TubeStats represents the stats of a beanstalk tube
+type TubeStats struct {
+    Ready uint64 `yaml:"current-jobs-ready"`
+    Reserved uint64 `yaml:"current-jobs-reserved"`
+    Delayed uint64 `yaml:"current-jobs-delayed"`
+    Buried uint64 `yaml:"current-jobs-buried"`
+    Waiting uint64 `yaml:"current-waiting"`
+    Watching uint64 `yaml:"current-watching"`
+}
+
+// BeanstalkStats represents the stats of the beanstalkd daemon
+type BeanstalkStats struct {
+    Connections uint64 `yaml:"current-connections"`
+    Producers uint64 `yaml:"current-producers"`
+    Workers uint64 `yaml:"current-workers"`
+    Waiting uint64 `yaml:"current-waiting"`
+    Pid uint64
+    Hostname string
+}
+
 // Job represents a beanstalkd job
 type Job struct {
     ID   uint64
     Body []byte
     conn *Conn
+}
+
+// JobStats represents the stats on a beanstalkd job
+type JobStats struct {
+    Tube string
+    State string
+    Priority uint32 `yaml:"pri"`
+    Age uint64
+    TimeLeft uint64 `yaml:"time-left"`
+    Reserves uint32
+    Timeouts uint32
+    Releases uint32
+    Buries uint32
+    Kicks uint32
 }
 
 // Connect creates a connection to the job queue daemon (beanstalkd) and to
@@ -45,6 +80,36 @@ func Connect(url string, tubename string) *Conn {
 // Disconnect closes the connections to beanstalkd and redis
 func (c *Conn) Disconnect() {
     c.beanstalk.Quit()
+}
+
+// Stats returns stats of the beanstalkd tube you connected to.
+func (c *Conn) Stats() TubeStats {
+    data, err := c.beanstalk.StatsTube(c.tube)
+    if err != nil {
+        log.Fatalf("Failed to get stats for beanstalk tube %s: %s", c.tube, err.Error())
+    }
+    
+    s := TubeStats{}
+    err = yaml.Unmarshal(data, &s)
+    if err != nil {
+        log.Fatalf("Failed to parse yaml for beanstalk tube %s stats: %v", c.tube, err)
+    }
+    return s
+}
+
+// DaemonStats returns stats of the beanstalkd daemon itself.
+func (c *Conn) DaemonStats() BeanstalkStats {
+    data, err := c.beanstalk.Stats()
+    if err != nil {
+        log.Fatalf("Failed to get stats for beanstalkd stats: %s", err.Error())
+    }
+    
+    s := BeanstalkStats{}
+    err = yaml.Unmarshal(data, &s)
+    if err != nil {
+        log.Fatalf("Failed to parse yaml for beanstalkd stats: %v", err)
+    }
+    return s
 }
 
 // Add adds a new job the job queue, but only if the job isn't already
@@ -81,14 +146,19 @@ func (c *Conn) Reserve(timeout time.Duration) *Job {
     return &Job{job.ID, job.Body, c}
 }
 
-// Stats returns the raw YAML from beanstalkd giving the stats of a job.
-func (j *Job) Stats() []byte {
-    yaml, err := j.conn.beanstalk.StatsJob(j.ID)
+// Stats returns stats of a beanstalkd job.
+func (j *Job) Stats() JobStats {
+    data, err := j.conn.beanstalk.StatsJob(j.ID)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to get stats for beanstalk job %d: ", j.ID), err.Error())
+        log.Fatalf("Failed to get stats for beanstalk job %d: %s", j.ID, err.Error())
     }
-    fmt.Printf(string(yaml))
-    return yaml
+    
+    s := JobStats{}
+    err = yaml.Unmarshal(data, &s)
+    if err != nil {
+        log.Fatalf("Failed to parse yaml for beanstalk job %d stats: %v", j.ID, err)
+    }
+    return s
 }
 
 // Delete removes a job from the beanstalkd queue and the parallel redis queue,

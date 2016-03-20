@@ -23,9 +23,15 @@ func main() {
         if job == nil {
             break
         }
-        job.Stats();
+        stats := job.Stats();
+        fmt.Printf("stats: %s; time left: %d\n", stats.State, stats.TimeLeft)
+        stats2 := jobqueue.Stats();
+        fmt.Printf("ready: %d; reserved: %d\n", stats2.Ready, stats2.Reserved)
         job.Delete();
     }
+    
+    stats := jobqueue.DaemonStats();
+    fmt.Printf("producers: %d, workers: %d, pid: %d, hostname: %s\n", stats.Producers, stats.Workers, stats.Pid, stats.Hostname)
     
     jobqueue.Disconnect()
     fmt.Printf("All done.\n")
