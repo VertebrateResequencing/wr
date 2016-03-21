@@ -10,19 +10,10 @@
 # file and have user-specific testing options
 # in your home directory file. 
 #
-# The format of this file is TOML:
-# https://github.com/toml-lang/toml
-#
-# There are 3 "tables" (sections): 'common', for
-# config options that apply to both production and testing,
-# and sections for options specific to 'production' or
-# 'testing'. It is up to you if you have options
-# specific to either environment.
-
-[common]
+# The format of this file is YAML
 
 # where is redis running? (it will be started here if not already running)
-redis = "127.0.0.1:6379"
+redis: "127.0.0.1:6379"
 
 # where is beanstalkd running? (it will be started here if not already running)
-beanstalk = "127.0.0.1:11300"
+beanstalk: "127.0.0.1:11300"
