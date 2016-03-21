@@ -3,6 +3,7 @@ package main
 import (
     "fmt"
     "time"
+    "github.com/sb10/vrpipe/internal"
     "github.com/sb10/vrpipe/jobqueue"
 )
 
@@ -11,9 +12,12 @@ const (
 )
 
 func main() {
+    config := internal.ConfigLoad("")
+    fmt.Printf("config: %#v\n", config)
+    
     fmt.Printf("Will try to connect to beanstalk...\n")
     
-    jobqueue := jobqueue.Connect("localhost:11300", tubeDES)
+    jobqueue := jobqueue.Connect(config.Beanstalk, tubeDES)
     
     jobqueue.Add("test job 1", 30)
     jobqueue.Add("test job 2", 40)

@@ -1,16 +1,30 @@
-# VRPipe is configured by this file;
-# all worker nodes must be able to see this file.
-# VRPipe looks in the following places for this
-# file, in order of precedence:
-# 1) In testing, .vrpipe.config in the root of the cloned git directory
-# 2) .vrpipe.config in the user's home directory
-# 3) $VRPIPE_CONFIG_FILE environment variable
-# You can use multiple of these files, eg. have
-# production options in the $VRPIPE_CONFIG_FILE
-# file and have user-specific testing options
-# in your home directory file. 
-#
 # The format of this file is YAML
+#
+# VRPipe will load its configuration settings from one or more files named
+# .vrpipe_config[.production|.development].yml found in these directories, in
+# order of precedence:
+# 1) The current directory
+# 2) Your home directory
+# 3) The directory pointed to by the environment variable $VRPIPE_CONFIG_DIR
+#
+# .vrpipe_config.yml files are always read, and can be used to put settings
+# common to both production and development deployments.
+# .vrpipe_config.production.yml files are only read in a production context:
+# either a --deployment production option has been passed to the vrpipe
+# executable, or the environment variable $VRPIPE_DEPLOYMENT has been set to
+# 'production'.
+# A similar story applies for .vrpipe_config.development.yml files, which are
+# used when things are set to 'development'
+#
+# If a setting is found in none of the files read, then an environment variable
+# is checked: VRPIPE_<setting name in caps>. Eg. to define the redis option you
+# might do:
+# export VRPIPE_REDIS="127.0.0.1:6379"
+#
+# Note that all worker nodes need to be able to see your desired set of config
+# files, so either define them in environment variables or put the config files
+# on a disc that is mounted and shared across all your compute nodes.
+
 
 # where is redis running? (it will be started here if not already running)
 redis: "127.0.0.1:6379"
