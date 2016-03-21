@@ -26,8 +26,9 @@ directory over config file in dir pointed to by VRPIPE_CONFIG_DIR.
 
 The deployment argument determines if we read .vrpipe_config.production.yml or
 .vrpipe_config.development.yml; we always read .vrpipe_config.yml. If the empty
-string is supplied, deployment is taken from the environment variable
-VRPIPE_DEPLOYMENT. Otherwise it defaults to production.
+string is supplied, deployment is development if you're in the git repository
+directory. Otherwise, deployment is taken from the environment variable
+VRPIPE_DEPLOYMENT, and if that's not set it defaults to production.
 
 Multiple of these files can be used to have settings that are common to
 multiple users and deployments, and settings specific to users or deployments.
@@ -37,11 +38,27 @@ VRPIPE_<setting name in caps>, eg.
 export VRPIPE_REDIS="127.0.0.1:6379"
 */
 func ConfigLoad(deployment string) Config {
+    pwd, err := os.Getwd()
+    if err != nil {
+        fmt.Println(err)
+        os.Exit(1)
+    }
+    
+    // if deployment not set on the command line
     if deployment != "development" && deployment != "production" {
-        deployment = "production"
-        if deploymentEnv := os.Getenv("VRPIPE_DEPLOYMENT"); deploymentEnv != "" {
-            if (deploymentEnv == "development") {
-                deployment = "development"
+        // if we're in the git repository
+        if _, err := os.Stat(filepath.Join(pwd, "vrpipe.go")); err == nil {
+            // force development
+            deployment = "development"
+        } else {
+            // default to production
+            deployment = "production"
+            
+            // and allow env var to override with development
+            if deploymentEnv := os.Getenv("VRPIPE_DEPLOYMENT"); deploymentEnv != "" {
+                if (deploymentEnv == "development") {
+                    deployment = "development"
+                }
             }
         }
     }
@@ -53,11 +70,6 @@ func ConfigLoad(deployment string) Config {
     // read the config files. We have to check file existence before passing
     // these to configor.Load, or it will complain
     var configFiles []string
-    pwd, err := os.Getwd()
-    if err != nil {
-        fmt.Println(err)
-        os.Exit(1)
-    }
     configFile := filepath.Join(pwd, ConfigCommonBasename)
     _, err = os.Stat(configFile)
     if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
