@@ -62,7 +62,6 @@ func ConfigLoad(deployment string) Config {
             }
         }
     }
-    fmt.Printf("deployment: %s\n", deployment)
     os.Setenv("CONFIGOR_ENV", deployment)
     os.Setenv("CONFIGOR_ENV_PREFIX", "VRPIPE")
     ConfigDeploymentBasename := ".vrpipe_config." + deployment + ".yml"
@@ -73,14 +72,12 @@ func ConfigLoad(deployment string) Config {
     configFile := filepath.Join(pwd, ConfigCommonBasename)
     _, err = os.Stat(configFile)
     if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
-        fmt.Println("local ok\n")
         configFiles = append(configFiles, configFile)
     }
     if home := os.Getenv("HOME"); home != "" {
         configFile = filepath.Join(home, ConfigCommonBasename)
         _, err = os.Stat(configFile)
         if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
-            fmt.Println("home ok\n")
             configFiles = append(configFiles, configFile)
         }
     }
@@ -88,11 +85,9 @@ func ConfigLoad(deployment string) Config {
         configFile = filepath.Join(configDir, ConfigCommonBasename)
         _, err = os.Stat(configFile)
         if _, err2 := os.Stat(filepath.Join(configDir, ConfigDeploymentBasename)); err == nil || err2 == nil {
-            fmt.Println("env ok\n")
             configFiles = append(configFiles, configFile)
         }
     }
-    fmt.Printf("config: %#v\n", configFiles)
     
     config := Config{}
     configor.Load(&config, configFiles...)

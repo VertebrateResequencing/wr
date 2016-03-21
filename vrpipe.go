@@ -13,7 +13,6 @@ const (
 
 func main() {
     config := internal.ConfigLoad("")
-    fmt.Printf("config: %#v\n", config)
     
     fmt.Printf("Will try to connect to beanstalk...\n")
     
