@@ -14,7 +14,8 @@
 # executable, or the environment variable $VRPIPE_DEPLOYMENT has been set to
 # 'production'.
 # A similar story applies for .vrpipe_config.development.yml files, which are
-# used when things are set to 'development'
+# used when things are set to 'development'.
+# The default deployment is production.
 #
 # If a setting is found in none of the files read, then an environment variable
 # is checked: VRPIPE_<setting name in caps>. Eg. to define the redis option you

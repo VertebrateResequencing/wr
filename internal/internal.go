@@ -27,7 +27,7 @@ directory over config file in dir pointed to by VRPIPE_CONFIG_DIR.
 The deployment argument determines if we read .vrpipe_config.production.yml or
 .vrpipe_config.development.yml; we always read .vrpipe_config.yml. If the empty
 string is supplied, deployment is taken from the environment variable
-VRPIPE_DEPLOYMENT. Otherwise it defaults to development.
+VRPIPE_DEPLOYMENT. Otherwise it defaults to production.
 
 Multiple of these files can be used to have settings that are common to
 multiple users and deployments, and settings specific to users or deployments.
@@ -38,10 +38,10 @@ export VRPIPE_REDIS="127.0.0.1:6379"
 */
 func ConfigLoad(deployment string) Config {
     if deployment != "development" && deployment != "production" {
-        deployment = "development"
+        deployment = "production"
         if deploymentEnv := os.Getenv("VRPIPE_DEPLOYMENT"); deploymentEnv != "" {
-            if (deploymentEnv == "production") {
-                deployment = "production"
+            if (deploymentEnv == "development") {
+                deployment = "development"
             }
         }
     }
