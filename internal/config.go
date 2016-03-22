@@ -47,7 +47,7 @@ func ConfigLoad(deployment string) Config {
     // if deployment not set on the command line
     if deployment != "development" && deployment != "production" {
         // if we're in the git repository
-        if _, err := os.Stat(filepath.Join(pwd, "vrpipe.go")); err == nil {
+        if _, err := os.Stat(filepath.Join(pwd, "main.go")); err == nil {
             // force development
             deployment = "development"
         } else {
