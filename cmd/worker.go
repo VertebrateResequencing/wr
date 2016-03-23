@@ -35,7 +35,7 @@ You won't normally run this yourself directly - vrpipe runs this as needed.`,
     Run: func(cmd *cobra.Command, args []string) {
         fmt.Printf("Worker will try to connect to beanstalk...\n")
         
-        jobqueue, err := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES)
+        jobqueue, err := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES, false)
         if err != nil {
             log.Fatal(err)
         }
