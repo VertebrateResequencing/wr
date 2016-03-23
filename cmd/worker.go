@@ -21,6 +21,7 @@ package cmd
 import (
     "fmt"
     "time"
+    "log"
     "github.com/spf13/cobra"
     "github.com/sb10/vrpipe/jobqueue"
 )
@@ -34,21 +35,39 @@ You won't normally run this yourself directly - vrpipe runs this as needed.`,
     Run: func(cmd *cobra.Command, args []string) {
         fmt.Printf("Worker will try to connect to beanstalk...\n")
         
-        jobqueue := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES)
+        jobqueue, err := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES)
+        if err != nil {
+            log.Fatal(err)
+        }
         
         for {
-            job := jobqueue.Reserve(5*time.Second)
+            job, err := jobqueue.Reserve(5*time.Second)
+            if err != nil {
+                log.Fatal(err)
+            }
             if job == nil {
                 break
             }
-            stats := job.Stats();
+            stats, err := job.Stats();
+            if err != nil {
+                log.Fatal(err)
+            }
             fmt.Printf("stats: %s; time left: %d\n", stats.State, stats.TimeLeft)
-            stats2 := jobqueue.Stats();
+            stats2, err := jobqueue.Stats();
+            if err != nil {
+                log.Fatal(err)
+            }
             fmt.Printf("ready: %d; reserved: %d\n", stats2.Ready, stats2.Reserved)
-            job.Delete();
+            err = job.Delete();
+            if err != nil {
+                log.Fatal(err)
+            }
         }
         
-        stats := jobqueue.DaemonStats();
+        stats, err := jobqueue.DaemonStats();
+        if err != nil {
+            log.Fatal(err)
+        }
         fmt.Printf("producers: %d, workers: %d, pid: %d, hostname: %s\n", stats.Producers, stats.Workers, stats.Pid, stats.Hostname)
         
         

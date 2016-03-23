@@ -6,7 +6,6 @@ package jobqueue
 import (
     "fmt"
     "time"
-    "log"
     "github.com/sb10/gobeanstalk"
     "gopkg.in/yaml.v2"
 )
@@ -65,20 +64,24 @@ type JobStats struct {
 
 // Connect creates a connection to the job queue daemon (beanstalkd) and to
 // the lookup daemon (redis), specific to a single queue (aka tube)
-func Connect(url string, tubename string) *Conn {
-    conn, err := gobeanstalk.Dial(url)
+func Connect(url string, tubename string) (conn *Conn, err error) {
+    bconn, err := gobeanstalk.Dial(url)
     if err != nil {
-        log.Fatal("Failed to connect to beanstalkd: ", err.Error())
+        err = fmt.Errorf("Failed to connect to beanstalkd: %s\n", err.Error())
+        return
     }
-    err = conn.Use(tubename)
+    err = bconn.Use(tubename)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to use %s: ", tubename), err.Error())
+        err = fmt.Errorf("Failed to use tube %s: %s\n", tubename, err.Error())
+        return
     }
-    _, err = conn.Watch(tubename)
+    _, err = bconn.Watch(tubename)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to watch %s: ", tubename), err.Error())
+        err = fmt.Errorf("Failed to watch tube %s: %s\n", tubename, err.Error())
+        return
     }
-    return &Conn{conn, tubename}
+    conn = &Conn{bconn, tubename}
+    return
 }
 
 // Disconnect closes the connections to beanstalkd and redis
@@ -87,33 +90,35 @@ func (c *Conn) Disconnect() {
 }
 
 // Stats returns stats of the beanstalkd tube you connected to.
-func (c *Conn) Stats() TubeStats {
+func (c *Conn) Stats() (s TubeStats, err error) {
     data, err := c.beanstalk.StatsTube(c.tube)
     if err != nil {
-        log.Fatalf("Failed to get stats for beanstalk tube %s: %s", c.tube, err.Error())
+        err = fmt.Errorf("Failed to get stats for beanstalk tube %s: %s\n", c.tube, err.Error())
+        return
     }
     
-    s := TubeStats{}
+    s = TubeStats{}
     err = yaml.Unmarshal(data, &s)
     if err != nil {
-        log.Fatalf("Failed to parse yaml for beanstalk tube %s stats: %v", c.tube, err)
+        err = fmt.Errorf("Failed to parse yaml for beanstalk tube %s stats: %s", c.tube, err.Error())
     }
-    return s
+    return
 }
 
 // DaemonStats returns stats of the beanstalkd daemon itself.
-func (c *Conn) DaemonStats() BeanstalkStats {
+func (c *Conn) DaemonStats() (s BeanstalkStats, err error) {
     data, err := c.beanstalk.Stats()
     if err != nil {
-        log.Fatalf("Failed to get stats for beanstalkd stats: %s", err.Error())
+        err = fmt.Errorf("Failed to get stats for beanstalkd: %s\n", err.Error())
+        return
     }
     
-    s := BeanstalkStats{}
+    s = BeanstalkStats{}
     err = yaml.Unmarshal(data, &s)
     if err != nil {
-        log.Fatalf("Failed to parse yaml for beanstalkd stats: %v", err)
+        err = fmt.Errorf("Failed to parse yaml for beanstalkd stats: %s\n", err.Error())
     }
-    return s
+    return
 }
 
 // Add adds a new job the job queue, but only if the job isn't already
@@ -122,15 +127,15 @@ func (c *Conn) DaemonStats() BeanstalkStats {
 // process exits before releasing, burying or deleting the job, the job will
 // be automatically released ttr seconds after it was reserved (or last
 // touched).
-func (c *Conn) Add(jobBody string, ttr int) *Job {
+func (c *Conn) Add(jobBody string, ttr int) (j *Job, err error) {
     job, err := c.beanstalk.Put([]byte(jobBody), 0, 0*time.Second, time.Duration(ttr)*time.Second)
     if err != nil {
-        log.Fatal("Failed to add a new job to beanstalk: ", err.Error())
+        err = fmt.Errorf("Failed to add a new job to beanstalk: %s\n", err.Error())
+        return
     }
     
-    fmt.Printf("Added job %d\n", job)
-    
-    return &Job{job, []byte(jobBody), c}
+    j = &Job{job, []byte(jobBody), c}
+    return
 }
 
 // Reserve takes a job off the job queue and notes in our parallel redis queue
@@ -138,79 +143,90 @@ func (c *Conn) Add(jobBody string, ttr int) *Job {
 // should Delete() it. If you can't deal with it right now you should Release()
 // it. If you think it can never be dealt with you should Bury() it. If you die
 // unexpectedly, the job will automatically be released back to the queue after
-// the job's ttr runs down.
-func (c *Conn) Reserve(timeout time.Duration) *Job {
+// the job's ttr runs down. If no job was available in the queue for as long as
+// the timeout arguement, nil is returned for both job and error.
+func (c *Conn) Reserve(timeout time.Duration) (j *Job, err error) {
     job, err := c.beanstalk.Reserve(timeout)
     if err == gobeanstalk.ErrTimedOut {
-        return nil
+        err = nil
+        return
     }
     if err != nil {
-        log.Fatal(err)
+        err = fmt.Errorf("Failed to reserve a job from beanstalk: %s\n", err.Error())
+        return
     }
-    return &Job{job.ID, job.Body, c}
+    
+    j = &Job{job.ID, job.Body, c}
+    return
 }
 
 // Stats returns stats of a beanstalkd job.
-func (j *Job) Stats() JobStats {
+func (j *Job) Stats() (s JobStats, err error) {
     data, err := j.conn.beanstalk.StatsJob(j.ID)
     if err != nil {
-        log.Fatalf("Failed to get stats for beanstalk job %d: %s", j.ID, err.Error())
+        err = fmt.Errorf("Failed to get stats for beanstalk job %d: %s\n", j.ID, err.Error())
+        return
     }
     
-    s := JobStats{}
+    s = JobStats{}
     err = yaml.Unmarshal(data, &s)
     if err != nil {
-        log.Fatalf("Failed to parse yaml for beanstalk job %d stats: %v", j.ID, err)
+        err = fmt.Errorf("Failed to parse yaml for beanstalk job %d stats: %s\n", j.ID, err.Error())
     }
-    return s
+    return
 }
 
 // Delete removes a job from the beanstalkd queue and the parallel redis queue,
 // for use after you have run the job successfully. Note that you must reserve a
 // job before you can delete it.
-func (j *Job) Delete() {
-    err := j.conn.beanstalk.Delete(j.ID)
+func (j *Job) Delete() (err error) {
+    err = j.conn.beanstalk.Delete(j.ID)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to delete beanstalk job %d: ", j.ID), err.Error())
+        err = fmt.Errorf("Failed to delete beanstalk job %d: %s\n", j.ID, err.Error())
     }
+    return
 }
 
 // Release places a job back on the beanstalkd queue and updates the parallel
 // redis queue, for use when you can't handle the job right now (eg. there was a
 // suspected transient error) but maybe someone else can later. Note that you
 // must reserve a job before you can release it.
-func (j *Job) Release() {
-    err := j.conn.beanstalk.Release(j.ID, 0, 60*time.Second)
+func (j *Job) Release() (err error) {
+    err = j.conn.beanstalk.Release(j.ID, 0, 60*time.Second)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to release beanstalk job %d: ", j.ID), err.Error())
+        err = fmt.Errorf("Failed to release beanstalk job %d: %s\n", j.ID, err.Error())
     }
+    return
 }
 
 // Touch resets a job's ttr in beanstalkd and redis, allowing you more time to
 // work on it. Note that you must reserve a job before you can touch it.
-func (j *Job) Touch() {
-    err := j.conn.beanstalk.Touch(j.ID)
+func (j *Job) Touch() (err error) {
+    err = j.conn.beanstalk.Touch(j.ID)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to touch beanstalk job %d: ", j.ID), err.Error())
+        err = fmt.Errorf("Failed to touch beanstalk job %d: %s\n", j.ID, err.Error())
     }
+    return
 }
 
 // Bury marks a job in beanstalkd and redis as unrunnable, so it will be ignored
 // (until the user does something to perhaps make it runnable and kicks the
 // job). Note that you must reserve a job before you can bury it.
 // 
-func (j *Job) Bury() {
-    err := j.conn.beanstalk.Bury(j.ID, 0)
+func (j *Job) Bury() (err error) {
+    err = j.conn.beanstalk.Bury(j.ID, 0)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to bury beanstalk job %d: ", j.ID), err.Error())
+        err = fmt.Errorf("Failed to bury beanstalk job %d: %s\n", j.ID, err.Error())
     }
+    return
 }
 
 // Kick makes a previously Bury()'d job runnable again (it can be reserved in
 // the future).
-func (j *Job) Kick() {
-    err := j.conn.beanstalk.KickJob(j.ID)
+func (j *Job) Kick() (err error) {
+    err = j.conn.beanstalk.KickJob(j.ID)
     if err != nil {
-        log.Fatal(fmt.Sprintf("Failed to kick beanstalk job %d: ", j.ID), err.Error())
+        err = fmt.Errorf("Failed to kick beanstalk job %d: %s\n", j.ID, err.Error())
     }
+    return
 }

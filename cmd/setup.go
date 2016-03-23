@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"fmt"
+    "log"
 	"github.com/spf13/cobra"
     "github.com/sb10/vrpipe/jobqueue"
 )
@@ -38,10 +39,22 @@ Once defined the pipeline will immediately start running.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("Setup will try to connect to beanstalk...\n")
         
-        jobqueue := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES)
+        jobqueue, err := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES)
+        if err != nil {
+            log.Fatal(err)
+        }
         
-        jobqueue.Add("test job 1", 30)
-        jobqueue.Add("test job 2", 40)
+        job, err := jobqueue.Add("test job 1", 30)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("Added job %d\n", job.ID)
+        
+        job, err = jobqueue.Add("test job 2", 40)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("Added job %d\n", job.ID)
         
         jobqueue.Disconnect()
         fmt.Printf("All done.\n")
