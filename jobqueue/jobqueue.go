@@ -13,10 +13,6 @@ import (
     "gopkg.in/yaml.v2"
 )
 
-const (
-    TubeDES = "des"
-)
-
 // Conn represents a connection to both the job queue daemon (beanstalkd)
 // and to the lookup daemon (redis), specific to a particular queue (aka tube)
 type Conn struct {

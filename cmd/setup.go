@@ -39,7 +39,7 @@ Once defined the pipeline will immediately start running.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("Setup will try to connect to beanstalk...\n")
         
-        jobqueue, err := jobqueue.Connect(config.Beanstalk, jobqueue.TubeDES, true)
+        jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe.des", true)
         if err != nil {
             log.Fatal(err)
         }
