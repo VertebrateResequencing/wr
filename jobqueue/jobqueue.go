@@ -1,4 +1,22 @@
-// package jobqueue combines beanstalkd with redis to form a reliable job
+// Copyright © 2016 Genome Research Limited
+// Author: Sendu Bala <sb10@sanger.ac.uk>.
+//
+//  This file is part of VRPipe.
+//
+//  VRPipe is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU Lesser General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  VRPipe is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU Lesser General Public License for more details.
+//
+//  You should have received a copy of the GNU Lesser General Public License
+//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+
+// Package jobqueue combines beanstalkd with redis to form a reliable job
 // queue system (beanstalkd) that can't have duplicate jobs and lets you look
 // up jobs by their bodies (redis), instead of their beanstalk job id
 package jobqueue
