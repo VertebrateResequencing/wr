@@ -26,16 +26,17 @@ import (
     "github.com/sb10/vrpipe/jobqueue"
 )
 
+var queuename string;
+
 // workerCmd represents the worker command
 var workerCmd = &cobra.Command{
     Use:   "worker",
     Short: "Run a queued command",
     Long: `A worker runs commands that were queued by the setup command.
-You won't normally run this yourself directly - vrpipe runs this as needed.`,
+You won't normally run this yourself directly - "vrpipe controller" runs this as
+needed.`,
     Run: func(cmd *cobra.Command, args []string) {
-        fmt.Printf("Worker will try to connect to beanstalk...\n")
-        
-        jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe.des", false)
+        jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe." + queuename, false)
         if err != nil {
             log.Fatal(err)
         }
@@ -70,9 +71,7 @@ You won't normally run this yourself directly - vrpipe runs this as needed.`,
         }
         fmt.Printf("producers: %d, workers: %d, pid: %d, hostname: %s\n", stats.Producers, stats.Workers, stats.Pid, stats.Hostname)
         
-        
         jobqueue.Disconnect()
-        fmt.Printf("All done.\n")
     },
 }
 
@@ -80,5 +79,5 @@ func init() {
     RootCmd.AddCommand(workerCmd)
 
     // flags specific to this sub-command
-    // setupCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+    workerCmd.Flags().StringVar(&queuename, "queue", "des", "Specify the queue to pull jobs from [des|cmd]")
 }
