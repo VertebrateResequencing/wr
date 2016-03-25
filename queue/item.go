@@ -147,7 +147,7 @@ func (item *Item) switchBuryDelay() {
 }
 
 // once removed from its queue, we clear out various properties just in case
-func (item *Item) clear() {
+func (item *Item) removalCleanup() {
     item.mutex.Lock()
     defer item.mutex.Unlock()
     item.ttrIndex = -1

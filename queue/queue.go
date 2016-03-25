@@ -277,7 +277,7 @@ func (queue *Queue) Remove(key string) (existed bool) {
         case "bury":
             queue.buryQueue.remove(item)
     }
-    item.clear()
+    item.removalCleanup()
     
     return
 }
