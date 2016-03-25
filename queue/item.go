@@ -31,6 +31,7 @@ import (
 type Item struct {
     Key          string
     Data         interface{}
+    Priority     uint8 // highest priority is 255
     State        string // one of 'delay', 'ready', 'run', 'bury', 'removed'
     ReleaseAt    time.Time
     Reserves     uint32
@@ -45,22 +46,23 @@ type Item struct {
     delayIndex   int
     readyElement *list.Element
     ttrIndex     int
-    buryElement  *list.Element
+    buryIndex    int
 }
 
-func newItem(key string, data interface{}, delay time.Duration, ttr time.Duration) *Item {
+func newItem(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) *Item {
 	return &Item{
-        Key:     key,
-		Data:    data,
-        State:   "delay",
+        Key:      key,
+		Data:     data,
+        Priority: priority,
+        State:    "delay",
         Reserves: 0,
         Timeouts: 0,
         Releases: 0,
         Buries:   0,
         Kicks:    0,
-        delay:   delay,
-		ttr:     ttr,
-        readyAt: time.Now().Add(delay),
+        delay:    delay,
+		ttr:      ttr,
+        readyAt:  time.Now().Add(delay),
 	}
 }
 
@@ -127,12 +129,11 @@ func (item *Item) switchRunReady(e *list.Element, reason string) {
 }
 
 // update after we've switched from the run to the bury sub-queue
-func (item *Item) switchRunBury(e *list.Element) {
+func (item *Item) switchRunBury() {
     item.mutex.Lock()
     defer item.mutex.Unlock()
     item.ttrIndex = -1
     item.ReleaseAt = time.Time{}
-    item.buryElement = e
     item.State = "bury"
 }
 
@@ -140,7 +141,7 @@ func (item *Item) switchRunBury(e *list.Element) {
 func (item *Item) switchBuryDelay() {
     item.mutex.Lock()
     defer item.mutex.Unlock()
-    item.buryElement = nil
+    item.buryIndex = -1
     item.readyAt = time.Now().Add(item.delay)
     item.State = "delay"
 }
@@ -154,6 +155,6 @@ func (item *Item) clear() {
     item.readyElement = nil
     item.delayIndex = -1
     item.readyAt = time.Time{}
-    item.buryElement = nil
+    item.buryIndex = -1
     item.State = "removed"
 }

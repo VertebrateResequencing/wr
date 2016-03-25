@@ -60,7 +60,7 @@ type Queue struct {
     delayQueue        *delayQueue
     readyQueue        *list.List
     runQueue          *ttrQueue
-    buryQueue         *list.List
+    buryQueue         *buryQueue
     delayNotification chan bool
     delayTime         time.Time
 	ttrNotification   chan bool
@@ -84,7 +84,7 @@ func New(name string) *Queue {
         delayQueue:        newDelayQueue(),
         readyQueue:        list.New(),
         runQueue:          newTTRQueue(),
-        buryQueue:         list.New(),
+        buryQueue:         newBuryQueue(),
         ttrNotification:   make(chan bool, 1),
         ttrTime:           time.Now(),
         delayNotification: make(chan bool, 1),
@@ -113,19 +113,24 @@ func (queue *Queue) Stats() *Stats {
 // Add is a thread-safe way to add new items to the queue. After delay they
 // will switch to the ready sub-queue from where they can be Reserve()d. Once
 // reserved, they have ttr to Remove() the item, otherwise it gets released
-// back to the ready sub-queue.
-func (queue *Queue) Add(key string, data interface{}, delay time.Duration, ttr time.Duration) bool {
+// back to the ready sub-queue. The priority determines which item will be
+// next to be Reserve()d, with priority 255 (the max) items coming before lower
+// priority ones (with 0 being the lowest). Items with the same priority
+// number are Reserve()d on a fifo basis.
+func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) bool {
     queue.mutex.Lock()
-    defer queue.mutex.Unlock()
     
     _, exists := queue.items[key]
     if exists {
+        queue.mutex.Unlock()
         return false
     }
     
-    item := newItem(key, data, delay, ttr)
+    item := newItem(key, data, priority, delay, ttr)
     queue.items[key] = item
     queue.delayQueue.push(item)
+    
+    queue.mutex.Unlock()
     queue.delayNotificationTrigger(item)
     return true
 }
@@ -149,17 +154,19 @@ func (queue *Queue) Get(key string) (item *Item, exists bool) {
 // you can manually call Release().
 func (queue *Queue) Reserve() (*Item, bool) {
     queue.mutex.Lock()
-    defer queue.mutex.Unlock()
     
     // pop an item from the ready queue and add it to the run queue
     e := queue.readyQueue.Back()
     if e == nil {
+        queue.mutex.Unlock()
         return nil, false
     }
     
     item := queue.readyQueue.Remove(e).(*Item)
     queue.runQueue.push(item)
     item.switchReadyRun()
+    
+    queue.mutex.Unlock()
     queue.ttrNotificationTrigger(item)
     
     return item, true
@@ -210,8 +217,8 @@ func (queue *Queue) Bury(key string) (ok bool) {
     
     // switch from run to bury queue
     queue.runQueue.remove(item)
-    e := queue.buryQueue.PushFront(item)
-    item.switchRunBury(e)
+    queue.buryQueue.push(item)
+    item.switchRunBury()
     
     return
 }
@@ -220,24 +227,27 @@ func (queue *Queue) Bury(key string) (ok bool) {
 // delay sub-queue, for when a previously buried item can now be handled.
 func (queue *Queue) Kick(key string) (ok bool) {
     queue.mutex.Lock()
-    defer queue.mutex.Unlock()
     
     // check it's actually still in the queue first
     item, ok := queue.items[key]
     if !ok {
+        queue.mutex.Unlock()
         return
     }
     
     // and it must be in the bury queue
     if ok = item.State == "bury"; !ok {
+        queue.mutex.Unlock()
         return
     }
     
     // switch from bury to delay queue
-    queue.buryQueue.Remove(item.buryElement)
+    queue.buryQueue.remove(item)
     queue.delayQueue.push(item)
-    queue.delayNotificationTrigger(item)
     item.switchBuryDelay()
+    
+    queue.mutex.Unlock()
+    queue.delayNotificationTrigger(item)
     
     return
 }
@@ -265,7 +275,7 @@ func (queue *Queue) Remove(key string) (existed bool) {
         case "run":
             queue.runQueue.remove(item)
         case "bury":
-            queue.buryQueue.Remove(item.buryElement)
+            queue.buryQueue.remove(item)
     }
     item.clear()
     

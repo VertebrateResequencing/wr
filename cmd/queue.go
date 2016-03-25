@@ -37,11 +37,12 @@ var queueCmd = &cobra.Command{
 	Long: `don't use this`,
 	Run: func(cmd *cobra.Command, args []string) {
 		myqueue := queue.New("test queue")
+        stats := myqueue.Stats()
         
         foo := &MyStruct{Num: 1, Foo: "bar"}
-        myqueue.Add("myfoo", foo, 1 * time.Second, 1 * time.Second)
+        myqueue.Add("myfoo", foo, 0, 100 * time.Millisecond, 100 * time.Millisecond)
         
-        stats := myqueue.Stats()
+        stats = myqueue.Stats()
         fmt.Printf("queue stats: %v\n", stats)
         
         fmt.Println("\nwill reserve...")
@@ -53,9 +54,9 @@ var queueCmd = &cobra.Command{
             fmt.Println("nothing in ready queue")
         }
         
-        <-time.After(2 * time.Second)
+        <-time.After(150 * time.Millisecond)
         
-        fmt.Println("\nafter 2 seconds will reserve again...")
+        fmt.Println("\nafter 150 seconds will reserve again...")
         stats = myqueue.Stats()
         fmt.Printf("queue stats: %v\n", stats)
         item, exists = myqueue.Reserve()
@@ -68,9 +69,9 @@ var queueCmd = &cobra.Command{
         stats = myqueue.Stats()
         fmt.Printf("queue stats: %v\n", stats)
         
-        <-time.After(500 * time.Millisecond)
+        <-time.After(50 * time.Millisecond)
         
-        fmt.Println("\nafter 0.5 more seconds will reserve again...")
+        fmt.Println("\nafter 50 more ms will reserve again...")
         stats = myqueue.Stats()
         fmt.Printf("queue stats: %v\n", stats)
         item, exists = myqueue.Reserve()
@@ -81,9 +82,9 @@ var queueCmd = &cobra.Command{
             fmt.Println("nothing in ready queue")
         }
         
-        <-time.After(1500 * time.Millisecond)
+        <-time.After(150 * time.Millisecond)
         
-        fmt.Println("\nafter 1.5 more seconds will reserve again...")
+        fmt.Println("\nafter 150 more ms will reserve again...")
         stats = myqueue.Stats()
         fmt.Printf("queue stats: %v\n", stats)
         item, exists = myqueue.Reserve()
@@ -118,9 +119,9 @@ var queueCmd = &cobra.Command{
             stats = myqueue.Stats()
             fmt.Printf("queue stats: %v\n", stats)
             
-            <-time.After(2 * time.Second)
+            <-time.After(150 * time.Millisecond)
             
-            fmt.Printf("\nafter waiting 2 seconds...\n")
+            fmt.Printf("\nafter waiting 150 ms...\n")
             stats = myqueue.Stats()
             fmt.Printf("queue stats: %v\n", stats)
         }
@@ -129,6 +130,27 @@ var queueCmd = &cobra.Command{
         fmt.Printf("\nremove myfoo returned %v, and item state is %s\n", removed, item.State)
         stats = myqueue.Stats()
         fmt.Printf("queue stats: %v\n", stats)
+        
+        myqueue.Add("j1", "j1", 0, 0 * time.Second, 1 * time.Second)
+        myqueue.Add("j2", "j2", 0, 0 * time.Second, 1 * time.Second)
+        myqueue.Add("j3", "j3", 0, 0 * time.Second, 1 * time.Second)
+        <-time.After(10 * time.Millisecond)
+        j1, exists1 := myqueue.Reserve()
+        j2, exists2 := myqueue.Reserve()
+        j3, exists3 := myqueue.Reserve()
+        if exists1 && exists2 && exists3 {
+            myqueue.Bury("j1")
+            myqueue.Bury("j2")
+            myqueue.Bury("j3")
+            fmt.Printf("\nafter adding, reserving and burying 3 jobs...\n")
+            stats = myqueue.Stats()
+            fmt.Printf("queue stats: %v\n", stats)
+            myqueue.Kick("j2")
+            <-time.After(10 * time.Millisecond)
+            fmt.Printf("after kicking the second job, the status of 1 is %s, 2 is %s and 3 is %s\n", j1.State, j2.State, j3.State)
+            stats = myqueue.Stats()
+            fmt.Printf("queue stats: %v\n", stats)
+        }
 	},
 }
 
