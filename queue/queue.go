@@ -33,7 +33,7 @@ switches it from the ready queue to the run queue.
 
 In the run queue the item starts a time-to-release (ttr) countdown; when that
 runs out the item is placed back on the ready queue. This is to handle a
-process Reserving and item but then crashing before it deals with the item;
+process Reserving an item but then crashing before it deals with the item;
 with it back on the ready queue, some other process can pick it up.
 
 To stop it going back to the ready queue you either Remove() the item (you dealt
