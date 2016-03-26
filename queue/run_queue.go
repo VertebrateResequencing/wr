@@ -20,83 +20,78 @@
 
 package queue
 
-// priority_fifo_queue implements a heap structure for items in the ready
-// sub-queue, so that we can efficiently pop items off in priority || fifo
-// order
+// run_queue implements a heap structure for items in the run sub-queue, so that
+// we can efficiently and ~immediately react when the ttr on an item runs out
 
 import (
 	"container/heap"
 	"sync"
 )
 
-type prioFifoQueue struct {
+type runQueue struct {
     mutex sync.Mutex
     items []*Item
 }
 
-func newPrioFifoQueue() *prioFifoQueue {
-	queue := &prioFifoQueue{}
+func newRunQueue() *runQueue {
+	queue := &runQueue{}
 	heap.Init(queue)
 	return queue
 }
 
-func (q *prioFifoQueue) update(item *Item) {
-	heap.Fix(q, item.readyIndex)
+func (q *runQueue) update(item *Item) {
+	heap.Fix(q, item.ttrIndex)
 }
 
-func (q *prioFifoQueue) push(item *Item) {
+func (q *runQueue) push(item *Item) {
 	heap.Push(q, item)
 }
 
-func (q *prioFifoQueue) pop() *Item {
+func (q *runQueue) pop() *Item {
 	if q.Len() == 0 {
 		return nil
 	}
 	return heap.Pop(q).(*Item)
 }
 
-func (q *prioFifoQueue) remove(item *Item) {
-	heap.Remove(q, item.readyIndex)
+func (q *runQueue) remove(item *Item) {
+	heap.Remove(q, item.ttrIndex)
 }
 
-func (q prioFifoQueue) Len() int {
+func (q runQueue) Len() int {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-	length := len(q.items)
-	return length
+	return len(q.items)
 }
 
-func (q prioFifoQueue) Less(i, j int) bool {
+func (q runQueue) Less(i, j int) bool {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-    if q.items[i].Priority == q.items[j].Priority {
-        return q.items[i].creation.Before(q.items[j].creation)
-    }
-    return q.items[i].Priority > q.items[j].Priority
+	return q.items[i].ReleaseAt.Before(q.items[j].ReleaseAt)
 }
 
-func (q prioFifoQueue) Swap(i, j int) {
+func (q runQueue) Swap(i, j int) {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
 	q.items[i], q.items[j] = q.items[j], q.items[i]
-	q.items[i].readyIndex = i
-	q.items[j].readyIndex = j
+	q.items[i].ttrIndex = i
+	q.items[j].ttrIndex = j
 }
 
-func (q *prioFifoQueue) Push(x interface{}) {
+func (q *runQueue) Push(x interface{}) {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
 	item := x.(*Item)
-	item.readyIndex = len(q.items)
+	item.ttrIndex = len(q.items)
 	q.items = append(q.items, item)
 }
 
-func (q *prioFifoQueue) Pop() interface{} {
+func (q *runQueue) Pop() interface{} {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-	lasti := len(q.items) - 1
+    lasti := len(q.items) - 1
     item := q.items[lasti]
-    item.readyIndex = -1
+    item.ttrIndex = -1
     q.items = q.items[:lasti]
 	return item
 }

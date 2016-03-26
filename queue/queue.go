@@ -57,8 +57,8 @@ type Queue struct {
 	mutex             sync.Mutex
 	items             map[string]*Item
     delayQueue        *delayQueue
-    readyQueue        *prioFifoQueue
-    runQueue          *ttrQueue
+    readyQueue        *readyQueue
+    runQueue          *runQueue
     buryQueue         *buryQueue
     delayNotification chan bool
     delayTime         time.Time
@@ -81,8 +81,8 @@ func New(name string) *Queue {
         Name:              name,
         items:             make(map[string]*Item),
         delayQueue:        newDelayQueue(),
-        readyQueue:        newPrioFifoQueue(),
-        runQueue:          newTTRQueue(),
+        readyQueue:        newReadyQueue(),
+        runQueue:          newRunQueue(),
         buryQueue:         newBuryQueue(),
         ttrNotification:   make(chan bool, 1),
         ttrTime:           time.Now(),

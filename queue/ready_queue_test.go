@@ -27,8 +27,8 @@ import (
     "time"
 )
 
-func BenchmarkPrioFifoQueue(b *testing.B) {
-    readyQueue := newPrioFifoQueue()
+func BenchmarkReadyQueue(b *testing.B) {
+    readyQueue := newReadyQueue()
     b.ResetTimer()
     k := 1
     for i := 0; i < b.N; i++ {
@@ -39,6 +39,6 @@ func BenchmarkPrioFifoQueue(b *testing.B) {
     }
 }
 
-func TestPrioFifoQueue(t *testing.T) {
+func TestReadyQueue(t *testing.T) {
     fmt.Println("test")
 }
