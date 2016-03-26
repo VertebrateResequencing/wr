@@ -47,7 +47,6 @@ package queue
 import (
 	"sync"
 	"time"
-    "container/list"
 )
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
@@ -58,7 +57,7 @@ type Queue struct {
 	mutex             sync.Mutex
 	items             map[string]*Item
     delayQueue        *delayQueue
-    readyQueue        *list.List
+    readyQueue        *prioFifoQueue
     runQueue          *ttrQueue
     buryQueue         *buryQueue
     delayNotification chan bool
@@ -82,7 +81,7 @@ func New(name string) *Queue {
         Name:              name,
         items:             make(map[string]*Item),
         delayQueue:        newDelayQueue(),
-        readyQueue:        list.New(),
+        readyQueue:        newPrioFifoQueue(),
         runQueue:          newTTRQueue(),
         buryQueue:         newBuryQueue(),
         ttrNotification:   make(chan bool, 1),
@@ -156,13 +155,12 @@ func (queue *Queue) Reserve() (*Item, bool) {
     queue.mutex.Lock()
     
     // pop an item from the ready queue and add it to the run queue
-    e := queue.readyQueue.Back()
-    if e == nil {
+    item := queue.readyQueue.pop()
+    if item == nil {
         queue.mutex.Unlock()
         return nil, false
     }
     
-    item := queue.readyQueue.Remove(e).(*Item)
     queue.runQueue.push(item)
     item.switchReadyRun()
     
@@ -191,8 +189,8 @@ func (queue *Queue) Release(key string) (ok bool) {
     
     // switch from run to ready queue
     queue.runQueue.remove(item)
-    e := queue.readyQueue.PushFront(item)
-    item.switchRunReady(e, "release")
+    queue.readyQueue.push(item)
+    item.switchRunReady("release")
     
     return
 }
@@ -271,7 +269,7 @@ func (queue *Queue) Remove(key string) (existed bool) {
         case "delay":
             queue.delayQueue.remove(item)
         case "ready":
-            queue.readyQueue.Remove(item.readyElement)
+            queue.readyQueue.remove(item)
         case "run":
             queue.runQueue.remove(item)
         case "bury":
@@ -312,8 +310,8 @@ func (queue *Queue) startDelayProcessing() {
                 // remove it from the delay sub-queue and add it to the ready
                 // sub-queue
                 queue.delayQueue.remove(item)
-                e := queue.readyQueue.PushFront(item)
-                item.switchDelayReady(e)
+                queue.readyQueue.push(item)
+                item.switchDelayReady()
                 
                 queue.mutex.Unlock()
             case <-queue.delayNotification:
@@ -358,8 +356,8 @@ func (queue *Queue) startTTRProcessing() {
                 // remove it from the ttr sub-queue and add it back to the
                 // ready sub-queue
     			queue.runQueue.remove(item)
-    			e := queue.readyQueue.PushFront(item)
-                item.switchRunReady(e, "timeout")
+    			queue.readyQueue.push(item)
+                item.switchRunReady("timeout")
                 
     			queue.mutex.Unlock()
     		case <-queue.ttrNotification:

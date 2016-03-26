@@ -23,7 +23,6 @@ package queue
 import (
 	"sync"
 	"time"
-    "container/list"
 )
 
 // Item holds the information about each item in our queue, and has thread-safe
@@ -42,9 +41,10 @@ type Item struct {
     delay        time.Duration
     ttr          time.Duration
     readyAt      time.Time
+    creation     time.Time
     mutex        sync.Mutex
     delayIndex   int
-    readyElement *list.Element
+    readyIndex   int
     ttrIndex     int
     buryIndex    int
 }
@@ -63,6 +63,7 @@ func newItem(key string, data interface{}, priority uint8, delay time.Duration, 
         delay:    delay,
 		ttr:      ttr,
         readyAt:  time.Now().Add(delay),
+        creation: time.Now(),
 	}
 }
 
@@ -91,12 +92,11 @@ func (item *Item) releasable() (releasable bool) {
 }
 
 // update after we've switched from the delay to the ready sub-queue
-func (item *Item) switchDelayReady(e *list.Element) {
+func (item *Item) switchDelayReady() {
     item.mutex.Lock()
     defer item.mutex.Unlock()
     item.delayIndex = -1
     item.readyAt = time.Time{}
-    item.readyElement = e
     item.State = "ready"
 }
 
@@ -104,19 +104,18 @@ func (item *Item) switchDelayReady(e *list.Element) {
 func (item *Item) switchReadyRun() {
     item.mutex.Lock()
     defer item.mutex.Unlock()
-    item.readyElement = nil
+    item.readyIndex = -1
     item.ReleaseAt = time.Now().Add(item.ttr)
     item.Reserves += 1
     item.State = "run"
 }
 
 // update after we've switched from the run to the ready sub-queue
-func (item *Item) switchRunReady(e *list.Element, reason string) {
+func (item *Item) switchRunReady(reason string) {
     item.mutex.Lock()
     defer item.mutex.Unlock()
     item.ttrIndex = -1
     item.ReleaseAt = time.Time{}
-    item.readyElement = e
     
     switch reason {
         case "timeout":
@@ -152,7 +151,7 @@ func (item *Item) removalCleanup() {
     defer item.mutex.Unlock()
     item.ttrIndex = -1
     item.ReleaseAt = time.Time{}
-    item.readyElement = nil
+    item.readyIndex = -1
     item.delayIndex = -1
     item.readyAt = time.Time{}
     item.buryIndex = -1
