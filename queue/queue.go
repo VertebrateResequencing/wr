@@ -23,12 +23,13 @@ Package queue provides a queue structure where you can add items to the
 queue that can then then switch between 4 sub-queues.
 
 This package provides the functions for a server process to do the work of a
-jobqueue like beanstalkd. See jobqueue.go for the functions that allow
+jobqueue like beanstalkd. See the jobqueue package for the functions that allow
 interaction with clients on the network.
 
 Items start in the delay queue. After the item's delay time, they automatically
-move to the ready queue. From there you can Reserve() an item to get the oldest
-one (fifo) which switches it from the ready queue to the run queue.
+move to the ready queue. From there you can Reserve() an item to get the highest
+priority (or for those with equal priority, the oldest one (fifo)) which
+switches it from the ready queue to the run queue.
 
 In the run queue the item starts a time-to-release (ttr) countdown; when that
 runs out the item is placed back on the ready queue. This is to handle a
