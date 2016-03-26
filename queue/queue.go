@@ -143,15 +143,16 @@ func (queue *Queue) Get(key string) (item *Item, exists bool) {
     return
 }
 
-// Reserve is a thread-safe way to get the oldest (by time since entry to the
-// ready sub-queue) item in the queue, switching it from the ready sub-queue to
-// the run sub-queue, and in so doing starting its ttr countdown. You need to
-// Remove() the item when you're done with it. If you're still doing something
-// and ttr is approaching, Touch() it, otherwise it will be assumed you died
-// and the item will be released back to the ready sub-queue automatically, to
-// be handled by someone else that gets it from a Reserve() call. If you know
-// you can't handle it right now, but someone else might be able to later,
-// you can manually call Release().
+// Reserve is a thread-safe way to get the highest priority (or for those with
+// equal priority, the oldest (by time since the item was first Add()ed) item
+// in the queue, switching it from the ready sub-queue to the run sub-queue, and
+// in so doing starting its ttr countdown. You need to Remove() the item when
+// you're done with it. If you're still doing something and ttr is approaching,
+// Touch() it, otherwise it will be assumed you died and the item will be
+// released back to the ready sub-queue automatically, to be handled by someone
+// else that gets it from a Reserve() call. If you know you can't handle it
+// right now, but someone else might be able to later, you can manually call
+// Release().
 func (queue *Queue) Reserve() (*Item, bool) {
     queue.mutex.Lock()
     
