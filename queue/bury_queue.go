@@ -64,6 +64,5 @@ func (q *buryQueue) remove(item *Item) {
 func (q buryQueue) Len() int {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-	length := len(q.items)
-	return length
+	return len(q.items)
 }

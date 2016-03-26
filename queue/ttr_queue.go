@@ -61,15 +61,13 @@ func (q *ttrQueue) remove(item *Item) {
 func (q ttrQueue) Len() int {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-	length := len(q.items)
-	return length
+	return len(q.items)
 }
 
 func (q ttrQueue) Less(i, j int) bool {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-	less := q.items[i].ReleaseAt.Before(q.items[j].ReleaseAt)
-	return less
+	return q.items[i].ReleaseAt.Before(q.items[j].ReleaseAt)
 }
 
 func (q ttrQueue) Swap(i, j int) {
@@ -91,10 +89,9 @@ func (q *ttrQueue) Push(x interface{}) {
 func (q *ttrQueue) Pop() interface{} {
 	q.mutex.Lock()
     defer q.mutex.Unlock()
-	old := q.items
-	n := len(old)
-	item := old[n-1]
-	item.ttrIndex = -1
-	q.items = old[0 : n-1]
+    lasti := len(q.items) - 1
+    item := q.items[lasti]
+    item.ttrIndex = -1
+    q.items = q.items[:lasti]
 	return item
 }
