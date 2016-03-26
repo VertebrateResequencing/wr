@@ -26,8 +26,8 @@ import (
 )
 
 type buryQueue struct {
-    mutex sync.Mutex
-    items []*Item
+	mutex sync.Mutex
+	items []*Item
 }
 
 func newBuryQueue() *buryQueue {
@@ -35,34 +35,34 @@ func newBuryQueue() *buryQueue {
 }
 
 func (q *buryQueue) push(item *Item) {
-    q.mutex.Lock()
-    defer q.mutex.Unlock()
-    item.buryIndex = len(q.items)
-    q.items = append(q.items, item)
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	item.buryIndex = len(q.items)
+	q.items = append(q.items, item)
 }
 
 func (q *buryQueue) remove(item *Item) {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
-    
-    lasti := len(q.items) - 1
-    thisi := item.buryIndex
-    
-    if lasti == 0 {
-        // this item was the only one in the queue, just make a new slice
-        q.items = []*Item{}
-    } else {
-        q.items[thisi] = q.items[lasti] // copy the item at the end to where this item was
-        q.items[thisi].buryIndex = thisi // update the index of the item we just moved
-        q.items[lasti] = nil // set the value at the end to nil so it can be garbage collected
-        q.items = q.items[:lasti] // reduce the length of the slice
-    }
-    
-    item.buryIndex = -1
+	defer q.mutex.Unlock()
+
+	lasti := len(q.items) - 1
+	thisi := item.buryIndex
+
+	if lasti == 0 {
+		// this item was the only one in the queue, just make a new slice
+		q.items = []*Item{}
+	} else {
+		q.items[thisi] = q.items[lasti]  // copy the item at the end to where this item was
+		q.items[thisi].buryIndex = thisi // update the index of the item we just moved
+		q.items[lasti] = nil             // set the value at the end to nil so it can be garbage collected
+		q.items = q.items[:lasti]        // reduce the length of the slice
+	}
+
+	item.buryIndex = -1
 }
 
 func (q buryQueue) Len() int {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	return len(q.items)
 }

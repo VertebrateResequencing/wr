@@ -19,65 +19,65 @@
 package cmd
 
 import (
-    "fmt"
-    "time"
-    "log"
-    "github.com/spf13/cobra"
-    "github.com/sb10/vrpipe/jobqueue"
+	"fmt"
+	"github.com/sb10/vrpipe/jobqueue"
+	"github.com/spf13/cobra"
+	"log"
+	"time"
 )
 
-var queuename string;
+var queuename string
 
 // workerCmd represents the worker command
 var workerCmd = &cobra.Command{
-    Use:   "worker",
-    Short: "Run a queued command",
-    Long: `A worker runs commands that were queued by the setup command.
+	Use:   "worker",
+	Short: "Run a queued command",
+	Long: `A worker runs commands that were queued by the setup command.
 You won't normally run this yourself directly - "vrpipe controller" runs this as
 needed.`,
-    Run: func(cmd *cobra.Command, args []string) {
-        jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe." + queuename, false)
-        if err != nil {
-            log.Fatal(err)
-        }
-        
-        for {
-            job, err := jobqueue.Reserve(5*time.Second)
-            if err != nil {
-                log.Fatal(err)
-            }
-            if job == nil {
-                break
-            }
-            stats, err := job.Stats();
-            if err != nil {
-                log.Fatal(err)
-            }
-            fmt.Printf("stats: %s; time left: %d\n", stats.State, stats.TimeLeft)
-            stats2, err := jobqueue.Stats();
-            if err != nil {
-                log.Fatal(err)
-            }
-            fmt.Printf("ready: %d; reserved: %d\n", stats2.Ready, stats2.Reserved)
-            err = job.Delete();
-            if err != nil {
-                log.Fatal(err)
-            }
-        }
-        
-        stats, err := jobqueue.DaemonStats();
-        if err != nil {
-            log.Fatal(err)
-        }
-        fmt.Printf("producers: %d, workers: %d, pid: %d, hostname: %s\n", stats.Producers, stats.Workers, stats.Pid, stats.Hostname)
-        
-        jobqueue.Disconnect()
-    },
+	Run: func(cmd *cobra.Command, args []string) {
+		jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe."+queuename, false)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for {
+			job, err := jobqueue.Reserve(5 * time.Second)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if job == nil {
+				break
+			}
+			stats, err := job.Stats()
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("stats: %s; time left: %d\n", stats.State, stats.TimeLeft)
+			stats2, err := jobqueue.Stats()
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("ready: %d; reserved: %d\n", stats2.Ready, stats2.Reserved)
+			err = job.Delete()
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		stats, err := jobqueue.DaemonStats()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("producers: %d, workers: %d, pid: %d, hostname: %s\n", stats.Producers, stats.Workers, stats.Pid, stats.Hostname)
+
+		jobqueue.Disconnect()
+	},
 }
 
 func init() {
-    RootCmd.AddCommand(workerCmd)
+	RootCmd.AddCommand(workerCmd)
 
-    // flags specific to this sub-command
-    workerCmd.Flags().StringVar(&queuename, "queue", "des", "Specify the queue to pull jobs from [des|cmd]")
+	// flags specific to this sub-command
+	workerCmd.Flags().StringVar(&queuename, "queue", "des", "Specify the queue to pull jobs from [des|cmd]")
 }

@@ -1,7 +1,7 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
-// https://github.com/diegobernardes/ttlcache 
+// https://github.com/diegobernardes/ttlcache
 //
 //  This file is part of VRPipe.
 //
@@ -29,8 +29,8 @@ import (
 )
 
 type runQueue struct {
-    mutex sync.Mutex
-    items []*Item
+	mutex sync.Mutex
+	items []*Item
 }
 
 func newRunQueue() *runQueue {
@@ -60,19 +60,19 @@ func (q *runQueue) remove(item *Item) {
 
 func (q runQueue) Len() int {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	return len(q.items)
 }
 
 func (q runQueue) Less(i, j int) bool {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	return q.items[i].ReleaseAt.Before(q.items[j].ReleaseAt)
 }
 
 func (q runQueue) Swap(i, j int) {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	q.items[i], q.items[j] = q.items[j], q.items[i]
 	q.items[i].ttrIndex = i
 	q.items[j].ttrIndex = j
@@ -80,7 +80,7 @@ func (q runQueue) Swap(i, j int) {
 
 func (q *runQueue) Push(x interface{}) {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	item := x.(*Item)
 	item.ttrIndex = len(q.items)
 	q.items = append(q.items, item)
@@ -88,10 +88,10 @@ func (q *runQueue) Push(x interface{}) {
 
 func (q *runQueue) Pop() interface{} {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
-    lasti := len(q.items) - 1
-    item := q.items[lasti]
-    item.ttrIndex = -1
-    q.items = q.items[:lasti]
+	defer q.mutex.Unlock()
+	lasti := len(q.items) - 1
+	item := q.items[lasti]
+	item.ttrIndex = -1
+	q.items = q.items[:lasti]
 	return item
 }

@@ -1,7 +1,7 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
-// https://github.com/diegobernardes/ttlcache 
+// https://github.com/diegobernardes/ttlcache
 //
 //  This file is part of VRPipe.
 //
@@ -30,8 +30,8 @@ import (
 )
 
 type delayQueue struct {
-    mutex sync.Mutex
-    items []*Item
+	mutex sync.Mutex
+	items []*Item
 }
 
 func newDelayQueue() *delayQueue {
@@ -61,19 +61,19 @@ func (q *delayQueue) remove(item *Item) {
 
 func (q delayQueue) Len() int {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	return len(q.items)
 }
 
 func (q delayQueue) Less(i, j int) bool {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	return q.items[i].readyAt.Before(q.items[j].readyAt)
 }
 
 func (q delayQueue) Swap(i, j int) {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	q.items[i], q.items[j] = q.items[j], q.items[i]
 	q.items[i].delayIndex = i
 	q.items[j].delayIndex = j
@@ -81,7 +81,7 @@ func (q delayQueue) Swap(i, j int) {
 
 func (q *delayQueue) Push(x interface{}) {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	item := x.(*Item)
 	item.delayIndex = len(q.items)
 	q.items = append(q.items, item)
@@ -89,10 +89,10 @@ func (q *delayQueue) Push(x interface{}) {
 
 func (q *delayQueue) Pop() interface{} {
 	q.mutex.Lock()
-    defer q.mutex.Unlock()
+	defer q.mutex.Unlock()
 	lasti := len(q.items) - 1
-    item := q.items[lasti]
-    item.delayIndex = -1
-    q.items = q.items[:lasti]
+	item := q.items[lasti]
+	item.delayIndex = -1
+	q.items = q.items[:lasti]
 	return item
 }

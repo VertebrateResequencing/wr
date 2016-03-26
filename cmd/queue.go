@@ -20,137 +20,137 @@ package cmd
 
 import (
 	"fmt"
-    "time"
+	"github.com/sb10/vrpipe/queue"
 	"github.com/spf13/cobra"
-    "github.com/sb10/vrpipe/queue"
+	"time"
 )
 
 type MyStruct struct {
-    Num int
-    Foo string
+	Num int
+	Foo string
 }
 
 // setupCmd represents the setup command
 var queueCmd = &cobra.Command{
 	Use:   "queue",
 	Short: "temp playground for queue implementations",
-	Long: `don't use this`,
+	Long:  `don't use this`,
 	Run: func(cmd *cobra.Command, args []string) {
 		myqueue := queue.New("test queue")
-        stats := myqueue.Stats()
-        
-        foo := &MyStruct{Num: 1, Foo: "bar"}
-        myqueue.Add("myfoo", foo, 0, 100 * time.Millisecond, 100 * time.Millisecond)
-        
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        
-        fmt.Println("\nwill reserve...")
-        item, exists := myqueue.Reserve()
-        if exists {
-            foo := item.Data.(*MyStruct)
-            fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
-        } else {
-            fmt.Println("nothing in ready queue")
-        }
-        
-        <-time.After(150 * time.Millisecond)
-        
-        fmt.Println("\nafter 150 seconds will reserve again...")
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        item, exists = myqueue.Reserve()
-        if exists {
-            foo := item.Data.(*MyStruct)
-            fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
-        } else {
-            fmt.Println("nothing in ready queue")
-        }
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        
-        <-time.After(50 * time.Millisecond)
-        
-        fmt.Println("\nafter 50 more ms will reserve again...")
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        item, exists = myqueue.Reserve()
-        if exists {
-            foo := item.Data.(*MyStruct)
-            fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
-        } else {
-            fmt.Println("nothing in ready queue")
-        }
-        
-        <-time.After(150 * time.Millisecond)
-        
-        fmt.Println("\nafter 150 more ms will reserve again...")
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        item, exists = myqueue.Reserve()
-        if exists {
-            foo := item.Data.(*MyStruct)
-            fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
-        } else {
-            fmt.Println("nothing in ready queue")
-        }
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        
-        released := myqueue.Release("myfoo")
-        fmt.Printf("\nrelease myfoo returned %v, and item state is %s\n", released, item.State)
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        
-        buried := myqueue.Bury("myfoo")
-        fmt.Printf("\nbury myfoo returned %v, and item state is %s\n", buried, item.State)
-        item, exists = myqueue.Reserve()
-        if exists {
-            foo := item.Data.(*MyStruct)
-            fmt.Printf("reserved again and got item with key %s and num %d\n", item.Key, foo.Num)
-            
-            buried = myqueue.Bury("myfoo")
-            fmt.Printf("bury myfoo returned %v, and item state is %s\n", buried, item.State)
-            stats = myqueue.Stats()
-            fmt.Printf("queue stats: %v\n", stats)
-            
-            kicked := myqueue.Kick("myfoo")
-            fmt.Printf("\nkick myfoo returned %v, and item state is %s\n", kicked, item.State)
-            stats = myqueue.Stats()
-            fmt.Printf("queue stats: %v\n", stats)
-            
-            <-time.After(150 * time.Millisecond)
-            
-            fmt.Printf("\nafter waiting 150 ms...\n")
-            stats = myqueue.Stats()
-            fmt.Printf("queue stats: %v\n", stats)
-        }
-        
-        removed := myqueue.Remove("myfoo")
-        fmt.Printf("\nremove myfoo returned %v, and item state is %s\n", removed, item.State)
-        stats = myqueue.Stats()
-        fmt.Printf("queue stats: %v\n", stats)
-        
-        myqueue.Add("j3", "foo", 0, 0 * time.Second, 1 * time.Second)
-        myqueue.Add("j1", "foo", 2, 0 * time.Second, 1 * time.Second)
-        myqueue.Add("j2", "foo", 1, 0 * time.Second, 1 * time.Second)
-        <-time.After(10 * time.Millisecond)
-        j1, exists1 := myqueue.Reserve()
-        j2, exists2 := myqueue.Reserve()
-        j3, exists3 := myqueue.Reserve()
-        if exists1 && exists2 && exists3 {
-            myqueue.Bury("j1")
-            myqueue.Bury("j2")
-            myqueue.Bury("j3")
-            fmt.Printf("\nafter adding, reserving and burying 3 jobs, the second to be reserved has key %s...\n", j2.Key)
-            stats = myqueue.Stats()
-            fmt.Printf("queue stats: %v\n", stats)
-            myqueue.Kick("j2")
-            <-time.After(10 * time.Millisecond)
-            fmt.Printf("after kicking the second job, the status of 1 is %s, 2 is %s and 3 is %s\n", j1.State, j2.State, j3.State)
-            stats = myqueue.Stats()
-            fmt.Printf("queue stats: %v\n", stats)
-        }
+		stats := myqueue.Stats()
+
+		foo := &MyStruct{Num: 1, Foo: "bar"}
+		myqueue.Add("myfoo", foo, 0, 100*time.Millisecond, 100*time.Millisecond)
+
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+
+		fmt.Println("\nwill reserve...")
+		item, exists := myqueue.Reserve()
+		if exists {
+			foo := item.Data.(*MyStruct)
+			fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
+		} else {
+			fmt.Println("nothing in ready queue")
+		}
+
+		<-time.After(150 * time.Millisecond)
+
+		fmt.Println("\nafter 150 seconds will reserve again...")
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+		item, exists = myqueue.Reserve()
+		if exists {
+			foo := item.Data.(*MyStruct)
+			fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
+		} else {
+			fmt.Println("nothing in ready queue")
+		}
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+
+		<-time.After(50 * time.Millisecond)
+
+		fmt.Println("\nafter 50 more ms will reserve again...")
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+		item, exists = myqueue.Reserve()
+		if exists {
+			foo := item.Data.(*MyStruct)
+			fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
+		} else {
+			fmt.Println("nothing in ready queue")
+		}
+
+		<-time.After(150 * time.Millisecond)
+
+		fmt.Println("\nafter 150 more ms will reserve again...")
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+		item, exists = myqueue.Reserve()
+		if exists {
+			foo := item.Data.(*MyStruct)
+			fmt.Printf("got item with key %s and num %d\n", item.Key, foo.Num)
+		} else {
+			fmt.Println("nothing in ready queue")
+		}
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+
+		released := myqueue.Release("myfoo")
+		fmt.Printf("\nrelease myfoo returned %v, and item state is %s\n", released, item.State)
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+
+		buried := myqueue.Bury("myfoo")
+		fmt.Printf("\nbury myfoo returned %v, and item state is %s\n", buried, item.State)
+		item, exists = myqueue.Reserve()
+		if exists {
+			foo := item.Data.(*MyStruct)
+			fmt.Printf("reserved again and got item with key %s and num %d\n", item.Key, foo.Num)
+
+			buried = myqueue.Bury("myfoo")
+			fmt.Printf("bury myfoo returned %v, and item state is %s\n", buried, item.State)
+			stats = myqueue.Stats()
+			fmt.Printf("queue stats: %v\n", stats)
+
+			kicked := myqueue.Kick("myfoo")
+			fmt.Printf("\nkick myfoo returned %v, and item state is %s\n", kicked, item.State)
+			stats = myqueue.Stats()
+			fmt.Printf("queue stats: %v\n", stats)
+
+			<-time.After(150 * time.Millisecond)
+
+			fmt.Printf("\nafter waiting 150 ms...\n")
+			stats = myqueue.Stats()
+			fmt.Printf("queue stats: %v\n", stats)
+		}
+
+		removed := myqueue.Remove("myfoo")
+		fmt.Printf("\nremove myfoo returned %v, and item state is %s\n", removed, item.State)
+		stats = myqueue.Stats()
+		fmt.Printf("queue stats: %v\n", stats)
+
+		myqueue.Add("j3", "foo", 0, 0*time.Second, 1*time.Second)
+		myqueue.Add("j1", "foo", 2, 0*time.Second, 1*time.Second)
+		myqueue.Add("j2", "foo", 1, 0*time.Second, 1*time.Second)
+		<-time.After(10 * time.Millisecond)
+		j1, exists1 := myqueue.Reserve()
+		j2, exists2 := myqueue.Reserve()
+		j3, exists3 := myqueue.Reserve()
+		if exists1 && exists2 && exists3 {
+			myqueue.Bury("j1")
+			myqueue.Bury("j2")
+			myqueue.Bury("j3")
+			fmt.Printf("\nafter adding, reserving and burying 3 jobs, the second to be reserved has key %s...\n", j2.Key)
+			stats = myqueue.Stats()
+			fmt.Printf("queue stats: %v\n", stats)
+			myqueue.Kick("j2")
+			<-time.After(10 * time.Millisecond)
+			fmt.Printf("after kicking the second job, the status of 1 is %s, 2 is %s and 3 is %s\n", j1.State, j2.State, j3.State)
+			stats = myqueue.Stats()
+			fmt.Printf("queue stats: %v\n", stats)
+		}
 	},
 }
 

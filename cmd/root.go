@@ -22,9 +22,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-    "github.com/sb10/vrpipe/internal"
+	"github.com/sb10/vrpipe/internal"
 	"github.com/spf13/cobra"
+	"os"
 )
 
 // these variables are accessible by all subcommands
@@ -55,10 +55,10 @@ func Execute() {
 }
 
 func init() {
-    // global flags
+	// global flags
 	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", "", "Use the production or development configuration (defaults to development in the vrpipe git repository directory, otherwise is taken from $VRPIPE_DEPLOYMENT or defaults to production)")
-    
-    cobra.OnInitialize(initConfig)
+
+	cobra.OnInitialize(initConfig)
 }
 
 // initConfig reads in config file and ENV variables if set.
