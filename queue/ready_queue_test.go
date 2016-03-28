@@ -73,11 +73,11 @@ func TestReadyQueue(t *testing.T) {
 		})
 
 		Convey("Updating an item works", func() {
-			exampleItem := items["key_0"]
-			exampleItem.Key = "newKey"
+			exampleItem := items["key_5"]
+			exampleItem.priority = 1
 			queue.update(exampleItem)
 			newItem := queue.pop()
-			So(newItem.Key, ShouldEqual, "newKey")
+			So(newItem.Key, ShouldEqual, "key_5")
 		})
 	})
 

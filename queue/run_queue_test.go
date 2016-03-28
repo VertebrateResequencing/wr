@@ -76,10 +76,10 @@ func TestRunQueue(t *testing.T) {
 
 		Convey("Updating an item works", func() {
 			exampleItem := items["key_9"]
-			exampleItem.Key = "newKey"
+			exampleItem.releaseAt = time.Now().Add(2500 * time.Millisecond)
 			queue.update(exampleItem)
 			newItem := queue.pop()
-			So(newItem.Key, ShouldEqual, "newKey")
+			So(newItem.Key, ShouldEqual, "key_8")
 		})
 
 		Convey("Getting the next item that would be popped without actually popping it works", func() {

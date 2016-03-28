@@ -75,10 +75,10 @@ func TestDelayQueue(t *testing.T) {
 
 		Convey("Updating an item works", func() {
 			exampleItem := items["key_9"]
-			exampleItem.Key = "newKey"
+			exampleItem.readyAt = time.Now().Add(2500 * time.Millisecond)
 			queue.update(exampleItem)
 			newItem := queue.pop()
-			So(newItem.Key, ShouldEqual, "newKey")
+			So(newItem.Key, ShouldEqual, "key_8")
 		})
 	})
 }

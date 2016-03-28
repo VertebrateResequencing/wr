@@ -67,10 +67,10 @@ func (q readyQueue) Len() int {
 func (q readyQueue) Less(i, j int) bool {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	if q.items[i].Priority == q.items[j].Priority {
+	if q.items[i].priority == q.items[j].priority {
 		return q.items[i].creation.Before(q.items[j].creation)
 	}
-	return q.items[i].Priority > q.items[j].Priority
+	return q.items[i].priority > q.items[j].priority
 }
 
 func (q readyQueue) Swap(i, j int) {

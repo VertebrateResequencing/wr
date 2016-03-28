@@ -32,13 +32,13 @@ import (
 type Item struct {
 	Key        string
 	Data       interface{}
-	Priority   uint8  // highest priority is 255
-	State      string // one of 'delay', 'ready', 'run', 'bury', 'removed'
+	State      string
 	Reserves   uint32
 	Timeouts   uint32
 	Releases   uint32
 	Buries     uint32
 	Kicks      uint32
+	priority   uint8 // highest priority is 255
 	delay      time.Duration
 	ttr        time.Duration
 	readyAt    time.Time
@@ -55,13 +55,13 @@ func newItem(key string, data interface{}, priority uint8, delay time.Duration, 
 	return &Item{
 		Key:      key,
 		Data:     data,
-		Priority: priority,
 		State:    "delay",
 		Reserves: 0,
 		Timeouts: 0,
 		Releases: 0,
 		Buries:   0,
 		Kicks:    0,
+		priority: priority,
 		delay:    delay,
 		ttr:      ttr,
 		readyAt:  time.Now().Add(delay),
