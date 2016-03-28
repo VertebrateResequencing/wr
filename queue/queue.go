@@ -187,7 +187,7 @@ func (queue *Queue) Touch(key string) (ok bool) {
 	}
 
 	// and it must be in the run queue
-	if ok = item.State == "run"; !ok {
+	if ok = item.state == "run"; !ok {
 		return
 	}
 
@@ -211,7 +211,7 @@ func (queue *Queue) Release(key string) (ok bool) {
 	}
 
 	// and it must be in the run queue
-	if ok = item.State == "run"; !ok {
+	if ok = item.state == "run"; !ok {
 		return
 	}
 
@@ -237,7 +237,7 @@ func (queue *Queue) Bury(key string) (ok bool) {
 	}
 
 	// and it must be in the run queue
-	if ok = item.State == "run"; !ok {
+	if ok = item.state == "run"; !ok {
 		return
 	}
 
@@ -262,7 +262,7 @@ func (queue *Queue) Kick(key string) (ok bool) {
 	}
 
 	// and it must be in the bury queue
-	if ok = item.State == "bury"; !ok {
+	if ok = item.state == "bury"; !ok {
 		queue.mutex.Unlock()
 		return
 	}
@@ -294,7 +294,7 @@ func (queue *Queue) Remove(key string) (existed bool) {
 	delete(queue.items, key)
 
 	// remove from the current sub-queue
-	switch item.State {
+	switch item.state {
 	case "delay":
 		queue.delayQueue.remove(item)
 	case "ready":

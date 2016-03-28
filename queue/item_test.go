@@ -27,8 +27,16 @@ import (
 func TestItem(t *testing.T) {
 	Convey("Given an item with a non-zero delay and ttr", t, func() {
 		item := newItem("item1", "data", 255, 100*time.Millisecond, 100*time.Millisecond)
-		So(item.State, ShouldEqual, "delay")
+		So(item.state, ShouldEqual, "delay")
 		So(item.readyAt, ShouldHappenOnOrBetween, time.Now().Add(90*time.Millisecond), time.Now().Add(100*time.Millisecond))
+
+		Convey("Whilst delayed, if restarted the Remaining stat is available", func() {
+			item.restart()
+			stats := item.Stats()
+			So(stats.State, ShouldEqual, "delay")
+			So(stats.Remaining.Nanoseconds(), ShouldAlmostEqual, 100000000, 10000)
+			So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 0, time.Since(item.creation))
+		})
 
 		Convey("It won't be ready until after delay", func() {
 			So(item.isready(), ShouldBeFalse)
@@ -53,43 +61,59 @@ func TestItem(t *testing.T) {
 			item.switchDelayReady()
 			So(item.delayIndex, ShouldEqual, -1)
 			So(item.readyAt, ShouldBeZeroValue)
-			So(item.State, ShouldEqual, "ready")
+			So(item.state, ShouldEqual, "ready")
 		})
 
 		Convey("Switching from ready to run updates properties; without a touch it still doesn't release", func() {
 			item.switchReadyRun()
 			So(item.readyIndex, ShouldEqual, -1)
-			So(item.Reserves, ShouldEqual, 1)
-			So(item.State, ShouldEqual, "run")
+			So(item.reserves, ShouldEqual, 1)
+			So(item.state, ShouldEqual, "run")
 			So(item.releasable(), ShouldBeFalse)
 			<-time.After(110 * time.Millisecond)
 			So(item.releasable(), ShouldBeFalse)
+
+			Convey("If touched, the Remaining stat is available", func() {
+				item.touch()
+				stats := item.Stats()
+				So(stats.State, ShouldEqual, "run")
+				So(stats.Remaining.Nanoseconds(), ShouldAlmostEqual, 100000000, 10000)
+				So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 110000, time.Since(item.creation))
+			})
 		})
 
 		Convey("Switching from run to ready updates properties", func() {
 			item.switchRunReady("timeout")
 			So(item.ttrIndex, ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
-			So(item.Timeouts, ShouldEqual, 1)
-			So(item.Releases, ShouldBeZeroValue)
-			So(item.State, ShouldEqual, "ready")
+			So(item.timeouts, ShouldEqual, 1)
+			So(item.releases, ShouldBeZeroValue)
+			So(item.state, ShouldEqual, "ready")
 
 			item.switchRunReady("release")
-			So(item.Timeouts, ShouldEqual, 1)
-			So(item.Releases, ShouldEqual, 1)
+			So(item.timeouts, ShouldEqual, 1)
+			So(item.releases, ShouldEqual, 1)
 		})
 
 		Convey("Switching from run to bury updates properties", func() {
 			item.switchRunBury()
 			So(item.ttrIndex, ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
-			So(item.State, ShouldEqual, "bury")
+			So(item.state, ShouldEqual, "bury")
+
+			Convey("Once, the Remaining stat is 0", func() {
+				item.touch()
+				stats := item.Stats()
+				So(stats.State, ShouldEqual, "bury")
+				So(stats.Remaining.Nanoseconds(), ShouldEqual, 0)
+				So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 0, time.Since(item.creation))
+			})
 		})
 
 		Convey("Switching from bury to delay updates properties", func() {
 			item.switchBuryDelay()
 			So(item.buryIndex, ShouldEqual, -1)
-			So(item.State, ShouldEqual, "delay")
+			So(item.state, ShouldEqual, "delay")
 
 			Convey("restart updates when the item will be ready", func() {
 				<-time.After(50 * time.Millisecond)
@@ -111,7 +135,7 @@ func TestItem(t *testing.T) {
 			So(item.buryIndex, ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
 			So(item.readyAt, ShouldBeZeroValue)
-			So(item.State, ShouldEqual, "removed")
+			So(item.state, ShouldEqual, "removed")
 		})
 	})
 }

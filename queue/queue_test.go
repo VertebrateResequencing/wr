@@ -76,7 +76,7 @@ func TestQueue(t *testing.T) {
 				item1 := queue.Reserve()
 				So(item1, ShouldNotBeNil)
 				So(item1.Key, ShouldEqual, "key_0")
-				So(item1.Reserves, ShouldEqual, 1)
+				So(item1.reserves, ShouldEqual, 1)
 				item2 := queue.Reserve()
 				So(item2, ShouldNotBeNil)
 				So(item2.Key, ShouldEqual, "key_1")
@@ -93,25 +93,31 @@ func TestQueue(t *testing.T) {
 				So(stats.Running, ShouldEqual, 3)
 
 				Convey("Once reserved you can release them", func() {
-					So(item1.State, ShouldEqual, "run")
-					So(item1.Releases, ShouldEqual, 0)
+					So(item1.state, ShouldEqual, "run")
+					So(item1.releases, ShouldEqual, 0)
 					released := queue.Release(item1.Key)
 					So(released, ShouldBeTrue)
-					So(item1.State, ShouldEqual, "ready")
-					So(item1.Releases, ShouldEqual, 1)
+					So(item1.state, ShouldEqual, "ready")
+					So(item1.releases, ShouldEqual, 1)
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
 					So(stats.Delayed, ShouldEqual, 7)
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 2)
+
+					Convey("You can get read-only item stats at any point", func() {
+						itemstats := item1.Stats()
+						So(itemstats.State, ShouldEqual, "ready")
+						So(itemstats.Releases, ShouldEqual, 1)
+					})
 				})
 
 				Convey("Or remove them", func() {
-					So(item2.State, ShouldEqual, "run")
+					So(item2.state, ShouldEqual, "run")
 					removed := queue.Remove(item2.Key)
 					So(removed, ShouldBeTrue)
-					So(item2.State, ShouldEqual, "removed")
+					So(item2.state, ShouldEqual, "removed")
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 9)
@@ -132,12 +138,12 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("Or bury them", func() {
-					So(item3.State, ShouldEqual, "run")
-					So(item3.Buries, ShouldEqual, 0)
+					So(item3.state, ShouldEqual, "run")
+					So(item3.buries, ShouldEqual, 0)
 					buried := queue.Bury(item3.Key)
 					So(buried, ShouldBeTrue)
-					So(item3.State, ShouldEqual, "bury")
-					So(item3.Buries, ShouldEqual, 1)
+					So(item3.state, ShouldEqual, "bury")
+					So(item3.buries, ShouldEqual, 1)
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
@@ -147,11 +153,11 @@ func TestQueue(t *testing.T) {
 					So(stats.Buried, ShouldEqual, 1)
 
 					Convey("Once buried you can kick them", func() {
-						So(item3.Kicks, ShouldEqual, 0)
+						So(item3.kicks, ShouldEqual, 0)
 						kicked := queue.Kick(item3.Key)
 						So(kicked, ShouldBeTrue)
-						So(item3.State, ShouldEqual, "delay")
-						So(item3.Kicks, ShouldEqual, 1)
+						So(item3.state, ShouldEqual, "delay")
+						So(item3.kicks, ShouldEqual, 1)
 
 						stats = queue.Stats()
 						So(stats.Items, ShouldEqual, 10)
@@ -162,7 +168,7 @@ func TestQueue(t *testing.T) {
 
 						Convey("And then they automatically get ready again", func() {
 							<-time.After(310 * time.Millisecond)
-							So(item3.State, ShouldEqual, "ready")
+							So(item3.state, ShouldEqual, "ready")
 						})
 					})
 
@@ -185,25 +191,25 @@ func TestQueue(t *testing.T) {
 				Convey("If not buried you can't kick them", func() {
 					kicked := queue.Kick(item3.Key)
 					So(kicked, ShouldBeFalse)
-					So(item3.State, ShouldEqual, "run")
+					So(item3.state, ShouldEqual, "run")
 				})
 
 				Convey("If you do nothing they get auto-released", func() {
 					<-time.After(50 * time.Millisecond)
-					So(item1.State, ShouldEqual, "run")
+					So(item1.state, ShouldEqual, "run")
 					<-time.After(60 * time.Millisecond)
-					So(item1.State, ShouldEqual, "ready")
-					So(item1.Timeouts, ShouldEqual, 1)
+					So(item1.state, ShouldEqual, "ready")
+					So(item1.timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 2)
 					So(stats.Running, ShouldEqual, 2)
 					<-time.After(110 * time.Millisecond)
-					So(item2.State, ShouldEqual, "ready")
+					So(item2.state, ShouldEqual, "ready")
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 4)
 					So(stats.Running, ShouldEqual, 1)
 					<-time.After(110 * time.Millisecond)
-					So(item3.State, ShouldEqual, "ready")
+					So(item3.state, ShouldEqual, "ready")
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 6)
 					So(stats.Running, ShouldEqual, 0)
@@ -215,22 +221,22 @@ func TestQueue(t *testing.T) {
 
 				Convey("Though you can prevent auto-release by touching them", func() {
 					<-time.After(50 * time.Millisecond)
-					So(item1.State, ShouldEqual, "run")
+					So(item1.state, ShouldEqual, "run")
 					queue.Touch(item1.Key)
 					<-time.After(60 * time.Millisecond)
-					So(item1.State, ShouldEqual, "run")
-					So(item1.Timeouts, ShouldEqual, 0)
+					So(item1.state, ShouldEqual, "run")
+					So(item1.timeouts, ShouldEqual, 0)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 3)
 					<-time.After(50 * time.Millisecond)
-					So(item1.State, ShouldEqual, "ready")
-					So(item1.Timeouts, ShouldEqual, 1)
+					So(item1.state, ShouldEqual, "ready")
+					So(item1.timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 2)
 					So(stats.Running, ShouldEqual, 2)
 					<-time.After(60 * time.Millisecond)
-					So(item2.State, ShouldEqual, "ready")
+					So(item2.state, ShouldEqual, "ready")
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 4)
 					So(stats.Running, ShouldEqual, 1)
@@ -243,10 +249,10 @@ func TestQueue(t *testing.T) {
 					<-time.After(1 * time.Millisecond)
 					item1 := queue.Reserve()
 					So(item1.Key, ShouldEqual, "item1")
-					So(item1.State, ShouldEqual, "run")
+					So(item1.state, ShouldEqual, "run")
 					item2 := queue.Reserve()
 					So(item2.Key, ShouldEqual, "item2")
-					So(item2.State, ShouldEqual, "run")
+					So(item2.state, ShouldEqual, "run")
 
 					<-time.After(25 * time.Millisecond)
 
@@ -256,11 +262,11 @@ func TestQueue(t *testing.T) {
 
 					<-time.After(30 * time.Millisecond)
 
-					So(item1.State, ShouldEqual, "run")
-					So(item2.State, ShouldEqual, "ready")
+					So(item1.state, ShouldEqual, "run")
+					So(item2.state, ShouldEqual, "ready")
 
 					<-time.After(25 * time.Millisecond)
-					So(item1.State, ShouldEqual, "ready")
+					So(item1.state, ShouldEqual, "ready")
 				})
 			})
 
@@ -320,7 +326,7 @@ func TestQueue(t *testing.T) {
 			<-time.After(49 * time.Millisecond)
 			queue.Remove("item1")
 			<-time.After(6 * time.Millisecond)
-			So(item.State, ShouldEqual, "removed")
+			So(item.state, ShouldEqual, "removed")
 
 			stats := queue.Stats()
 			So(stats.Items, ShouldEqual, 0)
@@ -332,9 +338,9 @@ func TestQueue(t *testing.T) {
 			<-time.After(49 * time.Millisecond)
 			item.readyAt = time.Now().Add(25 * time.Millisecond)
 			<-time.After(6 * time.Millisecond)
-			So(item.State, ShouldEqual, "delay")
+			So(item.state, ShouldEqual, "delay")
 			<-time.After(25 * time.Millisecond)
-			So(item.State, ShouldEqual, "ready")
+			So(item.state, ShouldEqual, "ready")
 		})
 
 		Convey("Once reserved", func() {
@@ -345,7 +351,7 @@ func TestQueue(t *testing.T) {
 				<-time.After(49 * time.Millisecond)
 				queue.Remove("item1")
 				<-time.After(6 * time.Millisecond)
-				So(item.State, ShouldEqual, "removed")
+				So(item.state, ShouldEqual, "removed")
 
 				stats := queue.Stats()
 				So(stats.Items, ShouldEqual, 0)
@@ -357,9 +363,9 @@ func TestQueue(t *testing.T) {
 				<-time.After(49 * time.Millisecond)
 				item.releaseAt = time.Now().Add(25 * time.Millisecond)
 				<-time.After(6 * time.Millisecond)
-				So(item.State, ShouldEqual, "run")
+				So(item.state, ShouldEqual, "run")
 				<-time.After(25 * time.Millisecond)
-				So(item.State, ShouldEqual, "ready")
+				So(item.state, ShouldEqual, "ready")
 			})
 		})
 	})
