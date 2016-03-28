@@ -67,7 +67,7 @@ type Queue struct {
 	ttrTime           time.Time
 }
 
-// Stats holds information about the Queue's state
+// Stats holds information about the Queue's state.
 type Stats struct {
 	Items   int
 	Delayed int
@@ -76,7 +76,7 @@ type Stats struct {
 	Buried  int
 }
 
-// New is a helper to create instance of the Queue struct
+// New is a helper to create instance of the Queue struct.
 func New(name string) *Queue {
 	queue := &Queue{
 		Name:              name,
@@ -116,23 +116,24 @@ func (queue *Queue) Stats() *Stats {
 // back to the ready sub-queue. The priority determines which item will be
 // next to be Reserve()d, with priority 255 (the max) items coming before lower
 // priority ones (with 0 being the lowest). Items with the same priority
-// number are Reserve()d on a fifo basis.
-func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) bool {
+// number are Reserve()d on a fifo basis. It returns an item, which may have
+// already existed (in which case, nothing was actually added or changed).
+func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) (item *Item, existed bool) {
 	queue.mutex.Lock()
 
-	_, exists := queue.items[key]
-	if exists {
+	item, existed = queue.items[key]
+	if existed {
 		queue.mutex.Unlock()
-		return false
+		return
 	}
 
-	item := newItem(key, data, priority, delay, ttr)
+	item = newItem(key, data, priority, delay, ttr)
 	queue.items[key] = item
 	queue.delayQueue.push(item)
 
 	queue.mutex.Unlock()
 	queue.delayNotificationTrigger(item)
-	return true
+	return
 }
 
 // Get is a thread-safe way to get an item by the key you used to Add() it.
@@ -153,23 +154,48 @@ func (queue *Queue) Get(key string) (item *Item, exists bool) {
 // else that gets it from a Reserve() call. If you know you can't handle it
 // right now, but someone else might be able to later, you can manually call
 // Release().
-func (queue *Queue) Reserve() (*Item, bool) {
+func (queue *Queue) Reserve() (item *Item) {
 	queue.mutex.Lock()
 
 	// pop an item from the ready queue and add it to the run queue
-	item := queue.readyQueue.pop()
+	item = queue.readyQueue.pop()
 	if item == nil {
 		queue.mutex.Unlock()
-		return nil, false
+		return
 	}
 
+	item.touch()
 	queue.runQueue.push(item)
 	item.switchReadyRun()
 
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
 
-	return item, true
+	return
+}
+
+// Touch is a thread-safe way to extend the amount of time a Reserve()d item
+// is allowed to run.
+func (queue *Queue) Touch(key string) (ok bool) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	// check it's actually still in the queue first
+	item, ok := queue.items[key]
+	if !ok {
+		return
+	}
+
+	// and it must be in the run queue
+	if ok = item.State == "run"; !ok {
+		return
+	}
+
+	// touch and update the heap
+	item.touch()
+	queue.runQueue.update(item)
+
+	return
 }
 
 // Release is a thread-safe way to switch an item in the run sub-queue to the
@@ -243,6 +269,7 @@ func (queue *Queue) Kick(key string) (ok bool) {
 
 	// switch from bury to delay queue
 	queue.buryQueue.remove(item)
+	item.restart()
 	queue.delayQueue.push(item)
 	item.switchBuryDelay()
 
@@ -333,7 +360,7 @@ func (queue *Queue) startTTRProcessing() {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
 		if queue.runQueue.Len() > 0 {
-			sleepTime = queue.runQueue.items[0].ReleaseAt.Sub(time.Now())
+			sleepTime = queue.runQueue.items[0].releaseAt.Sub(time.Now())
 		} else {
 			sleepTime = time.Duration(1 * time.Hour)
 		}
