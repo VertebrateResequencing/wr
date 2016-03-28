@@ -26,13 +26,14 @@ import (
 )
 
 // Item holds the information about each item in our queue, and has thread-safe
-// functions to update properties as we switch between sub-queues
+// functions to update properties as we switch between sub-queues. The 'state'
+// property can have one of the values 'delay', 'ready', 'run', 'bury' or
+// 'removed'.
 type Item struct {
 	Key        string
 	Data       interface{}
 	Priority   uint8  // highest priority is 255
 	State      string // one of 'delay', 'ready', 'run', 'bury', 'removed'
-	ReleaseAt  time.Time
 	Reserves   uint32
 	Timeouts   uint32
 	Releases   uint32
@@ -41,6 +42,7 @@ type Item struct {
 	delay      time.Duration
 	ttr        time.Duration
 	readyAt    time.Time
+	releaseAt  time.Time
 	creation   time.Time
 	mutex      sync.Mutex
 	delayIndex int
@@ -69,26 +71,35 @@ func newItem(key string, data interface{}, priority uint8, delay time.Duration, 
 
 // Touch is a thread-safe way to (re)set the item's release time, to allow it
 // more time on the run sub-queue.
-func (item *Item) Touch() {
+func (item *Item) touch() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.ReleaseAt = time.Now().Add(item.ttr)
+	item.releaseAt = time.Now().Add(item.ttr)
+}
+
+// restart is a thread-safe way to reset the readyAt time, for when the item
+// is put back in to the delay queue
+func (item *Item) restart() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.readyAt = time.Now().Add(item.delay)
 }
 
 // Verify if the item is ready
-func (item *Item) isready() (ready bool) {
+func (item *Item) isready() bool {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	ready = item.readyAt.Before(time.Now())
-	return
+	return item.readyAt.Before(time.Now())
 }
 
 // Verify if the item should be released
-func (item *Item) releasable() (releasable bool) {
+func (item *Item) releasable() bool {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	releasable = item.ReleaseAt.Before(time.Now())
-	return
+	if item.releaseAt.IsZero() {
+		return false
+	}
+	return item.releaseAt.Before(time.Now())
 }
 
 // update after we've switched from the delay to the ready sub-queue
@@ -105,17 +116,17 @@ func (item *Item) switchReadyRun() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.readyIndex = -1
-	item.ReleaseAt = time.Now().Add(item.ttr)
 	item.Reserves += 1
 	item.State = "run"
 }
 
-// update after we've switched from the run to the ready sub-queue
+// update after we've switched from the run to the ready sub-queue. reason is
+// one of 'timeout' or 'release'
 func (item *Item) switchRunReady(reason string) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.ttrIndex = -1
-	item.ReleaseAt = time.Time{}
+	item.releaseAt = time.Time{}
 
 	switch reason {
 	case "timeout":
@@ -132,7 +143,8 @@ func (item *Item) switchRunBury() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.ttrIndex = -1
-	item.ReleaseAt = time.Time{}
+	item.releaseAt = time.Time{}
+	item.Buries += 1
 	item.State = "bury"
 }
 
@@ -141,7 +153,7 @@ func (item *Item) switchBuryDelay() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.buryIndex = -1
-	item.readyAt = time.Now().Add(item.delay)
+	item.Kicks += 1
 	item.State = "delay"
 }
 
@@ -150,7 +162,7 @@ func (item *Item) removalCleanup() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.ttrIndex = -1
-	item.ReleaseAt = time.Time{}
+	item.releaseAt = time.Time{}
 	item.readyIndex = -1
 	item.delayIndex = -1
 	item.readyAt = time.Time{}
