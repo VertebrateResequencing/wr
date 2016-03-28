@@ -33,7 +33,7 @@ func TestRunQueue(t *testing.T) {
 			key := fmt.Sprintf("key_%d", i)
 			ttr := time.Duration((9 - i + 1)) * time.Second
 			items[key] = newItem(key, "data", 0, 0*time.Second, ttr)
-			items[key].Touch()
+			items[key].touch()
 			queue.push(items[key])
 		}
 
@@ -80,6 +80,38 @@ func TestRunQueue(t *testing.T) {
 			queue.update(exampleItem)
 			newItem := queue.pop()
 			So(newItem.Key, ShouldEqual, "newKey")
+		})
+
+		Convey("Getting the next item that would be popped without actually popping it works", func() {
+			item := queue.items[0]
+			So(item.Key, ShouldEqual, "key_9")
+			So(queue.Len(), ShouldEqual, 10)
+
+			queue := newRunQueue()
+			for i := 0; i < 10; i++ {
+				key := fmt.Sprintf("key_%d", i)
+				ttr := time.Duration((9 - i + 1)) * time.Second
+				item := newItem(key, "data", 0, 0*time.Second, ttr)
+				item.touch()
+				queue.push(item)
+
+				item = queue.items[0]
+				So(item.Key, ShouldEqual, key)
+				So(queue.Len(), ShouldEqual, i+1)
+			}
+
+			queue = newRunQueue()
+			for i := 0; i < 10; i++ {
+				key := fmt.Sprintf("key_%d", i)
+				ttr := time.Duration(i+1) * time.Second
+				item := newItem(key, "data", 0, 0*time.Second, ttr)
+				item.touch()
+				queue.push(item)
+
+				item = queue.items[0]
+				So(item.Key, ShouldEqual, "key_0")
+				So(queue.Len(), ShouldEqual, i+1)
+			}
 		})
 	})
 }

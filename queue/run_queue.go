@@ -1,7 +1,5 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// This file was based on: Diego Bernardes de Sousa Pinto's
-// https://github.com/diegobernardes/ttlcache
 //
 //  This file is part of VRPipe.
 //
@@ -67,7 +65,7 @@ func (q runQueue) Len() int {
 func (q runQueue) Less(i, j int) bool {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	return q.items[i].ReleaseAt.Before(q.items[j].ReleaseAt)
+	return q.items[i].releaseAt.Before(q.items[j].releaseAt)
 }
 
 func (q runQueue) Swap(i, j int) {
