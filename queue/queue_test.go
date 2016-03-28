@@ -332,6 +332,11 @@ func TestQueue(t *testing.T) {
 			So(stats.Items, ShouldEqual, 0)
 			So(stats.Delayed, ShouldEqual, 0)
 			So(stats.Ready, ShouldEqual, 0)
+
+			Convey("Once removed it can't be updated", func() {
+				ok := queue.Update("item1", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+				So(ok, ShouldBeFalse)
+			})
 		})
 
 		Convey("The queue won't fall over if we manage to change the item's readyAt without updating the queue", func() {
@@ -341,6 +346,22 @@ func TestQueue(t *testing.T) {
 			So(item.state, ShouldEqual, "delay")
 			<-time.After(25 * time.Millisecond)
 			So(item.state, ShouldEqual, "ready")
+		})
+
+		Convey("The delay can be updated even in the delay queue", func() {
+			<-time.After(25 * time.Millisecond)
+			ok := queue.Update("item1", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+			So(ok, ShouldBeTrue)
+			<-time.After(30 * time.Millisecond)
+			So(item.state, ShouldEqual, "delay")
+			<-time.After(50 * time.Millisecond)
+			So(item.state, ShouldEqual, "ready")
+
+			Convey("When ready the priority can be updated", func() {
+				ok := queue.Update("item1", "data", 1, 75*time.Millisecond, 50*time.Millisecond)
+				So(ok, ShouldBeTrue)
+				So(item.priority, ShouldEqual, 1)
+			})
 		})
 
 		Convey("Once reserved", func() {
@@ -365,6 +386,16 @@ func TestQueue(t *testing.T) {
 				<-time.After(6 * time.Millisecond)
 				So(item.state, ShouldEqual, "run")
 				<-time.After(25 * time.Millisecond)
+				So(item.state, ShouldEqual, "ready")
+			})
+
+			Convey("When running the ttr can be updated", func() {
+				<-time.After(25 * time.Millisecond)
+				ok := queue.Update("item1", "data", 0, 50*time.Millisecond, 75*time.Millisecond)
+				So(ok, ShouldBeTrue)
+				<-time.After(30 * time.Millisecond)
+				So(item.state, ShouldEqual, "run")
+				<-time.After(50 * time.Millisecond)
 				So(item.state, ShouldEqual, "ready")
 			})
 		})

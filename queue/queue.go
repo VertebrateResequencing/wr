@@ -144,6 +144,37 @@ func (queue *Queue) Get(key string) (item *Item, exists bool) {
 	return
 }
 
+// Update is a thread-safe way to change the data, priority, delay or ttr of an
+// item. You must supply all of these as per Add() - just supply the old values
+// of those you are not changing. The old values can be found by getting the
+// item with Get() (giving you item.Key and item.Data), and then calling
+// item.Stats to get stats.Priority, stats.Delay and stats.TTR.
+func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) (existed bool) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	item, existed := queue.items[key]
+	if !existed {
+		return
+	}
+
+	item.Data = data
+
+	if item.state == "delay" && item.delay != delay {
+		item.delay = delay
+		item.restart()
+		queue.delayQueue.update(item)
+	} else if item.state == "ready" && item.priority != priority {
+		item.priority = priority
+		queue.readyQueue.update(item)
+	} else if item.state == "run" && item.ttr != ttr {
+		item.ttr = ttr
+		item.touch()
+		queue.runQueue.update(item)
+	}
+
+	return
+}
+
 // Reserve is a thread-safe way to get the highest priority (or for those with
 // equal priority, the oldest (by time since the item was first Add()ed) item
 // in the queue, switching it from the ready sub-queue to the run sub-queue, and
