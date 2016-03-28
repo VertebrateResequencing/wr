@@ -1,7 +1,5 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// This file was based on: Diego Bernardes de Sousa Pinto's
-// https://github.com/diegobernardes/ttlcache
 //
 //  This file is part of VRPipe.
 //
