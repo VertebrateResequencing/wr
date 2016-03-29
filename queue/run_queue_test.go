@@ -82,6 +82,11 @@ func TestRunQueue(t *testing.T) {
 			So(newItem.Key, ShouldEqual, "key_8")
 		})
 
+		Convey("Removing all items works", func() {
+			queue.empty()
+			So(queue.Len(), ShouldEqual, 0)
+		})
+
 		Convey("Getting the next item that would be popped without actually popping it works", func() {
 			item := queue.items[0]
 			So(item.Key, ShouldEqual, "key_9")

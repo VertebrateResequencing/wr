@@ -79,3 +79,9 @@ func (q buryQueue) Len() int {
 	defer q.mutex.Unlock()
 	return len(q.items)
 }
+
+func (q *buryQueue) empty() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	q.items = nil
+}

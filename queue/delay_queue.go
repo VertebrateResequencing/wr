@@ -94,3 +94,9 @@ func (q *delayQueue) Pop() interface{} {
 	q.items = q.items[:lasti]
 	return item
 }
+
+func (q *delayQueue) empty() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	q.items = nil
+}

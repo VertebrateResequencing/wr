@@ -80,5 +80,10 @@ func TestDelayQueue(t *testing.T) {
 			newItem := queue.pop()
 			So(newItem.Key, ShouldEqual, "key_8")
 		})
+
+		Convey("Removing all items works", func() {
+			queue.empty()
+			So(queue.Len(), ShouldEqual, 0)
+		})
 	})
 }

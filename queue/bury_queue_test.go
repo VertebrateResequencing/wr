@@ -58,6 +58,11 @@ func TestBuryQueue(t *testing.T) {
 			newItem := queue.pop()
 			So(newItem.Key, ShouldEqual, "newKey")
 		})
+
+		Convey("Removing all items works", func() {
+			queue.empty()
+			So(queue.Len(), ShouldEqual, 0)
+		})
 	})
 
 	Convey("Once a single item has been pushed to the queue", t, func() {
