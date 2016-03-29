@@ -34,7 +34,7 @@ func TestItem(t *testing.T) {
 			item.restart()
 			stats := item.Stats()
 			So(stats.State, ShouldEqual, "delay")
-			So(stats.Remaining.Nanoseconds(), ShouldAlmostEqual, 100000000, 10000)
+			So(stats.Remaining.Nanoseconds(), ShouldBeBetweenOrEqual, 90000000, 100000000)
 			So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 0, time.Since(item.creation))
 		})
 
@@ -77,7 +77,7 @@ func TestItem(t *testing.T) {
 				item.touch()
 				stats := item.Stats()
 				So(stats.State, ShouldEqual, "run")
-				So(stats.Remaining.Nanoseconds(), ShouldAlmostEqual, 100000000, 10000)
+				So(stats.Remaining.Nanoseconds(), ShouldBeBetweenOrEqual, 90000000, 100000000)
 				So(stats.Age.Nanoseconds(), ShouldBeBetweenOrEqual, 110000, time.Since(item.creation))
 			})
 		})
