@@ -76,7 +76,7 @@ func (e Error) Error() string {
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
-// calling certain functions.
+// calling certain methods.
 type Queue struct {
 	Name              string
 	mutex             sync.Mutex
