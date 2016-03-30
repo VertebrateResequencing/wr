@@ -532,4 +532,67 @@ func TestQueue(t *testing.T) {
 			})
 		})
 	})
+
+	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
+		queue := New("1000 queue")
+		for i := 0; i < 1000; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			_, err := queue.Add(key, "data", 0, 0*time.Second, 30*time.Second)
+			So(err, ShouldBeNil)
+		}
+
+		Convey("They are immediately all ready", func() {
+			stats := queue.Stats()
+			So(stats.Items, ShouldEqual, 1000)
+			So(stats.Delayed, ShouldEqual, 0)
+			So(stats.Ready, ShouldEqual, 1000)
+			So(stats.Running, ShouldEqual, 0)
+			So(stats.Buried, ShouldEqual, 0)
+
+			Convey("And can all be reserved", func() {
+				for i := 0; i < 1000; i++ {
+					item, err := queue.Reserve()
+					So(err, ShouldBeNil)
+					So(item, ShouldNotBeNil)
+					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
+				}
+			})
+		})
+	})
+
+	Convey("Once a thousand items with a small delay have been added to the queue", t, func() {
+		queue := New("1000 queue")
+		for i := 0; i < 1000; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			_, err := queue.Add(key, "data", 0, 50*time.Millisecond, 30*time.Second)
+			So(err, ShouldBeNil)
+		}
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 1000)
+		So(stats.Delayed, ShouldEqual, 1000)
+		So(stats.Ready, ShouldEqual, 0)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+
+		<-time.After(60 * time.Millisecond)
+
+		Convey("They are all ready after that delay", func() {
+			stats := queue.Stats()
+			So(stats.Items, ShouldEqual, 1000)
+			So(stats.Delayed, ShouldEqual, 0)
+			So(stats.Ready, ShouldEqual, 1000)
+			So(stats.Running, ShouldEqual, 0)
+			So(stats.Buried, ShouldEqual, 0)
+
+			Convey("And can all be reserved", func() {
+				for i := 0; i < 1000; i++ {
+					item, err := queue.Reserve()
+					So(err, ShouldBeNil)
+					So(item, ShouldNotBeNil)
+					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
+				}
+			})
+		})
+	})
 }

@@ -187,10 +187,18 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 
 	item = newItem(key, data, priority, delay, ttr)
 	queue.items[key] = item
-	queue.delayQueue.push(item)
 
-	queue.mutex.Unlock()
-	queue.delayNotificationTrigger(item)
+	if delay.Nanoseconds() == 0 {
+		// put it directly on the ready queue
+		item.switchDelayReady()
+		queue.readyQueue.push(item)
+		queue.mutex.Unlock()
+	} else {
+		queue.delayQueue.push(item)
+		queue.mutex.Unlock()
+		queue.delayNotificationTrigger(item)
+	}
+
 	return
 }
 
@@ -261,7 +269,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 // else that gets it from a Reserve() call. If you know you can't handle it
 // right now, but someone else might be able to later, you can manually call
 // Release().
-func (queue *Queue) Reserve() (item *Item, err error) {
+func (queue *Queue) Reserve() (item *Item, err error) { //*** we want a wait time.Duration arg, where we'll wait that long for something to come on the ready queue
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -473,24 +481,21 @@ func (queue *Queue) startDelayProcessing() {
 
 		select {
 		case <-time.After(queue.delayTime.Sub(time.Now())):
-			if queue.delayQueue.Len() == 0 {
-				continue
-			}
-
 			queue.mutex.Lock()
-			item := queue.delayQueue.items[0]
+			len := queue.delayQueue.Len()
+			for i := 0; i < len; i++ {
+				item := queue.delayQueue.items[0]
 
-			if !item.isready() {
-				queue.mutex.Unlock()
-				continue
+				if !item.isready() {
+					break
+				}
+
+				// remove it from the delay sub-queue and add it to the ready
+				// sub-queue
+				queue.delayQueue.remove(item)
+				queue.readyQueue.push(item)
+				item.switchDelayReady()
 			}
-
-			// remove it from the delay sub-queue and add it to the ready
-			// sub-queue
-			queue.delayQueue.remove(item)
-			queue.readyQueue.push(item)
-			item.switchDelayReady()
-
 			queue.mutex.Unlock()
 		case <-queue.delayNotification:
 			continue
@@ -521,24 +526,21 @@ func (queue *Queue) startTTRProcessing() {
 
 		select {
 		case <-time.After(queue.ttrTime.Sub(time.Now())):
-			if queue.runQueue.Len() == 0 {
-				continue
-			}
-
 			queue.mutex.Lock()
-			item := queue.runQueue.items[0]
+			len := queue.runQueue.Len()
+			for i := 0; i < len; i++ {
+				item := queue.runQueue.items[0]
 
-			if !item.releasable() {
-				queue.mutex.Unlock()
-				continue
+				if !item.releasable() {
+					break
+				}
+
+				// remove it from the ttr sub-queue and add it back to the
+				// ready sub-queue
+				queue.runQueue.remove(item)
+				queue.readyQueue.push(item)
+				item.switchRunReady("timeout")
 			}
-
-			// remove it from the ttr sub-queue and add it back to the
-			// ready sub-queue
-			queue.runQueue.remove(item)
-			queue.readyQueue.push(item)
-			item.switchRunReady("timeout")
-
 			queue.mutex.Unlock()
 		case <-queue.ttrNotification:
 			continue
