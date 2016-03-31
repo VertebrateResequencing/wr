@@ -1,7 +1,5 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// This file was based on: Diego Bernardes de Sousa Pinto's
-// https://github.com/diegobernardes/ttlcache
 //
 //  This file is part of VRPipe.
 //
@@ -47,7 +45,6 @@ package queue
 
 import (
 	"errors"
-	"sync"
 	"time"
 )
 
@@ -74,24 +71,57 @@ func (e Error) Error() string {
 	return "queue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err.Error()
 }
 
+// itemError lets us return an item and an error message over a channel
+type itemError struct {
+	item *Item
+	err  error
+}
+
+// itemUpdate lets us send an item and an its update version over a channel
+type itemUpdate struct {
+	item   *Item
+	update *Item
+}
+
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
 type Queue struct {
-	Name              string
-	mutex             sync.Mutex
-	items             map[string]*Item
-	delayQueue        *delayQueue
-	readyQueue        *readyQueue
-	runQueue          *runQueue
-	buryQueue         *buryQueue
-	delayNotification chan bool
-	delayClose        chan bool
-	delayTime         time.Time
-	ttrNotification   chan bool
-	ttrClose          chan bool
-	ttrTime           time.Time
-	closed            bool
+	Name           string
+	items          map[string]*Item
+	addReturn      chan itemError
+	addItem        chan *Item
+	getItem        chan string
+	getReturn      chan itemError
+	updateItem     chan *Item
+	updateMain     chan bool
+	updateReturn   chan itemError
+	removeItem     chan string
+	closeMain      chan bool
+	delayQueue     *delayQueue
+	addDelay       chan *Item
+	addedDelay     chan bool
+	updateDelay    chan itemUpdate
+	closeDelay     chan bool
+	readyQueue     *readyQueue
+	addReady       chan *Item
+	addedReady     chan bool
+	reserve        chan bool
+	reserveReturn  chan itemError
+	updatePriority chan itemUpdate
+	closeReady     chan bool
+	runQueue       *runQueue
+	addRun         chan *Item
+	addedRun       chan bool
+	updateTTR      chan itemUpdate
+	closeRun       chan bool
+	buryQueue      *buryQueue
+	addBury        chan *Item
+	addedBury      chan bool
+	kick           chan string
+	kickReturn     chan itemError
+	closeBury      chan bool
+	closed         bool
 }
 
 // Stats holds information about the Queue's state.
@@ -106,52 +136,75 @@ type Stats struct {
 // New is a helper to create instance of the Queue struct.
 func New(name string) *Queue {
 	queue := &Queue{
-		Name:              name,
-		items:             make(map[string]*Item),
-		delayQueue:        newDelayQueue(),
-		readyQueue:        newReadyQueue(),
-		runQueue:          newRunQueue(),
-		buryQueue:         newBuryQueue(),
-		ttrNotification:   make(chan bool, 1),
-		ttrClose:          make(chan bool),
-		ttrTime:           time.Now(),
-		delayNotification: make(chan bool, 1),
-		delayClose:        make(chan bool),
-		delayTime:         time.Now(),
+		Name:           name,
+		items:          make(map[string]*Item),
+		addReturn:      make(chan itemError),
+		addItem:        make(chan *Item),
+		getItem:        make(chan string),
+		getReturn:      make(chan itemError),
+		updateItem:     make(chan *Item),
+		updateMain:     make(chan bool),
+		updateReturn:   make(chan itemError),
+		removeItem:     make(chan string),
+		closeMain:      make(chan bool),
+		delayQueue:     newDelayQueue(),
+		addDelay:       make(chan *Item),
+		addedDelay:     make(chan bool),
+		updateDelay:    make(chan itemUpdate),
+		closeDelay:     make(chan bool),
+		readyQueue:     newReadyQueue(),
+		addReady:       make(chan *Item),
+		addedReady:     make(chan bool),
+		reserve:        make(chan bool),
+		reserveReturn:  make(chan itemError),
+		updatePriority: make(chan itemUpdate),
+		closeReady:     make(chan bool),
+		runQueue:       newRunQueue(),
+		addRun:         make(chan *Item, 1000),
+		addedRun:       make(chan bool),
+		updateTTR:      make(chan itemUpdate),
+		closeRun:       make(chan bool),
+		buryQueue:      newBuryQueue(),
+		addBury:        make(chan *Item),
+		addedBury:      make(chan bool),
+		kick:           make(chan string),
+		kickReturn:     make(chan itemError),
+		closeBury:      make(chan bool),
+		closed:         false,
 	}
-	go queue.startDelayProcessing()
-	go queue.startTTRProcessing()
+	go queue.startMain()
+	go queue.startDelay()
+	go queue.startReady()
+	go queue.startRun()
+	go queue.startBury()
 	return queue
 }
 
 // Destroy shuts down a queue, destroying any contents. You can't do anything
 // useful with it after that.
 func (queue *Queue) Destroy() (err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+	// queue.mutex.Lock()
+	// defer queue.mutex.Unlock()
 
-	if queue.closed {
-		err = Error{queue.Name, "Destroy", "", ErrQueueClosed}
-		return
-	}
+	// if queue.closed {
+	// 	err = Error{queue.Name, "Destroy", "", ErrQueueClosed}
+	// 	return
+	// }
 
-	queue.ttrClose <- true
-	queue.delayClose <- true
-	queue.items = nil
-	queue.delayQueue.empty()
-	queue.readyQueue.empty()
-	queue.runQueue.empty()
-	queue.buryQueue.empty()
-	queue.closed = true
+	// queue.ttrClose <- true
+	// queue.delayClose <- true
+	// queue.items = nil
+	// queue.delayQueue.empty()
+	// queue.readyQueue.empty()
+	// queue.runQueue.empty()
+	// queue.buryQueue.empty()
+	// queue.closed = true
 	return
 }
 
 // Stats returns information about the number of items in the queue and each
 // sub-queue.
 func (queue *Queue) Stats() *Stats {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
-
 	return &Stats{
 		Items:   len(queue.items),
 		Delayed: queue.delayQueue.Len(),
@@ -170,54 +223,20 @@ func (queue *Queue) Stats() *Stats {
 // number are Reserve()d on a fifo basis. It returns an item, which may have
 // already existed (in which case, nothing was actually added or changed).
 func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) (item *Item, err error) {
-	queue.mutex.Lock()
-
-	if queue.closed {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Add", key, ErrQueueClosed}
-		return
-	}
-
-	item, existed := queue.items[key]
-	if existed {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Add", key, ErrAlreadyExists}
-		return
-	}
-
 	item = newItem(key, data, priority, delay, ttr)
-	queue.items[key] = item
-
-	if delay.Nanoseconds() == 0 {
-		// put it directly on the ready queue
-		item.switchDelayReady()
-		queue.readyQueue.push(item)
-		queue.mutex.Unlock()
-	} else {
-		queue.delayQueue.push(item)
-		queue.mutex.Unlock()
-		queue.delayNotificationTrigger(item)
-	}
-
+	queue.addItem <- item
+	itemError := <-queue.addReturn
+	item = itemError.item
+	err = itemError.err
 	return
 }
 
 // Get is a thread-safe way to get an item by the key you used to Add() it.
 func (queue *Queue) Get(key string) (item *Item, err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
-
-	if queue.closed {
-		err = Error{queue.Name, "Get", key, ErrQueueClosed}
-		return
-	}
-
-	item, exists := queue.items[key]
-
-	if !exists {
-		err = Error{queue.Name, "Get", key, ErrNotFound}
-	}
-
+	queue.getItem <- key
+	itemError := <-queue.getReturn
+	item = itemError.item
+	err = itemError.err
 	return
 }
 
@@ -227,35 +246,10 @@ func (queue *Queue) Get(key string) (item *Item, err error) {
 // item with Get() (giving you item.Key and item.Data), and then calling
 // item.Stats to get stats.Priority, stats.Delay and stats.TTR.
 func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) (err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
-
-	if queue.closed {
-		err = Error{queue.Name, "Update", key, ErrQueueClosed}
-		return
-	}
-
-	item, exists := queue.items[key]
-	if !exists {
-		err = Error{queue.Name, "Update", key, ErrNotFound}
-		return
-	}
-
-	item.Data = data
-
-	if item.state == "delay" && item.delay != delay {
-		item.delay = delay
-		item.restart()
-		queue.delayQueue.update(item)
-	} else if item.state == "ready" && item.priority != priority {
-		item.priority = priority
-		queue.readyQueue.update(item)
-	} else if item.state == "run" && item.ttr != ttr {
-		item.ttr = ttr
-		item.touch()
-		queue.runQueue.update(item)
-	}
-
+	item := newItem(key, data, priority, delay, ttr)
+	queue.updateItem <- item
+	itemError := <-queue.updateReturn
+	err = itemError.err
 	return
 }
 
@@ -270,37 +264,16 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 // right now, but someone else might be able to later, you can manually call
 // Release().
 func (queue *Queue) Reserve() (item *Item, err error) { //*** we want a wait time.Duration arg, where we'll wait that long for something to come on the ready queue
-	queue.mutex.Lock()
-
-	if queue.closed {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrQueueClosed}
-		return
-	}
-
-	// pop an item from the ready queue and add it to the run queue
-	item = queue.readyQueue.pop()
-	if item == nil {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrNothingReady}
-		return
-	}
-
-	item.touch()
-	queue.runQueue.push(item)
-	item.switchReadyRun()
-
-	queue.mutex.Unlock()
-	queue.ttrNotificationTrigger(item)
-
+	queue.reserve <- true
+	itemError := <-queue.reserveReturn
+	item = itemError.item
+	err = itemError.err
 	return
 }
 
 // Touch is a thread-safe way to extend the amount of time a Reserve()d item
 // is allowed to run.
 func (queue *Queue) Touch(key string) (err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Touch", key, ErrQueueClosed}
@@ -330,9 +303,6 @@ func (queue *Queue) Touch(key string) (err error) {
 // Release is a thread-safe way to switch an item in the run sub-queue to the
 // ready sub-queue, for when the item should be dealt with later, not now.
 func (queue *Queue) Release(key string) (err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
-
 	if queue.closed {
 		err = Error{queue.Name, "Release", key, ErrQueueClosed}
 		return
@@ -363,9 +333,6 @@ func (queue *Queue) Release(key string) (err error) {
 // bury sub-queue, for when the item can't be dealt with ever, at least until
 // the user takes some action and changes something.
 func (queue *Queue) Bury(key string) (err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
-
 	if queue.closed {
 		err = Error{queue.Name, "Bury", key, ErrQueueClosed}
 		return
@@ -395,46 +362,14 @@ func (queue *Queue) Bury(key string) (err error) {
 // Kick is a thread-safe way to switch an item in the bury sub-queue to the
 // delay sub-queue, for when a previously buried item can now be handled.
 func (queue *Queue) Kick(key string) (err error) {
-	queue.mutex.Lock()
-
-	if queue.closed {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Kick", key, ErrQueueClosed}
-		return
-	}
-
-	// check it's actually still in the queue first
-	item, ok := queue.items[key]
-	if !ok {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Kick", key, ErrNotFound}
-		return
-	}
-
-	// and it must be in the bury queue
-	if ok = item.state == "bury"; !ok {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "Kick", key, ErrNotBuried}
-		return
-	}
-
-	// switch from bury to delay queue
-	queue.buryQueue.remove(item)
-	item.restart()
-	queue.delayQueue.push(item)
-	item.switchBuryDelay()
-
-	queue.mutex.Unlock()
-	queue.delayNotificationTrigger(item)
-
+	queue.kick <- key
+	itemError := <-queue.kickReturn
+	err = itemError.err
 	return
 }
 
 // Remove is a thread-safe way to remove an item from the queue.
 func (queue *Queue) Remove(key string) (err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
-
 	if queue.closed {
 		err = Error{queue.Name, "Remove", key, ErrQueueClosed}
 		return
@@ -466,92 +401,255 @@ func (queue *Queue) Remove(key string) (err error) {
 	return
 }
 
-func (queue *Queue) startDelayProcessing() {
-	for {
-		var sleepTime time.Duration
-		queue.mutex.Lock()
-		if queue.delayQueue.Len() > 0 {
-			sleepTime = queue.delayQueue.items[0].readyAt.Sub(time.Now())
-		} else {
-			sleepTime = time.Duration(1 * time.Hour)
+// checkKey checks things about an item by its key; this should only be called
+// from the start*() go routines
+func (queue *Queue) checkKey(key string, method string, subqueue string) (item *Item, err error) {
+	if queue.closed {
+		err = Error{queue.Name, method, key, ErrQueueClosed}
+	} else {
+		// check it's actually still in the queue first
+		item, ok := queue.items[key]
+		if !ok {
+			err = Error{queue.Name, method, key, ErrNotFound}
+		} else if subqueue != "" {
+			// and it must be in the desired subqueue
+			if ok = item.state == subqueue; !ok {
+				var etype error
+				switch subqueue {
+				case "ready":
+					etype = ErrNotReady
+				case "run":
+					etype = ErrNotRunning
+				case "bury":
+					etype = ErrNotBuried
+				}
+				err = Error{queue.Name, method, key, etype}
+			}
 		}
+	}
+	return
+}
 
-		queue.delayTime = time.Now().Add(sleepTime)
-		queue.mutex.Unlock()
+// startMain is run as a go routine that waits for cross-sub-queue events and
+// handles them
+func (queue *Queue) startMain() {
+	for {
+		select {
+		case item := <-queue.addItem:
+			old, err := queue.checkKey(item.Key, "Add", "")
+			if err == nil {
+				err = Error{queue.Name, "Add", item.Key, ErrAlreadyExists}
+				item = old
+			} else {
+				qerr, _ := err.(Error)
+				if qerr.Err == ErrNotFound {
+					err = nil
+					queue.items[item.Key] = item
+					if item.delay.Nanoseconds() == 0 {
+						// put it directly on the ready queue
+						item.delayIndex = -1
+						item.readyAt = time.Time{}
+						queue.addReady <- item
+						<-queue.addedReady
+					} else {
+						queue.addDelay <- item
+						<-queue.addedDelay
+					}
+				}
+			}
+			queue.addReturn <- itemError{item: item, err: err}
+		case key := <-queue.getItem:
+			item, err := queue.checkKey(key, "Get", "")
+			queue.getReturn <- itemError{item: item, err: err}
+		case update := <-queue.updateItem:
+			item, err := queue.checkKey(update.Key, "Update", "")
+			if err == nil {
+				item.Data = update.Data
+				if item.state == "delay" && item.delay != update.delay {
+					queue.updateDelay <- itemUpdate{item: item, update: update}
+					<-queue.updateMain
+				} else {
+					item.delay = update.delay
+				}
+				if item.state == "ready" && item.priority != update.priority {
+					queue.updatePriority <- itemUpdate{item: item, update: update}
+					<-queue.updateMain
+				} else {
+					item.priority = update.priority
+				}
+				if item.state == "run" && item.ttr != update.ttr {
+					queue.updateTTR <- itemUpdate{item: item, update: update}
+					<-queue.updateMain
+				} else {
+					item.ttr = update.ttr
+				}
+			}
+			queue.updateReturn <- itemError{item: nil, err: err}
+		case <-queue.closeMain:
+			return
+		}
+	}
+}
+
+// startDelay is run as a go routine that waits for requests to add items to the
+// delay queue, and auto-moves them to the ready queue after item's delay
+func (queue *Queue) startDelay() {
+	sleepTime := time.Duration(1 * time.Hour)
+	for {
+		delayTime := time.Now().Add(sleepTime)
 
 		select {
-		case <-time.After(queue.delayTime.Sub(time.Now())):
-			queue.mutex.Lock()
+		case item := <-queue.addDelay:
+			queue.delayQueue.push(item)
+			item.state = "delay"
+			queue.addedDelay <- true
+			if delayTime.After(time.Now().Add(item.delay)) {
+				sleepTime = item.readyAt.Sub(time.Now())
+				continue
+			}
+		case <-time.After(delayTime.Sub(time.Now())):
 			len := queue.delayQueue.Len()
 			for i := 0; i < len; i++ {
 				item := queue.delayQueue.items[0]
-
 				if !item.isready() {
 					break
 				}
-
 				// remove it from the delay sub-queue and add it to the ready
 				// sub-queue
 				queue.delayQueue.remove(item)
-				queue.readyQueue.push(item)
-				item.switchDelayReady()
+				item.delayIndex = -1
+				item.readyAt = time.Time{}
+				queue.addReady <- item
+				<-queue.addedReady
 			}
-			queue.mutex.Unlock()
-		case <-queue.delayNotification:
-			continue
-		case <-queue.delayClose:
+		case iu := <-queue.updateDelay:
+			iu.item.delay = iu.update.delay
+			iu.item.readyAt = time.Now().Add(iu.item.delay)
+			queue.delayQueue.update(iu.item)
+			queue.updateMain <- true
+		case <-queue.closeDelay:
 			return
 		}
 	}
 }
 
-func (queue *Queue) delayNotificationTrigger(item *Item) {
-	if queue.delayTime.After(time.Now().Add(item.delay)) {
-		queue.delayNotification <- true
+// startReady is run as a go routine that waits for requests to add items to the
+// ready queue, and reserve them in to the run queue
+func (queue *Queue) startReady() {
+	for {
+		select {
+		case item := <-queue.addReady:
+			queue.readyQueue.push(item)
+			item.state = "ready"
+			queue.addedReady <- true
+		case <-queue.reserve:
+			var item *Item
+			var err error
+			if queue.closed {
+				err = Error{queue.Name, "Reserve", "", ErrQueueClosed}
+				item = nil
+			} else {
+				// pop an item from the ready queue and add it to the run queue
+				item = queue.readyQueue.pop()
+				if item == nil {
+					err = Error{queue.Name, "Reserve", "", ErrNothingReady}
+				} else {
+					item.readyIndex = -1
+					item.reserves += 1
+					queue.addRun <- item
+				}
+			}
+			queue.reserveReturn <- itemError{item: item, err: err}
+		case iu := <-queue.updatePriority:
+			iu.item.priority = iu.update.priority
+			queue.readyQueue.update(iu.item)
+			queue.updateMain <- true
+		case <-queue.closeReady:
+			return
+		}
 	}
 }
 
-func (queue *Queue) startTTRProcessing() {
+// startRun is run as a go routine that waits for requests to add items to the
+// run queue, and auto-moves them to the ready queue after item's ttr. It also
+// responds to requests to release, touch or bury an item.
+func (queue *Queue) startRun() {
+	sleepTime := time.Duration(1 * time.Hour)
 	for {
-		var sleepTime time.Duration
-		queue.mutex.Lock()
-		if queue.runQueue.Len() > 0 {
-			sleepTime = queue.runQueue.items[0].releaseAt.Sub(time.Now())
-		} else {
-			sleepTime = time.Duration(1 * time.Hour)
-		}
-
-		queue.ttrTime = time.Now().Add(sleepTime)
-		queue.mutex.Unlock()
+		ttrTime := time.Now().Add(sleepTime)
 
 		select {
-		case <-time.After(queue.ttrTime.Sub(time.Now())):
-			queue.mutex.Lock()
+		case item := <-queue.addRun:
+			item.releaseAt = time.Now().Add(item.ttr)
+			queue.runQueue.push(item)
+			item.state = "run"
+			if ttrTime.After(time.Now().Add(item.ttr)) {
+				sleepTime = item.releaseAt.Sub(time.Now())
+				continue
+			}
+		case <-time.After(ttrTime.Sub(time.Now())):
 			len := queue.runQueue.Len()
 			for i := 0; i < len; i++ {
 				item := queue.runQueue.items[0]
-
 				if !item.releasable() {
 					break
 				}
-
-				// remove it from the ttr sub-queue and add it back to the
+				// remove it from the run sub-queue and add it back to the
 				// ready sub-queue
 				queue.runQueue.remove(item)
-				queue.readyQueue.push(item)
-				item.switchRunReady("timeout")
+				item.ttrIndex = -1
+				item.timeouts += 1
+				item.releaseAt = time.Time{}
+				queue.addReady <- item
+				<-queue.addedReady
 			}
-			queue.mutex.Unlock()
-		case <-queue.ttrNotification:
-			continue
-		case <-queue.ttrClose:
+		case iu := <-queue.updateTTR:
+			iu.item.ttr = iu.update.ttr
+			iu.item.releaseAt = time.Now().Add(iu.item.ttr)
+			queue.runQueue.update(iu.item)
+			queue.updateMain <- true
+		case <-queue.closeDelay:
 			return
 		}
 	}
 }
 
-func (queue *Queue) ttrNotificationTrigger(item *Item) {
-	if queue.ttrTime.After(time.Now().Add(item.ttr)) {
-		queue.ttrNotification <- true
+// startBury is run as a go routine that waits for requests to add items to the
+// bury queue, and kick them in to the delay queue
+func (queue *Queue) startBury() {
+	for {
+		select {
+		case item := <-queue.addBury:
+			queue.buryQueue.push(item)
+			item.state = "bury"
+			queue.addedBury <- true
+		case key := <-queue.kick:
+			var err error
+			if queue.closed {
+				err = Error{queue.Name, "Kick", "", ErrQueueClosed}
+			} else {
+				// check it's actually still in the queue first
+				item, ok := queue.items[key]
+				if !ok {
+					err = Error{queue.Name, "Kick", key, ErrNotFound}
+				} else {
+					// and it must be in the bury queue
+					if ok = item.state == "bury"; !ok {
+						err = Error{queue.Name, "Kick", key, ErrNotBuried}
+					} else {
+						// switch from bury to delay queue
+						queue.buryQueue.remove(item)
+						item.readyAt = time.Now().Add(item.delay)
+						item.buryIndex = -1
+						item.kicks += 1
+						queue.addDelay <- item
+						<-queue.addedDelay
+					}
+				}
+			}
+			queue.kickReturn <- itemError{item: nil, err: err}
+		case <-queue.closeReady:
+			return
+		}
 	}
 }
