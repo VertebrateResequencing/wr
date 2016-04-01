@@ -104,10 +104,9 @@ func (q *subQueue) Less(i, j int) bool {
 			return q.items[i].creation.Before(q.items[j].creation)
 		}
 		return q.items[i].priority > q.items[j].priority
-	case 2:
-		return q.items[i].releaseAt.Before(q.items[j].releaseAt)
 	}
-	return false
+	// case 2, outside the switch, because we need to return
+	return q.items[i].releaseAt.Before(q.items[j].releaseAt)
 }
 
 func (q *subQueue) Swap(i, j int) {
