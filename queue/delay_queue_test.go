@@ -27,7 +27,7 @@ import (
 
 func TestDelayQueue(t *testing.T) {
 	Convey("Once 10 items of differing delay have been pushed to the queue", t, func() {
-		queue := newDelayQueue()
+		queue := newSubQueue(0)
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)

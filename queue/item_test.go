@@ -59,14 +59,14 @@ func TestItem(t *testing.T) {
 
 		Convey("Switching from delay to ready updates properties", func() {
 			item.switchDelayReady()
-			So(item.delayIndex, ShouldEqual, -1)
+			So(item.queueIndexes[0], ShouldEqual, -1)
 			So(item.readyAt, ShouldBeZeroValue)
 			So(item.state, ShouldEqual, "ready")
 		})
 
 		Convey("Switching from ready to run updates properties; without a touch it still doesn't release", func() {
 			item.switchReadyRun()
-			So(item.readyIndex, ShouldEqual, -1)
+			So(item.queueIndexes[1], ShouldEqual, -1)
 			So(item.reserves, ShouldEqual, 1)
 			So(item.state, ShouldEqual, "run")
 			So(item.releasable(), ShouldBeFalse)
@@ -84,7 +84,7 @@ func TestItem(t *testing.T) {
 
 		Convey("Switching from run to ready updates properties", func() {
 			item.switchRunReady("timeout")
-			So(item.ttrIndex, ShouldEqual, -1)
+			So(item.queueIndexes[2], ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
 			So(item.timeouts, ShouldEqual, 1)
 			So(item.releases, ShouldBeZeroValue)
@@ -97,7 +97,7 @@ func TestItem(t *testing.T) {
 
 		Convey("Switching from run to bury updates properties", func() {
 			item.switchRunBury()
-			So(item.ttrIndex, ShouldEqual, -1)
+			So(item.queueIndexes[2], ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
 			So(item.state, ShouldEqual, "bury")
 
@@ -112,7 +112,7 @@ func TestItem(t *testing.T) {
 
 		Convey("Switching from bury to delay updates properties", func() {
 			item.switchBuryDelay()
-			So(item.buryIndex, ShouldEqual, -1)
+			So(item.queueIndexes[3], ShouldEqual, -1)
 			So(item.state, ShouldEqual, "delay")
 
 			Convey("restart updates when the item will be ready", func() {
@@ -129,10 +129,10 @@ func TestItem(t *testing.T) {
 
 		Convey("Properties can be easily cleared out following removal", func() {
 			item.removalCleanup()
-			So(item.ttrIndex, ShouldEqual, -1)
-			So(item.readyIndex, ShouldEqual, -1)
-			So(item.delayIndex, ShouldEqual, -1)
-			So(item.buryIndex, ShouldEqual, -1)
+			So(item.queueIndexes[2], ShouldEqual, -1)
+			So(item.queueIndexes[1], ShouldEqual, -1)
+			So(item.queueIndexes[0], ShouldEqual, -1)
+			So(item.queueIndexes[3], ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
 			So(item.readyAt, ShouldBeZeroValue)
 			So(item.state, ShouldEqual, "removed")

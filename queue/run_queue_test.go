@@ -27,7 +27,7 @@ import (
 
 func TestRunQueue(t *testing.T) {
 	Convey("Once 10 items of differing ttr have been pushed to the queue", t, func() {
-		queue := newRunQueue()
+		queue := newSubQueue(2)
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
@@ -92,7 +92,7 @@ func TestRunQueue(t *testing.T) {
 			So(item.Key, ShouldEqual, "key_9")
 			So(queue.Len(), ShouldEqual, 10)
 
-			queue := newRunQueue()
+			queue := newSubQueue(2)
 			for i := 0; i < 10; i++ {
 				key := fmt.Sprintf("key_%d", i)
 				ttr := time.Duration((9 - i + 1)) * time.Second
@@ -105,7 +105,7 @@ func TestRunQueue(t *testing.T) {
 				So(queue.Len(), ShouldEqual, i+1)
 			}
 
-			queue = newRunQueue()
+			queue = newSubQueue(2)
 			for i := 0; i < 10; i++ {
 				key := fmt.Sprintf("key_%d", i)
 				ttr := time.Duration(i+1) * time.Second

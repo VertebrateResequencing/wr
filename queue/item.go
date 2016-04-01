@@ -30,25 +30,22 @@ import (
 // property can have one of the values 'delay', 'ready', 'run', 'bury' or
 // 'removed'.
 type Item struct {
-	Key        string
-	Data       interface{}
-	state      string
-	reserves   uint32
-	timeouts   uint32
-	releases   uint32
-	buries     uint32
-	kicks      uint32
-	priority   uint8 // highest priority is 255
-	delay      time.Duration
-	ttr        time.Duration
-	readyAt    time.Time
-	releaseAt  time.Time
-	creation   time.Time
-	mutex      sync.Mutex
-	delayIndex int
-	readyIndex int
-	ttrIndex   int
-	buryIndex  int
+	Key          string
+	Data         interface{}
+	state        string
+	reserves     uint32
+	timeouts     uint32
+	releases     uint32
+	buries       uint32
+	kicks        uint32
+	priority     uint8 // highest priority is 255
+	delay        time.Duration
+	ttr          time.Duration
+	readyAt      time.Time
+	releaseAt    time.Time
+	creation     time.Time
+	mutex        sync.Mutex
+	queueIndexes [4]int
 }
 
 // ItemStats holds information about the Item's state. The 'state' property can
@@ -153,7 +150,7 @@ func (item *Item) releasable() bool {
 func (item *Item) switchDelayReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.delayIndex = -1
+	item.queueIndexes[0] = -1
 	item.readyAt = time.Time{}
 	item.state = "ready"
 }
@@ -162,7 +159,7 @@ func (item *Item) switchDelayReady() {
 func (item *Item) switchReadyRun() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.readyIndex = -1
+	item.queueIndexes[1] = -1
 	item.reserves += 1
 	item.state = "run"
 }
@@ -172,7 +169,7 @@ func (item *Item) switchReadyRun() {
 func (item *Item) switchRunReady(reason string) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.ttrIndex = -1
+	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 
 	switch reason {
@@ -189,7 +186,7 @@ func (item *Item) switchRunReady(reason string) {
 func (item *Item) switchRunBury() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.ttrIndex = -1
+	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 	item.buries += 1
 	item.state = "bury"
@@ -199,7 +196,7 @@ func (item *Item) switchRunBury() {
 func (item *Item) switchBuryDelay() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.buryIndex = -1
+	item.queueIndexes[3] = -1
 	item.kicks += 1
 	item.state = "delay"
 }
@@ -208,11 +205,11 @@ func (item *Item) switchBuryDelay() {
 func (item *Item) removalCleanup() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.ttrIndex = -1
+	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-	item.readyIndex = -1
-	item.delayIndex = -1
+	item.queueIndexes[1] = -1
+	item.queueIndexes[0] = -1
 	item.readyAt = time.Time{}
-	item.buryIndex = -1
+	item.queueIndexes[3] = -1
 	item.state = "removed"
 }

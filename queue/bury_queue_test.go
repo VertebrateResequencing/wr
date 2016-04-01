@@ -35,12 +35,12 @@ func TestBuryQueue(t *testing.T) {
 			queue.push(items[key])
 		}
 
-		So(queue.Len(), ShouldEqual, 10)
+		So(queue.len(), ShouldEqual, 10)
 
 		Convey("Removing an item works", func() {
 			removeItem := items["key_2"]
 			queue.remove(removeItem)
-			So(queue.Len(), ShouldEqual, 9)
+			So(queue.len(), ShouldEqual, 9)
 
 			for {
 				item := queue.pop()
@@ -49,7 +49,7 @@ func TestBuryQueue(t *testing.T) {
 				}
 				So(item.Key, ShouldNotEqual, "key_2")
 			}
-			So(queue.Len(), ShouldEqual, 0)
+			So(queue.len(), ShouldEqual, 0)
 		})
 
 		Convey("Changing an item works", func() {
@@ -61,7 +61,7 @@ func TestBuryQueue(t *testing.T) {
 
 		Convey("Removing all items works", func() {
 			queue.empty()
-			So(queue.Len(), ShouldEqual, 0)
+			So(queue.len(), ShouldEqual, 0)
 		})
 	})
 
@@ -74,12 +74,12 @@ func TestBuryQueue(t *testing.T) {
 			queue.push(items[key])
 		}
 
-		So(queue.Len(), ShouldEqual, 1)
+		So(queue.len(), ShouldEqual, 1)
 
 		Convey("Removing the item works", func() {
 			removeItem := items["key_0"]
 			queue.remove(removeItem)
-			So(queue.Len(), ShouldEqual, 0)
+			So(queue.len(), ShouldEqual, 0)
 		})
 	})
 }

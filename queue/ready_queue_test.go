@@ -27,7 +27,7 @@ import (
 
 func TestReadyQueue(t *testing.T) {
 	Convey("Once 10 items of equal priority have been pushed to the queue", t, func() {
-		queue := newReadyQueue()
+		queue := newSubQueue(1)
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
@@ -87,7 +87,7 @@ func TestReadyQueue(t *testing.T) {
 	})
 
 	Convey("Once 10 items of differing priority have been pushed to the queue", t, func() {
-		queue := newReadyQueue()
+		queue := newSubQueue(1)
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)

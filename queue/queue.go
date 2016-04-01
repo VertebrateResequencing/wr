@@ -81,9 +81,9 @@ type Queue struct {
 	Name              string
 	mutex             sync.Mutex
 	items             map[string]*Item
-	delayQueue        *delayQueue
-	readyQueue        *readyQueue
-	runQueue          *runQueue
+	delayQueue        *subQueue
+	readyQueue        *subQueue
+	runQueue          *subQueue
 	buryQueue         *buryQueue
 	delayNotification chan bool
 	delayClose        chan bool
@@ -108,9 +108,9 @@ func New(name string) *Queue {
 	queue := &Queue{
 		Name:              name,
 		items:             make(map[string]*Item),
-		delayQueue:        newDelayQueue(),
-		readyQueue:        newReadyQueue(),
-		runQueue:          newRunQueue(),
+		delayQueue:        newSubQueue(0),
+		readyQueue:        newSubQueue(1),
+		runQueue:          newSubQueue(2),
 		buryQueue:         newBuryQueue(),
 		ttrNotification:   make(chan bool, 1),
 		ttrClose:          make(chan bool),
@@ -154,10 +154,10 @@ func (queue *Queue) Stats() *Stats {
 
 	return &Stats{
 		Items:   len(queue.items),
-		Delayed: queue.delayQueue.Len(),
-		Ready:   queue.readyQueue.Len(),
-		Running: queue.runQueue.Len(),
-		Buried:  queue.buryQueue.Len(),
+		Delayed: queue.delayQueue.len(),
+		Ready:   queue.readyQueue.len(),
+		Running: queue.runQueue.len(),
+		Buried:  queue.buryQueue.len(),
 	}
 }
 
@@ -470,7 +470,7 @@ func (queue *Queue) startDelayProcessing() {
 	for {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
-		if queue.delayQueue.Len() > 0 {
+		if queue.delayQueue.len() > 0 {
 			sleepTime = queue.delayQueue.items[0].readyAt.Sub(time.Now())
 		} else {
 			sleepTime = time.Duration(1 * time.Hour)
@@ -482,7 +482,7 @@ func (queue *Queue) startDelayProcessing() {
 		select {
 		case <-time.After(queue.delayTime.Sub(time.Now())):
 			queue.mutex.Lock()
-			len := queue.delayQueue.Len()
+			len := queue.delayQueue.len()
 			for i := 0; i < len; i++ {
 				item := queue.delayQueue.items[0]
 
@@ -515,7 +515,7 @@ func (queue *Queue) startTTRProcessing() {
 	for {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
-		if queue.runQueue.Len() > 0 {
+		if queue.runQueue.len() > 0 {
 			sleepTime = queue.runQueue.items[0].releaseAt.Sub(time.Now())
 		} else {
 			sleepTime = time.Duration(1 * time.Hour)
@@ -527,7 +527,7 @@ func (queue *Queue) startTTRProcessing() {
 		select {
 		case <-time.After(queue.ttrTime.Sub(time.Now())):
 			queue.mutex.Lock()
-			len := queue.runQueue.Len()
+			len := queue.runQueue.len()
 			for i := 0; i < len; i++ {
 				item := queue.runQueue.items[0]
 

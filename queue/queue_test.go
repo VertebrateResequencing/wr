@@ -562,20 +562,25 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once a thousand items with a small delay have been added to the queue", t, func() {
 		queue := New("1000 queue")
+		t := time.Now()
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			_, err := queue.Add(key, "data", 0, 50*time.Millisecond, 30*time.Second)
+			_, err := queue.Add(key, "data", 0, 100*time.Millisecond, 30*time.Second)
 			So(err, ShouldBeNil)
 		}
+		e := time.Since(t)
+		fmt.Printf("\ne was %s\n", e)
 
 		stats := queue.Stats()
 		So(stats.Items, ShouldEqual, 1000)
-		So(stats.Delayed, ShouldEqual, 1000)
-		So(stats.Ready, ShouldEqual, 0)
+		if e < 100*time.Millisecond {
+			So(stats.Delayed, ShouldEqual, 1000)
+			So(stats.Ready, ShouldEqual, 0)
+		}
 		So(stats.Running, ShouldEqual, 0)
 		So(stats.Buried, ShouldEqual, 0)
 
-		<-time.After(60 * time.Millisecond)
+		<-time.After(110 * time.Millisecond)
 
 		Convey("They are all ready after that delay", func() {
 			stats := queue.Stats()
