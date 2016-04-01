@@ -569,7 +569,6 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 		}
 		e := time.Since(t)
-		fmt.Printf("\ne was %s\n", e)
 
 		stats := queue.Stats()
 		So(stats.Items, ShouldEqual, 1000)
