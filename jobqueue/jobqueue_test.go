@@ -67,26 +67,30 @@ func TestJobqueue(t *testing.T) {
 		// <-stopped
 		// log.Printf("Added %d beanstalk jobs\n", k)
 
-		jq, err := Connect("vr-2-1-02:11301", "vrpipe.des", true)
+		jq, err := Connect("tcp://vr-2-1-02:11301", "vrpipe.des", true)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		before := time.Now()
 		n := 50000
+		inserts := 0
+		already := 0
 		for i := 0; i < n; i++ {
 			err := jq.Add(fmt.Sprintf("test job %d", i), "body", 1, 30)
 			if err != nil {
 				if qerr, ok := err.(Error); ok && qerr.Err == ErrAlreadyExists {
+					already++
 					continue
 				}
 				log.Fatal(err)
 			}
+			inserts++
 		}
 		e := time.Since(before)
 		per := int64(e.Nanoseconds() / int64(n))
 		jq.Disconnect()
-		log.Printf("Added %d jobqueue jobs in %s == %d per\n", n, e, per)
+		log.Printf("Added %d jobqueue jobs (%d inserts, %d dups) in %s == %d per\n", n, inserts, already, e, per)
 		// jq.Shutdown()
 
 		// stop = time.After(10 * time.Second)

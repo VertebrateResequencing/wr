@@ -20,22 +20,20 @@ package cmd
 
 import (
 	// "bufio"
-	"fmt"
+	// "fmt"
 	"github.com/sb10/vrpipe/jobqueue"
-	"github.com/sb10/vrpipe/queue"
+	// "github.com/sb10/vrpipe/queue"
 	"github.com/spf13/cobra"
 	// "github.com/ugorji/go/codec"
 	"log"
-	"net"
+	// "net"
 	"runtime"
 	// "strings"
 	// "strconv"
 	// "time"
-	"os"
-	"time"
+	// "os"
+	// "time"
 )
-
-var queues map[string]*queue.Queue
 
 // queueCmd represents the queue command
 var queueCmd = &cobra.Command{
@@ -44,24 +42,9 @@ var queueCmd = &cobra.Command{
 	Long:  `don't use this`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
-		queues = make(map[string]*queue.Queue)
-
-		l, err := net.Listen("tcp", ":11301")
+		err := jobqueue.Serve("tcp://vr-2-1-02:11301")
 		if err != nil {
-			log.Fatal("Error listening:", err)
-		}
-		defer l.Close()
-		defer os.Remove("/lustre/scratch116/vr/user/sb10/tmp/socket")
-
-		for {
-			// listen for an incoming connection.
-			netConn, err := l.Accept()
-			if err != nil {
-				log.Fatal("Error accepting: ", err)
-			}
-
-			// handle connections in a new goroutine.
-			go handleClient(netConn)
+			log.Fatal(err)
 		}
 	},
 }
@@ -70,30 +53,4 @@ func init() {
 	RootCmd.AddCommand(queueCmd)
 	// queueCmd.Flags().StringVar(&enqueue, "enqueue", "", "Add a job to the queue")
 	// queueCmd.Flags().BoolVar(&dequeue, "dequeue", false, "Get a job from the queue")
-}
-
-func handleClient(netConn net.Conn) {
-	c := jobqueue.New(netConn)
-	netConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-	defer netConn.Close()
-
-	// the first thing a client needs to do on connecting is send the desired
-	// queue name, which we get here
-	err := c.HandleQueue()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	// now we loop for up to 5mins waiting for some other command
-	for {
-		err := c.HandleCmd()
-		if err != nil {
-			if err != jobqueue.ErrClose {
-				fmt.Println(err)
-			}
-			return
-		}
-		netConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-	}
 }
