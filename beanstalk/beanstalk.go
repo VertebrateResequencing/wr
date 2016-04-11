@@ -19,7 +19,7 @@
 // Package jobqueue combines beanstalkd with redis to form a reliable job
 // queue system (beanstalkd) that can't have duplicate jobs and lets you look
 // up jobs by their bodies (redis), instead of their beanstalk job id
-package jobqueue
+package beanstalk
 
 import (
 	"fmt"
