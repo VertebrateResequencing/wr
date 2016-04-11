@@ -342,7 +342,7 @@ func (c *Conn) HandleQueue() error {
 		return err
 	}
 	if string(cmd[0]) != "q" {
-		return errBadFormat
+		return ErrBadFormat
 	}
 
 	cmd = strings.TrimRight(cmd, "\r\n")
@@ -449,7 +449,7 @@ func (c *Conn) HandleCmd() error {
 	case "c": // close
 		return ErrClose
 	}
-	return errUnknownCommand
+	return ErrUnknownCommand
 }
 
 // send command and expect some exact response
@@ -460,7 +460,7 @@ func (c *Conn) sendExpectExact(cmd string, expected string) error {
 	}
 
 	if resp != expected {
-		return parseCommonError(resp)
+		return parseCommonError(c.queuename, "", "", resp)
 	}
 	return nil
 }
