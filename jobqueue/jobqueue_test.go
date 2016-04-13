@@ -67,7 +67,7 @@ func TestJobqueue(t *testing.T) {
 		// <-stopped
 		// log.Printf("Added %d beanstalk jobs\n", k)
 
-		jq, err := Connect("tcp://vr-2-1-02:11301", "vrpipe.des", true)
+		jq, err := Connect("vr-2-1-02:11301", "vrpipe.des", true)
 		if err != nil {
 			log.Fatal(err)
 		}

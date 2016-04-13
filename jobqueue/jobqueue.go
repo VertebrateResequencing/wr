@@ -27,23 +27,18 @@ executable.
 package jobqueue
 
 import (
-	// "bufio"
+	"bufio"
 	"errors"
 	"fmt"
 	"github.com/sb10/vrpipe/queue"
-	// "github.com/sb10/vrpipe/ssh"
+	"github.com/sb10/vrpipe/ssh"
 	// "github.com/ugorji/go/codec"
-	// "io"
-	// "net"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/rep"
-	"github.com/go-mangos/mangos/protocol/req"
+	"io"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	// "github.com/go-mangos/mangos/transport/ipc"
-	"github.com/go-mangos/mangos/transport/tcp"
 )
 
 const (
@@ -101,22 +96,20 @@ type ClientRequest struct {
 // Conn represents a connection to the jobqueue server, specific to a particular
 // queue
 type Conn struct {
-	// conn      net.Conn
-	// bufReader *bufio.Reader
-	// bufWriter *bufio.Writer
-	sock      mangos.Socket
+	conn      net.Conn
+	bufReader *bufio.Reader
+	bufWriter *bufio.Writer
 	queue     *queue.Queue
 	queuename string
 	// ch        codec.Handle
 }
 
 // Makes a new Conn
-func New(sock mangos.Socket) *Conn {
+func New(netConn net.Conn) *Conn {
 	return &Conn{
-		sock: sock,
-		// conn:      netConn,
-		// bufReader: bufio.NewReader(netConn),
-		// bufWriter: bufio.NewWriter(netConn),
+		conn:      netConn,
+		bufReader: bufio.NewReader(netConn),
+		bufWriter: bufio.NewWriter(netConn),
 		// ch:        new(codec.BincHandle),
 	}
 }
@@ -125,46 +118,42 @@ func New(sock mangos.Socket) *Conn {
 // queue. If the spawn argument is set to true, then we will attempt to start up
 // the server if it isn't running already.
 func Connect(addr string, queuename string, spawn bool) (conn *Conn, err error) {
-	sock, err := req.NewSocket()
-	// if err != nil {
-	// 	// on connection refused we'll assume it simply isn't running and try
-	// 	// to start it up
-	// 	if spawn && strings.Contains(err.Error(), "connection refused") {
-	// 		host, port, err2 := net.SplitHostPort(addr)
-	// 		if err2 != nil {
-	// 			err = fmt.Errorf("%sAlso failed to parse [%s] as a place to ssh to: %s\n", err.Error(), addr, err2.Error())
-	// 			return
-	// 		}
-
-	// 		//_, err2 = ssh.RunCmd(host, 22, "vrpipe jobqueue -p "+port, true)
-	// 		_, err2 = ssh.RunCmd(host, 22, "vrpipe queue", true)
-	// 		if err2 != nil {
-	// 			err = fmt.Errorf("%sAlso failed to start up [vrpipe jobqueue -p %d] on %s: %s\n", err.Error(), port, host, err2.Error())
-	// 			return
-	// 		}
-
-	// 		time.Sleep(1 * time.Second)
-	// 		netConn, err = net.Dial("tcp", addr)
-	// 		if err != nil {
-	// 			return
-	// 		}
-	// 	} else {
-	// 		return
-	// 	}
-	// }
+	netConn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return
+		// on connection refused we'll assume it simply isn't running and try
+		// to start it up
+		if spawn && strings.Contains(err.Error(), "connection refused") {
+			host, port, err2 := net.SplitHostPort(addr)
+			if err2 != nil {
+				err = fmt.Errorf("%sAlso failed to parse [%s] as a place to ssh to: %s\n", err.Error(), addr, err2.Error())
+				return
+			}
+
+			//_, err2 = ssh.RunCmd(host, 22, "vrpipe jobqueue -p "+port, true)
+			_, err2 = ssh.RunCmd(host, 22, "vrpipe queue", true)
+			if err2 != nil {
+				err = fmt.Errorf("%sAlso failed to start up [vrpipe jobqueue -p %d] on %s: %s\n", err.Error(), port, host, err2.Error())
+				return
+			}
+
+			time.Sleep(1 * time.Second)
+			netConn, err = net.Dial("tcp", addr)
+			if err != nil {
+				return
+			}
+		} else {
+			return
+		}
 	}
 
-	// sock.AddTransport(ipc.NewTransport())
-	sock.AddTransport(tcp.NewTransport())
-
-	if err = sock.Dial(addr); err != nil {
-		return
-	}
-
-	conn = New(sock)
+	conn = New(netConn)
 	conn.queuename = queuename
+
+	_, err = conn.sendFull([]byte(fmt.Sprintf("q %s\r\n", queuename)))
+	if err != nil {
+		netConn.Close()
+		conn = nil
+	}
 
 	return
 }
@@ -172,40 +161,56 @@ func Connect(addr string, queuename string, spawn bool) (conn *Conn, err error) 
 // Serve is for use by a server and makes it start listening for Connect()ions
 // from clients, and then handles those clients
 func Serve(addr string) (err error) {
-	sock, err := rep.NewSocket()
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return
 	}
-
-	// sock.AddTransport(ipc.NewTransport())
-	sock.AddTransport(tcp.NewTransport())
-
-	if err = sock.Listen(addr); err != nil {
-		return
-	}
-	defer sock.Close()
+	defer l.Close()
 
 	for {
-		msg, rerr := sock.Recv()
-		if rerr != nil {
-			err = rerr
+		// listen for an incoming connection.
+		netConn, aerr := l.Accept()
+		if aerr != nil {
+			err = aerr
 			return
 		}
 
-		herr := HandleCmd(sock, string(msg))
-		if herr != nil {
-			if herr != ErrClose {
-				err = herr
-				return
+		// handle connections in a new goroutine.
+		go handleClient(netConn)
+	}
+}
+
+// the server goroutine that handles client requests
+func handleClient(netConn net.Conn) {
+	c := New(netConn)
+	netConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	defer netConn.Close()
+
+	// the first thing a client needs to do on connecting is send the desired
+	// queue name, which we get here
+	err := c.HandleQueue()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	// now we loop for up to 5mins waiting for some other command
+	for {
+		err := c.HandleCmd()
+		if err != nil {
+			if err != ErrClose {
+				fmt.Println(err)
 			}
+			return
 		}
+		netConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 	}
 }
 
 // Disconnect closes the connection to the jobqueue server
 func (c *Conn) Disconnect() {
-	request(c.sock, "close\r\n")
-	c.sock.Close()
+	c.sendFull([]byte("close\r\n"))
+	c.conn.Close()
 }
 
 // Stats returns stats of the jobqueue server queue you connected to.
@@ -267,7 +272,7 @@ func (c *Conn) Add(key string, data string, pri uint8, ttr time.Duration) error 
 	// }
 	// return nil
 
-	cmd := fmt.Sprintf("add %d 0 %d\r\n%s\r\n%s\r\n%s\r\n", pri, uint64(ttr.Seconds()), c.queuename, key, data)
+	cmd := fmt.Sprintf("add %d 0 %d %d %d\r\n%s\r\n%s\r\n", pri, uint64(ttr.Seconds()), len(key), len(data), key, data)
 
 	resp, err := c.sendGetResp(cmd)
 	if err != nil {
@@ -379,97 +384,112 @@ func (c *Conn) Add(key string, data string, pri uint8, ttr time.Duration) error 
 
 // receive a queue name from the client and return it to the server (for
 // server use only).
-// func (c *Conn) HandleQueue() error {
-// 	cmd, err := c.bufReader.ReadString('\n')
-// 	if err != nil {
-// 		return err
-// 	}
-// 	if string(cmd[0]) != "q" {
-// 		return ErrBadFormat
-// 	}
+func (c *Conn) HandleQueue() error {
+	cmd, err := c.bufReader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if string(cmd[0]) != "q" {
+		return ErrBadFormat
+	}
 
-// 	cmd = strings.TrimRight(cmd, "\r\n")
-// 	queuename := strings.TrimLeft(cmd, "q ")
+	cmd = strings.TrimRight(cmd, "\r\n")
+	queuename := strings.TrimLeft(cmd, "q ")
 
-// 	// get the queue from the global pool of queues, or create if necessary
-// 	queues.Lock()
-// 	q, existed := queues.qs[queuename]
-// 	if !existed {
-// 		q = queue.New(queuename)
-// 		queues.qs[queuename] = q
-// 	}
-// 	queues.Unlock()
+	// get the queue from the global pool of queues, or create if necessary
+	queues.Lock()
+	q, existed := queues.qs[queuename]
+	if !existed {
+		q = queue.New(queuename)
+		queues.qs[queuename] = q
+	}
+	queues.Unlock()
 
-// 	c.queue = q
+	c.queue = q
 
-// 	return nil
-// }
+	return nil
+}
 
 // receive a command and deal with it (for server use only).
-func HandleCmd(sock mangos.Socket, msg string) error {
-	// cmd, err := c.bufReader.ReadString('\n')
+func (c *Conn) HandleCmd() error {
+	cmd, err := c.bufReader.ReadString('\n')
 	// cd := codec.NewDecoder(c.bufReader, c.ch)
 	// cr := &jobqueue.ClientRequest{}
 	// err := cd.Decode(cr)
 	// ce := codec.NewEncoder(c.bufWriter, c.ch)
 	// result := true
 	// err := ce.Encode(result)
-	// if err != nil {
-	// 	c.sendFull([]byte("INTERNAL_ERROR\r\n"))
-	// 	return err
-	// }
+	if err != nil {
+		c.sendFull([]byte("INTERNAL_ERROR\r\n"))
+		return err
+	}
 
-	lines := strings.Split(msg, "\r\n")
-	cmd := lines[0]
+	cmd = strings.TrimRight(cmd, "\r\n")
 	s := strings.Split(cmd, " ")
 
 	switch string(cmd[0]) {
 	case "a": // add
 		priority, err := strconv.ParseUint(s[1], 10, 8)
 		if err != nil {
-			reply(sock, "BAD_FORMAT\r\n")
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
 			return err
 		}
 
 		delay, err := strconv.ParseUint(s[2], 10, 64)
 		if err != nil {
-			reply(sock, "BAD_FORMAT\r\n")
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
 			return err
 		}
 
 		ttr, err := strconv.ParseUint(s[3], 10, 64)
 		if err != nil {
-			reply(sock, "BAD_FORMAT\r\n")
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
 			return err
 		}
 
-		queuename := lines[1]
-		key := lines[2]
-		data := lines[3]
-
-		queues.Lock()
-		q, existed := queues.qs[queuename]
-		if !existed {
-			q = queue.New(queuename)
-			queues.qs[queuename] = q
+		keyLen, err := strconv.Atoi(s[4])
+		if err != nil {
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
+			return err
 		}
-		queues.Unlock()
 
-		_, err = q.Add(key, data, uint8(priority), time.Duration(delay)*time.Second, time.Duration(ttr)*time.Second)
+		dataLen, err := strconv.Atoi(s[5])
+		if err != nil {
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
+			return err
+		}
+
+		key := make([]byte, keyLen+2)
+		n, err := io.ReadFull(c.bufReader, key)
+		if err != nil {
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
+			return err
+		}
+		key = key[:n-2]
+
+		data := make([]byte, dataLen+2)
+		n, err = io.ReadFull(c.bufReader, data)
+		if err != nil {
+			c.sendFull([]byte("BAD_FORMAT\r\n"))
+			return err
+		}
+		data = data[:n-2]
+
+		_, err = c.queue.Add(string(key), data, uint8(priority), time.Duration(delay)*time.Second, time.Duration(ttr)*time.Second)
 		if err != nil {
 			if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
-				err = reply(sock, "ALREADY_EXISTS\r\n")
+				_, err = c.sendFull([]byte("ALREADY_EXISTS\r\n"))
 				if err != nil {
 					return err
 				}
 				return nil
 			} else {
-				reply(sock, "INTERNAL_ERROR\r\n")
+				c.sendFull([]byte("INTERNAL_ERROR\r\n"))
 				return err
 			}
 		}
 
-		err = reply(sock, "INSERTED\r\n")
+		_, err = c.sendFull([]byte("INSERTED\r\n"))
 		if err != nil {
 			return err
 		}
@@ -495,69 +515,50 @@ func HandleCmd(sock mangos.Socket, msg string) error {
 
 // send command and read response
 func (c *Conn) sendGetResp(cmd string) (string, error) {
-	err := request(c.sock, cmd)
+	c.conn.SetDeadline(time.Now().Add(time.Second * 2))
+
+	_, err := c.sendFull([]byte(cmd))
 	if err != nil {
 		return "", err
 	}
 
 	// wait for response
-	resp, err := receive(c.sock)
+	resp, err := c.bufReader.ReadString('\n')
 	if err != nil {
 		return "", err
 	}
 	return resp, nil
 }
 
-// request a cmd be handled by the server
-func request(sock mangos.Socket, cmd string) (err error) {
-	err = sock.Send([]byte(cmd))
-	return
-}
-
-// receive a response to a request() from the server
-func receive(sock mangos.Socket) (msg string, err error) {
-	bytes, err := sock.Recv()
-	if err == nil {
-		msg = string(bytes)
-	}
-	return
-}
-
-// reply to a client request() (server use only)
-func reply(sock mangos.Socket, msg string) (err error) {
-	err = sock.Send([]byte(msg))
-	return
-}
-
 // try to send all of data
 // if data len < 1500, it use TCPConn.Write
 // if data len >= 1500, it use bufio.Write
-// func (c *Conn) sendFull(data []byte) (int, error) {
-// 	toWrite := data
-// 	totWritten := 0
-// 	var n int
-// 	var err error
-// 	for totWritten < len(data) {
-// 		if len(toWrite) >= minLenToBuf {
-// 			n, err = c.bufWriter.Write(toWrite)
-// 			if err != nil && !isNetTempErr(err) {
-// 				return totWritten, err
-// 			}
-// 			err = c.bufWriter.Flush()
-// 			if err != nil && !isNetTempErr(err) {
-// 				return totWritten, err
-// 			}
-// 		} else {
-// 			n, err = c.conn.Write(toWrite)
-// 			if err != nil && !isNetTempErr(err) {
-// 				return totWritten, err
-// 			}
-// 		}
-// 		totWritten += n
-// 		toWrite = toWrite[n:]
-// 	}
-// 	return totWritten, nil
-// }
+func (c *Conn) sendFull(data []byte) (int, error) {
+	toWrite := data
+	totWritten := 0
+	var n int
+	var err error
+	for totWritten < len(data) {
+		if len(toWrite) >= minLenToBuf {
+			n, err = c.bufWriter.Write(toWrite)
+			if err != nil && !isNetTempErr(err) {
+				return totWritten, err
+			}
+			err = c.bufWriter.Flush()
+			if err != nil && !isNetTempErr(err) {
+				return totWritten, err
+			}
+		} else {
+			n, err = c.conn.Write(toWrite)
+			if err != nil && !isNetTempErr(err) {
+				return totWritten, err
+			}
+		}
+		totWritten += n
+		toWrite = toWrite[n:]
+	}
+	return totWritten, nil
+}
 
 // parse common errors
 func parseCommonError(queuename string, command string, key string, msg string) error {
@@ -579,9 +580,9 @@ func parseCommonError(queuename string, command string, key string, msg string) 
 }
 
 // check if it is temporary network error
-// func isNetTempErr(err error) bool {
-// 	if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
-// 		return true
-// 	}
-// 	return false
-// }
+func isNetTempErr(err error) bool {
+	if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
+		return true
+	}
+	return false
+}
