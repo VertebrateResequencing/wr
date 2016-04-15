@@ -79,7 +79,7 @@ func (e Error) Error() string {
 // calling certain methods.
 type Queue struct {
 	Name              string
-	mutex             sync.Mutex
+	mutex             sync.RWMutex
 	items             map[string]*Item
 	delayQueue        *subQueue
 	readyQueue        *subQueue
@@ -149,8 +149,8 @@ func (queue *Queue) Destroy() (err error) {
 // Stats returns information about the number of items in the queue and each
 // sub-queue.
 func (queue *Queue) Stats() *Stats {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
 
 	return &Stats{
 		Items:   len(queue.items),
@@ -204,8 +204,8 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 
 // Get is a thread-safe way to get an item by the key you used to Add() it.
 func (queue *Queue) Get(key string) (item *Item, err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Get", key, ErrQueueClosed}
@@ -269,7 +269,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 // else that gets it from a Reserve() call. If you know you can't handle it
 // right now, but someone else might be able to later, you can manually call
 // Release().
-func (queue *Queue) Reserve() (item *Item, err error) { //*** we want a wait time.Duration arg, where we'll wait that long for something to come on the ready queue
+func (queue *Queue) Reserve() (item *Item, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {

@@ -26,7 +26,7 @@ import (
 )
 
 type buryQueue struct {
-	mutex sync.Mutex
+	mutex sync.RWMutex
 	items []*Item
 }
 
@@ -75,8 +75,8 @@ func (q *buryQueue) remove(item *Item) {
 }
 
 func (q buryQueue) len() int {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
 	return len(q.items)
 }
 
