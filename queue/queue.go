@@ -103,6 +103,15 @@ type Stats struct {
 	Buried  int
 }
 
+// ItemDef makes it possible to supply a slice of Add() args to AddMany().
+type ItemDef struct {
+	Key      string
+	Data     interface{}
+	Priority uint8 // highest priority is 255
+	Delay    time.Duration
+	TTR      time.Duration
+}
+
 // New is a helper to create instance of the Queue struct.
 func New(name string) *Queue {
 	queue := &Queue{
@@ -199,6 +208,49 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 		queue.delayNotificationTrigger(item)
 	}
 
+	return
+}
+
+// AddMany is like Add(), except that you supply a slice of *ItemDef, and it
+// returns the number that were actually added and the number of items that were
+// not added because they were duplicates of items already in the queue. If an
+// error occurs, nothing will have been added.
+func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
+	queue.mutex.Lock()
+
+	if queue.closed {
+		queue.mutex.Unlock()
+		err = Error{queue.Name, "AddMany", "", ErrQueueClosed}
+		return
+	}
+
+	deferredTrigger := false
+	for _, def := range items {
+		_, existed := queue.items[def.Key]
+		if existed {
+			dups++
+			continue
+		}
+
+		item := newItem(def.Key, def.Data, def.Priority, def.Delay, def.TTR)
+		queue.items[def.Key] = item
+
+		if def.Delay.Nanoseconds() == 0 {
+			// put it directly on the ready queue
+			item.switchDelayReady()
+			queue.readyQueue.push(item)
+		} else {
+			queue.delayQueue.push(item)
+			if !deferredTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
+				defer queue.delayNotificationTrigger(item)
+				deferredTrigger = true
+			}
+		}
+
+		added++
+	}
+
+	queue.mutex.Unlock()
 	return
 }
 

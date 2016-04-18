@@ -600,4 +600,41 @@ func TestQueue(t *testing.T) {
 			})
 		})
 	})
+
+	Convey("You can add many items to the queue in one go", t, func() {
+		q := New("myqueue")
+
+		var itemdefs []*ItemDef
+		for i := 0; i < 10; i++ {
+			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 0 * time.Second, 1 * time.Minute})
+		}
+
+		added, dups, err := q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 10)
+		So(dups, ShouldEqual, 0)
+
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 0)
+		So(dups, ShouldEqual, 10)
+
+		for i := 10; i < 20; i++ {
+			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 1 * time.Second, 1 * time.Minute})
+		}
+
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 10)
+		So(dups, ShouldEqual, 10)
+
+		Convey("It doesn't work if the queue is closed", func() {
+			q.Destroy()
+			added, dups, err = q.AddMany(itemdefs)
+			So(err, ShouldNotBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrQueueClosed)
+		})
+	})
 }
