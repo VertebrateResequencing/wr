@@ -27,7 +27,7 @@ import (
 )
 
 type subQueue struct {
-	mutex   sync.Mutex
+	mutex   sync.RWMutex
 	items   []*Item
 	sqIndex int
 }
@@ -67,8 +67,8 @@ func (q *subQueue) remove(item *Item) {
 
 // len tells you how many items are in the queue
 func (q *subQueue) len() int {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
 	return len(q.items)
 }
 

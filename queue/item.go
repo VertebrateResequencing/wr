@@ -44,7 +44,7 @@ type Item struct {
 	readyAt      time.Time
 	releaseAt    time.Time
 	creation     time.Time
-	mutex        sync.Mutex
+	mutex        sync.RWMutex
 	queueIndexes [4]int
 }
 
@@ -87,8 +87,8 @@ func newItem(key string, data interface{}, priority uint8, delay time.Duration, 
 }
 
 func (item *Item) Stats() *ItemStats {
-	item.mutex.Lock()
-	defer item.mutex.Unlock()
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
 	age := time.Since(item.creation)
 	var remaining time.Duration
 	if item.state == "delay" {
@@ -131,15 +131,15 @@ func (item *Item) touch() {
 
 // Verify if the item is ready
 func (item *Item) isready() bool {
-	item.mutex.Lock()
-	defer item.mutex.Unlock()
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
 	return item.readyAt.Before(time.Now())
 }
 
 // Verify if the item should be released
 func (item *Item) releasable() bool {
-	item.mutex.Lock()
-	defer item.mutex.Unlock()
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
 	if item.releaseAt.IsZero() {
 		return false
 	}

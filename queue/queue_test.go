@@ -267,11 +267,12 @@ func TestQueue(t *testing.T) {
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 3)
-					<-time.After(50 * time.Millisecond)
+					<-time.After(45 * time.Millisecond)
 					So(item1.state, ShouldEqual, "ready")
 					So(item1.timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
-					So(stats.Ready, ShouldEqual, 2)
+					// if the total elapsed time since the items were added to the queue goes over 500ms, we can get an extra 'Ready' item
+					So(stats.Ready, ShouldBeBetweenOrEqual, 2, 3)
 					So(stats.Running, ShouldEqual, 2)
 					<-time.After(60 * time.Millisecond)
 					So(item2.state, ShouldEqual, "ready")
@@ -472,9 +473,9 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("The queue won't fall over if we manage to change the item's readyAt without updating the queue", func() {
-			<-time.After(49 * time.Millisecond)
+			<-time.After(45 * time.Millisecond)
 			item.readyAt = time.Now().Add(25 * time.Millisecond)
-			<-time.After(6 * time.Millisecond)
+			<-time.After(10 * time.Millisecond)
 			So(item.state, ShouldEqual, "delay")
 			<-time.After(25 * time.Millisecond)
 			So(item.state, ShouldEqual, "ready")
@@ -597,6 +598,43 @@ func TestQueue(t *testing.T) {
 					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
 				}
 			})
+		})
+	})
+
+	Convey("You can add many items to the queue in one go", t, func() {
+		q := New("myqueue")
+
+		var itemdefs []*ItemDef
+		for i := 0; i < 10; i++ {
+			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 0 * time.Second, 1 * time.Minute})
+		}
+
+		added, dups, err := q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 10)
+		So(dups, ShouldEqual, 0)
+
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 0)
+		So(dups, ShouldEqual, 10)
+
+		for i := 10; i < 20; i++ {
+			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 1 * time.Second, 1 * time.Minute})
+		}
+
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 10)
+		So(dups, ShouldEqual, 10)
+
+		Convey("It doesn't work if the queue is closed", func() {
+			q.Destroy()
+			added, dups, err = q.AddMany(itemdefs)
+			So(err, ShouldNotBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrQueueClosed)
 		})
 	})
 }

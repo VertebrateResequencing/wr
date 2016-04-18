@@ -20,213 +20,197 @@ package jobqueue
 
 import (
 	"fmt"
-	//"github.com/sb10/vrpipe/queue"
+	. "github.com/smartystreets/goconvey/convey"
 	// "github.com/sb10/vrpipe/beanstalk"
-	//"io/ioutil"
+	// "github.com/sb10/vrpipe/queue"
 	"log"
-	// "net/http"
-	// "net/url"
-	// "bufio"
-	// "net"
+	"math"
 	"runtime"
 	"testing"
 	"time"
 )
 
 func TestJobqueue(t *testing.T) {
-	if true {
+	Convey("Once the jobqueue server is up", t, func() {
+		done, quit, err := Serve("tcp://localhost:11301")
+		So(err, ShouldBeNil)
+
+		Convey("You can connect to the server and add jobs to the queue", func() {
+			jq, err := Connect("tcp://localhost:11301", "test_queue")
+			So(err, ShouldBeNil)
+
+			var jobs []*Job
+			for i := 0; i < 10; i++ {
+				pri := i
+				if i == 7 {
+					pri = 4
+				} else if i == 4 {
+					pri = 7
+				}
+				jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, uint8(0), uint8(pri)))
+			}
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 10)
+			So(already, ShouldEqual, 0)
+
+			Convey("You can't add the same jobs to the queue again", func() {
+				inserts, already, err := jq.Add(jobs)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 0)
+				So(already, ShouldEqual, 10)
+			})
+
+			Convey("You can reserve jobs from the queue in the correct order", func() {
+				for i := 9; i >= 0; i-- {
+					jid := i
+					if i == 7 {
+						jid = 4
+					} else if i == 4 {
+						jid = 7
+					}
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
+				}
+
+				Convey("Reserving when all have been reserved returns nil", func() {
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job, ShouldBeNil)
+				})
+			})
+
+			Convey("You can subsequently add more jobs", func() {
+				for i := 10; i < 20; i++ {
+					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, uint8(0), uint8(0)))
+				}
+				inserts, already, err := jq.Add(jobs)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 10)
+				So(already, ShouldEqual, 10)
+			})
+		})
+
+		Reset(func() {
+			quit <- true
+			<-done
+		})
+	})
+}
+
+func TestJobqueueSpeed(t *testing.T) {
+	// some manual speed tests (don't like the way the benchmarking feature
+	// works)
+	if false {
 		runtime.GOMAXPROCS(runtime.NumCPU())
+		n := 50000
 
 		// bs, err := beanstalk.Connect("localhost:11300", "vrpipe.des", true)
 		// if err != nil {
 		// 	log.Fatal(err)
 		// }
 
-		// how many adds can we do in 10s? (Using the Benchmark functionality
-		// doesn't behave the way we desire.)
-		// stop := time.After(10 * time.Second)
-		// stopped := make(chan bool)
-		// k := 1
-		// go func() {
-		// 	for {
-		// 		_, err := bs.Add(fmt.Sprintf("test job %d", k), 30)
-		// 		if err != nil {
-		// 			log.Fatal(err)
-		// 		}
-		// 		k++
+		// before := time.Now()
+		// for i := 0; i < n; i++ {
+		// 	_, err := bs.Add(fmt.Sprintf("test job %d", i), 30)
+		// 	if err != nil {
+		// 		log.Fatal(err)
+		// 	}
+		// }
+		// e := time.Since(before)
+		// per := int64(e.Nanoseconds() / int64(n))
+		// log.Printf("Added %d beanstalk jobs in %s == %d per\n", n, e, per)
 
-		// 		select {
-		// 		case <-stop:
-		// 			close(stopped)
-		// 			return
-		// 		default:
-		// 			continue
-		// 		}
+		// for ease of testing, start the server in a go routine
+		// go func() {
+		// 	err := Serve("tcp://vr-2-1-02:11301")
+		// 	if err != nil {
+		// 		log.Fatal(err)
 		// 	}
 		// }()
-		// <-stopped
-		// log.Printf("Added %d beanstalk jobs\n", k)
 
-		jq, err := Connect("vr-2-1-02:11301", "vrpipe.des", true)
+		jq, err := Connect("tcp://vr-2-1-02:11301", "vrpipe.des")
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		before := time.Now()
-		n := 50000
-		inserts := 0
-		already := 0
+		var jobs []*Job
 		for i := 0; i < n; i++ {
-			err := jq.Add(fmt.Sprintf("test job %d", i), "body", 1, 30)
-			if err != nil {
-				if qerr, ok := err.(Error); ok && qerr.Err == ErrAlreadyExists {
-					already++
-					continue
-				}
-				log.Fatal(err)
-			}
-			inserts++
+			jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, uint8(0), uint8(0)))
+		}
+		inserts, already, err := jq.Add(jobs)
+		if err != nil {
+			log.Fatal(err)
 		}
 		e := time.Since(before)
 		per := int64(e.Nanoseconds() / int64(n))
-		jq.Disconnect()
 		log.Printf("Added %d jobqueue jobs (%d inserts, %d dups) in %s == %d per\n", n, inserts, already, e, per)
-		// jq.Shutdown()
 
-		// stop = time.After(10 * time.Second)
-		// stopped = make(chan bool)
-		// k = 1
-		// go func() {
-		// 	for {
-		// 		job, err := jobqueue.Reserve(5 * time.Second)
-		// 		if err != nil {
-		// 			log.Fatal(err)
-		// 		}
-		// 		if job == nil {
-		// 			close(stopped)
-		// 			return
-		// 		}
-		// 		k++
+		jq.Disconnect()
 
-		// 		select {
-		// 		case <-stop:
-		// 			close(stopped)
-		// 			return
-		// 		default:
-		// 			continue
-		// 		}
-		// 	}
-		// }()
-		// <-stopped
-		// log.Printf("Reserved %d jobs\n", k)
+		reserves := make(chan int, n)
+		beginat := time.Now().Add(1 * time.Second)
+		o := runtime.NumCPU() // from here up to 1650 the time taken is around 6-7s, but beyond 1675 it suddenly drops to 14s, and seems to just hang forever at much higher values
+		m := int(math.Ceil(float64(n) / float64(o)))
+		for i := 1; i <= o; i++ {
+			go func(i int) {
+				start := time.After(beginat.Sub(time.Now()))
+				gjq, err := Connect("tcp://vr-2-1-02:11301", "vrpipe.des")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer gjq.Disconnect()
+				for {
+					select {
+					case <-start:
+						reserved := 0
+						na := 0
+						for j := 0; j < m; j++ {
+							job, err := gjq.Reserve(5 * time.Second)
+							if err != nil || job == nil {
+								for k := j; k < m; k++ {
+									na++
+									reserves <- -i
+								}
+								break
+							} else {
+								reserved++
+								reserves <- i
+							}
+						}
+						return
+					}
+				}
+			}(i)
+		}
+
+		r := 0
+		na := 0
+		for i := 0; i < n; i++ {
+			res := <-reserves
+			if res >= 0 {
+				r++
+			} else {
+				na++
+			}
+		}
+
+		e = time.Since(beginat)
+		per = int64(e.Nanoseconds() / int64(n))
+		log.Printf("Reserved %d jobqueue jobs (%d not available) in %s == %d per\n", r, na, e, per)
 
 		// q := queue.New("myqueue")
-		// stop = time.After(10 * time.Second)
-		// stopped = make(chan bool)
-		// k = 1
-		// go func() {
-		// 	for {
-		// 		_, err := q.Add(fmt.Sprintf("test job %d", k), "data", 0, 0*time.Second, 30*time.Second)
-		// 		if err != nil {
-		// 			log.Fatal(err)
-		// 		}
-		// 		k++
-
-		// 		select {
-		// 		case <-stop:
-		// 			close(stopped)
-		// 			return
-		// 		default:
-		// 			continue
-		// 		}
+		// before = time.Now()
+		// for i := 0; i < n; i++ {
+		// 	_, err := q.Add(fmt.Sprintf("test job %d", i), "data", 0, 0*time.Second, 30*time.Second)
+		// 	if err != nil {
+		// 		log.Fatal(err)
 		// 	}
-		// }()
-		// <-stopped
-		// log.Printf("Added %d jobs to my own queue directly\n", k)
-
-		// stop = time.After(10 * time.Second)
-		// stopped = make(chan bool)
-		// k = 1
-		// go func() {
-		// 	for {
-		// 		_, err := q.Reserve()
-		// 		if err != nil {
-		// 			if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-		// 				close(stopped)
-		// 				return
-		// 			}
-		// 			log.Fatal(err)
-		// 		}
-		// 		k++
-
-		// 		select {
-		// 		case <-stop:
-		// 			close(stopped)
-		// 			return
-		// 		default:
-		// 			continue
-		// 		}
-		// 	}
-		// }()
-		// <-stopped
-		// log.Printf("Reserved %d jobs from my own queue directly\n", k)
-
-		// stop = time.After(10 * time.Second)
-		// stopped = make(chan bool)
-		// k = 1
-		// go func() {
-		// 	for {
-		// 		// resp, err := http.PostForm("http://localhost:11301/enqueue", url.Values{"queue": {"httpqueue"}, "key": {fmt.Sprintf("test job %d", k)}, "job": {"job"}, "priority": {"1"}, "delay": {"0s"}, "ttr": {"30s"}})
-		// 		// if err != nil {
-		// 		// 	log.Fatal(err)
-		// 		// }
-		// 		// resp.Body.Close()
-		// 		conn, _ := net.Dial("tcp", "127.0.0.1:11301")
-		// 		fmt.Fprintf(conn, "foo %d\n", k)
-		// 		message, _ := bufio.NewReader(conn).ReadString('\n')
-		// 		message = message + ""
-		// 		conn.Close()
-		// 		k++
-
-		// 		select {
-		// 		case <-stop:
-		// 			close(stopped)
-		// 			return
-		// 		default:
-		// 			continue
-		// 		}
-		// 	}
-		// }()
-		// <-stopped
-		// log.Printf("Added %d jobs to my own queue via http\n", k)
-
-		// stop = time.After(10 * time.Second)
-		// stopped = make(chan bool)
-		// k = 1
-		// go func() {
-		// 	for {
-		// 		resp, err := http.PostForm("http://localhost:11301/dequeue", url.Values{"queue": {"httpqueue"}})
-		// 		if err != nil {
-		// 			log.Fatal(err)
-		// 		}
-		// 		resp.Body.Close()
-		// 		// body, err := ioutil.ReadAll(resp.Body)
-		// 		// if err != nil {
-		// 		// 	log.Fatal(err)
-		// 		// }
-		// 		// fmt.Println(body)
-		// 		k++
-
-		// 		select {
-		// 		case <-stop:
-		// 			close(stopped)
-		// 			return
-		// 		default:
-		// 			continue
-		// 		}
-		// 	}
-		// }()
-		// <-stopped
-		// log.Printf("Reserved %d jobs from my own queue via http\n", k)
+		// }
+		// e = time.Since(before)
+		// per = int64(e.Nanoseconds() / int64(n))
+		// log.Printf("Added %d items to queue in %s == %d per\n", n, e, per)
 	}
 }

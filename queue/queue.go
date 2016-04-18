@@ -79,7 +79,7 @@ func (e Error) Error() string {
 // calling certain methods.
 type Queue struct {
 	Name              string
-	mutex             sync.Mutex
+	mutex             sync.RWMutex
 	items             map[string]*Item
 	delayQueue        *subQueue
 	readyQueue        *subQueue
@@ -101,6 +101,15 @@ type Stats struct {
 	Ready   int
 	Running int
 	Buried  int
+}
+
+// ItemDef makes it possible to supply a slice of Add() args to AddMany().
+type ItemDef struct {
+	Key      string
+	Data     interface{}
+	Priority uint8 // highest priority is 255
+	Delay    time.Duration
+	TTR      time.Duration
 }
 
 // New is a helper to create instance of the Queue struct.
@@ -149,8 +158,8 @@ func (queue *Queue) Destroy() (err error) {
 // Stats returns information about the number of items in the queue and each
 // sub-queue.
 func (queue *Queue) Stats() *Stats {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
 
 	return &Stats{
 		Items:   len(queue.items),
@@ -202,10 +211,53 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 	return
 }
 
+// AddMany is like Add(), except that you supply a slice of *ItemDef, and it
+// returns the number that were actually added and the number of items that were
+// not added because they were duplicates of items already in the queue. If an
+// error occurs, nothing will have been added.
+func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
+	queue.mutex.Lock()
+
+	if queue.closed {
+		queue.mutex.Unlock()
+		err = Error{queue.Name, "AddMany", "", ErrQueueClosed}
+		return
+	}
+
+	deferredTrigger := false
+	for _, def := range items {
+		_, existed := queue.items[def.Key]
+		if existed {
+			dups++
+			continue
+		}
+
+		item := newItem(def.Key, def.Data, def.Priority, def.Delay, def.TTR)
+		queue.items[def.Key] = item
+
+		if def.Delay.Nanoseconds() == 0 {
+			// put it directly on the ready queue
+			item.switchDelayReady()
+			queue.readyQueue.push(item)
+		} else {
+			queue.delayQueue.push(item)
+			if !deferredTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
+				defer queue.delayNotificationTrigger(item)
+				deferredTrigger = true
+			}
+		}
+
+		added++
+	}
+
+	queue.mutex.Unlock()
+	return
+}
+
 // Get is a thread-safe way to get an item by the key you used to Add() it.
 func (queue *Queue) Get(key string) (item *Item, err error) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Get", key, ErrQueueClosed}
@@ -269,7 +321,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 // else that gets it from a Reserve() call. If you know you can't handle it
 // right now, but someone else might be able to later, you can manually call
 // Release().
-func (queue *Queue) Reserve() (item *Item, err error) { //*** we want a wait time.Duration arg, where we'll wait that long for something to come on the ready queue
+func (queue *Queue) Reserve() (item *Item, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
