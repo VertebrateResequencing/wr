@@ -79,7 +79,7 @@ type Server struct {
 	sock mangos.Socket
 	ch   codec.Handle
 	done chan error
-	quit chan bool
+	stop chan bool
 	sync.Mutex
 	qs map[string]*queue.Queue
 }
@@ -128,10 +128,10 @@ func Serve(addr string) (s *Server, err error) {
 	// of if something is sent on the quit channel
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	quit := make(chan bool, 1)
+	stop := make(chan bool, 1)
 	done := make(chan error, 1)
 
-	s = &Server{sock: sock, ch: new(codec.BincHandle), qs: make(map[string]*queue.Queue), quit: quit, done: done}
+	s = &Server{sock: sock, ch: new(codec.BincHandle), qs: make(map[string]*queue.Queue), stop: stop, done: done}
 
 	go func() {
 		for {
@@ -147,7 +147,7 @@ func Serve(addr string) (s *Server, err error) {
 				}
 				done <- serr
 				return
-			case <-quit:
+			case <-stop:
 				s.shutdown()
 				done <- Error{"", "Serve", "", ErrClosedStop}
 				return
@@ -173,6 +173,19 @@ func Serve(addr string) (s *Server, err error) {
 	}()
 
 	return
+}
+
+// Block makes you block while the server does the job of serving clients. This
+// will return with an error indicating why it stopped blocking, which will
+// be due to receiving a signal or because you called Stop()
+func (s *Server) Block() (err error) {
+	err = <-s.done
+	return
+}
+
+// Stop will cause a graceful shut down of the server.
+func (s *Server) Stop() {
+	s.stop <- true
 }
 
 // handleRequest parses the bytes received from a connected client in to a
@@ -305,17 +318,4 @@ func (s *Server) shutdown() {
 		q.Destroy()
 	}
 	s.qs = nil
-}
-
-// Block makes you block while the server does the job of serving clients. This
-// will return with an error indicating why it stopped blocking, which will
-// be due to receiving a signal or because you called Stop()
-func (s *Server) Block() (err error) {
-	err = <-s.done
-	return
-}
-
-// Stop will cause a graceful shut down of the server.
-func (s *Server) Stop() {
-	s.quit <- true
 }
