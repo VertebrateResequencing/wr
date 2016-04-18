@@ -32,7 +32,7 @@ import (
 
 func TestJobqueue(t *testing.T) {
 	Convey("Once the jobqueue server is up", t, func() {
-		done, quit, err := Serve("tcp://localhost:11301")
+		server, err := Serve("tcp://localhost:11301")
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
@@ -93,8 +93,8 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Reset(func() {
-			quit <- true
-			<-done
+			server.Stop()
+			server.Block()
 		})
 	})
 }

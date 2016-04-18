@@ -43,12 +43,7 @@ var (
 	ErrUnknown        = errors.New("unknown error")
 	ErrClosedInt      = errors.New("queues closed due to SIGINT")
 	ErrClosedTerm     = errors.New("queues closed due to SIGTERM")
-	ErrClosedQuit     = errors.New("queues closed due to manual quit")
-
-	queues = struct {
-		sync.Mutex
-		qs map[string]*queue.Queue
-	}{qs: make(map[string]*queue.Queue)}
+	ErrClosedStop     = errors.New("queues closed due to manual Stop()")
 )
 
 // Error records an error and the operation, item and queue that caused it.
@@ -80,23 +75,24 @@ type serverResponse struct {
 }
 
 // server represents the server side of the socket that clients Connect() to
-type server struct {
+type Server struct {
 	sock mangos.Socket
 	ch   codec.Handle
+	done chan error
+	quit chan bool
+	sync.Mutex
+	qs map[string]*queue.Queue
 }
 
 // Serve is for use by a server executable and makes it start listening for
 // Connect()ions from clients, and then handles those clients. It returns a
-// "done" channel that you will typically read from to block until until your
-// executable receives a SIGINT or SIGTERM, or you pass a value to the other
-// returned "quit" channel, at which point the queues will be safely closed
-// (you'd probably just exit at that point). Serve() always returns an error;
-// either directly and immediately, indicating failure to start up at the
-// supplied address, or by passing an error on the done channel, indicating that
-// SIGINT or SIGTERM was received, or that you quit it via the quit channel.
-// Errors encountered while dealing with clients are logged but otherwise
-// ignored.
-func Serve(addr string) (done chan error, quit chan bool, err error) {
+// *Server that you will typically call Block() on to block until until your
+// executable receives a SIGINT or SIGTERM, or you call Stop(), at which point
+// the queues will be safely closed (you'd probably just exit at that point).
+// The possible errors from Serve() will be related to not being able to start
+// up at the supplied address; errors encountered while dealing with clients are
+// logged but otherwise ignored.
+func Serve(addr string) (s *Server, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -128,14 +124,14 @@ func Serve(addr string) (done chan error, quit chan bool, err error) {
 		return
 	}
 
-	s := &server{sock: sock, ch: new(codec.BincHandle)}
-
 	// serving will happen in a goroutine that will stop on SIGINT or SIGTERM,
 	// of if something is sent on the quit channel
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	quit = make(chan bool, 1)
-	done = make(chan error, 1)
+	quit := make(chan bool, 1)
+	done := make(chan error, 1)
+
+	s = &Server{sock: sock, ch: new(codec.BincHandle), qs: make(map[string]*queue.Queue), quit: quit, done: done}
 
 	go func() {
 		for {
@@ -153,7 +149,7 @@ func Serve(addr string) (done chan error, quit chan bool, err error) {
 				return
 			case <-quit:
 				s.shutdown()
-				done <- Error{"", "Serve", "", ErrClosedQuit}
+				done <- Error{"", "Serve", "", ErrClosedStop}
 				return
 			default:
 				// receive a clientRequest from a client
@@ -182,7 +178,7 @@ func Serve(addr string) (done chan error, quit chan bool, err error) {
 // handleRequest parses the bytes received from a connected client in to a
 // clientRequest, does the requested work, then responds back to the client with
 // a serverResponse
-func (s *server) handleRequest(m *mangos.Message) error {
+func (s *Server) handleRequest(m *mangos.Message) error {
 	dec := codec.NewDecoderBytes(m.Body, s.ch)
 	cr := &clientRequest{}
 	err := dec.Decode(cr)
@@ -190,13 +186,13 @@ func (s *server) handleRequest(m *mangos.Message) error {
 		return err
 	}
 
-	queues.Lock()
-	q, existed := queues.qs[cr.Queue]
+	s.Lock()
+	q, existed := s.qs[cr.Queue]
 	if !existed {
 		q = queue.New(cr.Queue)
-		queues.qs[cr.Queue] = q
+		s.qs[cr.Queue] = q
 	}
-	queues.Unlock()
+	s.Unlock()
 
 	var sr *serverResponse
 
@@ -284,7 +280,7 @@ func (s *server) handleRequest(m *mangos.Message) error {
 }
 
 // reply to a client
-func (s *server) reply(m *mangos.Message, sr *serverResponse) (err error) {
+func (s *Server) reply(m *mangos.Message, sr *serverResponse) (err error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
 	err = enc.Encode(sr)
@@ -298,15 +294,28 @@ func (s *server) reply(m *mangos.Message, sr *serverResponse) (err error) {
 
 // shutdown stops listening to client connections, close all queues and
 // persists them to disk
-func (s *server) shutdown() {
+func (s *Server) shutdown() {
 	s.sock.Close()
 
 	//*** we want to persist production queues to disk
 
-	// clean up our globals and empty everything out, in case the same
-	// process calls Serve() again after this
-	for _, q := range queues.qs {
+	// clean up our queues and empty everything out to be garbage collected,
+	// in case the same process calls Serve() again after this
+	for _, q := range s.qs {
 		q.Destroy()
 	}
-	queues.qs = make(map[string]*queue.Queue)
+	s.qs = nil
+}
+
+// Block makes you block while the server does the job of serving clients. This
+// will return with an error indicating why it stopped blocking, which will
+// be due to receiving a signal or because you called Stop()
+func (s *Server) Block() (err error) {
+	err = <-s.done
+	return
+}
+
+// Stop will cause a graceful shut down of the server.
+func (s *Server) Stop() {
+	s.quit <- true
 }
