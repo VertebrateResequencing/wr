@@ -31,6 +31,8 @@ import (
 )
 
 func TestJobqueue(t *testing.T) {
+	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 5s anymore
+
 	Convey("Once the jobqueue server is up", t, func() {
 		server, err := Serve("tcp://localhost:11301")
 		So(err, ShouldBeNil)

@@ -38,12 +38,15 @@ import (
 )
 
 var (
-	ErrInternalError  = errors.New("internal error")
-	ErrUnknownCommand = errors.New("unknown command")
-	ErrUnknown        = errors.New("unknown error")
-	ErrClosedInt      = errors.New("queues closed due to SIGINT")
-	ErrClosedTerm     = errors.New("queues closed due to SIGTERM")
-	ErrClosedStop     = errors.New("queues closed due to manual Stop()")
+	ErrInternalError    = errors.New("internal error")
+	ErrUnknownCommand   = errors.New("unknown command")
+	ErrUnknown          = errors.New("unknown error")
+	ErrClosedInt        = errors.New("queues closed due to SIGINT")
+	ErrClosedTerm       = errors.New("queues closed due to SIGTERM")
+	ErrClosedStop       = errors.New("queues closed due to manual Stop()")
+	ServerInterruptTime = 5 * time.Second
+	ServerItemDelay     = 30 * time.Second
+	ServerItemTTR       = 60 * time.Second
 )
 
 // Error records an error and the operation, item and queue that caused it.
@@ -114,7 +117,7 @@ func Serve(addr string) (s *Server, err error) {
 
 	// we'll wait 5 seconds to recv from clients before trying again, allowing
 	// us to check if signals have been passed
-	if err = sock.SetOption(mangos.OptionRecvDeadline, 5*time.Second); err != nil {
+	if err = sock.SetOption(mangos.OptionRecvDeadline, ServerInterruptTime); err != nil {
 		return
 	}
 
@@ -215,7 +218,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		for _, job := range cr.Jobs {
 			l, h := farm.Hash128([]byte(fmt.Sprintf("%s.%s", job.Cwd, job.Cmd)))
 			key := fmt.Sprintf("%016x%016x", l, h)
-			itemdefs = append(itemdefs, &queue.ItemDef{key, job, job.Priority, 0 * time.Second, 1 * time.Minute})
+			itemdefs = append(itemdefs, &queue.ItemDef{key, job, job.Priority, 0 * time.Second, ServerItemTTR})
 		}
 
 		added, dups, amerr := q.AddMany(itemdefs)
