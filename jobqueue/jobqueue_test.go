@@ -20,6 +20,7 @@ package jobqueue
 
 import (
 	"fmt"
+	"github.com/sb10/vrpipe/internal"
 	. "github.com/smartystreets/goconvey/convey"
 	// "github.com/sb10/vrpipe/beanstalk"
 	// "github.com/sb10/vrpipe/queue"
@@ -31,14 +32,20 @@ import (
 )
 
 func TestJobqueue(t *testing.T) {
+	// load our config to know where our development daemon port is supposed to
+	// be; we'll use that to test jobqueue
+	config := internal.ConfigLoad("development", true)
+	port := config.Daemon_port
+	addr := "localhost:" + port
+
 	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 5s anymore
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, err := Serve("tcp://localhost:11301")
+		server, err := Serve(port)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
-			jq, err := Connect("tcp://localhost:11301", "test_queue")
+			jq, err := Connect(addr, "test_queue")
 			So(err, ShouldBeNil)
 
 			var jobs []*Job
@@ -105,6 +112,9 @@ func TestJobqueueSpeed(t *testing.T) {
 	// some manual speed tests (don't like the way the benchmarking feature
 	// works)
 	if false {
+		config := internal.ConfigLoad("development", true)
+		port := config.Daemon_port
+		addr := "localhost:" + port
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
@@ -132,7 +142,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		// 	}
 		// }()
 
-		jq, err := Connect("tcp://vr-2-1-02:11301", "vrpipe.des")
+		jq, err := Connect(addr, "vrpipe.des")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -159,7 +169,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		for i := 1; i <= o; i++ {
 			go func(i int) {
 				start := time.After(beginat.Sub(time.Now()))
-				gjq, err := Connect("tcp://vr-2-1-02:11301", "vrpipe.des")
+				gjq, err := Connect(addr, "vrpipe.des")
 				if err != nil {
 					log.Fatal(err)
 				}

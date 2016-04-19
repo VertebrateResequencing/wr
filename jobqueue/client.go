@@ -106,7 +106,7 @@ func Connect(addr string, queue string) (c *client, err error) {
 
 	sock.AddTransport(tcp.NewTransport())
 
-	if err = sock.Dial(addr); err != nil {
+	if err = sock.Dial("tcp://" + addr); err != nil {
 		return
 	}
 

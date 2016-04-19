@@ -42,7 +42,7 @@ var queueCmd = &cobra.Command{
 	Long:  `don't use this`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
-		server, err := jobqueue.Serve("tcp://localhost:11301")
+		server, err := jobqueue.Serve(config.Daemon_port)
 		if err != nil {
 			log.Fatal(err)
 		}

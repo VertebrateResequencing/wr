@@ -30,6 +30,7 @@ import (
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -44,6 +45,7 @@ var (
 	ErrClosedInt        = errors.New("queues closed due to SIGINT")
 	ErrClosedTerm       = errors.New("queues closed due to SIGTERM")
 	ErrClosedStop       = errors.New("queues closed due to manual Stop()")
+	ErrNoHost           = errors.New("could not determine the non-loopback ip address of this host")
 	ServerInterruptTime = 5 * time.Second
 	ServerItemDelay     = 30 * time.Second
 	ServerItemTTR       = 60 * time.Second
@@ -84,18 +86,19 @@ type Server struct {
 	done chan error
 	stop chan bool
 	sync.Mutex
-	qs map[string]*queue.Queue
+	qs   map[string]*queue.Queue
+	addr string
 }
 
-// Serve is for use by a server executable and makes it start listening for
-// Connect()ions from clients, and then handles those clients. It returns a
-// *Server that you will typically call Block() on to block until until your
-// executable receives a SIGINT or SIGTERM, or you call Stop(), at which point
-// the queues will be safely closed (you'd probably just exit at that point).
-// The possible errors from Serve() will be related to not being able to start
-// up at the supplied address; errors encountered while dealing with clients are
-// logged but otherwise ignored.
-func Serve(addr string) (s *Server, err error) {
+// Serve is for use by a server executable and makes it start listening on
+// localhost at the supplied port for Connect()ions from clients, and then
+// handles those clients. It returns a *Server that you will typically call
+// Block() on to block until until your executable receives a SIGINT or SIGTERM,
+// or you call Stop(), at which point the queues will be safely closed (you'd
+// probably just exit at that point). The possible errors from Serve() will be
+// related to not being able to start up at the supplied address; errors
+// encountered while dealing with clients are logged but otherwise ignored.
+func Serve(port string) (s *Server, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -123,7 +126,7 @@ func Serve(addr string) (s *Server, err error) {
 
 	sock.AddTransport(tcp.NewTransport())
 
-	if err = sock.Listen(addr); err != nil {
+	if err = sock.Listen("tcp://localhost:" + port); err != nil {
 		return
 	}
 
@@ -134,7 +137,26 @@ func Serve(addr string) (s *Server, err error) {
 	stop := make(chan bool, 1)
 	done := make(chan error, 1)
 
-	s = &Server{sock: sock, ch: new(codec.BincHandle), qs: make(map[string]*queue.Queue), stop: stop, done: done}
+	// if we end up spawning clients on other machines, they'll need to know
+	// our non-loopback ip address so they can connect to us
+	var host string
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				host = ipnet.IP.String()
+			}
+		}
+	}
+	if host == "" {
+		err = Error{"", "Serve", "", ErrNoHost}
+		return
+	}
+
+	s = &Server{sock: sock, ch: new(codec.BincHandle), qs: make(map[string]*queue.Queue), stop: stop, done: done, addr: host + ":" + port}
 
 	go func() {
 		for {

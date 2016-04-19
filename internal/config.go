@@ -31,16 +31,17 @@ const (
 )
 
 type Config struct {
-	Redis     string `default:"127.0.0.1:6379"`
-	Beanstalk string `default:"127.0.0.1:11300"`
+	Daemon_port string `default:"11301"`
+	Daemon_host string `default:"localhost"`
 }
 
 /*
 ConfigLoad loads configuration settings from files and environment
 variables.
 
-We prefer settings in config file in current dir over config file in home
-directory over config file in dir pointed to by VRPIPE_CONFIG_DIR.
+We prefer settings in config file in current dir (or the current dir's parent
+dir if the useparentdir option is true (used for test scripts)) over config file
+in home directory over config file in dir pointed to by VRPIPE_CONFIG_DIR.
 
 The deployment argument determines if we read .vrpipe_config.production.yml or
 .vrpipe_config.development.yml; we always read .vrpipe_config.yml. If the empty
@@ -53,13 +54,17 @@ multiple users and deployments, and settings specific to users or deployments.
 
 Settings found in no file can be set with the environment variable
 VRPIPE_<setting name in caps>, eg.
-export VRPIPE_REDIS="127.0.0.1:6379"
+export VRPIPE_DAEMON_PORT="11301"
 */
-func ConfigLoad(deployment string) Config {
+func ConfigLoad(deployment string, useparentdir bool) Config {
 	pwd, err := os.Getwd()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
+	}
+
+	if useparentdir {
+		pwd = filepath.Dir(pwd)
 	}
 
 	// if deployment not set on the command line
