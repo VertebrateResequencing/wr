@@ -36,7 +36,7 @@ jobs run successfully.
 
 You'll need to start this running before you can achieve anything useful with
 the other vrpipe commands. If the background process that is spawned when you
-run this dies, your pipelines will becomes stalled until you rerun this
+run this dies, your pipelines will become stalled until you rerun this
 command.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
