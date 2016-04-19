@@ -18,42 +18,42 @@
 # The default deployment is production.
 #
 # If a setting is found in none of the files read, then an environment variable
-# is checked: VRPIPE_<setting name in caps>. Eg. to define the daemon_port
+# is checked: VRPIPE_<setting name in caps>. Eg. to define the manager_port
 # option you might do:
-# export VRPIPE_DAEMON_PORT="11301"
+# export VRPIPE_MANAGER_PORT="11301"
 #
 # Note that all worker nodes need to be able to see your desired set of config
 # files, so either define them in environment variables or put the config files
 # on a disc that is mounted and shared across all your compute nodes.
 
 
-# daemon_port: What port should the main vrpipe daemon listen on?
+# manager_port: What port should the vrpipe manager listen on?
 # This defaults to 11301
 # NB: It is very important to have different settings for your production
-# daemon and your development daemon. If you have multiple developers running
-# tests, each individual person should have their own unique daemon_port 
+# manager and your development manager. If you have multiple developers running
+# tests, each individual person should have their own unique manager_port 
 # specified in their personal .vrpipe_config.development.yml file.
 #
-# Before being able to use vrpipe you must start the daemon by running 'vrpipe
-# daemon'. It will start listening on the specified port on your local host.
+# Before being able to use vrpipe you must start the manager by running 'vrpipe
+# manager'. It will start listening on the specified port on your local host.
 # Your other invocations of 'vrpipe' also use this option to know what port to
 # connect to, but they'll only succeed if you run them from the same host you
-# started the daemon on, or if you have set the daemon_host option to the
-# host you started the daemon on.
-# vrpipe commands that are spawned by the daemon itself are given the real
-# ip address of the host the daemon is running on, so these commands do not need
-# daemon_host to be set.
+# started the manager on, or if you have set the manager_host option to the
+# host you started the manager on.
+# vrpipe commands that are spawned by the manager itself are given the real
+# ip address of the host the manager is running on, so these commands do not
+# need manager_host to be set.
 # For multi-machine systems it is required that all hosts that could end up
 # running a vrpipe command be able to do tcp communication with the host you
-# launch the daemon on.
-daemon_port: "11301"
+# launch the manager on.
+manager_port: "11301"
 
-# daemon_host: What host was the vrpipe daemon started on?
+# manager_host: What host was 'vrpipe manager' started on?
 # This is optional and defaults to "localhost".
 #
-# This option determines where vrpipe commands (other than the daemon command)
-# try and connect to your vrpipe daemon. You only need to set this if you plan
+# This option determines where vrpipe commands (other than the manager command)
+# try and connect to your vrpipe manager. You only need to set this if you plan
 # on running vrpipe commands yourself on a host that is different to the one you
-# you plan to start the vrpipe daemon on.
-# For more details, see the notes for the daemon_port option above.
-daemon_host: "localhost"
+# you plan to start the vrpipe manager on.
+# For more details, see the notes for the manager_port option above.
+manager_host: "localhost"

@@ -32,10 +32,10 @@ import (
 )
 
 func TestJobqueue(t *testing.T) {
-	// load our config to know where our development daemon port is supposed to
+	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
-	port := config.Daemon_port
+	port := config.Manager_port
 	addr := "localhost:" + port
 
 	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 5s anymore
@@ -113,7 +113,7 @@ func TestJobqueueSpeed(t *testing.T) {
 	// works)
 	if false {
 		config := internal.ConfigLoad("development", true)
-		port := config.Daemon_port
+		port := config.Manager_port
 		addr := "localhost:" + port
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000

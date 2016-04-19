@@ -40,7 +40,7 @@ run this dies, your pipelines will become stalled until you rerun this
 command.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
-		server, err := jobqueue.Serve(config.Daemon_port)
+		server, err := jobqueue.Serve(config.Manager_port)
 		if err != nil {
 			log.Fatal(err)
 		}

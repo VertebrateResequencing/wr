@@ -31,8 +31,8 @@ const (
 )
 
 type Config struct {
-	Daemon_port string `default:"11301"`
-	Daemon_host string `default:"localhost"`
+	Manager_port string `default:"11301"`
+	Manager_host string `default:"localhost"`
 }
 
 /*
@@ -54,7 +54,7 @@ multiple users and deployments, and settings specific to users or deployments.
 
 Settings found in no file can be set with the environment variable
 VRPIPE_<setting name in caps>, eg.
-export VRPIPE_DAEMON_PORT="11301"
+export VRPIPE_MANAGER_PORT="11301"
 */
 func ConfigLoad(deployment string, useparentdir bool) Config {
 	pwd, err := os.Getwd()
