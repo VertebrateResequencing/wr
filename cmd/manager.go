@@ -19,27 +19,25 @@
 package cmd
 
 import (
-	// "bufio"
-	// "fmt"
 	"github.com/sb10/vrpipe/jobqueue"
-	// "github.com/sb10/vrpipe/queue"
 	"github.com/spf13/cobra"
-	// "github.com/ugorji/go/codec"
 	"log"
-	// "net"
 	"runtime"
-	// "strings"
-	// "strconv"
-	// "time"
-	// "os"
-	// "time"
 )
 
-// queueCmd represents the queue command
-var queueCmd = &cobra.Command{
-	Use:   "queue",
-	Short: "temp playground for queue implementations",
-	Long:  `don't use this`,
+// managerCmd represents the manager command
+var managerCmd = &cobra.Command{
+	Use:   "manager",
+	Short: "Start pipeline management",
+	Long: `Start the pipeline management system.
+
+The vrpipe manager works in the background, doing all the work of getting your
+jobs run successfully.
+
+You'll need to start this running before you can achieve anything useful with
+the other vrpipe commands. If the background process that is spawned when you
+run this dies, your pipelines will becomes stalled until you rerun this
+command.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		server, err := jobqueue.Serve(config.Daemon_port)
@@ -54,7 +52,8 @@ var queueCmd = &cobra.Command{
 }
 
 func init() {
-	RootCmd.AddCommand(queueCmd)
-	// queueCmd.Flags().StringVar(&enqueue, "enqueue", "", "Add a job to the queue")
-	// queueCmd.Flags().BoolVar(&dequeue, "dequeue", false, "Get a job from the queue")
+	RootCmd.AddCommand(managerCmd)
+
+	// flags specific to this sub-command
+	// managerCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
