@@ -24,6 +24,7 @@ import (
 	"github.com/jinzhu/configor"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -31,8 +32,12 @@ const (
 )
 
 type Config struct {
-	Manager_port string `default:"11301"`
-	Manager_host string `default:"localhost"`
+	Manager_port     string `default:"11301"`
+	Manager_host     string `default:"localhost"`
+	Manager_dir      string `default:"~/.vrpipe"`
+	Manager_pid_file string `default:"pid"`
+	Manager_log_file string `default:"log"`
+	Manager_umask    int    `default:007`
 }
 
 /*
@@ -97,7 +102,8 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
 		configFiles = append(configFiles, configFile)
 	}
-	if home := os.Getenv("HOME"); home != "" {
+	home := os.Getenv("HOME")
+	if home != "" {
 		configFile = filepath.Join(home, ConfigCommonBasename)
 		_, err = os.Stat(configFile)
 		if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
@@ -114,6 +120,22 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 
 	config := Config{}
 	configor.Load(&config, configFiles...)
+
+	// convert the possible ~/ in Manager_dir to abs path to user's home
+	if home != "" && strings.HasPrefix(config.Manager_dir, "~/") {
+		mdir := strings.TrimLeft(config.Manager_dir, "~/")
+		mdir = filepath.Join(home, mdir)
+		config.Manager_dir = mdir
+	}
+
+	// convert the possible relative paths in Manager_*_file to abs paths in
+	// Manager_dir
+	if !filepath.IsAbs(config.Manager_pid_file) {
+		config.Manager_pid_file = filepath.Join(config.Manager_dir, config.Manager_pid_file)
+	}
+	if !filepath.IsAbs(config.Manager_log_file) {
+		config.Manager_log_file = filepath.Join(config.Manager_dir, config.Manager_log_file)
+	}
 
 	return config
 }
