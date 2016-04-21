@@ -81,3 +81,19 @@ func init() {
 func initConfig() {
 	config = internal.ConfigLoad(deployment, false)
 }
+
+// info is a convenience to print a msg to STDOUT
+func info(msg string, a ...interface{}) {
+	fmt.Fprintf(os.Stdout, "info: %s\n", fmt.Sprintf(msg, a...))
+}
+
+// warn is a convenience to print a msg to STDERR
+func warn(msg string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, "warning: %s\n", fmt.Sprintf(msg, a...))
+}
+
+// fatal is a convenience to print an error to STDERR and exit indicating error
+func fatal(msg string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(msg, a...))
+	os.Exit(1)
+}

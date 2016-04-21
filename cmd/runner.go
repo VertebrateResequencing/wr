@@ -19,65 +19,61 @@
 package cmd
 
 import (
-	// "fmt"
-	// "github.com/sb10/vrpipe/jobqueue"
+	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/spf13/cobra"
-	// "log"
-	// "time"
+	"time"
 )
 
 var queuename string
+var timeoutint int
 
-// workerCmd represents the worker command
-var workerCmd = &cobra.Command{
-	Use:   "worker",
-	Short: "Run a queued command",
-	Long: `A worker runs commands that were queued by the setup command.
-You won't normally run this yourself directly - "vrpipe controller" runs this as
+// runnerCmd represents the runner command
+var runnerCmd = &cobra.Command{
+	Use:   "runner",
+	Short: "Run queued commands",
+	Long: `A runner runs commands that were queued by the add or setup commands.
+
+You won't normally run this yourself directly - "vrpipe manager" spawns these as
 needed.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe."+queuename, false)
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
+		if queuename == "" {
+			fatal("--queue is required")
+		}
 
-		// for {
-		// 	job, err := jobqueue.Reserve(5 * time.Second)
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// 	if job == nil {
-		// 		break
-		// 	}
-		// 	stats, err := job.Stats()
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// 	fmt.Printf("stats: %s; time left: %d\n", stats.State, stats.TimeLeft)
-		// 	stats2, err := jobqueue.Stats()
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// 	fmt.Printf("ready: %d; reserved: %d\n", stats2.Ready, stats2.Reserved)
-		// 	err = job.Delete()
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// }
+		addr := config.Manager_host + ":" + config.Manager_port
+		timeout := time.Duration(timeoutint+5) * time.Second // the receive timeout must be greater than the time we'll wait to Reserve
+		rtimeout := time.Duration(timeoutint) * time.Second
 
-		// stats, err := jobqueue.DaemonStats()
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		// fmt.Printf("producers: %d, workers: %d, pid: %d, hostname: %s\n", stats.Producers, stats.Workers, stats.Pid, stats.Hostname)
+		jq, err := jobqueue.Connect(addr, queuename, timeout)
+		if err != nil {
+			fatal("%s", err)
+		}
+		defer jq.Disconnect()
 
-		// jobqueue.Disconnect()
+		// loop, reserving and running commands from the queue, until there
+		// aren't any more commands in the queue
+		numrun := 0
+		for {
+			job, err := jq.Reserve(rtimeout)
+			if err != nil {
+				fatal("%s", err)
+			}
+			if job == nil {
+				break
+			}
+
+			cmd := job.Cmd
+			info("would run cmd [%s]", cmd)
+		}
+
+		info("vrpipe runner exiting, having run %d commands, because there are no more commands in queue '%s'", numrun, queuename)
 	},
 }
 
 func init() {
-	RootCmd.AddCommand(workerCmd)
+	RootCmd.AddCommand(runnerCmd)
 
 	// flags specific to this sub-command
-	workerCmd.Flags().StringVar(&queuename, "queue", "des", "Specify the queue to pull jobs from [des|cmd]")
+	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "", "specify the queue to pull commands from (required)")
+	runnerCmd.Flags().IntVarP(&timeoutint, "timeout", "t", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
 }

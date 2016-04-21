@@ -19,7 +19,6 @@
 package cmd
 
 import (
-	"fmt"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
@@ -68,10 +67,10 @@ var managerStartCmd = &cobra.Command{
 				// try and create the directory
 				err = os.MkdirAll(config.Manager_dir, os.ModePerm)
 				if err != nil {
-					log.Fatalf("could not create the working directory '%s': %v\n", config.Manager_dir, err)
+					fatal("could not create the working directory '%s': %v", config.Manager_dir, err)
 				}
 			} else {
-				log.Fatalf("could not access or create the working directory '%s': %v\n", config.Manager_dir, err)
+				fatal("could not access or create the working directory '%s': %v", config.Manager_dir, err)
 			}
 		}
 
@@ -85,7 +84,7 @@ var managerStartCmd = &cobra.Command{
 			if err == nil {
 				pid = sstats.ServerInfo.PID
 			}
-			log.Fatalf("vrpipe manager on port %s is already running (pid %d)\n", config.Manager_port, pid)
+			fatal("vrpipe manager on port %s is already running (pid %d)", config.Manager_port, pid)
 		}
 
 		// now daemonize unless in foreground mode
@@ -101,18 +100,18 @@ var managerStartCmd = &cobra.Command{
 			}
 			child, err := context.Reborn()
 			if err != nil {
-				log.Fatalf("failed to daemonize: %s\n", err)
+				fatal("failed to daemonize: %s", err)
 			}
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
 				jq := connect(10 * time.Second)
 				if jq == nil {
-					log.Fatalf("vrpipe manager failed to start on port %s after 10s\n", config.Manager_port)
+					fatal("vrpipe manager failed to start on port %s after 10s", config.Manager_port)
 				}
 				sstats, err := jq.ServerStats()
 				if err != nil {
-					log.Fatalf("vrpipe manager started but doesn't seem to be functional: %s", err)
+					fatal("vrpipe manager started but doesn't seem to be functional: %s", err)
 				}
 				logStarted(sstats.ServerInfo)
 			} else {
@@ -143,7 +142,7 @@ var managerStopCmd = &cobra.Command{
 			// connect
 			jq := connect(1 * time.Second)
 			if jq == nil {
-				log.Fatalf("vrpipe manager does not seem to be running on port %s\n", config.Manager_port)
+				fatal("vrpipe manager does not seem to be running on port %s", config.Manager_port)
 			}
 		}
 
@@ -152,9 +151,9 @@ var managerStopCmd = &cobra.Command{
 			// we'll do a quick test to confirm the daemon is down
 			jq = connect(10 * time.Millisecond)
 			if jq != nil {
-				log.Printf("according to the pid file %s, vrpipe manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!\n", config.Manager_pid_file, pid, config.Manager_port)
+				warn("according to the pid file %s, vrpipe manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.Manager_pid_file, pid, config.Manager_port)
 			} else {
-				log.Printf("vrpipe manager running on port %s was gracefully shut down\n", config.Manager_port)
+				info("vrpipe manager running on port %s was gracefully shut down", config.Manager_port)
 				return
 			}
 		} else {
@@ -162,7 +161,7 @@ var managerStopCmd = &cobra.Command{
 			// time to confirm the daemon is really up
 			jq = connect(5 * time.Second)
 			if jq == nil {
-				log.Fatalf("according to the pid file %s, vrpipe manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again\n", config.Manager_pid_file, config.Manager_port, pid)
+				fatal("according to the pid file %s, vrpipe manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.Manager_pid_file, config.Manager_port, pid)
 			}
 		}
 
@@ -170,16 +169,16 @@ var managerStopCmd = &cobra.Command{
 		// stop it again
 		sstats, err := jq.ServerStats()
 		if err != nil {
-			log.Fatal("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
+			fatal("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
 		}
 		spid := sstats.ServerInfo.PID
 		jq.Disconnect()
 
 		stopped = stopdaemon(spid, "the manager itself")
 		if stopped {
-			log.Printf("vrpipe manager running on port %s was gracefully shut down\n", config.Manager_port)
+			info("vrpipe manager running on port %s was gracefully shut down", config.Manager_port)
 		} else {
-			log.Printf("I've tried everything; giving up trying to stop the manager\n", config.Manager_port)
+			info("I've tried everything; giving up trying to stop the manager", config.Manager_port)
 		}
 	},
 }
@@ -197,19 +196,19 @@ var managerStatusCmd = &cobra.Command{
 			// confirm
 			jq := connect(5 * time.Second)
 			if jq != nil {
-				fmt.Println("started")
+				info("started")
 				return
 			}
 
-			log.Fatalf("vrpipe manager on port %s is supposed to be running with pid %d, but is non-responsive\n", config.Manager_port, pid)
+			fatal("vrpipe manager on port %s is supposed to be running with pid %d, but is non-responsive", config.Manager_port, pid)
 		}
 
 		// no pid file, so it's supposed to be down; confirm
 		jq := connect(10 * time.Millisecond)
 		if jq == nil {
-			fmt.Println("stopped")
+			info("stopped")
 		} else {
-			fmt.Println("started")
+			info("started")
 		}
 	},
 }
@@ -235,7 +234,7 @@ func connect(wait time.Duration) *jobqueue.Client {
 func stopdaemon(pid int, source string) bool {
 	err := syscall.Kill(pid, syscall.SIGTERM)
 	if err != nil {
-		log.Printf("vrpipe manager is running with pid %d according to %s, but failed to send it SIGTERM: %s\n", pid, source, err)
+		warn("vrpipe manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
 		return false
 	}
 
@@ -269,7 +268,7 @@ func stopdaemon(pid int, source string) bool {
 	// if it didn't stop, offer to force kill it? That's a bit dangerous...
 	// just warn for now
 	if !ok {
-		log.Printf("vrpipe manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM\n", pid, source, giveupseconds)
+		warn("vrpipe manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", pid, source, giveupseconds)
 	}
 
 	return ok
@@ -288,7 +287,7 @@ func sAddr(s *jobqueue.ServerInfo) (addr string) {
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
-	log.Printf("vrpipe manager started on %s, pid %d\n", sAddr(s), s.PID)
+	info("vrpipe manager started on %s, pid %d", sAddr(s), s.PID)
 }
 
 func startJQ(sayStarted bool) {
@@ -297,7 +296,7 @@ func startJQ(sayStarted bool) {
 	// start the jobqueue server
 	server, err := jobqueue.Serve(config.Manager_port)
 	if err != nil {
-		log.Fatal(err)
+		fatal("%s", err)
 	}
 
 	if sayStarted {
@@ -307,7 +306,7 @@ func startJQ(sayStarted bool) {
 	// start logging to configured file
 	logfile, err := os.OpenFile(config.Manager_log_file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
-		log.Printf("could not log to %s, will log to STDOUT: %v\n", config.Manager_log_file, err)
+		warn("could not log to %s, will log to STDOUT: %v", config.Manager_log_file, err)
 	} else {
 		defer logfile.Close()
 		log.SetOutput(logfile)
