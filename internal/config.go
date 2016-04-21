@@ -74,21 +74,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 
 	// if deployment not set on the command line
 	if deployment != "development" && deployment != "production" {
-		// if we're in the git repository
-		if _, err := os.Stat(filepath.Join(pwd, "main.go")); err == nil {
-			// force development
-			deployment = "development"
-		} else {
-			// default to production
-			deployment = "production"
-
-			// and allow env var to override with development
-			if deploymentEnv := os.Getenv("VRPIPE_DEPLOYMENT"); deploymentEnv != "" {
-				if deploymentEnv == "development" {
-					deployment = "development"
-				}
-			}
-		}
+		deployment = DefaultDeployment()
 	}
 	os.Setenv("CONFIGOR_ENV", deployment)
 	os.Setenv("CONFIGOR_ENV_PREFIX", "VRPIPE")
@@ -138,4 +124,30 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	}
 
 	return config
+}
+
+// work out the default deployment
+func DefaultDeployment() (deployment string) {
+	pwd, err := os.Getwd()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	// if we're in the git repository
+	if _, err := os.Stat(filepath.Join(pwd, "main.go")); err == nil {
+		// force development
+		deployment = "development"
+	} else {
+		// default to production
+		deployment = "production"
+
+		// and allow env var to override with development
+		if deploymentEnv := os.Getenv("VRPIPE_DEPLOYMENT"); deploymentEnv != "" {
+			if deploymentEnv == "development" {
+				deployment = "development"
+			}
+		}
+	}
+	return
 }
