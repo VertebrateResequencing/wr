@@ -149,14 +149,12 @@ func TestJobqueueSpeed(t *testing.T) {
 		// per := int64(e.Nanoseconds() / int64(n))
 		// log.Printf("Added %d beanstalk jobs in %s == %d per\n", n, e, per)
 
-		// for ease of testing, start the server in a go routine
-		// go func() {
-		// 	err := Serve("tcp://vr-2-1-02:11301")
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// }()
+		server, err := Serve(port)
+		if err != nil {
+			log.Fatal(err)
+		}
 
+		clientConnectTime = 10 * time.Second
 		jq, err := Connect(addr, "vrpipe.des", clientConnectTime)
 		if err != nil {
 			log.Fatal(err)
@@ -239,5 +237,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		// e = time.Since(before)
 		// per = int64(e.Nanoseconds() / int64(n))
 		// log.Printf("Added %d items to queue in %s == %d per\n", n, e, per)
+
+		server.Stop()
 	}
 }
