@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"fmt"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
@@ -196,7 +197,7 @@ var managerStatusCmd = &cobra.Command{
 			// confirm
 			jq := connect(5 * time.Second)
 			if jq != nil {
-				info("started")
+				fmt.Println("started")
 				return
 			}
 
@@ -206,9 +207,9 @@ var managerStatusCmd = &cobra.Command{
 		// no pid file, so it's supposed to be down; confirm
 		jq := connect(10 * time.Millisecond)
 		if jq == nil {
-			info("stopped")
+			fmt.Println("stopped")
 		} else {
-			info("started")
+			fmt.Println("started")
 		}
 	},
 }
