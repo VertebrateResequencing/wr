@@ -36,13 +36,19 @@ var foreground bool
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
 	Use:   "manager",
-	Short: "Pipeline/Job manager",
+	Short: "Pipeline manager",
 	Long: `The pipeline management system.
 
-The vrpipe manager works in the background, doing all the work of getting your
-pipelines and jobs run successfully.
+The vrpipe manager works in the background, doing all the work of ensuring your
+commands get run successfully.
 
-You'll need to start this running with the 'start' sub-command before you can
+It maintains both a temporary queue of the commands you want to run, and a
+permanent history of commands you've run in the past, along with a simple
+key/val database that can be used to store result metadata associated with
+output files. As commands are added to the queue, it makes sure to spawn
+sufficient 'vrpipe runner' agents to get them all run.
+
+You'll need to start this daemon with the 'start' sub-command before you can
 achieve anything useful with the other vrpipe commands. If the background
 process that is spawned when you run this dies, your pipelines will become
 stalled until you run the 'start' sub-command again.`,
@@ -122,7 +128,7 @@ var managerStartCmd = &cobra.Command{
 var managerStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop pipeline management",
-	Long:  `Stop the pipeline manager, gracefully shutting down the queues.`,
+	Long:  `Gracefully stop the pipeline manager, saving its state.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
@@ -215,7 +221,7 @@ func init() {
 	managerCmd.AddCommand(managerStatusCmd)
 
 	// flags specific to these sub-commands
-	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "Do not daemonize")
+	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 }
 
 func connect(wait time.Duration) *jobqueue.Client {

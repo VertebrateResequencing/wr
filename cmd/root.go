@@ -36,17 +36,33 @@ var RootCmd = &cobra.Command{
 	Use:   "vrpipe",
 	Short: "VRPipe is a software pipeline management system.",
 	Long: `VRPipe is a software pipeline management system.
-You use it to run the same sequence of commands (a "pipeline") on many different
-input files (which comprise a "datasource"). To get started you'd:
 
-Create a pipeline with:   vrpipe create
-Define a datasource with: vrpipe datasource
-Define a setup with:      vrpipe setup
-Monitor progress with:    vrpipe status`,
+You use it to run the same sequence of commands (a "pipeline") on many different
+input files (which comprise a "datasource").
+
+Initially, you start the management system, which maintains a queue of the
+commands you want to run:
+$ vrpipe manager start
+
+Then you either directly add commands you want to run to the queue:
+$ vrpipe add
+
+Or you define a pipeline that works out the commands for you:
+Create a pipeline with:                           $ vrpipe create
+Define a datasource with:                         $ vrpipe datasource
+Set up an instance of pipeline + datasource with: $ vrpipe setup
+
+At this point your commands should be running, and you can monitor their
+progress with:
+$ vrpipe status
+
+Finally, you can find your output files with:
+$ vrpipe outputs`,
 }
 
-// Execute adds all child commands to the root command sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
+// Execute adds all child commands to the root command and sets flags
+// appropriately. This is called by main.main(). It only needs to happen once to
+// the rootCmd.
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -56,7 +72,7 @@ func Execute() {
 
 func init() {
 	// global flags
-	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", "", "Use the production or development configuration (defaults to development in the vrpipe git repository directory, otherwise is taken from $VRPIPE_DEPLOYMENT or defaults to production)")
+	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(), "use production or development config")
 
 	cobra.OnInitialize(initConfig)
 }
