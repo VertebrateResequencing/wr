@@ -83,7 +83,7 @@ type serverResponse struct {
 
 // ServerInfo holds basic addressing info about the server
 type ServerInfo struct {
-	Addr string // ip:host
+	Addr string // ip:port
 	Host string // hostname
 	Port string // port
 	PID  int    // process id of server
