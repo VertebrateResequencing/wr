@@ -28,11 +28,11 @@
 
 
 # manager_port: What port should the vrpipe manager listen on?
-# This defaults to 11301
+# This defaults to "11301". Note, this is a string (quoted).
 # NB: It is very important to have different settings for your production
 # manager and your development manager. If you have multiple developers running
 # tests, each individual person should have their own unique manager_port 
-# specified in their personal .vrpipe_config.development.yml file.
+# specified in their personal ~/.vrpipe_config.development.yml file.
 #
 # Before being able to use vrpipe you must start the manager by running 'vrpipe
 # manager'. It will start listening on the specified port on your local host.
@@ -57,3 +57,34 @@ manager_port: "11301"
 # you plan to start the vrpipe manager on.
 # For more details, see the notes for the manager_port option above.
 manager_host: "localhost"
+
+# manager_dir: Where should the vrpipe manager store its working files?
+# This defaults to a directory named .vrpipe in your home directory.
+#
+# The files stored in here are, by default, the manager's pid file and log file.
+manager_dir: "~/.vrpipe"
+
+# manager_pid_file: Where should vrpipe manager store its pid file?
+# This defaults to a file named "pid" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir; for example if
+# you have the root permissions to set things up, you may prefer to set this to
+# /var/run/vrpipe/pid
+manager_pid_file: "pid"
+
+# manager_log_file: Where should vrpipe manager store its log file?
+# This defaults to a file named "log" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir; for example if
+# you have the root permissions to set things up, you may prefer to set this to
+# /var/log/vrpipe/pid
+manager_log_file: "log"
+
+# manager_umask: What umask should be used when vrpipe manager creates files?
+# This defaults to 007 (user+group read+writable, no access to others).
+# Note, this is a number (no quotes).
+#
+# Here are examples of alternative umasks:
+# 022 = world readable, user read+writable
+# 002 = world readable, user+group read+writable
+manager_umask: 007
