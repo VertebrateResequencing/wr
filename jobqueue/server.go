@@ -46,7 +46,8 @@ var (
 	ErrClosedTerm       = errors.New("queues closed due to SIGTERM")
 	ErrClosedStop       = errors.New("queues closed due to manual Stop()")
 	ErrNoHost           = errors.New("could not determine the non-loopback ip address of this host")
-	ServerInterruptTime = 5 * time.Second
+	ErrNoServer         = errors.New("could not reach the server")
+	ServerInterruptTime = 1 * time.Second
 	ServerItemDelay     = 30 * time.Second
 	ServerItemTTR       = 60 * time.Second
 )
@@ -77,17 +78,32 @@ type serverResponse struct {
 	Added   int
 	Existed int
 	Job     *Job
+	SStats  *ServerStats
+}
+
+// ServerInfo holds basic addressing info about the server
+type ServerInfo struct {
+	Addr string // ip:host
+	Host string // hostname
+	Port string // port
+	PID  int    // process id of server
+}
+
+// ServerStats holds information about the jobqueue server for sending to
+// clients
+type ServerStats struct {
+	ServerInfo *ServerInfo
 }
 
 // server represents the server side of the socket that clients Connect() to
 type Server struct {
-	sock mangos.Socket
-	ch   codec.Handle
-	done chan error
-	stop chan bool
+	ServerInfo *ServerInfo
+	sock       mangos.Socket
+	ch         codec.Handle
+	done       chan error
+	stop       chan bool
 	sync.Mutex
-	qs   map[string]*queue.Queue
-	addr string
+	qs map[string]*queue.Queue
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -118,8 +134,8 @@ func Serve(port string) (s *Server, err error) {
 		return
 	}
 
-	// we'll wait 5 seconds to recv from clients before trying again, allowing
-	// us to check if signals have been passed
+	// we'll wait ServerInterruptTime to recv from clients before trying again,
+	// allowing us to check if signals have been passed
 	if err = sock.SetOption(mangos.OptionRecvDeadline, ServerInterruptTime); err != nil {
 		return
 	}
@@ -139,7 +155,7 @@ func Serve(port string) (s *Server, err error) {
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	var host string
+	var ip string
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return
@@ -147,16 +163,30 @@ func Serve(port string) (s *Server, err error) {
 	for _, address := range addrs {
 		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 			if ipnet.IP.To4() != nil {
-				host = ipnet.IP.String()
+				ip = ipnet.IP.String()
 			}
 		}
 	}
-	if host == "" {
+	if ip == "" {
 		err = Error{"", "Serve", "", ErrNoHost}
 		return
 	}
 
-	s = &Server{sock: sock, ch: new(codec.BincHandle), qs: make(map[string]*queue.Queue), stop: stop, done: done, addr: host + ":" + port}
+	// to be friendly we also record the hostname, but it's possible this isn't
+	// defined, hence we don't rely on it for anything important
+	host, err := os.Hostname()
+	if err != nil {
+		host = "localhost"
+	}
+
+	s = &Server{
+		ServerInfo: &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid()},
+		sock:       sock,
+		ch:         new(codec.BincHandle),
+		qs:         make(map[string]*queue.Queue),
+		stop:       stop,
+		done:       done,
+	}
 
 	go func() {
 		for {
@@ -235,6 +265,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	var sr *serverResponse
 
 	switch cr.Method {
+	case "ping":
+		sr = &serverResponse{}
+	case "sstats":
+		sr = &serverResponse{SStats: &ServerStats{ServerInfo: s.ServerInfo}}
 	case "add":
 		var itemdefs []*queue.ItemDef
 		for _, job := range cr.Jobs {

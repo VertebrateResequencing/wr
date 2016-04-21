@@ -87,36 +87,62 @@ func NewJob(cmd string, cwd string, group string, memory int, time time.Duration
 	}
 }
 
-// client represents the client side of the socket that the jobqueue server is
+// Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue
-type client struct {
+type Client struct {
 	sock  mangos.Socket
 	queue string
 	ch    codec.Handle
 }
 
 // Connect creates a connection to the jobqueue server, specific to a single
-// queue. Note that if the server is not up, Connect() will not generate a
-// an error (you will just fail to achieve anything until the server starts).
-func Connect(addr string, queue string) (c *client, err error) {
+// queue. Timeout determines how long to wait for a response from the server,
+// not only while connecting, but for all subsequent interactions with it using
+// the returned client.
+func Connect(addr string, queue string, timeout time.Duration) (c *Client, err error) {
 	sock, err := req.NewSocket()
+	if err != nil {
+		return
+	}
+
+	err = sock.SetOption(mangos.OptionRecvDeadline, timeout)
 	if err != nil {
 		return
 	}
 
 	sock.AddTransport(tcp.NewTransport())
 
-	if err = sock.Dial("tcp://" + addr); err != nil {
+	err = sock.Dial("tcp://" + addr)
+	if err != nil {
 		return
 	}
 
-	c = &client{sock: sock, queue: queue, ch: new(codec.BincHandle)}
+	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle)}
+
+	// Dial succeeds even when there's no server up, so we test the connection
+	// works with a Ping()
+	ok := c.Ping(timeout)
+	if !ok {
+		sock.Close()
+		c = nil
+		err = Error{queue, "Connect", "", ErrNoServer}
+	}
+
 	return
 }
 
 // Disconnect closes the connection to the jobqueue server
-func (c *client) Disconnect() {
+func (c *Client) Disconnect() {
 	c.sock.Close()
+}
+
+// Ping tells you if your connection to the server is working
+func (c *Client) Ping(timeout time.Duration) bool {
+	_, err := c.request(&clientRequest{Method: "ping", Queue: c.queue, Timeout: timeout})
+	if err != nil {
+		return false
+	}
+	return true
 }
 
 // Stats returns stats of the jobqueue server queue you connected to.
@@ -134,26 +160,21 @@ func (c *client) Disconnect() {
 // 	return
 // }
 
-// DaemonStats returns stats of the jobqueue server itself.
-// func (c *Conn) ServerStats() (s BeanstalkStats, err error) {
-// 	data, err := c.beanstalk.Stats()
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to get stats for beanstalkd: %s\n", err.Error())
-// 		return
-// 	}
-// 	s = BeanstalkStats{}
-// 	err = yaml.Unmarshal(data, &s)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to parse yaml for beanstalkd stats: %s\n", err.Error())
-// 	}
-// 	return
-// }
+// ServerStats returns stats of the jobqueue server itself.
+func (c *Client) ServerStats() (s *ServerStats, err error) {
+	resp, err := c.request(&clientRequest{Method: "sstats", Queue: c.queue})
+	if err != nil {
+		return
+	}
+	s = resp.SStats
+	return
+}
 
 // Add adds new jobs to the job queue, but only if those jobs aren't already in
 // there. If any where already there, you will not get an error, but the
 // returned 'existed' count will be > 0. Note that no cross-queue checking is
 // done, so you need to be careful not to add the same job to different queues.
-func (c *client) Add(jobs []*Job) (added int, existed int, err error) {
+func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
 	resp, err := c.request(&clientRequest{Method: "add", Queue: c.queue, Jobs: jobs})
 	if err != nil {
 		return
@@ -170,7 +191,7 @@ func (c *client) Add(jobs []*Job) (added int, existed int, err error) {
 // some time. If no job was available in the queue for as long as the timeout
 // argument, nil is returned for both job and error. If your timeout is 0, you
 // will wait indefinitely for a job.
-func (c *client) Reserve(timeout time.Duration) (j *Job, err error) {
+func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout})
 	if err != nil {
 		return
@@ -247,7 +268,7 @@ func (c *client) Reserve(timeout time.Duration) (j *Job, err error) {
 // }
 
 // request the server do something and get back its response
-func (c *client) request(cr *clientRequest) (sr *serverResponse, err error) {
+func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	// encode and send the request
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)

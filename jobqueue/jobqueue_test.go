@@ -31,6 +31,8 @@ import (
 	"time"
 )
 
+var clientConnectTime = 60 * time.Millisecond
+
 func TestJobqueue(t *testing.T) {
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
@@ -38,15 +40,28 @@ func TestJobqueue(t *testing.T) {
 	port := config.Manager_port
 	addr := "localhost:" + port
 
-	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 5s anymore
+	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 1s anymore
+
+	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
+		_, err := Connect(addr, "test_queue", clientConnectTime)
+		So(err, ShouldNotBeNil)
+		jqerr, ok := err.(Error)
+		So(ok, ShouldBeTrue)
+		So(jqerr.Err, ShouldEqual, ErrNoServer)
+	})
 
 	Convey("Once the jobqueue server is up", t, func() {
 		server, err := Serve(port)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
-			jq, err := Connect(addr, "test_queue")
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+
+			sstats, err := jq.ServerStats()
+			So(err, ShouldBeNil)
+			So(sstats.ServerInfo.Port, ShouldEqual, port)
+			So(sstats.ServerInfo.PID, ShouldBeGreaterThan, 0)
 
 			var jobs []*Job
 			for i := 0; i < 10; i++ {
@@ -142,7 +157,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		// 	}
 		// }()
 
-		jq, err := Connect(addr, "vrpipe.des")
+		jq, err := Connect(addr, "vrpipe.des", clientConnectTime)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -169,7 +184,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		for i := 1; i <= o; i++ {
 			go func(i int) {
 				start := time.After(beginat.Sub(time.Now()))
-				gjq, err := Connect(addr, "vrpipe.des")
+				gjq, err := Connect(addr, "vrpipe.des", clientConnectTime)
 				if err != nil {
 					log.Fatal(err)
 				}
