@@ -45,10 +45,10 @@ type clientRequest struct {
 }
 
 // Job is a struct that represents a command that needs to be run and some
-// associated metadata. CmdGroup is a string that you supply to group together
+// associated metadata. ReqGroup is a string that you supply to group together
 // all commands that you expect to have similar memory and time requirements.
 // Memory and Time are added by the system based on past experience of running
-// jobs with the same CmdGroup. If you supply these yourself, your memory and
+// jobs with the same ReqGroup. If you supply these yourself, your memory and
 // time will be used if there is insufficient past experience, or if you also
 // supply Override, which can be 0 to not override, 1 to override past
 // experience if your supplied values are higher, or 2 to always override.
@@ -57,11 +57,12 @@ type clientRequest struct {
 // from the server (via Reserve() or Get()), you should treat the properties as
 // read-only: changing them will have no effect.
 type Job struct {
-	CmdGroup  string
+	ReqGroup  string
 	Cmd       string
 	Cwd       string        // the working directory to cd to before running Cmd
 	Memory    int           // the expected peak memory in MB Cmd will use while running
 	Time      time.Duration // the expected time Cmd will take to run
+	CPUs      int           // how many processor cores the Cmd will use
 	Override  uint8
 	Priority  uint8
 	Peakmem   int           // the actual peak memory is recorded here (MB)
@@ -75,13 +76,14 @@ type Job struct {
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
-func NewJob(cmd string, cwd string, group string, memory int, time time.Duration, override uint8, priority uint8) *Job {
+func NewJob(cmd string, cwd string, group string, memory int, time time.Duration, cpus int, override uint8, priority uint8) *Job {
 	return &Job{
-		CmdGroup: group,
+		ReqGroup: group,
 		Cmd:      cmd,
 		Cwd:      cwd,
 		Memory:   memory,
 		Time:     time,
+		CPUs:     cpus,
 		Override: override,
 		Priority: priority,
 	}
@@ -98,7 +100,7 @@ type Client struct {
 // Connect creates a connection to the jobqueue server, specific to a single
 // queue. Timeout determines how long to wait for a response from the server,
 // not only while connecting, but for all subsequent interactions with it using
-// the returned client.
+// the returned Client.
 func Connect(addr string, queue string, timeout time.Duration) (c *Client, err error) {
 	sock, err := req.NewSocket()
 	if err != nil {
