@@ -50,6 +50,7 @@ var (
 	ServerInterruptTime = 1 * time.Second
 	ServerItemDelay     = 30 * time.Second
 	ServerItemTTR       = 60 * time.Second
+	ServerReserveTicker = 1 * time.Second
 )
 
 // Error records an error and the operation, item and queue that caused it.
@@ -301,7 +302,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 
 				joberrch := make(chan *jobErr, 1)
-				ticker := time.NewTicker(1 * time.Second)
+				ticker := time.NewTicker(ServerReserveTicker)
 				go func() {
 					for {
 						select {
