@@ -21,6 +21,8 @@ package queue
 import (
 	"fmt"
 	. "github.com/smartystreets/goconvey/convey"
+	"math/rand"
+	"sort"
 	"testing"
 	"time"
 )
@@ -28,6 +30,13 @@ import (
 func TestQueue(t *testing.T) {
 	Convey("Once 10 items of differing delay and ttr have been added to the queue", t, func() {
 		queue := New("myqueue")
+		readyAddedTestEnable := false
+		readyAddedChan := make(chan int, 1)
+		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			if readyAddedTestEnable {
+				readyAddedChan <- len(allitemdata)
+			}
+		})
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
@@ -79,10 +88,13 @@ func TestQueue(t *testing.T) {
 			stats = queue.Stats()
 			So(stats.Delayed, ShouldEqual, 8)
 			So(stats.Ready, ShouldEqual, 2)
+			readyAddedTestEnable = true
 			<-time.After(110 * time.Millisecond)
 			stats = queue.Stats()
 			So(stats.Delayed, ShouldEqual, 7)
 			So(stats.Ready, ShouldEqual, 3)
+			So(<-readyAddedChan, ShouldEqual, 3)
+			readyAddedTestEnable = false
 
 			Convey("Once ready you should be able to reserve them in the expected order", func() {
 				item1, err := queue.Reserve()
@@ -344,6 +356,11 @@ func TestQueue(t *testing.T) {
 					qerr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					_, err = queue.ReserveFiltered(func(data interface{}) bool { return true })
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
 					err = queue.Touch("fake")
 					So(err, ShouldNotBeNil)
 					qerr, ok = err.(Error)
@@ -536,9 +553,15 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
 		queue := New("1000 queue")
+		type testdata struct {
+			ID int
+		}
+		var dataids []int
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			_, err := queue.Add(key, "data", 0, 0*time.Second, 30*time.Second)
+			dataid := rand.Intn(999)
+			dataids = append(dataids, dataid)
+			_, err := queue.Add(key, &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second)
 			So(err, ShouldBeNil)
 		}
 
@@ -558,6 +581,35 @@ func TestQueue(t *testing.T) {
 					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
 				}
 			})
+		})
+
+		Convey("They can be reserved with a filter", func() {
+			item, err := queue.ReserveFiltered(func(data interface{}) bool {
+				td := data.(*testdata)
+				if td.ID == 1001 {
+					return true
+				}
+				return false
+			})
+			So(err, ShouldNotBeNil)
+			So(item, ShouldBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNothingReady)
+
+			sort.Ints(dataids)
+			for _, dataid := range dataids {
+				item, err := queue.ReserveFiltered(func(data interface{}) bool {
+					td := data.(*testdata)
+					if td.ID == dataid {
+						return true
+					}
+					return false
+				})
+				So(err, ShouldBeNil)
+				So(item, ShouldNotBeNil)
+				So(item.Data.(*testdata).ID, ShouldEqual, dataid)
+			}
 		})
 	})
 

@@ -74,6 +74,15 @@ func (e Error) Error() string {
 	return "queue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err.Error()
 }
 
+// readyAddedCallback is used as a callback to know when new items have been
+// added to the ready sub-queue
+type readyAddedCallback func(queuename string, allitemdata []interface{})
+
+// reserveFilter is a callback for use when calling ReserveFiltered(). It will
+// receive an item's Data property and should return false if that is not
+// desired, true if it is.
+type reserveFilter func(data interface{}) bool
+
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
@@ -92,6 +101,7 @@ type Queue struct {
 	ttrClose          chan bool
 	ttrTime           time.Time
 	closed            bool
+	readyAddedCb      readyAddedCallback
 }
 
 // Stats holds information about the Queue's state.
@@ -131,6 +141,28 @@ func New(name string) *Queue {
 	go queue.startDelayProcessing()
 	go queue.startTTRProcessing()
 	return queue
+}
+
+// SetReadyAddedCallback sets a callback that will be called when new items have
+// been added to the ready sub-queue. The callback will receive the name of the
+// queue, and a slice of the Data properties of every item currently in the
+// ready sub-queue. The callback will be initiated in a go routine.
+func (queue *Queue) SetReadyAddedCallback(callback readyAddedCallback) {
+	queue.readyAddedCb = callback
+}
+
+// readyAdded checks if a readyAddedCallback has been set, and if so calls it
+// in a go routine
+func (queue *Queue) readyAdded() {
+	if queue.readyAddedCb != nil {
+		queue.mutex.RLock()
+		var data []interface{}
+		for _, item := range queue.readyQueue.items {
+			data = append(data, item.Data)
+		}
+		queue.mutex.RUnlock()
+		go queue.readyAddedCb(queue.Name, data)
+	}
 }
 
 // Destroy shuts down a queue, destroying any contents. You can't do anything
@@ -202,6 +234,7 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 		item.switchDelayReady()
 		queue.readyQueue.push(item)
 		queue.mutex.Unlock()
+		queue.readyAdded()
 	} else {
 		queue.delayQueue.push(item)
 		queue.mutex.Unlock()
@@ -225,6 +258,7 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 	}
 
 	deferredTrigger := false
+	addedReady := false
 	for _, def := range items {
 		_, existed := queue.items[def.Key]
 		if existed {
@@ -239,6 +273,7 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 			// put it directly on the ready queue
 			item.switchDelayReady()
 			queue.readyQueue.push(item)
+			addedReady = true
 		} else {
 			queue.delayQueue.push(item)
 			if !deferredTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
@@ -251,6 +286,9 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 	}
 
 	queue.mutex.Unlock()
+	if addedReady {
+		queue.readyAdded()
+	}
 	return
 }
 
@@ -348,6 +386,51 @@ func (queue *Queue) Reserve() (item *Item, err error) {
 	return
 }
 
+// ReserveFiltered is like Reserve(), except you provide a callback function
+// that will receive the next (highest priority || oldest) item's Data. If you
+// don't want that one your callback returns false, and then it will be called
+// again with the following item's Data, and so on until your say you want it by
+// returning true. That will be the item that gets moved from the ready to the
+// run queue and returned to you. If you don't want any you'll get an error as
+// if the ready queue was empty.
+func (queue *Queue) ReserveFiltered(filter reserveFilter) (item *Item, err error) {
+	queue.mutex.Lock()
+
+	if queue.closed {
+		queue.mutex.Unlock()
+		err = Error{queue.Name, "Reserve", "", ErrQueueClosed}
+		return
+	}
+
+	// go through the ready queue in order and offer each item's Data to filter
+	// until it returns true: that's the item we'll remove from ready
+	queue.readyQueue.mutex.RLock()
+	for _, thisItem := range queue.readyQueue.items {
+		ok := filter(thisItem.Data)
+		if ok {
+			item = thisItem
+			break
+		}
+	}
+	queue.readyQueue.mutex.RUnlock()
+
+	if item == nil {
+		queue.mutex.Unlock()
+		err = Error{queue.Name, "Reserve", "", ErrNothingReady}
+		return
+	}
+
+	queue.readyQueue.remove(item)
+	item.touch()
+	queue.runQueue.push(item)
+	item.switchReadyRun()
+
+	queue.mutex.Unlock()
+	queue.ttrNotificationTrigger(item)
+
+	return
+}
+
 // Touch is a thread-safe way to extend the amount of time a Reserve()d item
 // is allowed to run.
 func (queue *Queue) Touch(key string) (err error) {
@@ -383,10 +466,10 @@ func (queue *Queue) Touch(key string) (err error) {
 // ready sub-queue, for when the item should be dealt with later, not now.
 func (queue *Queue) Release(key string) (err error) {
 	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Release", key, ErrQueueClosed}
+		queue.mutex.Unlock()
 		return
 	}
 
@@ -394,12 +477,14 @@ func (queue *Queue) Release(key string) (err error) {
 	item, ok := queue.items[key]
 	if !ok {
 		err = Error{queue.Name, "Release", key, ErrNotFound}
+		queue.mutex.Unlock()
 		return
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == "run"; !ok {
 		err = Error{queue.Name, "Release", key, ErrNotRunning}
+		queue.mutex.Unlock()
 		return
 	}
 
@@ -407,6 +492,8 @@ func (queue *Queue) Release(key string) (err error) {
 	queue.runQueue.remove(item)
 	queue.readyQueue.push(item)
 	item.switchRunReady("release")
+	queue.mutex.Unlock()
+	queue.readyAdded()
 
 	return
 }
@@ -535,6 +622,7 @@ func (queue *Queue) startDelayProcessing() {
 		case <-time.After(queue.delayTime.Sub(time.Now())):
 			queue.mutex.Lock()
 			len := queue.delayQueue.len()
+			addedReady := false
 			for i := 0; i < len; i++ {
 				item := queue.delayQueue.items[0]
 
@@ -547,8 +635,12 @@ func (queue *Queue) startDelayProcessing() {
 				queue.delayQueue.remove(item)
 				queue.readyQueue.push(item)
 				item.switchDelayReady()
+				addedReady = true
 			}
 			queue.mutex.Unlock()
+			if addedReady {
+				queue.readyAdded()
+			}
 		case <-queue.delayNotification:
 			continue
 		case <-queue.delayClose:
@@ -580,6 +672,7 @@ func (queue *Queue) startTTRProcessing() {
 		case <-time.After(queue.ttrTime.Sub(time.Now())):
 			queue.mutex.Lock()
 			len := queue.runQueue.len()
+			addedReady := false
 			for i := 0; i < len; i++ {
 				item := queue.runQueue.items[0]
 
@@ -592,8 +685,12 @@ func (queue *Queue) startTTRProcessing() {
 				queue.runQueue.remove(item)
 				queue.readyQueue.push(item)
 				item.switchRunReady("timeout")
+				addedReady = true
 			}
 			queue.mutex.Unlock()
+			if addedReady {
+				queue.readyAdded()
+			}
 		case <-queue.ttrNotification:
 			continue
 		case <-queue.ttrClose:
