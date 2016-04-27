@@ -78,10 +78,10 @@ func (e Error) Error() string {
 // added to the ready sub-queue
 type readyAddedCallback func(queuename string, allitemdata []interface{})
 
-// reserveFilter is a callback for use when calling ReserveFiltered(). It will
+// ReserveFilter is a callback for use when calling ReserveFiltered(). It will
 // receive an item's Data property and should return false if that is not
 // desired, true if it is.
-type reserveFilter func(data interface{}) bool
+type ReserveFilter func(data interface{}) bool
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
@@ -393,7 +393,7 @@ func (queue *Queue) Reserve() (item *Item, err error) {
 // returning true. That will be the item that gets moved from the ready to the
 // run queue and returned to you. If you don't want any you'll get an error as
 // if the ready queue was empty.
-func (queue *Queue) ReserveFiltered(filter reserveFilter) (item *Item, err error) {
+func (queue *Queue) ReserveFiltered(filter ReserveFilter) (item *Item, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
