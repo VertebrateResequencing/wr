@@ -132,10 +132,10 @@ func New(name string) *Queue {
 		runQueue:          newSubQueue(2),
 		buryQueue:         newBuryQueue(),
 		ttrNotification:   make(chan bool, 1),
-		ttrClose:          make(chan bool),
+		ttrClose:          make(chan bool, 1),
 		ttrTime:           time.Now(),
 		delayNotification: make(chan bool, 1),
-		delayClose:        make(chan bool),
+		delayClose:        make(chan bool, 1),
 		delayTime:         time.Now(),
 	}
 	go queue.startDelayProcessing()
@@ -404,15 +404,13 @@ func (queue *Queue) ReserveFiltered(filter ReserveFilter) (item *Item, err error
 
 	// go through the ready queue in order and offer each item's Data to filter
 	// until it returns true: that's the item we'll remove from ready
-	queue.readyQueue.mutex.RLock()
-	for _, thisItem := range queue.readyQueue.items {
+	for _, thisItem := range queue.readyQueue.all() {
 		ok := filter(thisItem.Data)
 		if ok {
 			item = thisItem
 			break
 		}
 	}
-	queue.readyQueue.mutex.RUnlock()
 
 	if item == nil {
 		queue.mutex.Unlock()

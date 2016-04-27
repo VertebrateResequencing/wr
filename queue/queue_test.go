@@ -531,10 +531,16 @@ func TestQueue(t *testing.T) {
 			})
 
 			Convey("The queue won't fall over if we manage to change the item's releaseAt without updating the queue", func() {
+				So(item.state, ShouldEqual, "run")
 				<-time.After(49 * time.Millisecond)
+				// the state should still be run at this point, but due to
+				// timing vagueries it might not be; be more forgiving to
+				// following tests by testing against current state instead of
+				// explicit 'run'
+				currentState := item.state
 				item.releaseAt = time.Now().Add(25 * time.Millisecond)
 				<-time.After(6 * time.Millisecond)
-				So(item.state, ShouldEqual, "run")
+				So(item.state, ShouldEqual, currentState)
 				<-time.After(25 * time.Millisecond)
 				So(item.state, ShouldEqual, "ready")
 			})
