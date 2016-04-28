@@ -19,14 +19,20 @@
 package cmd
 
 import (
-	"fmt"
+	"bufio"
 	"github.com/pivotal-golang/bytefmt"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/spf13/cobra"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
 // options for this cmd
+var cmdFile string
 var cmdTorun string
 var cmdCwd string
 var reqGroup string
@@ -55,7 +61,9 @@ the current directory will not be changed.
 
 Requirments_group is an arbitrary string that identifies the kind of commands
 you are adding, such that future commands you add with this same
-requirements_group are likely to have similar memory and time requirements.
+requirements_group are likely to have similar memory and time requirements. It
+defaults to the basename of the first word in your command, which it assumes to
+be the name of your executable.
 
 By providing the memory and time hints, vrpipe manager can do a better job
 of spawning runners to handle these commands. The manager learns how much memory
@@ -91,8 +99,8 @@ different requirements_groups, you can give all the different batches the same
 identifier, so you can track them in one go.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// check the command line options
-		if reqGroup == "" {
-			fatal("--requirements_group is required")
+		if cmdFile == "" {
+			fatal("--file is required")
 		}
 		var cmdMB int
 		var err error
@@ -123,26 +131,124 @@ identifier, so you can track them in one go.`,
 		if cmdPri < 0 || cmdPri > 255 {
 			fatal("--priority must be in the range 0..255")
 		}
-
 		timeout := time.Duration(timeoutint) * time.Second
 
+		// open file or set up to read from STDIN
+		var reader io.Reader
+		if cmdFile == "-" {
+			reader = os.Stdin
+		} else {
+			reader, err = os.Open(cmdFile)
+			if err != nil {
+				fatal("could not open file '%s': %s", cmdFile, err)
+			}
+			defer reader.(*os.File).Close()
+		}
+
+		// for network efficiency, read in all commands and create a big slice
+		// of Jobs and Add() them in one go afterwards
+		var jobs []*jobqueue.Job
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			cols := strings.Split(scanner.Text(), "\t")
+			colsn := len(cols)
+			if colsn < 1 || cols[0] == "" {
+				continue
+			}
+
+			var cmd, cwd, rg string
+			var mb, cpus, override, priority int
+			var dur time.Duration
+
+			// command cwd requirements_group memory time cpus override priority
+			cmd = cols[0]
+
+			if colsn < 2 || cols[1] == "" {
+				cwd = cmdCwd
+			} else {
+				cwd = cols[1]
+			}
+
+			if colsn < 3 || cols[2] == "" {
+				if reqGroup != "" {
+					rg = reqGroup
+				} else {
+					parts := strings.Split(cmd, " ")
+					rg = filepath.Base(parts[0])
+				}
+			} else {
+				rg = cols[2]
+			}
+
+			if colsn < 4 || cols[3] == "" {
+				mb = cmdMB
+			} else {
+				thismb, err := bytefmt.ToMegabytes(cols[3])
+				if err != nil {
+					fatal("a value in the memory column (%s) was not specified correctly: %s", cols[3], err)
+				}
+				mb = int(thismb)
+			}
+
+			if colsn < 5 || cols[4] == "" {
+				dur = cmdDuration
+			} else {
+				dur, err = time.ParseDuration(cols[4])
+				if err != nil {
+					fatal("a value in the time column (%s) was not specified correctly: %s", cols[4], err)
+				}
+			}
+
+			if colsn < 6 || cols[5] == "" {
+				cpus = cmdCPUs
+			} else {
+				cpus, err = strconv.Atoi(cols[5])
+				if err != nil {
+					fatal("a value in the cpus column (%s) was not specified correctly: %s", cols[5], err)
+				}
+			}
+
+			if colsn < 7 || cols[6] == "" {
+				override = cmdOvr
+			} else {
+				override, err = strconv.Atoi(cols[6])
+				if err != nil {
+					fatal("a value in the override column (%s) was not specified correctly: %s", cols[6], err)
+				}
+				if override < 0 || override > 2 {
+					fatal("override column must contain values in the range 0..2 (not %d)", override)
+				}
+			}
+
+			if colsn < 8 || cols[7] == "" {
+				priority = cmdPri
+			} else {
+				priority, err = strconv.Atoi(cols[7])
+				if err != nil {
+					fatal("a value in the priority column (%s) was not specified correctly: %s", cols[7], err)
+				}
+				if priority < 0 || priority > 255 {
+					fatal("priority column must contain values in the range 0..255 (not %d)", priority)
+				}
+			}
+
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority)))
+		}
+
+		// connect to the server
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
 			fatal("%s", err)
 		}
 		defer jq.Disconnect()
 
-		var jobs []*jobqueue.Job
-		for i := 0; i < 10; i++ {
-			jobs = append(jobs, jobqueue.NewJob(fmt.Sprintf("test cmd %d", i), cmdCwd, reqGroup, cmdMB, cmdDuration, cmdCPUs, uint8(cmdOvr), uint8(cmdPri)))
-		}
-
+		// add the jobs to the queue
 		inserts, dups, err := jq.Add(jobs)
 		if err != nil {
 			fatal("%s", err)
 		}
 
-		info("Added %d new commands to queue %s (%d were duplicates)", inserts, "cmds", dups)
+		info("Added %d new commands to the queue (%d were duplicates)", inserts, dups)
 	},
 }
 
@@ -150,6 +256,7 @@ func init() {
 	RootCmd.AddCommand(addCmd)
 
 	// flags specific to this sub-command
+	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
 	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "r", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
