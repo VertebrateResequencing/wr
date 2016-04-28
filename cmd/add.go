@@ -33,6 +33,7 @@ var reqGroup string
 var cmdId string
 var cmdTime string
 var cmdMem string
+var cmdCPUs int
 var cmdOvr int
 var cmdPri int
 
@@ -42,7 +43,21 @@ var addCmd = &cobra.Command{
 	Short: "Add commands to the queue",
 	Long: `Manually add commands you want run to the queue.
 
-By providing the --memory and --time hints, vrpipe manager can do a better job
+You can supply your commands by putting them in a text file (1 per line), or
+by piping them in. In addition to the command itself, you can specify additional
+optional tab-separated columns as follows:
+command cwd requirements_group memory time cpus override priority
+If any of these will be the same for all your commands, you can instead specify
+them as flags.
+
+Cwd is the directory to cd to before running the command. If none is specified,
+the current directory will not be changed.
+
+Requirments_group is an arbitrary string that identifies the kind of commands
+you are adding, such that future commands you add with this same
+requirements_group are likely to have similar memory and time requirements.
+
+By providing the memory and time hints, vrpipe manager can do a better job
 of spawning runners to handle these commands. The manager learns how much memory
 and time commands in the same requirements_group actually used in the past, and
 will use its own values unless you set an override. For this learning to work
@@ -61,6 +76,15 @@ such as "5GB.1hr", because then the manager can't learn about your commands - it
 is only learning about how good your estimates are! The name of your executable
 should almost always be part of the requirements_group name.)
 
+Override defines if your memory and time should be used instead of the manager's
+estimate.
+0: do not override vrpipe's learned values for memory and time
+1: override if yours are higher
+2: always override
+
+Priority defines how urgent a particular command is; those with higher
+priorities will start running before those with lower priorities.
+
 The identifier option is an arbitrary name you can give your commands so you can
 query their status later. If you split your commands into multiple batches with
 different requirements_groups, you can give all the different batches the same
@@ -71,6 +95,7 @@ identifier, so you can track them in one go.`,
 			fatal("--requirements_group is required")
 		}
 		var cmdMB int
+		var err error
 		if cmdMem == "" {
 			cmdMB = 0
 		} else {
@@ -79,17 +104,18 @@ identifier, so you can track them in one go.`,
 				fatal("--memory was not specified correctly: %s", err)
 			}
 			cmdMB = int(mb)
-			info("--memory is %s", cmdMB)
 		}
 		var cmdDuration time.Duration
 		if cmdTime == "" {
 			cmdDuration = 0 * time.Second
 		} else {
-			cmdDuration, err := time.ParseDuration(cmdTime)
+			cmdDuration, err = time.ParseDuration(cmdTime)
 			if err != nil {
 				fatal("--time was not specified correctly: %s", err)
 			}
-			info("--time is %s", cmdDuration)
+		}
+		if cmdCPUs < 1 {
+			cmdCPUs = 1
 		}
 		if cmdOvr < 0 || cmdOvr > 2 {
 			fatal("--override must be in the range 0..2")
@@ -108,7 +134,7 @@ identifier, so you can track them in one go.`,
 
 		var jobs []*jobqueue.Job
 		for i := 0; i < 10; i++ {
-			jobs = append(jobs, jobqueue.NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", reqGroup, cmdMB, cmdDuration, 1, uint8(cmdOvr), uint8(cmdPri)))
+			jobs = append(jobs, jobqueue.NewJob(fmt.Sprintf("test cmd %d", i), cmdCwd, reqGroup, cmdMB, cmdDuration, cmdCPUs, uint8(cmdOvr), uint8(cmdPri)))
 		}
 
 		inserts, dups, err := jq.Add(jobs)
@@ -124,12 +150,13 @@ func init() {
 	RootCmd.AddCommand(addCmd)
 
 	// flags specific to this sub-command
-	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "an arbitrary identifier that identifies the kind of commands you are adding, such that future commands you add with this same requirements_group are likely to have similar memory and time requirements")
-	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "r", "", "an arbitrary string that identifies the kind of commands you are adding, such that future commands you add with this same requirements_group are likely to have similar memory and time requirements")
-	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "your estimate for the peak memory the added commands will each use when run [specify units such as M for Megabytes or G for Gigabytes]")
-	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "your estimate for how time the added commands will each take to run [specify units such as m for minutes or h for hours]")
-	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "0: do not override vrpipe's learned values for memory and time for previously run commands in requirements_group; 1: override if yours are higher; 2: always override")
-	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] give all the added commands this priority; commands with higher priorities will get run sooner than others")
+	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
+	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "r", "", "group name for commands with similar reqs")
+	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
+	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
+	addCmd.Flags().IntVar(&cmdCPUs, "cpus", 1, "cpu cores needed")
+	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override?")
+	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority")
 
-	addCmd.Flags().IntVarP(&timeoutint, "timeout", "t", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
+	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
 }
