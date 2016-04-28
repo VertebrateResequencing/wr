@@ -74,7 +74,7 @@ func TestJobqueue(t *testing.T) {
 				} else if i == 4 {
 					pri = 7
 				}
-				jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(pri)))
+				jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(pri), "manually_added"))
 			}
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
@@ -134,7 +134,7 @@ func TestJobqueue(t *testing.T) {
 								case <-ticker.C:
 									ticks++
 									if ticks == 2 {
-										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0)))
+										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0), "manually_added"))
 										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
 										gojq.Add(jobs)
 									}
@@ -158,7 +158,7 @@ func TestJobqueue(t *testing.T) {
 
 			Convey("You can subsequently add more jobs", func() {
 				for i := 10; i < 20; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "new_group", 2048, 1*time.Hour, 2, uint8(0), uint8(0)))
+					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "new_group", 2048, 1*time.Hour, 2, uint8(0), uint8(0), "manually_added"))
 				}
 				inserts, already, err := jq.Add(jobs)
 				So(err, ShouldBeNil)
@@ -268,7 +268,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		before := time.Now()
 		var jobs []*Job
 		for i := 0; i < n; i++ {
-			jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0)))
+			jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), "manually_added"))
 		}
 		inserts, already, err := jq.Add(jobs)
 		if err != nil {

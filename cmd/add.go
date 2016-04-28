@@ -102,6 +102,9 @@ identifier, so you can track them in one go.`,
 		if cmdFile == "" {
 			fatal("--file is required")
 		}
+		if cmdId == "" {
+			fatal("--identifier is required")
+		}
 		var cmdMB int
 		var err error
 		if cmdMem == "" {
@@ -232,7 +235,7 @@ identifier, so you can track them in one go.`,
 				}
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority)))
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), cmdId))
 		}
 
 		// connect to the server
@@ -248,7 +251,7 @@ identifier, so you can track them in one go.`,
 			fatal("%s", err)
 		}
 
-		info("Added %d new commands to the queue (%d were duplicates)", inserts, dups)
+		info("Added %d new commands (%d were duplicates) to the queue under the identifier '%s'", inserts, dups, cmdId)
 	},
 }
 
@@ -257,6 +260,7 @@ func init() {
 
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
+	addCmd.Flags().StringVarP(&cmdId, "identifier", "i", "manually_added", "identifier for all your commands")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
 	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "r", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")

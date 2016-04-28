@@ -58,6 +58,7 @@ type clientRequest struct {
 // from the server (via Reserve() or Get()), you should treat the properties as
 // read-only: changing them will have no effect.
 type Job struct {
+	RepGroup       string // a name associated with related Jobs to help group them together when reporting on their status etc.
 	ReqGroup       string
 	Cmd            string
 	Cwd            string        // the working directory to cd to before running Cmd
@@ -78,8 +79,9 @@ type Job struct {
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
-func NewJob(cmd string, cwd string, group string, memory int, time time.Duration, cpus int, override uint8, priority uint8) *Job {
+func NewJob(cmd string, cwd string, group string, memory int, time time.Duration, cpus int, override uint8, priority uint8, repgroup string) *Job {
 	return &Job{
+		RepGroup: repgroup,
 		ReqGroup: group,
 		Cmd:      cmd,
 		Cwd:      cwd,
