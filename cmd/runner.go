@@ -77,6 +77,8 @@ needed.`,
 
 			cmd := job.Cmd
 			info("would run cmd [%s]", cmd)
+
+			numrun++
 		}
 
 		info("vrpipe runner exiting, having run %d commands, because there are no more commands in queue '%s' in scheduler group '%s'", numrun, queuename, schedgrp)
