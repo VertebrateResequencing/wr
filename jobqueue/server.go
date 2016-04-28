@@ -260,6 +260,21 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	if !existed {
 		q = queue.New(cr.Queue)
 		s.qs[cr.Queue] = q
+
+		// we set a callback for things entering the this queue's ready
+		// sub-queue. This function will be called in a go routine and receives
+		// a slice of all the ready jobs. Based on the scheduler, we add to
+		// each job a schedulerGroup, which the runners we spawn will be able
+		// to pass to ReserveFiltered so that they run the correct jobs for
+		// the machine and resource reservations they're running under
+		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			//*** for now, scheduler stuff is not implemented, so we just set
+			// schedulerGroup to match the reqs provided
+			for _, inter := range allitemdata {
+				job := inter.(*Job)
+				job.schedulerGroup = fmt.Sprintf("%d.%.0f.%d", job.Memory, job.Time.Seconds(), job.CPUs)
+			}
+		})
 	}
 	s.Unlock()
 
@@ -287,7 +302,21 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		sr = &serverResponse{Added: added, Existed: dups}
 	case "reserve":
 		// first just try to Reserve normally
-		item, err := q.Reserve()
+		var item *queue.Item
+		var err error
+		var rf queue.ReserveFilter
+		if cr.SchedulerGroup != "" {
+			rf = func(data interface{}) bool {
+				job := data.(*Job)
+				if job.schedulerGroup == cr.SchedulerGroup {
+					return true
+				}
+				return false
+			}
+			item, err = q.ReserveFiltered(rf)
+		} else {
+			item, err = q.Reserve()
+		}
 		var job *Job
 		if err != nil {
 			if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
@@ -307,7 +336,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					for {
 						select {
 						case <-ticker.C:
-							item, err := q.Reserve()
+							var item *queue.Item
+							var err error
+							if cr.SchedulerGroup != "" {
+								item, err = q.ReserveFiltered(rf)
+							} else {
+								item, err = q.Reserve()
+							}
 							if err != nil {
 								if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 									continue

@@ -37,11 +37,12 @@ import (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
-	Method  string
-	Queue   string
-	Key     string
-	Jobs    []*Job
-	Timeout time.Duration
+	Method         string
+	Queue          string
+	Key            string
+	Jobs           []*Job
+	Timeout        time.Duration
+	SchedulerGroup string
 }
 
 // Job is a struct that represents a command that needs to be run and some
@@ -57,22 +58,23 @@ type clientRequest struct {
 // from the server (via Reserve() or Get()), you should treat the properties as
 // read-only: changing them will have no effect.
 type Job struct {
-	ReqGroup  string
-	Cmd       string
-	Cwd       string        // the working directory to cd to before running Cmd
-	Memory    int           // the expected peak memory in MB Cmd will use while running
-	Time      time.Duration // the expected time Cmd will take to run
-	CPUs      int           // how many processor cores the Cmd will use
-	Override  uint8
-	Priority  uint8
-	Peakmem   int           // the actual peak memory is recorded here (MB)
-	Exited    bool          // true if the Cmd was run and exited
-	Exitcode  int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
-	Pid       int           // the pid of the running or ran process is recorded here
-	Host      string        // the host the process is running or did run on is recorded here
-	Walltime  time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
-	starttime time.Time     // the time the cmd starts running is recorded here
-	endtime   time.Time     // the time the cmd stops running is recorded here
+	ReqGroup       string
+	Cmd            string
+	Cwd            string        // the working directory to cd to before running Cmd
+	Memory         int           // the expected peak memory in MB Cmd will use while running
+	Time           time.Duration // the expected time Cmd will take to run
+	CPUs           int           // how many processor cores the Cmd will use
+	Override       uint8
+	Priority       uint8
+	Peakmem        int           // the actual peak memory is recorded here (MB)
+	Exited         bool          // true if the Cmd was run and exited
+	Exitcode       int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
+	Pid            int           // the pid of the running or ran process is recorded here
+	Host           string        // the host the process is running or did run on is recorded here
+	Walltime       time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
+	starttime      time.Time     // the time the cmd starts running is recorded here
+	endtime        time.Time     // the time the cmd stops running is recorded here
+	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
@@ -195,6 +197,24 @@ func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
 // will wait indefinitely for a job.
 func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout})
+	if err != nil {
+		return
+	}
+	j = resp.Job
+	return
+}
+
+// ReserveScheduled is like Reserve(), except that it will only return jobs from
+// the specified schedulerGroup. Based on the scheduler the server was
+// configured with, it will group jobs based on their resource requirements and
+// then submit runners to handle them to your system's job scheduler (such as
+// LSF), possible in different scheduler queues. These runners are told the
+// group they are a part of, and that same group name is applied internally to
+// the Jobs as the "schedulerGroup", so that the runners can reserve only Jobs
+// that they're supposed to. Therefore, it does not make sense for you to call
+// this yourself; it is only for use by runners spawned by the server.
+func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) (j *Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, SchedulerGroup: schedulerGroup})
 	if err != nil {
 		return
 	}

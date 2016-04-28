@@ -26,7 +26,9 @@ import (
 	// "github.com/sb10/vrpipe/queue"
 	"log"
 	"math"
+	"os"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -41,6 +43,7 @@ func TestJobqueue(t *testing.T) {
 	addr := "localhost:" + port
 
 	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 1s anymore
+	ServerReserveTicker = 10 * time.Millisecond
 
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
 		_, err := Connect(addr, "test_queue", clientConnectTime)
@@ -102,17 +105,119 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
+
+					Convey("Adding one while waiting on a Reserve will return the new job", func() {
+						worked := make(chan bool)
+						go func() {
+							job, err := jq.Reserve(50 * time.Millisecond)
+							if err != nil {
+								worked <- false
+								return
+							}
+							if job == nil {
+								worked <- false
+								return
+							}
+							if job.Cmd == "new" {
+								worked <- true
+								return
+							}
+							worked <- false
+						}()
+
+						ok := make(chan bool)
+						go func() {
+							ticker := time.NewTicker(15 * time.Millisecond)
+							ticks := 0
+							for {
+								select {
+								case <-ticker.C:
+									ticks++
+									if ticks == 2 {
+										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0)))
+										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
+										gojq.Add(jobs)
+									}
+									continue
+								case w := <-worked:
+									ticker.Stop()
+									if w && ticks == 2 {
+										ok <- true
+									}
+									ok <- false
+									return
+								}
+							}
+						}()
+
+						<-time.After(55 * time.Millisecond)
+						So(<-ok, ShouldBeTrue)
+					})
 				})
 			})
 
 			Convey("You can subsequently add more jobs", func() {
 				for i := 10; i < 20; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0)))
+					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "new_group", 2048, 1*time.Hour, 2, uint8(0), uint8(0)))
 				}
 				inserts, already, err := jq.Add(jobs)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 10)
 				So(already, ShouldEqual, 10)
+
+				Convey("You can reserve jobs for a particular scheduler group", func() {
+					for i := 10; i < 20; i++ {
+						job, err := jq.ReserveScheduled(50*time.Millisecond, "2048.3600.2")
+						So(err, ShouldBeNil)
+						So(job, ShouldNotBeNil)
+						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
+					}
+					job, err := jq.ReserveScheduled(50*time.Millisecond, "2048.3600.2")
+					So(err, ShouldBeNil)
+					So(job, ShouldBeNil)
+
+					for i := 9; i >= 0; i-- {
+						jid := i
+						if i == 7 {
+							jid = 4
+						} else if i == 4 {
+							jid = 7
+						}
+						job, err := jq.ReserveScheduled(50*time.Millisecond, "1024.14400.1")
+						So(err, ShouldBeNil)
+						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
+					}
+					job, err = jq.ReserveScheduled(50*time.Millisecond, "1024.14400.1")
+					So(err, ShouldBeNil)
+					So(job, ShouldBeNil)
+				})
+			})
+
+			Convey("You can stop the server by sending it a SIGTERM or SIGINT", func() {
+				jq.Disconnect()
+
+				syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				<-time.After(50 * time.Millisecond)
+				_, err := Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldNotBeNil)
+				jqerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, ErrNoServer)
+
+				server, err = Serve(port)
+				So(err, ShouldBeNil)
+
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+				jq.Disconnect()
+
+				syscall.Kill(os.Getpid(), syscall.SIGINT)
+				<-time.After(50 * time.Millisecond)
+				_, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldNotBeNil)
+				jqerr, ok = err.(Error)
+				So(ok, ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, ErrNoServer)
 			})
 		})
 
