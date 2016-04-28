@@ -31,6 +31,10 @@ import (
 var deployment string
 var config internal.Config
 
+// these are shared by some of the subcommands
+var addr string
+var timeoutint int
+
 // This represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "vrpipe",
@@ -80,6 +84,7 @@ func init() {
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	config = internal.ConfigLoad(deployment, false)
+	addr = config.Manager_host + ":" + config.Manager_port
 }
 
 // info is a convenience to print a msg to STDOUT

@@ -24,8 +24,10 @@ import (
 	"time"
 )
 
+// options for this cmd
 var queuename string
-var timeoutint int
+var schedgrp string
+var reserveint int
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{
@@ -40,9 +42,13 @@ needed.`,
 			fatal("--queue is required")
 		}
 
-		addr := config.Manager_host + ":" + config.Manager_port
-		timeout := time.Duration(timeoutint+5) * time.Second // the receive timeout must be greater than the time we'll wait to Reserve
-		rtimeout := time.Duration(timeoutint) * time.Second
+		// the server receive timeout must be greater than the time we'll wait
+		// to Reserve()
+		if timeoutint < (reserveint + 5) {
+			timeoutint = reserveint + 5
+		}
+		timeout := time.Duration(timeoutint) * time.Second
+		rtimeout := time.Duration(reserveint) * time.Second
 
 		jq, err := jobqueue.Connect(addr, queuename, timeout)
 		if err != nil {
@@ -54,7 +60,14 @@ needed.`,
 		// aren't any more commands in the queue
 		numrun := 0
 		for {
-			job, err := jq.Reserve(rtimeout)
+			var job *jobqueue.Job
+			var err error
+			if schedgrp == "" {
+				job, err = jq.Reserve(rtimeout)
+			} else {
+				job, err = jq.ReserveScheduled(rtimeout, schedgrp)
+			}
+
 			if err != nil {
 				fatal("%s", err)
 			}
@@ -66,7 +79,7 @@ needed.`,
 			info("would run cmd [%s]", cmd)
 		}
 
-		info("vrpipe runner exiting, having run %d commands, because there are no more commands in queue '%s'", numrun, queuename)
+		info("vrpipe runner exiting, having run %d commands, because there are no more commands in queue '%s' in scheduler group '%s'", numrun, queuename, schedgrp)
 	},
 }
 
@@ -74,6 +87,8 @@ func init() {
 	RootCmd.AddCommand(runnerCmd)
 
 	// flags specific to this sub-command
-	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "", "specify the queue to pull commands from (required)")
+	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "cmds", "specify the queue to pull commands from")
+	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVarP(&timeoutint, "timeout", "t", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
+	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 25, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 }
