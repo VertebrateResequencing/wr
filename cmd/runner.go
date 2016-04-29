@@ -21,6 +21,7 @@ package cmd
 import (
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/spf13/cobra"
+	"os"
 	"time"
 )
 
@@ -41,6 +42,13 @@ needed.`,
 		if queuename == "" {
 			fatal("--queue is required")
 		}
+
+		// we need to know our current dir so we can cd back here afterwards
+		pwd, err := os.Getwd()
+		if err != nil {
+			fatal("%s", err)
+		}
+		defer os.Chdir(pwd)
 
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
@@ -75,8 +83,25 @@ needed.`,
 				break
 			}
 
+			// change to desired working dir
+			if job.Cwd != "" {
+				err = os.Chdir(job.Cwd)
+				if err != nil {
+					//*** release/bury? and continue... we need to note why we
+					// released, in case this is a permanent error and the user
+					// looks at status and wonders why it's just spinning
+					// forever between ready and reserve
+					fatal("%s", err)
+				}
+			}
+
 			cmd := job.Cmd
-			info("would run cmd [%s]", cmd)
+			info("would run cmd [%s] in dir %s", cmd, job.Cwd)
+
+			// change back to original dir
+			if job.Cwd != "" {
+				os.Chdir(pwd) // don't care if this fails
+			}
 
 			numrun++
 		}

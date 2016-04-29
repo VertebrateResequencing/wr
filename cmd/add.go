@@ -57,7 +57,7 @@ If any of these will be the same for all your commands, you can instead specify
 them as flags.
 
 Cwd is the directory to cd to before running the command. If none is specified,
-the current directory will not be changed.
+the default will be your current directory right now.
 
 Requirments_group is an arbitrary string that identifies the kind of commands
 you are adding, such that future commands you add with this same
@@ -148,6 +148,11 @@ identifier, so you can track them in one go.`,
 			defer reader.(*os.File).Close()
 		}
 
+		pwd, err := os.Getwd()
+		if err != nil {
+			fatal("%s", err)
+		}
+
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
 		var jobs []*jobqueue.Job
@@ -167,7 +172,11 @@ identifier, so you can track them in one go.`,
 			cmd = cols[0]
 
 			if colsn < 2 || cols[1] == "" {
-				cwd = cmdCwd
+				if cmdCwd != "" {
+					cwd = cmdCwd
+				} else {
+					cwd = pwd
+				}
 			} else {
 				cwd = cols[1]
 			}
