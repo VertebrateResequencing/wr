@@ -65,13 +65,14 @@ requirements_group are likely to have similar memory and time requirements. It
 defaults to the basename of the first word in your command, which it assumes to
 be the name of your executable.
 
-By providing the memory and time hints, vrpipe manager can do a better job
-of spawning runners to handle these commands. The manager learns how much memory
+By providing the memory and time hints, vrpipe manager can do a better job of
+spawning runners to handle these commands. The manager learns how much memory
 and time commands in the same requirements_group actually used in the past, and
 will use its own values unless you set an override. For this learning to work
-well, you should add commands in batches that you think will have similar memory
-and time requirements and give them a consistent and meaningful
-requirements_group name that you will use again in the future.
+well, you should have reason to believe that all the commands you add with the
+same requirements_group will have similar memory and time requirements, and you
+should pick the name in a consistent way such that you'll use it again in the
+future.
 
 For example, if you want to run an executable called "exop", and you know that
 the memory and time requirements of exop vary with the size of its input file,
@@ -86,7 +87,7 @@ should almost always be part of the requirements_group name.)
 
 Override defines if your memory and time should be used instead of the manager's
 estimate.
-0: do not override vrpipe's learned values for memory and time
+0: do not override vrpipe's learned values for memory and time (if any)
 1: override if yours are higher
 2: always override
 
