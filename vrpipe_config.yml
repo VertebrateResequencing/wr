@@ -88,3 +88,10 @@ manager_log_file: "log"
 # 022 = world readable, user read+writable
 # 002 = world readable, user+group read+writable
 manager_umask: 007
+
+# runner_exec_shell: What shell should be used to run commands in?
+# This defaults to bash, regardless of your current shell.
+#
+# Avoid the use of dash on Ubuntu, which is its default sh; bash is STRONGLY
+# recommended.
+runner_exec_shell: "bash"

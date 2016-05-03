@@ -32,12 +32,13 @@ const (
 )
 
 type Config struct {
-	Manager_port     string `default:"11301"`
-	Manager_host     string `default:"localhost"`
-	Manager_dir      string `default:"~/.vrpipe"`
-	Manager_pid_file string `default:"pid"`
-	Manager_log_file string `default:"log"`
-	Manager_umask    int    `default:007`
+	Manager_port      string `default:"11301"`
+	Manager_host      string `default:"localhost"`
+	Manager_dir       string `default:"~/.vrpipe"`
+	Manager_pid_file  string `default:"pid"`
+	Manager_log_file  string `default:"log"`
+	Manager_umask     int    `default:007`
+	Runner_exec_shell string `default:"bash"`
 }
 
 /*
