@@ -42,6 +42,7 @@ func TestJobqueue(t *testing.T) {
 	port := config.Manager_port
 	addr := "localhost:" + port
 
+	ServerLogClientErrors = false
 	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 1s anymore
 	ServerReserveTicker = 10 * time.Millisecond
 
@@ -218,6 +219,14 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok = err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
+			})
+
+			Convey("You get a nice error if you send the server junk", func() {
+				_, err := jq.request(&clientRequest{Method: "junk", Queue: "test_queue"})
+				So(err, ShouldNotBeNil)
+				jqerr, ok := err.(*Error)
+				So(ok, ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, ErrUnknownCommand)
 			})
 		})
 

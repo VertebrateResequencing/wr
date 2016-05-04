@@ -21,12 +21,12 @@ package jobqueue
 // This file contains all the functions to implement a jobqueue server.
 
 import (
-	"errors"
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/satori/go.uuid"
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
 	"log"
@@ -39,18 +39,23 @@ import (
 )
 
 var (
-	ErrInternalError    = errors.New("internal error")
-	ErrUnknownCommand   = errors.New("unknown command")
-	ErrUnknown          = errors.New("unknown error")
-	ErrClosedInt        = errors.New("queues closed due to SIGINT")
-	ErrClosedTerm       = errors.New("queues closed due to SIGTERM")
-	ErrClosedStop       = errors.New("queues closed due to manual Stop()")
-	ErrNoHost           = errors.New("could not determine the non-loopback ip address of this host")
-	ErrNoServer         = errors.New("could not reach the server")
-	ServerInterruptTime = 1 * time.Second
-	ServerItemDelay     = 30 * time.Second
-	ServerItemTTR       = 60 * time.Second
-	ServerReserveTicker = 1 * time.Second
+	ErrInternalError      = "internal error"
+	ErrUnknownCommand     = "unknown command"
+	ErrBadRequest         = "bad request (missing arguments?)"
+	ErrBadJob             = "bad job (not in queue or correct sub-queue)"
+	ErrUnknown            = "unknown error"
+	ErrClosedInt          = "queues closed due to SIGINT"
+	ErrClosedTerm         = "queues closed due to SIGTERM"
+	ErrClosedStop         = "queues closed due to manual Stop()"
+	ErrQueueClosed        = "queue closed"
+	ErrNoHost             = "could not determine the non-loopback ip address of this host"
+	ErrNoServer           = "could not reach the server"
+	ErrMustReserve        = "you must Reserve() a Job before passing it to other methods"
+	ServerInterruptTime   = 1 * time.Second
+	ServerItemDelay       = 30 * time.Second
+	ServerItemTTR         = 10 * time.Second
+	ServerReserveTicker   = 1 * time.Second
+	ServerLogClientErrors = true
 )
 
 // Error records an error and the operation, item and queue that caused it.
@@ -58,24 +63,24 @@ type Error struct {
 	Queue string // the queue's Name
 	Op    string // name of the method
 	Item  string // the item's key
-	Err   error  // one of our Err vars
+	Err   string // one of our Err* vars
 }
 
 func (e Error) Error() string {
-	return "jobqueue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err.Error()
+	return "jobqueue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err
 }
 
 // jobErr is used internally to implement Reserve(), which needs to send job and
 // err over a channel
 type jobErr struct {
 	job *Job
-	err error
+	err string
 }
 
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest
 type serverResponse struct {
-	Err     error
+	Err     string // string instead of error so we can decode on the client side
 	Added   int
 	Existed int
 	Job     *Job
@@ -220,7 +225,7 @@ func Serve(port string) (s *Server, err error) {
 				// parse the request, do the desired work and respond to the client
 				go func() {
 					herr := s.handleRequest(m)
-					if herr != nil {
+					if ServerLogClientErrors && herr != nil {
 						log.Println(herr)
 					}
 				}()
@@ -279,26 +284,24 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	s.Unlock()
 
 	var sr *serverResponse
+	var srerr string
+	var qerr string
 
 	switch cr.Method {
 	case "ping":
-		sr = &serverResponse{}
+		// do nothing - not returning an error to client means ping success
 	case "sstats":
 		sr = &serverResponse{SStats: &ServerStats{ServerInfo: s.ServerInfo}}
 	case "add":
 		var itemdefs []*queue.ItemDef
 		for _, job := range cr.Jobs {
-			l, h := farm.Hash128([]byte(fmt.Sprintf("%s.%s", job.Cwd, job.Cmd)))
-			key := fmt.Sprintf("%016x%016x", l, h)
-			itemdefs = append(itemdefs, &queue.ItemDef{key, job, job.Priority, 0 * time.Second, ServerItemTTR})
+			itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
 		}
-
-		added, dups, amerr := q.AddMany(itemdefs)
-		if amerr != nil {
-			s.reply(m, &serverResponse{Err: Error{cr.Queue, cr.Method, "", ErrInternalError}})
-			return amerr
+		added, dups, err := q.AddMany(itemdefs)
+		if err != nil {
+			srerr = ErrInternalError
+			qerr = err.Error()
 		}
-
 		sr = &serverResponse{Added: added, Existed: dups}
 	case "reserve":
 		// first just try to Reserve normally
@@ -348,7 +351,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 									continue
 								}
 								ticker.Stop()
-								joberrch <- &jobErr{err: Error{cr.Queue, cr.Method, "", err}}
+								if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
+									joberrch <- &jobErr{err: ErrQueueClosed}
+								} else {
+									joberrch <- &jobErr{err: ErrInternalError}
+								}
 								return
 							}
 							ticker.Stop()
@@ -365,26 +372,103 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				joberr := <-joberrch
 				close(joberrch)
 				job = joberr.job
-				err = joberr.err
+				srerr = joberr.err
 			}
 		} else {
 			job = item.Data.(*Job)
 		}
-
-		sr = &serverResponse{Job: job, Err: err}
+		if job != nil {
+			job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
+			sr = &serverResponse{Job: job}
+		}
+	case "jstart":
+		// update the job's cmd-started-related properties
+		var job *Job
+		_, job, srerr = s.getij(cr, q)
+		if srerr == "" {
+			if cr.Job.Pid <= 0 || cr.Job.Host == "" {
+				srerr = ErrBadRequest
+			} else {
+				job.Pid = cr.Job.Pid
+				job.Host = cr.Job.Host
+				job.starttime = time.Now()
+			}
+		}
+	case "jtouch":
+		// update the job's ttr
+		var item *queue.Item
+		item, _, srerr = s.getij(cr, q)
+		if srerr == "" {
+			err = q.Touch(item.Key)
+			if err != nil {
+				srerr = ErrInternalError
+				qerr = err.Error()
+			}
+		}
+	case "jend":
+		// update the job's cmd-ended-related properties
+		var job *Job
+		_, job, srerr = s.getij(cr, q)
+		if srerr == "" {
+			job.Exited = true
+			job.Exitcode = cr.Job.Exitcode
+			job.Peakmem = cr.Job.Peakmem
+			job.CPUtime = cr.Job.CPUtime
+			job.endtime = time.Now()
+		}
+	case "default":
+		srerr = ErrUnknownCommand
 	}
 
+	// on error, just send the error back to client and return a more detailed
+	// error for logging
+	if srerr != "" {
+		s.reply(m, &serverResponse{Err: srerr})
+		if qerr == "" {
+			qerr = srerr
+		}
+		key := ""
+		if cr.Job != nil {
+			key = jobKey(cr.Job)
+		}
+		return Error{cr.Queue, cr.Method, key, qerr}
+	}
+
+	// some commands don't return anything to the client
 	if sr == nil {
-		err = Error{cr.Queue, cr.Method, cr.Key, ErrUnknownCommand}
-		s.reply(m, &serverResponse{Err: err})
-		return err
+		sr = &serverResponse{}
 	}
 
+	// send reply to client
 	err = s.reply(m, sr)
 	if err != nil {
+		// log failure to reply
 		return err
 	}
 	return nil
+}
+
+// for the many j* methods in handleRequest, we do this common stuff to get
+// the desired item and job
+func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job *Job, errs string) {
+	// clientRequest must have a Job
+	if cr.Job == nil {
+		errs = ErrBadRequest
+		return
+	}
+
+	item, err := q.Get(jobKey(cr.Job))
+	if err != nil || item.Stats().State != "run" {
+		errs = ErrBadJob
+		return
+	}
+	job = item.Data.(*Job)
+
+	if !uuid.Equal(cr.ClientID, job.ReservedBy) {
+		errs = ErrMustReserve
+	}
+
+	return
 }
 
 // reply to a client
@@ -413,4 +497,10 @@ func (s *Server) shutdown() {
 		q.Destroy()
 	}
 	s.qs = nil
+}
+
+// jobKey calculates a unique key to describe the job
+func jobKey(job *Job) string {
+	l, h := farm.Hash128([]byte(fmt.Sprintf("%s.%s", job.Cwd, job.Cmd)))
+	return fmt.Sprintf("%016x%016x", l, h)
 }

@@ -26,21 +26,34 @@ See server.go for the functions needed to implement a server executable.
 package jobqueue
 
 import (
+	"bufio"
+	"bytes"
+	"fmt"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
 	"time"
+)
+
+var (
+	pss = []byte("Pss:")
 )
 
 // clientRequest is the struct that clients send to the server over the network
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
+	ClientID       uuid.UUID
 	Method         string
 	Queue          string
-	Key            string
 	Jobs           []*Job
+	Job            *Job
 	Timeout        time.Duration
 	SchedulerGroup string
 }
@@ -73,9 +86,11 @@ type Job struct {
 	Pid            int           // the pid of the running or ran process is recorded here
 	Host           string        // the host the process is running or did run on is recorded here
 	Walltime       time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
+	CPUtime        time.Duration // if the job ran, the CPU time is recorded here
 	starttime      time.Time     // the time the cmd starts running is recorded here
 	endtime        time.Time     // the time the cmd stops running is recorded here
 	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
+	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
@@ -96,9 +111,10 @@ func NewJob(cmd string, cwd string, group string, memory int, time time.Duration
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue
 type Client struct {
-	sock  mangos.Socket
-	queue string
-	ch    codec.Handle
+	sock     mangos.Socket
+	queue    string
+	ch       codec.Handle
+	clientid uuid.UUID
 }
 
 // Connect creates a connection to the jobqueue server, specific to a single
@@ -123,7 +139,12 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 		return
 	}
 
-	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle)}
+	// clients identify themselves (only for the purpose of calling methods that
+	// require the client has previously used Require()) with a UUID; v4 is used
+	// since speed doesn't matter: a typical client executable will only
+	// Connect() once; on the other hand, we avoid any possible problem with
+	// running on machines with low time resolution
+	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), clientid: uuid.NewV4()}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
@@ -198,7 +219,7 @@ func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
 // argument, nil is returned for both job and error. If your timeout is 0, you
 // will wait indefinitely for a job.
 func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout})
+	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid})
 	if err != nil {
 		return
 	}
@@ -216,11 +237,206 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 // that they're supposed to. Therefore, it does not make sense for you to call
 // this yourself; it is only for use by runners spawned by the server.
 func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, SchedulerGroup: schedulerGroup})
+	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid, SchedulerGroup: schedulerGroup})
 	if err != nil {
 		return
 	}
 	j = resp.Job
+	return
+}
+
+// Execute runs the given Job's Cmd and blocks until it exits. Internally it
+// calls Started() and Ended() and keeps track of peak memory used. It regularly
+// calls Touch() on the Job so that the server knows we are still alive and
+// handling the Job successfully. If no error is returned, the Cmd will have run
+// OK, exited with status 0, and been Remove()d from the queue while being
+// placed in the permanent store. Otherwise, it will have been Release()d or
+// Bury()ied as appropriate. The supplied shell is the shell to execute the Cmd
+// under, ideally bash (something that understand the command "set -o
+// pipefail"). You have to have been the one to Reserve() the supplied Job, or
+// this will immediately return an error. NB: the peak memory tracking assumes
+// we are running on a modern linux system with /proc/*/smaps.
+func (c *Client) Execute(job *Job, shell string) error {
+	// quickly check upfront that we Reserve()d the job; this isn't required
+	// for other methods since the server does this check and returns an error,
+	// but in this case we want to avoid starting to execute the command before
+	// finding out about this problem
+	if !uuid.Equal(c.clientid, job.ReservedBy) {
+		return Error{c.queue, "Execute", jobKey(job), ErrMustReserve}
+	}
+
+	// we support arbitrary shell commands that may include semi-colons,
+	// quoted stuff and pipes, so it's best if we just pass it to bash
+	jc := job.Cmd
+	if strings.Contains(jc, " | ") {
+		jc = "set -o pipefail; " + jc
+	}
+	cmd := exec.Command(shell, "-c", jc)
+	err := cmd.Start()
+	if err != nil {
+		// some obscure internal error about setting things up
+		// *** jq.Release(job) // which should put it in delay for 30s, and confirm that we were the client that reserved this job
+		return fmt.Errorf("could not start command [%s]: %s", jc, err)
+	}
+
+	// update the server that we've started the job
+	host, err := os.Hostname()
+	if err != nil {
+		host = "localhost"
+	}
+	err = c.Started(job, cmd.Process.Pid, host)
+	if err != nil {
+		// if we can't access the server, may as well bail out now - kill the
+		// command (and don't bother trying to Release(); it will auto-Release)
+		cmd.Process.Kill()
+		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
+	}
+
+	// update peak mem used by command, and touch job every 15s
+	peakmem := 0
+	ticker := time.NewTicker(time.Duration(ServerItemTTR.Seconds()/2) * time.Second) //*** this should be the ServerItemTTR set when the server started, not the current value
+	go func() {
+		for _ = range ticker.C {
+			err := c.Touch(job)
+			if err != nil {
+				// this could fail for a number of reasons and it's important
+				// we bail out on failure to Touch()
+				cmd.Process.Kill() //*** we just get exit code -1 and don't know that this is why we failed... but ok?
+				break
+			}
+
+			mem, err := currentMemory(job.Pid)
+			if err == nil && mem > peakmem {
+				peakmem = mem
+			}
+		}
+	}()
+
+	// wait for the command to exit and update job stats
+	err = cmd.Wait()
+	ticker.Stop()
+
+	// we could get the max rss from ProcessState.SysUsage, but we'll stick with
+	// our better (?) pss-based Peakmem, unless the command exited so quickly
+	// we never ticked and calculated it
+	if peakmem == 0 {
+		ru := cmd.ProcessState.SysUsage().(*syscall.Rusage)
+		peakmem = int(ru.Maxrss / 1024)
+	}
+
+	// get the exit code and figure out what to do with the Job
+	exitcode := 0
+	var myerr error
+	dobury := false
+	dorelease := false
+	dodelete := false
+	if err != nil {
+		// there was a problem running the command
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitcode = exitError.Sys().(syscall.WaitStatus).ExitStatus()
+			switch exitcode {
+			case 126:
+				dobury = true
+				myerr = fmt.Errorf("command [%s] exited with code %d (permission problem, or command is not executable), which seems permanent, so it has been buried", job.Cmd, exitcode)
+			case 127:
+				dobury = true
+				myerr = fmt.Errorf("command [%s] exited with code %d (command not found), which seems permanent, so it has been buried", job.Cmd, exitcode)
+			case 128:
+				dobury = true
+				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried", job.Cmd, exitcode)
+			default:
+				// *** somehow have to consider the scheduler and if LSF handle killed for memory or time
+				dorelease = true
+				myerr = fmt.Errorf("command [%s] exited with code %d, which may be a temporary issue, so it will be tried again", job.Cmd, exitcode)
+			}
+		} else {
+			// some obscure internal error unrelated to the exit code
+			exitcode = 255
+			dorelease = true
+			myerr = fmt.Errorf("command [%s] failed to complete normally (%v), which may be a temporary issue, so it will be tried again", job.Cmd, err)
+		}
+	} else {
+		// the command worked fine
+		exitcode = cmd.ProcessState.Sys().(syscall.WaitStatus).ExitStatus()
+		dodelete = true
+		myerr = nil
+	}
+
+	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime())
+	if err != nil {
+		// if we can't access the server, we'll have to treat this as failed
+		// and let it auto-Release
+		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+	}
+
+	if dobury {
+		//*** c.Bury(job)
+	} else if dorelease {
+		//*** c.Release(job) // which buries after x attempts
+	} else if dodelete {
+		//*** c.Delete(job) // which records the job in the permanent store
+	}
+
+	return myerr
+}
+
+// get the current memory usage of a pid, relying on modern linux /proc/*/smaps
+// (based on http://stackoverflow.com/a/31881979/675083)
+func currentMemory(pid int) (int, error) {
+	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	kb := uint64(0)
+	r := bufio.NewScanner(f)
+	for r.Scan() {
+		line := r.Bytes()
+		if bytes.HasPrefix(line, pss) {
+			var size uint64
+			_, err := fmt.Sscanf(string(line[4:]), "%d", &size)
+			if err != nil {
+				return 0, err
+			}
+			kb += size
+		}
+	}
+	if err := r.Err(); err != nil {
+		return 0, err
+	}
+
+	// convert kB to MB
+	mem := int(kb / 1024)
+
+	return mem, nil
+}
+
+// Started updates a Job on the server with information that you've started
+// running the Job's Cmd. (The Job's Walltime is handled by the server
+// internally, based on you calling this.)
+func (c *Client) Started(job *Job, pid int, host string) (err error) {
+	job.Pid = pid
+	job.Host = host
+	_, err = c.request(&clientRequest{Method: "jstart", Queue: c.queue, Job: job, ClientID: c.clientid})
+	return
+}
+
+// Touch adds to a job's ttr, allowing you more time to work on it. Note that
+// you must have reserved the job before you can touch it.
+func (c *Client) Touch(job *Job) (err error) {
+	_, err = c.request(&clientRequest{Method: "jtouch", Queue: c.queue, Job: job, ClientID: c.clientid})
+	return
+}
+
+// Ended updates a Job on the server with information that you've finished
+// running the Job's Cmd. (The Job's Walltime is handled by the server
+// internally, based on you calling this.) Peakmem should be in MB.
+func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duration) (err error) {
+	job.Exitcode = exitcode
+	job.Peakmem = peakmem
+	job.CPUtime = cputime
+	_, err = c.request(&clientRequest{Method: "jend", Queue: c.queue, Job: job, ClientID: c.clientid})
 	return
 }
 
@@ -256,16 +472,6 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // 	err = j.conn.beanstalk.Release(j.ID, 0, 60*time.Second)
 // 	if err != nil {
 // 		err = fmt.Errorf("Failed to release beanstalk job %d: %s\n", j.ID, err.Error())
-// 	}
-// 	return
-// }
-
-// Touch resets a job's ttr, allowing you more time to work on it. Note that you
-// must reserve a job before you can touch it.
-// func (j *Job) Touch() (err error) {
-// 	err = j.conn.beanstalk.Touch(j.ID)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to touch beanstalk job %d: %s\n", j.ID, err.Error())
 // 	}
 // 	return
 // }
@@ -318,6 +524,12 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	}
 
 	// pull the error out of sr
-	err = sr.Err
+	if sr.Err != "" {
+		key := ""
+		if cr.Job != nil {
+			key = jobKey(cr.Job)
+		}
+		err = &Error{cr.Queue, cr.Method, key, sr.Err}
+	}
 	return
 }
