@@ -416,7 +416,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.CPUtime = cr.Job.CPUtime
 			job.endtime = time.Now()
 		}
-	case "default":
+	default:
 		srerr = ErrUnknownCommand
 	}
 
