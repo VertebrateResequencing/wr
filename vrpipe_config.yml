@@ -61,7 +61,8 @@ manager_host: "localhost"
 # manager_dir: Where should the vrpipe manager store its working files?
 # This defaults to a directory named .vrpipe in your home directory.
 #
-# The files stored in here are, by default, the manager's pid file and log file.
+# The files stored in here are, by default, the manager's pid file, log file and
+# database related files.
 manager_dir: "~/.vrpipe"
 
 # manager_pid_file: Where should vrpipe manager store its pid file?
@@ -79,6 +80,30 @@ manager_pid_file: "pid"
 # you have the root permissions to set things up, you may prefer to set this to
 # /var/log/vrpipe/pid
 manager_log_file: "log"
+
+# manager_db_file: Where should vrpipe manager store its database file?
+# This defaults to a file named "db" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir. Note that you may
+# need quite a lot of disk space for this, especially after you've run millions
+# of jobs, since a permanent record of everything you've done is held in this
+# file.
+#
+# WARNING: the database file will eventually contain your environment variables,
+# so you should secure this file and not make it public if you have passwords
+# set as the values of environment variables.
+manager_db_file: "db"
+
+# manager_db_bk_file: Where should vrpipe manager back up its database file?
+# This defaults to a file named "db_bk" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir (and ideally you
+# should set this to a path on a different disk or better yet a different
+# machine). Note that you may need quite a lot of disk space for this, as when a
+# new backup starts it is written to a temp file in the directory you specify
+# before replacing the file at the path you specified, so peaking to 2x disk
+# usage.
+manager_db_bk_file: "db_bk"
 
 # manager_umask: What umask should be used when vrpipe manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).

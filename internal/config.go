@@ -32,13 +32,15 @@ const (
 )
 
 type Config struct {
-	Manager_port      string `default:"11301"`
-	Manager_host      string `default:"localhost"`
-	Manager_dir       string `default:"~/.vrpipe"`
-	Manager_pid_file  string `default:"pid"`
-	Manager_log_file  string `default:"log"`
-	Manager_umask     int    `default:007`
-	Runner_exec_shell string `default:"bash"`
+	Manager_port       string `default:"11301"`
+	Manager_host       string `default:"localhost"`
+	Manager_dir        string `default:"~/.vrpipe"`
+	Manager_pid_file   string `default:"pid"`
+	Manager_log_file   string `default:"log"`
+	Manager_db_file    string `default:"db"`
+	Manager_db_bk_file string `default:"db_bk"`
+	Manager_umask      int    `default:007`
+	Runner_exec_shell  string `default:"bash"`
 }
 
 /*
@@ -122,6 +124,13 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	}
 	if !filepath.IsAbs(config.Manager_log_file) {
 		config.Manager_log_file = filepath.Join(config.Manager_dir, config.Manager_log_file)
+	}
+	if !filepath.IsAbs(config.Manager_db_file) {
+		config.Manager_db_file = filepath.Join(config.Manager_dir, config.Manager_db_file)
+	}
+	if !filepath.IsAbs(config.Manager_db_bk_file) {
+		//*** we need to support this being on a different machine, possibly on an S3-style object store
+		config.Manager_db_bk_file = filepath.Join(config.Manager_dir, config.Manager_db_bk_file)
 	}
 
 	return config
