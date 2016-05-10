@@ -86,6 +86,7 @@ func newItem(key string, data interface{}, priority uint8, delay time.Duration, 
 	}
 }
 
+// Stats returns some information about the item
 func (item *Item) Stats() *ItemStats {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
