@@ -32,16 +32,14 @@ import (
 )
 
 // options for this cmd
-var cmdFile string
-var cmdTorun string
-var cmdCwd string
 var reqGroup string
-var cmdId string
 var cmdTime string
 var cmdMem string
 var cmdCPUs int
 var cmdOvr int
 var cmdPri int
+var cmdFile string
+var cmdId string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -97,7 +95,11 @@ priorities will start running before those with lower priorities.
 The identifier option is an arbitrary name you can give your commands so you can
 query their status later. If you split your commands into multiple batches with
 different requirements_groups, you can give all the different batches the same
-identifier, so you can track them in one go.`,
+identifier, so you can track them in one go.
+
+NB: Your commands will run with the environment variables you had when you
+added them, not the possibly different environment variables you could have in
+the future when the commands actually get run.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
