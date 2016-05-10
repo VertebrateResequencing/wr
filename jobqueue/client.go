@@ -26,8 +26,6 @@ See server.go for the functions needed to implement a server executable.
 package jobqueue
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
@@ -56,6 +54,9 @@ type clientRequest struct {
 	Job            *Job
 	Timeout        time.Duration
 	SchedulerGroup string
+	Env            []byte // compressed binc encoding of []string
+	GetStd         bool
+	GetEnv         bool
 }
 
 // Job is a struct that represents a command that needs to be run and some
@@ -68,7 +69,7 @@ type clientRequest struct {
 // experience if your supplied values are higher, or 2 to always override.
 // Priority is a number between 0 and 255 inclusive - higher numbered jobs will
 // run before lower numbered ones (the default is 0). If you get a Job back
-// from the server (via Reserve() or Get()), you should treat the properties as
+// from the server (via Reserve() or Get*()), you should treat the properties as
 // read-only: changing them will have no effect.
 type Job struct {
 	RepGroup       string // a name associated with related Jobs to help group them together when reporting on their status etc.
@@ -87,10 +88,16 @@ type Job struct {
 	Host           string        // the host the process is running or did run on is recorded here
 	Walltime       time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
 	CPUtime        time.Duration // if the job ran, the CPU time is recorded here
+	StdErrC        []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
+	StdOutC        []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
+	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
+	State          string        // the job's state in the queue: 'delayed', 'ready', 'running', 'buried' or 'complete'
+	Attempts       uint32        // the number of times the job had ever entered 'running' state
 	starttime      time.Time     // the time the cmd starts running is recorded here
 	endtime        time.Time     // the time the cmd stops running is recorded here
 	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
 	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
+	envKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
@@ -115,6 +122,11 @@ type Client struct {
 	queue    string
 	ch       codec.Handle
 	clientid uuid.UUID
+}
+
+// envStr holds the []string from os.Environ(), for codec compatibility
+type envStr struct {
+	Environ []string
 }
 
 // Connect creates a connection to the jobqueue server, specific to a single
@@ -198,11 +210,11 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 }
 
 // Add adds new jobs to the job queue, but only if those jobs aren't already in
-// there. If any where already there, you will not get an error, but the
+// there. If any were already there, you will not get an error, but the
 // returned 'existed' count will be > 0. Note that no cross-queue checking is
 // done, so you need to be careful not to add the same job to different queues.
 func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Queue: c.queue, Jobs: jobs})
+	resp, err := c.request(&clientRequest{Method: "add", Queue: c.queue, Jobs: jobs, Env: c.compressEnv()})
 	if err != nil {
 		return
 	}
@@ -272,7 +284,25 @@ func (c *Client) Execute(job *Job, shell string) error {
 		jc = "set -o pipefail; " + jc
 	}
 	cmd := exec.Command(shell, "-c", jc)
-	err := cmd.Start()
+
+	// we'll store up to 4kb of the head and tail of command's STDERR and STDOUT
+	cmd.Stderr = &prefixSuffixSaver{N: 4096}
+	cmd.Stdout = &prefixSuffixSaver{N: 4096}
+
+	// we'll run the command from the desired directory
+	cmd.Dir = job.Cwd
+
+	// and we'll run it with the environment variables that were present when
+	// the command was first added to the queue *** we need a way for users to update a job with new env vars
+	env, err := job.Env()
+	if err != nil {
+		// *** jq.Bury(job)
+		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", jobKey(job), err)
+	}
+	cmd.Env = env
+
+	// start running the command
+	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
 		// *** jq.Release(job) // which should put it in delay for 30s, and confirm that we were the client that reserved this job
@@ -312,7 +342,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 	}()
 
-	// wait for the command to exit and update job stats
+	// wait for the command to exit
 	err = cmd.Wait()
 	ticker.Stop()
 
@@ -362,7 +392,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		myerr = nil
 	}
 
-	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime())
+	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), cmd.Stdout.(*prefixSuffixSaver).Bytes(), cmd.Stderr.(*prefixSuffixSaver).Bytes())
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
@@ -378,38 +408,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	return myerr
-}
-
-// get the current memory usage of a pid, relying on modern linux /proc/*/smaps
-// (based on http://stackoverflow.com/a/31881979/675083)
-func currentMemory(pid int) (int, error) {
-	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	kb := uint64(0)
-	r := bufio.NewScanner(f)
-	for r.Scan() {
-		line := r.Bytes()
-		if bytes.HasPrefix(line, pss) {
-			var size uint64
-			_, err := fmt.Sscanf(string(line[4:]), "%d", &size)
-			if err != nil {
-				return 0, err
-			}
-			kb += size
-		}
-	}
-	if err := r.Err(); err != nil {
-		return 0, err
-	}
-
-	// convert kB to MB
-	mem := int(kb / 1024)
-
-	return mem, nil
 }
 
 // Started updates a Job on the server with information that you've started
@@ -432,10 +430,16 @@ func (c *Client) Touch(job *Job) (err error) {
 // Ended updates a Job on the server with information that you've finished
 // running the Job's Cmd. (The Job's Walltime is handled by the server
 // internally, based on you calling this.) Peakmem should be in MB.
-func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duration) (err error) {
+func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
 	job.Exitcode = exitcode
 	job.Peakmem = peakmem
 	job.CPUtime = cputime
+	if len(stdout) > 0 {
+		job.StdOutC = compress(stdout)
+	}
+	if len(stderr) > 0 {
+		job.StdErrC = compress(stderr)
+	}
 	_, err = c.request(&clientRequest{Method: "jend", Queue: c.queue, Job: job, ClientID: c.clientid})
 	return
 }
@@ -497,6 +501,71 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 // 	return
 // }
 
+// GetByCmd gets a Job given its Cmd. With the boolean args set to true, this
+// is the only way to get a Job that StdOut() and StdErr() will work on, and one
+// of 2 ways that Env() will work (the other being Reserve()).
+func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Job: &Job{Cmd: cmd, Cwd: cwd}, GetStd: getstd, GetEnv: getenv})
+	if err != nil {
+		return
+	}
+	j = resp.Job
+	return
+}
+
+// Env decompresses and decodes job.EnvC (the output of compressEnv(), which are
+// the environment variables the Job's Cmd should run/ran under). Note that EnvC
+// is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().
+func (j *Job) Env() (env []string, err error) {
+	decompressed, err := decompress(j.EnvC)
+	if err != nil {
+		return
+	}
+	ch := new(codec.BincHandle)
+	dec := codec.NewDecoderBytes([]byte(decompressed), ch)
+	es := &envStr{}
+	err = dec.Decode(es)
+	if err != nil {
+		return
+	}
+	env = es.Environ
+	return
+}
+
+// StdOut returns the decompressed job.StdOutC, which is the head and tail of
+// job.Cmd's STDOUT when it ran. If the Cmd hasn't run yet, or if it output
+// nothing to STDOUT, you will get an empty string. Note that StdOutC is only
+// populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
+// but failed.
+func (j *Job) StdOut() (stdout string, err error) {
+	if len(j.StdOutC) == 0 {
+		return
+	}
+	decomp, err := decompress(j.StdOutC)
+	if err != nil {
+		return
+	}
+	stdout = string(decomp)
+	return
+}
+
+// StdErr returns the decompressed job.StdErrC, which is the head and tail of
+// job.Cmd's STDERR when it ran. If the Cmd hasn't run yet, or if it output
+// nothing to STDERR, you will get an empty string. Note that StdErrC is only
+// populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
+// but failed.
+func (j *Job) StdErr() (stderr string, err error) {
+	if len(j.StdErrC) == 0 {
+		return
+	}
+	decomp, err := decompress(j.StdErrC)
+	if err != nil {
+		return
+	}
+	stderr = string(decomp)
+	return
+}
+
 // request the server do something and get back its response
 func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	// encode and send the request
@@ -532,4 +601,15 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 		err = &Error{cr.Queue, cr.Method, key, sr.Err}
 	}
 	return
+}
+
+// compressEnv encodes the current user environment variables and then
+// compresses that, so that for Add() the server can store it on disc without
+// holding it in memory, and pass the compressed bytes back to us when we need
+// to know the Env (during Execute()).
+func (c *Client) compressEnv() []byte {
+	var encoded []byte
+	enc := codec.NewEncoderBytes(&encoded, c.ch)
+	enc.Encode(&envStr{os.Environ()})
+	return compress(encoded)
 }

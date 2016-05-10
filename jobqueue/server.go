@@ -22,10 +22,11 @@ package jobqueue
 
 import (
 	"fmt"
-	"github.com/dgryski/go-farm"
+	"github.com/asdine/storm"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/hashicorp/golang-lru"
 	"github.com/satori/go.uuid"
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
@@ -43,6 +44,7 @@ var (
 	ErrUnknownCommand     = "unknown command"
 	ErrBadRequest         = "bad request (missing arguments?)"
 	ErrBadJob             = "bad job (not in queue or correct sub-queue)"
+	ErrMissingJob         = "corresponding job not found"
 	ErrUnknown            = "unknown error"
 	ErrClosedInt          = "queues closed due to SIGINT"
 	ErrClosedTerm         = "queues closed due to SIGTERM"
@@ -51,6 +53,7 @@ var (
 	ErrNoHost             = "could not determine the non-loopback ip address of this host"
 	ErrNoServer           = "could not reach the server"
 	ErrMustReserve        = "you must Reserve() a Job before passing it to other methods"
+	ErrDBError            = "failed to use database"
 	ServerInterruptTime   = 1 * time.Second
 	ServerItemDelay       = 30 * time.Second
 	ServerItemTTR         = 10 * time.Second
@@ -106,6 +109,8 @@ type Server struct {
 	ServerInfo *ServerInfo
 	sock       mangos.Socket
 	ch         codec.Handle
+	storm      *storm.DB
+	envcache   *lru.ARCCache
 	done       chan error
 	stop       chan bool
 	sync.Mutex
@@ -119,8 +124,10 @@ type Server struct {
 // or you call Stop(), at which point the queues will be safely closed (you'd
 // probably just exit at that point). The possible errors from Serve() will be
 // related to not being able to start up at the supplied address; errors
-// encountered while dealing with clients are logged but otherwise ignored.
-func Serve(port string) (s *Server, err error) {
+// encountered while dealing with clients are logged but otherwise ignored. If
+// it creates a db file or recreates one from backup, it will say what it did
+// in the returned msg string.
+func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -185,11 +192,64 @@ func Serve(port string) (s *Server, err error) {
 		host = "localhost"
 	}
 
+	// we need to persist stuff to disk, and we do so using Storm, an ORM for
+	// BoltDB. It gives us transactions, a single small db file, and the ability
+	// to do hot backups. If dbFile doesn't exist or seems corrupted, we copy
+	// it from backup if that exists, otherwise we start fresh.
+	var stormdb *storm.DB
+	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
+		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) { //*** need to handle bk being on another machine, possibly an S3-style object store
+			stormdb, err = storm.Open(dbFile)
+			msg = "created new empty db file " + dbFile
+		} else {
+			// copy bk to main *** need to handle bk being in an object store
+			err = copyFile(dbBkFile, dbFile)
+			if err != nil {
+				return
+			}
+			stormdb, err = storm.Open(dbFile)
+			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
+		}
+	} else {
+		stormdb, err = storm.Open(dbFile)
+		if err != nil {
+			// try the backup *** again, need to handle bk being elsewhere
+			if _, errbk := os.Stat(dbBkFile); errbk == nil {
+				stormdb, errbk = storm.Open(dbBkFile)
+				if errbk == nil {
+					origerr := err
+					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
+					err = os.Remove(dbFile)
+					if err != nil {
+						return
+					}
+					err = copyFile(dbBkFile, dbFile)
+					if err != nil {
+						return
+					}
+					stormdb, err = storm.Open(dbFile)
+					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, origerr)
+				}
+			}
+		}
+	}
+	if err != nil {
+		return
+	}
+
+	// we cache frequently used things to avoid db access
+	envcache, err := lru.NewARC(12) // we don't expect that many different ENVs to be in use at once
+	if err != nil {
+		return
+	}
+
 	s = &Server{
 		ServerInfo: &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid()},
 		sock:       sock,
 		ch:         new(codec.BincHandle),
 		qs:         make(map[string]*queue.Queue),
+		storm:      stormdb,
+		envcache:   envcache,
 		stop:       stop,
 		done:       done,
 	}
@@ -241,6 +301,7 @@ func Serve(port string) (s *Server, err error) {
 // be due to receiving a signal or because you called Stop()
 func (s *Server) Block() (err error) {
 	err = <-s.done
+	s.storm.Close() //*** do one last backup?
 	return
 }
 
@@ -293,93 +354,130 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	case "sstats":
 		sr = &serverResponse{SStats: &ServerStats{ServerInfo: s.ServerInfo}}
 	case "add":
-		var itemdefs []*queue.ItemDef
-		for _, job := range cr.Jobs {
-			itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
-		}
-		added, dups, err := q.AddMany(itemdefs)
-		if err != nil {
-			srerr = ErrInternalError
-			qerr = err.Error()
-		}
-		sr = &serverResponse{Added: added, Existed: dups}
-	case "reserve":
-		// first just try to Reserve normally
-		var item *queue.Item
-		var err error
-		var rf queue.ReserveFilter
-		if cr.SchedulerGroup != "" {
-			rf = func(data interface{}) bool {
-				job := data.(*Job)
-				if job.schedulerGroup == cr.SchedulerGroup {
-					return true
-				}
-				return false
-			}
-			item, err = q.ReserveFiltered(rf)
+		// add jobs to the queue, and along side keep the environment variables
+		// they're supposed to execute under.
+		if cr.Env == nil || cr.Jobs == nil {
+			srerr = ErrBadRequest
 		} else {
-			item, err = q.Reserve()
-		}
-		var job *Job
-		if err != nil {
-			if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-				// there's nothing in the ready sub queue right now, so every
-				// second try and Reserve() from the queue until either we get
-				// an item, or we exceed the client's timeout
-				var stop <-chan time.Time
-				if cr.Timeout.Nanoseconds() > 0 {
-					stop = time.After(cr.Timeout)
+			// Store Env in db unless cached, which means it must already be there
+			envkey := byteKey(cr.Env)
+			ok := true
+			if !s.envcache.Contains(envkey) {
+				err := s.storm.Set("envs", envkey, cr.Env)
+				if err == nil {
+					s.envcache.Add(envkey, cr.Env)
 				} else {
-					stop = make(chan time.Time)
+					srerr = ErrDBError
+					qerr = err.Error()
+					ok = false
 				}
+			}
+			if ok {
+				var itemdefs []*queue.ItemDef
+				for _, job := range cr.Jobs {
+					job.envKey = envkey
+					itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
+				}
+				added, dups, err := q.AddMany(itemdefs)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				}
+				sr = &serverResponse{Added: added, Existed: dups}
+			}
+		}
+	case "reserve":
+		// return the next ready job
+		if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
+			srerr = ErrBadRequest
+		} else {
+			// first just try to Reserve normally
+			var item *queue.Item
+			var err error
+			var rf queue.ReserveFilter
+			if cr.SchedulerGroup != "" {
+				rf = func(data interface{}) bool {
+					job := data.(*Job)
+					if job.schedulerGroup == cr.SchedulerGroup {
+						return true
+					}
+					return false
+				}
+				item, err = q.ReserveFiltered(rf)
+			} else {
+				item, err = q.Reserve()
+			}
+			var job *Job
+			if err != nil {
+				if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
+					// there's nothing in the ready sub queue right now, so every
+					// second try and Reserve() from the queue until either we get
+					// an item, or we exceed the client's timeout
+					var stop <-chan time.Time
+					if cr.Timeout.Nanoseconds() > 0 {
+						stop = time.After(cr.Timeout)
+					} else {
+						stop = make(chan time.Time)
+					}
 
-				joberrch := make(chan *jobErr, 1)
-				ticker := time.NewTicker(ServerReserveTicker)
-				go func() {
-					for {
-						select {
-						case <-ticker.C:
-							var item *queue.Item
-							var err error
-							if cr.SchedulerGroup != "" {
-								item, err = q.ReserveFiltered(rf)
-							} else {
-								item, err = q.Reserve()
-							}
-							if err != nil {
-								if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-									continue
+					joberrch := make(chan *jobErr, 1)
+					ticker := time.NewTicker(ServerReserveTicker)
+					go func() {
+						for {
+							select {
+							case <-ticker.C:
+								var item *queue.Item
+								var err error
+								if cr.SchedulerGroup != "" {
+									item, err = q.ReserveFiltered(rf)
+								} else {
+									item, err = q.Reserve()
+								}
+								if err != nil {
+									if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
+										continue
+									}
+									ticker.Stop()
+									if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
+										joberrch <- &jobErr{err: ErrQueueClosed}
+									} else {
+										joberrch <- &jobErr{err: ErrInternalError}
+									}
+									return
 								}
 								ticker.Stop()
-								if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
-									joberrch <- &jobErr{err: ErrQueueClosed}
-								} else {
-									joberrch <- &jobErr{err: ErrInternalError}
-								}
+								joberrch <- &jobErr{job: item.Data.(*Job)}
+								return
+							case <-stop:
+								ticker.Stop()
+								// if we time out, we'll return nil job and nil err
+								joberrch <- &jobErr{}
 								return
 							}
-							ticker.Stop()
-							joberrch <- &jobErr{job: item.Data.(*Job)}
-							return
-						case <-stop:
-							ticker.Stop()
-							// if we time out, we'll return nil job and nil err
-							joberrch <- &jobErr{}
-							return
 						}
-					}
-				}()
-				joberr := <-joberrch
-				close(joberrch)
-				job = joberr.job
-				srerr = joberr.err
+					}()
+					joberr := <-joberrch
+					close(joberrch)
+					job = joberr.job
+					srerr = joberr.err
+				}
+			} else {
+				job = item.Data.(*Job)
 			}
-		} else {
-			job = item.Data.(*Job)
-		}
-		if job != nil {
-			job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
-			sr = &serverResponse{Job: job}
+			if job != nil {
+				job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
+				var envc []byte
+				cached, got := s.envcache.Get(job.envKey)
+				if got {
+					envc = cached.([]byte)
+				} else {
+					s.storm.Get("envs", job.envKey, envc)
+					s.envcache.Add(job.envKey, envc)
+				}
+				job.EnvC = envc
+				job.Exited = false
+				sr = &serverResponse{Job: job}
+			}
 		}
 	case "jstart":
 		// update the job's cmd-started-related properties
@@ -392,6 +490,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Pid = cr.Job.Pid
 				job.Host = cr.Job.Host
 				job.starttime = time.Now()
+				var tend time.Time
+				job.endtime = tend
 			}
 		}
 	case "jtouch":
@@ -415,6 +515,107 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.Peakmem = cr.Job.Peakmem
 			job.CPUtime = cr.Job.CPUtime
 			job.endtime = time.Now()
+
+			// we don't want to store Std*C in the job, since that would waste a
+			// lot of the queue's memory; we store in db instead, and only
+			// retrieve when a client needs to see these. To stop the db file
+			// becoming enormous, we only store these if the cmd failed and also
+			// delete these from db when the cmd completes successfully. By
+			// doing the deletion upfront, we also ensure we have the latest
+			// std, which may be nil even on cmd failure.
+			jobkey := jobKey(job)
+			s.storm.Delete("stdo", jobKey)
+			s.storm.Delete("stde", jobKey)
+			if cr.Job.Exitcode != 0 {
+				if cr.Job.StdOutC != nil {
+					err = s.storm.Set("stdo", jobkey, cr.Job.StdOutC)
+				}
+				if cr.Job.StdErrC != nil {
+					err = s.storm.Set("stde", jobkey, cr.Job.StdErrC)
+				}
+				if err != nil {
+					srerr = ErrDBError
+					qerr = err.Error()
+				}
+			}
+		}
+	case "getbc":
+		// get a job by its Cmd & Cwd
+		if cr.Job == nil {
+			srerr = ErrBadRequest
+		} else {
+			jobkey := byteKey([]byte(fmt.Sprintf("%s.%s", cr.Job.Cwd, cr.Job.Cmd)))
+			item, err := q.Get(jobkey)
+			if err == nil && item != nil {
+				sjob := item.Data.(*Job)
+				stats := item.Stats()
+
+				state := ""
+				switch stats.State {
+				case "delay":
+					state = "delayed"
+				case "ready":
+					state = "ready"
+				case "run":
+					state = "running"
+				case "bury":
+					state = "buried"
+				default:
+					state = "complete"
+				}
+
+				// we're going to fill in some properties of the Job and return
+				// it to client, but don't want those properties set here for
+				// us, so we make a new Job and fill stuff in that
+				job := &Job{
+					RepGroup: sjob.RepGroup,
+					ReqGroup: sjob.ReqGroup,
+					Cmd:      sjob.Cmd,
+					Cwd:      sjob.Cwd,
+					Memory:   sjob.Memory,
+					Time:     sjob.Time,
+					CPUs:     sjob.CPUs,
+					Priority: sjob.Priority,
+					Peakmem:  sjob.Peakmem,
+					Exited:   sjob.Exited,
+					Exitcode: sjob.Exitcode,
+					Pid:      sjob.Pid,
+					Host:     sjob.Host,
+					CPUtime:  sjob.CPUtime,
+					State:    state,
+					Attempts: stats.Reserves,
+				}
+
+				if !sjob.starttime.IsZero() {
+					if sjob.endtime.IsZero() || state == "running" {
+						job.Walltime = time.Since(sjob.starttime)
+					} else {
+						job.Walltime = sjob.endtime.Sub(sjob.starttime)
+					}
+				}
+				if cr.GetEnv {
+					var envc []byte
+					cached, got := s.envcache.Get(sjob.envKey)
+					if got {
+						envc = cached.([]byte)
+					} else {
+						s.storm.Get("envs", sjob.envKey, envc)
+						s.envcache.Add(sjob.envKey, envc)
+					}
+					job.EnvC = envc
+				}
+				if cr.GetStd && job.Exited && job.Exitcode != 0 {
+					var stdo []byte
+					s.storm.Get("stdo", jobkey, &stdo)
+					job.StdOutC = stdo
+					var stde []byte
+					s.storm.Get("stde", jobkey, &stde)
+					job.StdErrC = stde
+				}
+				sr = &serverResponse{Job: job}
+			} else {
+				srerr = ErrMissingJob
+			}
 		}
 	default:
 		srerr = ErrUnknownCommand
@@ -488,6 +689,7 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) (err error) {
 // persists them to disk
 func (s *Server) shutdown() {
 	s.sock.Close()
+	s.storm.Close()
 
 	//*** we want to persist production queues to disk
 
@@ -497,10 +699,4 @@ func (s *Server) shutdown() {
 		q.Destroy()
 	}
 	s.qs = nil
-}
-
-// jobKey calculates a unique key to describe the job
-func jobKey(job *Job) string {
-	l, h := farm.Hash128([]byte(fmt.Sprintf("%s.%s", job.Cwd, job.Cmd)))
-	return fmt.Sprintf("%016x%016x", l, h)
 }

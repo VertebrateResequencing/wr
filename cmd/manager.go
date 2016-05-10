@@ -295,27 +295,36 @@ func startJQ(sayStarted bool) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// start the jobqueue server
-	server, err := jobqueue.Serve(config.Manager_port)
-	if err != nil {
-		fatal("%s", err)
-	}
+	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_db_file, config.Manager_db_bk_file)
 
-	if sayStarted {
+	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)
 	}
 
 	// start logging to configured file
-	logfile, err := os.OpenFile(config.Manager_log_file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		warn("could not log to %s, will log to STDOUT: %v", config.Manager_log_file, err)
+	logfile, errlog := os.OpenFile(config.Manager_log_file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if errlog != nil {
+		warn("could not log to %s, will log to STDOUT: %v", config.Manager_log_file, errlog)
 	} else {
 		defer logfile.Close()
 		log.SetOutput(logfile)
 	}
 
+	// log to file failure to Serve
+	if err != nil {
+		if msg != "" {
+			log.Printf("vrpipe manager : %s\n", msg)
+		}
+		log.Printf("vrpipe manager failed to start : %s\n", err)
+		os.Exit(1)
+	}
+
 	// log to file that we started
 	addr := sAddr(server.ServerInfo)
 	log.Printf("vrpipe manager started on %s\n", addr)
+	if msg != "" {
+		log.Printf("vrpipe manager : %s\n", msg)
+	}
 
 	// block forever while the jobqueue does its work
 	err = server.Block()

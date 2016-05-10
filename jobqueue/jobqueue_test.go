@@ -55,7 +55,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, err := Serve(port)
+		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
@@ -205,7 +205,7 @@ func TestJobqueue(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, err = Serve(port)
+				server, _, err = Serve(port, config.Manager_db_file, config.Manager_db_bk_file)
 				So(err, ShouldBeNil)
 
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -263,7 +263,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		// per := int64(e.Nanoseconds() / int64(n))
 		// log.Printf("Added %d beanstalk jobs in %s == %d per\n", n, e, per)
 
-		server, err := Serve(port)
+		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file)
 		if err != nil {
 			log.Fatal(err)
 		}
