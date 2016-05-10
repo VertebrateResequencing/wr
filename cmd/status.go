@@ -68,7 +68,7 @@ the commands, or if you added them with a different cwd.`,
 			set++
 		}
 		if set > 1 {
-			fatal("-f, -i and -c are mutually exclusive; only specify one of them")
+			fatal("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
 		if cmdCwd == "" {
 			pwd, err := os.Getwd()
