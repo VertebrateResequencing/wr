@@ -34,6 +34,7 @@ var config internal.Config
 // these are shared by some of the subcommands
 var addr string
 var timeoutint int
+var cmdCwd string
 
 // This represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
