@@ -22,11 +22,9 @@ package jobqueue
 
 import (
 	"fmt"
-	"github.com/asdine/storm"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
-	"github.com/hashicorp/golang-lru"
 	"github.com/satori/go.uuid"
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
@@ -110,8 +108,7 @@ type Server struct {
 	ServerInfo *ServerInfo
 	sock       mangos.Socket
 	ch         codec.Handle
-	storm      *storm.DB
-	envcache   *lru.ARCCache
+	db         *db
 	done       chan error
 	stop       chan bool
 	sync.Mutex
@@ -193,53 +190,8 @@ func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, 
 		host = "localhost"
 	}
 
-	// we need to persist stuff to disk, and we do so using Storm, an ORM for
-	// BoltDB. It gives us transactions, a single small db file, and the ability
-	// to do hot backups. If dbFile doesn't exist or seems corrupted, we copy
-	// it from backup if that exists, otherwise we start fresh.
-	var stormdb *storm.DB
-	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
-		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) { //*** need to handle bk being on another machine, possibly an S3-style object store
-			stormdb, err = storm.Open(dbFile)
-			msg = "created new empty db file " + dbFile
-		} else {
-			// copy bk to main *** need to handle bk being in an object store
-			err = copyFile(dbBkFile, dbFile)
-			if err != nil {
-				return
-			}
-			stormdb, err = storm.Open(dbFile)
-			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
-		}
-	} else {
-		stormdb, err = storm.Open(dbFile)
-		if err != nil {
-			// try the backup *** again, need to handle bk being elsewhere
-			if _, errbk := os.Stat(dbBkFile); errbk == nil {
-				stormdb, errbk = storm.Open(dbBkFile)
-				if errbk == nil {
-					origerr := err
-					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
-					err = os.Remove(dbFile)
-					if err != nil {
-						return
-					}
-					err = copyFile(dbBkFile, dbFile)
-					if err != nil {
-						return
-					}
-					stormdb, err = storm.Open(dbFile)
-					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, origerr)
-				}
-			}
-		}
-	}
-	if err != nil {
-		return
-	}
-
-	// we cache frequently used things to avoid db access
-	envcache, err := lru.NewARC(12) // we don't expect that many different ENVs to be in use at once
+	// we need to persist stuff to disk, and we do so using boltdb
+	db, msg, err := initDB(dbFile, dbBkFile)
 	if err != nil {
 		return
 	}
@@ -249,8 +201,7 @@ func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, 
 		sock:       sock,
 		ch:         new(codec.BincHandle),
 		qs:         make(map[string]*queue.Queue),
-		storm:      stormdb,
-		envcache:   envcache,
+		db:         db,
 		stop:       stop,
 		done:       done,
 	}
@@ -302,7 +253,7 @@ func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, 
 // be due to receiving a signal or because you called Stop()
 func (s *Server) Block() (err error) {
 	err = <-s.done
-	s.storm.Close() //*** do one last backup?
+	s.db.close() //*** do one last backup?
 	return
 }
 
@@ -360,20 +311,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		if cr.Env == nil || cr.Jobs == nil {
 			srerr = ErrBadRequest
 		} else {
-			// Store Env in db unless cached, which means it must already be there
-			envkey := byteKey(cr.Env)
-			ok := true
-			if !s.envcache.Contains(envkey) {
-				err := s.storm.Set("envs", envkey, cr.Env)
-				if err == nil {
-					s.envcache.Add(envkey, cr.Env)
-				} else {
-					srerr = ErrDBError
-					qerr = err.Error()
-					ok = false
-				}
-			}
-			if ok {
+			// Store Env
+			envkey, err := s.db.storeEnv(cr.Env)
+			if err != nil {
+				srerr = ErrDBError
+				qerr = err.Error()
+			} else {
 				var itemdefs []*queue.ItemDef
 				for _, job := range cr.Jobs {
 					job.envKey = envkey
@@ -467,15 +410,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 			if job != nil {
 				job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
-				var envc []byte
-				cached, got := s.envcache.Get(job.envKey)
-				if got {
-					envc = cached.([]byte)
-				} else {
-					s.storm.Get("envs", job.envKey, envc)
-					s.envcache.Add(job.envKey, envc)
-				}
-				job.EnvC = envc
+				job.EnvC = s.db.retrieveEnv(job.envKey)
 				job.Exited = false
 				sr = &serverResponse{Job: job}
 			}
@@ -516,28 +451,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.Peakmem = cr.Job.Peakmem
 			job.CPUtime = cr.Job.CPUtime
 			job.endtime = time.Now()
-
-			// we don't want to store Std*C in the job, since that would waste a
-			// lot of the queue's memory; we store in db instead, and only
-			// retrieve when a client needs to see these. To stop the db file
-			// becoming enormous, we only store these if the cmd failed and also
-			// delete these from db when the cmd completes successfully. By
-			// doing the deletion upfront, we also ensure we have the latest
-			// std, which may be nil even on cmd failure.
-			jobkey := jobKey(job)
-			s.storm.Delete("stdo", jobKey)
-			s.storm.Delete("stde", jobKey)
-			if cr.Job.Exitcode != 0 {
-				if cr.Job.StdOutC != nil {
-					err = s.storm.Set("stdo", jobkey, cr.Job.StdOutC)
-				}
-				if cr.Job.StdErrC != nil {
-					err = s.storm.Set("stde", jobkey, cr.Job.StdErrC)
-				}
-				if err != nil {
-					srerr = ErrDBError
-					qerr = err.Error()
-				}
+			err := s.db.updateJobStd(jobKey(job), cr.Job.Exitcode, cr.Job.StdOutC, cr.Job.StdErrC)
+			if err != nil {
+				srerr = ErrDBError
+				qerr = err.Error()
 			}
 		}
 	case "getbc":
@@ -566,6 +483,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 				jobs = append(jobs, job)
 			}
+			sr = &serverResponse{Jobs: jobs}
+		}
+	case "getbr":
+		// get jobs by their RepGroup
+		if cr.Job == nil || cr.Job.RepGroup == "" {
+			srerr = ErrBadRequest
+		} else {
+			var jobs []*Job
+			//***
 			sr = &serverResponse{Jobs: jobs}
 		}
 	default:
@@ -676,23 +602,10 @@ func (s *Server) ccToJob(cmd string, cwd string, q *queue.Queue, getstd bool, ge
 			}
 		}
 		if getenv {
-			var envc []byte
-			cached, got := s.envcache.Get(sjob.envKey)
-			if got {
-				envc = cached.([]byte)
-			} else {
-				s.storm.Get("envs", sjob.envKey, envc)
-				s.envcache.Add(sjob.envKey, envc)
-			}
-			job.EnvC = envc
+			job.EnvC = s.db.retrieveEnv(sjob.envKey)
 		}
 		if getstd && job.Exited && job.Exitcode != 0 {
-			var stdo []byte
-			s.storm.Get("stdo", jobkey, &stdo)
-			job.StdOutC = stdo
-			var stde []byte
-			s.storm.Get("stde", jobkey, &stde)
-			job.StdErrC = stde
+			job.StdOutC, job.StdErrC = s.db.retrieveJobStd(jobkey)
 		}
 	} else {
 		srerr = ErrMissingJob
@@ -717,7 +630,7 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) (err error) {
 // persists them to disk
 func (s *Server) shutdown() {
 	s.sock.Close()
-	s.storm.Close()
+	s.db.close()
 
 	//*** we want to persist production queues to disk
 

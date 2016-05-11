@@ -525,6 +525,18 @@ func (c *Client) GetByCmds(in []*Job) (out []*Job, err error) {
 	return
 }
 
+// GetByRepGroup gets multiple Jobs at once given their RepGroup (an abitrary
+// user-supplied identifier for the purpose of grouping related jobs together
+// for reporting purposes).
+func (c *Client) GetByRepGroup(repgroup string) (jobs []*Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getbr", Queue: c.queue, Job: &Job{RepGroup: repgroup}})
+	if err != nil {
+		return
+	}
+	jobs = resp.Jobs
+	return
+}
+
 // Env decompresses and decodes job.EnvC (the output of compressEnv(), which are
 // the environment variables the Job's Cmd should run/ran under). Note that EnvC
 // is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().
