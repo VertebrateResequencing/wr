@@ -501,15 +501,27 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 // 	return
 // }
 
-// GetByCmd gets a Job given its Cmd. With the boolean args set to true, this
-// is the only way to get a Job that StdOut() and StdErr() will work on, and one
-// of 2 ways that Env() will work (the other being Reserve()).
+// GetByCmd gets a Job given its Cmd and Cwd. With the boolean args set to true,
+// this is the only way to get a Job that StdOut() and StdErr() will work on,
+// and one of 2 ways that Env() will work (the other being Reserve()).
 func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Job: &Job{Cmd: cmd, Cwd: cwd}, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return
 	}
 	j = resp.Job
+	return
+}
+
+// GetByCmds gets multiple Jobs at once given their Cmds and Cwds. You supply
+// a slice of fake jobs which only need Cmd and Cwd set, ie. you can make them
+// like: &jobqueue.Job{Cmd: cmd, Cwd: cwd}
+func (c *Client) GetByCmds(in []*Job) (out []*Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getbcs", Queue: c.queue, Jobs: in})
+	if err != nil {
+		return
+	}
+	out = resp.Jobs
 	return
 }
 

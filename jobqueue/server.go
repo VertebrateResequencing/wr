@@ -87,6 +87,7 @@ type serverResponse struct {
 	Added   int
 	Existed int
 	Job     *Job
+	Jobs    []*Job
 	SStats  *ServerStats
 }
 
@@ -544,78 +545,28 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		if cr.Job == nil {
 			srerr = ErrBadRequest
 		} else {
-			jobkey := byteKey([]byte(fmt.Sprintf("%s.%s", cr.Job.Cwd, cr.Job.Cmd)))
-			item, err := q.Get(jobkey)
-			if err == nil && item != nil {
-				sjob := item.Data.(*Job)
-				stats := item.Stats()
-
-				state := ""
-				switch stats.State {
-				case "delay":
-					state = "delayed"
-				case "ready":
-					state = "ready"
-				case "run":
-					state = "running"
-				case "bury":
-					state = "buried"
-				default:
-					state = "complete"
-				}
-
-				// we're going to fill in some properties of the Job and return
-				// it to client, but don't want those properties set here for
-				// us, so we make a new Job and fill stuff in that
-				job := &Job{
-					RepGroup: sjob.RepGroup,
-					ReqGroup: sjob.ReqGroup,
-					Cmd:      sjob.Cmd,
-					Cwd:      sjob.Cwd,
-					Memory:   sjob.Memory,
-					Time:     sjob.Time,
-					CPUs:     sjob.CPUs,
-					Priority: sjob.Priority,
-					Peakmem:  sjob.Peakmem,
-					Exited:   sjob.Exited,
-					Exitcode: sjob.Exitcode,
-					Pid:      sjob.Pid,
-					Host:     sjob.Host,
-					CPUtime:  sjob.CPUtime,
-					State:    state,
-					Attempts: stats.Reserves,
-				}
-
-				if !sjob.starttime.IsZero() {
-					if sjob.endtime.IsZero() || state == "running" {
-						job.Walltime = time.Since(sjob.starttime)
-					} else {
-						job.Walltime = sjob.endtime.Sub(sjob.starttime)
-					}
-				}
-				if cr.GetEnv {
-					var envc []byte
-					cached, got := s.envcache.Get(sjob.envKey)
-					if got {
-						envc = cached.([]byte)
-					} else {
-						s.storm.Get("envs", sjob.envKey, envc)
-						s.envcache.Add(sjob.envKey, envc)
-					}
-					job.EnvC = envc
-				}
-				if cr.GetStd && job.Exited && job.Exitcode != 0 {
-					var stdo []byte
-					s.storm.Get("stdo", jobkey, &stdo)
-					job.StdOutC = stdo
-					var stde []byte
-					s.storm.Get("stde", jobkey, &stde)
-					job.StdErrC = stde
-				}
+			var job *Job
+			job, srerr = s.ccToJob(cr.Job.Cmd, cr.Job.Cwd, q, cr.GetStd, cr.GetEnv)
+			if srerr == "" {
 				sr = &serverResponse{Job: job}
-			} else {
-				srerr = ErrMissingJob
 			}
+		}
+	case "getbcs":
+		// get jobs by their Cmds & Cwds
+		if cr.Jobs == nil {
+			srerr = ErrBadRequest
+		} else {
+			var jobs []*Job
+			for _, in := range cr.Jobs {
+				var job *Job
+				job, srerr = s.ccToJob(in.Cmd, in.Cwd, q, false, false)
+				if srerr != "" {
+					// corresponding real job not found, ignore
+					continue
+				}
+				jobs = append(jobs, job)
+			}
+			sr = &serverResponse{Jobs: jobs}
 		}
 	default:
 		srerr = ErrUnknownCommand
@@ -669,6 +620,83 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 		errs = ErrMustReserve
 	}
 
+	return
+}
+
+// for the many get* methods in handleRequest, we do this common stuff to get
+// the desired job
+func (s *Server) ccToJob(cmd string, cwd string, q *queue.Queue, getstd bool, getenv bool) (job *Job, srerr string) {
+	jobkey := byteKey([]byte(fmt.Sprintf("%s.%s", cwd, cmd)))
+	item, err := q.Get(jobkey)
+	if err == nil && item != nil {
+		sjob := item.Data.(*Job)
+		stats := item.Stats()
+
+		state := ""
+		switch stats.State {
+		case "delay":
+			state = "delayed"
+		case "ready":
+			state = "ready"
+		case "run":
+			state = "running"
+		case "bury":
+			state = "buried"
+		default:
+			state = "complete"
+		}
+
+		// we're going to fill in some properties of the Job and return
+		// it to client, but don't want those properties set here for
+		// us, so we make a new Job and fill stuff in that
+		job = &Job{
+			RepGroup: sjob.RepGroup,
+			ReqGroup: sjob.ReqGroup,
+			Cmd:      sjob.Cmd,
+			Cwd:      sjob.Cwd,
+			Memory:   sjob.Memory,
+			Time:     sjob.Time,
+			CPUs:     sjob.CPUs,
+			Priority: sjob.Priority,
+			Peakmem:  sjob.Peakmem,
+			Exited:   sjob.Exited,
+			Exitcode: sjob.Exitcode,
+			Pid:      sjob.Pid,
+			Host:     sjob.Host,
+			CPUtime:  sjob.CPUtime,
+			State:    state,
+			Attempts: stats.Reserves,
+		}
+
+		if !sjob.starttime.IsZero() {
+			if sjob.endtime.IsZero() || state == "running" {
+				job.Walltime = time.Since(sjob.starttime)
+			} else {
+				job.Walltime = sjob.endtime.Sub(sjob.starttime)
+			}
+		}
+		if getenv {
+			var envc []byte
+			cached, got := s.envcache.Get(sjob.envKey)
+			if got {
+				envc = cached.([]byte)
+			} else {
+				s.storm.Get("envs", sjob.envKey, envc)
+				s.envcache.Add(sjob.envKey, envc)
+			}
+			job.EnvC = envc
+		}
+		if getstd && job.Exited && job.Exitcode != 0 {
+			var stdo []byte
+			s.storm.Get("stdo", jobkey, &stdo)
+			job.StdOutC = stdo
+			var stde []byte
+			s.storm.Get("stde", jobkey, &stde)
+			job.StdErrC = stde
+		}
+	} else {
+		srerr = ErrMissingJob
+	}
 	return
 }
 

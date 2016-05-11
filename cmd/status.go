@@ -97,7 +97,7 @@ the commands, or if you added them with a different cwd.`,
 		case cmdFileStatus != "":
 			// get jobs that have the supplied commands. We support the same
 			// format of file that "vrpipe add" takes, but only care about the
-			// first column
+			// first 2 columns
 			var reader io.Reader
 			if cmdFileStatus == "-" {
 				reader = os.Stdin
@@ -109,16 +109,22 @@ the commands, or if you added them with a different cwd.`,
 				defer reader.(*os.File).Close()
 			}
 			scanner := bufio.NewScanner(reader)
-			var cmds []string
+			var in []*jobqueue.Job
 			for scanner.Scan() {
 				cols := strings.Split(scanner.Text(), "\t")
 				colsn := len(cols)
 				if colsn < 1 || cols[0] == "" {
 					continue
 				}
-				cmds = append(cmds, cols[0])
+				var cwd string
+				if colsn < 2 || cols[1] == "" {
+					cwd = cmdCwd
+				} else {
+					cwd = cols[1]
+				}
+				in = append(in, &jobqueue.Job{Cmd: cols[0], Cwd: cwd})
 			}
-			// jobs, err = jq.GetByCmds(cmds)
+			jobs, err = jq.GetByCmds(in)
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job
@@ -181,9 +187,9 @@ the commands, or if you added them with a different cwd.`,
 			if showextra && showEnv {
 				env, err := job.Env()
 				if err != nil {
-					warn("problem reading the cmd's ENV: %s", err)
+					warn("problem reading the cmd's Env: %s", err)
 				} else {
-					fmt.Printf("ENV: %s\n", env)
+					fmt.Printf("Env: %s\n", env)
 				}
 			}
 		}
