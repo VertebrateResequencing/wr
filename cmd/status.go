@@ -92,8 +92,8 @@ the commands, or if you added them with a different cwd.`,
 			// get unfinished jobs
 			//*** jobs, err = jq.GetUnfinished()
 		case cmdIdStatus != "":
-			// get all jobs with this id
-			//*** jobs, err = jq.GetByID(cmdIdStatus)
+			// get all jobs with this identifier (repgroup)
+			jobs, err = jq.GetByRepGroup(cmdIdStatus)
 		case cmdFileStatus != "":
 			// get jobs that have the supplied commands. We support the same
 			// format of file that "vrpipe add" takes, but only care about the
@@ -157,7 +157,7 @@ the commands, or if you added them with a different cwd.`,
 				if job.State != "complete" {
 					prefix = "Stats of previous attempt"
 				}
-				fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; PID: %d\n", prefix, job.Exitcode, job.Peakmem, job.Walltime, job.CPUtime, job.Host, job.Pid)
+				fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.Peakmem, job.Walltime, job.CPUtime, job.Host, job.Pid)
 				if showextra && showStd && job.Exitcode != 0 {
 					stdout, err := job.StdOut()
 					if err != nil {
@@ -177,7 +177,7 @@ the commands, or if you added them with a different cwd.`,
 					}
 				}
 			} else if job.State == "running" {
-				fmt.Printf("Stats: { Wall time: %s }\nHost: %s; PID: %d\n", job.Walltime, job.Host, job.Pid)
+				fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.Walltime, job.Host, job.Pid)
 				//*** we should be able to peek at STDOUT & STDERR, and see
 				// Peak memory during a run... but is that possible/ too
 				// expensive? Maybe we could communicate directly with the
