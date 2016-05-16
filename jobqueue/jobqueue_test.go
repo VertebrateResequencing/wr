@@ -91,6 +91,26 @@ func TestJobqueue(t *testing.T) {
 				So(already, ShouldEqual, 10)
 			})
 
+			Convey("You can get back jobs you've just added", func() {
+				job, err := jq.GetByCmd("test cmd 3", "/fake/cwd", false, false)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.Cmd, ShouldEqual, "test cmd 3")
+				So(job.State, ShouldEqual, "ready")
+
+				var ccs [][2]string
+				for i := 0; i < 10; i++ {
+					ccs = append(ccs, [2]string{fmt.Sprintf("test cmd %d", i), "/fake/cwd"})
+				}
+				jobs, err := jq.GetByCmds(ccs)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 10)
+				for i, job := range jobs {
+					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
+					So(job.State, ShouldEqual, "ready")
+				}
+			})
+
 			Convey("You can reserve jobs from the queue in the correct order", func() {
 				for i := 9; i >= 0; i-- {
 					jid := i

@@ -523,7 +523,7 @@ func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *
 func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
 	var keys []string
 	for _, cc := range ccs {
-		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[0], cc[1]))))
+		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
 	}
 	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Keys: keys})
 	if err != nil {
