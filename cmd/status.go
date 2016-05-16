@@ -110,6 +110,7 @@ the commands, or if you added them with a different cwd.`,
 			}
 			scanner := bufio.NewScanner(reader)
 			var ccs [][2]string
+			desired := 0
 			for scanner.Scan() {
 				cols := strings.Split(scanner.Text(), "\t")
 				colsn := len(cols)
@@ -123,8 +124,12 @@ the commands, or if you added them with a different cwd.`,
 					cwd = cols[1]
 				}
 				ccs = append(ccs, [2]string{cols[0], cwd})
+				desired++
 			}
 			jobs, err = jq.GetByCmds(ccs)
+			if len(jobs) < desired {
+				warn("%d/%d cmds were not found", desired-len(jobs), desired)
+			}
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job

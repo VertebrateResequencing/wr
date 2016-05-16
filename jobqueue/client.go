@@ -528,7 +528,9 @@ func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *
 		return
 	}
 	jobs := resp.Jobs
-	j = jobs[0]
+	if len(jobs) > 0 {
+		j = jobs[0]
+	}
 	return
 }
 

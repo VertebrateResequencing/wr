@@ -54,7 +54,7 @@ var (
 	ErrDBError            = "failed to use database"
 	ServerInterruptTime   = 1 * time.Second
 	ServerItemDelay       = 30 * time.Second
-	ServerItemTTR         = 10 * time.Second
+	ServerItemTTR         = 60 * time.Second
 	ServerReserveTicker   = 1 * time.Second
 	ServerLogClientErrors = true
 )
@@ -523,7 +523,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if err != nil {
 					srerr = ErrDBError
 					qerr = err.Error()
-				} else {
+				} else if len(found) > 0 {
 					jobs = append(jobs, found...)
 				}
 			}
