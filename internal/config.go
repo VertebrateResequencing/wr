@@ -132,6 +132,8 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 		//*** we need to support this being on a different machine, possibly on an S3-style object store
 		config.Manager_db_bk_file = filepath.Join(config.Manager_dir, config.Manager_db_bk_file)
 	}
+	config.Manager_db_file = config.Manager_db_file + "_" + deployment
+	config.Manager_db_bk_file = config.Manager_db_bk_file + "_" + deployment
 
 	return config
 }

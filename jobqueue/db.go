@@ -31,6 +31,7 @@ import (
 	"github.com/ugorji/go/codec"
 	"os"
 	"sort"
+	"strings"
 )
 
 var (
@@ -68,8 +69,14 @@ type db struct {
 
 // initDB opens/creates our database and sets things up for use. If dbFile
 // doesn't exist or seems corrupted, we copy it from backup if that exists,
-// otherwise we start fresh.
+// otherwise we start fresh. In development we delete any existing db and force
+// a fresh start.
 func initDB(dbFile string, dbBkFile string) (dbstruct *db, msg string, err error) {
+	if strings.HasSuffix(dbFile, "_development") {
+		os.Remove(dbFile)
+		os.Remove(dbBkFile)
+	}
+
 	var boltdb *bolt.DB
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) { //*** need to handle bk being on another machine, possibly an S3-style object store
