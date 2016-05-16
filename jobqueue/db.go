@@ -24,11 +24,13 @@ package jobqueue
 // queries that are multiple times faster than what Storm can do.
 
 import (
-	// "bytes"
+	"bytes"
 	"fmt"
 	"github.com/boltdb/bolt"
 	"github.com/hashicorp/golang-lru"
+	"github.com/ugorji/go/codec"
 	"os"
+	"sort"
 )
 
 var (
@@ -40,9 +42,28 @@ var (
 	bucketStdE         []byte = []byte("stde")
 )
 
+// bje implements sort interface so we can sort a slice of []byte triples,
+// needed for efficient Puts in to the database
+type bje [][3][]byte
+
+func (s bje) Len() int {
+	return len(s)
+}
+func (s bje) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+func (s bje) Less(i, j int) bool {
+	cmp := bytes.Compare(s[i][0], s[j][0])
+	if cmp == -1 {
+		return true
+	}
+	return false
+}
+
 type db struct {
 	bolt     *bolt.DB
 	envcache *lru.ARCCache
+	ch       codec.Handle
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -128,7 +149,30 @@ func initDB(dbFile string, dbBkFile string) (dbstruct *db, msg string, err error
 		return
 	}
 
-	dbstruct = &db{boltdb, envcache}
+	dbstruct = &db{boltdb, envcache, new(codec.BincHandle)}
+	return
+}
+
+// storeNewJobs stores jobs in the live bucket, where they will only be used for
+// disaster recovery. The jobs are supplied pre-encoded by binc in
+// key,repgroup,data triples.
+func (db *db) storeNewJobs(encjobs [][3][]byte) (err error) {
+	// turn the jobs in to bjes and sort by their keys
+	var encodes bje
+	for _, encjob := range encjobs {
+		rp := append(encjob[1], []byte("_::_")...)
+		rp = append(rp, encjob[0]...)
+		encodes = append(encodes, [3][]byte{encjob[0], encjob[2], rp})
+	}
+	sort.Sort(encodes)
+	err = db.storeBatchedEncodedJobs(bucketJobsLive, encodes)
+	return
+}
+
+// retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
+// jobs bucket (ie. those that have gone through the queue and been Remove()d).
+func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool) (jobs []*Job, err error) {
+
 	return
 }
 
@@ -244,6 +288,66 @@ func (db *db) retrieve(bucket []byte, key string) (val []byte) {
 // 		return nil
 // 	})
 // }
+
+func (db *db) storeBatchedEncodedJobs(bucket []byte, encodes bje) (err error) {
+	// we want to add in batches of size encodes/10, minimum 1000, rounded to
+	// the nearest 1000
+	num := len(encodes)
+	batchSize := num / 10
+	rem := batchSize % 1000
+	if rem > 500 {
+		batchSize = batchSize - rem + 1000
+	} else {
+		batchSize = batchSize - rem
+	}
+	if batchSize < 1000 {
+		batchSize = 1000
+	}
+
+	// based on https://github.com/boltdb/bolt/issues/337#issue-64861745
+	if num < batchSize {
+		err = db.storeEncodedJobs(bucket, encodes)
+		return
+	}
+
+	batches := num / batchSize
+	offset := num - (num % batchSize)
+
+	for i := 0; i < batches; i++ {
+		err = db.storeEncodedJobs(bucket, encodes[i*batchSize:(i+1)*batchSize])
+		if err != nil {
+			return
+		}
+	}
+
+	if offset != 0 {
+		err = db.storeEncodedJobs(bucket, encodes[offset:])
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+func (db *db) storeEncodedJobs(bucket []byte, encodes bje) (err error) {
+	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		bjobs := tx.Bucket(bucket)
+		brtk := tx.Bucket(bucketRTK)
+		for _, triple := range encodes {
+			err := bjobs.Put(triple[0], triple[1])
+			if err != nil {
+				return err
+			}
+
+			err = brtk.Put(triple[2], nil)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return
+}
 
 // close shuts down the db, should be used prior to exiting
 func (db *db) close() {

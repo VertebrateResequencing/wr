@@ -50,8 +50,9 @@ type clientRequest struct {
 	ClientID       uuid.UUID
 	Method         string
 	Queue          string
-	Jobs           []*Job
+	Jobs           [][3][]byte // not a []*Job, but a slice of [key,repgroup,pre-encoded []*Job] triples because for efficiency reasons on the server side, we want to avoid re-encoding when we persist to disk
 	Job            *Job
+	CCs            [][2]string
 	Timeout        time.Duration
 	SchedulerGroup string
 	Env            []byte // compressed binc encoding of []string
@@ -97,7 +98,7 @@ type Job struct {
 	endtime        time.Time     // the time the cmd stops running is recorded here
 	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
 	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
-	envKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
+	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
@@ -214,7 +215,24 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 // returned 'existed' count will be > 0. Note that no cross-queue checking is
 // done, so you need to be careful not to add the same job to different queues.
 func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Queue: c.queue, Jobs: jobs, Env: c.compressEnv()})
+	// separately pre-encode the jobs so that when the server decodes the whole
+	// request, it won't have to re-encode the jobs to store them on disk.
+	// Because of that, we must add the envkey to the jobs right now.
+	var encjobs [][3][]byte
+	env := c.compressEnv()
+	envkey := byteKey(env)
+	for _, job := range jobs {
+		job.EnvKey = envkey
+		var encoded []byte
+		enc := codec.NewEncoderBytes(&encoded, c.ch)
+		err = enc.Encode(job)
+		if err != nil {
+			return
+		}
+		encjobs = append(encjobs, [3][]byte{[]byte(jobKey(job)), []byte(job.RepGroup), encoded})
+	}
+
+	resp, err := c.request(&clientRequest{Method: "add", Queue: c.queue, Jobs: encjobs, Env: env})
 	if err != nil {
 		return
 	}
@@ -505,19 +523,20 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 // this is the only way to get a Job that StdOut() and StdErr() will work on,
 // and one of 2 ways that Env() will work (the other being Reserve()).
 func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Job: &Job{Cmd: cmd, Cwd: cwd}, GetStd: getstd, GetEnv: getenv})
+	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, CCs: [][2]string{[2]string{cmd, cwd}}, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return
 	}
-	j = resp.Job
+	jobs := resp.Jobs
+	j = jobs[0]
 	return
 }
 
-// GetByCmds gets multiple Jobs at once given their Cmds and Cwds. You supply
-// a slice of fake jobs which only need Cmd and Cwd set, ie. you can make them
-// like: &jobqueue.Job{Cmd: cmd, Cwd: cwd}
-func (c *Client) GetByCmds(in []*Job) (out []*Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbcs", Queue: c.queue, Jobs: in})
+// GetByCmds gets multiple Jobs at once given their Cmds and Cwds. You supply a
+// slice of cmd/cwd string tuples like: [][2]string{[2]string{cmd1, cwd1},
+// [2]string{cmd2, cwd2}, ...}
+func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, CCs: ccs})
 	if err != nil {
 		return
 	}

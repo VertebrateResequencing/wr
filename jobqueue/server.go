@@ -318,16 +318,52 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				qerr = err.Error()
 			} else {
 				var itemdefs []*queue.ItemDef
-				for _, job := range cr.Jobs {
-					job.envKey = envkey
-					itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
+				ok := true
+				for _, encjob := range cr.Jobs {
+					job := &Job{}
+					dec := codec.NewDecoderBytes(encjob[2], s.ch)
+					err = dec.Decode(job)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+						ok = false
+						break
+					}
+					if job.EnvKey != envkey {
+						srerr = ErrBadRequest
+						ok = false
+						break
+					}
+					itemdefs = append(itemdefs, &queue.ItemDef{string(encjob[0]), job, job.Priority, 0 * time.Second, ServerItemTTR})
 				}
-				added, dups, err := q.AddMany(itemdefs)
-				if err != nil {
-					srerr = ErrInternalError
-					qerr = err.Error()
+
+				if ok {
+					// keep an on-disk record of these new jobs; we sacrifice a
+					// lot of speed by waiting on this database write to persist
+					// to disk. The alternative would be to return success to
+					// the client as soon as the jobs were in the in-memory
+					// queue, then lazily persist to disk in a goroutine, but we
+					// must guarantee that jobs are never lost or a pipeline
+					// could hopelessly break if the server node goes down
+					// between returning success and the write to disk
+					// succeeding. (If we don't return success to the client, it
+					// won't Remove the job that created the new jobs from the
+					// queue and when we recover, at worst the creating job will
+					// be run again - no jobs get lost.)
+					err = s.db.storeNewJobs(cr.Jobs)
+					if err != nil {
+						srerr = ErrDBError
+						qerr = err.Error()
+					} else {
+						// add the jobs to the in-memory job queue
+						added, dups, err := q.AddMany(itemdefs)
+						if err != nil {
+							srerr = ErrInternalError
+							qerr = err.Error()
+						}
+						sr = &serverResponse{Added: added, Existed: dups}
+					}
 				}
-				sr = &serverResponse{Added: added, Existed: dups}
 			}
 		}
 	case "reserve":
@@ -410,7 +446,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 			if job != nil {
 				job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
-				job.EnvC = s.db.retrieveEnv(job.envKey)
+				job.EnvC = s.db.retrieveEnv(job.EnvKey)
 				job.Exited = false
 				sr = &serverResponse{Job: job}
 			}
@@ -458,32 +494,43 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		}
 	case "getbc":
-		// get a job by its Cmd & Cwd
-		if cr.Job == nil {
-			srerr = ErrBadRequest
-		} else {
-			var job *Job
-			job, srerr = s.ccToJob(cr.Job.Cmd, cr.Job.Cwd, q, cr.GetStd, cr.GetEnv)
-			if srerr == "" {
-				sr = &serverResponse{Job: job}
-			}
-		}
-	case "getbcs":
 		// get jobs by their Cmds & Cwds
-		if cr.Jobs == nil {
+		if cr.CCs == nil {
 			srerr = ErrBadRequest
 		} else {
 			var jobs []*Job
-			for _, in := range cr.Jobs {
+			var notfound []string
+			for _, cc := range cr.CCs {
+				jobkey := byteKey([]byte(fmt.Sprintf("%s.%s", cc[0], cc[1])))
 				var job *Job
-				job, srerr = s.ccToJob(in.Cmd, in.Cwd, q, false, false)
-				if srerr != "" {
-					// corresponding real job not found, ignore
-					continue
+
+				// try and get the job from the in-memory queue
+				item, err := q.Get(jobkey)
+				if err == nil && item != nil {
+					job = s.itemToJob(item, cr.GetStd, cr.GetEnv)
+				} else {
+					notfound = append(notfound, jobkey)
 				}
-				jobs = append(jobs, job)
+
+				if job != nil {
+					jobs = append(jobs, job)
+				}
 			}
-			sr = &serverResponse{Jobs: jobs}
+
+			if len(notfound) > 0 {
+				// try and get the jobs from the permanent store
+				found, err := s.db.retrieveCompleteJobsByKeys(notfound, cr.GetStd, cr.GetEnv)
+				if err != nil {
+					srerr = ErrDBError
+					qerr = err.Error()
+				} else {
+					jobs = append(jobs, found...)
+				}
+			}
+
+			if len(jobs) > 0 {
+				sr = &serverResponse{Jobs: jobs}
+			}
 		}
 	case "getbr":
 		// get jobs by their RepGroup
@@ -550,66 +597,59 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 }
 
 // for the many get* methods in handleRequest, we do this common stuff to get
-// the desired job
-func (s *Server) ccToJob(cmd string, cwd string, q *queue.Queue, getstd bool, getenv bool) (job *Job, srerr string) {
-	jobkey := byteKey([]byte(fmt.Sprintf("%s.%s", cwd, cmd)))
-	item, err := q.Get(jobkey)
-	if err == nil && item != nil {
-		sjob := item.Data.(*Job)
-		stats := item.Stats()
+// an item's job from the in-memory queue formulated for the client
+func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job) {
+	sjob := item.Data.(*Job)
+	stats := item.Stats()
 
-		state := ""
-		switch stats.State {
-		case "delay":
-			state = "delayed"
-		case "ready":
-			state = "ready"
-		case "run":
-			state = "running"
-		case "bury":
-			state = "buried"
-		default:
-			state = "complete"
-		}
-
-		// we're going to fill in some properties of the Job and return
-		// it to client, but don't want those properties set here for
-		// us, so we make a new Job and fill stuff in that
-		job = &Job{
-			RepGroup: sjob.RepGroup,
-			ReqGroup: sjob.ReqGroup,
-			Cmd:      sjob.Cmd,
-			Cwd:      sjob.Cwd,
-			Memory:   sjob.Memory,
-			Time:     sjob.Time,
-			CPUs:     sjob.CPUs,
-			Priority: sjob.Priority,
-			Peakmem:  sjob.Peakmem,
-			Exited:   sjob.Exited,
-			Exitcode: sjob.Exitcode,
-			Pid:      sjob.Pid,
-			Host:     sjob.Host,
-			CPUtime:  sjob.CPUtime,
-			State:    state,
-			Attempts: stats.Reserves,
-		}
-
-		if !sjob.starttime.IsZero() {
-			if sjob.endtime.IsZero() || state == "running" {
-				job.Walltime = time.Since(sjob.starttime)
-			} else {
-				job.Walltime = sjob.endtime.Sub(sjob.starttime)
-			}
-		}
-		if getenv {
-			job.EnvC = s.db.retrieveEnv(sjob.envKey)
-		}
-		if getstd && job.Exited && job.Exitcode != 0 {
-			job.StdOutC, job.StdErrC = s.db.retrieveJobStd(jobkey)
-		}
-	} else {
-		srerr = ErrMissingJob
+	state := "unknown"
+	switch stats.State {
+	case "delay":
+		state = "delayed"
+	case "ready":
+		state = "ready"
+	case "run":
+		state = "running"
+	case "bury":
+		state = "buried"
 	}
+
+	// we're going to fill in some properties of the Job and return
+	// it to client, but don't want those properties set here for
+	// us, so we make a new Job and fill stuff in that
+	job = &Job{
+		RepGroup: sjob.RepGroup,
+		ReqGroup: sjob.ReqGroup,
+		Cmd:      sjob.Cmd,
+		Cwd:      sjob.Cwd,
+		Memory:   sjob.Memory,
+		Time:     sjob.Time,
+		CPUs:     sjob.CPUs,
+		Priority: sjob.Priority,
+		Peakmem:  sjob.Peakmem,
+		Exited:   sjob.Exited,
+		Exitcode: sjob.Exitcode,
+		Pid:      sjob.Pid,
+		Host:     sjob.Host,
+		CPUtime:  sjob.CPUtime,
+		State:    state,
+		Attempts: stats.Reserves,
+	}
+
+	if !sjob.starttime.IsZero() {
+		if sjob.endtime.IsZero() || state == "running" {
+			job.Walltime = time.Since(sjob.starttime)
+		} else {
+			job.Walltime = sjob.endtime.Sub(sjob.starttime)
+		}
+	}
+	if getenv {
+		job.EnvC = s.db.retrieveEnv(sjob.EnvKey)
+	}
+	if getstd && job.Exited && job.Exitcode != 0 {
+		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(jobKey(job))
+	}
+
 	return
 }
 

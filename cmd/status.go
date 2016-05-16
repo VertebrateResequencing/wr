@@ -109,7 +109,7 @@ the commands, or if you added them with a different cwd.`,
 				defer reader.(*os.File).Close()
 			}
 			scanner := bufio.NewScanner(reader)
-			var in []*jobqueue.Job
+			var ccs [][2]string
 			for scanner.Scan() {
 				cols := strings.Split(scanner.Text(), "\t")
 				colsn := len(cols)
@@ -122,9 +122,9 @@ the commands, or if you added them with a different cwd.`,
 				} else {
 					cwd = cols[1]
 				}
-				in = append(in, &jobqueue.Job{Cmd: cols[0], Cwd: cwd})
+				ccs = append(ccs, [2]string{cols[0], cwd})
 			}
-			jobs, err = jq.GetByCmds(in)
+			jobs, err = jq.GetByCmds(ccs)
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job
