@@ -319,22 +319,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				var itemdefs []*queue.ItemDef
 				ok := true
-				for _, encjob := range cr.Jobs {
-					job := &Job{}
-					dec := codec.NewDecoderBytes(encjob[2], s.ch)
-					err = dec.Decode(job)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-						ok = false
-						break
-					}
-					if job.EnvKey != envkey {
-						srerr = ErrBadRequest
-						ok = false
-						break
-					}
-					itemdefs = append(itemdefs, &queue.ItemDef{string(encjob[0]), job, job.Priority, 0 * time.Second, ServerItemTTR})
+				for _, job := range cr.Jobs {
+					job.envKey = envkey
+					itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
 				}
 
 				if ok {
@@ -446,7 +433,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 			if job != nil {
 				job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
-				job.EnvC = s.db.retrieveEnv(job.EnvKey)
+				job.EnvC = s.db.retrieveEnv(job.envKey)
 				job.Exited = false
 				sr = &serverResponse{Job: job}
 			}
@@ -644,7 +631,7 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 		}
 	}
 	if getenv {
-		job.EnvC = s.db.retrieveEnv(sjob.EnvKey)
+		job.EnvC = s.db.retrieveEnv(sjob.envKey)
 	}
 	if getstd && job.Exited && job.Exitcode != 0 {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(jobKey(job))

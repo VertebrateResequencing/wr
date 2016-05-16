@@ -33,9 +33,11 @@ import (
 	"time"
 )
 
-var clientConnectTime = 60 * time.Millisecond
+var clientConnectTime = 150 * time.Millisecond
 
 func TestJobqueue(t *testing.T) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
@@ -110,7 +112,7 @@ func TestJobqueue(t *testing.T) {
 					Convey("Adding one while waiting on a Reserve will return the new job", func() {
 						worked := make(chan bool)
 						go func() {
-							job, err := jq.Reserve(50 * time.Millisecond)
+							job, err := jq.Reserve(100 * time.Millisecond)
 							if err != nil {
 								worked <- false
 								return
@@ -142,7 +144,7 @@ func TestJobqueue(t *testing.T) {
 									continue
 								case w := <-worked:
 									ticker.Stop()
-									if w && ticks == 2 {
+									if w && ticks <= 6 {
 										ok <- true
 									}
 									ok <- false

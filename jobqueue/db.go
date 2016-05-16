@@ -163,13 +163,20 @@ func initDB(dbFile string, dbBkFile string) (dbstruct *db, msg string, err error
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
 // disaster recovery. The jobs are supplied pre-encoded by binc in
 // key,repgroup,data triples.
-func (db *db) storeNewJobs(encjobs [][3][]byte) (err error) {
+func (db *db) storeNewJobs(jobs []*Job) (err error) {
 	// turn the jobs in to bjes and sort by their keys
 	var encodes bje
-	for _, encjob := range encjobs {
-		rp := append(encjob[1], []byte("_::_")...)
-		rp = append(rp, encjob[0]...)
-		encodes = append(encodes, [3][]byte{encjob[0], encjob[2], rp})
+	for _, job := range jobs {
+		key := jobKey(job)
+		rp := append([]byte(job.RepGroup), []byte("_::_")...)
+		rp = append(rp, []byte(key)...)
+		var encoded []byte
+		enc := codec.NewEncoderBytes(&encoded, db.ch)
+		err = enc.Encode(job)
+		if err != nil {
+			return
+		}
+		encodes = append(encodes, [3][]byte{[]byte(key), encoded, rp})
 	}
 	sort.Sort(encodes)
 	err = db.storeBatchedEncodedJobs(bucketJobsLive, encodes)
