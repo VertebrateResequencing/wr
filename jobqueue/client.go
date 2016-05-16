@@ -52,7 +52,7 @@ type clientRequest struct {
 	Queue          string
 	Jobs           []*Job
 	Job            *Job
-	CCs            [][2]string
+	Keys           []string
 	Timeout        time.Duration
 	SchedulerGroup string
 	Env            []byte // compressed binc encoding of []string
@@ -506,7 +506,7 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 // this is the only way to get a Job that StdOut() and StdErr() will work on,
 // and one of 2 ways that Env() will work (the other being Reserve()).
 func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, CCs: [][2]string{[2]string{cmd, cwd}}, GetStd: getstd, GetEnv: getenv})
+	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Keys: []string{byteKey([]byte(fmt.Sprintf("%s.%s", cwd, cmd)))}, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return
 	}
@@ -521,7 +521,11 @@ func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *
 // slice of cmd/cwd string tuples like: [][2]string{[2]string{cmd1, cwd1},
 // [2]string{cmd2, cwd2}, ...}
 func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, CCs: ccs})
+	var keys []string
+	for _, cc := range ccs {
+		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[0], cc[1]))))
+	}
+	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Keys: keys})
 	if err != nil {
 		return
 	}

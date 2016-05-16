@@ -482,17 +482,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		}
 	case "getbc":
 		// get jobs by their Cmds & Cwds
-		if cr.CCs == nil {
+		if cr.Keys == nil {
 			srerr = ErrBadRequest
 		} else {
 			var jobs []*Job
 			var notfound []string
-			for _, cc := range cr.CCs {
-				jobkey := byteKey([]byte(fmt.Sprintf("%s.%s", cc[0], cc[1])))
-				var job *Job
-
+			for _, jobkey := range cr.Keys {
 				// try and get the job from the in-memory queue
 				item, err := q.Get(jobkey)
+				var job *Job
 				if err == nil && item != nil {
 					job = s.itemToJob(item, cr.GetStd, cr.GetEnv)
 				} else {
