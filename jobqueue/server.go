@@ -71,11 +71,11 @@ func (e Error) Error() string {
 	return "jobqueue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err
 }
 
-// jobErr is used internally to implement Reserve(), which needs to send job and
-// err over a channel
-type jobErr struct {
-	job *Job
-	err string
+// itemErr is used internally to implement Reserve(), which needs to send item
+// and err over a channel
+type itemErr struct {
+	item *queue.Item
+	err  string
 }
 
 // serverResponse is the struct that the server sends to clients over the
@@ -393,7 +393,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				item, err = q.Reserve()
 			}
-			var job *Job
 			if err != nil {
 				if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 					// there's nothing in the ready sub queue right now, so every
@@ -406,7 +405,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						stop = make(chan time.Time)
 					}
 
-					joberrch := make(chan *jobErr, 1)
+					itemerrch := make(chan *itemErr, 1)
 					ticker := time.NewTicker(ServerReserveTicker)
 					go func() {
 						for {
@@ -425,35 +424,45 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 									}
 									ticker.Stop()
 									if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
-										joberrch <- &jobErr{err: ErrQueueClosed}
+										itemerrch <- &itemErr{err: ErrQueueClosed}
 									} else {
-										joberrch <- &jobErr{err: ErrInternalError}
+										itemerrch <- &itemErr{err: ErrInternalError}
 									}
 									return
 								}
 								ticker.Stop()
-								joberrch <- &jobErr{job: item.Data.(*Job)}
+								itemerrch <- &itemErr{item: item}
 								return
 							case <-stop:
 								ticker.Stop()
 								// if we time out, we'll return nil job and nil err
-								joberrch <- &jobErr{}
+								itemerrch <- &itemErr{}
 								return
 							}
 						}
 					}()
-					joberr := <-joberrch
-					close(joberrch)
-					job = joberr.job
-					srerr = joberr.err
+					itemerr := <-itemerrch
+					close(itemerrch)
+					item = itemerr.item
+					srerr = itemerr.err
 				}
-			} else {
-				job = item.Data.(*Job)
 			}
-			if job != nil {
-				job.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
-				job.EnvC = s.db.retrieveEnv(job.envKey)
-				job.Exited = false
+			if item != nil {
+				// clean up any past state to have a fresh job ready to run
+				sjob := item.Data.(*Job)
+				sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
+				sjob.Exited = false
+				sjob.Pid = 0
+				sjob.Host = ""
+				var tnil time.Time
+				sjob.starttime = tnil
+				sjob.endtime = tnil
+				sjob.Peakmem = 0
+				sjob.Exitcode = -1
+
+				// make a copy of the job with some extra stuff filled in (that
+				// we don't want taking up memory here) for the client
+				job := s.itemToJob(item, false, true)
 				sr = &serverResponse{Job: job}
 			}
 		}
@@ -635,7 +644,7 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 	case "ready":
 		state = "ready"
 	case "run":
-		state = "running"
+		state = "reserved"
 	case "bury":
 		state = "buried"
 	}
@@ -663,11 +672,12 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 	}
 
 	if !sjob.starttime.IsZero() {
-		if sjob.endtime.IsZero() || state == "running" {
+		if sjob.endtime.IsZero() || state == "reserved" {
 			job.Walltime = time.Since(sjob.starttime)
 		} else {
 			job.Walltime = sjob.endtime.Sub(sjob.starttime)
 		}
+		state = "running"
 	}
 	if getenv {
 		job.EnvC = s.db.retrieveEnv(sjob.envKey)

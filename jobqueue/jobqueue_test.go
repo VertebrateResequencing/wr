@@ -98,6 +98,10 @@ func TestJobqueue(t *testing.T) {
 				So(job.Cmd, ShouldEqual, "test cmd 3")
 				So(job.State, ShouldEqual, "ready")
 
+				job, err = jq.GetByCmd("test cmd x", "/fake/cwd", false, false)
+				So(err, ShouldBeNil)
+				So(job, ShouldBeNil)
+
 				var ccs [][2]string
 				for i := 0; i < 10; i++ {
 					ccs = append(ccs, [2]string{fmt.Sprintf("test cmd %d", i), "/fake/cwd"})
@@ -130,6 +134,8 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
+					So(job.EnvC, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "reserved")
 				}
 
 				Convey("Reserving when all have been reserved returns nil", func() {

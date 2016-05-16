@@ -92,7 +92,7 @@ type Job struct {
 	StdErrC        []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
 	StdOutC        []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
 	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
-	State          string        // the job's state in the queue: 'delayed', 'ready', 'running', 'buried' or 'complete'
+	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried' or 'complete'
 	Attempts       uint32        // the number of times the job had ever entered 'running' state
 	starttime      time.Time     // the time the cmd starts running is recorded here
 	endtime        time.Time     // the time the cmd stops running is recorded here
