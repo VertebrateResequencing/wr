@@ -190,6 +190,14 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool
 	return
 }
 
+// retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the
+// completed jobs bucket (ie. those that have gone through the queue and been
+// Remove()d).
+func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err error) {
+
+	return
+}
+
 // storeEnv stores a clientRequest.Env in db unless cached, which means it must
 // already be there. Returns a key by which the stored Env can be retrieved.
 func (db *db) storeEnv(env []byte) (envkey string, err error) {

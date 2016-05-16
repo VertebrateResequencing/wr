@@ -109,6 +109,14 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
 					So(job.State, ShouldEqual, "ready")
 				}
+
+				jobs, err = jq.GetByRepGroup("manually_added")
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 10)
+
+				jobs, err = jq.GetByRepGroup("foo")
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 0)
 			})
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {

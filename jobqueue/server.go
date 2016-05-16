@@ -103,6 +103,11 @@ type ServerStats struct {
 	ServerInfo *ServerInfo
 }
 
+type rgToKeys struct {
+	sync.RWMutex
+	lookup map[string]map[string]bool
+}
+
 // server represents the server side of the socket that clients Connect() to
 type Server struct {
 	ServerInfo *ServerInfo
@@ -112,7 +117,8 @@ type Server struct {
 	done       chan error
 	stop       chan bool
 	sync.Mutex
-	qs map[string]*queue.Queue
+	qs  map[string]*queue.Queue
+	rpl *rgToKeys
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -201,6 +207,7 @@ func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, 
 		sock:       sock,
 		ch:         new(codec.BincHandle),
 		qs:         make(map[string]*queue.Queue),
+		rpl:        &rgToKeys{lookup: make(map[string]map[string]bool)},
 		db:         db,
 		stop:       stop,
 		done:       done,
@@ -348,6 +355,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							srerr = ErrInternalError
 							qerr = err.Error()
 						}
+
+						// add to our lookup of job RepGroup to key
+						s.rpl.Lock()
+						for _, itemdef := range itemdefs {
+							rp := itemdef.Data.(*Job).RepGroup
+							if _, exists := s.rpl.lookup[rp]; !exists {
+								s.rpl.lookup[rp] = make(map[string]bool)
+							}
+							s.rpl.lookup[rp][itemdef.Key] = true
+						}
+						s.rpl.Unlock()
+
 						sr = &serverResponse{Added: added, Existed: dups}
 					}
 				}
@@ -523,8 +542,30 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			srerr = ErrBadRequest
 		} else {
 			var jobs []*Job
-			//***
-			sr = &serverResponse{Jobs: jobs}
+
+			// look in the in-memory queue for matching jobs
+			s.rpl.RLock()
+			for key, _ := range s.rpl.lookup[cr.Job.RepGroup] {
+				item, err := q.Get(key)
+				if err == nil && item != nil {
+					job := s.itemToJob(item, false, false)
+					jobs = append(jobs, job)
+				}
+			}
+			s.rpl.RUnlock()
+
+			// look in the permanent store for matching jobs
+			found, err := s.db.retrieveCompleteJobsByRepGroup(cr.Job.RepGroup)
+			if err != nil {
+				srerr = ErrDBError
+				qerr = err.Error()
+			} else if len(found) > 0 {
+				jobs = append(jobs, found...)
+			}
+
+			if len(jobs) > 0 {
+				sr = &serverResponse{Jobs: jobs}
+			}
 		}
 	default:
 		srerr = ErrUnknownCommand
