@@ -161,8 +161,9 @@ func initDB(dbFile string, dbBkFile string) (dbstruct *db, msg string, err error
 }
 
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
-// disaster recovery. The jobs are supplied pre-encoded by binc in
-// key,repgroup,data triples.
+// disaster recovery. It also stores a lookup from the Job.RepGroup to the
+// Job's key, and since this is independent, and we call this prior to checking
+// for dups, we allow the same job to be lookup up by multiple RepGroups.
 func (db *db) storeNewJobs(jobs []*Job) (err error) {
 	// turn the jobs in to bjes and sort by their keys
 	var encodes bje
@@ -183,10 +184,47 @@ func (db *db) storeNewJobs(jobs []*Job) (err error) {
 	return
 }
 
+// archiveJob deletes a job from the live bucket, and adds a new version of it
+// (with different properties) to the complete bucket. The key you supply must
+// be the key of the job you supply, or bad things will happen - no checking is
+// done!
+func (db *db) archiveJob(key string, job *Job) (err error) {
+	var encoded []byte
+	enc := codec.NewEncoderBytes(&encoded, db.ch)
+	err = enc.Encode(job)
+	if err != nil {
+		return
+	}
+
+	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsLive)
+		b.Delete([]byte(key))
+
+		b = tx.Bucket(bucketJobsComplete)
+		err := b.Put([]byte(key), encoded)
+		return err
+	})
+	return
+}
+
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
 // jobs bucket (ie. those that have gone through the queue and been Remove()d).
 func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool) (jobs []*Job, err error) {
-
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsComplete)
+		for _, key := range keys {
+			encoded := b.Get([]byte(key))
+			if encoded != nil {
+				dec := codec.NewDecoderBytes(encoded, db.ch)
+				job := &Job{}
+				err = dec.Decode(job)
+				if err == nil {
+					jobs = append(jobs, job)
+				}
+			}
+		}
+		return nil
+	})
 	return
 }
 

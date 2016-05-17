@@ -94,6 +94,7 @@ type Job struct {
 	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
 	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried' or 'complete'
 	Attempts       uint32        // the number of times the job had ever entered 'running' state
+	UntilBuried    uint8         // the remaining number of Release()s allowed before being buried instead
 	starttime      time.Time     // the time the cmd starts running is recorded here
 	endtime        time.Time     // the time the cmd stops running is recorded here
 	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
@@ -225,7 +226,7 @@ func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
 }
 
 // Reserve takes a job off the jobqueue. If you process the job successfully you
-// should Delete() it. If you can't deal with it right now you should Release()
+// should Archive() it. If you can't deal with it right now you should Release()
 // it. If you think it can never be dealt with you should Bury() it. If you die
 // unexpectedly, the job will automatically be released back to the queue after
 // some time. If no job was available in the queue for as long as the timeout
@@ -262,7 +263,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // calls Started() and Ended() and keeps track of peak memory used. It regularly
 // calls Touch() on the Job so that the server knows we are still alive and
 // handling the Job successfully. If no error is returned, the Cmd will have run
-// OK, exited with status 0, and been Remove()d from the queue while being
+// OK, exited with status 0, and been Archive()d from the queue while being
 // placed in the permanent store. Otherwise, it will have been Release()d or
 // Bury()ied as appropriate. The supplied shell is the shell to execute the Cmd
 // under, ideally bash (something that understand the command "set -o
@@ -325,7 +326,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// update peak mem used by command, and touch job every 15s
 	peakmem := 0
-	ticker := time.NewTicker(time.Duration(ServerItemTTR.Seconds()/2) * time.Second) //*** this should be the ServerItemTTR set when the server started, not the current value
+	ticker := time.NewTicker(time.Duration(ServerItemTTR.Nanoseconds()/2) * time.Nanosecond) //*** this should be the ServerItemTTR set when the server started, not the current value
 	go func() {
 		for _ = range ticker.C {
 			err := c.Touch(job)
@@ -360,7 +361,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	var myerr error
 	dobury := false
 	dorelease := false
-	dodelete := false
+	doarchive := false
 	if err != nil {
 		// there was a problem running the command
 		if exitError, ok := err.(*exec.ExitError); ok {
@@ -389,7 +390,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	} else {
 		// the command worked fine
 		exitcode = cmd.ProcessState.Sys().(syscall.WaitStatus).ExitStatus()
-		dodelete = true
+		doarchive = true
 		myerr = nil
 	}
 
@@ -401,11 +402,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	if dobury {
-		//*** c.Bury(job)
+		//*** myerr = c.Bury(job)
 	} else if dorelease {
-		//*** c.Release(job) // which buries after x attempts
-	} else if dodelete {
-		//*** c.Delete(job) // which records the job in the permanent store
+		//*** myerr = c.Release(job) // which buries after x attempts
+	} else if doarchive {
+		myerr = c.Archive(job)
 	}
 
 	return myerr
@@ -417,6 +418,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 func (c *Client) Started(job *Job, pid int, host string) (err error) {
 	job.Pid = pid
 	job.Host = host
+	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
+	job.starttime = time.Now() // ditto
 	_, err = c.request(&clientRequest{Method: "jstart", Queue: c.queue, Job: job, ClientID: c.clientid})
 	return
 }
@@ -432,6 +435,7 @@ func (c *Client) Touch(job *Job) (err error) {
 // running the Job's Cmd. (The Job's Walltime is handled by the server
 // internally, based on you calling this.) Peakmem should be in MB.
 func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
+	job.Exited = true
 	job.Exitcode = exitcode
 	job.Peakmem = peakmem
 	job.CPUtime = cputime
@@ -442,6 +446,7 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 		job.StdErrC = compress(stderr)
 	}
 	_, err = c.request(&clientRequest{Method: "jend", Queue: c.queue, Job: job, ClientID: c.clientid})
+	job.Walltime = time.Since(job.starttime) // starttime having been set during Started()
 	return
 }
 
@@ -460,15 +465,17 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 // 	return
 // }
 
-// Delete removes a job from the jobqueue, for use after you have run the job
-// successfully.
-// func (j *Job) Delete() (err error) {
-// 	err = j.conn.beanstalk.Delete(j.ID)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to delete beanstalk job %d: %s\n", j.ID, err.Error())
-// 	}
-// 	return
-// }
+// Archive removes a job from the jobqueue and adds it to the database of
+// complete jobs, for use after you have run the job successfully. You have to
+// have been the one to Reserve() the supplied Job, and the Job must be marked
+// as having successfully run, or you will get an error.
+func (c *Client) Archive(job *Job) (err error) {
+	_, err = c.request(&clientRequest{Method: "jarchive", Queue: c.queue, Job: job, ClientID: c.clientid})
+	if err == nil {
+		job.State = "complete"
+	}
+	return
+}
 
 // Release places a job back on the jobqueue, for use when you can't handle the
 // job right now (eg. there was a suspected transient error) but maybe someone

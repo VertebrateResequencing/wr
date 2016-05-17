@@ -47,6 +47,7 @@ func TestJobqueue(t *testing.T) {
 	ServerLogClientErrors = false
 	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 1s anymore
 	ServerReserveTicker = 10 * time.Millisecond
+	ServerItemTTR = 1 * time.Second
 
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
 		_, err := Connect(addr, "test_queue", clientConnectTime)
@@ -263,6 +264,88 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok := err.(*Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrUnknownCommand)
+			})
+		})
+
+		Reset(func() {
+			server.Stop()
+			server.Block()
+		})
+	})
+
+	// start these tests anew because I don't want to mess with the timings in
+	// the above tests
+	Convey("Once a new jobqueue server is up", t, func() {
+		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file)
+		So(err, ShouldBeNil)
+
+		Convey("You can connect, and add some real jobs", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+
+			var jobs []*Job
+			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+			jobs = append(jobs, NewJob("sleep 0.1 && true | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+			jobs = append(jobs, NewJob("sleep 0.1 && true | false | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+			jobs = append(jobs, NewJob("perl -e 'die qq[die\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+			jobs = append(jobs, NewJob("awesjnalakjf --foo", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+			jobs = append(jobs, NewJob("perl -e 'for (1..60) { warn $_ x 130, qq[\\n] } die'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+			jobs = append(jobs, NewJob("perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 8)
+			So(already, ShouldEqual, 0)
+
+			Convey("You can't execute a job without reserving it", func() {
+				err := jq.Execute(jobs[0], config.Runner_exec_shell)
+				So(err, ShouldNotBeNil)
+				jqerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, ErrMustReserve)
+			})
+
+			Convey("Once reserved you can execute jobs, and other clients see the correct state on gets", func() {
+				jq2, err := Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.Cmd, ShouldEqual, "sleep 0.1 && true")
+				So(job.State, ShouldEqual, "reserved")
+
+				job2, err := jq2.GetByCmd("sleep 0.1 && true", "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job2, ShouldNotBeNil)
+				So(job2.Cmd, ShouldEqual, "sleep 0.1 && true")
+				So(job2.State, ShouldEqual, "reserved")
+
+				err = jq.Execute(job, config.Runner_exec_shell)
+				So(err, ShouldBeNil)
+				So(job.State, ShouldEqual, "complete")
+				So(job.Exited, ShouldBeTrue)
+				So(job.Exitcode, ShouldEqual, 0)
+				So(job.Peakmem, ShouldBeGreaterThan, 0)
+				So(job.Pid, ShouldBeGreaterThan, 0)
+				host, _ := os.Hostname()
+				So(job.Host, ShouldEqual, host)
+				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, 0*time.Millisecond)
+				So(job.Attempts, ShouldEqual, 1)
+
+				job2, err = jq2.GetByCmd("sleep 0.1 && true", "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job2, ShouldNotBeNil)
+				So(job2.State, ShouldEqual, "complete")
+				So(job2.Exited, ShouldBeTrue)
+				So(job2.Exitcode, ShouldEqual, 0)
+				So(job2.Peakmem, ShouldEqual, job.Peakmem)
+				So(job2.Pid, ShouldEqual, job.Pid)
+				So(job2.Host, ShouldEqual, host)
+				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
+				So(job2.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job2.CPUtime, ShouldEqual, job.CPUtime)
+				So(job2.Attempts, ShouldEqual, 1)
 			})
 		})
 

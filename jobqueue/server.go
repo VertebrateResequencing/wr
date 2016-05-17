@@ -325,50 +325,47 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				qerr = err.Error()
 			} else {
 				var itemdefs []*queue.ItemDef
-				ok := true
 				for _, job := range cr.Jobs {
 					job.envKey = envkey
+					job.UntilBuried = 3
 					itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
 				}
 
-				if ok {
-					// keep an on-disk record of these new jobs; we sacrifice a
-					// lot of speed by waiting on this database write to persist
-					// to disk. The alternative would be to return success to
-					// the client as soon as the jobs were in the in-memory
-					// queue, then lazily persist to disk in a goroutine, but we
-					// must guarantee that jobs are never lost or a pipeline
-					// could hopelessly break if the server node goes down
-					// between returning success and the write to disk
-					// succeeding. (If we don't return success to the client, it
-					// won't Remove the job that created the new jobs from the
-					// queue and when we recover, at worst the creating job will
-					// be run again - no jobs get lost.)
-					err = s.db.storeNewJobs(cr.Jobs)
+				// keep an on-disk record of these new jobs; we sacrifice a lot
+				// of speed by waiting on this database write to persist to
+				// disk. The alternative would be to return success to the
+				// client as soon as the jobs were in the in-memory queue, then
+				// lazily persist to disk in a goroutine, but we must guarantee
+				// that jobs are never lost or a pipeline could hopelessly break
+				// if the server node goes down between returning success and
+				// the write to disk succeeding. (If we don't return success to
+				// the client, it won't Remove the job that created the new jobs
+				// from the queue and when we recover, at worst the creating job
+				// will be run again - no jobs get lost.)
+				err = s.db.storeNewJobs(cr.Jobs)
+				if err != nil {
+					srerr = ErrDBError
+					qerr = err.Error()
+				} else {
+					// add the jobs to the in-memory job queue
+					added, dups, err := q.AddMany(itemdefs)
 					if err != nil {
-						srerr = ErrDBError
+						srerr = ErrInternalError
 						qerr = err.Error()
-					} else {
-						// add the jobs to the in-memory job queue
-						added, dups, err := q.AddMany(itemdefs)
-						if err != nil {
-							srerr = ErrInternalError
-							qerr = err.Error()
-						}
-
-						// add to our lookup of job RepGroup to key
-						s.rpl.Lock()
-						for _, itemdef := range itemdefs {
-							rp := itemdef.Data.(*Job).RepGroup
-							if _, exists := s.rpl.lookup[rp]; !exists {
-								s.rpl.lookup[rp] = make(map[string]bool)
-							}
-							s.rpl.lookup[rp][itemdef.Key] = true
-						}
-						s.rpl.Unlock()
-
-						sr = &serverResponse{Added: added, Existed: dups}
 					}
+
+					// add to our lookup of job RepGroup to key
+					s.rpl.Lock()
+					for _, itemdef := range itemdefs {
+						rp := itemdef.Data.(*Job).RepGroup
+						if _, exists := s.rpl.lookup[rp]; !exists {
+							s.rpl.lookup[rp] = make(map[string]bool)
+						}
+						s.rpl.lookup[rp][itemdef.Key] = true
+					}
+					s.rpl.Unlock()
+
+					sr = &serverResponse{Added: added, Existed: dups}
 				}
 			}
 		}
@@ -479,6 +476,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.starttime = time.Now()
 				var tend time.Time
 				job.endtime = tend
+				job.Attempts++
 			}
 		}
 	case "jtouch":
@@ -506,6 +504,37 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if err != nil {
 				srerr = ErrDBError
 				qerr = err.Error()
+			}
+		}
+	case "jarchive":
+		// remove the job from the queue, rpl and live bucket and add to
+		// complete bucket
+		var job *Job
+		_, job, srerr = s.getij(cr, q)
+		if srerr == "" {
+			if !job.Exited || job.Exitcode != 0 || job.starttime.IsZero() || job.endtime.IsZero() {
+				srerr = ErrBadRequest
+			} else {
+				key := jobKey(job)
+				job.State = "complete"
+				job.Walltime = job.endtime.Sub(job.starttime)
+				err := s.db.archiveJob(key, job)
+				if err != nil {
+					srerr = ErrDBError
+					qerr = err.Error()
+				} else {
+					err = q.Remove(key)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+					} else {
+						s.rpl.Lock()
+						if m, exists := s.rpl.lookup[job.RepGroup]; exists {
+							delete(m, key)
+						}
+						s.rpl.Unlock()
+					}
+				}
 			}
 		}
 	case "getbc":
@@ -653,22 +682,24 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 	// it to client, but don't want those properties set here for
 	// us, so we make a new Job and fill stuff in that
 	job = &Job{
-		RepGroup: sjob.RepGroup,
-		ReqGroup: sjob.ReqGroup,
-		Cmd:      sjob.Cmd,
-		Cwd:      sjob.Cwd,
-		Memory:   sjob.Memory,
-		Time:     sjob.Time,
-		CPUs:     sjob.CPUs,
-		Priority: sjob.Priority,
-		Peakmem:  sjob.Peakmem,
-		Exited:   sjob.Exited,
-		Exitcode: sjob.Exitcode,
-		Pid:      sjob.Pid,
-		Host:     sjob.Host,
-		CPUtime:  sjob.CPUtime,
-		State:    state,
-		Attempts: stats.Reserves,
+		RepGroup:    sjob.RepGroup,
+		ReqGroup:    sjob.ReqGroup,
+		Cmd:         sjob.Cmd,
+		Cwd:         sjob.Cwd,
+		Memory:      sjob.Memory,
+		Time:        sjob.Time,
+		CPUs:        sjob.CPUs,
+		Priority:    sjob.Priority,
+		Peakmem:     sjob.Peakmem,
+		Exited:      sjob.Exited,
+		Exitcode:    sjob.Exitcode,
+		Pid:         sjob.Pid,
+		Host:        sjob.Host,
+		CPUtime:     sjob.CPUtime,
+		State:       state,
+		Attempts:    sjob.Attempts,
+		UntilBuried: sjob.UntilBuried,
+		ReservedBy:  sjob.ReservedBy,
 	}
 
 	if !sjob.starttime.IsZero() {
