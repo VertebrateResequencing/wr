@@ -134,7 +134,7 @@ func TestQueue(t *testing.T) {
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
 					So(stats.Delayed, ShouldEqual, 8)
-					So(stats.Ready, ShouldEqual, 1)
+					So(stats.Ready, ShouldEqual, 0)
 					So(stats.Running, ShouldEqual, 2)
 
 					Convey("You can get read-only item stats at any point", func() {
@@ -150,7 +150,7 @@ func TestQueue(t *testing.T) {
 						So(item1.state, ShouldEqual, "ready")
 						stats = queue.Stats()
 						So(stats.Delayed, ShouldEqual, 6)
-						So(stats.Ready, ShouldEqual, 3)
+						So(stats.Ready, ShouldEqual, 2)
 
 						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
 							item1, err := queue.Reserve()

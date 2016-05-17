@@ -518,7 +518,6 @@ func (queue *Queue) Release(key string) (err error) {
 
 	// switch from run to delay queue
 	queue.runQueue.remove(item)
-	queue.readyQueue.push(item)
 	item.restart()
 	queue.delayQueue.push(item)
 	item.switchRunDelay()
