@@ -349,6 +349,36 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 	return
 }
 
+// SetDelay is a thread-safe way to change the delay of an item.
+func (queue *Queue) SetDelay(key string, delay time.Duration) (err error) {
+	queue.mutex.Lock()
+	if queue.closed {
+		err = Error{queue.Name, "SetDelay", key, ErrQueueClosed}
+		queue.mutex.Unlock()
+		return
+	}
+
+	item, exists := queue.items[key]
+	if !exists {
+		err = Error{queue.Name, "SetDelay", key, ErrNotFound}
+		queue.mutex.Unlock()
+		return
+	}
+
+	if item.delay != delay {
+		item.delay = delay
+		if item.state == "delay" {
+			item.restart()
+			queue.delayQueue.update(item)
+			queue.mutex.Unlock()
+			queue.delayNotificationTrigger(item)
+			return
+		}
+	}
+	queue.mutex.Unlock()
+	return
+}
+
 // Reserve is a thread-safe way to get the highest priority (or for those with
 // equal priority, the oldest (by time since the item was first Add()ed) item
 // in the queue, switching it from the ready sub-queue to the run sub-queue, and
@@ -358,7 +388,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 // released back to the ready sub-queue automatically, to be handled by someone
 // else that gets it from a Reserve() call. If you know you can't handle it
 // right now, but someone else might be able to later, you can manually call
-// Release().
+// Release(), which moves it to the delay sub-queue.
 func (queue *Queue) Reserve() (item *Item, err error) {
 	queue.mutex.Lock()
 
