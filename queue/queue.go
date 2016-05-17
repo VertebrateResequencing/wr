@@ -41,7 +41,7 @@ with the item successfully), Touch() it to give yourself more time to handle the
 item, or you Bury() the item (the item can't be dealt with until the user takes
 some action). When you know you have a transient problem preventing you from
 handling the item right now, you can manually Release() the item back to the
-ready queue.
+delay queue.
 */
 package queue
 
@@ -461,7 +461,7 @@ func (queue *Queue) Touch(key string) (err error) {
 }
 
 // Release is a thread-safe way to switch an item in the run sub-queue to the
-// ready sub-queue, for when the item should be dealt with later, not now.
+// delay sub-queue, for when the item should be dealt with later, not now.
 func (queue *Queue) Release(key string) (err error) {
 	queue.mutex.Lock()
 
@@ -486,12 +486,14 @@ func (queue *Queue) Release(key string) (err error) {
 		return
 	}
 
-	// switch from run to ready queue
+	// switch from run to delay queue
 	queue.runQueue.remove(item)
 	queue.readyQueue.push(item)
-	item.switchRunReady("release")
+	item.restart()
+	queue.delayQueue.push(item)
+	item.switchRunDelay()
 	queue.mutex.Unlock()
-	queue.readyAdded()
+	queue.delayNotificationTrigger(item)
 
 	return
 }
@@ -530,7 +532,7 @@ func (queue *Queue) Bury(key string) (err error) {
 }
 
 // Kick is a thread-safe way to switch an item in the bury sub-queue to the
-// delay sub-queue, for when a previously buried item can now be handled.
+// ready sub-queue, for when a previously buried item can now be handled.
 func (queue *Queue) Kick(key string) (err error) {
 	queue.mutex.Lock()
 
@@ -555,15 +557,12 @@ func (queue *Queue) Kick(key string) (err error) {
 		return
 	}
 
-	// switch from bury to delay queue
+	// switch from bury to ready queue
 	queue.buryQueue.remove(item)
-	item.restart()
-	queue.delayQueue.push(item)
-	item.switchBuryDelay()
-
+	queue.readyQueue.push(item)
+	item.switchBuryReady()
 	queue.mutex.Unlock()
-	queue.delayNotificationTrigger(item)
-
+	queue.readyAdded()
 	return
 }
 
@@ -682,7 +681,7 @@ func (queue *Queue) startTTRProcessing() {
 				// ready sub-queue
 				queue.runQueue.remove(item)
 				queue.readyQueue.push(item)
-				item.switchRunReady("timeout")
+				item.switchRunReady()
 				addedReady = true
 			}
 			queue.mutex.Unlock()

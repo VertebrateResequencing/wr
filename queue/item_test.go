@@ -83,16 +83,29 @@ func TestItem(t *testing.T) {
 		})
 
 		Convey("Switching from run to ready updates properties", func() {
-			item.switchRunReady("timeout")
+			item.switchRunReady()
 			So(item.queueIndexes[2], ShouldEqual, -1)
 			So(item.releaseAt, ShouldBeZeroValue)
 			So(item.timeouts, ShouldEqual, 1)
 			So(item.releases, ShouldBeZeroValue)
 			So(item.state, ShouldEqual, "ready")
+		})
 
-			item.switchRunReady("release")
-			So(item.timeouts, ShouldEqual, 1)
+		Convey("Switching from run to delay updates properties", func() {
+			item.switchRunDelay()
 			So(item.releases, ShouldEqual, 1)
+			So(item.state, ShouldEqual, "delay")
+
+			Convey("restart updates when the item will be ready", func() {
+				<-time.After(50 * time.Millisecond)
+				item.restart()
+				So(item.readyAt, ShouldHappenOnOrBetween, time.Now().Add(90*time.Millisecond), time.Now().Add(100*time.Millisecond))
+				So(item.isready(), ShouldBeFalse)
+				<-time.After(60 * time.Millisecond)
+				So(item.isready(), ShouldBeFalse)
+				<-time.After(60 * time.Millisecond)
+				So(item.isready(), ShouldBeTrue)
+			})
 		})
 
 		Convey("Switching from run to bury updates properties", func() {
@@ -110,21 +123,10 @@ func TestItem(t *testing.T) {
 			})
 		})
 
-		Convey("Switching from bury to delay updates properties", func() {
-			item.switchBuryDelay()
+		Convey("Switching from bury to ready updates properties", func() {
+			item.switchBuryReady()
 			So(item.queueIndexes[3], ShouldEqual, -1)
-			So(item.state, ShouldEqual, "delay")
-
-			Convey("restart updates when the item will be ready", func() {
-				<-time.After(50 * time.Millisecond)
-				item.restart()
-				So(item.readyAt, ShouldHappenOnOrBetween, time.Now().Add(90*time.Millisecond), time.Now().Add(100*time.Millisecond))
-				So(item.isready(), ShouldBeFalse)
-				<-time.After(60 * time.Millisecond)
-				So(item.isready(), ShouldBeFalse)
-				<-time.After(60 * time.Millisecond)
-				So(item.isready(), ShouldBeTrue)
-			})
+			So(item.state, ShouldEqual, "ready")
 		})
 
 		Convey("Properties can be easily cleared out following removal", func() {

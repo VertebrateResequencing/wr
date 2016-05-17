@@ -165,22 +165,24 @@ func (item *Item) switchReadyRun() {
 	item.state = "run"
 }
 
-// update after we've switched from the run to the ready sub-queue. reason is
-// one of 'timeout' or 'release'
-func (item *Item) switchRunReady(reason string) {
+// update after we've switched from the run to the ready sub-queue
+func (item *Item) switchRunReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-
-	switch reason {
-	case "timeout":
-		item.timeouts += 1
-	case "release":
-		item.releases += 1
-	}
-
+	item.timeouts += 1
 	item.state = "ready"
+}
+
+// update after we've switched from the run to the delay sub-queue
+func (item *Item) switchRunDelay() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.queueIndexes[2] = -1
+	item.releaseAt = time.Time{}
+	item.releases += 1
+	item.state = "delay"
 }
 
 // update after we've switched from the run to the bury sub-queue
@@ -193,13 +195,13 @@ func (item *Item) switchRunBury() {
 	item.state = "bury"
 }
 
-// update after we've switched from the bury to the delay sub-queue
-func (item *Item) switchBuryDelay() {
+// update after we've switched from the bury to the ready sub-queue
+func (item *Item) switchBuryReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[3] = -1
 	item.kicks += 1
-	item.state = "delay"
+	item.state = "ready"
 }
 
 // once removed from its queue, we clear out various properties just in case

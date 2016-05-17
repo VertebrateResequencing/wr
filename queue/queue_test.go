@@ -128,19 +128,27 @@ func TestQueue(t *testing.T) {
 					So(item1.releases, ShouldEqual, 0)
 					err := queue.Release(item1.Key)
 					So(err, ShouldBeNil)
-					So(item1.state, ShouldEqual, "ready")
+					So(item1.state, ShouldEqual, "delay")
 					So(item1.releases, ShouldEqual, 1)
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
-					So(stats.Delayed, ShouldEqual, 7)
+					So(stats.Delayed, ShouldEqual, 8)
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 2)
 
 					Convey("You can get read-only item stats at any point", func() {
 						itemstats := item1.Stats()
-						So(itemstats.State, ShouldEqual, "ready")
+						So(itemstats.State, ShouldEqual, "delay")
 						So(itemstats.Releases, ShouldEqual, 1)
+					})
+
+					Convey("Once released an, item become ready after its delay", func() {
+						<-time.After(110 * time.Millisecond)
+						So(item1.state, ShouldEqual, "ready")
+						stats = queue.Stats()
+						So(stats.Delayed, ShouldEqual, 6)
+						So(stats.Ready, ShouldEqual, 3)
 					})
 				})
 
@@ -199,13 +207,13 @@ func TestQueue(t *testing.T) {
 						So(item3.kicks, ShouldEqual, 0)
 						err := queue.Kick(item3.Key)
 						So(err, ShouldBeNil)
-						So(item3.state, ShouldEqual, "delay")
+						So(item3.state, ShouldEqual, "ready")
 						So(item3.kicks, ShouldEqual, 1)
 
 						stats = queue.Stats()
 						So(stats.Items, ShouldEqual, 10)
-						So(stats.Delayed, ShouldEqual, 8)
-						So(stats.Ready, ShouldEqual, 0)
+						So(stats.Delayed, ShouldEqual, 7)
+						So(stats.Ready, ShouldEqual, 1)
 						So(stats.Running, ShouldEqual, 2)
 						So(stats.Buried, ShouldEqual, 0)
 
