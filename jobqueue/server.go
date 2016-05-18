@@ -130,7 +130,7 @@ type Server struct {
 // encountered while dealing with clients are logged but otherwise ignored. If
 // it creates a db file or recreates one from backup, it will say what it did
 // in the returned msg string.
-func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, err error) {
+func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -196,7 +196,7 @@ func Serve(port string, dbFile string, dbBkFile string) (s *Server, msg string, 
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(dbFile, dbBkFile)
+	db, msg, err := initDB(dbFile, dbBkFile, deployment)
 	if err != nil {
 		return
 	}

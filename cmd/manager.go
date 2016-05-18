@@ -295,7 +295,7 @@ func startJQ(sayStarted bool) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_db_file, config.Manager_db_bk_file)
+	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)

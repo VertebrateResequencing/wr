@@ -41,6 +41,7 @@ type Config struct {
 	Manager_db_bk_file string `default:"db_bk"`
 	Manager_umask      int    `default:007`
 	Runner_exec_shell  string `default:"bash"`
+	Deployment         string `default:"production"`
 }
 
 /*
@@ -109,12 +110,21 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 
 	config := Config{}
 	configor.Load(&config, configFiles...)
+	config.Deployment = deployment
 
 	// convert the possible ~/ in Manager_dir to abs path to user's home
 	if home != "" && strings.HasPrefix(config.Manager_dir, "~/") {
 		mdir := strings.TrimLeft(config.Manager_dir, "~/")
 		mdir = filepath.Join(home, mdir)
 		config.Manager_dir = mdir
+	}
+	config.Manager_dir += "_" + deployment
+
+	// create the manager dir now, or else we're doomed to failure
+	err = os.MkdirAll(config.Manager_dir, 0700)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 
 	// convert the possible relative paths in Manager_*_file to abs paths in
@@ -132,8 +142,6 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 		//*** we need to support this being on a different machine, possibly on an S3-style object store
 		config.Manager_db_bk_file = filepath.Join(config.Manager_dir, config.Manager_db_bk_file)
 	}
-	config.Manager_db_file = config.Manager_db_file + "_" + deployment
-	config.Manager_db_bk_file = config.Manager_db_bk_file + "_" + deployment
 
 	return config
 }

@@ -31,7 +31,6 @@ import (
 	"github.com/ugorji/go/codec"
 	"os"
 	"sort"
-	"strings"
 )
 
 var (
@@ -71,8 +70,8 @@ type db struct {
 // doesn't exist or seems corrupted, we copy it from backup if that exists,
 // otherwise we start fresh. In development we delete any existing db and force
 // a fresh start.
-func initDB(dbFile string, dbBkFile string) (dbstruct *db, msg string, err error) {
-	if strings.HasSuffix(dbFile, "_development") {
+func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, msg string, err error) {
+	if deployment == "development" {
 		os.Remove(dbFile)
 		os.Remove(dbBkFile)
 	}

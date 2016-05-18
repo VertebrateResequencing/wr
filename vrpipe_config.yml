@@ -59,7 +59,14 @@ manager_port: "11301"
 manager_host: "localhost"
 
 # manager_dir: Where should the vrpipe manager store its working files?
-# This defaults to a directory named .vrpipe in your home directory.
+# This defaults to a directory prefixed with .vrpipe in your home directory.
+#
+# The final directory name will be suffixed with "_[deployment]", eg. by default
+# when developing the directory will be ~/.vrpipe_development. For this reason
+# you do not have to set this differently in your production and development
+# config files. The other file-name-based configuration options like
+# 'manager_pid_file' and 'manager_db_file' also do not need to be altered from
+# their defaults.
 #
 # The files stored in here are, by default, the manager's pid file, log file and
 # database related files.
@@ -82,17 +89,12 @@ manager_pid_file: "pid"
 manager_log_file: "log"
 
 # manager_db_file: Where should vrpipe manager store its database file?
-# This defaults to a file prefixed with "db" in manager_dir.
+# This defaults to a file named "db" in manager_dir.
 #
 # You can set this to an absolute path to ignore manager_dir. Note that you may
 # need quite a lot of disk space for this, especially after you've run millions
 # of jobs, since a permanent record of everything you've done is held in this
 # file.
-#
-# The final file name will be suffixed with "_[deployment]", eg. by default when
-# developing the database file will be ~/.vrpipe/db_development. For this
-# reason, you do not have to set this differently in your production and
-# development config files.
 #
 # WARNING: the database file will eventually contain your environment variables,
 # so you should secure this file and not make it public if you have passwords
@@ -100,16 +102,11 @@ manager_log_file: "log"
 manager_db_file: "db"
 
 # manager_db_bk_file: Where should vrpipe manager back up its database file?
-# This defaults to a file prefixed with "db_bk" in manager_dir.
+# This defaults to a file named "db_bk" in manager_dir.
 #
 # You can set this to an absolute path to ignore manager_dir (and ideally you
 # should set this to a path on a different disk or better yet a different
 # machine).
-#
-# The final file name will be suffixed with "_[deployment]", eg. by default when
-# developing the database file will be ~/.vrpipe/db_bk_development. For this
-# reason, you do not have to set this differently in your production and
-# development config files.
 #
 # Note that you may need quite a lot of disk space for this, as when a
 # new backup starts it is written to a temp file in the directory you specify
