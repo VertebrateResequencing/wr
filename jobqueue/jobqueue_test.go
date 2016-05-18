@@ -279,6 +279,7 @@ func TestJobqueue(t *testing.T) {
 	// the above tests
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
+		ClientTouchInterval = 50 * time.Millisecond
 		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file)
 		So(err, ShouldBeNil)
 
@@ -496,7 +497,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
-					err = jq.Bury(job)
+					err = jq.Bury(job, "test bury")
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
@@ -511,14 +512,16 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
-					err = jq.Bury(job)
+					err = jq.Bury(job, "test bury")
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, "buried")
+					So(job.FailReason, ShouldEqual, "test bury")
 
 					job2, err := jq2.GetByCmd(added.Cmd, added.Cwd, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, "buried")
+					So(job2.FailReason, ShouldEqual, "test bury")
 
 					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
@@ -551,6 +554,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "complete")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 0)
+					So(job.FailReason, ShouldEqual, "")
 
 					// pipe job that fails in the middle
 					job, err = jq.Reserve(50 * time.Millisecond)
@@ -564,6 +568,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
 				})
 
 				Convey("Invalid commands are immediately buried", func() {
@@ -585,11 +590,13 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "buried")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 127)
+					So(job.FailReason, ShouldEqual, FailReasonCFound)
 
 					job2, err := jq2.GetByCmd("awesjnalakjf --foo", "/tmp", false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, "buried")
+					So(job2.FailReason, ShouldEqual, FailReasonCFound)
 
 					//*** how to test the other bury cases of invalid exit code
 					// and permission problems on the exe?
@@ -643,6 +650,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 255)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job.StdOut()
 					So(err, ShouldBeNil)
 					So(stdout, ShouldEqual, "print\n")
@@ -654,6 +662,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, "delayed")
+					So(job2.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
 					So(stdout, ShouldEqual, "print\n")
@@ -733,7 +742,7 @@ func TestJobqueue(t *testing.T) {
 					})
 				})
 
-				Convey("Jobs that take longer than the ttr can execute successfully", func() {
+				Convey("Jobs that take longer than the ttr can execute successfully, unless the clienttouchinterval is > ttr", func() {
 					jobs = nil
 					jobs = append(jobs, NewJob("perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
 					inserts, _, err := jq.Add(jobs)
@@ -755,6 +764,30 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, "complete")
+
+					// same again, but we'll alter the clienttouchinterval to be invalid
+					ClientTouchInterval = 150 * time.Millisecond
+					inserts, _, err = jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldNotBeNil)
+					So(err.Error(), ShouldEqual, "command [perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'] was running fine, but will need to be rerun due to a jobqueue server error")
+					// because Execute() just returns in this situation, job.* won't be updated,
+
+					job2, err = jq2.GetByCmd("perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'", "/tmp", true, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					// in this situation, the job got auto-released to ready
+					// with no indication of a problem stored on the server
+					So(job2.State, ShouldEqual, "ready")
+					So(job2.Exited, ShouldBeFalse)
 				})
 			})
 		})

@@ -516,6 +516,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				key := jobKey(job)
 				job.State = "complete"
+				job.FailReason = ""
 				job.Walltime = job.endtime.Sub(job.starttime)
 				err := s.db.archiveJob(key, job)
 				if err != nil {
@@ -543,6 +544,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		var job *Job
 		item, job, srerr = s.getij(cr, q)
 		if srerr == "" {
+			job.FailReason = cr.Job.FailReason
 			if job.Exited && job.Exitcode != 0 {
 				job.UntilBuried--
 			}
@@ -569,8 +571,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	case "jbury":
 		// move the job from the run queue to the bury queue
 		var item *queue.Item
-		item, _, srerr = s.getij(cr, q)
+		var job *Job
+		item, job, srerr = s.getij(cr, q)
 		if srerr == "" {
+			job.FailReason = cr.Job.FailReason
 			err = q.Bury(item.Key)
 			if err != nil {
 				srerr = ErrInternalError
@@ -774,6 +778,7 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 		Peakmem:     sjob.Peakmem,
 		Exited:      sjob.Exited,
 		Exitcode:    sjob.Exitcode,
+		FailReason:  sjob.FailReason,
 		Pid:         sjob.Pid,
 		Host:        sjob.Host,
 		CPUtime:     sjob.CPUtime,

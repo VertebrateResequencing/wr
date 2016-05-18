@@ -40,8 +40,18 @@ import (
 )
 
 var (
-	pss                = []byte("Pss:")
-	ClientReleaseDelay = 30 * time.Second
+	pss                 = []byte("Pss:")
+	ClientTouchInterval = 15 * time.Second
+	ClientReleaseDelay  = 30 * time.Second
+	FailReasonEnv       = "failed to get environment variables"
+	FailReasonStart     = "command failed to start"
+	FailReasonCPerm     = "command permission problem"
+	FailReasonCFound    = "command not found"
+	FailReasonCExit     = "command invalid exit code"
+	FailReasonExit      = "command exited non-zero"
+	FailReasonMem       = "command used too much memory"
+	FailReasonTime      = "command used too much time"
+	FailReasonAbnormal  = "command failed to complete normally"
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -86,6 +96,7 @@ type Job struct {
 	Peakmem        int           // the actual peak memory is recorded here (MB)
 	Exited         bool          // true if the Cmd was run and exited
 	Exitcode       int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
+	FailReason     string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
 	Pid            int           // the pid of the running or ran process is recorded here
 	Host           string        // the host the process is running or did run on is recorded here
 	Walltime       time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
@@ -299,7 +310,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// the command was first added to the queue *** we need a way for users to update a job with new env vars
 	env, err := job.Env()
 	if err != nil {
-		c.Bury(job)
+		c.Bury(job, FailReasonEnv)
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", jobKey(job), err)
 		//*** we need a way for users to know why jobs are buried, when looking at all buried jobs...
 	}
@@ -309,7 +320,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
-		// *** jq.Release(job) // which should put it in delay for 30s, and confirm that we were the client that reserved this job
+		c.Release(job, FailReasonStart, ClientReleaseDelay)
 		return fmt.Errorf("could not start command [%s]: %s", jc, err)
 	}
 
@@ -328,14 +339,16 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// update peak mem used by command, and touch job every 15s
 	peakmem := 0
-	ticker := time.NewTicker(time.Duration(ServerItemTTR.Nanoseconds()/2) * time.Nanosecond) //*** this should be the ServerItemTTR set when the server started, not the current value
+	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
+	timedOut := false
 	go func() {
 		for _ = range ticker.C {
 			err := c.Touch(job)
 			if err != nil {
 				// this could fail for a number of reasons and it's important
 				// we bail out on failure to Touch()
-				cmd.Process.Kill() //*** we just get exit code -1 and don't know that this is why we failed... but ok?
+				cmd.Process.Kill()
+				timedOut = true
 				break
 			}
 
@@ -364,6 +377,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	dobury := false
 	dorelease := false
 	doarchive := false
+	failreason := ""
 	if err != nil {
 		// there was a problem running the command
 		if exitError, ok := err.(*exec.ExitError); ok {
@@ -371,22 +385,27 @@ func (c *Client) Execute(job *Job, shell string) error {
 			switch exitcode {
 			case 126:
 				dobury = true
+				failreason = FailReasonCPerm
 				myerr = fmt.Errorf("command [%s] exited with code %d (permission problem, or command is not executable), which seems permanent, so it has been buried", job.Cmd, exitcode)
 			case 127:
 				dobury = true
+				failreason = FailReasonCFound
 				myerr = fmt.Errorf("command [%s] exited with code %d (command not found), which seems permanent, so it has been buried", job.Cmd, exitcode)
 			case 128:
 				dobury = true
+				failreason = FailReasonCExit
 				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried", job.Cmd, exitcode)
 			default:
 				// *** somehow have to consider the scheduler and if LSF handle killed for memory or time
 				dorelease = true
+				failreason = FailReasonExit
 				myerr = fmt.Errorf("command [%s] exited with code %d, which may be a temporary issue, so it will be tried again", job.Cmd, exitcode)
 			}
 		} else {
 			// some obscure internal error unrelated to the exit code
 			exitcode = 255
 			dorelease = true
+			failreason = FailReasonAbnormal
 			myerr = fmt.Errorf("command [%s] failed to complete normally (%v), which may be a temporary issue, so it will be tried again", job.Cmd, err)
 		}
 	} else {
@@ -400,13 +419,16 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
+		if timedOut {
+			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
+		}
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
 	if dobury {
-		err = c.Bury(job)
+		err = c.Bury(job, failreason)
 	} else if dorelease {
-		err = c.Release(job, ClientReleaseDelay) // which buries after 3 fails in a row
+		err = c.Release(job, failreason, ClientReleaseDelay) // which buries after 3 fails in a row
 	} else if doarchive {
 		err = c.Archive(job)
 	}
@@ -476,7 +498,8 @@ func (c *Client) Archive(job *Job) (err error) {
 // times if it has been run and failed; a subsequent call to Release() will
 // instead result in a Bury(). (If the job's Cmd was not run, you can Release()
 // an unlimited number of times.)
-func (c *Client) Release(job *Job, delay time.Duration) (err error) {
+func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err error) {
+	job.FailReason = failreason
 	_, err = c.request(&clientRequest{Method: "jrelease", Queue: c.queue, Job: job, Timeout: delay, ClientID: c.clientid})
 	if err == nil {
 		// update our process with what the server would have done
@@ -495,7 +518,8 @@ func (c *Client) Release(job *Job, delay time.Duration) (err error) {
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
 // something to perhaps make it runnable and kicks the job). Note that you must
 // reserve a job before you can bury it.
-func (c *Client) Bury(job *Job) (err error) {
+func (c *Client) Bury(job *Job, failreason string) (err error) {
+	job.FailReason = failreason
 	_, err = c.request(&clientRequest{Method: "jbury", Queue: c.queue, Job: job, ClientID: c.clientid})
 	if err == nil {
 		job.State = "buried"
