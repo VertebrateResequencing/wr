@@ -28,6 +28,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ func TestJobqueue(t *testing.T) {
 	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 1s anymore
 	ServerReserveTicker = 10 * time.Millisecond
 	ServerItemTTR = 1 * time.Second
+	ClientReleaseDelay = 100 * time.Millisecond
 
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
 		_, err := Connect(addr, "test_queue", clientConnectTime)
@@ -261,7 +263,7 @@ func TestJobqueue(t *testing.T) {
 			Convey("You get a nice error if you send the server junk", func() {
 				_, err := jq.request(&clientRequest{Method: "junk", Queue: "test_queue"})
 				So(err, ShouldNotBeNil)
-				jqerr, ok := err.(*Error)
+				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrUnknownCommand)
 			})
@@ -276,25 +278,22 @@ func TestJobqueue(t *testing.T) {
 	// start these tests anew because I don't want to mess with the timings in
 	// the above tests
 	Convey("Once a new jobqueue server is up", t, func() {
+		ServerItemTTR = 100 * time.Millisecond
 		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			jq2, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
 
 			var jobs []*Job
 			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
 			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
-			jobs = append(jobs, NewJob("sleep 0.1 && true | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
-			jobs = append(jobs, NewJob("sleep 0.1 && true | false | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
-			jobs = append(jobs, NewJob("perl -e 'die qq[die\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
-			jobs = append(jobs, NewJob("awesjnalakjf --foo", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
-			jobs = append(jobs, NewJob("perl -e 'for (1..60) { warn $_ x 130, qq[\\n] } die'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
-			jobs = append(jobs, NewJob("perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 8)
+			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
 
 			Convey("You can't execute a job without reserving it", func() {
@@ -306,13 +305,13 @@ func TestJobqueue(t *testing.T) {
 			})
 
 			Convey("Once reserved you can execute jobs, and other clients see the correct state on gets", func() {
-				jq2, err := Connect(addr, "test_queue", clientConnectTime)
-				So(err, ShouldBeNil)
-
+				// job that succeeds, no std out
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, "sleep 0.1 && true")
 				So(job.State, ShouldEqual, "reserved")
+				So(job.Attempts, ShouldEqual, 0)
+				So(job.UntilBuried, ShouldEqual, 3)
 
 				job2, err := jq2.GetByCmd("sleep 0.1 && true", "/tmp", false, false)
 				So(err, ShouldBeNil)
@@ -332,6 +331,13 @@ func TestJobqueue(t *testing.T) {
 				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, 0*time.Millisecond)
 				So(job.Attempts, ShouldEqual, 1)
+				So(job.UntilBuried, ShouldEqual, 3)
+				stdout, err := job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "")
+				stderr, err := job.StdErr()
+				So(err, ShouldBeNil)
+				So(stderr, ShouldEqual, "")
 
 				job2, err = jq2.GetByCmd("sleep 0.1 && true", "/tmp", false, false)
 				So(err, ShouldBeNil)
@@ -346,6 +352,410 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)
+
+				// job that fails, no std out
+				job, err = jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+				So(job.State, ShouldEqual, "reserved")
+				So(job.Attempts, ShouldEqual, 0)
+				So(job.UntilBuried, ShouldEqual, 3)
+
+				err = jq.Execute(job, config.Runner_exec_shell)
+				So(err, ShouldNotBeNil)
+				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again")
+				So(job.State, ShouldEqual, "delayed")
+				So(job.Exited, ShouldBeTrue)
+				So(job.Exitcode, ShouldEqual, 1)
+				So(job.Peakmem, ShouldBeGreaterThan, 0)
+				So(job.Pid, ShouldBeGreaterThan, 0)
+				So(job.Host, ShouldEqual, host)
+				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, 0*time.Millisecond)
+				So(job.Attempts, ShouldEqual, 1)
+				So(job.UntilBuried, ShouldEqual, 2)
+				stdout, err = job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "")
+				stderr, err = job.StdErr()
+				So(err, ShouldBeNil)
+				So(stderr, ShouldEqual, "")
+
+				job2, err = jq2.GetByCmd("sleep 0.1 && false", "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job2, ShouldNotBeNil)
+				So(job2.State, ShouldEqual, "delayed")
+				So(job2.Exited, ShouldBeTrue)
+				So(job2.Exitcode, ShouldEqual, 1)
+				So(job2.Peakmem, ShouldEqual, job.Peakmem)
+				So(job2.Pid, ShouldEqual, job.Pid)
+				So(job2.Host, ShouldEqual, host)
+				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
+				So(job2.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job2.CPUtime, ShouldEqual, job.CPUtime)
+				So(job2.Attempts, ShouldEqual, 1)
+
+				Convey("A temp failed job is reservable after a delay", func() {
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job, ShouldBeNil)
+					job2, err = jq2.GetByCmd("sleep 0.1 && false", "/tmp", false, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "delayed")
+
+					<-time.After(60 * time.Millisecond)
+					job, err = jq.Reserve(5 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+					So(job.State, ShouldEqual, "reserved")
+					So(job.Attempts, ShouldEqual, 1)
+					So(job.UntilBuried, ShouldEqual, 2)
+					job2, err = jq2.GetByCmd("sleep 0.1 && false", "/tmp", false, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "reserved")
+
+					Convey("After 3 failures it gets buried", func() {
+						err = jq.Execute(job, config.Runner_exec_shell)
+						So(err, ShouldNotBeNil)
+						So(job.State, ShouldEqual, "delayed")
+						So(job.Exited, ShouldBeTrue)
+						So(job.Exitcode, ShouldEqual, 1)
+						So(job.Attempts, ShouldEqual, 2)
+						So(job.UntilBuried, ShouldEqual, 1)
+
+						<-time.After(110 * time.Millisecond)
+						job, err = jq.Reserve(5 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+						So(job.State, ShouldEqual, "reserved")
+						So(job.Attempts, ShouldEqual, 2)
+						So(job.UntilBuried, ShouldEqual, 1)
+
+						err = jq.Execute(job, config.Runner_exec_shell)
+						So(err, ShouldNotBeNil)
+						So(job.State, ShouldEqual, "buried")
+						So(job.Exited, ShouldBeTrue)
+						So(job.Exitcode, ShouldEqual, 1)
+						So(job.Attempts, ShouldEqual, 3)
+						So(job.UntilBuried, ShouldEqual, 0)
+
+						<-time.After(110 * time.Millisecond)
+						job, err = jq.Reserve(5 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(job, ShouldBeNil)
+
+						Convey("Once buried it can be kicked back to ready state and be reserved again", func() {
+							job2, err = jq2.GetByCmd("sleep 0.1 && false", "/tmp", false, false)
+							So(err, ShouldBeNil)
+							So(job2, ShouldNotBeNil)
+							So(job2.State, ShouldEqual, "buried")
+
+							kicked, err := jq.Kick([][2]string{[2]string{"sleep 0.1 && false", "/tmp"}})
+							So(err, ShouldBeNil)
+							So(kicked, ShouldEqual, 1)
+
+							job, err = jq.Reserve(5 * time.Millisecond)
+							So(err, ShouldBeNil)
+							So(job, ShouldNotBeNil)
+							So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
+							So(job.State, ShouldEqual, "reserved")
+							So(job.Attempts, ShouldEqual, 3)
+							So(job.UntilBuried, ShouldEqual, 3)
+
+							job2, err = jq2.GetByCmd("sleep 0.1 && false", "/tmp", false, false)
+							So(err, ShouldBeNil)
+							So(job2, ShouldNotBeNil)
+							So(job2.State, ShouldEqual, "reserved")
+							So(job2.Attempts, ShouldEqual, 3)
+							So(job2.UntilBuried, ShouldEqual, 3)
+
+							Convey("If you do nothing with a reserved job, it auto reverts back to ready", func() {
+								<-time.After(110 * time.Millisecond)
+								job2, err = jq2.GetByCmd("sleep 0.1 && false", "/tmp", false, false)
+								So(err, ShouldBeNil)
+								So(job2, ShouldNotBeNil)
+								So(job2.State, ShouldEqual, "ready")
+								So(job2.Attempts, ShouldEqual, 3)
+								So(job2.UntilBuried, ShouldEqual, 3)
+							})
+						})
+					})
+				})
+			})
+
+			Convey("Jobs can be deleted, but only once buried, and you can only bury once reserved", func() {
+				for _, added := range jobs {
+					job, err := jq.GetByCmd(added.Cmd, added.Cwd, false, false)
+					So(err, ShouldBeNil)
+					So(job, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "ready")
+
+					deleted, err := jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					So(err, ShouldBeNil)
+					So(deleted, ShouldEqual, 0)
+
+					err = jq.Bury(job)
+					So(err, ShouldNotBeNil)
+					jqerr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(jqerr.Err, ShouldEqual, ErrBadJob)
+
+					job, err = jq.Reserve(5 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, added.Cmd)
+					So(job.State, ShouldEqual, "reserved")
+
+					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					So(err, ShouldBeNil)
+					So(deleted, ShouldEqual, 0)
+
+					err = jq.Bury(job)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, "buried")
+
+					job2, err := jq2.GetByCmd(added.Cmd, added.Cwd, false, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "buried")
+
+					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					So(err, ShouldBeNil)
+					So(deleted, ShouldEqual, 1)
+
+					job, err = jq.GetByCmd(added.Cmd, added.Cwd, false, false)
+					So(err, ShouldBeNil)
+					So(job, ShouldBeNil)
+				}
+				job, err := jq.Reserve(5 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldBeNil)
+
+				Convey("Cmds with pipes in them are handled correctly", func() {
+					jobs = nil
+					jobs = append(jobs, NewJob("sleep 0.1 && true | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+					jobs = append(jobs, NewJob("sleep 0.1 && true | false | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					inserts, _, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 2)
+
+					// pipe job that succeeds
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | true")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, "complete")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 0)
+
+					// pipe job that fails in the middle
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | false | true")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldNotBeNil)
+					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again")
+					So(job.State, ShouldEqual, "delayed")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+				})
+
+				Convey("Invalid commands are immediately buried", func() {
+					jobs = nil
+					jobs = append(jobs, NewJob("awesjnalakjf --foo", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					inserts, _, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					// job that fails because of non-existent exe
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "awesjnalakjf --foo")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldNotBeNil)
+					So(err.Error(), ShouldEqual, "command [awesjnalakjf --foo] exited with code 127 (command not found), which seems permanent, so it has been buried")
+					So(job.State, ShouldEqual, "buried")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 127)
+
+					job2, err := jq2.GetByCmd("awesjnalakjf --foo", "/tmp", false, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "buried")
+
+					//*** how to test the other bury cases of invalid exit code
+					// and permission problems on the exe?
+				})
+
+				Convey("The stdout/err of jobs is only kept for failed jobs", func() {
+					jobs = nil
+					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					inserts, _, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 2)
+
+					// job that outputs to stdout and stderr but succeeds
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "perl -e 'print qq[print\\n]; warn qq[warn\\n]'")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, "complete")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 0)
+					stdout, err := job.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, "print\n")
+					stderr, err := job.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, "warn\n")
+
+					job2, err := jq2.GetByCmd("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", true, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "complete")
+					stdout, err = job2.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, "")
+					stderr, err = job2.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, "")
+
+					// job that outputs to stdout and stderr and fails
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "perl -e 'print qq[print\\n]; die qq[die\\n]'")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "delayed")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 255)
+					stdout, err = job.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, "print\n")
+					stderr, err = job.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, "die\n")
+
+					job2, err = jq2.GetByCmd("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", true, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "delayed")
+					stdout, err = job2.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, "print\n")
+					stderr, err = job2.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, "die\n")
+				})
+
+				Convey("The stdout/err of jobs is limited in size", func() {
+					jobs = nil
+					jobs = append(jobs, NewJob("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					inserts, _, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					// job that outputs tons of stdout and stderr and fails
+					expectedout := ""
+					expectederr := ""
+					for i := 1; i <= 60; i++ {
+						if i > 21 && i < 46 {
+							continue
+						}
+						if i == 21 {
+							expectedout += "21212121212121212121212121\n... omitting 6358 bytes ...\n45454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545p\n"
+							expectederr += "21212121212121212121212121\n... omitting 6377 bytes ...\n5454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545454545w\n"
+						} else {
+							s := strconv.Itoa(i)
+							for j := 1; j <= 130; j++ {
+								expectedout += s
+								expectederr += s
+							}
+							expectedout += "p\n"
+							expectederr += "w\n"
+						}
+					}
+					expectederr += "Died at -e line 1.\n"
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "delayed")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 255)
+					stdout, err := job.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, expectedout)
+					stderr, err := job.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, expectederr)
+
+					job2, err := jq2.GetByCmd("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", true, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "delayed")
+					stdout, err = job2.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, expectedout)
+					stderr, err = job2.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, expectederr)
+
+					Convey("If you don't ask for stdout, you don't get it", func() {
+						job2, err = jq2.GetByCmd("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", false, false)
+						So(err, ShouldBeNil)
+						So(job2, ShouldNotBeNil)
+						So(job2.State, ShouldEqual, "delayed")
+						stdout, err = job2.StdOut()
+						So(err, ShouldBeNil)
+						So(stdout, ShouldEqual, "")
+						stderr, err = job2.StdErr()
+						So(err, ShouldBeNil)
+						So(stderr, ShouldEqual, "")
+					})
+				})
+
+				Convey("Jobs that take longer than the ttr can execute successfully", func() {
+					jobs = nil
+					jobs = append(jobs, NewJob("perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+					inserts, _, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'")
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, "complete")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 0)
+
+					job2, err := jq2.GetByCmd("perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'", "/tmp", true, false)
+					So(err, ShouldBeNil)
+					So(job2, ShouldNotBeNil)
+					So(job2.State, ShouldEqual, "complete")
+				})
 			})
 		})
 

@@ -207,6 +207,12 @@ func (db *db) archiveJob(key string, job *Job) (err error) {
 	return
 }
 
+// deleteLiveJob remove a job from the live bucket, for use when jobs were
+// added in error
+func (db *db) deleteLiveJob(key string) {
+	db.remove(bucketJobsLive, key)
+}
+
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
 // jobs bucket (ie. those that have gone through the queue and been Remove()d).
 func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool) (jobs []*Job, err error) {
@@ -341,13 +347,13 @@ func (db *db) retrieve(bucket []byte, key string) (val []byte) {
 
 // remove does a basic delete of a key from a given bucket. We don't care about
 // errors here.
-// func (db *db) remove(bucket []byte, key string) {
-// 	db.bolt.Batch(func(tx *bolt.Tx) error {
-// 		b := tx.Bucket(bucket)
-// 		b.Delete([]byte(key))
-// 		return nil
-// 	})
-// }
+func (db *db) remove(bucket []byte, key string) {
+	db.bolt.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		b.Delete([]byte(key))
+		return nil
+	})
+}
 
 func (db *db) storeBatchedEncodedJobs(bucket []byte, encodes bje) (err error) {
 	// we want to add in batches of size encodes/10, minimum 1000, rounded to

@@ -40,7 +40,8 @@ import (
 )
 
 var (
-	pss = []byte("Pss:")
+	pss                = []byte("Pss:")
+	ClientReleaseDelay = 30 * time.Second
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -298,8 +299,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// the command was first added to the queue *** we need a way for users to update a job with new env vars
 	env, err := job.Env()
 	if err != nil {
-		// *** jq.Bury(job)
+		c.Bury(job)
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", jobKey(job), err)
+		//*** we need a way for users to know why jobs are buried, when looking at all buried jobs...
 	}
 	cmd.Env = env
 
@@ -402,11 +404,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	if dobury {
-		//*** myerr = c.Bury(job)
+		err = c.Bury(job)
 	} else if dorelease {
-		//*** myerr = c.Release(job) // which buries after x attempts
+		err = c.Release(job, ClientReleaseDelay) // which buries after 3 fails in a row
 	} else if doarchive {
-		myerr = c.Archive(job)
+		err = c.Archive(job)
+	}
+	if err != nil {
+		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
 	return myerr
@@ -446,24 +451,9 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 		job.StdErrC = compress(stderr)
 	}
 	_, err = c.request(&clientRequest{Method: "jend", Queue: c.queue, Job: job, ClientID: c.clientid})
-	job.Walltime = time.Since(job.starttime) // starttime having been set during Started()
+	job.Walltime = time.Since(job.starttime)
 	return
 }
-
-// Stats returns stats of a jobqueue job.
-// func (j *Job) Stats() (s JobStats, err error) {
-// 	data, err := j.conn.beanstalk.StatsJob(j.ID)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to get stats for beanstalk job %d: %s\n", j.ID, err.Error())
-// 		return
-// 	}
-// 	s = JobStats{}
-// 	err = yaml.Unmarshal(data, &s)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to parse yaml for beanstalk job %d stats: %s\n", j.ID, err.Error())
-// 	}
-// 	return
-// }
 
 // Archive removes a job from the jobqueue and adds it to the database of
 // complete jobs, for use after you have run the job successfully. You have to
@@ -480,34 +470,73 @@ func (c *Client) Archive(job *Job) (err error) {
 // Release places a job back on the jobqueue, for use when you can't handle the
 // job right now (eg. there was a suspected transient error) but maybe someone
 // else can later. Note that you must reserve a job before you can release it.
-// func (j *Job) Release() (err error) {
-// 	err = j.conn.beanstalk.Release(j.ID, 0, 60*time.Second)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to release beanstalk job %d: %s\n", j.ID, err.Error())
-// 	}
-// 	return
-// }
+// The delay arg is the duration to wait after your call to Release() before
+// anyone else can Reserve() this job again - could help you stop immediately
+// Reserve()ing the job again yourself. You can only Release() the same job 3
+// times if it has been run and failed; a subsequent call to Release() will
+// instead result in a Bury(). (If the job's Cmd was not run, you can Release()
+// an unlimited number of times.)
+func (c *Client) Release(job *Job, delay time.Duration) (err error) {
+	_, err = c.request(&clientRequest{Method: "jrelease", Queue: c.queue, Job: job, Timeout: delay, ClientID: c.clientid})
+	if err == nil {
+		// update our process with what the server would have done
+		if job.Exited && job.Exitcode != 0 {
+			job.UntilBuried--
+		}
+		if job.UntilBuried <= 0 {
+			job.State = "buried"
+		} else {
+			job.State = "delayed"
+		}
+	}
+	return
+}
 
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
 // something to perhaps make it runnable and kicks the job). Note that you must
 // reserve a job before you can bury it.
-// func (j *Job) Bury() (err error) {
-// 	err = j.conn.beanstalk.Bury(j.ID, 0)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to bury beanstalk job %d: %s\n", j.ID, err.Error())
-// 	}
-// 	return
-// }
+func (c *Client) Bury(job *Job) (err error) {
+	_, err = c.request(&clientRequest{Method: "jbury", Queue: c.queue, Job: job, ClientID: c.clientid})
+	if err == nil {
+		job.State = "buried"
+	}
+	return
+}
 
-// Kick makes a previously Bury()'d job runnable again (it can be reserved in
-// the future).
-// func (j *Job) Kick() (err error) {
-// 	err = j.conn.beanstalk.KickJob(j.ID)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to kick beanstalk job %d: %s\n", j.ID, err.Error())
-// 	}
-// 	return
-// }
+// Kick makes previously Bury()'d jobs runnable again (it can be Reserve()d in
+// the future). It returns a count of jobs that it actually kicked. Errors will
+// only be related to not being able to contact the server. The ccs argument is
+// the same as for GetByCmds()
+func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
+	var keys []string
+	for _, cc := range ccs {
+		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
+	}
+	resp, err := c.request(&clientRequest{Method: "jkick", Queue: c.queue, Keys: keys})
+	if err != nil {
+		return
+	}
+	kicked = resp.Existed
+	return
+}
+
+// Delete removes previously Bury()'d jobs from the queue completely. For use
+// when jobs were created incorrectly/ by accident, or they can never be fixed.
+// It returns a count of jobs that it actually removed. Errors will only be
+// related to not being able to contact the server. The ccs argument is the same
+// as for GetByCmds().
+func (c *Client) Delete(ccs [][2]string) (deleted int, err error) {
+	var keys []string
+	for _, cc := range ccs {
+		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
+	}
+	resp, err := c.request(&clientRequest{Method: "jdel", Queue: c.queue, Keys: keys})
+	if err != nil {
+		return
+	}
+	deleted = resp.Existed
+	return
+}
 
 // GetByCmd gets a Job given its Cmd and Cwd. With the boolean args set to true,
 // this is the only way to get a Job that StdOut() and StdErr() will work on,
@@ -637,7 +666,7 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 		if cr.Job != nil {
 			key = jobKey(cr.Job)
 		}
-		err = &Error{cr.Queue, cr.Method, key, sr.Err}
+		err = Error{cr.Queue, cr.Method, key, sr.Err}
 	}
 	return
 }

@@ -53,7 +53,6 @@ var (
 	ErrMustReserve        = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError            = "failed to use database"
 	ServerInterruptTime   = 1 * time.Second
-	ServerItemDelay       = 30 * time.Second
 	ServerItemTTR         = 60 * time.Second
 	ServerReserveTicker   = 1 * time.Second
 	ServerLogClientErrors = true
@@ -444,7 +443,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					srerr = itemerr.err
 				}
 			}
-			if item != nil {
+			if srerr == "" && item != nil {
 				// clean up any past state to have a fresh job ready to run
 				sjob := item.Data.(*Job)
 				sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
@@ -536,6 +535,88 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 				}
 			}
+		}
+	case "jrelease":
+		// move the job from the run queue to the delay queue, unless it has
+		// failed too many times, in which case bury
+		var item *queue.Item
+		var job *Job
+		item, job, srerr = s.getij(cr, q)
+		if srerr == "" {
+			if job.Exited && job.Exitcode != 0 {
+				job.UntilBuried--
+			}
+			if job.UntilBuried <= 0 {
+				err = q.Bury(item.Key)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				}
+			} else {
+				err = q.SetDelay(item.Key, cr.Timeout)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				} else {
+					err = q.Release(item.Key)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+					}
+				}
+			}
+		}
+	case "jbury":
+		// move the job from the run queue to the bury queue
+		var item *queue.Item
+		item, _, srerr = s.getij(cr, q)
+		if srerr == "" {
+			err = q.Bury(item.Key)
+			if err != nil {
+				srerr = ErrInternalError
+				qerr = err.Error()
+			}
+		}
+	case "jkick":
+		// move the jobs from the bury queue to the ready queue; unlike the
+		// other j* methods, client doesn't have to be the Reserve() owner of
+		// these jobs, and we don't want the "in run queue" test
+		if cr.Keys == nil {
+			srerr = ErrBadRequest
+		} else {
+			kicked := 0
+			for _, jobkey := range cr.Keys {
+				item, err := q.Get(jobkey)
+				if err != nil || item.Stats().State != "bury" {
+					continue
+				}
+				err = q.Kick(jobkey)
+				if err == nil {
+					job := item.Data.(*Job)
+					job.UntilBuried = 3
+					kicked++
+				}
+			}
+			sr = &serverResponse{Existed: kicked}
+		}
+	case "jdel":
+		// remove the jobs from the bury queue and the live bucket
+		if cr.Keys == nil {
+			srerr = ErrBadRequest
+		} else {
+			deleted := 0
+			for _, jobkey := range cr.Keys {
+				item, err := q.Get(jobkey)
+				if err != nil || item.Stats().State != "bury" {
+					continue
+				}
+				err = q.Remove(jobkey)
+				if err == nil {
+					deleted++
+					s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
+				}
+			}
+			sr = &serverResponse{Existed: deleted}
 		}
 	case "getbc":
 		// get jobs by their Cmds & Cwds
