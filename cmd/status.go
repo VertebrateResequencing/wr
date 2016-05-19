@@ -144,7 +144,7 @@ the commands, or if you added them with a different cwd.`,
 
 		// print out status information for each job
 		for _, job := range jobs {
-			fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements Group: %s; Priority: %d; Attempts: %d\nExpected Requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Memory, job.Time, job.CPUs)
+			fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Memory, job.Time, job.CPUs)
 
 			switch job.State {
 			case "delayed":
@@ -155,6 +155,10 @@ the commands, or if you added them with a different cwd.`,
 				fmt.Printf("Status: %s - you need to fix the problem and then `vrpipe kick`\n", job.State)
 			case "running", "complete":
 				fmt.Printf("Status: %s\n", job.State)
+			}
+
+			if job.FailReason != "" {
+				fmt.Printf("Previous problem: %s\n", job.FailReason)
 			}
 
 			if job.Exited {
