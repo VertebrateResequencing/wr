@@ -311,6 +311,14 @@ func (queue *Queue) Get(key string) (item *Item, err error) {
 	return
 }
 
+// AllData() returns the item.Data of all items in the queue
+func (queue *Queue) AllData() (data []interface{}) {
+	for _, item := range queue.items {
+		data = append(data, item.Data)
+	}
+	return
+}
+
 // Update is a thread-safe way to change the data, priority, delay or ttr of an
 // item. You must supply all of these as per Add() - just supply the old values
 // of those you are not changing. The old values can be found by getting the
