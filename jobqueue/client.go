@@ -616,7 +616,7 @@ func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
 	return
 }
 
-// GetByRepGroup gets multiple Jobs at once given their RepGroup (an abitrary
+// GetByRepGroup gets multiple Jobs at once given their RepGroup (an arbitrary
 // user-supplied identifier for the purpose of grouping related jobs together
 // for reporting purposes).
 func (c *Client) GetByRepGroup(repgroup string) (jobs []*Job, err error) {
