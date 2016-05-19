@@ -115,6 +115,8 @@ type Server struct {
 	db         *db
 	done       chan error
 	stop       chan bool
+	up         bool
+	blocking   bool
 	sync.Mutex
 	qs  map[string]*queue.Queue
 	rpl *rgToKeys
@@ -210,6 +212,7 @@ func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *S
 		db:         db,
 		stop:       stop,
 		done:       done,
+		up:         true,
 	}
 
 	go func() {
@@ -258,14 +261,25 @@ func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *S
 // will return with an error indicating why it stopped blocking, which will
 // be due to receiving a signal or because you called Stop()
 func (s *Server) Block() (err error) {
+	s.blocking = true
 	err = <-s.done
 	s.db.close() //*** do one last backup?
+	s.up = false
+	s.blocking = false
 	return
 }
 
 // Stop will cause a graceful shut down of the server.
-func (s *Server) Stop() {
-	s.stop <- true
+func (s *Server) Stop() (err error) {
+	if s.up {
+		s.stop <- true
+		if !s.blocking {
+			err = <-s.done
+			s.db.close()
+			s.up = false
+		}
+	}
+	return
 }
 
 // handleRequest parses the bytes received from a connected client in to a

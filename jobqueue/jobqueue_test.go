@@ -49,8 +49,10 @@ func TestJobqueue(t *testing.T) {
 	ServerItemTTR = 1 * time.Second
 	ClientReleaseDelay = 100 * time.Millisecond
 
+	var server *Server
+	var err error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
-		_, err := Connect(addr, "test_queue", clientConnectTime)
+		_, err = Connect(addr, "test_queue", clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
 		So(ok, ShouldBeTrue)
@@ -58,7 +60,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
@@ -269,16 +271,19 @@ func TestJobqueue(t *testing.T) {
 
 		Reset(func() {
 			server.Stop()
-			server.Block()
 		})
 	})
+
+	if server != nil {
+		server.Stop()
+	}
 
 	// start these tests anew because I don't want to mess with the timings in
 	// the above tests
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
@@ -792,9 +797,12 @@ func TestJobqueue(t *testing.T) {
 
 		Reset(func() {
 			server.Stop()
-			server.Block()
 		})
 	})
+
+	if server != nil {
+		server.Stop()
+	}
 }
 
 func TestJobqueueSpeed(t *testing.T) {
