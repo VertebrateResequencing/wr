@@ -21,6 +21,7 @@ package jobqueue
 import (
 	"fmt"
 	"github.com/sb10/vrpipe/internal"
+	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
 	"log"
 	"math"
@@ -44,10 +45,123 @@ func TestJobqueue(t *testing.T) {
 	addr := "localhost:" + port
 
 	ServerLogClientErrors = false
-	ServerInterruptTime = 10 * time.Millisecond // Stop() followed by Block() won't take 1s anymore
+	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
-	ServerItemTTR = 1 * time.Second
 	ClientReleaseDelay = 100 * time.Millisecond
+
+	// these tests need the server running in it's own pid so we can test signal
+	// handling in the client; to get the server in its own pid we need to
+	// "fork", and that means these must be the first tests to run or else we
+	// won't know in our parent process when our desired server is ready
+	Convey("Once a jobqueue server is up as a daemon", t, func() {
+		ServerItemTTR = 100 * time.Millisecond
+		ClientTouchInterval = 50 * time.Millisecond
+
+		context := &daemon.Context{
+			PidFileName: config.Manager_pid_file,
+			PidFilePerm: 0644,
+			WorkDir:     "/",
+			Umask:       config.Manager_umask,
+		}
+		child, err := context.Reborn()
+		if err != nil {
+			log.Fatalf("failed to daemonize: %s", err)
+		}
+		if child == nil {
+			// daemonized child, that will run until signalled to stop
+			defer context.Release()
+
+			//*** we need a log rotation scheme in place to have this...
+			// logfile, errlog := os.OpenFile(config.Manager_log_file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+			// if errlog == nil {
+			// 	defer logfile.Close()
+			// 	log.SetOutput(logfile)
+			// }
+
+			server, msg, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+			if err != nil {
+				log.Fatalf("test daemon failed to start: %s\n", err)
+			}
+			if msg != "" {
+				log.Println(msg)
+			}
+
+			// we'll Block() later, but just in case the parent tests bomb out
+			// without killing us, we'll stop after 10s
+			go func() {
+				<-time.After(10 * time.Second)
+				log.Println("test daemon stopping after 10s")
+				server.Stop()
+			}()
+
+			log.Println("test daemon up, will block")
+
+			// wait until we are killed
+			server.Block()
+			log.Println("test daemon exiting")
+			os.Exit(0)
+		}
+		// parent; wait a while for our child to bring up the server
+		defer syscall.Kill(child.Pid, syscall.SIGTERM)
+		jq, err := Connect(addr, "test_queue", 10*time.Second)
+		So(err, ShouldBeNil)
+
+		sstats, err := jq.ServerStats()
+		So(err, ShouldBeNil)
+		So(sstats.ServerInfo.PID, ShouldEqual, child.Pid)
+
+		Convey("You can set up a long-running job for execution", func() {
+			cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
+			var jobs []*Job
+			jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			job, err := jq.Reserve(50 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(job.Cmd, ShouldEqual, cmd)
+			So(job.State, ShouldEqual, "reserved")
+
+			Convey("signals are handled during execution", func() {
+				go func() {
+					<-time.After(1 * time.Second)
+					syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				}()
+
+				err = jq.Execute(job, config.Runner_exec_shell)
+				So(err, ShouldNotBeNil)
+				jqerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, FailReasonSignal)
+				So(job.State, ShouldEqual, "delayed")
+				So(job.Exited, ShouldBeTrue)
+				So(job.Exitcode, ShouldEqual, -1)
+				So(job.FailReason, ShouldEqual, FailReasonSignal)
+
+				jq2, err := Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+				job2, err := jq2.GetByCmd(cmd, "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job2, ShouldNotBeNil)
+				So(job2.Cmd, ShouldEqual, cmd)
+				So(job2.State, ShouldEqual, "delayed")
+				So(job2.FailReason, ShouldEqual, FailReasonSignal)
+
+				// all signals handled the same way, so no need for further
+				// tests
+			})
+		})
+
+		Reset(func() {
+			syscall.Kill(child.Pid, syscall.SIGTERM)
+		})
+	})
+
+	ServerItemTTR = 1 * time.Second
+	ClientTouchInterval = 500 * time.Millisecond
 
 	var server *Server
 	var err error

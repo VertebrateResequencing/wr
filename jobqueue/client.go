@@ -34,6 +34,7 @@ import (
 	"github.com/ugorji/go/codec"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -52,6 +53,7 @@ var (
 	FailReasonMem       = "command used too much memory"
 	FailReasonTime      = "command used too much time"
 	FailReasonAbnormal  = "command failed to complete normally"
+	FailReasonSignal    = "runner received a signal to stop"
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -274,14 +276,17 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // Execute runs the given Job's Cmd and blocks until it exits. Internally it
 // calls Started() and Ended() and keeps track of peak memory used. It regularly
 // calls Touch() on the Job so that the server knows we are still alive and
-// handling the Job successfully. If no error is returned, the Cmd will have run
-// OK, exited with status 0, and been Archive()d from the queue while being
-// placed in the permanent store. Otherwise, it will have been Release()d or
-// Bury()ied as appropriate. The supplied shell is the shell to execute the Cmd
-// under, ideally bash (something that understand the command "set -o
-// pipefail"). You have to have been the one to Reserve() the supplied Job, or
-// this will immediately return an error. NB: the peak memory tracking assumes
-// we are running on a modern linux system with /proc/*/smaps.
+// handling the Job successfully. It also intercepts SIGTERM, SIGINT, SIGQUIT,
+// SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and returning
+// Error.Err(FailReasonSignal); you should check for this and exit your
+// process). If no error is returned, the Cmd will have run OK, exited with
+// status 0, and been Archive()d from the queue while being placed in the
+// permanent store. Otherwise, it will have been Release()d or Bury()ied as
+// appropriate. The supplied shell is the shell to execute the Cmd under,
+// ideally bash (something that understand the command "set -o pipefail"). You
+// have to have been the one to Reserve() the supplied Job, or this will
+// immediately return an error. NB: the peak memory tracking assumes we are
+// running on a modern linux system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
@@ -312,9 +317,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		c.Bury(job, FailReasonEnv)
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", jobKey(job), err)
-		//*** we need a way for users to know why jobs are buried, when looking at all buried jobs...
 	}
 	cmd.Env = env
+
+	// intercept certain signals (under LSF and SGE, SIGUSR2 may mean out-of-
+	// time, but there's no reliable way of knowing out-of-memory, so we will
+	// just treat them all the same)
+	sigs := make(chan os.Signal, 5)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
 
 	// start running the command
 	err = cmd.Start()
@@ -341,20 +351,28 @@ func (c *Client) Execute(job *Job, shell string) error {
 	peakmem := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	timedOut := false
+	signalled := false
 	go func() {
-		for _ = range ticker.C {
-			err := c.Touch(job)
-			if err != nil {
-				// this could fail for a number of reasons and it's important
-				// we bail out on failure to Touch()
+		for {
+			select {
+			case <-sigs:
 				cmd.Process.Kill()
-				timedOut = true
+				signalled = true
 				break
-			}
+			case <-ticker.C:
+				err := c.Touch(job)
+				if err != nil {
+					// this could fail for a number of reasons and it's important
+					// we bail out on failure to Touch()
+					cmd.Process.Kill()
+					timedOut = true
+					break
+				}
 
-			mem, err := currentMemory(job.Pid)
-			if err == nil && mem > peakmem {
-				peakmem = mem
+				mem, err := currentMemory(job.Pid)
+				if err == nil && mem > peakmem {
+					peakmem = mem
+				}
 			}
 		}
 	}()
@@ -396,10 +414,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 				failreason = FailReasonCExit
 				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried", job.Cmd, exitcode)
 			default:
-				// *** somehow have to consider the scheduler and if LSF handle killed for memory or time
 				dorelease = true
-				failreason = FailReasonExit
-				myerr = fmt.Errorf("command [%s] exited with code %d, which may be a temporary issue, so it will be tried again", job.Cmd, exitcode)
+				if signalled {
+					failreason = FailReasonSignal
+					myerr = Error{c.queue, "Execute", jobKey(job), FailReasonSignal}
+				} else {
+					failreason = FailReasonExit
+					myerr = fmt.Errorf("command [%s] exited with code %d, which may be a temporary issue, so it will be tried again", job.Cmd, exitcode)
+				}
 			}
 		} else {
 			// some obscure internal error unrelated to the exit code
