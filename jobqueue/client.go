@@ -325,6 +325,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// just treat them all the same)
 	sigs := make(chan os.Signal, 5)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
+	defer signal.Stop(sigs)
 
 	// start running the command
 	err = cmd.Start()

@@ -79,6 +79,9 @@ needed.`,
 			err = jq.Execute(job, config.Runner_exec_shell)
 			if err != nil {
 				warn("%s", err)
+				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {
+					break
+				}
 			} else {
 				info("command [%s] ran OK (exit code %d)", job.Cmd, job.Exitcode)
 			}

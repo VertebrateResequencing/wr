@@ -227,10 +227,12 @@ func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *S
 				case syscall.SIGTERM:
 					serr = Error{"", "Serve", "", ErrClosedTerm}
 				}
+				signal.Stop(sigs)
 				done <- serr
 				return
 			case <-stop:
 				s.shutdown()
+				signal.Stop(sigs)
 				done <- Error{"", "Serve", "", ErrClosedStop}
 				return
 			default:
