@@ -89,8 +89,8 @@ the commands, or if you added them with a different cwd.`,
 		showextra := false
 		switch {
 		case set == 0:
-			// get unfinished jobs
-			//*** jobs, err = jq.GetUnfinished()
+			// get incomplete jobs
+			jobs, err = jq.GetIncomplete()
 		case cmdIdStatus != "":
 			// get all jobs with this identifier (repgroup)
 			jobs, err = jq.GetByRepGroup(cmdIdStatus)

@@ -706,6 +706,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sr = &serverResponse{Jobs: jobs}
 			}
 		}
+	case "getin":
+		// get all jobs in the jobqueue
+		var jobs []*Job
+
+		data := q.AllData() //*** can we do this without the need for the loop to convert interface{} to *Job?
+		for _, datum := range data {
+			jobs = append(jobs, datum.(*Job))
+		}
+
+		if len(jobs) > 0 {
+			sr = &serverResponse{Jobs: jobs}
+		}
 	default:
 		srerr = ErrUnknownCommand
 	}

@@ -628,6 +628,17 @@ func (c *Client) GetByRepGroup(repgroup string) (jobs []*Job, err error) {
 	return
 }
 
+// GetIncomplete gets all Jobs that are currently in the jobqueue, ie. excluding
+// those that are complete and have been Archive()d.
+func (c *Client) GetIncomplete() (jobs []*Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getin", Queue: c.queue})
+	if err != nil {
+		return
+	}
+	jobs = resp.Jobs
+	return
+}
+
 // Env decompresses and decodes job.EnvC (the output of compressEnv(), which are
 // the environment variables the Job's Cmd should run/ran under). Note that EnvC
 // is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().

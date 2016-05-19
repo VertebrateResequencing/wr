@@ -235,9 +235,27 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool
 
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the
 // completed jobs bucket (ie. those that have gone through the queue and been
-// Remove()d).
+// Archive()d).
 func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err error) {
-
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsComplete)
+		c := tx.Bucket(bucketRTK).Cursor()
+		prefix := []byte(repgroup + "_::_")
+		for k, _ := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+			key := bytes.TrimPrefix(k, prefix)
+			encoded := b.Get(key)
+			if len(encoded) > 0 {
+				dec := codec.NewDecoderBytes(encoded, db.ch)
+				job := &Job{}
+				err = dec.Decode(job)
+				if err != nil {
+					return err
+				}
+				jobs = append(jobs, job)
+			}
+		}
+		return nil
+	})
 	return
 }
 

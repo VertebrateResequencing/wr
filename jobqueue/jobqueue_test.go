@@ -65,7 +65,7 @@ func TestJobqueue(t *testing.T) {
 		}
 		child, err := context.Reborn()
 		if err != nil {
-			log.Fatalf("failed to daemonize: %s", err)
+			log.Fatalf("failed to daemonize for the initial test: %s (you probably need to `vrpipe manager stop`)", err)
 		}
 		if child == nil {
 			// daemonized child, that will run until signalled to stop
@@ -407,8 +407,8 @@ func TestJobqueue(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			var jobs []*Job
-			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
-			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "manually_added"))
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -512,6 +512,20 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)
+
+				Convey("Both current and archived jobs can be retrieved with GetByRepGroup", func() {
+					jobs, err := jq.GetByRepGroup("manually_added")
+					So(err, ShouldBeNil)
+					So(len(jobs), ShouldEqual, 2)
+
+					Convey("But only current jobs are retrieved with GetIncomplete", func() {
+						jobs, err := jq.GetIncomplete()
+						So(err, ShouldBeNil)
+						So(len(jobs), ShouldEqual, 1)
+						So(jobs[0].Cmd, ShouldEqual, "sleep 0.1 && false")
+						//*** should probably have a better test, where there are incomplete jobs in each of the sub queues
+					})
+				})
 
 				Convey("A temp failed job is reservable after a delay", func() {
 					job, err = jq.Reserve(50 * time.Millisecond)
