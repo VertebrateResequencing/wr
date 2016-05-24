@@ -20,6 +20,15 @@
 Package jobqueue provides server/client functions to interact with the queue
 structure provided by the queue package over a network.
 
+It provides a job queue and running system which guarantees:
+# Created jobs are never lost accidentally.
+# The same job will not run more than once simultaneously:
+  - Duplicate jobs are not created
+  - Each job is handled by only a single client
+# Jobs are handled in the desired order (user priority and fifo).
+# Jobs still get run despite crashing clients.
+# Completed jobs are kept forever for historical purposes.
+
 This file contains all the functions for clients to interact with the server.
 See server.go for the functions needed to implement a server executable.
 */
@@ -259,7 +268,7 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 // the specified schedulerGroup. Based on the scheduler the server was
 // configured with, it will group jobs based on their resource requirements and
 // then submit runners to handle them to your system's job scheduler (such as
-// LSF), possible in different scheduler queues. These runners are told the
+// LSF), possibly in different scheduler queues. These runners are told the
 // group they are a part of, and that same group name is applied internally to
 // the Jobs as the "schedulerGroup", so that the runners can reserve only Jobs
 // that they're supposed to. Therefore, it does not make sense for you to call
