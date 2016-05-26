@@ -301,12 +301,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		q = queue.New(cr.Queue)
 		s.qs[cr.Queue] = q
 
-		// we set a callback for things entering the this queue's ready
-		// sub-queue. This function will be called in a go routine and receives
-		// a slice of all the ready jobs. Based on the scheduler, we add to
-		// each job a schedulerGroup, which the runners we spawn will be able
-		// to pass to ReserveFiltered so that they run the correct jobs for
-		// the machine and resource reservations they're running under
+		// we set a callback for things entering this queue's ready sub-queue.
+		// This function will be called in a go routine and receives a slice of
+		// all the ready jobs. Based on the scheduler, we add to each job a
+		// schedulerGroup, which the runners we spawn will be able to pass to
+		// ReserveFiltered so that they run the correct jobs for the machine and
+		// resource reservations they're running under
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 			//*** for now, scheduler stuff is not implemented, so we just set
 			// schedulerGroup to match the reqs provided
