@@ -32,6 +32,8 @@ import (
 	"strconv"
 )
 
+var pss = []byte("Pss:")
+
 // jobKey calculates a unique key to describe the job
 func jobKey(job *Job) string {
 	return byteKey([]byte(fmt.Sprintf("%s.%s", job.Cwd, job.Cmd)))

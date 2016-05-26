@@ -50,7 +50,6 @@ import (
 )
 
 var (
-	pss                 = []byte("Pss:")
 	ClientTouchInterval = 15 * time.Second
 	ClientReleaseDelay  = 30 * time.Second
 	FailReasonEnv       = "failed to get environment variables"
