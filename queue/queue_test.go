@@ -649,6 +649,21 @@ func TestQueue(t *testing.T) {
 					So(item, ShouldNotBeNil)
 					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
 				}
+
+				Convey("And when released are immediately ready", func() {
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 1000)
+					So(stats.Delayed, ShouldEqual, 0)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 1000)
+					err := queue.Release("key_0")
+					So(err, ShouldBeNil)
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 1000)
+					So(stats.Delayed, ShouldEqual, 0)
+					So(stats.Ready, ShouldEqual, 1)
+					So(stats.Running, ShouldEqual, 999)
+				})
 			})
 		})
 

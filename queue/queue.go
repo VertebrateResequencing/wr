@@ -524,13 +524,21 @@ func (queue *Queue) Release(key string) (err error) {
 		return
 	}
 
-	// switch from run to delay queue
+	// switch from run to delay queue (unless there is no delay, in which case
+	// straight to ready)
 	queue.runQueue.remove(item)
-	item.restart()
-	queue.delayQueue.push(item)
-	item.switchRunDelay()
-	queue.mutex.Unlock()
-	queue.delayNotificationTrigger(item)
+	if item.delay.Nanoseconds() == 0 {
+		item.switchRunReady()
+		queue.readyQueue.push(item)
+		queue.mutex.Unlock()
+		queue.readyAdded()
+	} else {
+		item.restart()
+		queue.delayQueue.push(item)
+		item.switchRunDelay()
+		queue.mutex.Unlock()
+		queue.delayNotificationTrigger(item)
+	}
 
 	return
 }
