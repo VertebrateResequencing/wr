@@ -42,8 +42,8 @@ func TestSchedulerLocal(t *testing.T) {
 		impossibleReq := &Requirements{999999999, 24 * time.Hour, 999, ""}
 
 		Convey("Place() always returns a value that is specific to the requirements", func() {
-			So(s.Place(possibleReq), ShouldEqual, "localhost:1:0.017:1")
-			So(s.Place(impossibleReq), ShouldEqual, "localhost:999999999:1440.000:999")
+			So(s.Place(possibleReq), ShouldEqual, "localhost:1:0:1")
+			So(s.Place(impossibleReq), ShouldEqual, "localhost:999999999:1440:999")
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {

@@ -100,7 +100,7 @@ func (s *local) initialize() (err error) {
 // schedule (which ought to contain our place) to be specific to the
 // Requirements, so we include reqs in the place.
 func (s *local) place(req *Requirements) string {
-	return fmt.Sprintf("%s:%d:%.3f:%d", place, req.Memory, req.Time.Minutes(), req.CPUs)
+	return fmt.Sprintf("%s:%d:%.0f:%d", place, req.Memory, req.Time.Minutes(), req.CPUs)
 }
 
 // schedule achieves the aims of Schedule().
