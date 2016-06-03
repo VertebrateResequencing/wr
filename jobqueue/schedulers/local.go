@@ -97,14 +97,14 @@ func (s *local) initialize() (err error) {
 }
 
 // schedule achieves the aims of Schedule().
-func (s *local) schedule(cmd string, req *Requirements, count int, shell string) error {
+func (s *local) schedule(cmd string, req *Requirements, count int, deployment string, shell string) error {
 	// first find out if its at all possible to ever run this cmd
 	if req.Memory > s.maxmb || req.CPUs > s.maxcores {
 		return Error{"local", "Schedule", ErrImpossible}
 	}
 
 	// add to the queue
-	key := jobName(cmd, false)
+	key := jobName(cmd, deployment, false)
 	data := &job{cmd, req, count}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds

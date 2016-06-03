@@ -84,24 +84,25 @@ type CmdStatus struct {
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize() error                                                     // do any initial set up to be able to use the job scheduler
-	schedule(cmd string, req *Requirements, count int, shell string) error // achieve the aims of Schedule()
-	busy() bool                                                            // achieve the aims of Busy()
+	initialize() error                                                                        // do any initial set up to be able to use the job scheduler
+	schedule(cmd string, req *Requirements, count int, deployment string, shell string) error // achieve the aims of Schedule()
+	busy() bool                                                                               // achieve the aims of Busy()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
 // interact with a job scheduler.
 type Scheduler struct {
-	impl  scheduleri
-	Name  string
-	shell string
+	impl       scheduleri
+	Name       string
+	deployment string
+	shell      string
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
 // Possible names so far are "lsf" and "local". You must provide the shell that
 // commands to interact with your job scheduler will be run on; 'bash' is
 // recommended.
-func New(name string, shell string) (s *Scheduler, err error) {
+func New(name string, deployment string, shell string) (s *Scheduler, err error) {
 	switch name {
 	// case "lsf":
 	// 	s = &Scheduler{impl: new(lsf)}
@@ -113,6 +114,7 @@ func New(name string, shell string) (s *Scheduler, err error) {
 		err = Error{name, "New", ErrBadScheduler}
 	} else {
 		s.Name = name
+		s.deployment = deployment
 		s.shell = shell
 		err = s.impl.initialize()
 	}
@@ -130,24 +132,7 @@ func New(name string, shell string) (s *Scheduler, err error) {
 // eventually run unless you call Schedule() again with the same command and a
 // lower count.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
-	return s.impl.schedule(cmd, req, count, s.shell)
-
-	// // get the details of everything already in the scheduler for this cmd,
-	// // removing from the queue anything not currently running when we're over
-	// // the desired count
-	// scheduledCount, runningSidaids, err := s.impl.commandStatus(cmd, count)
-	// if err != nil || scheduledCount >= count {
-	// 	return
-	// }
-
-	// stillNeeded = count - scheduledCount
-
-	// // schedule stillNeeded new jobs that all run cmd
-	// schedulerCmd = s.impl.submitCommand(cmd, req, stillNeeded)
-	// ec := exec.Command(s.shell, "-c", schedulerCmd)
-	// err = ec.Run()
-
-	// return
+	return s.impl.schedule(cmd, req, count, s.deployment, s.shell)
 }
 
 // Busy reports true if there are any Schedule()d cmds still in the job
@@ -159,11 +144,11 @@ func (s *Scheduler) Busy() bool {
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-
-// width (length 39) string unique to the cmd, and optionally suffixed with a
-// random string (length 9, total length 48).
-func jobName(cmd string, unique bool) (name string) {
+// width (length 37) string unique to the cmd and deployment, and optionally
+// suffixed with a random string (length 9, total length 46).
+func jobName(cmd string, deployment string, unique bool) (name string) {
 	l, h := farm.Hash128([]byte(cmd))
-	name = fmt.Sprintf("vrpipe_%016x%016x", l, h)
+	name = fmt.Sprintf("vrp%s_%016x%016x", deployment[0:1], l, h)
 
 	if unique {
 		// based on http://stackoverflow.com/a/31832326/675083

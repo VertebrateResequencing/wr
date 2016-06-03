@@ -211,7 +211,7 @@ func Serve(port string, schedulerName string, shell string, runnerCmd string, db
 	}
 
 	// we will spawn runner clients via the requested job scheduler
-	sch, err := scheduler.New(schedulerName, shell)
+	sch, err := scheduler.New(schedulerName, deployment, shell)
 	if err != nil {
 		return
 	}

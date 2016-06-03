@@ -34,7 +34,7 @@ func TestSchedulerLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", "bash")
+		s, err := New("local", "development", "bash")
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
