@@ -156,7 +156,7 @@ func DefaultDeployment() (deployment string) {
 	}
 
 	// if we're in the git repository
-	if _, err := os.Stat(filepath.Join(pwd, "main.go")); err == nil {
+	if _, err := os.Stat(filepath.Join(pwd, "jobqueue", "server.go")); err == nil {
 		// force development
 		deployment = "development"
 	} else {

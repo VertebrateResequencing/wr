@@ -95,10 +95,28 @@ var managerStartCmd = &cobra.Command{
 			syscall.Umask(config.Manager_umask)
 			startJQ(true)
 		} else {
+			// when we spawn a child it will be called with our args, but we
+			// must ensure that the --deployment is correct, since the default
+			// for that depends on the dir we are in, and our child is forced to
+			// start in the root dir
+			args := os.Args
+			hadDeployment := false
+			for _, arg := range args {
+				if arg == "deployment" {
+					hadDeployment = true
+					break
+				}
+			}
+			if !hadDeployment {
+				args = append(args, "--deployment")
+				args = append(args, config.Deployment)
+			}
+
 			context := &daemon.Context{
 				PidFileName: config.Manager_pid_file,
 				PidFilePerm: 0644,
 				WorkDir:     "/",
+				Args:        args,
 				Umask:       config.Manager_umask,
 			}
 			child, err := context.Reborn()
