@@ -26,6 +26,7 @@ import (
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/satori/go.uuid"
+	"github.com/sb10/vrpipe/jobqueue/schedulers"
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
 	"log"
@@ -118,8 +119,13 @@ type Server struct {
 	up         bool
 	blocking   bool
 	sync.Mutex
-	qs  map[string]*queue.Queue
-	rpl *rgToKeys
+	qs           map[string]*queue.Queue
+	rpl          *rgToKeys
+	scheduler    *scheduler.Scheduler
+	sgroupcounts map[string]int
+	sgtr         map[string]*scheduler.Requirements
+	sgcmutex     sync.Mutex
+	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup)
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -130,9 +136,16 @@ type Server struct {
 // probably just exit at that point). The possible errors from Serve() will be
 // related to not being able to start up at the supplied address; errors
 // encountered while dealing with clients are logged but otherwise ignored. If
-// it creates a db file or recreates one from backup, it will say what it did
-// in the returned msg string.
-func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
+// it creates a db file or recreates one from backup, it will say what it did in
+// the returned msg string. It also spawns your runner clients as needed,
+// running them via the job scheduler specified by schedulerName, using the
+// supplied shell. It determines the command line to execute for your runner
+// client from the runnerCmd string you supply, which should contain 2 %s parts
+// which will be replaced with the queue name and scheduler group, eg.
+// "my_jobqueue_runner_client --queue %s, --group %s". If you supply an empty
+// string, runner clients will not be spawned; for any work to be done you will
+// have to run your runner client yourself manually.
+func Serve(port string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -197,6 +210,12 @@ func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *S
 		host = "localhost"
 	}
 
+	// we will spawn runner clients via the requested job scheduler
+	sch, err := scheduler.New(schedulerName, shell)
+	if err != nil {
+		return
+	}
+
 	// we need to persist stuff to disk, and we do so using boltdb
 	db, msg, err := initDB(dbFile, dbBkFile, deployment)
 	if err != nil {
@@ -204,15 +223,19 @@ func Serve(port string, dbFile string, dbBkFile string, deployment string) (s *S
 	}
 
 	s = &Server{
-		ServerInfo: &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid()},
-		sock:       sock,
-		ch:         new(codec.BincHandle),
-		qs:         make(map[string]*queue.Queue),
-		rpl:        &rgToKeys{lookup: make(map[string]map[string]bool)},
-		db:         db,
-		stop:       stop,
-		done:       done,
-		up:         true,
+		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid()},
+		sock:         sock,
+		ch:           new(codec.BincHandle),
+		qs:           make(map[string]*queue.Queue),
+		rpl:          &rgToKeys{lookup: make(map[string]map[string]bool)},
+		db:           db,
+		stop:         stop,
+		done:         done,
+		up:           true,
+		scheduler:    sch,
+		sgroupcounts: make(map[string]int),
+		sgtr:         make(map[string]*scheduler.Requirements),
+		rc:           runnerCmd,
 	}
 
 	go func() {
@@ -284,6 +307,12 @@ func (s *Server) Stop() (err error) {
 	return
 }
 
+// HasRunners tells you if there are currently runner clients in the job
+// scheduler (either running or pending)
+func (s *Server) HasRunners() bool {
+	return s.scheduler.Busy()
+}
+
 // handleRequest parses the bytes received from a connected client in to a
 // clientRequest, does the requested work, then responds back to the client with
 // a serverResponse
@@ -308,11 +337,39 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		// ReserveFiltered so that they run the correct jobs for the machine and
 		// resource reservations they're running under
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
-			//*** for now, scheduler stuff is not implemented, so we just set
-			// schedulerGroup to match the reqs provided
+			// calculate, set and count jobs by schedulerGroup
+			groups := make(map[string]int)
 			for _, inter := range allitemdata {
 				job := inter.(*Job)
-				job.schedulerGroup = fmt.Sprintf("%d.%.0f.%d", job.Memory, job.Time.Seconds(), job.CPUs)
+				//*** get memory and time estimates from history, depending on job.Override
+				req := &scheduler.Requirements{job.Memory, job.Time, job.CPUs, ""} //*** how to pass though scheduler extra args?
+				job.schedulerGroup = s.scheduler.Place(req)
+				groups[job.schedulerGroup]++
+
+				// *** we assume that group correlates closely to req, ie. that
+				// either there is a 1:1 relationship between req and group, or
+				// that the reqs that match a group are similar enough that it
+				// doesn't matter if we pick a random 1 of those reqs here
+				if _, set := s.sgtr[job.schedulerGroup]; !set {
+					s.sgcmutex.Lock()
+					s.sgtr[job.schedulerGroup] = req
+					s.sgcmutex.Unlock()
+				}
+			}
+
+			if s.rc != "" {
+				// schedule runners for each group in the job scheduler
+				for group, count := range groups {
+					// we also keep a count of how many we request for this
+					// group, so that when we Archive() or Bury() we can
+					// decrement the count and re-call Schedule() to get rid
+					// of no-longer-needed pending runners in the job
+					// scheduler
+					s.sgcmutex.Lock()
+					s.sgroupcounts[group] = count
+					s.scheduler.Schedule(fmt.Sprintf(s.rc, queuename, group), s.sgtr[group], count)
+					s.sgcmutex.Unlock()
+				}
 			}
 		})
 	}
@@ -549,6 +606,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							delete(m, key)
 						}
 						s.rpl.Unlock()
+
+						s.decrementGroupCount(job, q.Name)
 					}
 				}
 			}
@@ -595,6 +654,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if err != nil {
 				srerr = ErrInternalError
 				qerr = err.Error()
+			} else {
+				s.decrementGroupCount(job, q.Name)
 			}
 		}
 	case "jkick":
@@ -748,6 +809,20 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		return err
 	}
 	return nil
+}
+
+// adjust our count of how many jobs with this job's
+// scheduler group we need in the job scheduler
+func (s *Server) decrementGroupCount(job *Job, queuename string) {
+	s.sgcmutex.Lock()
+	s.sgroupcounts[job.schedulerGroup] = s.sgroupcounts[job.schedulerGroup] - 1
+	if s.sgroupcounts[job.schedulerGroup] <= 0 {
+		delete(s.sgroupcounts, job.schedulerGroup)
+		delete(s.sgtr, job.schedulerGroup)
+	} else {
+		s.scheduler.Schedule(fmt.Sprintf(s.rc, queuename, job.schedulerGroup), s.sgtr[job.schedulerGroup], s.sgroupcounts[job.schedulerGroup])
+	}
+	s.sgcmutex.Unlock()
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get

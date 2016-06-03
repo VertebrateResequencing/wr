@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/sb10/vrpipe/internal"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
@@ -32,6 +33,7 @@ import (
 
 // options for this cmd
 var foreground bool
+var scheduler string
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -222,6 +224,7 @@ func init() {
 
 	// flags specific to these sub-commands
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
+	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf'] job scheduler")
 }
 
 func connect(wait time.Duration) *jobqueue.Client {
@@ -295,7 +298,7 @@ func startJQ(sayStarted bool) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+	server, msg, err := jobqueue.Serve(config.Manager_port, scheduler, config.Runner_exec_shell, "vrpipe runner -q %s -s %s", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)

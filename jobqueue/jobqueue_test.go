@@ -19,10 +19,12 @@
 package jobqueue
 
 import (
+	"flag"
 	"fmt"
 	"github.com/sb10/vrpipe/internal"
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
+	"io/ioutil"
 	"log"
 	"math"
 	"os"
@@ -33,10 +35,27 @@ import (
 	"time"
 )
 
-var clientConnectTime = 150 * time.Millisecond
+var runnermode bool
+var queuename string
+var schedgrp string
+var runnermodetmpdir string
+
+func init() {
+	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
+	flag.StringVar(&queuename, "queue", "", "queue for runnermode")
+	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
+	flag.StringVar(&runnermodetmpdir, "tmpdir", "", "tmp dir for runnermode")
+}
 
 func TestJobqueue(t *testing.T) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+	if runnermode {
+		// we have a full test of Serve() below that needs a client executable;
+		// we say this test script is that exe, and when --runnermode is passed
+		// to us we skip all tests and just act like a runner
+		runner()
+		return
+	}
 
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
@@ -48,6 +67,8 @@ func TestJobqueue(t *testing.T) {
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
+	clientConnectTime := 150 * time.Millisecond
+	rc := ""
 
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
@@ -78,7 +99,7 @@ func TestJobqueue(t *testing.T) {
 			// 	log.SetOutput(logfile)
 			// }
 
-			server, msg, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+			server, msg, err := Serve(port, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 			if err != nil {
 				log.Fatalf("test daemon failed to start: %s\n", err)
 			}
@@ -174,7 +195,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err = Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
@@ -321,12 +342,12 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("You can reserve jobs for a particular scheduler group", func() {
 					for i := 10; i < 20; i++ {
-						job, err := jq.ReserveScheduled(50*time.Millisecond, "2048.3600.2")
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "localhost:2048:60:2")
 						So(err, ShouldBeNil)
 						So(job, ShouldNotBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
 					}
-					job, err := jq.ReserveScheduled(50*time.Millisecond, "2048.3600.2")
+					job, err := jq.ReserveScheduled(10*time.Millisecond, "localhost:2048:60:2")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 
@@ -337,11 +358,11 @@ func TestJobqueue(t *testing.T) {
 						} else if i == 4 {
 							jid = 7
 						}
-						job, err := jq.ReserveScheduled(50*time.Millisecond, "1024.14400.1")
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "localhost:1024:240:1")
 						So(err, ShouldBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 					}
-					job, err = jq.ReserveScheduled(50*time.Millisecond, "1024.14400.1")
+					job, err = jq.ReserveScheduled(10*time.Millisecond, "localhost:1024:240:1")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 				})
@@ -358,7 +379,7 @@ func TestJobqueue(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, _, err = Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+				server, _, err = Serve(port, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 				So(err, ShouldBeNil)
 
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -397,7 +418,7 @@ func TestJobqueue(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		server, _, err = Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
@@ -481,7 +502,7 @@ func TestJobqueue(t *testing.T) {
 
 				err = jq.Execute(job, config.Runner_exec_shell)
 				So(err, ShouldNotBeNil)
-				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again")
+				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again") // *** fails randomly with a receive time out error instead of the correct error - why?!
 				So(job.State, ShouldEqual, "delayed")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 1)
@@ -931,15 +952,114 @@ func TestJobqueue(t *testing.T) {
 	if server != nil {
 		server.Stop()
 	}
+
+	// start these tests anew because these tests have the server spawn runners
+	Convey("Once a new jobqueue server is up", t, func() {
+		ServerItemTTR = 100 * time.Millisecond
+		ClientTouchInterval = 50 * time.Millisecond
+		runnertmpdir, err := ioutil.TempDir("", "vrpipe_jobqueue_test_runner_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(runnertmpdir)
+		server, _, err = Serve(port, "local", config.Runner_exec_shell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp %s --tmpdir "+runnertmpdir+" > /dev/null 2>&1", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		So(err, ShouldBeNil)
+		maxCPU := runtime.NumCPU()
+		runtime.GOMAXPROCS(maxCPU)
+
+		Convey("You can connect, and add some real jobs", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+
+			tmpdir, err := ioutil.TempDir("", "vrpipe_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			var jobs []*Job
+			count := maxCPU * 2
+			for i := 0; i < count; i++ {
+				jobs = append(jobs, NewJob(fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), tmpdir, "perl", 1, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+			}
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the jobs get automatically run", func() {
+				// we need some time for 'go test' to live-compile and run
+				// ourselves in runnermode *** not sure if it's legit for this
+				// to take ~15seconds though!
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(25 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue) // we shouldn't have hit our time limit
+
+				files, err := ioutil.ReadDir(tmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ran := 0
+				for range files {
+					ran++
+				}
+				So(ran, ShouldEqual, count)
+
+				// we shouldn't have executed any unnecessary runners, and those
+				// we did run should have exited without error, even if there
+				// were no more jobs left
+				files, err = ioutil.ReadDir(runnertmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ranClean := 0
+				for range files {
+					ranClean++
+				}
+				So(ranClean, ShouldEqual, maxCPU)
+			})
+		})
+
+		Reset(func() {
+			server.Stop()
+		})
+	})
+
+	if server != nil {
+		server.Stop()
+	}
 }
 
 func TestJobqueueSpeed(t *testing.T) {
+	if runnermode {
+		return
+	}
+
 	// some manual speed tests (don't like the way the benchmarking feature
 	// works)
 	if false {
 		config := internal.ConfigLoad("development", true)
 		port := config.Manager_port
 		addr := "localhost:" + port
+		rc := ""
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
@@ -959,12 +1079,12 @@ func TestJobqueueSpeed(t *testing.T) {
 		// per := int64(e.Nanoseconds() / int64(n))
 		// log.Printf("Added %d beanstalk jobs in %s == %d per\n", n, e, per)
 
-		server, _, err := Serve(port, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err := Serve(port, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		clientConnectTime = 10 * time.Second
+		clientConnectTime := 10 * time.Second
 		jq, err := Connect(addr, "vrpipe.des", clientConnectTime)
 		if err != nil {
 			log.Fatal(err)
@@ -1050,4 +1170,56 @@ func TestJobqueueSpeed(t *testing.T) {
 
 		server.Stop()
 	}
+}
+
+func runner() {
+	if queuename == "" {
+		log.Fatal("queue missing")
+	}
+	if schedgrp == "" {
+		log.Fatal("schedgrp missing")
+	}
+
+	config := internal.ConfigLoad("development", true)
+	addr := "localhost:" + config.Manager_port
+
+	timeout := 6 * time.Second
+	rtimeout := 1 * time.Second
+
+	jq, err := Connect(addr, queuename, timeout)
+
+	//*** it only takes some milliseconds to go from entering the script to get
+	// here, and running in runnermode manually takes less than 2 seconds, so
+	// I've no idea why during the test there's a 15s+ overhead!
+
+	if err != nil {
+		log.Fatalf("connect err: %s\n", err)
+	}
+	defer jq.Disconnect()
+
+	for {
+		job, err := jq.ReserveScheduled(rtimeout, schedgrp)
+		if err != nil {
+			log.Fatalf("reserve err: %s\n", err)
+		}
+		if job == nil {
+			break
+		}
+
+		// actually run the cmd
+		err = jq.Execute(job, config.Runner_exec_shell)
+		if err != nil {
+			if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal {
+				break
+			} else {
+				log.Fatalf("execute err: %s\n", err)
+			}
+		} else {
+			jq.Archive(job)
+		}
+	}
+
+	// if everything ran cleanly, create a tmpfile in our tmp dir
+	tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "ok")
+	tmpfile.Close()
 }
