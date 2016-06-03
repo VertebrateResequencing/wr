@@ -153,7 +153,9 @@ the commands, or if you added them with a different cwd.`,
 				fmt.Printf("Status: %s to be picked up by a `vrpipe runner`\n", job.State)
 			case "buried":
 				fmt.Printf("Status: %s - you need to fix the problem and then `vrpipe kick`\n", job.State)
-			case "running", "complete":
+			case "reserved":
+				fmt.Println("Status: running")
+			case "complete":
 				fmt.Printf("Status: %s\n", job.State)
 			}
 
