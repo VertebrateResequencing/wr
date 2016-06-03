@@ -53,7 +53,10 @@ sufficient 'vrpipe runner' agents to get them all run.
 You'll need to start this daemon with the 'start' sub-command before you can
 achieve anything useful with the other vrpipe commands. If the background
 process that is spawned when you run this dies, your pipelines will become
-stalled until you run the 'start' sub-command again.`,
+stalled until you run the 'start' sub-command again.
+
+If the manager fails to start or dies unexpectedly, you can check the logs which
+are by default found in ~/.vrpipe_[deployment]/log.`,
 }
 
 // start sub-command starts the daemon
