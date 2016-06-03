@@ -40,6 +40,7 @@ type Config struct {
 	Manager_db_file    string `default:"db"`
 	Manager_db_bk_file string `default:"db_bk"`
 	Manager_umask      int    `default:007`
+	Manager_scheduler  string `default:"local"`
 	Runner_exec_shell  string `default:"bash"`
 	Deployment         string `default:"production"`
 }
@@ -170,4 +171,12 @@ func DefaultDeployment() (deployment string) {
 		}
 	}
 	return
+}
+
+// work out the default scheduler (we need this to be able to report this
+// default before we know what deployment the user has actually chosen, ie.
+// before we have a final config)
+func DefaultScheduler() (scheduler string) {
+	config := ConfigLoad(DefaultDeployment(), false)
+	return config.Manager_scheduler
 }

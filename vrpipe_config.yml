@@ -123,6 +123,14 @@ manager_db_bk_file: "db_bk"
 # 002 = world readable, user+group read+writable
 manager_umask: 007
 
+# manager_scheduler: What job scheduler should be used to run 'vrpipe runner'?
+# This defaults to "local" and is overridden by the --scheduler option to
+# 'vrpipe manager start'.
+#
+# "local" means run everything on the local machine.
+# "lsf" means submit to LSF using 'bsub'.
+manager_scheduler: "local"
+
 # runner_exec_shell: What shell should be used to run commands in?
 # This defaults to bash, regardless of your current shell.
 #
