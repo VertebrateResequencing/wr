@@ -332,24 +332,22 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 		// we set a callback for things entering this queue's ready sub-queue.
 		// This function will be called in a go routine and receives a slice of
-		// all the ready jobs. Based on the scheduler, we add to each job a
+		// all the ready jobs. Based on the requirements, we add to each job a
 		// schedulerGroup, which the runners we spawn will be able to pass to
 		// ReserveFiltered so that they run the correct jobs for the machine and
-		// resource reservations they're running under
+		// resource reservations the job scheduler will run them under
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 			// calculate, set and count jobs by schedulerGroup
 			groups := make(map[string]int)
 			for _, inter := range allitemdata {
 				job := inter.(*Job)
-				//*** get memory and time estimates from history, depending on job.Override
+				//*** get memory and time estimates from history, depending on
+				// job.Override, and round them a little to get fewer larger
+				// groups
 				req := &scheduler.Requirements{job.Memory, job.Time, job.CPUs, ""} //*** how to pass though scheduler extra args?
-				job.schedulerGroup = s.scheduler.Place(req)
+				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.Memory, req.Time.Minutes(), req.CPUs)
 				groups[job.schedulerGroup]++
 
-				// *** we assume that group correlates closely to req, ie. that
-				// either there is a 1:1 relationship between req and group, or
-				// that the reqs that match a group are similar enough that it
-				// doesn't matter if we pick a random 1 of those reqs here
 				if _, set := s.sgtr[job.schedulerGroup]; !set {
 					s.sgcmutex.Lock()
 					s.sgtr[job.schedulerGroup] = req

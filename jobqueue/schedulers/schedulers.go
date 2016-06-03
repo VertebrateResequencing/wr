@@ -85,7 +85,6 @@ type CmdStatus struct {
 // scheduler.
 type scheduleri interface {
 	initialize() error                                                     // do any initial set up to be able to use the job scheduler
-	place(req *Requirements) string                                        // achieve the aims of Place()
 	schedule(cmd string, req *Requirements, count int, shell string) error // achieve the aims of Schedule()
 	busy() bool                                                            // achieve the aims of Busy()
 }
@@ -119,13 +118,6 @@ func New(name string, shell string) (s *Scheduler, err error) {
 	}
 
 	return
-}
-
-// Place returns an identifier for the "place" (eg. machine or queue name) that
-// jobs with these resource requirements would be submitted to during
-// Schedule().
-func (s *Scheduler) Place(req *Requirements) string {
-	return s.impl.place(req)
 }
 
 // Schedule gets your cmd scheduled in the job scheduler. You give it a command

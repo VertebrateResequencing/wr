@@ -342,12 +342,12 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("You can reserve jobs for a particular scheduler group", func() {
 					for i := 10; i < 20; i++ {
-						job, err := jq.ReserveScheduled(10*time.Millisecond, "localhost:2048:60:2")
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2")
 						So(err, ShouldBeNil)
 						So(job, ShouldNotBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
 					}
-					job, err := jq.ReserveScheduled(10*time.Millisecond, "localhost:2048:60:2")
+					job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 
@@ -358,11 +358,11 @@ func TestJobqueue(t *testing.T) {
 						} else if i == 4 {
 							jid = 7
 						}
-						job, err := jq.ReserveScheduled(10*time.Millisecond, "localhost:1024:240:1")
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "1024:240:1")
 						So(err, ShouldBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 					}
-					job, err = jq.ReserveScheduled(10*time.Millisecond, "localhost:1024:240:1")
+					job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 				})
@@ -716,7 +716,7 @@ func TestJobqueue(t *testing.T) {
 
 					err = jq.Execute(job, config.Runner_exec_shell)
 					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again")
+					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again") //*** can fail with a receive time out; why?!
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)

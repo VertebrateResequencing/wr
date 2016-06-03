@@ -41,11 +41,6 @@ func TestSchedulerLocal(t *testing.T) {
 		possibleReq := &Requirements{1, 1 * time.Second, 1, ""}
 		impossibleReq := &Requirements{999999999, 24 * time.Hour, 999, ""}
 
-		Convey("Place() always returns a value that is specific to the requirements", func() {
-			So(s.Place(possibleReq), ShouldEqual, "localhost:1:0:1")
-			So(s.Place(impossibleReq), ShouldEqual, "localhost:999999999:1440:999")
-		})
-
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)
 		})

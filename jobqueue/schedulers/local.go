@@ -96,14 +96,6 @@ func (s *local) initialize() (err error) {
 	return
 }
 
-// place is needed to implement scheduleri; we only have 1 "place", which is the
-// local machine, but because of the way our queue works we want cmds passed to
-// schedule (which ought to contain our place) to be specific to the
-// Requirements, so we include reqs in the place.
-func (s *local) place(req *Requirements) string {
-	return fmt.Sprintf("%s:%d:%.0f:%d", place, req.Memory, req.Time.Minutes(), req.CPUs)
-}
-
 // schedule achieves the aims of Schedule().
 func (s *local) schedule(cmd string, req *Requirements, count int, shell string) error {
 	// first find out if its at all possible to ever run this cmd
