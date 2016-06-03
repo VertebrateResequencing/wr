@@ -770,12 +770,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	case "getin":
 		// get all jobs in the jobqueue
 		var jobs []*Job
-
-		data := q.AllData() //*** can we do this without the need for the loop to convert interface{} to *Job?
-		for _, datum := range data {
-			jobs = append(jobs, datum.(*Job))
+		for _, item := range q.AllItems() {
+			jobs = append(jobs, s.itemToJob(item, cr.GetStd, cr.GetEnv))
 		}
-
 		if len(jobs) > 0 {
 			sr = &serverResponse{Jobs: jobs}
 		}

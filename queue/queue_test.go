@@ -69,9 +69,9 @@ func TestQueue(t *testing.T) {
 			So(qerr.Err, ShouldEqual, ErrNotFound)
 		})
 
-		Convey("You can get all item data back out", func() {
-			data := queue.AllData()
-			So(len(data), ShouldEqual, 10)
+		Convey("You can get all items back out", func() {
+			items := queue.AllItems()
+			So(len(items), ShouldEqual, 10)
 		})
 
 		Convey("You can't add the same item again", func() {

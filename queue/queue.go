@@ -311,10 +311,11 @@ func (queue *Queue) Get(key string) (item *Item, err error) {
 	return
 }
 
-// AllData() returns the item.Data of all items in the queue
-func (queue *Queue) AllData() (data []interface{}) {
+// AllItems() returns the items in the queue. NB: You should NOT do anything
+// to these items - use for read-only purposes.
+func (queue *Queue) AllItems() (items []*Item) {
 	for _, item := range queue.items {
-		data = append(data, item.Data)
+		items = append(items, item)
 	}
 	return
 }
