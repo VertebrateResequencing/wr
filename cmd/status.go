@@ -35,6 +35,7 @@ var cmdIdStatus string
 var cmdLine string
 var showStd bool
 var showEnv bool
+var quietMode bool
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{
@@ -142,65 +143,84 @@ the commands, or if you added them with a different cwd.`,
 			fatal("failed to get jobs corresponding to your settings: %s", err)
 		}
 
-		// print out status information for each job
-		for _, job := range jobs {
-			fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Memory, job.Time, job.CPUs)
-
-			switch job.State {
-			case "delayed":
-				fmt.Printf("Status: %s following a temporary problem, will become ready soon\n", job.State)
-			case "ready":
-				fmt.Printf("Status: %s to be picked up by a `vrpipe runner`\n", job.State)
-			case "buried":
-				fmt.Printf("Status: %s - you need to fix the problem and then `vrpipe kick`\n", job.State)
-			case "reserved":
-				fmt.Println("Status: running")
-			case "complete":
-				fmt.Printf("Status: %s\n", job.State)
-			}
-
-			if job.FailReason != "" {
-				fmt.Printf("Previous problem: %s\n", job.FailReason)
-			}
-
-			if job.Exited {
-				prefix := "Stats"
-				if job.State != "complete" {
-					prefix = "Stats of previous attempt"
+		if quietMode {
+			var d, re, b, ru, c int
+			for _, job := range jobs {
+				switch job.State {
+				case "delayed":
+					d++
+				case "ready":
+					re++
+				case "buried":
+					b++
+				case "reserved":
+					ru++
+				case "complete":
+					c++
 				}
-				fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.Peakmem, job.Walltime, job.CPUtime, job.Host, job.Pid)
-				if showextra && showStd && job.Exitcode != 0 {
-					stdout, err := job.StdOut()
-					if err != nil {
-						warn("problem reading the cmd's STDOUT: %s", err)
-					} else if stdout != "" {
-						fmt.Printf("StdOut:\n%s\n", stdout)
-					} else {
-						fmt.Printf("StdOut: [none]\n")
-					}
-					stderr, err := job.StdErr()
-					if err != nil {
-						warn("problem reading the cmd's STDERR: %s", err)
-					} else if stderr != "" {
-						fmt.Printf("StdErr:\n%s\n", stderr)
-					} else {
-						fmt.Printf("StdErr: [none]\n")
-					}
-				}
-			} else if job.State == "running" {
-				fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.Walltime, job.Host, job.Pid)
-				//*** we should be able to peek at STDOUT & STDERR, and see
-				// Peak memory during a run... but is that possible/ too
-				// expensive? Maybe we could communicate directly with the
-				// runner?...
 			}
+			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndelayed: %d\nburied: %d\n", c, ru, re, d, b)
+		} else {
+			// print out status information for each job
+			for _, job := range jobs {
+				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Memory, job.Time, job.CPUs)
 
-			if showextra && showEnv {
-				env, err := job.Env()
-				if err != nil {
-					warn("problem reading the cmd's Env: %s", err)
-				} else {
-					fmt.Printf("Env: %s\n", env)
+				switch job.State {
+				case "delayed":
+					fmt.Printf("Status: %s following a temporary problem, will become ready soon\n", job.State)
+				case "ready":
+					fmt.Printf("Status: %s to be picked up by a `vrpipe runner`\n", job.State)
+				case "buried":
+					fmt.Printf("Status: %s - you need to fix the problem and then `vrpipe kick`\n", job.State)
+				case "reserved":
+					fmt.Println("Status: running")
+				case "complete":
+					fmt.Printf("Status: %s\n", job.State)
+				}
+
+				if job.FailReason != "" {
+					fmt.Printf("Previous problem: %s\n", job.FailReason)
+				}
+
+				if job.Exited {
+					prefix := "Stats"
+					if job.State != "complete" {
+						prefix = "Stats of previous attempt"
+					}
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.Peakmem, job.Walltime, job.CPUtime, job.Host, job.Pid)
+					if showextra && showStd && job.Exitcode != 0 {
+						stdout, err := job.StdOut()
+						if err != nil {
+							warn("problem reading the cmd's STDOUT: %s", err)
+						} else if stdout != "" {
+							fmt.Printf("StdOut:\n%s\n", stdout)
+						} else {
+							fmt.Printf("StdOut: [none]\n")
+						}
+						stderr, err := job.StdErr()
+						if err != nil {
+							warn("problem reading the cmd's STDERR: %s", err)
+						} else if stderr != "" {
+							fmt.Printf("StdErr:\n%s\n", stderr)
+						} else {
+							fmt.Printf("StdErr: [none]\n")
+						}
+					}
+				} else if job.State == "running" {
+					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.Walltime, job.Host, job.Pid)
+					//*** we should be able to peek at STDOUT & STDERR, and see
+					// Peak memory during a run... but is that possible/ too
+					// expensive? Maybe we could communicate directly with the
+					// runner?...
+				}
+
+				if showextra && showEnv {
+					env, err := job.Env()
+					if err != nil {
+						warn("problem reading the cmd's Env: %s", err)
+					} else {
+						fmt.Printf("Env: %s\n", env)
+					}
 				}
 			}
 		}
@@ -219,6 +239,7 @@ func init() {
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "in -l mode only, also show the most recent STDOUT and STDERR of the command")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -l mode only, also show the environment variables the command ran with")
+	statusCmd.Flags().BoolVarP(&quietMode, "quiet", "q", false, "minimal verbosity: just display status counts")
 
 	statusCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
 }
