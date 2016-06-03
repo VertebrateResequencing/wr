@@ -46,6 +46,10 @@ func TestSchedulerLocal(t *testing.T) {
 			So(s.Place(impossibleReq), ShouldEqual, "localhost:999999999:1440:999")
 		})
 
+		Convey("Busy() starts off false", func() {
+			So(s.Busy(), ShouldBeFalse)
+		})
+
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
 			err := s.Schedule("foo", impossibleReq, 1)
 			So(err, ShouldNotBeNil)
@@ -55,16 +59,22 @@ func TestSchedulerLocal(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			tmpdir, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_output_dir_")
+			tmpdir, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_immediate_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
 			defer os.RemoveAll(tmpdir)
+			tmpdir2, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_end_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir2)
 
-			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir) // creates a file and sleeps for 0.75s
+			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
 			count := maxCPU * 2
 			err = s.Schedule(cmd, possibleReq, count)
 			So(err, ShouldBeNil)
+			So(s.Busy(), ShouldBeTrue)
 
 			Convey("It eventually runs them all", func() {
 				<-time.After(700 * time.Millisecond)
@@ -92,6 +102,21 @@ func TestSchedulerLocal(t *testing.T) {
 					ran++
 				}
 				So(ran, ShouldEqual, count)
+				So(s.Busy(), ShouldBeTrue)
+
+				<-time.After(750 * time.Millisecond) // *** don't know why we need an extra 850ms for the cmds to finish running
+
+				files, err = ioutil.ReadDir(tmpdir2)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				ran = 0
+				for range files {
+					ran++
+				}
+				So(ran, ShouldEqual, count)
+				So(s.Busy(), ShouldBeFalse)
 			})
 
 			Convey("You can Schedule() again to drop the count", func() {

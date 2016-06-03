@@ -47,6 +47,7 @@ type local struct {
 	cores    int
 	queue    *queue.Queue
 	running  map[string]int
+	rcount   int
 	mutex    sync.Mutex
 }
 
@@ -130,6 +131,15 @@ func (s *local) schedule(cmd string, req *Requirements, count int, shell string)
 	// try and run the oldest job in the queue
 	err = s.processQueue(shell)
 	return err
+}
+
+// busy returns true if there's anything in our queue or we are still running
+// any cmd
+func (s *local) busy() bool {
+	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
+		return false
+	}
+	return true
 }
 
 // processQueue gets the oldest job in the queue, sees if it's possible to
@@ -235,7 +245,29 @@ func (s *local) processQueue(shell string) error {
 }
 
 // runcmd runs the command, kills it if it goes much over memory or time limits.
-func (s *local) runcmd(cmd string, mbs int, time time.Duration, shell string) {
+func (s *local) runcmd(cmd string, mbs int, maxt time.Duration, shell string) {
 	ec := exec.Command(shell, "-c", cmd)
-	ec.Run() //*** instead of Run() we want to Start() and Wait(), and in between monitor memory and time usage and kill if > than what req claimed
+	err := ec.Start()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	s.mutex.Lock()
+	s.rcount++
+	s.mutex.Unlock()
+
+	//*** set up monitoring of memory and time usage and kill if >> than mbs or maxt
+
+	err = ec.Wait()
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	s.mutex.Lock()
+	s.rcount--
+	if s.rcount < 0 {
+		s.rcount = 0
+	}
+	s.mutex.Unlock()
 }

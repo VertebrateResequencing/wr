@@ -87,6 +87,7 @@ type scheduleri interface {
 	initialize() error                                                     // do any initial set up to be able to use the job scheduler
 	place(req *Requirements) string                                        // achieve the aims of Place()
 	schedule(cmd string, req *Requirements, count int, shell string) error // achieve the aims of Schedule()
+	busy() bool                                                            // achieve the aims of Busy()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
@@ -155,6 +156,14 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	// err = ec.Run()
 
 	// return
+}
+
+// Busy reports true if there are any Schedule()d cmds still in the job
+// scheduler's system. This is useful when testing and other situations where
+// you want to avoid shutting down the server while there are still clients
+// running/ about to run.
+func (s *Scheduler) Busy() bool {
+	return s.impl.busy()
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-
