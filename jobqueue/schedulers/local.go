@@ -41,14 +41,16 @@ var mt = []byte("MemTotal:")
 
 // local is our implementer of scheduleri
 type local struct {
-	maxmb    int
-	maxcores int
-	mb       int
-	cores    int
-	queue    *queue.Queue
-	running  map[string]int
-	rcount   int
-	mutex    sync.Mutex
+	deployment string
+	shell      string
+	maxmb      int
+	maxcores   int
+	mb         int
+	cores      int
+	queue      *queue.Queue
+	running    map[string]int
+	rcount     int
+	mutex      sync.Mutex
 }
 
 // jobs are what we store in our queue
@@ -60,7 +62,7 @@ type job struct {
 
 // initialize finds out about the local machine. Compatible with linux-like
 // systems with /proc/meminfo only!
-func (s *local) initialize() (err error) {
+func (s *local) initialize(deployment string, shell string) (err error) {
 	s.maxcores = runtime.NumCPU()
 
 	// get MemTotal from /proc/meminfo
@@ -93,18 +95,21 @@ func (s *local) initialize() (err error) {
 	s.queue = queue.New(place)
 	s.running = make(map[string]int)
 
+	s.deployment = deployment
+	s.shell = shell
+
 	return
 }
 
 // schedule achieves the aims of Schedule().
-func (s *local) schedule(cmd string, req *Requirements, count int, deployment string, shell string) error {
+func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	// first find out if its at all possible to ever run this cmd
 	if req.Memory > s.maxmb || req.CPUs > s.maxcores {
 		return Error{"local", "Schedule", ErrImpossible}
 	}
 
 	// add to the queue
-	key := jobName(cmd, deployment, false)
+	key := jobName(cmd, s.deployment, false)
 	data := &job{cmd, req, count}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
@@ -121,7 +126,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int, deployment st
 	s.mutex.Unlock()
 
 	// try and run the oldest job in the queue
-	err = s.processQueue(shell)
+	err = s.processQueue()
 	return err
 }
 
@@ -136,7 +141,7 @@ func (s *local) busy() bool {
 
 // processQueue gets the oldest job in the queue, sees if it's possible to
 // run it, does so if it does, otherwise returns the job to the queue
-func (s *local) processQueue(shell string) error {
+func (s *local) processQueue() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	var key, cmd string
@@ -214,7 +219,7 @@ func (s *local) processQueue(shell string) error {
 		s.running[key]++
 
 		go func() {
-			s.runcmd(cmd, mbs, t, shell)
+			s.runcmd(cmd, mbs, t)
 			s.mutex.Lock()
 			s.mb -= mbs
 			s.cores -= cpus
@@ -227,7 +232,7 @@ func (s *local) processQueue(shell string) error {
 				s.queue.Remove(key)
 			}
 			s.mutex.Unlock()
-			s.processQueue(shell)
+			s.processQueue()
 		}()
 	}
 
@@ -237,8 +242,8 @@ func (s *local) processQueue(shell string) error {
 }
 
 // runcmd runs the command, kills it if it goes much over memory or time limits.
-func (s *local) runcmd(cmd string, mbs int, maxt time.Duration, shell string) {
-	ec := exec.Command(shell, "-c", cmd)
+func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
+	ec := exec.Command(s.shell, "-c", cmd)
 	err := ec.Start()
 	if err != nil {
 		fmt.Println(err)

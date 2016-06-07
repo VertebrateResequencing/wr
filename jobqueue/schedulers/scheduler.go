@@ -84,18 +84,16 @@ type CmdStatus struct {
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize() error                                                                        // do any initial set up to be able to use the job scheduler
-	schedule(cmd string, req *Requirements, count int, deployment string, shell string) error // achieve the aims of Schedule()
-	busy() bool                                                                               // achieve the aims of Busy()
+	initialize(deployment string, shell string) error        // do any initial set up to be able to use the job scheduler
+	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
+	busy() bool                                              // achieve the aims of Busy()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
 // interact with a job scheduler.
 type Scheduler struct {
-	impl       scheduleri
-	Name       string
-	deployment string
-	shell      string
+	impl scheduleri
+	Name string
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
@@ -114,9 +112,7 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 		err = Error{name, "New", ErrBadScheduler}
 	} else {
 		s.Name = name
-		s.deployment = deployment
-		s.shell = shell
-		err = s.impl.initialize()
+		err = s.impl.initialize(deployment, shell)
 	}
 
 	return
@@ -132,7 +128,7 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 // eventually run unless you call Schedule() again with the same command and a
 // lower count.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
-	return s.impl.schedule(cmd, req, count, s.deployment, s.shell)
+	return s.impl.schedule(cmd, req, count)
 }
 
 // Busy reports true if there are any Schedule()d cmds still in the job
