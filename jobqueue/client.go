@@ -49,19 +49,23 @@ import (
 	"time"
 )
 
+const (
+	FailReasonEnv      = "failed to get environment variables"
+	FailReasonStart    = "command failed to start"
+	FailReasonCPerm    = "command permission problem"
+	FailReasonCFound   = "command not found"
+	FailReasonCExit    = "command invalid exit code"
+	FailReasonExit     = "command exited non-zero"
+	FailReasonMem      = "command used too much memory"
+	FailReasonTime     = "command used too much time"
+	FailReasonAbnormal = "command failed to complete normally"
+	FailReasonSignal   = "runner received a signal to stop"
+	FailReasonResource = "resource requirements cannot be met"
+)
+
 var (
 	ClientTouchInterval = 15 * time.Second
 	ClientReleaseDelay  = 30 * time.Second
-	FailReasonEnv       = "failed to get environment variables"
-	FailReasonStart     = "command failed to start"
-	FailReasonCPerm     = "command permission problem"
-	FailReasonCFound    = "command not found"
-	FailReasonCExit     = "command invalid exit code"
-	FailReasonExit      = "command exited non-zero"
-	FailReasonMem       = "command used too much memory"
-	FailReasonTime      = "command used too much time"
-	FailReasonAbnormal  = "command failed to complete normally"
-	FailReasonSignal    = "runner received a signal to stop"
 )
 
 // clientRequest is the struct that clients send to the server over the network
