@@ -105,7 +105,7 @@ func (s *local) initialize(deployment string, shell string) (err error) {
 func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	// first find out if its at all possible to ever run this cmd
 	if req.Memory > s.maxmb || req.CPUs > s.maxcores {
-		return Error{"local", "Schedule", ErrImpossible}
+		return Error{"local", "schedule", ErrImpossible}
 	}
 
 	// add to the queue
