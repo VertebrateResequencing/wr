@@ -47,7 +47,6 @@ const (
 
 var (
 	ErrBadScheduler = "unknown scheduler name"
-	ErrTryAgain     = "scheduler did not accept the job(s), but try again later"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
 )
 
@@ -102,8 +101,8 @@ type Scheduler struct {
 // recommended.
 func New(name string, deployment string, shell string) (s *Scheduler, err error) {
 	switch name {
-	// case "lsf":
-	// 	s = &Scheduler{impl: new(lsf)}
+	case "lsf":
+		s = &Scheduler{impl: new(lsf)}
 	case "local":
 		s = &Scheduler{impl: new(local)}
 	}
@@ -123,10 +122,11 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 // scheduler. If you already had `count` many scheduled, it will do nothing. If
 // you had less than `count`, it will schedule more to run. If you have more
 // than `count`, it will remove the appropriate number of scheduled (but not yet
-// running) jobs that were previously scheduled for this same cmd. If no error
-// is returned, you know all `count` of your jobs are now scheduled and will
-// eventually run unless you call Schedule() again with the same command and a
-// lower count.
+// running) jobs that were previously scheduled for this same cmd (counts of 0
+// are legitimate - it will get rid of all non-running jobs for the cmd). If no
+// error is returned, you know all `count` of your jobs are now scheduled and
+// will eventually run unless you call Schedule() again with the same command
+// and a lower count.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	return s.impl.schedule(cmd, req, count)
 }
