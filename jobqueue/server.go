@@ -38,21 +38,24 @@ import (
 	"time"
 )
 
+const (
+	ErrInternalError  = "internal error"
+	ErrUnknownCommand = "unknown command"
+	ErrBadRequest     = "bad request (missing arguments?)"
+	ErrBadJob         = "bad job (not in queue or correct sub-queue)"
+	ErrMissingJob     = "corresponding job not found"
+	ErrUnknown        = "unknown error"
+	ErrClosedInt      = "queues closed due to SIGINT"
+	ErrClosedTerm     = "queues closed due to SIGTERM"
+	ErrClosedStop     = "queues closed due to manual Stop()"
+	ErrQueueClosed    = "queue closed"
+	ErrNoHost         = "could not determine the non-loopback ip address of this host"
+	ErrNoServer       = "could not reach the server"
+	ErrMustReserve    = "you must Reserve() a Job before passing it to other methods"
+	ErrDBError        = "failed to use database"
+)
+
 var (
-	ErrInternalError      = "internal error"
-	ErrUnknownCommand     = "unknown command"
-	ErrBadRequest         = "bad request (missing arguments?)"
-	ErrBadJob             = "bad job (not in queue or correct sub-queue)"
-	ErrMissingJob         = "corresponding job not found"
-	ErrUnknown            = "unknown error"
-	ErrClosedInt          = "queues closed due to SIGINT"
-	ErrClosedTerm         = "queues closed due to SIGTERM"
-	ErrClosedStop         = "queues closed due to manual Stop()"
-	ErrQueueClosed        = "queue closed"
-	ErrNoHost             = "could not determine the non-loopback ip address of this host"
-	ErrNoServer           = "could not reach the server"
-	ErrMustReserve        = "you must Reserve() a Job before passing it to other methods"
-	ErrDBError            = "failed to use database"
 	ServerInterruptTime   = 1 * time.Second
 	ServerItemTTR         = 60 * time.Second
 	ServerReserveTicker   = 1 * time.Second
@@ -365,8 +368,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					// scheduler
 					s.sgcmutex.Lock()
 					s.sgroupcounts[group] = count
-					s.scheduler.Schedule(fmt.Sprintf(s.rc, queuename, group), s.sgtr[group], count)
 					s.sgcmutex.Unlock()
+					s.scheduleRunners(queuename, group)
 				}
 			}
 		})
@@ -806,18 +809,63 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	return nil
 }
 
+func (s *Server) scheduleRunners(queuename string, group string) {
+	s.sgcmutex.Lock()
+	if s.sgroupcounts[group] < 0 {
+		s.sgroupcounts[group] = 0
+	}
+	err := s.scheduler.Schedule(fmt.Sprintf(s.rc, queuename, group), s.sgtr[group], s.sgroupcounts[group])
+	if err != nil {
+		if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
+			// bury all jobs in this scheduler group
+			rf = func(data interface{}) bool {
+				job := data.(*Job)
+				if job.schedulerGroup == s.sgtr[group] {
+					return true
+				}
+				return false
+			}
+			for {
+				item, err = q.ReserveFiltered(rf)
+				if item == nil {
+					break
+				}
+				job := item.Data.(*Job)
+				job.FailReason = FailReasonResource
+				q.Bury(item.Key)
+			}
+			delete(s.sgroupcounts, job.schedulerGroup)
+			delete(s.sgtr, job.schedulerGroup)
+		} else {
+			// log the error *** and inform (by email) the user about this
+			// problem if it's persistent, once per hour (day?)
+			log.Println(err)
+
+			// retry the schedule in a while
+			s.sgcmutex.Unlock()
+			go func() {
+				<-time.After(1 * time.Minute)
+				s.scheduleRunners(queuename, group)
+			}()
+			return
+		}
+	}
+	if s.sgroupcounts[group] <= 0 {
+		delete(s.sgroupcounts, group)
+		delete(s.sgtr, group)
+	}
+	s.sgcmutex.Unlock()
+}
+
 // adjust our count of how many jobs with this job's
 // scheduler group we need in the job scheduler
 func (s *Server) decrementGroupCount(job *Job, queuename string) {
 	s.sgcmutex.Lock()
 	s.sgroupcounts[job.schedulerGroup] = s.sgroupcounts[job.schedulerGroup] - 1
-	if s.sgroupcounts[job.schedulerGroup] <= 0 {
-		delete(s.sgroupcounts, job.schedulerGroup)
-		delete(s.sgtr, job.schedulerGroup)
-	} else {
-		s.scheduler.Schedule(fmt.Sprintf(s.rc, queuename, job.schedulerGroup), s.sgtr[job.schedulerGroup], s.sgroupcounts[job.schedulerGroup])
-	}
 	s.sgcmutex.Unlock()
+	// notify the job scheduler we need less jobs for this job's cmd now;
+	// it will remove extraneous ones from its queue
+	s.scheduleRunners(queuename, job.schedulerGroup)
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
