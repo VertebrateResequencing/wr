@@ -180,3 +180,11 @@ func DefaultScheduler() (scheduler string) {
 	config := ConfigLoad(DefaultDeployment(), false)
 	return config.Manager_scheduler
 }
+
+// work out the default server (we need this to be able to report this
+// default before we know what deployment the user has actually chosen, ie.
+// before we have a final config)
+func DefaultServer() (server string) {
+	config := ConfigLoad(DefaultDeployment(), false)
+	return config.Manager_host + ":" + config.Manager_port
+}

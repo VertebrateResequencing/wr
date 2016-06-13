@@ -94,10 +94,11 @@ type serverResponse struct {
 
 // ServerInfo holds basic addressing info about the server
 type ServerInfo struct {
-	Addr string // ip:port
-	Host string // hostname
-	Port string // port
-	PID  int    // process id of server
+	Addr       string // ip:port
+	Host       string // hostname
+	Port       string // port
+	PID        int    // process id of server
+	Deployment string // deployment the server is running under
 }
 
 // ServerStats holds information about the jobqueue server for sending to
@@ -128,7 +129,7 @@ type Server struct {
 	sgroupcounts map[string]int
 	sgtr         map[string]*scheduler.Requirements
 	sgcmutex     sync.Mutex
-	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup)
+	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr)
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -143,11 +144,12 @@ type Server struct {
 // the returned msg string. It also spawns your runner clients as needed,
 // running them via the job scheduler specified by schedulerName, using the
 // supplied shell. It determines the command line to execute for your runner
-// client from the runnerCmd string you supply, which should contain 2 %s parts
-// which will be replaced with the queue name and scheduler group, eg.
-// "my_jobqueue_runner_client --queue %s, --group %s". If you supply an empty
-// string, runner clients will not be spawned; for any work to be done you will
-// have to run your runner client yourself manually.
+// client from the runnerCmd string you supply, which should contain 4 %s parts
+// which will be replaced with the queue name, scheduler group, deployment and
+// ip:host address of the server, eg. "my_jobqueue_runner_client --queue %s
+// --group '%s' --deployment %s --server '%s'". If you supply an empty string,
+// runner clients will not be spawned; for any work to be done you will have to
+// run your runner client yourself manually.
 func Serve(port string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
@@ -176,7 +178,7 @@ func Serve(port string, schedulerName string, shell string, runnerCmd string, db
 
 	sock.AddTransport(tcp.NewTransport())
 
-	if err = sock.Listen("tcp://localhost:" + port); err != nil {
+	if err = sock.Listen("tcp://0.0.0.0:" + port); err != nil {
 		return
 	}
 
@@ -226,7 +228,7 @@ func Serve(port string, schedulerName string, shell string, runnerCmd string, db
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid()},
+		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid(), Deployment: deployment},
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),
@@ -372,6 +374,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					s.sgcmutex.Lock()
 					s.sgroupcounts[group] = count
 					s.sgcmutex.Unlock()
+					fmt.Printf("\nwill call scheduleRunners for group %s at count %d\n", group, count)
 					s.scheduleRunners(q, group)
 				}
 			}
@@ -827,7 +830,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 		s.sgroupcounts[group] = 0
 	}
 
-	err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group), req, s.sgroupcounts[group])
+	err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr), req, s.sgroupcounts[group])
 	if err != nil {
 		problem := true
 		if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {

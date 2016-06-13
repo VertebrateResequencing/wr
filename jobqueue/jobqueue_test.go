@@ -39,11 +39,15 @@ var runnermode bool
 var queuename string
 var schedgrp string
 var runnermodetmpdir string
+var rdeployment string
+var rserver string
 
 func init() {
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.StringVar(&queuename, "queue", "", "queue for runnermode")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
+	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
+	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
 	flag.StringVar(&runnermodetmpdir, "tmpdir", "", "tmp dir for runnermode")
 }
 
@@ -206,6 +210,7 @@ func TestJobqueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(sstats.ServerInfo.Port, ShouldEqual, port)
 			So(sstats.ServerInfo.PID, ShouldBeGreaterThan, 0)
+			So(sstats.ServerInfo.Deployment, ShouldEqual, "development")
 
 			var jobs []*Job
 			for i := 0; i < 10; i++ {
@@ -962,7 +967,7 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
-		server, _, err = Serve(port, "local", config.Runner_exec_shell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp %s --tmpdir "+runnertmpdir+" > /dev/null 2>&1", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, "local", config.Runner_exec_shell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --tmpdir "+runnertmpdir, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment) // +" > /dev/null 2>&1"
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
@@ -1180,8 +1185,8 @@ func runner() {
 		log.Fatal("schedgrp missing")
 	}
 
-	config := internal.ConfigLoad("development", true)
-	addr := "localhost:" + config.Manager_port
+	config := internal.ConfigLoad(rdeployment, true)
+	addr := rserver
 
 	timeout := 6 * time.Second
 	rtimeout := 1 * time.Second

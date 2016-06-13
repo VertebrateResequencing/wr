@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"github.com/sb10/vrpipe/internal"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/spf13/cobra"
 	"time"
@@ -28,6 +29,7 @@ import (
 var queuename string
 var schedgrp string
 var reserveint int
+var rserver string
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{
@@ -50,7 +52,7 @@ needed.`,
 		timeout := time.Duration(timeoutint) * time.Second
 		rtimeout := time.Duration(reserveint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, queuename, timeout)
+		jq, err := jobqueue.Connect(rserver, queuename, timeout)
 		if err != nil {
 			fatal("%s", err)
 		}
@@ -101,4 +103,5 @@ func init() {
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 25, "how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of vrpipe manager")
 }
