@@ -349,11 +349,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// groups
 				req := &scheduler.Requirements{job.Memory, job.Time, job.CPUs, ""} //*** how to pass though scheduler extra args?
 				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.Memory, req.Time.Minutes(), req.CPUs)
-				groups[job.schedulerGroup]++
 
-				if _, set := s.sgtr[job.schedulerGroup]; !set {
+				if s.rc != "" {
+					groups[job.schedulerGroup]++
+
 					s.sgcmutex.Lock()
-					s.sgtr[job.schedulerGroup] = req
+					if _, set := s.sgtr[job.schedulerGroup]; !set {
+						s.sgtr[job.schedulerGroup] = req
+					}
 					s.sgcmutex.Unlock()
 				}
 			}
@@ -369,7 +372,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					s.sgcmutex.Lock()
 					s.sgroupcounts[group] = count
 					s.sgcmutex.Unlock()
-					s.scheduleRunners(queuename, group)
+					s.scheduleRunners(q, group)
 				}
 			}
 		})
@@ -608,7 +611,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						}
 						s.rpl.Unlock()
 
-						s.decrementGroupCount(job, q.Name)
+						s.decrementGroupCount(job, q)
 					}
 				}
 			}
@@ -656,7 +659,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrInternalError
 				qerr = err.Error()
 			} else {
-				s.decrementGroupCount(job, q.Name)
+				s.decrementGroupCount(job, q)
 			}
 		}
 	case "jkick":
@@ -809,34 +812,55 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	return nil
 }
 
-func (s *Server) scheduleRunners(queuename string, group string) {
+func (s *Server) scheduleRunners(q *queue.Queue, group string) {
+	if s.rc == "" {
+		return
+	}
+
+	req, hadreq := s.sgtr[group]
+	if !hadreq {
+		return
+	}
+
 	s.sgcmutex.Lock()
 	if s.sgroupcounts[group] < 0 {
 		s.sgroupcounts[group] = 0
 	}
-	err := s.scheduler.Schedule(fmt.Sprintf(s.rc, queuename, group), s.sgtr[group], s.sgroupcounts[group])
+
+	err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group), req, s.sgroupcounts[group])
 	if err != nil {
+		problem := true
 		if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
 			// bury all jobs in this scheduler group
-			rf = func(data interface{}) bool {
+			problem = false
+			rf := func(data interface{}) bool {
 				job := data.(*Job)
-				if job.schedulerGroup == s.sgtr[group] {
+				if job.schedulerGroup == group {
 					return true
 				}
 				return false
 			}
 			for {
-				item, err = q.ReserveFiltered(rf)
+				item, err := q.ReserveFiltered(rf)
+				if err != nil {
+					problem = true
+					break
+				}
 				if item == nil {
 					break
 				}
 				job := item.Data.(*Job)
 				job.FailReason = FailReasonResource
 				q.Bury(item.Key)
+				s.sgroupcounts[group]--
 			}
-			delete(s.sgroupcounts, job.schedulerGroup)
-			delete(s.sgtr, job.schedulerGroup)
-		} else {
+			if !problem {
+				delete(s.sgroupcounts, group)
+				delete(s.sgtr, group)
+			}
+		}
+
+		if problem {
 			// log the error *** and inform (by email) the user about this
 			// problem if it's persistent, once per hour (day?)
 			log.Println(err)
@@ -845,7 +869,7 @@ func (s *Server) scheduleRunners(queuename string, group string) {
 			s.sgcmutex.Unlock()
 			go func() {
 				<-time.After(1 * time.Minute)
-				s.scheduleRunners(queuename, group)
+				s.scheduleRunners(q, group)
 			}()
 			return
 		}
@@ -859,13 +883,15 @@ func (s *Server) scheduleRunners(queuename string, group string) {
 
 // adjust our count of how many jobs with this job's
 // scheduler group we need in the job scheduler
-func (s *Server) decrementGroupCount(job *Job, queuename string) {
-	s.sgcmutex.Lock()
-	s.sgroupcounts[job.schedulerGroup] = s.sgroupcounts[job.schedulerGroup] - 1
-	s.sgcmutex.Unlock()
-	// notify the job scheduler we need less jobs for this job's cmd now;
-	// it will remove extraneous ones from its queue
-	s.scheduleRunners(queuename, job.schedulerGroup)
+func (s *Server) decrementGroupCount(job *Job, q *queue.Queue) {
+	if s.rc != "" {
+		s.sgcmutex.Lock()
+		s.sgroupcounts[job.schedulerGroup]--
+		s.sgcmutex.Unlock()
+		// notify the job scheduler we need less jobs for this job's cmd now;
+		// it will remove extraneous ones from its queue
+		s.scheduleRunners(q, job.schedulerGroup)
+	}
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
