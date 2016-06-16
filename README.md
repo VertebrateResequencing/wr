@@ -3,6 +3,9 @@ vrpipe
 
 ***DO NOT USE YET!***
 
+But if you want to be adventurous and provide feedback...
+[![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/sb10/vrpipe/master)
+
 This is an experimental reimplementation of
 https://github.com/VertebrateResequencing/vr-pipe/
 in the Go programming language
