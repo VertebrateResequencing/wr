@@ -1,0 +1,12 @@
+author: Sendu Bala
+description: Software Pipeline System
+os: darwin linux
+includes:
+  - README.md
+  - LICENSE
+  - vrpipe_config.yml
+excludes:
+  - \.git
+script:
+  - go get -v
+  - go build -tags netgo
