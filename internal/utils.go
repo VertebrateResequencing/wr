@@ -21,8 +21,12 @@ package internal
 // this file has general utility functions
 
 import (
+	"os/exec"
 	"sort"
+	"strings"
 )
+
+var username string
 
 // SortMapKeysByIntValue sorts the keys of a map[string]int by its values,
 // reversed if you supply true as the second arg.
@@ -79,5 +83,22 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 		}
 	}
 
+	return
+}
+
+// Username returns the username of the current user. This avoids problems
+// with static compilation as it avoids the use of os/user. It will only work
+// on linux-like systems where 'id -u -n' works.
+func Username() (uname string, err error) {
+	if username == "" {
+		usercmd := exec.Command("id", "-u", "-n")
+		var idout []byte
+		idout, err = usercmd.Output()
+		if err != nil {
+			return
+		}
+		username = strings.TrimSuffix(string(idout), "\n")
+	}
+	uname = username
 	return
 }
