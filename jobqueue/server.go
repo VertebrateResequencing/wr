@@ -25,12 +25,15 @@ import (
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/gorilla/websocket"
+	"github.com/grafov/bcast"
 	"github.com/satori/go.uuid"
 	"github.com/sb10/vrpipe/jobqueue/schedulers"
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -112,6 +115,48 @@ type rgToKeys struct {
 	lookup map[string]map[string]bool
 }
 
+// jstatusReq is what the status webpage sends us to ask for info about jobs
+type jstatusReq struct {
+	Key      string // sending Key means "give me detailed info about this single job"
+	RepGroup string // sending RepGroup means "send me basic info about every job with this RepGroup"
+	Request  string // "current" means "send me basic info about every job in every RepGroup that is in currently in the cmds queue"
+}
+
+// jstatus is the job info we send to the status webpage
+type jstatus struct {
+	// basic info always sent
+	Key      string
+	RepGroup string
+	Cmd      string
+	State    string
+	// extra info when specifically requested
+	Cwd            string
+	ExpectedMemory int
+	ExpectedTime   float64
+	CPUs           int
+	Peakmem        int
+	Exited         bool
+	Exitcode       int
+	FailReason     string
+	Pid            int
+	Host           string
+	Walltime       float64
+	CPUtime        float64
+	StdErr         string
+	StdOut         string
+	Env            []string
+	Attempts       uint32
+}
+
+// jstateCount is the state count change we send to the status webpage; we are
+// representing the jobs moving from one state to another.
+type jstateCount struct {
+	RepGroup  string // "+all+" is the special group representing all live jobs across all RepGroups
+	FromState string // one of 'new', 'delay', 'ready', 'run' or 'bury'
+	ToState   string // one of 'delay', 'ready', 'run', 'bury' or 'complete'
+	Count     int    // num in FromState drop by this much, num in ToState rise by this much
+}
+
 // server represents the server side of the socket that clients Connect() to
 type Server struct {
 	ServerInfo *ServerInfo
@@ -130,6 +175,7 @@ type Server struct {
 	sgtr         map[string]*scheduler.Requirements
 	sgcmutex     sync.Mutex
 	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr)
+	statusCaster *bcast.Group
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -150,7 +196,7 @@ type Server struct {
 // --group '%s' --deployment %s --server '%s'". If you supply an empty string,
 // runner clients will not be spawned; for any work to be done you will have to
 // run your runner client yourself manually.
-func Serve(port string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
+func Serve(port string, webPort string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -241,6 +287,7 @@ func Serve(port string, schedulerName string, shell string, runnerCmd string, db
 		sgroupcounts: make(map[string]int),
 		sgtr:         make(map[string]*scheduler.Requirements),
 		rc:           runnerCmd,
+		statusCaster: bcast.NewGroup(),
 	}
 
 	go func() {
@@ -284,6 +331,230 @@ func Serve(port string, schedulerName string, shell string, runnerCmd string, db
 		}
 	}()
 
+	// set up the web interface
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", webInterfaceHTML)
+	mux.HandleFunc("/js/", webInterfaceJS)
+	mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
+	go http.ListenAndServe("0.0.0.0:"+webPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+	go s.statusCaster.Broadcasting(0)
+
+	return
+}
+
+// webInterfaceHTML is a http handler for html pages
+func webInterfaceHTML(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/":
+		fmt.Fprint(w, htmlHome)
+	case "/status":
+		fmt.Fprintf(w, htmlStatus, r.Host)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// webInterfaceJS is a http handler for javascript pages
+func webInterfaceJS(w http.ResponseWriter, r *http.Request) {
+	var js string
+	switch r.URL.Path {
+	case "/js/jquery-3.0.0.min.js":
+		js = jsJQuery
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write([]byte(js))
+}
+
+// webSocket upgrades a http connection to a websocket
+func webSocket(w http.ResponseWriter, r *http.Request) (conn *websocket.Conn, ok bool) {
+	var upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	ok = true
+	if err != nil {
+		http.Error(w, "Could not open websocket connection", http.StatusBadRequest)
+		ok = false
+	}
+	return
+}
+
+// webInterfaceStatusWS reads from and writes to the websocket on the status
+// webpage
+func webInterfaceStatusWS(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		conn, ok := webSocket(w, r)
+		if !ok {
+			log.Println("failed to set up websocket at", r.Host)
+			return
+		}
+
+		writeMutex := &sync.Mutex{}
+
+		// go routine to read client requests and respond to them
+		go func(conn *websocket.Conn) {
+			for {
+				req := jstatusReq{}
+				err := conn.ReadJSON(&req)
+				if err != nil { // probably the browser was refreshed, breaking conn
+					break
+				}
+
+				q, existed := s.qs["cmds"]
+				if !existed {
+					continue
+				}
+
+				switch {
+				case req.Key != "":
+					jobs, _, errstr := s.getJobsByKeys(q, []string{req.Key}, true, true)
+					if errstr == "" && len(jobs) == 1 {
+						stderr, _ := jobs[0].StdErr()
+						stdout, _ := jobs[0].StdOut()
+						env, _ := jobs[0].Env()
+						status := jstatus{
+							Key:            jobKey(jobs[0]),
+							RepGroup:       jobs[0].RepGroup,
+							Cmd:            jobs[0].Cmd,
+							State:          jobs[0].State,
+							Cwd:            jobs[0].Cwd,
+							ExpectedMemory: jobs[0].Memory,
+							ExpectedTime:   jobs[0].Time.Seconds(),
+							CPUs:           jobs[0].CPUs,
+							Peakmem:        jobs[0].Peakmem,
+							Exited:         jobs[0].Exited,
+							Exitcode:       jobs[0].Exitcode,
+							FailReason:     jobs[0].FailReason,
+							Pid:            jobs[0].Pid,
+							Host:           jobs[0].Host,
+							Walltime:       jobs[0].Walltime.Seconds(),
+							CPUtime:        jobs[0].CPUtime.Seconds(),
+							StdErr:         stderr,
+							StdOut:         stdout,
+							Env:            env,
+							Attempts:       jobs[0].Attempts,
+						}
+						writeMutex.Lock()
+						err = conn.WriteJSON(status)
+						writeMutex.Unlock()
+						if err != nil {
+							break
+						}
+					}
+				case req.RepGroup != "":
+					jobs, _, errstr := s.getJobsByRepGroup(q, req.RepGroup)
+					//*** sort jobs and then we can implement paging (send only
+					// 50 jobs in each state)
+					if errstr == "" && len(jobs) > 0 {
+						writeMutex.Lock()
+						failed := false
+						for _, job := range jobs {
+							status := jstatus{
+								Key:      jobKey(job),
+								RepGroup: job.RepGroup,
+								Cmd:      job.Cmd,
+								State:    job.State,
+							}
+							err = conn.WriteJSON(status)
+							if err != nil {
+								failed = true
+								break
+							}
+						}
+						writeMutex.Unlock()
+						if failed {
+							break
+						}
+					}
+				case req.Request != "":
+					switch req.Request {
+					case "current":
+						// get all current jobs
+						jobs := s.getJobsCurrent(q)
+						writeMutex.Lock()
+						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs) // &jstateCount{group, from, to, count}
+						if err != nil {
+							writeMutex.Unlock()
+							break
+						}
+
+						// for each different RepGroup amongst these jobs,
+						// send the job state counts
+						repGroups := make(map[string][]*Job)
+						for _, job := range jobs {
+							repGroups[job.RepGroup] = append(repGroups[job.RepGroup], job)
+						}
+						failed := false
+						for repGroup, jobs := range repGroups {
+							complete, _, qerr := s.getCompleteJobsByRepGroup(repGroup)
+							if qerr != "" {
+								failed = true
+								break
+							}
+							jobs = append(jobs, complete...)
+							err := webInterfaceStatusSendGroupStateCount(conn, repGroup, jobs)
+							if err != nil {
+								failed = true
+								break
+							}
+						}
+						writeMutex.Unlock()
+						if failed {
+							break
+						}
+					default:
+						continue
+					}
+				default:
+					continue
+				}
+			}
+		}(conn)
+
+		// go routine to push changes to the client
+		go func(conn *websocket.Conn) {
+			statusReceiver := s.statusCaster.Join()
+			for status := range statusReceiver.In {
+				writeMutex.Lock()
+				err := conn.WriteJSON(status)
+				writeMutex.Unlock()
+				if err != nil {
+					break
+				}
+			}
+			statusReceiver.Close()
+		}(conn)
+	}
+}
+
+// webInterfaceStatusSendGroupStateCount sends the per-repgroup state counts
+// to the status webpage websocket
+func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) (err error) {
+	queueCounts := make(map[string]int)
+	for _, job := range jobs {
+		var subQueue string
+		switch job.State {
+		case "delayed":
+			subQueue = "delay"
+		case "reserved", "running":
+			subQueue = "run"
+		case "buried":
+			subQueue = "bury"
+		default:
+			subQueue = job.State
+		}
+		queueCounts[subQueue]++
+	}
+	for to, count := range queueCounts {
+		err = conn.WriteJSON(&jstateCount{repGroup, "new", to, count})
+		if err != nil {
+			return
+		}
+	}
 	return
 }
 
@@ -361,6 +632,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 					s.sgcmutex.Unlock()
 				}
+
+				s.statusCaster.Send(&jstatus{Key: jobKey(job), RepGroup: job.RepGroup, Cmd: job.Cmd, State: "ready"})
 			}
 
 			if s.rc != "" {
@@ -374,9 +647,29 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					s.sgcmutex.Lock()
 					s.sgroupcounts[group] = count
 					s.sgcmutex.Unlock()
-					fmt.Printf("\nwill call scheduleRunners for group %s at count %d\n", group, count)
 					s.scheduleRunners(q, group)
 				}
+			}
+		})
+
+		// we set a callback for things changing in the queue, which lets us
+		// update the status webpage with the minimal work and data transfer
+		q.SetChangedCallback(func(from string, to string, data []interface{}) {
+			if to == "removed" {
+				to = "complete"
+			}
+
+			// overall count
+			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data)})
+
+			// counts per RepGroup
+			groups := make(map[string]int)
+			for _, inter := range data {
+				job := inter.(*Job)
+				groups[job.RepGroup]++
+			}
+			for group, count := range groups {
+				s.statusCaster.Send(&jstateCount{group, from, to, count})
 			}
 		})
 	}
@@ -707,38 +1000,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			sr = &serverResponse{Existed: deleted}
 		}
 	case "getbc":
-		// get jobs by their Cmds & Cwds
+		// get jobs by their keys (which come from their Cmds & Cwds)
 		if cr.Keys == nil {
 			srerr = ErrBadRequest
 		} else {
 			var jobs []*Job
-			var notfound []string
-			for _, jobkey := range cr.Keys {
-				// try and get the job from the in-memory queue
-				item, err := q.Get(jobkey)
-				var job *Job
-				if err == nil && item != nil {
-					job = s.itemToJob(item, cr.GetStd, cr.GetEnv)
-				} else {
-					notfound = append(notfound, jobkey)
-				}
-
-				if job != nil {
-					jobs = append(jobs, job)
-				}
-			}
-
-			if len(notfound) > 0 {
-				// try and get the jobs from the permanent store
-				found, err := s.db.retrieveCompleteJobsByKeys(notfound, cr.GetStd, cr.GetEnv)
-				if err != nil {
-					srerr = ErrDBError
-					qerr = err.Error()
-				} else if len(found) > 0 {
-					jobs = append(jobs, found...)
-				}
-			}
-
+			jobs, srerr, qerr = s.getJobsByKeys(q, cr.Keys, cr.GetStd, cr.GetEnv)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
@@ -749,37 +1016,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			srerr = ErrBadRequest
 		} else {
 			var jobs []*Job
-
-			// look in the in-memory queue for matching jobs
-			s.rpl.RLock()
-			for key, _ := range s.rpl.lookup[cr.Job.RepGroup] {
-				item, err := q.Get(key)
-				if err == nil && item != nil {
-					job := s.itemToJob(item, false, false)
-					jobs = append(jobs, job)
-				}
-			}
-			s.rpl.RUnlock()
-
-			// look in the permanent store for matching jobs
-			found, err := s.db.retrieveCompleteJobsByRepGroup(cr.Job.RepGroup)
-			if err != nil {
-				srerr = ErrDBError
-				qerr = err.Error()
-			} else if len(found) > 0 {
-				jobs = append(jobs, found...)
-			}
-
+			jobs, srerr, qerr = s.getJobsByRepGroup(q, cr.Job.RepGroup)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
 		}
 	case "getin":
 		// get all jobs in the jobqueue
-		var jobs []*Job
-		for _, item := range q.AllItems() {
-			jobs = append(jobs, s.itemToJob(item, cr.GetStd, cr.GetEnv))
-		}
+		jobs := s.getJobsCurrent(q)
 		if len(jobs) > 0 {
 			sr = &serverResponse{Jobs: jobs}
 		}
@@ -813,6 +1057,79 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		return err
 	}
 	return nil
+}
+
+// getJobsByRepGroup gets jobs with the given keys (current and complete)
+func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+	var notfound []string
+	for _, jobkey := range keys {
+		// try and get the job from the in-memory queue
+		item, err := q.Get(jobkey)
+		var job *Job
+		if err == nil && item != nil {
+			job = s.itemToJob(item, getStd, getEnv)
+		} else {
+			notfound = append(notfound, jobkey)
+		}
+
+		if job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	if len(notfound) > 0 {
+		// try and get the jobs from the permanent store
+		found, err := s.db.retrieveCompleteJobsByKeys(notfound, getStd, getEnv)
+		if err != nil {
+			srerr = ErrDBError
+			qerr = err.Error()
+		} else if len(found) > 0 {
+			jobs = append(jobs, found...)
+		}
+	}
+
+	return
+}
+
+// getJobsByRepGroup gets jobs in the given group (current and complete)
+func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string) (jobs []*Job, srerr string, qerr string) {
+	// look in the in-memory queue for matching jobs
+	s.rpl.RLock()
+	for key, _ := range s.rpl.lookup[repgroup] {
+		item, err := q.Get(key)
+		if err == nil && item != nil {
+			job := s.itemToJob(item, false, false)
+			jobs = append(jobs, job)
+		}
+	}
+	s.rpl.RUnlock()
+
+	// look in the permanent store for matching jobs
+	var complete []*Job
+	complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
+	if len(complete) > 0 {
+		jobs = append(jobs, complete...)
+	}
+
+	return
+}
+
+// getCompleteJobsByRepGroup gets complete jobs in the given group
+func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr string, qerr string) {
+	jobs, err := s.db.retrieveCompleteJobsByRepGroup(repgroup)
+	if err != nil {
+		srerr = ErrDBError
+		qerr = err.Error()
+	}
+	return
+}
+
+// getJobsCurrent gets all current (incomplete) jobs
+func (s *Server) getJobsCurrent(q *queue.Queue) (jobs []*Job) {
+	for _, item := range q.AllItems() {
+		jobs = append(jobs, s.itemToJob(item, false, false))
+	}
+	return
 }
 
 func (s *Server) scheduleRunners(q *queue.Queue, group string) {
