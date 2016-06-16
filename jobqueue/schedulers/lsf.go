@@ -27,7 +27,6 @@ import (
 	"github.com/sb10/vrpipe/internal"
 	"math"
 	"os/exec"
-	"os/user"
 	"regexp"
 	"sort"
 	"strconv"
@@ -223,11 +222,10 @@ func (s *lsf) initialize(deployment string, shell string) error {
 					users[val] = true
 				}
 
-				user, err := user.Current()
+				me, err := internal.Username()
 				if err != nil {
 					return Error{"lsf", "initialize", fmt.Sprintf("could not get current user: %s", err)}
 				}
-				me := user.Username
 
 				if !users["all"] && !users[me] {
 					delete(s.queues, queue)
