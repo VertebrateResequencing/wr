@@ -15,7 +15,8 @@
 # 'production'.
 # A similar story applies for .vrpipe_config.development.yml files, which are
 # used when things are set to 'development'.
-# The default deployment is production.
+# The default deployment is production (unless you're in the git repository for
+# vrpipe, in which case it is development).
 #
 # If a setting is found in none of the files read, then an environment variable
 # is checked: VRPIPE_<setting name in caps>. Eg. to define the manager_port
@@ -47,6 +48,12 @@
 # running a vrpipe command be able to do tcp communication with the host you
 # launch the manager on.
 manager_port: "11301"
+
+# manager_web: What port should the vrpipe manager serve its web interface on?
+# This defaults to "11302". Note, this is a string (quoted).
+# NB: This must be different to the manager_port, and to anyone else's port
+# choice on the same machine.
+manager_web: "11302"
 
 # manager_host: What host was 'vrpipe manager' started on?
 # This is optional and defaults to "localhost".

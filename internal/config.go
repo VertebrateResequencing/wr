@@ -33,6 +33,7 @@ const (
 
 type Config struct {
 	Manager_port       string `default:"11301"`
+	Manager_web        string `default:"11302"`
 	Manager_host       string `default:"localhost"`
 	Manager_dir        string `default:"~/.vrpipe"`
 	Manager_pid_file   string `default:"pid"`
