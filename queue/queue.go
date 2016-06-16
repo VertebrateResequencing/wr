@@ -75,8 +75,14 @@ func (e Error) Error() string {
 }
 
 // readyAddedCallback is used as a callback to know when new items have been
-// added to the ready sub-queue
+// added to the ready sub-queue, getting /all/ items in the ready sub-queue.
 type readyAddedCallback func(queuename string, allitemdata []interface{})
+
+// changedCallback is used as a callback to know when items change sub-queues,
+// telling you what item.Data moved from which sub-queue to which other sub-
+// queue. For new items in the queue, `from` will be 'new', and for items
+// leaving the queue, `to` will be 'removed'.
+type changedCallback func(from string, to string, data []interface{})
 
 // ReserveFilter is a callback for use when calling ReserveFiltered(). It will
 // receive an item's Data property and should return false if that is not
@@ -102,6 +108,7 @@ type Queue struct {
 	ttrTime           time.Time
 	closed            bool
 	readyAddedCb      readyAddedCallback
+	changedCb         changedCallback
 }
 
 // Stats holds information about the Queue's state.
@@ -152,7 +159,7 @@ func (queue *Queue) SetReadyAddedCallback(callback readyAddedCallback) {
 }
 
 // readyAdded checks if a readyAddedCallback has been set, and if so calls it
-// in a go routine
+// in a go routine.
 func (queue *Queue) readyAdded() {
 	if queue.readyAddedCb != nil {
 		queue.mutex.RLock()
@@ -162,6 +169,28 @@ func (queue *Queue) readyAdded() {
 		}
 		queue.mutex.RUnlock()
 		go queue.readyAddedCb(queue.Name, data)
+	}
+}
+
+// SetChangedCallback sets a callback that will be called when items move from
+// one sub-queue to another. The callback receives the name of the moved-from
+// sub-queue ('new' in the case of entering the queue for the first time), the name of the
+// moved-to sub-queue ('removed' in the case of the item being removed from the
+// queue), and a slice of item.Data of everything that moved in this way. The
+// callback will be initiated in a go routine.
+func (queue *Queue) SetChangedCallback(callback changedCallback) {
+	queue.changedCb = callback
+}
+
+// changed checks if a changedCallback has been set, and if so calls it in a go
+// routine.
+func (queue *Queue) changed(from string, to string, items []*Item) {
+	if queue.changedCb != nil {
+		var data []interface{}
+		for _, item := range items {
+			data = append(data, item.Data)
+		}
+		go queue.changedCb(from, to, data)
 	}
 }
 
@@ -234,10 +263,12 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 		item.switchDelayReady()
 		queue.readyQueue.push(item)
 		queue.mutex.Unlock()
+		queue.changed("new", "ready", []*Item{item})
 		queue.readyAdded()
 	} else {
 		queue.delayQueue.push(item)
 		queue.mutex.Unlock()
+		queue.changed("new", "delay", []*Item{item})
 		queue.delayNotificationTrigger(item)
 	}
 
@@ -259,6 +290,9 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 
 	deferredTrigger := false
 	addedReady := false
+	addedDelay := false
+	var addedReadyItems []*Item
+	var addedDelayItems []*Item
 	for _, def := range items {
 		_, existed := queue.items[def.Key]
 		if existed {
@@ -273,9 +307,12 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 			// put it directly on the ready queue
 			item.switchDelayReady()
 			queue.readyQueue.push(item)
+			addedReadyItems = append(addedReadyItems, item)
 			addedReady = true
 		} else {
 			queue.delayQueue.push(item)
+			addedDelayItems = append(addedDelayItems, item)
+			addedDelay = true
 			if !deferredTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
 				defer queue.delayNotificationTrigger(item)
 				deferredTrigger = true
@@ -287,7 +324,11 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 
 	queue.mutex.Unlock()
 	if addedReady {
+		queue.changed("new", "ready", addedReadyItems)
 		queue.readyAdded()
+	}
+	if addedDelay {
+		queue.changed("new", "delay", addedDelayItems)
 	}
 	return
 }
@@ -421,6 +462,7 @@ func (queue *Queue) Reserve() (item *Item, err error) {
 
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
+	queue.changed("ready", "run", []*Item{item})
 
 	return
 }
@@ -464,6 +506,7 @@ func (queue *Queue) ReserveFiltered(filter ReserveFilter) (item *Item, err error
 
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
+	queue.changed("ready", "run", []*Item{item})
 
 	return
 }
@@ -532,6 +575,7 @@ func (queue *Queue) Release(key string) (err error) {
 		item.switchRunReady()
 		queue.readyQueue.push(item)
 		queue.mutex.Unlock()
+		queue.changed("run", "ready", []*Item{item})
 		queue.readyAdded()
 	} else {
 		item.restart()
@@ -539,6 +583,7 @@ func (queue *Queue) Release(key string) (err error) {
 		item.switchRunDelay()
 		queue.mutex.Unlock()
 		queue.delayNotificationTrigger(item)
+		queue.changed("run", "delay", []*Item{item})
 	}
 
 	return
@@ -573,6 +618,7 @@ func (queue *Queue) Bury(key string) (err error) {
 	queue.runQueue.remove(item)
 	queue.buryQueue.push(item)
 	item.switchRunBury()
+	queue.changed("run", "bury", []*Item{item})
 
 	return
 }
@@ -608,6 +654,7 @@ func (queue *Queue) Kick(key string) (err error) {
 	queue.readyQueue.push(item)
 	item.switchBuryReady()
 	queue.mutex.Unlock()
+	queue.changed("bury", "ready", []*Item{item})
 	queue.readyAdded()
 	return
 }
@@ -636,12 +683,16 @@ func (queue *Queue) Remove(key string) (err error) {
 	switch item.state {
 	case "delay":
 		queue.delayQueue.remove(item)
+		queue.changed("delay", "removed", []*Item{item})
 	case "ready":
 		queue.readyQueue.remove(item)
+		queue.changed("ready", "removed", []*Item{item})
 	case "run":
 		queue.runQueue.remove(item)
+		queue.changed("run", "removed", []*Item{item})
 	case "bury":
 		queue.buryQueue.remove(item)
+		queue.changed("bury", "removed", []*Item{item})
 	}
 	item.removalCleanup()
 
@@ -666,6 +717,7 @@ func (queue *Queue) startDelayProcessing() {
 			queue.mutex.Lock()
 			len := queue.delayQueue.len()
 			addedReady := false
+			var items []*Item
 			for i := 0; i < len; i++ {
 				item := queue.delayQueue.items[0]
 
@@ -678,10 +730,12 @@ func (queue *Queue) startDelayProcessing() {
 				queue.delayQueue.remove(item)
 				queue.readyQueue.push(item)
 				item.switchDelayReady()
+				items = append(items, item)
 				addedReady = true
 			}
 			queue.mutex.Unlock()
 			if addedReady {
+				queue.changed("delay", "ready", items)
 				queue.readyAdded()
 			}
 		case <-queue.delayNotification:
@@ -716,6 +770,7 @@ func (queue *Queue) startTTRProcessing() {
 			queue.mutex.Lock()
 			len := queue.runQueue.len()
 			addedReady := false
+			var items []*Item
 			for i := 0; i < len; i++ {
 				item := queue.runQueue.items[0]
 
@@ -728,10 +783,12 @@ func (queue *Queue) startTTRProcessing() {
 				queue.runQueue.remove(item)
 				queue.readyQueue.push(item)
 				item.switchRunReady()
+				items = append(items, item)
 				addedReady = true
 			}
 			queue.mutex.Unlock()
 			if addedReady {
+				queue.changed("run", "ready", items)
 				queue.readyAdded()
 			}
 		case <-queue.ttrNotification:

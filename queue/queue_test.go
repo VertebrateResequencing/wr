@@ -27,6 +27,12 @@ import (
 	"time"
 )
 
+type changedStruct struct {
+	from  string
+	to    string
+	count int
+}
+
 func TestQueue(t *testing.T) {
 	Convey("Once 10 items of differing delay and ttr have been added to the queue", t, func() {
 		queue := New("myqueue")
@@ -35,6 +41,13 @@ func TestQueue(t *testing.T) {
 		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 			if readyAddedTestEnable {
 				readyAddedChan <- len(allitemdata)
+			}
+		})
+		changedTestEnable := false
+		changedChan := make(chan *changedStruct, 1)
+		queue.SetChangedCallback(func(from string, to string, data []interface{}) {
+			if changedTestEnable {
+				changedChan <- &changedStruct{from, to, len(data)}
 			}
 		})
 		items := make(map[string]*Item)
@@ -94,12 +107,15 @@ func TestQueue(t *testing.T) {
 			So(stats.Delayed, ShouldEqual, 8)
 			So(stats.Ready, ShouldEqual, 2)
 			readyAddedTestEnable = true
+			changedTestEnable = true
 			<-time.After(110 * time.Millisecond)
 			stats = queue.Stats()
 			So(stats.Delayed, ShouldEqual, 7)
 			So(stats.Ready, ShouldEqual, 3)
 			So(<-readyAddedChan, ShouldEqual, 3)
+			So(checkChanged(changedChan, "delay", "ready", 1), ShouldBeTrue)
 			readyAddedTestEnable = false
+			changedTestEnable = false
 
 			Convey("Once ready you should be able to reserve them in the expected order", func() {
 				item1, err := queue.Reserve()
@@ -111,10 +127,13 @@ func TestQueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(item2, ShouldNotBeNil)
 				So(item2.Key, ShouldEqual, "key_1")
+				changedTestEnable = true
 				item3, err := queue.Reserve()
 				So(err, ShouldBeNil)
 				So(item3, ShouldNotBeNil)
 				So(item3.Key, ShouldEqual, "key_2")
+				So(checkChanged(changedChan, "ready", "run", 1), ShouldBeTrue)
+				changedTestEnable = false
 				item4, err := queue.Reserve()
 				So(err, ShouldNotBeNil)
 				So(item4, ShouldBeNil)
@@ -131,10 +150,13 @@ func TestQueue(t *testing.T) {
 				Convey("Once reserved you can release them", func() {
 					So(item1.state, ShouldEqual, "run")
 					So(item1.releases, ShouldEqual, 0)
+					changedTestEnable = true
 					err := queue.Release(item1.Key)
 					So(err, ShouldBeNil)
 					So(item1.state, ShouldEqual, "delay")
 					So(item1.releases, ShouldEqual, 1)
+					So(checkChanged(changedChan, "run", "delay", 1), ShouldBeTrue)
+					changedTestEnable = false
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
@@ -151,11 +173,14 @@ func TestQueue(t *testing.T) {
 					Convey("Once released, items become ready after their delay", func() {
 						<-time.After(50 * time.Millisecond)
 						So(item1.state, ShouldEqual, "delay")
+						changedTestEnable = true
 						<-time.After(60 * time.Millisecond)
 						So(item1.state, ShouldEqual, "ready")
 						stats = queue.Stats()
 						So(stats.Delayed, ShouldEqual, 6)
 						So(stats.Ready, ShouldEqual, 2)
+						So(checkChanged(changedChan, "delay", "ready", 1), ShouldBeTrue)
+						changedTestEnable = false
 
 						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
 							item1, err := queue.Reserve()
@@ -199,9 +224,12 @@ func TestQueue(t *testing.T) {
 
 				Convey("Or remove them", func() {
 					So(item2.state, ShouldEqual, "run")
+					changedTestEnable = true
 					err := queue.Remove(item2.Key)
 					So(err, ShouldBeNil)
 					So(item2.state, ShouldEqual, "removed")
+					So(checkChanged(changedChan, "run", "removed", 1), ShouldBeTrue)
+					changedTestEnable = false
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 9)
@@ -246,10 +274,13 @@ func TestQueue(t *testing.T) {
 				Convey("Or bury them", func() {
 					So(item3.state, ShouldEqual, "run")
 					So(item3.buries, ShouldEqual, 0)
+					changedTestEnable = true
 					err := queue.Bury(item3.Key)
 					So(err, ShouldBeNil)
 					So(item3.state, ShouldEqual, "bury")
 					So(item3.buries, ShouldEqual, 1)
+					So(checkChanged(changedChan, "run", "bury", 1), ShouldBeTrue)
+					changedTestEnable = false
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
@@ -260,10 +291,13 @@ func TestQueue(t *testing.T) {
 
 					Convey("Once buried you can kick them", func() {
 						So(item3.kicks, ShouldEqual, 0)
+						changedTestEnable = true
 						err := queue.Kick(item3.Key)
 						So(err, ShouldBeNil)
 						So(item3.state, ShouldEqual, "ready")
 						So(item3.kicks, ShouldEqual, 1)
+						So(checkChanged(changedChan, "bury", "ready", 1), ShouldBeTrue)
+						changedTestEnable = false
 
 						stats = queue.Stats()
 						So(stats.Items, ShouldEqual, 10)
@@ -274,8 +308,11 @@ func TestQueue(t *testing.T) {
 					})
 
 					Convey("You can also remove them whilst buried", func() {
+						changedTestEnable = true
 						err := queue.Remove("key_2")
 						So(err, ShouldBeNil)
+						So(checkChanged(changedChan, "bury", "removed", 1), ShouldBeTrue)
+						changedTestEnable = false
 
 						stats := queue.Stats()
 						So(stats.Items, ShouldEqual, 9)
@@ -304,12 +341,15 @@ func TestQueue(t *testing.T) {
 				Convey("If you do nothing they get auto-released to the ready queue", func() {
 					<-time.After(50 * time.Millisecond)
 					So(item1.state, ShouldEqual, "run")
+					changedTestEnable = true
 					<-time.After(60 * time.Millisecond)
 					So(item1.state, ShouldEqual, "ready")
 					So(item1.timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 2)
 					So(stats.Running, ShouldEqual, 2)
+					So(checkChanged(changedChan, "run", "ready", 1), ShouldBeTrue)
+					changedTestEnable = false
 					<-time.After(110 * time.Millisecond)
 					So(item2.state, ShouldEqual, "ready")
 					stats = queue.Stats()
@@ -788,4 +828,25 @@ func TestQueue(t *testing.T) {
 			So(qerr.Err, ShouldEqual, ErrQueueClosed)
 		})
 	})
+}
+
+func checkChanged(changedChan chan *changedStruct, from string, to string, count int) (ok bool) {
+	loops := 0
+	for cs := range changedChan {
+		loops++
+		if loops > 10 {
+			break
+		}
+		if cs.from != from {
+			continue
+		}
+		if cs.to != to {
+			continue
+		}
+		if cs.count == count {
+			ok = true
+			break
+		}
+	}
+	return
 }
