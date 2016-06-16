@@ -1,0 +1,146 @@
+# The format of this file is YAML
+#
+# VRPipe will load its configuration settings from one or more files named
+# .vrpipe_config[.production|.development].yml found in these directories, in
+# order of precedence:
+# 1) The current directory
+# 2) Your home directory
+# 3) The directory pointed to by the environment variable $VRPIPE_CONFIG_DIR
+#
+# .vrpipe_config.yml files are always read, and can be used to define settings
+# common to both production and development deployments.
+# .vrpipe_config.production.yml files are only read in a production context:
+# either a --deployment production option has been passed to the vrpipe
+# executable, or the environment variable $VRPIPE_DEPLOYMENT has been set to
+# 'production'.
+# A similar story applies for .vrpipe_config.development.yml files, which are
+# used when things are set to 'development'.
+# The default deployment is production (unless you're in the git repository for
+# vrpipe, in which case it is development).
+#
+# If a setting is found in none of the files read, then an environment variable
+# is checked: VRPIPE_<setting name in caps>. Eg. to define the manager_port
+# option you might do:
+# export VRPIPE_MANAGER_PORT="11301"
+#
+# Note that all worker nodes need to be able to see your desired set of config
+# files, so either define them in environment variables or put the config files
+# on a disc that is mounted and shared across all your compute nodes.
+
+
+# manager_port: What port should the vrpipe manager listen on?
+# This defaults to "11301". Note, this is a string (quoted).
+# NB: It is very important to have different settings for your production
+# manager and your development manager. If you have multiple developers running
+# tests, each individual person should have their own unique manager_port 
+# specified in their personal ~/.vrpipe_config.development.yml file.
+#
+# Before being able to use vrpipe you must start the manager by running 'vrpipe
+# manager'. It will start listening on the specified port on your local host.
+# Your other invocations of 'vrpipe' also use this option to know what port to
+# connect to, but they'll only succeed if you run them from the same host you
+# started the manager on, or if you have set the manager_host option to the
+# host you started the manager on.
+# vrpipe commands that are spawned by the manager itself are given the real
+# ip address of the host the manager is running on, so these commands do not
+# need manager_host to be set.
+# For multi-machine systems it is required that all hosts that could end up
+# running a vrpipe command be able to do tcp communication with the host you
+# launch the manager on.
+manager_port: "11301"
+
+# manager_web: What port should the vrpipe manager serve its web interface on?
+# This defaults to "11302". Note, this is a string (quoted).
+# NB: This must be different to the manager_port, and to anyone else's port
+# choice on the same machine.
+manager_web: "11302"
+
+# manager_host: What host was 'vrpipe manager' started on?
+# This is optional and defaults to "localhost".
+#
+# This option determines where vrpipe commands (other than the manager command)
+# try and connect to your vrpipe manager. You only need to set this if you plan
+# on running vrpipe commands yourself on a host that is different to the one you
+# you plan to start the vrpipe manager on.
+# For more details, see the notes for the manager_port option above.
+manager_host: "localhost"
+
+# manager_dir: Where should the vrpipe manager store its working files?
+# This defaults to a directory prefixed with .vrpipe in your home directory.
+#
+# The final directory name will be suffixed with "_[deployment]", eg. by default
+# when developing the directory will be ~/.vrpipe_development. For this reason
+# you do not have to set this differently in your production and development
+# config files. The other file-name-based configuration options like
+# 'manager_pid_file' and 'manager_db_file' also do not need to be altered from
+# their defaults.
+#
+# The files stored in here are, by default, the manager's pid file, log file and
+# database related files.
+manager_dir: "~/.vrpipe"
+
+# manager_pid_file: Where should vrpipe manager store its pid file?
+# This defaults to a file named "pid" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir; for example if
+# you have the root permissions to set things up, you may prefer to set this to
+# /var/run/vrpipe/pid
+manager_pid_file: "pid"
+
+# manager_log_file: Where should vrpipe manager store its log file?
+# This defaults to a file named "log" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir; for example if
+# you have the root permissions to set things up, you may prefer to set this to
+# /var/log/vrpipe/pid
+manager_log_file: "log"
+
+# manager_db_file: Where should vrpipe manager store its database file?
+# This defaults to a file named "db" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir. Note that you may
+# need quite a lot of disk space for this, especially after you've run millions
+# of jobs, since a permanent record of everything you've done is held in this
+# file.
+#
+# WARNING: the database file will eventually contain your environment variables,
+# so you should secure this file and not make it public if you have passwords
+# set as the values of environment variables.
+manager_db_file: "db"
+
+# manager_db_bk_file: Where should vrpipe manager back up its database file?
+# This defaults to a file named "db_bk" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir (and ideally you
+# should set this to a path on a different disk or better yet a different
+# machine).
+#
+# Note that you may need quite a lot of disk space for this, as when a
+# new backup starts it is written to a temp file in the directory you specify
+# before replacing the file at the path you specified, so peaking to 2x disk
+# usage.
+manager_db_bk_file: "db_bk"
+
+# manager_umask: What umask should be used when vrpipe manager creates files?
+# This defaults to 007 (user+group read+writable, no access to others).
+# Note, this is a number (no quotes).
+#
+# Here are examples of alternative umasks:
+# 022 = world readable, user read+writable
+# 002 = world readable, user+group read+writable
+manager_umask: 007
+
+# manager_scheduler: What job scheduler should be used to run 'vrpipe runner'?
+# This defaults to "local" and is overridden by the --scheduler option to
+# 'vrpipe manager start'.
+#
+# "local" means run everything on the local machine.
+# "lsf" means submit to LSF using 'bsub'.
+manager_scheduler: "local"
+
+# runner_exec_shell: What shell should be used to run commands in?
+# This defaults to bash, regardless of your current shell.
+#
+# Avoid the use of dash on Ubuntu, which is its default sh; bash is STRONGLY
+# recommended.
+runner_exec_shell: "bash"

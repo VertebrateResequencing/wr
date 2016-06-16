@@ -1,0 +1,852 @@
+// Copyright © 2016 Genome Research Limited
+// Author: Sendu Bala <sb10@sanger.ac.uk>.
+//
+//  This file is part of VRPipe.
+//
+//  VRPipe is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU Lesser General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  VRPipe is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU Lesser General Public License for more details.
+//
+//  You should have received a copy of the GNU Lesser General Public License
+//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+
+package queue
+
+import (
+	"fmt"
+	. "github.com/smartystreets/goconvey/convey"
+	"math/rand"
+	"sort"
+	"testing"
+	"time"
+)
+
+type changedStruct struct {
+	from  string
+	to    string
+	count int
+}
+
+func TestQueue(t *testing.T) {
+	Convey("Once 10 items of differing delay and ttr have been added to the queue", t, func() {
+		queue := New("myqueue")
+		readyAddedTestEnable := false
+		readyAddedChan := make(chan int, 1)
+		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			if readyAddedTestEnable {
+				readyAddedChan <- len(allitemdata)
+			}
+		})
+		changedTestEnable := false
+		changedChan := make(chan *changedStruct, 1)
+		queue.SetChangedCallback(func(from string, to string, data []interface{}) {
+			if changedTestEnable {
+				changedChan <- &changedStruct{from, to, len(data)}
+			}
+		})
+		items := make(map[string]*Item)
+		for i := 0; i < 10; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			t := time.Duration((i+1)*100) * time.Millisecond
+			item, err := queue.Add(key, "data", 0, t, t)
+			So(err, ShouldBeNil)
+			items[key] = item
+		}
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 10)
+		So(stats.Delayed, ShouldEqual, 10)
+		So(stats.Ready, ShouldEqual, 0)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+
+		Convey("You can get an item back out", func() {
+			item, err := queue.Get("key_0")
+			So(err, ShouldBeNil)
+			So(item.Data, ShouldEqual, "data")
+			So(item.creation, ShouldHappenOnOrBefore, items["key_0"].creation)
+		})
+
+		Convey("You can't get an non-existent item", func() {
+			item, err := queue.Get("key_fake")
+			So(err, ShouldNotBeNil)
+			So(item, ShouldBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNotFound)
+		})
+
+		Convey("You can get all items back out", func() {
+			items := queue.AllItems()
+			So(len(items), ShouldEqual, 10)
+		})
+
+		Convey("You can't add the same item again", func() {
+			item, err := queue.Add("key_0", "data new", 0, 100*time.Millisecond, 100*time.Millisecond)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrAlreadyExists)
+			So(err.Error(), ShouldEqual, "queue(myqueue) Add(key_0): already exists")
+			So(item.Data, ShouldEqual, "data")
+			So(item.creation, ShouldHappenOnOrBefore, items["key_0"].creation)
+		})
+
+		Convey("They should start delayed and gradually become ready", func() {
+			<-time.After(110 * time.Millisecond)
+			stats = queue.Stats()
+			So(stats.Delayed, ShouldEqual, 9)
+			So(stats.Ready, ShouldEqual, 1)
+			<-time.After(110 * time.Millisecond)
+			stats = queue.Stats()
+			So(stats.Delayed, ShouldEqual, 8)
+			So(stats.Ready, ShouldEqual, 2)
+			readyAddedTestEnable = true
+			changedTestEnable = true
+			<-time.After(110 * time.Millisecond)
+			stats = queue.Stats()
+			So(stats.Delayed, ShouldEqual, 7)
+			So(stats.Ready, ShouldEqual, 3)
+			So(<-readyAddedChan, ShouldEqual, 3)
+			So(checkChanged(changedChan, "delay", "ready", 1), ShouldBeTrue)
+			readyAddedTestEnable = false
+			changedTestEnable = false
+
+			Convey("Once ready you should be able to reserve them in the expected order", func() {
+				item1, err := queue.Reserve()
+				So(err, ShouldBeNil)
+				So(item1, ShouldNotBeNil)
+				So(item1.Key, ShouldEqual, "key_0")
+				So(item1.reserves, ShouldEqual, 1)
+				item2, err := queue.Reserve()
+				So(err, ShouldBeNil)
+				So(item2, ShouldNotBeNil)
+				So(item2.Key, ShouldEqual, "key_1")
+				changedTestEnable = true
+				item3, err := queue.Reserve()
+				So(err, ShouldBeNil)
+				So(item3, ShouldNotBeNil)
+				So(item3.Key, ShouldEqual, "key_2")
+				So(checkChanged(changedChan, "ready", "run", 1), ShouldBeTrue)
+				changedTestEnable = false
+				item4, err := queue.Reserve()
+				So(err, ShouldNotBeNil)
+				So(item4, ShouldBeNil)
+				qerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNothingReady)
+
+				stats = queue.Stats()
+				So(stats.Items, ShouldEqual, 10)
+				So(stats.Delayed, ShouldEqual, 7)
+				So(stats.Ready, ShouldEqual, 0)
+				So(stats.Running, ShouldEqual, 3)
+
+				Convey("Once reserved you can release them", func() {
+					So(item1.state, ShouldEqual, "run")
+					So(item1.releases, ShouldEqual, 0)
+					changedTestEnable = true
+					err := queue.Release(item1.Key)
+					So(err, ShouldBeNil)
+					So(item1.state, ShouldEqual, "delay")
+					So(item1.releases, ShouldEqual, 1)
+					So(checkChanged(changedChan, "run", "delay", 1), ShouldBeTrue)
+					changedTestEnable = false
+
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 10)
+					So(stats.Delayed, ShouldEqual, 8)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 2)
+
+					Convey("You can get read-only item stats at any point", func() {
+						itemstats := item1.Stats()
+						So(itemstats.State, ShouldEqual, "delay")
+						So(itemstats.Releases, ShouldEqual, 1)
+					})
+
+					Convey("Once released, items become ready after their delay", func() {
+						<-time.After(50 * time.Millisecond)
+						So(item1.state, ShouldEqual, "delay")
+						changedTestEnable = true
+						<-time.After(60 * time.Millisecond)
+						So(item1.state, ShouldEqual, "ready")
+						stats = queue.Stats()
+						So(stats.Delayed, ShouldEqual, 6)
+						So(stats.Ready, ShouldEqual, 2)
+						So(checkChanged(changedChan, "delay", "ready", 1), ShouldBeTrue)
+						changedTestEnable = false
+
+						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
+							item1, err := queue.Reserve()
+							So(err, ShouldBeNil)
+							So(item1, ShouldNotBeNil)
+							So(item1.Key, ShouldEqual, "key_0")
+
+							err = queue.SetDelay(item1.Key, 20*time.Millisecond)
+							So(err, ShouldBeNil)
+							err = queue.Release(item1.Key)
+							So(err, ShouldBeNil)
+							So(item1.state, ShouldEqual, "delay")
+							So(item1.releases, ShouldEqual, 2)
+
+							<-time.After(10 * time.Millisecond)
+							So(item1.state, ShouldEqual, "delay")
+							<-time.After(20 * time.Millisecond)
+							So(item1.state, ShouldEqual, "ready")
+						})
+
+						Convey("Once reserved and released, the delay can be altered", func() {
+							item1, err := queue.Reserve()
+							So(err, ShouldBeNil)
+							So(item1, ShouldNotBeNil)
+							So(item1.Key, ShouldEqual, "key_0")
+							err = queue.Release(item1.Key)
+							So(err, ShouldBeNil)
+							So(item1.state, ShouldEqual, "delay")
+							So(item1.releases, ShouldEqual, 2)
+
+							err = queue.SetDelay(item1.Key, 30*time.Millisecond)
+							So(err, ShouldBeNil)
+
+							<-time.After(20 * time.Millisecond)
+							So(item1.state, ShouldEqual, "delay")
+							<-time.After(20 * time.Millisecond)
+							So(item1.state, ShouldEqual, "ready")
+						})
+					})
+				})
+
+				Convey("Or remove them", func() {
+					So(item2.state, ShouldEqual, "run")
+					changedTestEnable = true
+					err := queue.Remove(item2.Key)
+					So(err, ShouldBeNil)
+					So(item2.state, ShouldEqual, "removed")
+					So(checkChanged(changedChan, "run", "removed", 1), ShouldBeTrue)
+					changedTestEnable = false
+
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 9)
+					So(stats.Delayed, ShouldEqual, 7)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 2)
+
+					Convey("Releasing, touching, burying, kicking and updating fail after removal", func() {
+						err := queue.Release(item2.Key)
+						So(err, ShouldNotBeNil)
+						qerr, ok := err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+						err = queue.Touch(item2.Key)
+						So(err, ShouldNotBeNil)
+						qerr, ok = err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+						err = queue.Bury(item2.Key)
+						So(err, ShouldNotBeNil)
+						qerr, ok = err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+						err = queue.Kick(item2.Key)
+						So(err, ShouldNotBeNil)
+						qerr, ok = err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+						err = queue.Update(item2.Key, item2.Data, 0, 0*time.Second, 0*time.Second)
+						So(err, ShouldNotBeNil)
+						qerr, ok = err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+						err = queue.SetDelay(item2.Key, 0*time.Second)
+						So(err, ShouldNotBeNil)
+						qerr, ok = err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+					})
+				})
+
+				Convey("Or bury them", func() {
+					So(item3.state, ShouldEqual, "run")
+					So(item3.buries, ShouldEqual, 0)
+					changedTestEnable = true
+					err := queue.Bury(item3.Key)
+					So(err, ShouldBeNil)
+					So(item3.state, ShouldEqual, "bury")
+					So(item3.buries, ShouldEqual, 1)
+					So(checkChanged(changedChan, "run", "bury", 1), ShouldBeTrue)
+					changedTestEnable = false
+
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 10)
+					So(stats.Delayed, ShouldEqual, 7)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 2)
+					So(stats.Buried, ShouldEqual, 1)
+
+					Convey("Once buried you can kick them", func() {
+						So(item3.kicks, ShouldEqual, 0)
+						changedTestEnable = true
+						err := queue.Kick(item3.Key)
+						So(err, ShouldBeNil)
+						So(item3.state, ShouldEqual, "ready")
+						So(item3.kicks, ShouldEqual, 1)
+						So(checkChanged(changedChan, "bury", "ready", 1), ShouldBeTrue)
+						changedTestEnable = false
+
+						stats = queue.Stats()
+						So(stats.Items, ShouldEqual, 10)
+						So(stats.Delayed, ShouldEqual, 7)
+						So(stats.Ready, ShouldEqual, 1)
+						So(stats.Running, ShouldEqual, 2)
+						So(stats.Buried, ShouldEqual, 0)
+					})
+
+					Convey("You can also remove them whilst buried", func() {
+						changedTestEnable = true
+						err := queue.Remove("key_2")
+						So(err, ShouldBeNil)
+						So(checkChanged(changedChan, "bury", "removed", 1), ShouldBeTrue)
+						changedTestEnable = false
+
+						stats := queue.Stats()
+						So(stats.Items, ShouldEqual, 9)
+						So(stats.Delayed, ShouldEqual, 7)
+						So(stats.Ready, ShouldEqual, 0)
+						So(stats.Running, ShouldEqual, 2)
+						So(stats.Buried, ShouldEqual, 0)
+
+						err = queue.Remove("key_2")
+						So(err, ShouldNotBeNil)
+						qerr, ok := err.(Error)
+						So(ok, ShouldBeTrue)
+						So(qerr.Err, ShouldEqual, ErrNotFound)
+					})
+				})
+
+				Convey("If not buried you can't kick them", func() {
+					err := queue.Kick(item3.Key)
+					So(err, ShouldNotBeNil)
+					qerr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrNotBuried)
+					So(item3.state, ShouldEqual, "run")
+				})
+
+				Convey("If you do nothing they get auto-released to the ready queue", func() {
+					<-time.After(50 * time.Millisecond)
+					So(item1.state, ShouldEqual, "run")
+					changedTestEnable = true
+					<-time.After(60 * time.Millisecond)
+					So(item1.state, ShouldEqual, "ready")
+					So(item1.timeouts, ShouldEqual, 1)
+					stats = queue.Stats()
+					So(stats.Ready, ShouldEqual, 2)
+					So(stats.Running, ShouldEqual, 2)
+					So(checkChanged(changedChan, "run", "ready", 1), ShouldBeTrue)
+					changedTestEnable = false
+					<-time.After(110 * time.Millisecond)
+					So(item2.state, ShouldEqual, "ready")
+					stats = queue.Stats()
+					So(stats.Ready, ShouldEqual, 4)
+					So(stats.Running, ShouldEqual, 1)
+					<-time.After(110 * time.Millisecond)
+					So(item3.state, ShouldEqual, "ready")
+					stats = queue.Stats()
+					So(stats.Ready, ShouldEqual, 6)
+					So(stats.Running, ShouldEqual, 0)
+
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 10)
+					So(stats.Delayed, ShouldEqual, 4)
+				})
+
+				Convey("Though you can prevent auto-release by touching them", func() {
+					<-time.After(50 * time.Millisecond)
+					So(item1.state, ShouldEqual, "run")
+					err := queue.Touch(item1.Key)
+					So(err, ShouldBeNil)
+					<-time.After(60 * time.Millisecond)
+					So(item1.state, ShouldEqual, "run")
+					So(item1.timeouts, ShouldEqual, 0)
+					stats = queue.Stats()
+					So(stats.Ready, ShouldEqual, 1)
+					So(stats.Running, ShouldEqual, 3)
+					<-time.After(45 * time.Millisecond)
+					So(item1.state, ShouldEqual, "ready")
+					So(item1.timeouts, ShouldEqual, 1)
+					stats = queue.Stats()
+					// if the total elapsed time since the items were added to the queue goes over 500ms, we can get an extra 'Ready' item
+					So(stats.Ready, ShouldBeBetweenOrEqual, 2, 3)
+					So(stats.Running, ShouldEqual, 2)
+					<-time.After(60 * time.Millisecond)
+					So(item2.state, ShouldEqual, "ready")
+					stats = queue.Stats()
+					So(stats.Ready, ShouldEqual, 4)
+					So(stats.Running, ShouldEqual, 1)
+
+					err = queue.Touch("item_fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrNotFound)
+				})
+
+				Convey("Touching doesn't mess with the correct queue order", func() {
+					queue := New("new queue")
+					queue.Add("item1", "data", 0, 0*time.Millisecond, 50*time.Millisecond)
+					queue.Add("item2", "data", 0, 0*time.Millisecond, 52*time.Millisecond)
+					<-time.After(1 * time.Millisecond)
+					item1, _ := queue.Reserve()
+					So(item1.Key, ShouldEqual, "item1")
+					So(item1.state, ShouldEqual, "run")
+					item2, _ := queue.Reserve()
+					So(item2.Key, ShouldEqual, "item2")
+					So(item2.state, ShouldEqual, "run")
+
+					<-time.After(25 * time.Millisecond)
+
+					So(queue.runQueue.items[0].Key, ShouldEqual, "item1")
+					queue.Touch(item1.Key)
+					So(queue.runQueue.items[0].Key, ShouldEqual, "item2")
+
+					<-time.After(30 * time.Millisecond)
+
+					So(item1.state, ShouldEqual, "run")
+					So(item2.state, ShouldEqual, "ready")
+
+					<-time.After(25 * time.Millisecond)
+					So(item1.state, ShouldEqual, "ready")
+				})
+
+				Convey("Finally, you can destroy the queue, which doesn't let you do much else after", func() {
+					err := queue.Destroy()
+					So(err, ShouldBeNil)
+					stats := queue.Stats()
+					So(stats.Items, ShouldEqual, 0)
+					So(stats.Delayed, ShouldEqual, 0)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 0)
+					So(stats.Buried, ShouldEqual, 0)
+
+					_, err = queue.Add("fake", "data", 0, 0*time.Second, 0*time.Second)
+					So(err, ShouldNotBeNil)
+					qerr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					_, err = queue.Get("fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.Update("fake", "data", 0, 0*time.Second, 0*time.Second)
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					_, err = queue.Reserve()
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					_, err = queue.ReserveFiltered(func(data interface{}) bool { return true })
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.Touch("fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.Release("fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.Bury("fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.Kick("fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.Remove("fake")
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+					err = queue.SetDelay("fake", 0*time.Second)
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+
+					err = queue.Destroy()
+					So(err, ShouldNotBeNil)
+					qerr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(qerr.Err, ShouldEqual, ErrQueueClosed)
+				})
+			})
+
+			Convey("If not reserved you can't release, touch, bury or kick them", func() {
+				err := queue.Release("key_0")
+				So(err, ShouldNotBeNil)
+				qerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNotRunning)
+				err = queue.Touch("key_0")
+				So(err, ShouldNotBeNil)
+				qerr, ok = err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNotRunning)
+				err = queue.Bury("key_0")
+				So(err, ShouldNotBeNil)
+				qerr, ok = err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNotRunning)
+				err = queue.Kick("key_0")
+				So(err, ShouldNotBeNil)
+				qerr, ok = err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNotBuried)
+			})
+
+			Convey("But you can remove them when ready", func() {
+				err := queue.Remove("key_0")
+				So(err, ShouldBeNil)
+
+				stats := queue.Stats()
+				So(stats.Items, ShouldEqual, 9)
+				So(stats.Delayed, ShouldEqual, 7)
+				So(stats.Ready, ShouldEqual, 2)
+				So(stats.Running, ShouldEqual, 0)
+				So(stats.Buried, ShouldEqual, 0)
+
+				err = queue.Remove("key_0")
+				So(err, ShouldNotBeNil)
+				qerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNotFound)
+			})
+		})
+
+		Convey("If not ready you can't reserve them", func() {
+			item, err := queue.Reserve()
+			So(err, ShouldNotBeNil)
+			So(item, ShouldBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNothingReady)
+		})
+
+		Convey("But you can remove them when not ready", func() {
+			err := queue.Remove("key_0")
+			So(err, ShouldBeNil)
+
+			stats := queue.Stats()
+			So(stats.Items, ShouldEqual, 9)
+			So(stats.Delayed, ShouldEqual, 9)
+			So(stats.Ready, ShouldEqual, 0)
+			So(stats.Running, ShouldEqual, 0)
+			So(stats.Buried, ShouldEqual, 0)
+
+			err = queue.Remove("key_0")
+			So(err, ShouldNotBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNotFound)
+		})
+	})
+
+	Convey("Once an item been added to the queue", t, func() {
+		queue := New("myqueue")
+		item, _ := queue.Add("item1", "data", 0, 50*time.Millisecond, 50*time.Millisecond)
+
+		Convey("It can be removed from the queue immediately prior to it getting switched to the ready queue", func() {
+			<-time.After(49 * time.Millisecond)
+			queue.Remove("item1")
+			<-time.After(6 * time.Millisecond)
+			So(item.state, ShouldEqual, "removed")
+
+			stats := queue.Stats()
+			So(stats.Items, ShouldEqual, 0)
+			So(stats.Delayed, ShouldEqual, 0)
+			So(stats.Ready, ShouldEqual, 0)
+
+			Convey("Once removed it can't be updated", func() {
+				err := queue.Update("item1", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+				So(err, ShouldNotBeNil)
+				qerr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(qerr.Err, ShouldEqual, ErrNotFound)
+			})
+		})
+
+		Convey("The queue won't fall over if we manage to change the item's readyAt without updating the queue", func() {
+			<-time.After(45 * time.Millisecond)
+			item.readyAt = time.Now().Add(25 * time.Millisecond)
+			<-time.After(10 * time.Millisecond)
+			So(item.state, ShouldEqual, "delay")
+			<-time.After(25 * time.Millisecond)
+			So(item.state, ShouldEqual, "ready")
+		})
+
+		Convey("The delay can be updated even in the delay queue", func() {
+			<-time.After(25 * time.Millisecond)
+			err := queue.Update("item1", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+			So(err, ShouldBeNil)
+			<-time.After(30 * time.Millisecond)
+			So(item.state, ShouldEqual, "delay")
+			<-time.After(50 * time.Millisecond)
+			So(item.state, ShouldEqual, "ready")
+
+			Convey("When ready the priority can be updated", func() {
+				err := queue.Update("item1", "data", 1, 75*time.Millisecond, 50*time.Millisecond)
+				So(err, ShouldBeNil)
+				So(item.priority, ShouldEqual, 1)
+			})
+		})
+
+		Convey("Once reserved", func() {
+			<-time.After(55 * time.Millisecond)
+			queue.Reserve()
+
+			Convey("It can be removed from the queue immediately prior to it getting switched to the ready queue", func() {
+				<-time.After(49 * time.Millisecond)
+				queue.Remove("item1")
+				<-time.After(6 * time.Millisecond)
+				So(item.state, ShouldEqual, "removed")
+
+				stats := queue.Stats()
+				So(stats.Items, ShouldEqual, 0)
+				So(stats.Delayed, ShouldEqual, 0)
+				So(stats.Ready, ShouldEqual, 0)
+			})
+
+			Convey("The queue won't fall over if we manage to change the item's releaseAt without updating the queue", func() {
+				So(item.state, ShouldEqual, "run")
+				<-time.After(49 * time.Millisecond)
+				// the state should still be run at this point, but due to
+				// timing vagueries it might not be; be more forgiving to
+				// following tests by testing against current state instead of
+				// explicit 'run'
+				currentState := item.state
+				item.releaseAt = time.Now().Add(25 * time.Millisecond)
+				<-time.After(6 * time.Millisecond)
+				So(item.state, ShouldEqual, currentState)
+				<-time.After(25 * time.Millisecond)
+				So(item.state, ShouldEqual, "ready")
+			})
+
+			Convey("When running the ttr can be updated", func() {
+				<-time.After(25 * time.Millisecond)
+				err := queue.Update("item1", "data", 0, 50*time.Millisecond, 75*time.Millisecond)
+				So(err, ShouldBeNil)
+				<-time.After(30 * time.Millisecond)
+				So(item.state, ShouldEqual, "run")
+				<-time.After(50 * time.Millisecond)
+				So(item.state, ShouldEqual, "ready")
+			})
+		})
+	})
+
+	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
+		queue := New("1000 queue")
+		type testdata struct {
+			ID int
+		}
+		var dataids []int
+		for i := 0; i < 1000; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			dataid := rand.Intn(999)
+			dataids = append(dataids, dataid)
+			_, err := queue.Add(key, &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second)
+			So(err, ShouldBeNil)
+		}
+
+		Convey("They are immediately all ready", func() {
+			stats := queue.Stats()
+			So(stats.Items, ShouldEqual, 1000)
+			So(stats.Delayed, ShouldEqual, 0)
+			So(stats.Ready, ShouldEqual, 1000)
+			So(stats.Running, ShouldEqual, 0)
+			So(stats.Buried, ShouldEqual, 0)
+
+			Convey("And can all be reserved", func() {
+				for i := 0; i < 1000; i++ {
+					item, err := queue.Reserve()
+					So(err, ShouldBeNil)
+					So(item, ShouldNotBeNil)
+					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
+				}
+
+				Convey("And when released are immediately ready", func() {
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 1000)
+					So(stats.Delayed, ShouldEqual, 0)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 1000)
+					err := queue.Release("key_0")
+					So(err, ShouldBeNil)
+					stats = queue.Stats()
+					So(stats.Items, ShouldEqual, 1000)
+					So(stats.Delayed, ShouldEqual, 0)
+					So(stats.Ready, ShouldEqual, 1)
+					So(stats.Running, ShouldEqual, 999)
+				})
+			})
+		})
+
+		Convey("They can be reserved with a filter", func() {
+			item, err := queue.ReserveFiltered(func(data interface{}) bool {
+				td := data.(*testdata)
+				if td.ID == 1001 {
+					return true
+				}
+				return false
+			})
+			So(err, ShouldNotBeNil)
+			So(item, ShouldBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNothingReady)
+
+			sort.Ints(dataids)
+			for _, dataid := range dataids {
+				item, err := queue.ReserveFiltered(func(data interface{}) bool {
+					td := data.(*testdata)
+					if td.ID == dataid {
+						return true
+					}
+					return false
+				})
+				So(err, ShouldBeNil)
+				So(item, ShouldNotBeNil)
+				So(item.Data.(*testdata).ID, ShouldEqual, dataid)
+			}
+		})
+	})
+
+	Convey("Once a thousand items with a small delay have been added to the queue", t, func() {
+		queue := New("1000 queue")
+		t := time.Now()
+		for i := 0; i < 1000; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			_, err := queue.Add(key, "data", 0, 100*time.Millisecond, 30*time.Second)
+			So(err, ShouldBeNil)
+		}
+		e := time.Since(t)
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 1000)
+		if e < 100*time.Millisecond {
+			So(stats.Delayed, ShouldEqual, 1000)
+			So(stats.Ready, ShouldEqual, 0)
+		}
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+
+		<-time.After(110 * time.Millisecond)
+
+		Convey("They are all ready after that delay", func() {
+			stats := queue.Stats()
+			So(stats.Items, ShouldEqual, 1000)
+			So(stats.Delayed, ShouldEqual, 0)
+			So(stats.Ready, ShouldEqual, 1000)
+			So(stats.Running, ShouldEqual, 0)
+			So(stats.Buried, ShouldEqual, 0)
+
+			Convey("And can all be reserved", func() {
+				for i := 0; i < 1000; i++ {
+					item, err := queue.Reserve()
+					So(err, ShouldBeNil)
+					So(item, ShouldNotBeNil)
+					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
+				}
+			})
+		})
+	})
+
+	Convey("You can add many items to the queue in one go", t, func() {
+		q := New("myqueue")
+
+		item, err := q.ReserveFiltered(func(data interface{}) bool {
+			return true
+		})
+		So(err, ShouldNotBeNil)
+		So(item, ShouldBeNil)
+		qerr, ok := err.(Error)
+		So(ok, ShouldBeTrue)
+		So(qerr.Err, ShouldEqual, ErrNothingReady)
+
+		var itemdefs []*ItemDef
+		for i := 0; i < 10; i++ {
+			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 100 * time.Millisecond, 1 * time.Minute})
+		}
+
+		added, dups, err := q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 10)
+		So(dups, ShouldEqual, 0)
+
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 0)
+		So(dups, ShouldEqual, 10)
+
+		for i := 10; i < 20; i++ {
+			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 50 * time.Millisecond, 1 * time.Minute})
+		}
+
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 10)
+		So(dups, ShouldEqual, 10)
+
+		itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", 99), "data", 0, 0 * time.Millisecond, 1 * time.Minute})
+		added, dups, err = q.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+		So(dups, ShouldEqual, 20)
+
+		Convey("It doesn't work if the queue is closed", func() {
+			q.Destroy()
+			added, dups, err = q.AddMany(itemdefs)
+			So(err, ShouldNotBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrQueueClosed)
+		})
+	})
+}
+
+func checkChanged(changedChan chan *changedStruct, from string, to string, count int) (ok bool) {
+	loops := 0
+	for cs := range changedChan {
+		loops++
+		if loops > 10 {
+			break
+		}
+		if cs.from != from {
+			continue
+		}
+		if cs.to != to {
+			continue
+		}
+		if cs.count == count {
+			ok = true
+			break
+		}
+	}
+	return
+}
