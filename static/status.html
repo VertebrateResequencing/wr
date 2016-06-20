@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>VRPipe Status</title>
+        
+        <!-- jQuery for various utility, and needed by bootstrap.js -->
+        <script src="/js/jquery-2.2.4.min.js"></script>
+        
+        <!-- Bootstrap for presentation and styling -->
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="/css/bootstrap-3.3.6.min.css">
+        <script src="/js/bootstrap-3.3.6.min.js"></script>
+        
+        <!-- Knockout for event handling -->
+        <script src="/js/knockout-3.4.0.min.js"></script>
+        
+        <!-- Some of our own general helper functions -->
+        <script src="/js/vrpipe-0.0.1.js"></script>
+        <link rel="stylesheet" href="/css/vrpipe-0.0.1.css">
+    </head>
+    <body>
+    
+        <div id="nav" class="navbar navbar-default" role="navigation">
+            <div class="container">
+                <div class="navbar-header">
+                    <span class="navbar-brand">VRPipe Status</span>
+                </div>
+            </div>
+        </div>
+        
+        <div id="status" class="container">
+            <div class="row">
+                <div class="col-xs-4">
+                    <form>
+                        <div class="input-group">
+                            <span class="input-group-addon" data-toggle="tooltip" data-container="body" title="Enter an identifier to also see that status of all commands added with that identifier.">identifier</span>
+                            <input type="text" class="form-control" data-bind="value: cmdId">
+                            <span class="input-group-btn">
+                                <button class="btn btn-default" type="submit"><span class="glyphicon glyphicon-play-circle"></span></button>
+                            </span>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <div id="statuserrors" data-bind="foreach: statuserror">
+                <div class="alert alert-danger fade in">
+                    <p data-bind="text: $data"></p>
+                </div>
+            </div>
+            
+             <div id="status_center_container" style="width: 100%;" class="well" data-bind="loadingWhen: aquiringstatus().length">
+                <div id="status_center" style="margin: 0 auto;">
+                    <div id="status_current">
+                        <p>hello</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="stream">
+                <form>
+                    <label for="repgroupField">Group</label>
+                    <input type="text" id="repgroupField" /> <button type="button" id="requestRep">Send</button>
+                    <br>
+                    <label for="jobkeyField">Key</label>
+                    <input type="text" id="jobkeyField" /> <button type="button" id="requestJobkey">Send</button>
+                </form>
+            </div>
+            
+            <hr>
+            
+            <footer id="footer">
+                <small>&copy; 2016 Genome Research Limited.</small>
+            </footer>
+        </div>
+        
+        <script type="text/javascript">
+            // turn on bootstrap tooltips and popovers
+            $('[data-toggle="tooltip"]').tooltip({'placement': 'top'});
+            $('[data-toggle="popover"]').popover();
+            $('html').on('click', function(e) {
+                if (typeof $(e.target).data('original-title') == 'undefined' && !$(e.target).parents().is('.popover.in')) {
+                    $('[data-original-title]').popover('hide');
+                }
+            });
+            $(document).keyup(function (event) {
+                if (event.which === 27) {
+                    $('[data-original-title]').popover('hide');
+                }
+            });
+            
+            // viewmodel for displaying status
+            function StatusViewModel() {
+                var self = this;
+                self.aquiringstatus = ko.observableArray();
+                self.statuserror = ko.observableArray();
+                self.cmdId = ko.observable();
+            }
+            var svm = new StatusViewModel();
+            ko.applyBindings(svm, $('#status')[0]);
+        </script>
+        
+        <script type="text/javascript">
+            $(function () {
+                var ws;
+
+                if (window.WebSocket === undefined) {
+                    $("#stream").append("Your browser does not support WebSockets");
+                    return;
+                } else {
+                    ws = initWS();
+                }
+
+                function initWS() {
+                    var socket = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws"),
+                        container = $("#stream")
+                    socket.onopen = function() {
+                        container.append("<p>Socket is open</p>");
+                        ws.send(JSON.stringify({ Request: "current" }));
+                    };
+                    socket.onmessage = function (e) {
+                        container.append("<p>Job changed state:" + e.data + "</p>");
+                    }
+                    socket.onclose = function () {
+                        container.append("<p>Socket closed</p>");
+                    }
+                    return socket;
+                }
+
+                $("#requestRep").click(function (e) {
+                    e.preventDefault();
+                    ws.send(JSON.stringify({ RepGroup: $("#repgroupField").val() }));
+                });
+                
+                $("#requestJobkey").click(function (e) {
+                    e.preventDefault();
+                    ws.send(JSON.stringify({ Key: $("#jobkeyField").val() }));
+                });
+            });
+        </script>
+    </body>
+</html>
