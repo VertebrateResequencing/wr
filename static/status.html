@@ -31,12 +31,40 @@
         </div>
         
         <div id="status" class="container">
-            <div class="row">
-                <div class="col-xs-4">
-                    <form>
+            <div id="statuserrors" data-bind="foreach: statuserror">
+                <div class="alert alert-danger fade in">
+                    <p data-bind="text: $data"></p>
+                </div>
+            </div>
+            
+            <div style="width: 100%;" class="well well-sm top-margin">
+                <div style="margin: 0 auto;">
+                    <h5 style="margin: 0; padding: 0">Live: <span data-bind="text: inflight.total"></span> jobs in flight</h5>
+                    <div class="top-margin" data-bind="if: inflight.total() > 0">
+                        <div class="progress" style="margin-bottom: 0">
+                            <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
+                                <span data-bind="text: inflight.delay"></span> delayed
+                            </div>
+                            <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
+                                <span data-bind="text: inflight.ready"></span> pending
+                            </div>
+                            <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
+                                <span data-bind="text: inflight.run"></span> running
+                            </div>
+                            <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
+                                <span data-bind="text: inflight.bury"></span> buried
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row bottom-margin">
+                <div class="col-xs-5">
+                    <form data-bind="submit: requestRepGroup">
                         <div class="input-group">
-                            <span class="input-group-addon" data-toggle="tooltip" data-container="body" title="Enter an identifier to also see that status of all commands added with that identifier.">identifier</span>
-                            <input type="text" class="form-control" data-bind="value: cmdId">
+                            <span class="input-group-addon" data-toggle="tooltip" data-container="body" title="Enter an identifier to also see the status of all commands added with that identifier.">identifier</span>
+                            <input type="text" class="form-control" data-bind="value: repGroup">
                             <span class="input-group-btn">
                                 <button class="btn btn-default" type="submit"><span class="glyphicon glyphicon-play-circle"></span></button>
                             </span>
@@ -45,28 +73,31 @@
                 </div>
             </div>
             
-            <div id="statuserrors" data-bind="foreach: statuserror">
-                <div class="alert alert-danger fade in">
-                    <p data-bind="text: $data"></p>
-                </div>
-            </div>
-            
-             <div id="status_center_container" style="width: 100%;" class="well" data-bind="loadingWhen: aquiringstatus().length">
-                <div id="status_center" style="margin: 0 auto;">
-                    <div id="status_current">
-                        <p>hello</p>
+            <div data-bind="foreach: repGroups.sort(function(l,r) { l.id > r.id ? 1 : -1 })">
+                <div style="width: 100%;" class="well well-sm">
+                    <div style="margin: 0 auto;">
+                        <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span>: <span data-bind="text: total"></span> jobs</h5>
+                        <div class="top-margin" data-bind="if: total() > 0">
+                            <div class="progress" style="margin-bottom: 0">
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: delayPct() + '%' }">
+                                    <span data-bind="text: delay"></span> delayed
+                                </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: readyPct() + '%' }">
+                                    <span data-bind="text: ready"></span> pending
+                                </div>
+                                <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: runPct() + '%' }">
+                                    <span data-bind="text: run"></span> running
+                                </div>
+                                <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: buryPct() + '%' }">
+                                    <span data-bind="text: bury"></span> buried
+                                </div>
+                                <div class="progress-bar progress-bar-striped progress-bar-success" role="progressbar" data-bind="style: { width: completePct() + '%' }">
+                                    <span data-bind="text: complete"></span> complete
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
-            
-            <div id="stream">
-                <form>
-                    <label for="repgroupField">Group</label>
-                    <input type="text" id="repgroupField" /> <button type="button" id="requestRep">Send</button>
-                    <br>
-                    <label for="jobkeyField">Key</label>
-                    <input type="text" id="jobkeyField" /> <button type="button" id="requestJobkey">Send</button>
-                </form>
             </div>
             
             <hr>
@@ -96,13 +127,174 @@
                 var self = this;
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
-                self.cmdId = ko.observable();
+                self.repGroup = ko.observable();
+                
+                self.inflight = {
+                    'delay': ko.observable(0),
+                    'ready': ko.observable(0),
+                    'run': ko.observable(0),
+                    'bury': ko.observable(0),
+                    'delayPct': ko.observable(0),
+                    'readyPct': ko.observable(0),
+                    'runPct': ko.observable(0),
+                    'buryPct': ko.observable(0),
+                    'old_total': 0,
+                    'delay_compute': 0
+                };
+                self.inflight['total'] = ko.computed(function() {
+                    if (self.inflight['delay_compute']) {
+                        return self.inflight['old_total'];
+                    }
+                    
+                    total = self.inflight['delay']() + self.inflight['ready']() + self.inflight['run']() + self.inflight['bury']();
+                    if (total > 0) {
+                        multiplier = 100 / total;
+                        self.inflight['delayPct'](Math.round(multiplier * self.inflight['delay']()));
+                        self.inflight['readyPct'](Math.round(multiplier * self.inflight['ready']()));
+                        self.inflight['runPct'](Math.round(multiplier * self.inflight['run']()));
+                        self.inflight['buryPct'](Math.round(multiplier * self.inflight['bury']()));
+                    }
+                        
+                    self.inflight['old_total'] = total;
+                    return total;
+                });
+                self.rateLimit = 1000;
+                self.inflight['delay'].extend({ rateLimit: self.rateLimit });
+                self.inflight['ready'].extend({ rateLimit: self.rateLimit });
+                self.inflight['run'].extend({ rateLimit: self.rateLimit });
+                self.inflight['bury'].extend({ rateLimit: self.rateLimit });
+                
+                self.repGroups = ko.observableArray();
+                self.repGroupLookup = {};
+                self.omcount = 0;
+                
+                // set up the websocket
+                if (window.WebSocket === undefined) {
+                    self.statuserror.push("Your browser does not support WebSockets");
+                } else {
+                    self.ws = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws");
+                    self.ws.onopen = function() {
+                        self.ws.send(JSON.stringify({ Request: "current" }));
+                    };
+                    self.ws.onclose = function () {
+                        self.statuserror.push("Connection to the manager has been lost!");
+                        //*** we could poll and try to re-establish the connection...
+                    }
+                    self.ws.onmessage = function (e) {
+                        json = JSON.parse(e.data)
+                        if (json.hasOwnProperty('FromState')) {
+                            // state numbers have changed
+                            rg = json['RepGroup']
+                            var repgroup
+                            if (rg == "+all+") {
+                                repgroup = self.inflight;
+                            } else if (self.repGroupLookup.hasOwnProperty(rg)) {
+                                repgroup = self.repGroups()[self.repGroupLookup[rg]];
+                            } else {
+                                repgroup = {
+                                    'id': rg,
+                                    'delay': ko.observable(0),
+                                    'ready': ko.observable(0),
+                                    'run': ko.observable(0),
+                                    'bury': ko.observable(0),
+                                    'complete': ko.observable(0),
+                                    'delayPct': ko.observable(0),
+                                    'readyPct': ko.observable(0),
+                                    'runPct': ko.observable(0),
+                                    'buryPct': ko.observable(0),
+                                    'completePct': ko.observable(0),
+                                    'old_total': 0,
+                                    'delay_compute': 0
+                                };
+                                repgroup['total'] = ko.computed(function() {
+                                    if (repgroup['delay_compute']) {
+                                        return repgroup['old_total'];
+                                    }
+                                    
+                                    total = repgroup['delay']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['complete']();
+                                    if (total > 0) {
+                                        multiplier = 100 / total;
+                                        repgroup['delayPct'](Math.round(multiplier * repgroup['delay']()));
+                                        repgroup['readyPct'](Math.round(multiplier * repgroup['ready']()));
+                                        repgroup['runPct'](Math.round(multiplier * repgroup['run']()));
+                                        repgroup['buryPct'](Math.round(multiplier * repgroup['bury']()));
+                                        repgroup['completePct'](Math.round(multiplier * repgroup['complete']()));
+                                    }
+                                        
+                                    repgroup['old_total'] = total;
+                                    return total;
+                                });
+                                repgroup['delay'].extend({ rateLimit: self.rateLimit });
+                                repgroup['ready'].extend({ rateLimit: self.rateLimit });
+                                repgroup['run'].extend({ rateLimit: self.rateLimit });
+                                repgroup['bury'].extend({ rateLimit: self.rateLimit });
+                                repgroup['complete'].extend({ rateLimit: self.rateLimit });
+                                
+                                self.repGroups.push(repgroup);
+                                self.repGroupLookup[rg] = self.repGroups().length - 1;
+                            }
+                            
+                            var from, to
+                            switch(json['FromState']) {
+                                case 'delay':
+                                    from = repgroup['delay'];
+                                    break;
+                                case 'ready':
+                                    from = repgroup['ready'];
+                                    break;
+                                case 'run':
+                                    from = repgroup['run'];
+                                    break;
+                                case 'bury':
+                                    from = repgroup['bury'];
+                                    break;
+                            }
+                            
+                            switch(json['ToState']) {
+                                case 'delay':
+                                    to = repgroup['delay'];
+                                    break;
+                                case 'ready':
+                                    to = repgroup['ready'];
+                                    break;
+                                case 'run':
+                                    to = repgroup['run'];
+                                    break;
+                                case 'bury':
+                                    to = repgroup['bury'];
+                                    break;
+                                case 'complete':
+                                    if (rg != "+all+") {
+                                        to = repgroup['complete'];
+                                    }
+                                    break;
+                            }
+                            
+                            repgroup['delay_compute'] = to ? 1 : 0;
+                            if (from) {
+                                from(from() - json['Count'])
+                            }
+                            repgroup['delay_compute'] = 0;
+                            if (to) {
+                                to(to() + json['Count'])
+                            }
+                        } else if (json.hasOwnProperty('State')) {
+                            // a job changed state
+                        }
+                    }
+                }
+                
+                // act if the user requests a repGroup
+                self.requestRepGroup = function(formElement) {
+                    console.log("requesting rep group " + self.repGroup())
+                    self.ws.send(JSON.stringify({ RepGroup: self.repGroup() }));
+                };
             }
             var svm = new StatusViewModel();
             ko.applyBindings(svm, $('#status')[0]);
         </script>
         
-        <script type="text/javascript">
+        <!-- <script type="text/javascript">
             $(function () {
                 var ws;
 
@@ -139,6 +331,6 @@
                     ws.send(JSON.stringify({ Key: $("#jobkeyField").val() }));
                 });
             });
-        </script>
+        </script> -->
     </body>
 </html>

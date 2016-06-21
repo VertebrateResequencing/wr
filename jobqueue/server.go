@@ -471,10 +471,23 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						failed := false
 						for _, job := range jobs {
 							status := jstatus{
-								Key:      jobKey(job),
-								RepGroup: job.RepGroup,
-								Cmd:      job.Cmd,
-								State:    job.State,
+								Key:            jobKey(job),
+								RepGroup:       job.RepGroup,
+								Cmd:            job.Cmd,
+								State:          job.State,
+								Cwd:            job.Cwd,
+								ExpectedMemory: job.Memory,
+								ExpectedTime:   job.Time.Seconds(),
+								CPUs:           job.CPUs,
+								Peakmem:        job.Peakmem,
+								Exited:         job.Exited,
+								Exitcode:       job.Exitcode,
+								FailReason:     job.FailReason,
+								Pid:            job.Pid,
+								Host:           job.Host,
+								Walltime:       job.Walltime.Seconds(),
+								CPUtime:        job.CPUtime.Seconds(),
+								Attempts:       job.Attempts,
 							}
 							err = conn.WriteJSON(status)
 							if err != nil {
@@ -649,8 +662,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 					s.sgcmutex.Unlock()
 				}
-
-				s.statusCaster.Send(&jstatus{Key: jobKey(job), RepGroup: job.RepGroup, Cmd: job.Cmd, State: "ready"})
 			}
 
 			if s.rc != "" {
@@ -687,6 +698,41 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 			for group, count := range groups {
 				s.statusCaster.Send(&jstateCount{group, from, to, count})
+			}
+
+			// also send out most of the details about each changed job, in case
+			// the user is looking at a particular repgroup in-depth
+			// *** would be better if clients could subscribe to a repgroup and
+			// state, and we only send this out if any client wants these
+			for _, datum := range data {
+				job := datum.(*Job)
+				var walltime float64
+				if !job.starttime.IsZero() {
+					if job.endtime.IsZero() || to == "ready" {
+						walltime = time.Since(job.starttime).Seconds()
+					} else {
+						walltime = job.endtime.Sub(job.starttime).Seconds()
+					}
+				}
+				s.statusCaster.Send(&jstatus{
+					Key:            jobKey(job),
+					RepGroup:       job.RepGroup,
+					Cmd:            job.Cmd,
+					State:          to,
+					Cwd:            job.Cwd,
+					ExpectedMemory: job.Memory,
+					ExpectedTime:   job.Time.Seconds(),
+					CPUs:           job.CPUs,
+					Peakmem:        job.Peakmem,
+					Exited:         job.Exited,
+					Exitcode:       job.Exitcode,
+					FailReason:     job.FailReason,
+					Pid:            job.Pid,
+					Host:           job.Host,
+					Walltime:       walltime,
+					CPUtime:        job.CPUtime.Seconds(),
+					Attempts:       job.Attempts,
+				})
 			}
 		})
 	}
