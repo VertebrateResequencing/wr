@@ -28,9 +28,10 @@ import (
 )
 
 type subQueue struct {
-	mutex   sync.RWMutex
-	items   []*Item
-	sqIndex int
+	mutex     sync.RWMutex
+	items     []*Item
+	sqIndex   int
+	needsSort bool
 }
 
 // create a new subQueue that can hold *Items in "priority" order. sqIndex is
@@ -47,6 +48,7 @@ func (q *subQueue) push(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	heap.Push(q, item)
+	q.needsSort = true
 }
 
 // pop removes the next item from the queue according to its "priority"
@@ -79,6 +81,7 @@ func (q *subQueue) update(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
+	q.needsSort = true
 }
 
 // empty clears out a queue, setting it back to its new state
@@ -100,7 +103,10 @@ func (q *subQueue) all() (items []*Item) {
 	// heap (?), so we must trigger a sort manually. We create a new slice for
 	// them to avoid issues with items being added to q.items while the user
 	// is looking through q.items.
-	sort.Sort(q)
+	if q.needsSort {
+		sort.Sort(q)
+		q.needsSort = false
+	}
 	for _, item := range q.items {
 		items = append(items, item)
 	}

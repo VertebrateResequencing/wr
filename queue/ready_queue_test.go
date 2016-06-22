@@ -101,7 +101,7 @@ func TestReadyQueue(t *testing.T) {
 
 		So(queue.Len(), ShouldEqual, 10)
 
-		Convey("all should return items in priority and then fifo order", func() {
+		Convey("all() should return items in priority and then fifo order", func() {
 			all := queue.all()
 			for i := 0; i < 10; i++ {
 				item := all[i]
@@ -113,6 +113,36 @@ func TestReadyQueue(t *testing.T) {
 				}
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
 			}
+
+			// test twice in a row because we have an optimisation to not
+			// re-sort unnecessarily
+			all = queue.all()
+			for i := 0; i < 10; i++ {
+				item := all[i]
+				p := 9 - i
+				if i == 4 {
+					p--
+				} else if i == 5 {
+					p++
+				}
+				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
+			}
+
+			Convey("all() still returns items in the correct order after pushing a new item", func() {
+				queue.push(newItem("key_10", "data", uint8(10), 0*time.Second, 0*time.Second))
+
+				all = queue.all()
+				for i := 0; i < 11; i++ {
+					item := all[i]
+					p := 10 - i
+					if i == 5 {
+						p--
+					} else if i == 6 {
+						p++
+					}
+					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
+				}
+			})
 		})
 
 		Convey("Popping them should remove them in priority and then fifo order", func() {
