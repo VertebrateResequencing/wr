@@ -39,20 +39,20 @@
             
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
-                    <h5 style="margin: 0; padding: 0">Live: <span data-bind="text: inflight.total"></span> jobs in flight</h5>
+                    <h5 style="margin: 0; padding: 0">Live: <span data-bind="text: inflight.total"></span> incomplete jobs</h5>
                     <div class="top-margin" data-bind="if: inflight.total() > 0">
                         <div class="progress" style="margin-bottom: 0">
                             <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
-                                <span data-bind="text: inflight.delay"></span> delayed
+                                <!-- ko if: inflight.delayPct() > 5 --><span data-bind="text: inflight.delay"></span> delayed<!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
-                                <span data-bind="text: inflight.ready"></span> pending
+                                <!-- ko if: inflight.readyPct() > 5 --><span data-bind="text: inflight.ready"></span> pending<!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
-                                <span data-bind="text: inflight.run"></span> running
+                                <!-- ko if: inflight.runPct() > 5 --><span data-bind="text: inflight.run"></span> running<!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
-                                <span data-bind="text: inflight.bury"></span> buried
+                                <!-- ko if: inflight.buryPct() > 5 --><span data-bind="text: inflight.bury"></span> buried<!-- /ko -->
                             </div>
                         </div>
                     </div>
@@ -80,19 +80,19 @@
                         <div class="top-margin" data-bind="if: total() > 0">
                             <div class="progress" style="margin-bottom: 0">
                                 <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: delayPct() + '%' }">
-                                    <span data-bind="text: delay"></span> delayed
+                                    <!-- ko if: delayPct() > 5 --><span data-bind="text: delay"></span> delayed<!-- /ko -->
                                 </div>
                                 <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: readyPct() + '%' }">
-                                    <span data-bind="text: ready"></span> pending
+                                    <!-- ko if: readyPct() > 5 --><span data-bind="text: ready"></span> pending<!-- /ko -->
                                 </div>
                                 <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: runPct() + '%' }">
-                                    <span data-bind="text: run"></span> running
+                                    <!-- ko if: runPct() > 5 --><span data-bind="text: run"></span> running<!-- /ko -->
                                 </div>
                                 <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: buryPct() + '%' }">
-                                    <span data-bind="text: bury"></span> buried
+                                    <!-- ko if: buryPct() > 5 --><span data-bind="text: bury"></span> buried<!-- /ko -->
                                 </div>
                                 <div class="progress-bar progress-bar-striped progress-bar-success" role="progressbar" data-bind="style: { width: completePct() + '%' }">
-                                    <span data-bind="text: complete"></span> complete
+                                    <!-- ko if: completePct() > 5 --><span data-bind="text: complete"></span> complete<!-- /ko -->
                                 </div>
                             </div>
                         </div>
@@ -108,19 +108,8 @@
         </div>
         
         <script type="text/javascript">
-            // turn on bootstrap tooltips and popovers
+            // turn on bootstrap tooltips
             $('[data-toggle="tooltip"]').tooltip({'placement': 'top'});
-            $('[data-toggle="popover"]').popover();
-            $('html').on('click', function(e) {
-                if (typeof $(e.target).data('original-title') == 'undefined' && !$(e.target).parents().is('.popover.in')) {
-                    $('[data-original-title]').popover('hide');
-                }
-            });
-            $(document).keyup(function (event) {
-                if (event.which === 27) {
-                    $('[data-original-title]').popover('hide');
-                }
-            });
             
             // viewmodel for displaying status
             function StatusViewModel() {
@@ -146,23 +135,25 @@
                         return self.inflight['old_total'];
                     }
                     
-                    total = self.inflight['delay']() + self.inflight['ready']() + self.inflight['run']() + self.inflight['bury']();
+                    var total = self.inflight['delay']() + self.inflight['ready']() + self.inflight['run']() + self.inflight['bury']();
                     if (total > 0) {
-                        multiplier = 100 / total;
-                        self.inflight['delayPct'](Math.round(multiplier * self.inflight['delay']()));
-                        self.inflight['readyPct'](Math.round(multiplier * self.inflight['ready']()));
-                        self.inflight['runPct'](Math.round(multiplier * self.inflight['run']()));
-                        self.inflight['buryPct'](Math.round(multiplier * self.inflight['bury']()));
+                        var multiplier = 100 / total;
+                        var rounded = percentRounder([(multiplier * self.inflight['delay']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['run']()), (multiplier * self.inflight['bury']())]);
+                        self.inflight['delayPct'](rounded[0]);
+                        self.inflight['readyPct'](rounded[1]);
+                        self.inflight['runPct'](rounded[2]);
+                        self.inflight['buryPct'](rounded[3]);
                     }
                         
                     self.inflight['old_total'] = total;
                     return total;
                 });
-                self.rateLimit = 1000;
+                self.rateLimit = 350; // this is a sweetspot that seems to avoid flickering of the progress bars, at least in Safari
                 self.inflight['delay'].extend({ rateLimit: self.rateLimit });
                 self.inflight['ready'].extend({ rateLimit: self.rateLimit });
                 self.inflight['run'].extend({ rateLimit: self.rateLimit });
                 self.inflight['bury'].extend({ rateLimit: self.rateLimit });
+                self.inflight['total'].extend({ rateLimit: self.rateLimit });
                 
                 self.repGroups = ko.observableArray();
                 self.repGroupLookup = {};
@@ -211,14 +202,34 @@
                                         return repgroup['old_total'];
                                     }
                                     
-                                    total = repgroup['delay']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['complete']();
+                                    var total = repgroup['delay']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['complete']();
                                     if (total > 0) {
-                                        multiplier = 100 / total;
-                                        repgroup['delayPct'](Math.round(multiplier * repgroup['delay']()));
-                                        repgroup['readyPct'](Math.round(multiplier * repgroup['ready']()));
-                                        repgroup['runPct'](Math.round(multiplier * repgroup['run']()));
-                                        repgroup['buryPct'](Math.round(multiplier * repgroup['bury']()));
-                                        repgroup['completePct'](Math.round(multiplier * repgroup['complete']()));
+                                        var multiplier = 100 / total;
+                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['complete']())]);
+                                        
+                                        // repgroup['delayPct'](rounded[0]);
+                                        // repgroup['readyPct'](rounded[1]);
+                                        // repgroup['runPct'](rounded[2]);
+                                        // repgroup['buryPct'](rounded[3]);
+                                        // repgroup['completePct'](rounded[4]);
+                                        
+                                        // to avoid the percentage bars
+                                        // totalling over 100 at any point in
+                                        // time, do all decrementing updates
+                                        // first; not sure if this really helps
+                                        // avoid some instances of flickering,
+                                        // but it might...
+                                        var keys = ['delayPct', 'readyPct', 'runPct', 'buryPct', 'completePct'];
+                                        for (var i = 0; i < 5; i++) {
+                                            if (repgroup[keys[i]]() > rounded[i]) {
+                                                repgroup[keys[i]](rounded[i]);
+                                            }
+                                        }
+                                        for (var i = 0; i < 5; i++) {
+                                            if (repgroup[keys[i]]() < rounded[i]) {
+                                                repgroup[keys[i]](rounded[i]);
+                                            }
+                                        }
                                     }
                                         
                                     repgroup['old_total'] = total;
@@ -229,6 +240,7 @@
                                 repgroup['run'].extend({ rateLimit: self.rateLimit });
                                 repgroup['bury'].extend({ rateLimit: self.rateLimit });
                                 repgroup['complete'].extend({ rateLimit: self.rateLimit });
+                                repgroup['total'].extend({ rateLimit: self.rateLimit });
                                 
                                 self.repGroups.push(repgroup);
                                 self.repGroupLookup[rg] = self.repGroups().length - 1;
