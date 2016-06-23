@@ -128,20 +128,43 @@ func TestReadyQueue(t *testing.T) {
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
 			}
 
-			Convey("all() still returns items in the correct order after pushing a new item", func() {
+			Convey("all() still returns items in the correct order after pushing some new items", func() {
+				queue.push(newItem("key_13", "data", uint8(10), 0*time.Second, 0*time.Second))
+				removeItem := newItem("key_12", "data", uint8(10), 0*time.Second, 0*time.Second)
+				queue.push(removeItem)
+				queue.push(newItem("key_11", "data", uint8(10), 0*time.Second, 0*time.Second))
 				queue.push(newItem("key_10", "data", uint8(10), 0*time.Second, 0*time.Second))
 
 				all = queue.all()
-				for i := 0; i < 11; i++ {
+				for i := 0; i < 14; i++ {
 					item := all[i]
-					p := 10 - i
-					if i == 5 {
+					p := 13 - i
+					if i == 8 {
 						p--
-					} else if i == 6 {
+					} else if i == 9 {
 						p++
 					}
 					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
 				}
+
+				Convey("all() still returns items in the correct order after removing an item", func() {
+					queue.remove(removeItem)
+
+					all = queue.all()
+					for i := 0; i < 13; i++ {
+						item := all[i]
+						p := 13 - i
+						if i > 0 {
+							p--
+						}
+						if i == 7 {
+							p--
+						} else if i == 8 {
+							p++
+						}
+						So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
+					}
+				})
 			})
 		})
 
