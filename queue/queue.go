@@ -479,23 +479,33 @@ func (queue *Queue) ReserveFiltered(filter ReserveFilter) (item *Item, err error
 
 	if queue.closed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrQueueClosed}
+		err = Error{queue.Name, "ReserveFiltered", "", ErrQueueClosed}
 		return
 	}
 
 	// go through the ready queue in order and offer each item's Data to filter
 	// until it returns true: that's the item we'll remove from ready
-	for _, thisItem := range queue.readyQueue.all() {
+	var poppedItems []*Item
+	for {
+		thisItem := queue.readyQueue.pop()
+		if thisItem == nil {
+			break
+		}
+		poppedItems = append(poppedItems, thisItem)
+
 		ok := filter(thisItem.Data)
 		if ok {
 			item = thisItem
 			break
 		}
 	}
+	for _, thisItem := range poppedItems {
+		queue.readyQueue.push(thisItem)
+	}
 
 	if item == nil {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrNothingReady}
+		err = Error{queue.Name, "ReserveFiltered", "", ErrNothingReady}
 		return
 	}
 

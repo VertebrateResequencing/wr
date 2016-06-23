@@ -23,7 +23,6 @@ package queue
 
 import (
 	"container/heap"
-	"sort"
 	"sync"
 )
 
@@ -89,28 +88,6 @@ func (q *subQueue) empty() {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	q.items = nil
-}
-
-// all correctly sorts all items in the queue and returns a new slice of them.
-func (q *subQueue) all() (items []*Item) {
-	q.mutex.RLock()
-	defer q.mutex.RUnlock()
-	if len(q.items) == 0 {
-		return
-	}
-
-	// q.items is not sorted, and we don't have a way of directly accessing the
-	// heap (?), so we must trigger a sort manually. We create a new slice for
-	// them to avoid issues with items being added to q.items while the user
-	// is looking through q.items.
-	if q.needsSort {
-		sort.Sort(q)
-		q.needsSort = false
-	}
-	for _, item := range q.items {
-		items = append(items, item)
-	}
-	return
 }
 
 // the following functions are required for the heap implementation, and though
