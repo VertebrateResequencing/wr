@@ -39,7 +39,7 @@
             
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
-                    <h5 style="margin: 0; padding: 0">Live: <span data-bind="text: inflight.total"></span> incomplete jobs</h5>
+                    <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
                     <div class="top-margin" data-bind="if: inflight.total() > 0">
                         <div class="progress" style="margin-bottom: 0">
                             <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
@@ -76,26 +76,109 @@
             <div data-bind="foreach: repGroups.sort(function(l,r) { l.id > r.id ? 1 : -1 })">
                 <div style="width: 100%;" class="well well-sm">
                     <div style="margin: 0 auto;">
-                        <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span>: <span data-bind="text: total"></span> jobs</h5>
+                        <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge" data-bind="text: total"></span></h5>
                         <div class="top-margin" data-bind="if: total() > 0">
                             <div class="progress" style="margin-bottom: 0">
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: delayPct() + '%' }">
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed">
                                     <!-- ko if: delayPct() > 5 --><span data-bind="text: delay"></span> delayed<!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: readyPct() + '%' }">
+                                <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady">
                                     <!-- ko if: readyPct() > 5 --><span data-bind="text: ready"></span> pending<!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: runPct() + '%' }">
+                                <div class="progress-bar progress-bar-striped active clickable" role="progressbar" data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning">
                                     <!-- ko if: runPct() > 5 --><span data-bind="text: run"></span> running<!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: buryPct() + '%' }">
+                                <div class="progress-bar progress-bar-striped progress-bar-danger clickable" role="progressbar" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried">
                                     <!-- ko if: buryPct() > 5 --><span data-bind="text: bury"></span> buried<!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped progress-bar-success" role="progressbar" data-bind="style: { width: completePct() + '%' }">
+                                <div class="progress-bar progress-bar-striped progress-bar-success clickable" role="progressbar" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete">
                                     <!-- ko if: completePct() > 5 --><span data-bind="text: complete"></span> complete<!-- /ko -->
                                 </div>
                             </div>
                         </div>
+                        
+                        <!-- ko foreach: details -->
+                            <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried', 'panel-success': State == 'complete' }">
+                                <div class="panel-heading">
+                                    <h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
+                                    <small><i data-bind="text: Cwd"></i></small>
+                                </div>
+                                <div class="panel-body keyvals">
+                                    <dl>
+                                        <dt>Attempts</dt>
+                                        <dd data-bind="text: Attempts"></dd>
+                                    </dl>
+                                    <dl>
+                                        <dt>Expected Memory</dt>
+                                        <dd><span data-bind="text: ExpectedMemory"></span>mb</dd>
+                                    </dl>
+                                    <dl>
+                                        <dt>Expected Time</dt>
+                                        <dd data-bind="text: ExpectedTime.toDuration()"></dd>
+                                    </dl>
+                                    <dl>
+                                        <dt>CPUs</dt>
+                                        <dd data-bind="text: CPUs"></dd>
+                                    </dl>
+                                    <!-- ko if: FailReason -->
+                                        <dl>
+                                            <dt>Reason for Failure</dt>
+                                            <dd data-bind="text: FailReason"></dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
+                                    <!-- ko if: Exited -->
+                                        <dl>
+                                            <dt>Exit code</dt>
+                                            <dd data-bind="text: Exitcode"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Peak Memory</dt>
+                                            <dd><span data-bind="text: Peakmem"></span>mb</dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Walltime</dt>
+                                            <dd data-bind="text: Walltime.toDuration()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>CPUtime</dt>
+                                            <dd data-bind="text: CPUtime.toDuration()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Host</dt>
+                                            <dd data-bind="text: Host"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Pid</dt>
+                                            <dd data-bind="text: Pid"></dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
+                                    <!-- ko if: ! Exited && (State == "reserved" || State == "running") -->
+                                        <dl>
+                                            <dt>Walltime</dt>
+                                            <dd data-bind="text: Walltime.toDuration()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Host</dt>
+                                            <dd data-bind="text: Host"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Pid</dt>
+                                            <dd data-bind="text: Pid"></dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                </div>
+                                <div class="panel-footer">
+                                    <!-- ko if: Similar -->
+                                        + <span data-bind="text: Similar.length"></span> other commands
+                                        <!-- ko if: Exitcode != 0  -->
+                                            with same exit code and reason for failure
+                                        <!-- /ko -->
+                                    <!-- /ko -->
+                                </div>
+                            </div>
+                        <!-- /ko -->
                     </div>
                 </div>
             </div>
@@ -117,6 +200,9 @@
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
                 self.repGroup = ko.observable();
+                self.detailsRepgroup = '';
+                self.detailsState = '';
+                self.detailsOA;
                 
                 self.inflight = {
                     'delay': ko.observable(0),
@@ -148,7 +234,7 @@
                     self.inflight['old_total'] = total;
                     return total;
                 });
-                self.rateLimit = 350; // this is a sweetspot that seems to avoid flickering of the progress bars, at least in Safari
+                self.rateLimit = 350; // this is a sweetspot that seems to mostly avoid flickering of the progress bars, at least in Safari
                 self.inflight['delay'].extend({ rateLimit: self.rateLimit });
                 self.inflight['ready'].extend({ rateLimit: self.rateLimit });
                 self.inflight['run'].extend({ rateLimit: self.rateLimit });
@@ -194,6 +280,7 @@
                                     'runPct': ko.observable(0),
                                     'buryPct': ko.observable(0),
                                     'completePct': ko.observable(0),
+                                    'details': ko.observableArray(),
                                     'old_total': 0,
                                     'delay_compute': 0
                                 };
@@ -291,7 +378,13 @@
                                 to(to() + json['Count'])
                             }
                         } else if (json.hasOwnProperty('State')) {
-                            // a job changed state
+                            console.log(json)
+                            rg = json['RepGroup']
+                            if (self.detailsOA && rg == self.detailsRepgroup) {
+                                // the user has clicked on a progress bar for
+                                // a particular repgroup; add to its details
+                                self.detailsOA.push(json)
+                            }
                         }
                     }
                 }
@@ -301,6 +394,43 @@
                     console.log("requesting rep group " + self.repGroup())
                     self.ws.send(JSON.stringify({ RepGroup: self.repGroup() }));
                 };
+                
+                // act if the user clicks on the different types of progress
+                // bar for a repGroup
+                self.showRepgroupDelayed = function(repGroup) {
+                    self.showGroupState(repGroup, 'delayed');
+                }
+                self.showRepgroupReady = function(repGroup) {
+                    self.showGroupState(repGroup, 'ready');
+                }
+                self.showRepgroupRunning = function(repGroup) {
+                    self.showGroupState(repGroup, 'reserved'); // which includes 'running'
+                }
+                self.showRepgroupBuried = function(repGroup) {
+                    self.showGroupState(repGroup, 'buried');
+                }
+                self.showRepgroupComplete = function(repGroup) {
+                    self.showGroupState(repGroup, 'complete');
+                }
+                self.showGroupState = function(repGroup, state) {
+                    if (self.detailsOA) {
+                        self.detailsOA([]);
+                    }
+                    
+                    if (repGroup.id == self.detailsRepgroup && state == self.detailsState) {
+                        // stop showing
+                        repGroup.details([]);
+                        self.detailsRepgroup = '';
+                        self.detailsState = '';
+                        self.detailsOA = '';
+                        return;
+                    }
+                    
+                    self.detailsRepgroup = repGroup.id;
+                    self.detailsState = state;
+                    self.detailsOA = repGroup.details;
+                    self.ws.send(JSON.stringify({ RepGroup: repGroup.id, State: state }));
+                }
             }
             var svm = new StatusViewModel();
             ko.applyBindings(svm, $('#status')[0]);

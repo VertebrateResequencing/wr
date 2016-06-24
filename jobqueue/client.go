@@ -35,6 +35,7 @@ See server.go for the functions needed to implement a server executable.
 package jobqueue
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
@@ -83,6 +84,8 @@ type clientRequest struct {
 	Env            []byte // compressed binc encoding of []string
 	GetStd         bool
 	GetEnv         bool
+	Limit          int
+	State          string
 }
 
 // Job is a struct that represents a command that needs to be run and some
@@ -125,7 +128,8 @@ type Job struct {
 	endtime        time.Time     // the time the cmd stops running is recorded here
 	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
 	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
-	envKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
+	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
+	Similar        []string      // when retrieving jobs with a limit, this holds the keys of the excluded jobs
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
@@ -450,7 +454,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		myerr = nil
 	}
 
-	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), cmd.Stdout.(*prefixSuffixSaver).Bytes(), cmd.Stderr.(*prefixSuffixSaver).Bytes())
+	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(cmd.Stdout.(*prefixSuffixSaver).Bytes()), bytes.TrimSpace(cmd.Stderr.(*prefixSuffixSaver).Bytes()))
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
@@ -567,10 +571,7 @@ func (c *Client) Bury(job *Job, failreason string) (err error) {
 // only be related to not being able to contact the server. The ccs argument is
 // the same as for GetByCmds()
 func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
-	var keys []string
-	for _, cc := range ccs {
-		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
-	}
+	keys := c.ccsToKeys(ccs)
 	resp, err := c.request(&clientRequest{Method: "jkick", Queue: c.queue, Keys: keys})
 	if err != nil {
 		return
@@ -585,10 +586,7 @@ func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
 // related to not being able to contact the server. The ccs argument is the same
 // as for GetByCmds().
 func (c *Client) Delete(ccs [][2]string) (deleted int, err error) {
-	var keys []string
-	for _, cc := range ccs {
-		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
-	}
+	keys := c.ccsToKeys(ccs)
 	resp, err := c.request(&clientRequest{Method: "jdel", Queue: c.queue, Keys: keys})
 	if err != nil {
 		return
@@ -614,12 +612,11 @@ func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *
 
 // GetByCmds gets multiple Jobs at once given their Cmds and Cwds. You supply a
 // slice of cmd/cwd string tuples like: [][2]string{[2]string{cmd1, cwd1},
-// [2]string{cmd2, cwd2}, ...}
+// [2]string{cmd2, cwd2}, ...}. It is also possible to supply
+// "",key if you know the "key" of the desired job; you can get these keys when
+// you use GetByRepGroup() or GetIncomplete() with a limit.
 func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
-	var keys []string
-	for _, cc := range ccs {
-		keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
-	}
+	keys := c.ccsToKeys(ccs)
 	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Keys: keys})
 	if err != nil {
 		return
@@ -628,11 +625,29 @@ func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
 	return
 }
 
+// ccsToKeys deals with the ccs arg that GetByCmds(), Kick() and Delete() take.
+func (c *Client) ccsToKeys(ccs [][2]string) (keys []string) {
+	for _, cc := range ccs {
+		if cc[0] == "" {
+			keys = append(keys, cc[1])
+		} else {
+			keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
+		}
+	}
+	return
+}
+
 // GetByRepGroup gets multiple Jobs at once given their RepGroup (an arbitrary
 // user-supplied identifier for the purpose of grouping related jobs together
-// for reporting purposes).
-func (c *Client) GetByRepGroup(repgroup string) (jobs []*Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbr", Queue: c.queue, Job: &Job{RepGroup: repgroup}})
+// for reporting purposes). 'limit', if greater than 0, limits the number of
+// jobs returned that have the same State, FailReason and Exitcode, and on the
+// the last job of each State+FailReason group it populates 'Similar' with a
+// []string of job keys that tells you which other jobs there were in that
+// group. Providing 'state' only returns jobs in that State. 'getStd' and
+// 'getEnv', if true, retrieve the stdout, stderr and environement variables
+// for the Jobs, but only if 'limit' is <= 5.
+func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getbr", Queue: c.queue, Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
 	}
@@ -641,9 +656,10 @@ func (c *Client) GetByRepGroup(repgroup string) (jobs []*Job, err error) {
 }
 
 // GetIncomplete gets all Jobs that are currently in the jobqueue, ie. excluding
-// those that are complete and have been Archive()d.
-func (c *Client) GetIncomplete() (jobs []*Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getin", Queue: c.queue})
+// those that are complete and have been Archive()d. The args are as in
+// GetByRepGroup().
+func (c *Client) GetIncomplete(limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getin", Queue: c.queue, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
 	}

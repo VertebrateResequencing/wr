@@ -258,11 +258,11 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "ready")
 				}
 
-				jobs, err = jq.GetByRepGroup("manually_added")
+				jobs, err = jq.GetByRepGroup("manually_added", 0, "")
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 10)
 
-				jobs, err = jq.GetByRepGroup("foo")
+				jobs, err = jq.GetByRepGroup("foo", 0, "")
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 0)
 			})
@@ -541,12 +541,12 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Attempts, ShouldEqual, 1)
 
 				Convey("Both current and archived jobs can be retrieved with GetByRepGroup", func() {
-					jobs, err := jq.GetByRepGroup("manually_added")
+					jobs, err := jq.GetByRepGroup("manually_added", 0, "")
 					So(err, ShouldBeNil)
 					So(len(jobs), ShouldEqual, 2)
 
 					Convey("But only current jobs are retrieved with GetIncomplete", func() {
-						jobs, err := jq.GetIncomplete()
+						jobs, err := jq.GetIncomplete(0, "")
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 1)
 						So(jobs[0].Cmd, ShouldEqual, "sleep 0.1 && false")
@@ -996,10 +996,10 @@ func TestJobqueue(t *testing.T) {
 			Convey("After some time the jobs get automatically run", func() {
 				// we need some time for 'go test' to live-compile and run
 				// ourselves in runnermode *** not sure if it's legit for this
-				// to take ~15seconds though!
+				// to take ~45 seconds though!
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(25 * time.Second)
+					limit := time.After(60 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {

@@ -79,14 +79,14 @@ func (e Error) Error() string {
 }
 
 // itemErr is used internally to implement Reserve(), which needs to send item
-// and err over a channel
+// and err over a channel.
 type itemErr struct {
 	item *queue.Item
 	err  string
 }
 
 // serverResponse is the struct that the server sends to clients over the
-// network in response to their clientRequest
+// network in response to their clientRequest.
 type serverResponse struct {
 	Err     string // string instead of error so we can decode on the client side
 	Added   int
@@ -96,7 +96,7 @@ type serverResponse struct {
 	SStats  *ServerStats
 }
 
-// ServerInfo holds basic addressing info about the server
+// ServerInfo holds basic addressing info about the server.
 type ServerInfo struct {
 	Addr       string // ip:port
 	Host       string // hostname
@@ -106,7 +106,7 @@ type ServerInfo struct {
 }
 
 // ServerStats holds information about the jobqueue server for sending to
-// clients
+// clients.
 type ServerStats struct {
 	ServerInfo *ServerInfo
 }
@@ -116,21 +116,23 @@ type rgToKeys struct {
 	lookup map[string]map[string]bool
 }
 
-// jstatusReq is what the status webpage sends us to ask for info about jobs
+// jstatusReq is what the status webpage sends us to ask for info about jobs.
 type jstatusReq struct {
 	Key      string // sending Key means "give me detailed info about this single job"
-	RepGroup string // sending RepGroup means "send me basic info about every job with this RepGroup"
-	Request  string // "current" means "send me basic info about every job in every RepGroup that is in currently in the cmds queue"
+	RepGroup string // sending RepGroup means "send me limited info about the jobs with this RepGroup"
+	State    string // A Job.State to limit RepGroup by
+	Request  string // "current" means "send me count info about every job in every RepGroup that is in currently in the cmds queue"
 }
 
-// jstatus is the job info we send to the status webpage
+// jstatus is the job info we send to the status webpage (only real difference
+// to Job is that the times are seconds instead of *time.Duration... *** not
+// really sure if we really need this and should just give the webapge Jobs
+// directly instead).
 type jstatus struct {
-	// basic info always sent
-	Key      string
-	RepGroup string
-	Cmd      string
-	State    string
-	// extra info when specifically requested
+	Key            string
+	RepGroup       string
+	Cmd            string
+	State          string
 	Cwd            string
 	ExpectedMemory int
 	ExpectedTime   float64
@@ -147,6 +149,7 @@ type jstatus struct {
 	StdOut         string
 	Env            []string
 	Attempts       uint32
+	Similar        []string
 }
 
 // jstateCount is the state count change we send to the status webpage; we are
@@ -158,7 +161,7 @@ type jstateCount struct {
 	Count     int    // num in FromState drop by this much, num in ToState rise by this much
 }
 
-// server represents the server side of the socket that clients Connect() to
+// server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo *ServerInfo
 	sock       mangos.Socket
@@ -463,13 +466,17 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 					}
 				case req.RepGroup != "":
-					jobs, _, errstr := s.getJobsByRepGroup(q, req.RepGroup)
-					//*** sort jobs and then we can implement paging (send only
-					// 50 jobs in each state)
+					// *** probably want to take the count as a req option,
+					// so user can request to see more than just 1 job per
+					// State+FailReason
+					jobs, _, errstr := s.getJobsByRepGroup(q, req.RepGroup, 1, req.State, true, true)
 					if errstr == "" && len(jobs) > 0 {
 						writeMutex.Lock()
 						failed := false
 						for _, job := range jobs {
+							stderr, _ := job.StdErr()
+							stdout, _ := job.StdOut()
+							env, _ := job.Env()
 							status := jstatus{
 								Key:            jobKey(job),
 								RepGroup:       job.RepGroup,
@@ -488,6 +495,10 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								Walltime:       job.Walltime.Seconds(),
 								CPUtime:        job.CPUtime.Seconds(),
 								Attempts:       job.Attempts,
+								Similar:        job.Similar,
+								StdErr:         stderr,
+								StdOut:         stdout,
+								Env:            env,
 							}
 							err = conn.WriteJSON(status)
 							if err != nil {
@@ -504,9 +515,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					switch req.Request {
 					case "current":
 						// get all current jobs
-						jobs := s.getJobsCurrent(q)
+						jobs := s.getJobsCurrent(q, 0, "", false, false)
 						writeMutex.Lock()
-						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs) // &jstateCount{group, from, to, count}
+						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs)
 						if err != nil {
 							writeMutex.Unlock()
 							break
@@ -699,41 +710,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			for group, count := range groups {
 				s.statusCaster.Send(&jstateCount{group, from, to, count})
 			}
-
-			// also send out most of the details about each changed job, in case
-			// the user is looking at a particular repgroup in-depth
-			// *** would be better if clients could subscribe to a repgroup and
-			// state, and we only send this out if any client wants these
-			for _, datum := range data {
-				job := datum.(*Job)
-				var walltime float64
-				if !job.starttime.IsZero() {
-					if job.endtime.IsZero() || to == "ready" {
-						walltime = time.Since(job.starttime).Seconds()
-					} else {
-						walltime = job.endtime.Sub(job.starttime).Seconds()
-					}
-				}
-				s.statusCaster.Send(&jstatus{
-					Key:            jobKey(job),
-					RepGroup:       job.RepGroup,
-					Cmd:            job.Cmd,
-					State:          to,
-					Cwd:            job.Cwd,
-					ExpectedMemory: job.Memory,
-					ExpectedTime:   job.Time.Seconds(),
-					CPUs:           job.CPUs,
-					Peakmem:        job.Peakmem,
-					Exited:         job.Exited,
-					Exitcode:       job.Exitcode,
-					FailReason:     job.FailReason,
-					Pid:            job.Pid,
-					Host:           job.Host,
-					Walltime:       walltime,
-					CPUtime:        job.CPUtime.Seconds(),
-					Attempts:       job.Attempts,
-				})
-			}
 		})
 	}
 	s.Unlock()
@@ -761,7 +737,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				var itemdefs []*queue.ItemDef
 				for _, job := range cr.Jobs {
-					job.envKey = envkey
+					job.EnvKey = envkey
 					job.UntilBuried = 3
 					itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
 				}
@@ -1079,14 +1055,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			srerr = ErrBadRequest
 		} else {
 			var jobs []*Job
-			jobs, srerr, qerr = s.getJobsByRepGroup(q, cr.Job.RepGroup)
+			jobs, srerr, qerr = s.getJobsByRepGroup(q, cr.Job.RepGroup, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
 		}
 	case "getin":
 		// get all jobs in the jobqueue
-		jobs := s.getJobsCurrent(q)
+		jobs := s.getJobsCurrent(q, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
 		if len(jobs) > 0 {
 			sr = &serverResponse{Jobs: jobs}
 		}
@@ -1122,7 +1098,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	return nil
 }
 
-// getJobsByRepGroup gets jobs with the given keys (current and complete)
+// getJobsByKeys gets jobs with the given keys (current and complete)
 func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
 	for _, jobkey := range keys {
@@ -1155,7 +1131,7 @@ func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEn
 }
 
 // getJobsByRepGroup gets jobs in the given group (current and complete)
-func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string) (jobs []*Job, srerr string, qerr string) {
+func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	// look in the in-memory queue for matching jobs
 	s.rpl.RLock()
 	for key, _ := range s.rpl.lookup[repgroup] {
@@ -1174,6 +1150,10 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string) (jobs []*Job
 		jobs = append(jobs, complete...)
 	}
 
+	if limit > 0 || state != "" {
+		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
+	}
+
 	return
 }
 
@@ -1188,9 +1168,68 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 }
 
 // getJobsCurrent gets all current (incomplete) jobs
-func (s *Server) getJobsCurrent(q *queue.Queue) (jobs []*Job) {
+func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state string, getStd bool, getEnv bool) (jobs []*Job) {
 	for _, item := range q.AllItems() {
 		jobs = append(jobs, s.itemToJob(item, false, false))
+	}
+
+	if limit > 0 || state != "" {
+		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
+	}
+
+	return
+}
+
+// limitJobs handles the limiting of jobs for getJobsByRepGroup() and
+// getJobsCurrent(). States 'reserved' and 'running' are treated as the same
+// state.
+func (s *Server) limitJobs(jobs []*Job, limit int, state string, getStd bool, getEnv bool) (limited []*Job) {
+	groups := make(map[string][]*Job)
+	for _, job := range jobs {
+		jState := job.State
+		if jState == "running" {
+			jState = "reserved"
+		}
+
+		if state != "" {
+			if state == "running" {
+				state = "reserved"
+			}
+			if jState != state {
+				continue
+			}
+		}
+
+		if limit == 0 {
+			limited = append(limited, job)
+		} else {
+			group := fmt.Sprintf("%s.%d.%s", jState, job.Exitcode, job.FailReason)
+			jobs, existed := groups[group]
+			if existed {
+				lenj := len(jobs)
+				if lenj == limit {
+					jobs[lenj-1].Similar = append(jobs[lenj-1].Similar, jobKey(job))
+				} else {
+					jobs = append(jobs, job)
+					groups[group] = jobs
+				}
+			} else {
+				jobs = []*Job{job}
+				groups[group] = jobs
+			}
+		}
+	}
+
+	if limit > 0 {
+		for _, jobs := range groups {
+			limited = append(limited, jobs...)
+		}
+
+		if limit <= 5 {
+			for _, job := range limited {
+				s.jobPopulateStdEnv(job, getStd, getEnv)
+			}
+		}
 	}
 	return
 }
@@ -1302,7 +1341,7 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client
-func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job) {
+func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job) {
 	sjob := item.Data.(*Job)
 	stats := item.Stats()
 
@@ -1341,6 +1380,7 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 		Attempts:    sjob.Attempts,
 		UntilBuried: sjob.UntilBuried,
 		ReservedBy:  sjob.ReservedBy,
+		EnvKey:      sjob.EnvKey,
 	}
 
 	if !sjob.starttime.IsZero() {
@@ -1351,14 +1391,18 @@ func (s *Server) itemToJob(item *queue.Item, getstd bool, getenv bool) (job *Job
 		}
 		state = "running"
 	}
-	if getenv {
-		job.EnvC = s.db.retrieveEnv(sjob.envKey)
-	}
-	if getstd && job.Exited && job.Exitcode != 0 {
+	s.jobPopulateStdEnv(job, getStd, getEnv)
+	return
+}
+
+func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
+	if getStd && job.Exited && job.Exitcode != 0 {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(jobKey(job))
 	}
+	if getEnv {
+		job.EnvC = s.db.retrieveEnv(job.EnvKey)
+	}
 
-	return
 }
 
 // reply to a client
