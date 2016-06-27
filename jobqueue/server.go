@@ -149,7 +149,7 @@ type jstatus struct {
 	StdOut         string
 	Env            []string
 	Attempts       uint32
-	Similar        []string
+	Similar        int
 }
 
 // jstateCount is the state count change we send to the status webpage; we are
@@ -1208,7 +1208,7 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state string, getStd bool, ge
 			if existed {
 				lenj := len(jobs)
 				if lenj == limit {
-					jobs[lenj-1].Similar = append(jobs[lenj-1].Similar, jobKey(job))
+					jobs[lenj-1].Similar++
 				} else {
 					jobs = append(jobs, job)
 					groups[group] = jobs

@@ -153,15 +153,15 @@ the commands, or if you added them with a different cwd.`,
 			for _, job := range jobs {
 				switch job.State {
 				case "delayed":
-					d += 1 + len(job.Similar)
+					d += 1 + job.Similar
 				case "ready":
-					re += 1 + len(job.Similar)
+					re += 1 + job.Similar
 				case "buried":
-					b += 1 + len(job.Similar)
+					b += 1 + job.Similar
 				case "reserved":
-					ru += 1 + len(job.Similar)
+					ru += 1 + job.Similar
 				case "complete":
-					c += 1 + len(job.Similar)
+					c += 1 + job.Similar
 				}
 			}
 			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndelayed: %d\nburied: %d\n", c, ru, re, d, b)
@@ -228,7 +228,7 @@ the commands, or if you added them with a different cwd.`,
 					}
 				}
 
-				if len(job.Similar) > 0 {
+				if job.Similar > 0 {
 					fr := ""
 					if job.FailReason != "" {
 						fr = " and problem"
@@ -241,7 +241,7 @@ the commands, or if you added them with a different cwd.`,
 							er = " and exit code"
 						}
 					}
-					fmt.Printf("+ %d other commands with the same state%s%s\n", len(job.Similar), er, fr)
+					fmt.Printf("+ %d other commands with the same status%s%s\n", job.Similar, er, fr)
 				}
 			}
 		}

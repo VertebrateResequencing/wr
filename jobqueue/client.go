@@ -129,7 +129,7 @@ type Job struct {
 	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
 	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
 	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
-	Similar        []string      // when retrieving jobs with a limit, this holds the keys of the excluded jobs
+	Similar        int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
@@ -641,11 +641,11 @@ func (c *Client) ccsToKeys(ccs [][2]string) (keys []string) {
 // user-supplied identifier for the purpose of grouping related jobs together
 // for reporting purposes). 'limit', if greater than 0, limits the number of
 // jobs returned that have the same State, FailReason and Exitcode, and on the
-// the last job of each State+FailReason group it populates 'Similar' with a
-// []string of job keys that tells you which other jobs there were in that
-// group. Providing 'state' only returns jobs in that State. 'getStd' and
-// 'getEnv', if true, retrieve the stdout, stderr and environement variables
-// for the Jobs, but only if 'limit' is <= 5.
+// the last job of each State+FailReason group it populates 'Similar' with the
+// number of other excluded jobs there were in that group. Providing 'state'
+// only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
+// stdout, stderr and environement variables for the Jobs, but only if 'limit'
+// is <= 5.
 func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Queue: c.queue, Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
