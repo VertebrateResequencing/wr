@@ -85,3 +85,9 @@ Number.prototype.mbIEC = function () {
     var i = Math.floor( Math.log(size) / Math.log(1024) );
     return ( size / Math.pow(1024, i) ).toFixed(2) * 1 + ' ' + ['B', 'kB', 'MB', 'GB', 'TB'][i];
 };
+
+// capitalize the first letter of a string
+// (taken from http://stackoverflow.com/a/1026087/675083) 
+String.prototype.capitalizeFirstLetter = function() {
+    return this.charAt(0).toUpperCase() + this.slice(1);
+}

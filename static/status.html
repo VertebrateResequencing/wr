@@ -210,8 +210,14 @@
                                             with same exit code and reason for failure
                                         <!-- /ko -->
                                     <!-- /ko -->
+                                    <!-- ko if: State == "delayed" -->
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemove">Remove</button>
+                                    <!-- /ko -->
                                     <!-- ko if: State == "buried" -->
-                                        <button type="button" class="btn btn-primary pull-right" data-bind="click: $root.confirmRetry">Retry</button>
+                                        <div class="btn-group pull-right">
+                                            <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemove">Remove</button>
+                                            <button type="button" class="btn btn-primary" data-bind="click: $root.confirmRetry">Retry</button>
+                                        </div>
                                     <!-- /ko -->
                                 </div>
                             </div>
@@ -232,14 +238,16 @@
                 Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>" that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
             </script>
             <script type="text/html" id="actionModalFooterTemplate">
-                <!-- ko if: count() > 1 -->
-                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: action() + ' all'"></button>
-                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action() + ' 1'"></button>
-                <!-- /ko -->
-                <!-- ko if: count() == 1 -->
-                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action"></button>
-                <!-- /ko -->
-                <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                <div class="btn-group">
+                    <!-- ko if: count() > 1 -->
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: action().capitalizeFirstLetter() + ' all'"></button>
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action().capitalizeFirstLetter() + ' 1'"></button>
+                    <!-- /ko -->
+                    <!-- ko if: count() == 1 -->
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action().capitalizeFirstLetter()"></button>
+                    <!-- /ko -->
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                </div>
             </script>
             
             <!-- stdout/err modals -->
@@ -580,6 +588,11 @@
                 self.confirmRetry = function(job) {
                     self.jobToActionDetails(job, 'retry');
                     self.actionModalHeader('Retry Buried Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmRemove = function(job) {
+                    self.jobToActionDetails(job, 'remove');
+                    self.actionModalHeader('Remove Failed Commands');
                     self.actionModalVisible(true);
                 };
             }

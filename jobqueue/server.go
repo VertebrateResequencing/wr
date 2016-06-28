@@ -566,7 +566,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							if stats.State == "bury" {
 								job := item.Data.(*Job)
 								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									err := q.Kick(item.Key)
+									err := q.Kick(key)
 									if err != nil {
 										break
 									}
@@ -576,6 +576,39 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									}
 								}
 							}
+						}
+						s.rpl.RUnlock()
+					case "remove":
+						s.rpl.RLock()
+						var toDelete []string
+						for key, _ := range s.rpl.lookup[req.RepGroup] {
+							item, err := q.Get(key)
+							if err != nil {
+								break
+							}
+							stats := item.Stats()
+							if stats.State == "bury" || stats.State == "delay" {
+								job := item.Data.(*Job)
+								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
+									err := q.Remove(key)
+									if err != nil {
+										break
+									}
+									if err == nil {
+										s.db.deleteLiveJob(key)
+										toDelete = append(toDelete, key)
+										if stats.State != "bury" {
+											s.decrementGroupCount(job, q)
+										}
+									}
+									if !req.All {
+										break
+									}
+								}
+							}
+						}
+						for _, key := range toDelete {
+							delete(s.rpl.lookup[req.RepGroup], key)
 						}
 						s.rpl.RUnlock()
 					default:
