@@ -113,7 +113,7 @@
                                     </dl>
                                     <dl>
                                         <dt>Expected Memory</dt>
-                                        <dd><span data-bind="text: ExpectedMemory"></span>mb</dd>
+                                        <dd data-bind="text: ExpectedMemory.mbIEC()"></dd>
                                     </dl>
                                     <dl>
                                         <dt>Expected Time</dt>
@@ -135,9 +135,33 @@
                                             <dt>Exit code</dt>
                                             <dd data-bind="text: Exitcode"></dd>
                                         </dl>
+                                        <!-- ko if: Exitcode != 0 -->
+                                            <dl>
+                                                <dt>StdOut</dt>
+                                                <dd>
+                                                    <!-- ko if: StdOut -->
+                                                        <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdOut')">&lt;show&gt;</span>
+                                                    <!-- /ko -->
+                                                    <!-- ko if: ! StdOut -->
+                                                        &lt;none&gt;
+                                                    <!-- /ko -->
+                                                </dd>
+                                            </dl>
+                                            <dl>
+                                                <dt>StdErr</dt>
+                                                <dd>
+                                                    <!-- ko if: StdErr -->
+                                                        <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
+                                                    <!-- /ko -->
+                                                    <!-- ko if: ! StdErr -->
+                                                        &lt;none&gt;
+                                                    <!-- /ko -->
+                                                </dd>
+                                            </dl>
+                                        <!-- /ko -->
                                         <dl>
                                             <dt>Peak Memory</dt>
-                                            <dd><span data-bind="text: Peakmem"></span>mb</dd>
+                                            <dd data-bind="text: Peakmem.mbIEC()"></dd>
                                         </dl>
                                         <dl>
                                             <dt>Walltime</dt>
@@ -171,6 +195,13 @@
                                             <dd data-bind="text: Pid"></dd>
                                         </dl>
                                     <!-- /ko -->
+                                    
+                                    <dl>
+                                        <dt>Env</dt>
+                                        <dd>
+                                            <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
+                                        </dd>
+                                    </dl>
                                 </div>
                                 <div class="panel-footer clearfix">
                                     <!-- ko if: Similar -->
@@ -209,6 +240,27 @@
                     <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action"></button>
                 <!-- /ko -->
                 <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+            </script>
+            
+            <!-- stdout/err modals -->
+            <div data-bind="modal: {
+                visible: stdModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: stdModalHeader } },
+                body: { data: { content: stdOutput } }
+            }"></div>
+            
+            <!-- env modal -->
+            <div data-bind="modal: {
+                visible: envModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Environment Variables' } },
+                body: { name: 'envModalBodyTemplate', data: envVars }
+            }"></div>
+            <script type="text/html" id="envModalBodyTemplate">
+                <div data-bind="foreach: $data">
+                    <span data-bind="text: $data"></span><br>
+                </div>
             </script>
             
             <hr>
@@ -398,11 +450,19 @@
                             }
                             
                             repgroup['delay_compute'] = to ? 1 : 0;
+                            var ok = true;
                             if (from) {
-                                from(from() - json['Count'])
+                                var newfrom = from() - json['Count'];
+                                if (newfrom >= 0) {
+                                    from(newfrom)
+                                } else {
+                                    // some rare wonkiness happens and we're
+                                    // hoping this helps avoid it...
+                                    ok = false;
+                                }
                             }
                             repgroup['delay_compute'] = 0;
-                            if (to) {
+                            if (ok && to) {
                                 to(to() + json['Count'])
                             }
                         } else if (json.hasOwnProperty('State')) {
@@ -457,6 +517,24 @@
                     self.detailsState = state;
                     self.detailsOA = repGroup.details;
                     self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state }));
+                }
+                
+                // act if the user clicks to view stdout/err
+                self.stdModalVisible = ko.observable(false);
+                self.stdModalHeader = ko.observable();
+                self.stdOutput = ko.observable();
+                self.showStd = function(type, job) {
+                    self.stdModalHeader(type);
+                    self.stdOutput(job[type]);
+                    self.stdModalVisible(true);
+                }
+                
+                // act if the user clicks to view env
+                self.envModalVisible = ko.observable(false);
+                self.envVars = ko.observableArray();
+                self.showEnv = function(job) {
+                    self.envVars(job.Env);
+                    self.envModalVisible(true);
                 }
                 
                 // act if the user clicks one of the action buttons in the

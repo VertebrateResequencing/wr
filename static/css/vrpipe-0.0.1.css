@@ -36,3 +36,7 @@
     margin: 0;
     padding: 0;
 }
+
+.modal-body {
+    overflow-x: auto;
+}

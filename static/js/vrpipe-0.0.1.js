@@ -76,4 +76,12 @@ Number.prototype.toDuration = function () {
         dur += ms + 'ms';
     }
     return dur;
-}
+};
+
+// Convert MB in to GB or TB if appropriate
+// (based on http://stackoverflow.com/a/20732091/675083)
+Number.prototype.mbIEC = function () {
+    var size = this * 1048576;
+    var i = Math.floor( Math.log(size) / Math.log(1024) );
+    return ( size / Math.pow(1024, i) ).toFixed(2) * 1 + ' ' + ['B', 'kB', 'MB', 'GB', 'TB'][i];
+};
