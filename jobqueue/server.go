@@ -117,11 +117,19 @@ type rgToKeys struct {
 }
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
+// The possible Requests are:
+// current = get count info for every job in every RepGroup in the cmds queue.
+// details = get example job details for jobs in the RepGroup, grouped by having
+//           the same Status, Exitcode and FailReason.
+// retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
 type jstatusReq struct {
-	Key      string // sending Key means "give me detailed info about this single job"
-	RepGroup string // sending RepGroup means "send me limited info about the jobs with this RepGroup"
-	State    string // A Job.State to limit RepGroup by
-	Request  string // "current" means "send me count info about every job in every RepGroup that is in currently in the cmds queue"
+	Key        string // sending Key means "give me detailed info about this single job"
+	RepGroup   string // sending RepGroup means "send me limited info about the jobs with this RepGroup"
+	State      string // A Job.State to limit RepGroup by
+	Exitcode   int
+	FailReason string
+	All        bool // If false, retry mode will act on a single random matching job, instead of all of them
+	Request    string
 }
 
 // jstatus is the job info we send to the status webpage (only real difference
@@ -465,52 +473,6 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							break
 						}
 					}
-				case req.RepGroup != "":
-					// *** probably want to take the count as a req option,
-					// so user can request to see more than just 1 job per
-					// State+FailReason
-					jobs, _, errstr := s.getJobsByRepGroup(q, req.RepGroup, 1, req.State, true, true)
-					if errstr == "" && len(jobs) > 0 {
-						writeMutex.Lock()
-						failed := false
-						for _, job := range jobs {
-							stderr, _ := job.StdErr()
-							stdout, _ := job.StdOut()
-							env, _ := job.Env()
-							status := jstatus{
-								Key:            jobKey(job),
-								RepGroup:       job.RepGroup,
-								Cmd:            job.Cmd,
-								State:          job.State,
-								Cwd:            job.Cwd,
-								ExpectedMemory: job.Memory,
-								ExpectedTime:   job.Time.Seconds(),
-								CPUs:           job.CPUs,
-								Peakmem:        job.Peakmem,
-								Exited:         job.Exited,
-								Exitcode:       job.Exitcode,
-								FailReason:     job.FailReason,
-								Pid:            job.Pid,
-								Host:           job.Host,
-								Walltime:       job.Walltime.Seconds(),
-								CPUtime:        job.CPUtime.Seconds(),
-								Attempts:       job.Attempts,
-								Similar:        job.Similar,
-								StdErr:         stderr,
-								StdOut:         stdout,
-								Env:            env,
-							}
-							err = conn.WriteJSON(status)
-							if err != nil {
-								failed = true
-								break
-							}
-						}
-						writeMutex.Unlock()
-						if failed {
-							break
-						}
-					}
 				case req.Request != "":
 					switch req.Request {
 					case "current":
@@ -547,6 +509,75 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						if failed {
 							break
 						}
+					case "details":
+						// *** probably want to take the count as a req option,
+						// so user can request to see more than just 1 job per
+						// State+Exitcode+FailReason
+						jobs, _, errstr := s.getJobsByRepGroup(q, req.RepGroup, 1, req.State, true, true)
+						if errstr == "" && len(jobs) > 0 {
+							writeMutex.Lock()
+							failed := false
+							for _, job := range jobs {
+								stderr, _ := job.StdErr()
+								stdout, _ := job.StdOut()
+								env, _ := job.Env()
+								status := jstatus{
+									Key:            jobKey(job),
+									RepGroup:       job.RepGroup,
+									Cmd:            job.Cmd,
+									State:          job.State,
+									Cwd:            job.Cwd,
+									ExpectedMemory: job.Memory,
+									ExpectedTime:   job.Time.Seconds(),
+									CPUs:           job.CPUs,
+									Peakmem:        job.Peakmem,
+									Exited:         job.Exited,
+									Exitcode:       job.Exitcode,
+									FailReason:     job.FailReason,
+									Pid:            job.Pid,
+									Host:           job.Host,
+									Walltime:       job.Walltime.Seconds(),
+									CPUtime:        job.CPUtime.Seconds(),
+									Attempts:       job.Attempts,
+									Similar:        job.Similar,
+									StdErr:         stderr,
+									StdOut:         stdout,
+									Env:            env,
+								}
+								err = conn.WriteJSON(status)
+								if err != nil {
+									failed = true
+									break
+								}
+							}
+							writeMutex.Unlock()
+							if failed {
+								break
+							}
+						}
+					case "retry":
+						s.rpl.RLock()
+						for key, _ := range s.rpl.lookup[req.RepGroup] {
+							item, err := q.Get(key)
+							if err != nil {
+								break
+							}
+							stats := item.Stats()
+							if stats.State == "bury" {
+								job := item.Data.(*Job)
+								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
+									err := q.Kick(item.Key)
+									if err != nil {
+										break
+									}
+									job.UntilBuried = 3
+									if !req.All {
+										break
+									}
+								}
+							}
+						}
+						s.rpl.RUnlock()
 					default:
 						continue
 					}
@@ -1144,10 +1175,12 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, s
 	s.rpl.RUnlock()
 
 	// look in the permanent store for matching jobs
-	var complete []*Job
-	complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
-	if len(complete) > 0 {
-		jobs = append(jobs, complete...)
+	if state == "" || state == "complete" {
+		var complete []*Job
+		complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
+		if len(complete) > 0 {
+			jobs = append(jobs, complete...)
+		}
 	}
 
 	if limit > 0 || state != "" {

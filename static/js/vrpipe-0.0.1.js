@@ -1,16 +1,50 @@
 // given an array of floats that add up to ~100, returns a corresponding array
 // of ints where each of the floats are rounded to a whole number, such that the
-// total will be exactly 100
-var percentRounder = function(floats) {
+// total will be exactly 100. If min > 0, then any input greater than 0 but with
+// a rounded result less than min is instead increased to min, and those larger
+// than min are correspondingly reduced (this may break if there are too many
+// below min).
+var percentRounder = function(floats, min) {
     var cumul = 0;
     var baseline = 0;
+    var increased = 0;
     var ints = [];
     for (var i = 0; i < floats.length; i++) {
         cumul += floats[i];
         cumulRounded = Math.round(cumul);
-        ints.push(cumulRounded - baseline);
+        var int = cumulRounded - baseline;
+        if (min > 0 && floats[i] > 0 && int < min) {
+            increased += (min - int);
+            int = min;
+        }
+        ints.push(int);
         baseline = cumulRounded;
     }
+    
+    if (increased > 0) {
+        var over = [];
+        var totalOver = 0;
+        for (var i = 0; i < ints.length; i++) {
+            if (ints[i] > min) {
+                over.push(i);
+                totalOver += ints[i];
+            }
+        }
+        
+        var decreased = 0;
+        for (var i = 0; i < over.length; i++) {
+            var intIndex = over[i];
+            var intVal = ints[intIndex];
+            var proportion = intVal / totalOver;
+            var decrease = Math.ceil(proportion * increased);
+            if (decreased + decrease > increased) {
+                decrease = increased - decreased;
+            }
+            ints[intIndex] = intVal - decrease;
+            decreased += decrease;
+        }
+    }
+    
     return ints;
 };
 

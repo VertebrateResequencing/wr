@@ -16,6 +16,9 @@
         <!-- Knockout for event handling -->
         <script src="/js/knockout-3.4.0.min.js"></script>
         
+        <!-- Knockstrap to make buttons and things work 2-way between knockout and bootstrap -->
+        <script src="/js/knockstrap-1.3.2.min.js"></script>
+        
         <!-- Some of our own general helper functions -->
         <script src="/js/vrpipe-0.0.1.js"></script>
         <link rel="stylesheet" href="/css/vrpipe-0.0.1.css">
@@ -43,16 +46,16 @@
                     <div class="top-margin" data-bind="if: inflight.total() > 0">
                         <div class="progress" style="margin-bottom: 0">
                             <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
-                                <!-- ko if: inflight.delayPct() > 5 --><span data-bind="text: inflight.delay"></span> delayed<!-- /ko -->
+                                <span data-bind="text: inflight.delay"></span> delayed
                             </div>
                             <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
-                                <!-- ko if: inflight.readyPct() > 5 --><span data-bind="text: inflight.ready"></span> pending<!-- /ko -->
+                                <span data-bind="text: inflight.ready"></span> pending
                             </div>
                             <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
-                                <!-- ko if: inflight.runPct() > 5 --><span data-bind="text: inflight.run"></span> running<!-- /ko -->
+                                <span data-bind="text: inflight.run"></span> running
                             </div>
                             <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
-                                <!-- ko if: inflight.buryPct() > 5 --><span data-bind="text: inflight.bury"></span> buried<!-- /ko -->
+                                <span data-bind="text: inflight.bury"></span> buried
                             </div>
                         </div>
                     </div>
@@ -80,19 +83,19 @@
                         <div class="top-margin" data-bind="if: total() > 0">
                             <div class="progress" style="margin-bottom: 0">
                                 <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed">
-                                    <!-- ko if: delayPct() > 5 --><span data-bind="text: delay"></span> delayed<!-- /ko -->
+                                    <span data-bind="text: delay"></span> delayed
                                 </div>
                                 <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady">
-                                    <!-- ko if: readyPct() > 5 --><span data-bind="text: ready"></span> pending<!-- /ko -->
+                                    <span data-bind="text: ready"></span> pending
                                 </div>
                                 <div class="progress-bar progress-bar-striped active clickable" role="progressbar" data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning">
-                                    <!-- ko if: runPct() > 5 --><span data-bind="text: run"></span> running<!-- /ko -->
+                                    <span data-bind="text: run"></span> running
                                 </div>
                                 <div class="progress-bar progress-bar-striped progress-bar-danger clickable" role="progressbar" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried">
-                                    <!-- ko if: buryPct() > 5 --><span data-bind="text: bury"></span> buried<!-- /ko -->
+                                    <span data-bind="text: bury"></span> buried
                                 </div>
                                 <div class="progress-bar progress-bar-striped progress-bar-success clickable" role="progressbar" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete">
-                                    <!-- ko if: completePct() > 5 --><span data-bind="text: complete"></span> complete<!-- /ko -->
+                                    <span data-bind="text: complete"></span> complete
                                 </div>
                             </div>
                         </div>
@@ -169,12 +172,15 @@
                                         </dl>
                                     <!-- /ko -->
                                 </div>
-                                <div class="panel-footer">
+                                <div class="panel-footer clearfix">
                                     <!-- ko if: Similar -->
                                         + <span data-bind="text: Similar"></span> other commands
                                         <!-- ko if: Exitcode != 0  -->
                                             with same exit code and reason for failure
                                         <!-- /ko -->
+                                    <!-- /ko -->
+                                    <!-- ko if: State == "buried" -->
+                                        <button type="button" class="btn btn-primary pull-right" data-bind="click: $root.confirmRetry">Retry</button>
                                     <!-- /ko -->
                                 </div>
                             </div>
@@ -182,6 +188,28 @@
                     </div>
                 </div>
             </div>
+            
+            <!-- action modals -->
+            <div data-bind="modal: {
+                visible: actionModalVisible,
+                dialogCss: 'modal-sm',
+                header: { data: { label: actionModalHeader } },
+                body: { name: 'actionModalBodyTemplate', data: actionDetails },
+                footer: { name: 'actionModalFooterTemplate', data: actionDetails }
+            }"></div>
+            <script type="text/html" id="actionModalBodyTemplate">
+                Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>" that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
+            </script>
+            <script type="text/html" id="actionModalFooterTemplate">
+                <!-- ko if: count() > 1 -->
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: action() + ' all'"></button>
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action() + ' 1'"></button>
+                <!-- /ko -->
+                <!-- ko if: count() == 1 -->
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action"></button>
+                <!-- /ko -->
+                <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+            </script>
             
             <hr>
             
@@ -224,7 +252,7 @@
                     var total = self.inflight['delay']() + self.inflight['ready']() + self.inflight['run']() + self.inflight['bury']();
                     if (total > 0) {
                         var multiplier = 100 / total;
-                        var rounded = percentRounder([(multiplier * self.inflight['delay']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['run']()), (multiplier * self.inflight['bury']())]);
+                        var rounded = percentRounder([(multiplier * self.inflight['delay']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['run']()), (multiplier * self.inflight['bury']())], 2);
                         self.inflight['delayPct'](rounded[0]);
                         self.inflight['readyPct'](rounded[1]);
                         self.inflight['runPct'](rounded[2]);
@@ -292,7 +320,7 @@
                                     var total = repgroup['delay']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['complete']();
                                     if (total > 0) {
                                         var multiplier = 100 / total;
-                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['complete']())]);
+                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['complete']())], 2);
                                         
                                         // repgroup['delayPct'](rounded[0]);
                                         // repgroup['readyPct'](rounded[1]);
@@ -378,7 +406,6 @@
                                 to(to() + json['Count'])
                             }
                         } else if (json.hasOwnProperty('State')) {
-                            console.log(json)
                             rg = json['RepGroup']
                             if (self.detailsOA && rg == self.detailsRepgroup) {
                                 // the user has clicked on a progress bar for
@@ -399,19 +426,19 @@
                 // bar for a repGroup
                 self.showRepgroupDelayed = function(repGroup) {
                     self.showGroupState(repGroup, 'delayed');
-                }
+                };
                 self.showRepgroupReady = function(repGroup) {
                     self.showGroupState(repGroup, 'ready');
-                }
+                };
                 self.showRepgroupRunning = function(repGroup) {
                     self.showGroupState(repGroup, 'reserved'); // which includes 'running'
-                }
+                };
                 self.showRepgroupBuried = function(repGroup) {
                     self.showGroupState(repGroup, 'buried');
-                }
+                };
                 self.showRepgroupComplete = function(repGroup) {
                     self.showGroupState(repGroup, 'complete');
-                }
+                };
                 self.showGroupState = function(repGroup, state) {
                     if (self.detailsOA) {
                         self.detailsOA([]);
@@ -429,8 +456,54 @@
                     self.detailsRepgroup = repGroup.id;
                     self.detailsState = state;
                     self.detailsOA = repGroup.details;
-                    self.ws.send(JSON.stringify({ RepGroup: repGroup.id, State: state }));
+                    self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state }));
                 }
+                
+                // act if the user clicks one of the action buttons in the
+                // details of a progress bar
+                self.actionModalVisible = ko.observable(false);
+                self.actionModalHeader = ko.observable();
+                self.actionDetails = {
+                    action: ko.observable(),
+                    repGroup: ko.observable(),
+                    state: ko.observable(),
+                    exitCode: ko.observable(),
+                    failReason: ko.observable(),
+                    count: ko.observable()
+                };
+                self.jobToActionDetails = function(job, action) {
+                    self.actionDetails.action(action);
+                    self.actionDetails.repGroup(job.RepGroup);
+                    self.actionDetails.state(job.State);
+                    self.actionDetails.exitCode(job.Exitcode);
+                    self.actionDetails.failReason(job.FailReason);
+                    self.actionDetails.count(job.Similar + 1);
+                };
+                self.commitAction = function(all) {
+                    // request the action
+                    self.ws.send(JSON.stringify({
+                        Request: self.actionDetails.action(),
+                        RepGroup: self.actionDetails.repGroup(),
+                        State: self.actionDetails.state(),
+                        Exitcode: self.actionDetails.exitCode(),
+                        FailReason: self.actionDetails.failReason(),
+                        All: all
+                    }));
+                    
+                    // reset the ui
+                    if (self.detailsOA) {
+                        self.detailsOA([]);
+                    }
+                    self.detailsRepgroup = '';
+                    self.detailsState = '';
+                    self.detailsOA = '';
+                    self.actionModalVisible(false);
+                };
+                self.confirmRetry = function(job) {
+                    self.jobToActionDetails(job, 'retry');
+                    self.actionModalHeader('Retry Buried Commands');
+                    self.actionModalVisible(true);
+                };
             }
             var svm = new StatusViewModel();
             ko.applyBindings(svm, $('#status')[0]);
