@@ -30,6 +30,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ var schedgrp string
 var runnermodetmpdir string
 var rdeployment string
 var rserver string
+var rtimeout int
 
 func init() {
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
@@ -48,6 +50,7 @@ func init() {
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
+	flag.IntVar(&rtimeout, "rtimeout", 1, "reserve timeout for runnermode")
 	flag.StringVar(&runnermodetmpdir, "tmpdir", "", "tmp dir for runnermode")
 }
 
@@ -258,13 +261,44 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "ready")
 				}
 
-				jobs, err = jq.GetByRepGroup("manually_added", 0, "")
+				jobs, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 10)
 
-				jobs, err = jq.GetByRepGroup("foo", 0, "")
+				jobs, err = jq.GetByRepGroup("foo", 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 0)
+			})
+
+			Convey("You can store their (fake) runtime stats and get recommendations", func() {
+				for index, job := range jobs {
+					job.Peakmem = index + 1
+					job.starttime = time.Now()
+					job.endtime = job.starttime.Add(time.Duration(index+1) * time.Second)
+					server.db.updateJobAfterExit(job, []byte{}, []byte{})
+				}
+				<-time.After(100 * time.Millisecond)
+				rmem, err := server.db.recommendedReqGroupMemory("fake_group")
+				So(err, ShouldBeNil)
+				So(rmem, ShouldEqual, 10)
+				rtime, err := server.db.recommendedReqGroupTime("fake_group")
+				So(err, ShouldBeNil)
+				So(rtime, ShouldEqual, 10)
+
+				for i := 11; i <= 100; i++ {
+					job := NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), "manually_added")
+					job.Peakmem = i * 100
+					job.starttime = time.Now()
+					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
+					server.db.updateJobAfterExit(job, []byte{}, []byte{})
+				}
+				<-time.After(100 * time.Millisecond)
+				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
+				So(err, ShouldBeNil)
+				So(rmem, ShouldEqual, 9500)
+				rtime, err = server.db.recommendedReqGroupTime("fake_group")
+				So(err, ShouldBeNil)
+				So(rtime, ShouldEqual, 10800)
 			})
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {
@@ -541,12 +575,12 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Attempts, ShouldEqual, 1)
 
 				Convey("Both current and archived jobs can be retrieved with GetByRepGroup", func() {
-					jobs, err := jq.GetByRepGroup("manually_added", 0, "")
+					jobs, err := jq.GetByRepGroup("manually_added", 0, "", false, false)
 					So(err, ShouldBeNil)
 					So(len(jobs), ShouldEqual, 2)
 
 					Convey("But only current jobs are retrieved with GetIncomplete", func() {
-						jobs, err := jq.GetIncomplete(0, "")
+						jobs, err := jq.GetIncomplete(0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 1)
 						So(jobs[0].Cmd, ShouldEqual, "sleep 0.1 && false")
@@ -781,10 +815,10 @@ func TestJobqueue(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, 0)
 					stdout, err := job.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, "print\n")
+					So(stdout, ShouldEqual, "print")
 					stderr, err := job.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, "warn\n")
+					So(stderr, ShouldEqual, "warn")
 
 					job2, err := jq2.GetByCmd("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", true, false)
 					So(err, ShouldBeNil)
@@ -804,6 +838,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.Runner_exec_shell)
+					<-time.After(50 * time.Millisecond)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
@@ -811,10 +846,10 @@ func TestJobqueue(t *testing.T) {
 					So(job.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, "print\n")
+					So(stdout, ShouldEqual, "print")
 					stderr, err = job.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, "die\n")
+					So(stderr, ShouldEqual, "die")
 
 					job2, err = jq2.GetByCmd("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", true, false)
 					So(err, ShouldBeNil)
@@ -823,10 +858,10 @@ func TestJobqueue(t *testing.T) {
 					So(job2.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, "print\n")
+					So(stdout, ShouldEqual, "print")
 					stderr, err = job2.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, "die\n")
+					So(stderr, ShouldEqual, "die")
 				})
 
 				Convey("The stdout/err of jobs is limited in size", func() {
@@ -856,7 +891,8 @@ func TestJobqueue(t *testing.T) {
 							expectederr += "w\n"
 						}
 					}
-					expectederr += "Died at -e line 1.\n"
+					expectederr += "Died at -e line 1."
+					expectedout = strings.TrimSpace(expectedout)
 
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
@@ -864,6 +900,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.Runner_exec_shell)
+					<-time.After(50 * time.Millisecond)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
@@ -913,6 +950,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.Runner_exec_shell)
+					<-time.After(100 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, "complete")
 					So(job.Exited, ShouldBeTrue)
@@ -935,6 +973,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.Runner_exec_shell)
+					<-time.After(100 * time.Millisecond)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'] was running fine, but will need to be rerun due to a jobqueue server error")
 					// because Execute() just returns in this situation, job.* won't be updated,
@@ -968,7 +1007,7 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
-		server, _, err = Serve(port, webport, "local", config.Runner_exec_shell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --tmpdir "+runnertmpdir, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment) // +" > /dev/null 2>&1"
+		server, _, err = Serve(port, webport, "local", config.Runner_exec_shell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --tmpdir "+runnertmpdir, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment) // +" > /dev/null 2>&1"
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
@@ -999,7 +1038,7 @@ func TestJobqueue(t *testing.T) {
 				// to take ~45 seconds though!
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(60 * time.Second)
+					limit := time.After(120 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {
@@ -1191,7 +1230,7 @@ func runner() {
 	addr := rserver
 
 	timeout := 6 * time.Second
-	rtimeout := 1 * time.Second
+	rtimeoutd := time.Duration(rtimeout) * time.Second
 
 	jq, err := Connect(addr, queuename, timeout)
 
@@ -1205,7 +1244,7 @@ func runner() {
 	defer jq.Disconnect()
 
 	for {
-		job, err := jq.ReserveScheduled(rtimeout, schedgrp)
+		job, err := jq.ReserveScheduled(rtimeoutd, schedgrp)
 		if err != nil {
 			log.Fatalf("reserve err: %s\n", err)
 		}

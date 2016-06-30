@@ -186,7 +186,7 @@ type Server struct {
 	sgroupcounts map[string]int
 	sgtr         map[string]*scheduler.Requirements
 	sgcmutex     sync.Mutex
-	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr)
+	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout)
 	statusCaster *bcast.Group
 }
 
@@ -598,7 +598,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 										s.db.deleteLiveJob(key)
 										toDelete = append(toDelete, key)
 										if stats.State != "bury" {
-											s.decrementGroupCount(job, q)
+											s.decrementGroupCount(job.schedulerGroup, q)
 										}
 									}
 									if !req.All {
@@ -720,11 +720,50 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 			// calculate, set and count jobs by schedulerGroup
 			groups := make(map[string]int)
+			recMBs := make(map[string]int)
+			recSecs := make(map[string]int)
 			for _, inter := range allitemdata {
 				job := inter.(*Job)
-				//*** get memory and time estimates from history, depending on
-				// job.Override, and round them a little to get fewer larger
+				// depending on job.Override, get memory and time
+				// recommendations, which are rounded to get fewer larger
 				// groups
+				if job.Override != 2 {
+					var recm int
+					var done bool
+					var err error
+					if recm, done = recMBs[job.ReqGroup]; !done {
+						recm, err = s.db.recommendedReqGroupMemory(job.ReqGroup)
+						if err == nil {
+							recMBs[job.ReqGroup] = recm
+						}
+					}
+					if recm == 0 {
+						recm = job.Memory
+					}
+
+					var recs int
+					if recs, done = recSecs[job.ReqGroup]; !done {
+						recs, err = s.db.recommendedReqGroupTime(job.ReqGroup)
+						if err == nil {
+							recSecs[job.ReqGroup] = recs
+						}
+					}
+					if recs == 0 {
+						recs = int(job.Time.Seconds())
+					}
+
+					if job.Override == 1 {
+						if recm > job.Memory {
+							job.Memory = recm
+						}
+						if recs > int(job.Time.Seconds()) {
+							job.Time = time.Duration(recs) * time.Second
+						}
+					} else {
+						job.Memory = recm
+						job.Time = time.Duration(recs) * time.Second
+					}
+				}
 				req := &scheduler.Requirements{job.Memory, job.Time, job.CPUs, ""} //*** how to pass though scheduler extra args?
 				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.Memory, req.Time.Minutes(), req.CPUs)
 
@@ -750,7 +789,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					s.sgcmutex.Lock()
 					s.sgroupcounts[group] = count
 					s.sgcmutex.Unlock()
+					//log.Printf("readycallback set group [%s] count to %d\n", group, count)
 					s.scheduleRunners(q, group)
+				}
+
+				// clear out groups we no longer need
+				for group, _ := range s.sgroupcounts {
+					if _, needed := groups[group]; !needed {
+						s.clearSchedulerGroup(group, q)
+					}
 				}
 			}
 		})
@@ -975,11 +1022,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.Peakmem = cr.Job.Peakmem
 			job.CPUtime = cr.Job.CPUtime
 			job.endtime = time.Now()
-			err := s.db.updateJobStd(jobKey(job), cr.Job.Exitcode, cr.Job.StdOutC, cr.Job.StdErrC)
-			if err != nil {
-				srerr = ErrDBError
-				qerr = err.Error()
-			}
+			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC)
 		}
 	case "jarchive":
 		// remove the job from the queue, rpl and live bucket and add to
@@ -1010,7 +1053,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						}
 						s.rpl.Unlock()
 
-						s.decrementGroupCount(job, q)
+						//log.Println("jarchive will decrement")
+						s.decrementGroupCount(job.schedulerGroup, q)
 					}
 				}
 			}
@@ -1058,7 +1102,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrInternalError
 				qerr = err.Error()
 			} else {
-				s.decrementGroupCount(job, q)
+				//log.Println("jbury will decrement")
+				s.decrementGroupCount(job.schedulerGroup, q)
 			}
 		}
 	case "jkick":
@@ -1310,80 +1355,111 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 		return
 	}
 
+	doClear := false
+
 	s.sgcmutex.Lock()
 	if s.sgroupcounts[group] < 0 {
 		s.sgroupcounts[group] = 0
+		doClear = true
 	}
 
-	err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr), req, s.sgroupcounts[group])
-	if err != nil {
-		problem := true
-		if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
-			// bury all jobs in this scheduler group
-			problem = false
-			rf := func(data interface{}) bool {
-				job := data.(*Job)
-				if job.schedulerGroup == group {
-					return true
+	if !doClear {
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, s.sgroupcounts[group])
+		if err != nil {
+			problem := true
+			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
+				// bury all jobs in this scheduler group
+				problem = false
+				rf := func(data interface{}) bool {
+					job := data.(*Job)
+					if job.schedulerGroup == group {
+						return true
+					}
+					return false
 				}
-				return false
+				for {
+					item, err := q.ReserveFiltered(rf)
+					if err != nil {
+						problem = true
+						break
+					}
+					if item == nil {
+						break
+					}
+					job := item.Data.(*Job)
+					job.FailReason = FailReasonResource
+					q.Bury(item.Key)
+					s.sgroupcounts[group]--
+				}
+				if !problem {
+					doClear = true
+				}
 			}
-			for {
-				item, err := q.ReserveFiltered(rf)
-				if err != nil {
-					problem = true
-					break
-				}
-				if item == nil {
-					break
-				}
-				job := item.Data.(*Job)
-				job.FailReason = FailReasonResource
-				q.Bury(item.Key)
-				s.sgroupcounts[group]--
-			}
-			if !problem {
-				delete(s.sgroupcounts, group)
-				delete(s.sgtr, group)
+
+			if problem {
+				// log the error *** and inform (by email) the user about this
+				// problem if it's persistent, once per hour (day?)
+				log.Println(err)
+
+				// retry the schedule in a while
+				s.sgcmutex.Unlock()
+				go func() {
+					<-time.After(1 * time.Minute)
+					s.scheduleRunners(q, group)
+				}()
+				return
 			}
 		}
-
-		if problem {
-			// log the error *** and inform (by email) the user about this
-			// problem if it's persistent, once per hour (day?)
-			log.Println(err)
-
-			// retry the schedule in a while
-			s.sgcmutex.Unlock()
-			go func() {
-				<-time.After(1 * time.Minute)
-				s.scheduleRunners(q, group)
-			}()
-			return
-		}
 	}
-	if s.sgroupcounts[group] <= 0 {
-		delete(s.sgroupcounts, group)
-		delete(s.sgtr, group)
-	}
+
 	s.sgcmutex.Unlock()
+	if doClear {
+		//log.Printf("group [%s] count dropped to 0, will clear\n", group)
+		s.clearSchedulerGroup(group, q)
+	}
 }
 
-// adjust our count of how many jobs with this job's
-// scheduler group we need in the job scheduler
-func (s *Server) decrementGroupCount(job *Job, q *queue.Queue) {
+// adjust our count of how many jobs with this schedulerGroup we need in the job
+// scheduler.
+func (s *Server) decrementGroupCount(schedulerGroup string, q *queue.Queue) {
+	if s.rc != "" {
+		doSchedule := false
+		s.sgcmutex.Lock()
+		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
+			s.sgroupcounts[schedulerGroup]--
+			doSchedule = true
+			//log.Printf("decremented group [%s] to %d\n", schedulerGroup, s.sgroupcounts[schedulerGroup])
+		}
+		s.sgcmutex.Unlock()
+
+		if doSchedule {
+			// notify the job scheduler we need less jobs for this job's cmd now;
+			// it will remove extraneous ones from its queue
+			s.scheduleRunners(q, schedulerGroup)
+		}
+	}
+}
+
+// when we no longer need a schedulerGroup in the job scheduler, clean up and
+// make sure the job scheduler knows we don't need any runners for this group.
+func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 	if s.rc != "" {
 		s.sgcmutex.Lock()
-		s.sgroupcounts[job.schedulerGroup]--
+		req, hadreq := s.sgtr[schedulerGroup]
+		if !hadreq {
+			s.sgcmutex.Unlock()
+			return
+		}
+		delete(s.sgroupcounts, schedulerGroup)
+		delete(s.sgtr, schedulerGroup)
+		//log.Printf("telling scheduler we need 0 for group [%s]\n", schedulerGroup)
+		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, 0)
 		s.sgcmutex.Unlock()
-		// notify the job scheduler we need less jobs for this job's cmd now;
-		// it will remove extraneous ones from its queue
-		s.scheduleRunners(q, job.schedulerGroup)
 	}
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
-// the desired item and job
+// the desired item and job.
 func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job *Job, errs string) {
 	// clientRequest must have a Job
 	if cr.Job == nil {
@@ -1406,7 +1482,7 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 }
 
 // for the many get* methods in handleRequest, we do this common stuff to get
-// an item's job from the in-memory queue formulated for the client
+// an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job) {
 	sjob := item.Data.(*Job)
 	stats := item.Stats()
@@ -1485,7 +1561,7 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) (err error) {
 }
 
 // shutdown stops listening to client connections, close all queues and
-// persists them to disk
+// persists them to disk.
 func (s *Server) shutdown() {
 	s.sock.Close()
 	s.db.close()
