@@ -43,6 +43,10 @@ func TestLocal(t *testing.T) {
 		possibleReq := &Requirements{1, 1 * time.Second, 1, ""}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
 
+		Convey("ReserveTimeout() returns 1 second", func() {
+			So(s.ReserveTimeout(), ShouldEqual, 1)
+		})
+
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)
 		})
@@ -205,6 +209,10 @@ func TestLSF(t *testing.T) {
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, ""}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
+
+		Convey("ReserveTimeout() returns 25 seconds", func() {
+			So(s.ReserveTimeout(), ShouldEqual, 25)
+		})
 
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to

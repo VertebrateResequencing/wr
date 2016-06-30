@@ -39,10 +39,11 @@ import (
 )
 
 const (
-	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	randIdxBits = 6                  // 6 bits to represent a rand index
-	randIdxMask = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
-	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+	randBytes             = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randIdxBits           = 6                  // 6 bits to represent a rand index
+	randIdxMask           = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	randIdxMax            = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+	defaultReserveTimeout = 25                 // implementers of reserveTimeout can just return this
 )
 
 var (
@@ -86,6 +87,7 @@ type scheduleri interface {
 	initialize(deployment string, shell string) error        // do any initial set up to be able to use the job scheduler
 	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
 	busy() bool                                              // achieve the aims of Busy()
+	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
@@ -137,6 +139,12 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 // running/ about to run.
 func (s *Scheduler) Busy() bool {
 	return s.impl.busy()
+}
+
+// ReserveTimeout() returns the number of seconds that runners spawned in this
+// scheduler should wait for new jobs to appear in the manager's queue.
+func (s *Scheduler) ReserveTimeout() int {
+	return s.impl.reserveTimeout()
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

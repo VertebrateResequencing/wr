@@ -363,6 +363,11 @@ func (s *lsf) initialize(deployment string, shell string) error {
 	return nil
 }
 
+// reserveTimeout achieves the aims of ReserveTimeout().
+func (s *lsf) reserveTimeout() int {
+	return defaultReserveTimeout
+}
+
 // schedule achieves the aims of Schedule(). Note that if rescheduling a cmd
 // at a lower count, we cannot guarantee that only that number get run; it may
 // end up being a few more.
