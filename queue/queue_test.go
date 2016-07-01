@@ -117,6 +117,11 @@ func TestQueue(t *testing.T) {
 			readyAddedTestEnable = false
 			changedTestEnable = false
 
+			readyAddedTestEnable = true
+			queue.TriggerReadyAddedCallback()
+			So(<-readyAddedChan, ShouldEqual, 3)
+			readyAddedTestEnable = false
+
 			Convey("Once ready you should be able to reserve them in the expected order", func() {
 				item1, err := queue.Reserve()
 				So(err, ShouldBeNil)

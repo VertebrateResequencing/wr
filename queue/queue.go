@@ -158,6 +158,13 @@ func (queue *Queue) SetReadyAddedCallback(callback readyAddedCallback) {
 	queue.readyAddedCb = callback
 }
 
+// TriggerReadyAddedCallback allows you to manually trigger your
+// readyAddedCallback at times when no new items have been added to the ready
+// queue.
+func (queue *Queue) TriggerReadyAddedCallback() {
+	queue.readyAdded()
+}
+
 // readyAdded checks if a readyAddedCallback has been set, and if so calls it
 // in a go routine.
 func (queue *Queue) readyAdded() {
