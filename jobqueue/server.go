@@ -184,6 +184,7 @@ type Server struct {
 	rpl          *rgToKeys
 	scheduler    *scheduler.Scheduler
 	sgroupcounts map[string]int
+	sgrouptrigs  map[string]int
 	sgtr         map[string]*scheduler.Requirements
 	sgcmutex     sync.Mutex
 	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout)
@@ -297,6 +298,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 		up:           true,
 		scheduler:    sch,
 		sgroupcounts: make(map[string]int),
+		sgrouptrigs:  make(map[string]int),
 		sgtr:         make(map[string]*scheduler.Requirements),
 		rc:           runnerCmd,
 		statusCaster: bcast.NewGroup(),
@@ -722,11 +724,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			groups := make(map[string]int)
 			recMBs := make(map[string]int)
 			recSecs := make(map[string]int)
+			noRecGroups := make(map[string]bool)
 			for _, inter := range allitemdata {
 				job := inter.(*Job)
 				// depending on job.Override, get memory and time
 				// recommendations, which are rounded to get fewer larger
 				// groups
+				noRec := false
 				if job.Override != 2 {
 					var recm int
 					var done bool
@@ -739,6 +743,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 					if recm == 0 {
 						recm = job.Memory
+						noRec = true
 					}
 
 					var recs int
@@ -750,6 +755,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 					if recs == 0 {
 						recs = int(job.Time.Seconds())
+						noRec = true
 					}
 
 					if job.Override == 1 {
@@ -769,6 +775,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 				if s.rc != "" {
 					groups[job.schedulerGroup]++
+
+					if noRec {
+						noRecGroups[job.schedulerGroup] = true
+					}
 
 					s.sgcmutex.Lock()
 					if _, set := s.sgtr[job.schedulerGroup]; !set {
@@ -791,12 +801,21 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					s.sgcmutex.Unlock()
 					//log.Printf("readycallback set group [%s] count to %d\n", group, count)
 					s.scheduleRunners(q, group)
+
+					if _, noRec := noRecGroups[group]; noRec && count > 100 {
+						s.sgrouptrigs[group] = 0
+					}
 				}
 
 				// clear out groups we no longer need
 				for group, _ := range s.sgroupcounts {
 					if _, needed := groups[group]; !needed {
 						s.clearSchedulerGroup(group, q)
+					}
+				}
+				for group, _ := range s.sgrouptrigs {
+					if _, needed := groups[group]; !needed {
+						delete(s.sgrouptrigs, group)
 					}
 				}
 			}
@@ -1424,15 +1443,31 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 func (s *Server) decrementGroupCount(schedulerGroup string, q *queue.Queue) {
 	if s.rc != "" {
 		doSchedule := false
+		doTrigger := false
 		s.sgcmutex.Lock()
 		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
 			s.sgroupcounts[schedulerGroup]--
 			doSchedule = true
 			//log.Printf("decremented group [%s] to %d\n", schedulerGroup, s.sgroupcounts[schedulerGroup])
+			if count, set := s.sgrouptrigs[schedulerGroup]; set {
+				s.sgrouptrigs[schedulerGroup]++
+				if count >= 100 {
+					s.sgrouptrigs[schedulerGroup] = 0
+					if s.sgroupcounts[schedulerGroup] > 10 {
+						doTrigger = true
+					}
+				}
+			}
 		}
 		s.sgcmutex.Unlock()
 
-		if doSchedule {
+		if doTrigger {
+			// we most likely have completed 100 more jobs for this group, so
+			// we'll trigger our ready callback which will re-calculate the
+			// best resource requirements for the remaining jobs in the group
+			// and then call scheduleRunners
+			q.TriggerReadyAddedCallback()
+		} else if doSchedule {
 			// notify the job scheduler we need less jobs for this job's cmd now;
 			// it will remove extraneous ones from its queue
 			s.scheduleRunners(q, schedulerGroup)
@@ -1451,6 +1486,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 			return
 		}
 		delete(s.sgroupcounts, schedulerGroup)
+		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		//log.Printf("telling scheduler we need 0 for group [%s]\n", schedulerGroup)
 		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, 0)
