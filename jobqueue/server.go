@@ -1369,21 +1369,24 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 		return
 	}
 
+	s.sgcmutex.Lock()
 	req, hadreq := s.sgtr[group]
 	if !hadreq {
+		s.sgcmutex.Unlock()
 		return
 	}
 
 	doClear := false
-
-	s.sgcmutex.Lock()
-	if s.sgroupcounts[group] < 0 {
+	groupCount := s.sgroupcounts[group]
+	if groupCount < 0 {
 		s.sgroupcounts[group] = 0
+		groupCount = 0
 		doClear = true
 	}
+	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, s.sgroupcounts[group])
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -1396,6 +1399,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 					}
 					return false
 				}
+				s.sgcmutex.Lock()
 				for {
 					item, err := q.ReserveFiltered(rf)
 					if err != nil {
@@ -1410,6 +1414,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 					q.Bury(item.Key)
 					s.sgroupcounts[group]--
 				}
+				s.sgcmutex.Unlock()
 				if !problem {
 					doClear = true
 				}
@@ -1421,7 +1426,6 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 				log.Println(err)
 
 				// retry the schedule in a while
-				s.sgcmutex.Unlock()
 				go func() {
 					<-time.After(1 * time.Minute)
 					s.scheduleRunners(q, group)
@@ -1431,7 +1435,6 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 		}
 	}
 
-	s.sgcmutex.Unlock()
 	if doClear {
 		//log.Printf("group [%s] count dropped to 0, will clear\n", group)
 		s.clearSchedulerGroup(group, q)
@@ -1488,9 +1491,9 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 		delete(s.sgroupcounts, schedulerGroup)
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
+		s.sgcmutex.Unlock()
 		//log.Printf("telling scheduler we need 0 for group [%s]\n", schedulerGroup)
 		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, 0)
-		s.sgcmutex.Unlock()
 	}
 }
 
