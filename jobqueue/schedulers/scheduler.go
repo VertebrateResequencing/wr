@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -93,8 +94,10 @@ type scheduleri interface {
 // the Scheduler struct gives you access to all of the methods you'll need to
 // interact with a job scheduler.
 type Scheduler struct {
-	impl scheduleri
-	Name string
+	impl    scheduleri
+	Name    string
+	limiter map[string]int
+	sync.Mutex
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
@@ -113,6 +116,7 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 		err = Error{name, "New", ErrBadScheduler}
 	} else {
 		s.Name = name
+		s.limiter = make(map[string]int)
 		err = s.impl.initialize(deployment, shell)
 	}
 
@@ -130,7 +134,34 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 // will eventually run unless you call Schedule() again with the same command
 // and a lower count.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
-	return s.impl.schedule(cmd, req, count)
+	// Schedule may get called many times in different go routines, eg. a
+	// succession of calls with the same cmd and req but decrementing count.
+	// Here we arrange that impl.schedule is only called once at a time per
+	// cmd: if not already running we call as normal; if running we don't run
+	// it but return immediately while storing the more recent desired count;
+	// when it finishes running, we re-run with the most recent count, if any
+	s.Lock()
+	if _, limited := s.limiter[cmd]; limited {
+		s.limiter[cmd] = count
+		s.Unlock()
+		return nil
+	}
+	s.limiter[cmd] = count
+	s.Unlock()
+
+	err := s.impl.schedule(cmd, req, count)
+
+	s.Lock()
+	if newcount, limited := s.limiter[cmd]; limited {
+		delete(s.limiter, cmd)
+		s.Unlock()
+		if newcount != count {
+			return s.Schedule(cmd, req, newcount)
+		}
+	} else {
+		s.Unlock()
+	}
+	return err
 }
 
 // Busy reports true if there are any Schedule()d cmds still in the job
