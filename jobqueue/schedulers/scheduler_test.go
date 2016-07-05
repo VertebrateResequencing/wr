@@ -345,7 +345,7 @@ func TestLSF(t *testing.T) {
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
 				numfiles = testDirForFiles(tmpdir)
-				So(numfiles, ShouldBeBetweenOrEqual, newcount, newcount+maxCPU) // we must allow it to run a few extra due to the implementation
+				So(numfiles, ShouldBeBetweenOrEqual, newcount, numfiles*2) // we must allow it to run a few extra due to the implementation
 			})
 		})
 
