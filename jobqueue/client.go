@@ -410,11 +410,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// peak memory is used to schedule us in the job scheduler, which may
 	// kill us for using more memory than expected: we need to allow for our
 	// own memory usage
-	ourmem, err := currentMemory(os.Getpid())
-	if err != nil {
+	ourmem, cmerr := currentMemory(os.Getpid())
+	if cmerr != nil {
 		ourmem = 10
 	}
-	peakmem += ourmem + 4 // +4 for a little leeway for memory usage vagaries
+	peakmem += ourmem + 40 // +40 for a little leeway for memory usage vagaries
 
 	// get the exit code and figure out what to do with the Job
 	exitcode := 0
