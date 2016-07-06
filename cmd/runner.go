@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"fmt"
 	"github.com/sb10/vrpipe/internal"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/spf13/cobra"
@@ -61,6 +62,7 @@ needed.`,
 		// loop, reserving and running commands from the queue, until there
 		// aren't any more commands in the queue
 		numrun := 0
+		exitReason := fmt.Sprintf("there are no more commands in queue '%s' in scheduler group '%s'", queuename, schedgrp)
 		for {
 			var job *jobqueue.Job
 			var err error
@@ -82,6 +84,7 @@ needed.`,
 			if err != nil {
 				warn("%s", err)
 				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {
+					exitReason = "we received a signal to stop"
 					break
 				}
 			} else {
@@ -91,7 +94,7 @@ needed.`,
 			numrun++
 		}
 
-		info("vrpipe runner exiting, having run %d commands, because there are no more commands in queue '%s' in scheduler group '%s'", numrun, queuename, schedgrp)
+		info("vrpipe runner exiting, having run %d commands, because %s", numrun, exitReason)
 	},
 }
 
@@ -102,6 +105,6 @@ func init() {
 	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "cmds", "specify the queue to pull commands from")
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
-	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 25, "how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of vrpipe manager")
 }

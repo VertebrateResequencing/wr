@@ -44,7 +44,7 @@ const (
 	randIdxBits           = 6                  // 6 bits to represent a rand index
 	randIdxMask           = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
 	randIdxMax            = 63 / randIdxBits   // # of letter indices fitting in 63 bits
-	defaultReserveTimeout = 25                 // implementers of reserveTimeout can just return this
+	defaultReserveTimeout = 1                  // implementers of reserveTimeout can just return this
 )
 
 var (
