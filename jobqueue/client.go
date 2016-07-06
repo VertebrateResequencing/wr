@@ -414,7 +414,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if cmerr != nil {
 		ourmem = 10
 	}
-	peakmem += ourmem + 40 // +40 for a little leeway for memory usage vagaries
+	peakmem += ourmem
 
 	// get the exit code and figure out what to do with the Job
 	exitcode := 0

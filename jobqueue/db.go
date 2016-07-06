@@ -375,8 +375,8 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 // all jobs that previously ran with the given reqGroup. If there are too few
 // prior values to calculate a 95th percentile, or if the 95th percentile is
 // very close to the maximum value, returns the maximum value instead. In either
-// case, the true value is rounded up to the nearest 100 MB unless below 100MB.
-// Returns 0 if there are no prior values.
+// case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
+// are no prior values.
 func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
 	mbs, err = db.recommendedReqGroupStat(bucketJobMBs, reqGroup, 100)
 	return
@@ -439,7 +439,7 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		recommendation = max
 	}
 
-	if recommendation > roundAmount && recommendation%roundAmount > 0 {
+	if recommendation%roundAmount > 0 {
 		recommendation = int(math.Ceil(float64(recommendation)/float64(roundAmount))) * roundAmount
 	}
 

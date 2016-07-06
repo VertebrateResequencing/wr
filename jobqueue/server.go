@@ -770,7 +770,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						job.Time = time.Duration(recs) * time.Second
 					}
 				}
-				req := &scheduler.Requirements{job.Memory, job.Time, job.CPUs, ""} //*** how to pass though scheduler extra args?
+
+				// our req will be job memory + 100 to allow some leeway in
+				// case the job scheduler calculates used memory differently,
+				// and for other memory usage vagaries
+				req := &scheduler.Requirements{job.Memory + 100, job.Time, job.CPUs, ""} // *** how to pass though scheduler extra args?
 				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.Memory, req.Time.Minutes(), req.CPUs)
 
 				if s.rc != "" {
