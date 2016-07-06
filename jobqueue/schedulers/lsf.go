@@ -626,7 +626,7 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 		line := bjScanner.Text()
 
 		if matches := reParse.FindStringSubmatch(line); matches != nil && len(matches) == 4 {
-			if matches[2] == "EXIT" {
+			if matches[2] == "EXIT" || matches[2] == "DONE" {
 				continue
 			}
 			callback(matches)
