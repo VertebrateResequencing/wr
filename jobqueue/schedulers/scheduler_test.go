@@ -211,7 +211,7 @@ func TestLSF(t *testing.T) {
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
-			So(s.ReserveTimeout(), ShouldEqual, 25)
+			So(s.ReserveTimeout(), ShouldEqual, 1)
 		})
 
 		// author specific tests, based on hostname, where we know what the
