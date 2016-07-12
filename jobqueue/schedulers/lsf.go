@@ -543,32 +543,37 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 	if max >= 0 {
 		// to avoid a race condition where we collect id[index]s to kill here,
 		// then later kill them all, though some may have started running by
-		// then, we just collect the jod ids now, then later we'll bmod to allow
+		// then, we used to collect the jod ids now, then later bmod to allow
 		// 0 running, then repeat the bjobs to find the ones to kill, kill them,
-		// then bmod back to allowing lots to run
-		modIds := make(map[string]bool)
-		cb := func(matches []string) {
-			if matches[2] != "RUN" {
-				modIds[matches[1]] = true
-			}
-		}
-		s.parseBjobs(jobPrefix, cb)
+		// then bmod back to allowing lots to run. However, use of bmod resulted
+		// in big rescheduling delays, and overall it seemed better (in terms of
+		// getting jobs run quicker) to all the race condition and allow some
+		// cmds to start running and then get killed. Hence the bmod-related
+		// code is now commented out.
 
-		toMod := make([]string, len(modIds)+1)
-		if len(modIds) > 0 {
-			toMod[0] = "-J%0"
-			i := 1
-			for k := range modIds {
-				toMod[i] = k
-				i++
-			}
-			modcmd := exec.Command("bmod", toMod...)
-			modcmd.Run()
-		}
+		// modIds := make(map[string]bool)
+		// cb := func(matches []string) {
+		// 	if matches[2] != "RUN" {
+		// 		modIds[matches[1]] = true
+		// 	}
+		// }
+		// s.parseBjobs(jobPrefix, cb)
+
+		// toMod := make([]string, len(modIds)+1)
+		// if len(modIds) > 0 {
+		// 	toMod[0] = "-J%0"
+		// 	i := 1
+		// 	for k := range modIds {
+		// 		toMod[i] = k
+		// 		i++
+		// 	}
+		// 	modcmd := exec.Command("bmod", toMod...)
+		// 	modcmd.Run()
+		// }
 
 		reAid := regexp.MustCompile(`\[(\d+)\]$`)
 		toKill := []string{"-b"}
-		cb = func(matches []string) {
+		cb := func(matches []string) {
 			count++
 			if count > max && matches[2] != "RUN" {
 				sidaid := matches[1]
@@ -586,11 +591,11 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 			killcmd.Run()
 		}
 
-		if len(modIds) > 0 {
-			toMod[0] = "-J%1000000"
-			modcmd := exec.Command("bmod", toMod...)
-			modcmd.Run()
-		}
+		// if len(modIds) > 0 {
+		// 	toMod[0] = "-J%1000000"
+		// 	modcmd := exec.Command("bmod", toMod...)
+		// 	modcmd.Run()
+		// }
 	} else {
 		cb := func(matches []string) {
 			count++
