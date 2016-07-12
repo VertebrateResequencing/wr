@@ -387,7 +387,7 @@ func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
 // values to calculate a 95th percentile, or if the 95th percentile is very
 // close to the maximum value, returns the maximum value instead. In either
 // case, the true value is rounded up to the nearest 30mins (but returned in
-// seconds) unless below 30 mins. Returns 0 if there are no prior values.
+// seconds). Returns 0 if there are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (seconds int, err error) {
 	seconds, err = db.recommendedReqGroupStat(bucketJobSecs, reqGroup, 1800)
 	return

@@ -924,14 +924,29 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			var err error
 			var rf queue.ReserveFilter
 			if cr.SchedulerGroup != "" {
-				rf = func(data interface{}) bool {
-					job := data.(*Job)
-					if job.schedulerGroup == cr.SchedulerGroup {
-						return true
+				// if this is the first job that the client is trying to
+				// reserve, and if we don't actually want any more clients
+				// working on this schedulerGroup, we'll just act as if nothing
+				// was ready
+				skip := false
+				if cr.FirstReserve && s.rc != "" {
+					s.sgcmutex.Lock()
+					if count, existed := s.sgroupcounts[cr.SchedulerGroup]; !existed || count == 0 {
+						skip = true
 					}
-					return false
+					s.sgcmutex.Unlock()
 				}
-				item, err = q.ReserveFiltered(rf)
+
+				if !skip {
+					rf = func(data interface{}) bool {
+						job := data.(*Job)
+						if job.schedulerGroup == cr.SchedulerGroup {
+							return true
+						}
+						return false
+					}
+					item, err = q.ReserveFiltered(rf)
+				}
 			} else {
 				item, err = q.Reserve()
 			}

@@ -86,6 +86,7 @@ type clientRequest struct {
 	GetEnv         bool
 	Limit          int
 	State          string
+	FirstReserve   bool
 }
 
 // Job is a struct that represents a command that needs to be run and some
@@ -150,10 +151,11 @@ func NewJob(cmd string, cwd string, group string, memory int, time time.Duration
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue
 type Client struct {
-	sock     mangos.Socket
-	queue    string
-	ch       codec.Handle
-	clientid uuid.UUID
+	sock        mangos.Socket
+	queue       string
+	ch          codec.Handle
+	clientid    uuid.UUID
+	hasReserved bool
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility
@@ -263,7 +265,12 @@ func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
 // argument, nil is returned for both job and error. If your timeout is 0, you
 // will wait indefinitely for a job.
 func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid})
+	fr := false
+	if !c.hasReserved {
+		fr = true
+		c.hasReserved = true
+	}
+	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid, FirstReserve: fr})
 	if err != nil {
 		return
 	}
@@ -281,7 +288,12 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 // that they're supposed to. Therefore, it does not make sense for you to call
 // this yourself; it is only for use by runners spawned by the server.
 func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid, SchedulerGroup: schedulerGroup})
+	fr := false
+	if !c.hasReserved {
+		fr = true
+		c.hasReserved = true
+	}
+	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid, SchedulerGroup: schedulerGroup, FirstReserve: fr})
 	if err != nil {
 		return
 	}
