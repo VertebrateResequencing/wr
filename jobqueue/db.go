@@ -49,6 +49,7 @@ var (
 	bucketStdE         []byte = []byte("stde")
 	bucketJobMBs       []byte = []byte("jobMBs")
 	bucketJobSecs      []byte = []byte("jobSecs")
+	wipeDevDBOnInit    bool   = true
 )
 
 // bje implements sort interface so we can sort a slice of []byte triples,
@@ -80,7 +81,7 @@ type db struct {
 // otherwise we start fresh. In development we delete any existing db and force
 // a fresh start.
 func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, msg string, err error) {
-	if deployment == "development" {
+	if wipeDevDBOnInit && deployment == "development" {
 		os.Remove(dbFile)
 		os.Remove(dbBkFile)
 	}
@@ -228,6 +229,31 @@ func (db *db) archiveJob(key string, job *Job) (err error) {
 func (db *db) deleteLiveJob(key string) {
 	db.remove(bucketJobsLive, key)
 	//*** we're not removing the lookup entry from the bucketRTK bucket...
+}
+
+// recoverIncompleteJobs returns all jobs in the live bucket, for use when
+// restarting the server, allowing you start working on any jobs that were
+// stored with storeNewJobs() but not yet archived with archiveJob(). Note that
+// any state changes to the Jobs that may have occurred will be lost: you get
+// back the Jobs exactly as they were when you put them in with storeNewJobs().
+func (db *db) recoverIncompleteJobs() (jobs []*Job, err error) {
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsLive)
+		b.ForEach(func(_, encoded []byte) error {
+			if encoded != nil {
+				dec := codec.NewDecoderBytes(encoded, db.ch)
+				job := &Job{}
+				err = dec.Decode(job)
+				if err != nil {
+					return err
+				}
+				jobs = append(jobs, job)
+			}
+			return nil
+		})
+		return nil
+	})
+	return
 }
 
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed

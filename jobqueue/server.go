@@ -257,6 +257,26 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 		statusCaster: bcast.NewGroup(),
 	}
 
+	// if we're restarting from a state where there were incomplete jobs, we
+	// need to load those in to the appropriate queues now
+	priorJobs, err := db.recoverIncompleteJobs()
+	if err != nil {
+		return
+	}
+	if len(priorJobs) > 0 {
+		jobsByQueue := make(map[string][]*queue.ItemDef)
+		for _, job := range priorJobs {
+			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
+		}
+		for qname, itemdefs := range jobsByQueue {
+			q := s.getOrCreateQueue(qname)
+			_, _, err = s.enqueueItems(q, itemdefs)
+			if err != nil {
+				return
+			}
+		}
+	}
+
 	// set up responding to command-line clients and signals
 	go func() {
 		for {
@@ -484,6 +504,27 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 	s.Unlock()
 
 	return q
+}
+
+// enqueueItems adds new items to a queue, for when we have new jobs to handle.
+func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added int, dups int, err error) {
+	added, dups, err = q.AddMany(itemdefs)
+	if err != nil {
+		return
+	}
+
+	// add to our lookup of job RepGroup to key
+	s.rpl.Lock()
+	for _, itemdef := range itemdefs {
+		rp := itemdef.Data.(*Job).RepGroup
+		if _, exists := s.rpl.lookup[rp]; !exists {
+			s.rpl.lookup[rp] = make(map[string]bool)
+		}
+		s.rpl.lookup[rp][itemdef.Key] = true
+	}
+	s.rpl.Unlock()
+
+	return
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete)

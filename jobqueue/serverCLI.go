@@ -87,22 +87,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					qerr = err.Error()
 				} else {
 					// add the jobs to the in-memory job queue
-					added, dups, err := q.AddMany(itemdefs)
+					added, dups, err := s.enqueueItems(q, itemdefs)
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
 					}
-
-					// add to our lookup of job RepGroup to key
-					s.rpl.Lock()
-					for _, itemdef := range itemdefs {
-						rp := itemdef.Data.(*Job).RepGroup
-						if _, exists := s.rpl.lookup[rp]; !exists {
-							s.rpl.lookup[rp] = make(map[string]bool)
-						}
-						s.rpl.lookup[rp][itemdef.Key] = true
-					}
-					s.rpl.Unlock()
 
 					sr = &serverResponse{Added: added, Existed: dups}
 				}

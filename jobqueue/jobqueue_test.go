@@ -998,6 +998,63 @@ func TestJobqueue(t *testing.T) {
 		server.Stop()
 	}
 
+	// start these tests anew because I need to disable dev-mode wiping of the
+	// db to test server restart recovery behaviour
+	Convey("Once a new jobqueue server is up", t, func() {
+		server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		So(err, ShouldBeNil)
+
+		Convey("You can connect, and add 2 jobs", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+
+			var jobs []*Job
+			jobs = append(jobs, NewJob("echo 1", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+			jobs = append(jobs, NewJob("echo 2", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 2)
+			So(already, ShouldEqual, 0)
+
+			Convey("You can reserve & execute just 1 of the jobs, stop the server, restart it, and then reserve & execute the other", func() {
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.Cmd, ShouldEqual, "echo 1")
+				err = jq.Execute(job, config.Runner_exec_shell)
+				So(err, ShouldBeNil)
+				So(job.State, ShouldEqual, "complete")
+				So(job.Exited, ShouldBeTrue)
+				So(job.Exitcode, ShouldEqual, 0)
+
+				server.Stop()
+				wipeDevDBOnInit = false
+				server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+				wipeDevDBOnInit = true
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				job, err = jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.Cmd, ShouldEqual, "echo 2")
+				err = jq.Execute(job, config.Runner_exec_shell)
+				So(err, ShouldBeNil)
+				So(job.State, ShouldEqual, "complete")
+				So(job.Exited, ShouldBeTrue)
+				So(job.Exitcode, ShouldEqual, 0)
+			})
+		})
+
+		Reset(func() {
+			server.Stop()
+		})
+	})
+
+	if server != nil {
+		server.Stop()
+	}
+
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond

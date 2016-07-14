@@ -131,6 +131,7 @@ type Job struct {
 	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
 	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
 	Similar        int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
+	Queue          string        // the name of the queue the Job was added to
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add()
