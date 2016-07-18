@@ -181,10 +181,10 @@ func (queue *Queue) readyAdded() {
 
 // SetChangedCallback sets a callback that will be called when items move from
 // one sub-queue to another. The callback receives the name of the moved-from
-// sub-queue ('new' in the case of entering the queue for the first time), the name of the
-// moved-to sub-queue ('removed' in the case of the item being removed from the
-// queue), and a slice of item.Data of everything that moved in this way. The
-// callback will be initiated in a go routine.
+// sub-queue ('new' in the case of entering the queue for the first time), the
+// name of the moved-to sub-queue ('removed' in the case of the item being
+// removed from the queue), and a slice of item.Data of everything that moved in
+// this way. The callback will be initiated in a go routine.
 func (queue *Queue) SetChangedCallback(callback changedCallback) {
 	queue.changedCb = callback
 }
@@ -356,6 +356,17 @@ func (queue *Queue) Get(key string) (item *Item, err error) {
 		err = Error{queue.Name, "Get", key, ErrNotFound}
 	}
 
+	return
+}
+
+// GetRunningData gets all the item.Data of items currently in the run sub-
+// queue.
+func (queue *Queue) GetRunningData() (data []interface{}) {
+	queue.mutex.RLock()
+	for _, item := range queue.runQueue.items {
+		data = append(data, item.Data)
+	}
+	queue.mutex.RUnlock()
 	return
 }
 

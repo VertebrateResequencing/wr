@@ -87,6 +87,11 @@ func TestQueue(t *testing.T) {
 			So(len(items), ShouldEqual, 10)
 		})
 
+		Convey("When nothing is running, GetRunningData returns nothing", func() {
+			data := queue.GetRunningData()
+			So(len(data), ShouldEqual, 0)
+		})
+
 		Convey("You can't add the same item again", func() {
 			item, err := queue.Add("key_0", "data new", 0, 100*time.Millisecond, 100*time.Millisecond)
 			qerr, ok := err.(Error)
@@ -151,6 +156,11 @@ func TestQueue(t *testing.T) {
 				So(stats.Delayed, ShouldEqual, 7)
 				So(stats.Ready, ShouldEqual, 0)
 				So(stats.Running, ShouldEqual, 3)
+
+				Convey("Once reserved, you can get the data with GetRunningData", func() {
+					data := queue.GetRunningData()
+					So(len(data), ShouldEqual, 3)
+				})
 
 				Convey("Once reserved you can release them", func() {
 					So(item1.state, ShouldEqual, "run")
