@@ -54,6 +54,8 @@ const (
 	ErrNoServer       = "could not reach the server"
 	ErrMustReserve    = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError        = "failed to use database"
+	ServerModeNormal  = "started"
+	ServerModeDrain   = "draining"
 )
 
 var (
@@ -100,12 +102,18 @@ type ServerInfo struct {
 	Port       string // port
 	PID        int    // process id of server
 	Deployment string // deployment the server is running under
+	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
 }
 
 // ServerStats holds information about the jobqueue server for sending to
 // clients.
 type ServerStats struct {
 	ServerInfo *ServerInfo
+	Delayed    int           // how many jobs are waiting following a possibly transient error
+	Ready      int           // how many jobs are ready to begin running
+	Running    int           // how many jobs are currently running
+	Buried     int           // how many jobs are no longer being processed because of seemingly permanent errors
+	ETC        time.Duration // how long until the the slowest of the currently running jobs is expected to complete
 }
 
 type rgToKeys struct {
@@ -131,6 +139,7 @@ type Server struct {
 	done       chan error
 	stop       chan bool
 	up         bool
+	drain      bool
 	blocking   bool
 	sync.Mutex
 	qs           map[string]*queue.Queue
@@ -240,7 +249,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid(), Deployment: deployment},
+		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid(), Deployment: deployment, Mode: ServerModeNormal},
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),
@@ -354,8 +363,76 @@ func (s *Server) Stop() (err error) {
 	return
 }
 
+// Drain will stop the server spawning new runners and stop Reserve*() from
+// returning any more Jobs. Once all current runners exit, we Stop().
+func (s *Server) Drain() (err error) {
+	if s.up {
+		if !s.drain {
+			s.drain = true
+			s.ServerInfo.Mode = ServerModeDrain
+			go func() {
+				ticker := time.NewTicker(1 * time.Second)
+			TICKS:
+				for {
+					select {
+					case <-ticker.C:
+						// check our queues for things running, which is cheap
+						for _, q := range s.qs {
+							stats := q.Stats()
+							if stats.Running > 0 {
+								continue TICKS
+							}
+						}
+
+						// now that we think nothing should be running, wait
+						// for the runner clients to exit so the job scheduler
+						// will be nice and clean
+						if !s.HasRunners() {
+							ticker.Stop()
+							s.Stop()
+							return
+						}
+					}
+				}
+			}()
+		}
+	} else {
+		err = Error{"", "Drain", "", ErrNoServer}
+	}
+	return
+}
+
+// GetServerStats returns basic info about the server along with some simple
+// live stats about what's happening in the server's queues.
+func (s *Server) GetServerStats() *ServerStats {
+	var delayed, ready, running, buried int
+	var etc time.Time
+
+	for _, q := range s.qs {
+		stats := q.Stats()
+		delayed += stats.Delayed
+		ready += stats.Ready
+		buried += stats.Buried
+
+		for _, inter := range q.GetRunningData() {
+			running++
+
+			// work out when this Job is going to end, and update etc if later
+			job := inter.(*Job)
+			if !job.starttime.IsZero() && job.Time.Seconds() > 0 {
+				endTime := job.starttime.Add(job.Time)
+				if endTime.After(etc) {
+					etc = endTime
+				}
+			}
+		}
+	}
+
+	return &ServerStats{ServerInfo: s.ServerInfo, Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
+}
+
 // HasRunners tells you if there are currently runner clients in the job
-// scheduler (either running or pending)
+// scheduler (either running or pending).
 func (s *Server) HasRunners() bool {
 	return s.scheduler.Busy()
 }
@@ -376,6 +453,10 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 		// ReserveFiltered so that they run the correct jobs for the machine and
 		// resource reservations the job scheduler will run them under
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			if s.drain {
+				return
+			}
+
 			// calculate, set and count jobs by schedulerGroup
 			groups := make(map[string]int)
 			recMBs := make(map[string]int)

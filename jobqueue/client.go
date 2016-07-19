@@ -46,6 +46,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -134,7 +135,7 @@ type Job struct {
 	Queue          string        // the name of the queue the Job was added to
 }
 
-// NewJob makes it a little easier to make a new Job, for use with Add()
+// NewJob makes it a little easier to make a new Job, for use with Add().
 func NewJob(cmd string, cwd string, group string, memory int, time time.Duration, cpus int, override uint8, priority uint8, repgroup string) *Job {
 	return &Job{
 		RepGroup: repgroup,
@@ -150,16 +151,17 @@ func NewJob(cmd string, cwd string, group string, memory int, time time.Duration
 }
 
 // Client represents the client side of the socket that the jobqueue server is
-// Serve()ing, specific to a particular queue
+// Serve()ing, specific to a particular queue.
 type Client struct {
 	sock        mangos.Socket
 	queue       string
 	ch          codec.Handle
 	clientid    uuid.UUID
 	hasReserved bool
+	sync.Mutex
 }
 
-// envStr holds the []string from os.Environ(), for codec compatibility
+// envStr holds the []string from os.Environ(), for codec compatibility.
 type envStr struct {
 	Environ []string
 }
@@ -205,18 +207,33 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	return
 }
 
-// Disconnect closes the connection to the jobqueue server
+// Disconnect closes the connection to the jobqueue server.
 func (c *Client) Disconnect() {
 	c.sock.Close()
 }
 
-// Ping tells you if your connection to the server is working
+// Ping tells you if your connection to the server is working.
 func (c *Client) Ping(timeout time.Duration) bool {
-	_, err := c.request(&clientRequest{Method: "ping", Queue: c.queue, Timeout: timeout})
+	_, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
 	if err != nil {
 		return false
 	}
 	return true
+}
+
+// Drain tells the server to stop spawning new runners, stop letting existing
+// runners reserve new jobs, and exit once existing runners stop running. You
+// get back a count of existing runners and and an estimated time until
+// completion for the last of those runners.
+func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
+	resp, err := c.request(&clientRequest{Method: "drain"})
+	if err != nil {
+		return
+	}
+	s := resp.SStats
+	running = s.Running
+	etc = s.ETC
+	return
 }
 
 // Stats returns stats of the jobqueue server queue you connected to.
@@ -236,7 +253,7 @@ func (c *Client) Ping(timeout time.Duration) bool {
 
 // ServerStats returns stats of the jobqueue server itself.
 func (c *Client) ServerStats() (s *ServerStats, err error) {
-	resp, err := c.request(&clientRequest{Method: "sstats", Queue: c.queue})
+	resp, err := c.request(&clientRequest{Method: "sstats"})
 	if err != nil {
 		return
 	}
@@ -249,7 +266,7 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 // returned 'existed' count will be > 0. Note that no cross-queue checking is
 // done, so you need to be careful not to add the same job to different queues.
 func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Queue: c.queue, Jobs: jobs, Env: c.compressEnv()})
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.compressEnv()})
 	if err != nil {
 		return
 	}
@@ -271,7 +288,7 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 		fr = true
 		c.hasReserved = true
 	}
-	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid, FirstReserve: fr})
+	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, FirstReserve: fr})
 	if err != nil {
 		return
 	}
@@ -294,7 +311,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 		fr = true
 		c.hasReserved = true
 	}
-	resp, err := c.request(&clientRequest{Method: "reserve", Queue: c.queue, Timeout: timeout, ClientID: c.clientid, SchedulerGroup: schedulerGroup, FirstReserve: fr})
+	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr})
 	if err != nil {
 		return
 	}
@@ -380,7 +397,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// update peak mem used by command, and touch job every 15s
 	peakmem := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
-	timedOut := false
+	bailed := false
 	signalled := false
 	go func() {
 		for {
@@ -388,15 +405,15 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-sigs:
 				cmd.Process.Kill()
 				signalled = true
-				break
+				return
 			case <-ticker.C:
 				err := c.Touch(job)
 				if err != nil {
 					// this could fail for a number of reasons and it's important
 					// we bail out on failure to Touch()
 					cmd.Process.Kill()
-					timedOut = true
-					break
+					bailed = true
+					return
 				}
 
 				mem, err := currentMemory(job.Pid)
@@ -477,11 +494,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 		myerr = nil
 	}
 
+	// though we may have bailed or had some other problem, we always try and
+	// update our job end state
 	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(cmd.Stdout.(*prefixSuffixSaver).Bytes()), bytes.TrimSpace(cmd.Stderr.(*prefixSuffixSaver).Bytes()))
+
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
-		if timedOut {
+		if bailed {
 			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
 		}
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
@@ -509,14 +529,14 @@ func (c *Client) Started(job *Job, pid int, host string) (err error) {
 	job.Host = host
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.starttime = time.Now() // ditto
-	_, err = c.request(&clientRequest{Method: "jstart", Queue: c.queue, Job: job, ClientID: c.clientid})
+	_, err = c.request(&clientRequest{Method: "jstart", Job: job})
 	return
 }
 
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
 // you must have reserved the job before you can touch it.
 func (c *Client) Touch(job *Job) (err error) {
-	_, err = c.request(&clientRequest{Method: "jtouch", Queue: c.queue, Job: job, ClientID: c.clientid})
+	_, err = c.request(&clientRequest{Method: "jtouch", Job: job})
 	return
 }
 
@@ -534,7 +554,7 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 	if len(stderr) > 0 {
 		job.StdErrC = compress(stderr)
 	}
-	_, err = c.request(&clientRequest{Method: "jend", Queue: c.queue, Job: job, ClientID: c.clientid})
+	_, err = c.request(&clientRequest{Method: "jend", Job: job})
 	job.Walltime = time.Since(job.starttime)
 	return
 }
@@ -544,7 +564,7 @@ func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duratio
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
 func (c *Client) Archive(job *Job) (err error) {
-	_, err = c.request(&clientRequest{Method: "jarchive", Queue: c.queue, Job: job, ClientID: c.clientid})
+	_, err = c.request(&clientRequest{Method: "jarchive", Job: job})
 	if err == nil {
 		job.State = "complete"
 	}
@@ -562,7 +582,7 @@ func (c *Client) Archive(job *Job) (err error) {
 // an unlimited number of times.)
 func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err error) {
 	job.FailReason = failreason
-	_, err = c.request(&clientRequest{Method: "jrelease", Queue: c.queue, Job: job, Timeout: delay, ClientID: c.clientid})
+	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, Timeout: delay})
 	if err == nil {
 		// update our process with what the server would have done
 		if job.Exited && job.Exitcode != 0 {
@@ -582,7 +602,7 @@ func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err 
 // reserve a job before you can bury it.
 func (c *Client) Bury(job *Job, failreason string) (err error) {
 	job.FailReason = failreason
-	_, err = c.request(&clientRequest{Method: "jbury", Queue: c.queue, Job: job, ClientID: c.clientid})
+	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
 	if err == nil {
 		job.State = "buried"
 	}
@@ -595,7 +615,7 @@ func (c *Client) Bury(job *Job, failreason string) (err error) {
 // the same as for GetByCmds()
 func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
 	keys := c.ccsToKeys(ccs)
-	resp, err := c.request(&clientRequest{Method: "jkick", Queue: c.queue, Keys: keys})
+	resp, err := c.request(&clientRequest{Method: "jkick", Keys: keys})
 	if err != nil {
 		return
 	}
@@ -610,7 +630,7 @@ func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
 // as for GetByCmds().
 func (c *Client) Delete(ccs [][2]string) (deleted int, err error) {
 	keys := c.ccsToKeys(ccs)
-	resp, err := c.request(&clientRequest{Method: "jdel", Queue: c.queue, Keys: keys})
+	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
 	if err != nil {
 		return
 	}
@@ -622,7 +642,7 @@ func (c *Client) Delete(ccs [][2]string) (deleted int, err error) {
 // this is the only way to get a Job that StdOut() and StdErr() will work on,
 // and one of 2 ways that Env() will work (the other being Reserve()).
 func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Keys: []string{byteKey([]byte(fmt.Sprintf("%s.%s", cwd, cmd)))}, GetStd: getstd, GetEnv: getenv})
+	resp, err := c.request(&clientRequest{Method: "getbc", Keys: []string{byteKey([]byte(fmt.Sprintf("%s.%s", cwd, cmd)))}, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return
 	}
@@ -640,7 +660,7 @@ func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *
 // you use GetByRepGroup() or GetIncomplete() with a limit.
 func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
 	keys := c.ccsToKeys(ccs)
-	resp, err := c.request(&clientRequest{Method: "getbc", Queue: c.queue, Keys: keys})
+	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys})
 	if err != nil {
 		return
 	}
@@ -670,7 +690,7 @@ func (c *Client) ccsToKeys(ccs [][2]string) (keys []string) {
 // stdout, stderr and environement variables for the Jobs, but only if 'limit'
 // is <= 5.
 func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbr", Queue: c.queue, Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
 	}
@@ -682,7 +702,7 @@ func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd 
 // those that are complete and have been Archive()d. The args are as in
 // GetByRepGroup().
 func (c *Client) GetIncomplete(limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getin", Queue: c.queue, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+	resp, err := c.request(&clientRequest{Method: "getin", Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
 	}
@@ -743,11 +763,18 @@ func (j *Job) StdErr() (stderr string, err error) {
 	return
 }
 
-// request the server do something and get back its response
+// request the server do something and get back its response. We can only cope
+// with one request at a time per client, or we'll get replies back in the
+// wrong order, hence we lock.
 func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
+	c.Lock()
+	defer c.Unlock()
+
 	// encode and send the request
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
+	cr.Queue = c.queue
+	cr.ClientID = c.clientid
 	err = enc.Encode(cr)
 	if err != nil {
 		return

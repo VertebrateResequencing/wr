@@ -49,7 +49,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	case "ping":
 		// do nothing - not returning an error to client means ping success
 	case "sstats":
-		sr = &serverResponse{SStats: &ServerStats{ServerInfo: s.ServerInfo}}
+		sr = &serverResponse{SStats: s.GetServerStats()}
+	case "drain":
+		err := s.Drain()
+		if err != nil {
+			srerr = ErrInternalError
+			qerr = err.Error()
+		} else {
+			sr = &serverResponse{SStats: s.GetServerStats()}
+		}
 	case "add":
 		// add jobs to the queue, and along side keep the environment variables
 		// they're supposed to execute under.
@@ -101,7 +109,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		// return the next ready job
 		if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
 			srerr = ErrBadRequest
-		} else {
+		} else if !s.drain {
 			// first just try to Reserve normally
 			var item *queue.Item
 			var err error
@@ -110,7 +118,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// if this is the first job that the client is trying to
 				// reserve, and if we don't actually want any more clients
 				// working on this schedulerGroup, we'll just act as if nothing
-				// was ready
+				// was ready. Likewise if in drain mode.
 				skip := false
 				if cr.FirstReserve && s.rc != "" {
 					s.sgcmutex.Lock()
@@ -133,6 +141,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				item, err = q.Reserve()
 			}
+
 			if err != nil {
 				if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 					// there's nothing in the ready sub queue right now, so every
@@ -205,7 +214,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job := s.itemToJob(item, false, true)
 				sr = &serverResponse{Job: job}
 			}
-		}
+		} // else we'll return nothing, as if there were no jobs in the queue
 	case "jstart":
 		// update the job's cmd-started-related properties
 		var job *Job

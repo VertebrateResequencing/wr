@@ -999,8 +999,9 @@ func TestJobqueue(t *testing.T) {
 	}
 
 	// start these tests anew because I need to disable dev-mode wiping of the
-	// db to test server restart recovery behaviour
+	// db to test some behaviours
 	Convey("Once a new jobqueue server is up", t, func() {
+		ServerItemTTR = 2 * time.Second
 		server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		So(err, ShouldBeNil)
 
@@ -1043,6 +1044,69 @@ func TestJobqueue(t *testing.T) {
 				So(job.State, ShouldEqual, "complete")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
+			})
+		})
+
+		Convey("You can connect and add a non-instant job", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+
+			var jobs []*Job
+			job1Cmd := "sleep 1 && echo noninstant"
+			jobs = append(jobs, NewJob(job1Cmd, "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			Convey("You can reserve & execute the job, drain the server, add a new job while draining, restart it, and then reserve & execute the new one", func() {
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.Cmd, ShouldEqual, job1Cmd)
+				go jq.Execute(job, config.Runner_exec_shell)
+				So(job.Exited, ShouldBeFalse)
+
+				running, etc, err := jq.DrainServer()
+				So(err, ShouldBeNil)
+				So(running, ShouldEqual, 1)
+				So(etc.Minutes(), ShouldBeLessThanOrEqualTo, 30)
+
+				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+				inserts, already, err = jq.Add(jobs)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 1)
+
+				job2, err := jq.Reserve(10 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job2, ShouldBeNil)
+
+				<-time.After(2 * time.Second)
+
+				up := jq.Ping(10 * time.Millisecond)
+				So(up, ShouldBeFalse)
+
+				wipeDevDBOnInit = false
+				server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+				wipeDevDBOnInit = true
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				job, err = jq.GetByCmd(job1Cmd, "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job.Exited, ShouldBeTrue)
+				So(job.Exitcode, ShouldEqual, 0)
+
+				job2, err = jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job2, ShouldNotBeNil)
+				So(job2.Cmd, ShouldEqual, "echo added")
+				err = jq.Execute(job2, config.Runner_exec_shell)
+				So(err, ShouldBeNil)
+				So(job2.State, ShouldEqual, "complete")
+				So(job2.Exited, ShouldBeTrue)
+				So(job2.Exitcode, ShouldEqual, 0)
 			})
 		})
 
