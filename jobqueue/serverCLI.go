@@ -299,6 +299,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.FailReason = cr.Job.FailReason
 			if job.Exited && job.Exitcode != 0 {
 				job.UntilBuried--
+				job.updateRecsAfterFailure()
 			}
 			if job.UntilBuried <= 0 {
 				err = q.Bury(item.Key)

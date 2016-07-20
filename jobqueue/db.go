@@ -50,6 +50,8 @@ var (
 	bucketJobMBs       []byte = []byte("jobMBs")
 	bucketJobSecs      []byte = []byte("jobSecs")
 	wipeDevDBOnInit    bool   = true
+	RecMBRound         int    = 100  // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
+	RecSecRound        int    = 1800 // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
 
 // bje implements sort interface so we can sort a slice of []byte triples,
@@ -404,7 +406,7 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
-	mbs, err = db.recommendedReqGroupStat(bucketJobMBs, reqGroup, 100)
+	mbs, err = db.recommendedReqGroupStat(bucketJobMBs, reqGroup, RecMBRound)
 	return
 }
 
@@ -415,7 +417,7 @@ func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
 // case, the true value is rounded up to the nearest 30mins (but returned in
 // seconds). Returns 0 if there are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (seconds int, err error) {
-	seconds, err = db.recommendedReqGroupStat(bucketJobSecs, reqGroup, 1800)
+	seconds, err = db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
 	return
 }
 

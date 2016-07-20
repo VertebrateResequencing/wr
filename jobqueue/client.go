@@ -42,6 +42,7 @@ import (
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -66,8 +67,12 @@ const (
 )
 
 var (
-	ClientTouchInterval = 15 * time.Second
-	ClientReleaseDelay  = 30 * time.Second
+	ClientTouchInterval                  = 15 * time.Second
+	ClientReleaseDelay                   = 30 * time.Second
+	MemoryIncreaseMin            float64 = 1000
+	MemoryIncreaseMultLow        float64 = 2.0
+	MemoryIncreaseMultHigh       float64 = 1.3
+	MemoryIncreaseMultBreakpoint float64 = 8192
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -374,6 +379,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	defer signal.Stop(sigs)
 
 	// start running the command
+	endT := time.Now().Add(job.Time)
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
@@ -394,10 +400,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
-	// update peak mem used by command, and touch job every 15s
+	// update peak mem used by command, touch job and check if we use too much
+	// resources, every 15s. Also check for signals
 	peakmem := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
+	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
 	bailed := false
+	ranoutMem := false
+	ranoutTime := false
 	signalled := false
 	go func() {
 		for {
@@ -407,18 +417,33 @@ func (c *Client) Execute(job *Job, shell string) error {
 				signalled = true
 				return
 			case <-ticker.C:
+				if !ranoutTime && time.Now().After(endT) {
+					ranoutTime = true
+					// we allow things to go over time, but then if we end up
+					// getting signalled later, we now know it may be because we
+					// used too much time
+				}
+
 				err := c.Touch(job)
 				if err != nil {
 					// this could fail for a number of reasons and it's important
 					// we bail out on failure to Touch()
-					cmd.Process.Kill()
 					bailed = true
+					cmd.Process.Kill()
 					return
 				}
-
+			case <-memTicker.C:
 				mem, err := currentMemory(job.Pid)
 				if err == nil && mem > peakmem {
 					peakmem = mem
+
+					if peakmem > job.Memory {
+						// we don't allow things to use too much memory, or we
+						// could screw up the machine we're running on
+						ranoutMem = true
+						cmd.Process.Kill()
+						return
+					}
 				}
 			}
 		}
@@ -427,6 +452,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// wait for the command to exit
 	err = cmd.Wait()
 	ticker.Stop()
+	memTicker.Stop()
 
 	// we could get the max rss from ProcessState.SysUsage, but we'll stick with
 	// our better (?) pss-based Peakmem, unless the command exited so quickly
@@ -472,9 +498,17 @@ func (c *Client) Execute(job *Job, shell string) error {
 				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried", job.Cmd, exitcode)
 			default:
 				dorelease = true
-				if signalled {
-					failreason = FailReasonSignal
-					myerr = Error{c.queue, "Execute", jobKey(job), FailReasonSignal}
+				if ranoutMem {
+					failreason = FailReasonMem
+					myerr = Error{c.queue, "Execute", jobKey(job), FailReasonMem}
+				} else if signalled {
+					if ranoutTime {
+						failreason = FailReasonTime
+						myerr = Error{c.queue, "Execute", jobKey(job), FailReasonTime}
+					} else {
+						failreason = FailReasonSignal
+						myerr = Error{c.queue, "Execute", jobKey(job), FailReasonSignal}
+					}
 				} else {
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d, which may be a temporary issue, so it will be tried again", job.Cmd, exitcode)
@@ -587,6 +621,7 @@ func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err 
 		// update our process with what the server would have done
 		if job.Exited && job.Exitcode != 0 {
 			job.UntilBuried--
+			job.updateRecsAfterFailure()
 		}
 		if job.UntilBuried <= 0 {
 			job.State = "buried"
@@ -761,6 +796,31 @@ func (j *Job) StdErr() (stderr string, err error) {
 	}
 	stderr = string(decomp)
 	return
+}
+
+// updateRecsAfterFailure checks the FailReason and bumps Memory or Time as
+// appropriate.
+func (j *Job) updateRecsAfterFailure() {
+	switch j.FailReason {
+	case FailReasonMem:
+		// increase by 1GB or [100% if under 8GB, 30% if over], whichever is
+		// greater, and round up to nearest 100
+		// *** increase to greater than max seen for jobs in our ReqGroup?
+		updatedMB := float64(j.Peakmem)
+		if updatedMB <= MemoryIncreaseMultBreakpoint {
+			updatedMB *= MemoryIncreaseMultLow
+		} else {
+			updatedMB *= MemoryIncreaseMultHigh
+		}
+		if updatedMB < float64(j.Peakmem)+MemoryIncreaseMin {
+			updatedMB = float64(j.Peakmem) + MemoryIncreaseMin
+		}
+		j.Memory = int(math.Ceil(updatedMB/100) * 100)
+		j.Override = uint8(1)
+	case FailReasonTime:
+		j.Time += 1 * time.Hour
+		j.Override = uint8(1)
+	}
 }
 
 // request the server do something and get back its response. We can only cope
