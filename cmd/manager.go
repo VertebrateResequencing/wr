@@ -368,6 +368,7 @@ func sAddr(s *jobqueue.ServerInfo) (addr string) {
 
 func logStarted(s *jobqueue.ServerInfo) {
 	info("vrpipe manager started on %s, pid %d", sAddr(s), s.PID)
+	info("vrpipe's web interface can be reached at %s:%s", s.Host, s.WebPort)
 }
 
 func startJQ(sayStarted bool) {

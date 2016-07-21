@@ -100,6 +100,7 @@ type ServerInfo struct {
 	Addr       string // ip:port
 	Host       string // hostname
 	Port       string // port
+	WebPort    string // port of the web interface
 	PID        int    // process id of server
 	Deployment string // deployment the server is running under
 	Scheduler  string // the name of the scheduler that jobs are being submitted to
@@ -251,7 +252,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid(), Deployment: deployment, Scheduler: schedulerName, Mode: ServerModeNormal},
+		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, WebPort: webPort, PID: os.Getpid(), Deployment: deployment, Scheduler: schedulerName, Mode: ServerModeNormal},
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),
