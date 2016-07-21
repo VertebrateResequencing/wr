@@ -102,6 +102,7 @@ type ServerInfo struct {
 	Port       string // port
 	PID        int    // process id of server
 	Deployment string // deployment the server is running under
+	Scheduler  string // the name of the scheduler that jobs are being submitted to
 	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
 }
 
@@ -149,7 +150,7 @@ type Server struct {
 	sgrouptrigs  map[string]int
 	sgtr         map[string]*scheduler.Requirements
 	sgcmutex     sync.Mutex
-	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout)
+	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
 	statusCaster *bcast.Group
 }
 
@@ -165,12 +166,13 @@ type Server struct {
 // the returned msg string. It also spawns your runner clients as needed,
 // running them via the job scheduler specified by schedulerName, using the
 // supplied shell. It determines the command line to execute for your runner
-// client from the runnerCmd string you supply, which should contain 4 %s parts
-// which will be replaced with the queue name, scheduler group, deployment and
-// ip:host address of the server, eg. "my_jobqueue_runner_client --queue %s
-// --group '%s' --deployment %s --server '%s'". If you supply an empty string,
-// runner clients will not be spawned; for any work to be done you will have to
-// run your runner client yourself manually.
+// client from the runnerCmd string you supply, which should contain 6 %s parts
+// which will be replaced with the queue name, scheduler group, deployment
+// ip:host address of the server, reservation time out and maximum number of
+// minutes allowed, eg. "my_jobqueue_runner_client --queue %s --group '%s'
+// --deployment %s --server '%s' --reserve_timeout %d --max_mins %d". If you
+// supply an empty string, runner clients will not be spawned; for any work to
+// be done you will have to run your runner client yourself manually.
 func Serve(port string, webPort string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
 	sock, err := rep.NewSocket()
 	if err != nil {
@@ -249,7 +251,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid(), Deployment: deployment, Mode: ServerModeNormal},
+		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, PID: os.Getpid(), Deployment: deployment, Scheduler: schedulerName, Mode: ServerModeNormal},
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),
@@ -768,7 +770,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -875,7 +877,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
 		//log.Printf("telling scheduler we need 0 for group [%s]\n", schedulerGroup)
-		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout()), req, 0)
+		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 	}
 }
 

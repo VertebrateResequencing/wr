@@ -374,7 +374,7 @@ func startJQ(sayStarted bool) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, "vrpipe runner -q %s -s '%s' --deployment %s --server '%s' -r %d", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, "vrpipe runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)

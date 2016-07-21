@@ -31,6 +31,7 @@ var queuename string
 var schedgrp string
 var reserveint int
 var rserver string
+var maxtime int
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{
@@ -39,7 +40,14 @@ var runnerCmd = &cobra.Command{
 	Long: `A runner runs commands that were queued by the add or setup commands.
 
 You won't normally run this yourself directly - "vrpipe manager" spawns these as
-needed.`,
+needed.
+
+A runner will pick up a queued command and run it. Once that cmd completes, the
+runner will pick up another and so on. Once max_time has been used (or would be
+used based on the expected time to complete of the next queued command), the
+runner stops picking up new commands and exits instead; max_time does not cause
+the runner to kill itself if the cmd it is running takes longer than max_time to
+complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if queuename == "" {
 			fatal("--queue is required")
@@ -59,6 +67,14 @@ needed.`,
 		}
 		defer jq.Disconnect()
 
+		// we'll stop the below loop before using up too much time
+		var endTime time.Time
+		if maxtime > 0 {
+			endTime = time.Now().Add(time.Duration(maxtime) * time.Minute)
+		} else {
+			endTime = time.Now().AddDate(1, 0, 0) // default to allowing us a year to run
+		}
+
 		// loop, reserving and running commands from the queue, until there
 		// aren't any more commands in the queue
 		numrun := 0
@@ -76,6 +92,13 @@ needed.`,
 				fatal("%s", err) //*** we want this in a central log so we can know if/why our runners are failing
 			}
 			if job == nil {
+				break
+			}
+
+			// see if we have enough time left to run this
+			if time.Now().Add(job.Time).After(endTime) {
+				jq.Release(job, job.FailReason, 0*time.Second)
+				exitReason = "we're about to hit our maximum time limit"
 				break
 			}
 
@@ -106,5 +129,6 @@ func init() {
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of vrpipe manager")
 }
