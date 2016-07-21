@@ -90,7 +90,7 @@ type scheduleri interface {
 	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
 	busy() bool                                              // achieve the aims of Busy()
 	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
-	queueTime() time.Duration                                // achieve the aims of QueueTime()
+	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
@@ -180,13 +180,13 @@ func (s *Scheduler) ReserveTimeout() int {
 	return s.impl.reserveTimeout()
 }
 
-// QueueTime() returns the maximum amount of time that a process running from
-// the current process's queue is allowed to run for before the job scheduler
-// kills it. If the job scheduler doesn't have a queue system, or if the queue
-// allows jobs to run forever, then this returns a 0 length duration, which
-// should be regarded as "infinite" queue time.
-func (s *Scheduler) QueueTime() time.Duration {
-	return s.impl.queueTime()
+// MaxQueueTime() returns the maximum amount of time that jobs with the given
+// resource requirements are allowed to run for in the job scheduler's queue. If
+// the job scheduler doesn't have a queue system, or if the queue allows jobs to
+// run forever, then this returns a 0 length duration, which should be regarded
+// as "infinite" queue time.
+func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
+	return s.impl.maxQueueTime(req)
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

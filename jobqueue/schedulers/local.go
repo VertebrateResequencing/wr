@@ -109,8 +109,8 @@ func (s *local) reserveTimeout() int {
 	return localReserveTimeout
 }
 
-// queueTime achieves the aims of QueueTime().
-func (s *local) queueTime() time.Duration {
+// maxQueueTime achieves the aims of MaxQueueTime().
+func (s *local) maxQueueTime(req *Requirements) time.Duration {
 	return infiniteQueueTime
 }
 

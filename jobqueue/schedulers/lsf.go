@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"github.com/sb10/vrpipe/internal"
 	"math"
-	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -369,13 +368,11 @@ func (s *lsf) reserveTimeout() int {
 	return defaultReserveTimeout
 }
 
-// queueTime achieves the aims of QueueTime().
-func (s *lsf) queueTime() time.Duration {
-	queue := os.Getenv("LSB_QUEUE")
-	if queue != "" {
-		if _, existed := s.queues[queue]; existed {
-			return time.Duration(s.queues[queue]["runlimit"]) * time.Second
-		}
+// maxQueueTime achieves the aims of MaxQueueTime().
+func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
+	queue, err := s.determineQueue(req, 0)
+	if err == nil {
+		return time.Duration(s.queues[queue]["runlimit"]) * time.Second
 	}
 	return infiniteQueueTime
 }
