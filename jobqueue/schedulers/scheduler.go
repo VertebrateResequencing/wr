@@ -40,11 +40,12 @@ import (
 )
 
 const (
-	randBytes             = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	randIdxBits           = 6                  // 6 bits to represent a rand index
-	randIdxMask           = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
-	randIdxMax            = 63 / randIdxBits   // # of letter indices fitting in 63 bits
-	defaultReserveTimeout = 1                  // implementers of reserveTimeout can just return this
+	randBytes                           = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randIdxBits                         = 6                  // 6 bits to represent a rand index
+	randIdxMask                         = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	randIdxMax                          = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+	defaultReserveTimeout               = 1                  // implementers of reserveTimeout can just return this
+	infiniteQueueTime     time.Duration = 0
 )
 
 var (
@@ -89,6 +90,7 @@ type scheduleri interface {
 	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
 	busy() bool                                              // achieve the aims of Busy()
 	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
+	queueTime() time.Duration                                // achieve the aims of QueueTime()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
@@ -176,6 +178,15 @@ func (s *Scheduler) Busy() bool {
 // scheduler should wait for new jobs to appear in the manager's queue.
 func (s *Scheduler) ReserveTimeout() int {
 	return s.impl.reserveTimeout()
+}
+
+// QueueTime() returns the maximum amount of time that a process running from
+// the current process's queue is allowed to run for before the job scheduler
+// kills it. If the job scheduler doesn't have a queue system, or if the queue
+// allows jobs to run forever, then this returns a 0 length duration, which
+// should be regarded as "infinite" queue time.
+func (s *Scheduler) QueueTime() time.Duration {
+	return s.impl.queueTime()
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

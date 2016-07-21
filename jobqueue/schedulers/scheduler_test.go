@@ -47,6 +47,10 @@ func TestLocal(t *testing.T) {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
 		})
 
+		Convey("QueueTime() returns 0 seconds", func() {
+			So(s.QueueTime().Seconds(), ShouldEqual, 0)
+		})
+
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)
 		})
@@ -214,6 +218,10 @@ func TestLSF(t *testing.T) {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
 		})
 
+		Convey("QueueTime() returns 0 seconds outside of a queue", func() {
+			So(s.QueueTime().Seconds(), ShouldEqual, 0)
+		})
+
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
@@ -242,6 +250,14 @@ func TestLSF(t *testing.T) {
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
+			})
+
+			Convey("QueueTime() returns appropriate times when we fake being in a queue", func() {
+				os.Setenv("LSB_QUEUE", "normal")
+				So(s.QueueTime().Minutes(), ShouldEqual, 720)
+				os.Setenv("LSB_QUEUE", "long")
+				So(s.QueueTime().Minutes(), ShouldEqual, 4320)
+				os.Setenv("LSB_QUEUE", "")
 			})
 		}
 

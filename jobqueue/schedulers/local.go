@@ -109,6 +109,11 @@ func (s *local) reserveTimeout() int {
 	return localReserveTimeout
 }
 
+// queueTime achieves the aims of QueueTime().
+func (s *local) queueTime() time.Duration {
+	return infiniteQueueTime
+}
+
 // schedule achieves the aims of Schedule().
 func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	// first find out if its at all possible to ever run this cmd

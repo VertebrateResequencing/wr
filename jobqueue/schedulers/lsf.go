@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"github.com/sb10/vrpipe/internal"
 	"math"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -366,6 +367,17 @@ func (s *lsf) initialize(deployment string, shell string) error {
 // reserveTimeout achieves the aims of ReserveTimeout().
 func (s *lsf) reserveTimeout() int {
 	return defaultReserveTimeout
+}
+
+// queueTime achieves the aims of QueueTime().
+func (s *lsf) queueTime() time.Duration {
+	queue := os.Getenv("LSB_QUEUE")
+	if queue != "" {
+		if _, existed := s.queues[queue]; existed {
+			return time.Duration(s.queues[queue]["runlimit"]) * time.Second
+		}
+	}
+	return infiniteQueueTime
 }
 
 // schedule achieves the aims of Schedule(). Note that if rescheduling a cmd
