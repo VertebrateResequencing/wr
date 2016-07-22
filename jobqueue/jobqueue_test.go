@@ -32,6 +32,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	// "github.com/boltdb/bolt"
+	// "github.com/ugorji/go/codec"
+	// "sync"
 	"testing"
 	"time"
 )
@@ -1295,22 +1298,6 @@ func TestJobqueueSpeed(t *testing.T) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
-		// bs, err := beanstalk.Connect("localhost:11300", "vrpipe.des", true)
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-
-		// before := time.Now()
-		// for i := 0; i < n; i++ {
-		// 	_, err := bs.Add(fmt.Sprintf("test job %d", i), 30)
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// }
-		// e := time.Since(before)
-		// per := int64(e.Nanoseconds() / int64(n))
-		// log.Printf("Added %d beanstalk jobs in %s == %d per\n", n, e, per)
-
 		server, _, err := Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 		if err != nil {
 			log.Fatal(err)
@@ -1402,7 +1389,159 @@ func TestJobqueueSpeed(t *testing.T) {
 
 		server.Stop()
 	}
+
+	// test speed of bolt db when there are lots of jobs already stored
+	/*
+		if true {
+			config := internal.ConfigLoad("development", true)
+			port := config.Manager_port
+			webport := config.Manager_web
+			addr := "localhost:" + port
+			rc := ""
+			n := 10000000 // num jobs to start with
+			b := 10000    // jobs per identifier
+
+			server, _, err := Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			jq, err := Connect(addr, "cmds", 60*time.Second)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// get timings when the bolt db is empty
+			total := 0
+			batchNum := 1
+			timeDealingWithBatch(addr, jq, batchNum, b)
+			batchNum++
+			total += b
+
+			// add n jobs in b batches to the completed bolt db bucket to simulate
+			// a well used database
+			before := time.Now()
+			q := server.getOrCreateQueue("cmds")
+			for total < n {
+				var jobs []*Job
+				for i := 0; i < b; i++ {
+					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), fmt.Sprintf("batch_%d", batchNum)))
+				}
+				_, _, err := jq.Add(jobs)
+				if err != nil {
+					log.Fatal(err)
+				}
+				fmt.Printf("\nadded batch %d", batchNum)
+
+				// it's too slow to reserve and archive things properly in this
+				// test; this is not a real-world performance concern though, since
+				// normally you wouldn't archive so many jobs in a row in a single
+	            // process...
+				// for {
+				// 	job, _ := jq.Reserve(1 * time.Millisecond)
+				// 	if job == nil {
+				// 		break
+				// 	}
+				// 	jq.Started(job, 123, "host")
+				// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
+				// 	err = jq.Archive(job)
+				// 	if err != nil {
+				// 		log.Fatal(err)
+				// 	}
+				// 	fmt.Print(".")
+				// }
+
+				// ... Instead we bypass the client interface and directly add to
+				// bolt db
+				err = server.db.bolt.Batch(func(tx *bolt.Tx) error {
+					bl := tx.Bucket(bucketJobsLive)
+					b := tx.Bucket(bucketJobsComplete)
+
+					var puterr error
+					for _, job := range jobs {
+						key := jobKey(job)
+						var encoded []byte
+						enc := codec.NewEncoderBytes(&encoded, server.db.ch)
+						enc.Encode(job)
+
+						bl.Delete([]byte(key))
+						q.Remove(key)
+
+						puterr = b.Put([]byte(key), encoded)
+						if puterr != nil {
+							break
+						}
+					}
+					return puterr
+				})
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				batchNum++
+				total += b
+			}
+			e := time.Since(before)
+			log.Printf("Archived %d jobqueue jobs in %d sized groups in %s\n", n, b, e)
+
+			// now re-time how long it takes to deal with a single new batch
+			timeDealingWithBatch(addr, jq, batchNum, b)
+
+			server.Stop()
+		}
+	*/
 }
+
+/* this func is used by the commented out test above
+func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
+	before := time.Now()
+	var jobs []*Job
+	batchName := fmt.Sprintf("batch_%d", batchNum)
+	for i := 0; i < b; i++ {
+		jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), batchName))
+	}
+	_, _, err := jq.Add(jobs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	e := time.Since(before)
+	log.Printf("\nAdded a new batch of %d jobs in %s\n", b, e)
+
+	before = time.Now()
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	var wg sync.WaitGroup
+	wg.Add(runtime.NumCPU())
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			defer wg.Done()
+			gojq, _ := Connect(addr, "cmds", 10*time.Second)
+			for {
+				job, _ := gojq.Reserve(1 * time.Millisecond)
+				if job == nil {
+					break
+				}
+				gojq.Started(job, 123, "host")
+				gojq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
+				err = gojq.Archive(job)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	e = time.Since(before)
+	log.Printf("Reserved and Archived that batch of jobs in %s\n", e)
+
+	before = time.Now()
+	jobs, err = jq.GetByRepGroup(batchName, 1, "complete", false, false) // without a limit this takes longer than 60s, so would time out
+	if err != nil {
+		log.Fatal(err)
+	}
+	e = time.Since(before)
+	log.Printf("Was able to get all %d jobs in that batch in %s\n", 1+jobs[0].Similar, e)
+}
+*/
 
 func runner() {
 	if queuename == "" {
