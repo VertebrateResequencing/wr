@@ -661,6 +661,14 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, s
 		var complete []*Job
 		complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
 		if len(complete) > 0 {
+			// a job is stored in the db with only the single most recent
+			// RepGroup it had, but we're able to retrieve jobs based on any of
+			// the RepGroups it ever had; set the RepGroup to the one the user
+			// requested *** may want to change RepGroup to store a slice of
+			// RepGroups? But that could be massive...
+			for _, cj := range complete {
+				cj.RepGroup = repgroup
+			}
 			jobs = append(jobs, complete...)
 		}
 	}

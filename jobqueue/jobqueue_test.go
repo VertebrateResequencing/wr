@@ -1057,6 +1057,91 @@ func TestJobqueue(t *testing.T) {
 			})
 		})
 
+		Convey("After connecting and adding some jobs under one RepGroup", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+
+			var jobs []*Job
+			for i := 0; i < 3; i++ {
+				jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "rp1"))
+			}
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 3)
+			So(already, ShouldEqual, 0)
+
+			Convey("You can reserve and execute those", func() {
+				for i := 0; i < 3; i++ {
+					job, err := jq.Reserve(50 * time.Millisecond)
+					err = jq.Execute(job, config.Runner_exec_shell)
+					So(err, ShouldBeNil)
+				}
+
+				Convey("Then you can add dups and a new one under a new RepGroup and reserve/execute all of them", func() {
+					jobs = nil
+					for i := 0; i < 4; i++ {
+						jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "rp2"))
+					}
+					inserts, already, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 4)
+					So(already, ShouldEqual, 0)
+
+					for i := 0; i < 4; i++ {
+						job, err := jq.Reserve(50 * time.Millisecond)
+						err = jq.Execute(job, config.Runner_exec_shell)
+						So(err, ShouldBeNil)
+					}
+
+					Convey("The jobs can be retrieved by either RepGroup and will have the expected RepGroup", func() {
+						jobs, err := jq.GetByRepGroup("rp1", 0, "complete", false, false)
+						So(err, ShouldBeNil)
+						So(len(jobs), ShouldEqual, 3)
+						So(jobs[0].RepGroup, ShouldEqual, "rp1")
+
+						jobs, err = jq.GetByRepGroup("rp2", 0, "complete", false, false)
+						So(err, ShouldBeNil)
+						So(len(jobs), ShouldEqual, 4)
+						So(jobs[0].RepGroup, ShouldEqual, "rp2")
+					})
+				})
+			})
+
+			Convey("You can add dups and a new one under a new RepGroup", func() {
+				jobs = nil
+				for i := 0; i < 4; i++ {
+					jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "rp2"))
+				}
+				inserts, already, err := jq.Add(jobs)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 3)
+
+				Convey("You can then reserve and execute the only 4 jobs", func() {
+					for i := 0; i < 4; i++ {
+						job, err := jq.Reserve(50 * time.Millisecond)
+						err = jq.Execute(job, config.Runner_exec_shell)
+						So(err, ShouldBeNil)
+					}
+					job, err := jq.Reserve(10 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job, ShouldBeNil)
+
+					Convey("The jobs can be retrieved by either RepGroup and will have the expected RepGroup", func() {
+						jobs, err := jq.GetByRepGroup("rp1", 0, "complete", false, false)
+						So(err, ShouldBeNil)
+						So(len(jobs), ShouldEqual, 3)
+						So(jobs[0].RepGroup, ShouldEqual, "rp1")
+
+						jobs, err = jq.GetByRepGroup("rp2", 0, "complete", false, false)
+						So(err, ShouldBeNil)
+						So(len(jobs), ShouldEqual, 4)
+						So(jobs[0].RepGroup, ShouldEqual, "rp2")
+					})
+				})
+			})
+		})
+
 		Reset(func() {
 			server.Stop()
 		})
@@ -1390,8 +1475,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		server.Stop()
 	}
 
-	// test speed of bolt db when there are lots of jobs already stored
-	/*
+	/* test speed of bolt db when there are lots of jobs already stored
 		if true {
 			config := internal.ConfigLoad("development", true)
 			port := config.Manager_port
