@@ -30,15 +30,22 @@ Implemented so far
 * Adding manually generated commands to the manager's queue
 * Automatically running those commands on the local machine or via LSF
 * Getting the status of your commands
+* Manually retrying failed commands
+* Automatic retrying of failed commands, using more memory/time reservation
+  as necessary
+* Learning of how much memory and time commands take for best resource
+  utilization
+* Draining the queue if you want to stop the system as gracefully as
+  possible, and recoving from drains, stops and crashes
 
-Critical things not yet implemented
+Not yet implemented
 -----------------------------------
-* If a command fails, there's no interface to let you "kick" (retry) it
-* While there are 3 automatic retries, there is no automatic retrying with
-  higher memory or time, if it failed for those reasons
-* Learning of how much memory and time commands use is not yet implemented
-* If you stop the manager while there are incomplete jobs, when you restart
-  the manager, those incomplete jobs are not recovered and processed
-* The status web page "works", but is unstyled and practically unusable
 * While the help mentions pipelines, nothing pipeline-related has been
-  implemented
+  implemented (no job dependecies)
+* Get a complete listing of all commands with a given id
+* Database backups
+* Checkpointing for long running commands
+* Security (anyone with an account on your machine can use your
+  manager)
+* Re-run button in web interface for successfully completed commands
+* Ability to alter memory/time/env-vars of commands
