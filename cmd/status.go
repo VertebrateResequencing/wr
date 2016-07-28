@@ -33,6 +33,7 @@ import (
 var cmdFileStatus string
 var cmdIdStatus string
 var cmdLine string
+var showBuried bool
 var showStd bool
 var showEnv bool
 var quietMode bool
@@ -78,6 +79,10 @@ the commands, or if you added them with a different cwd.`,
 			}
 			cmdCwd = pwd
 		}
+		cmdState := ""
+		if showBuried {
+			cmdState = "buried"
+		}
 		timeout := time.Duration(timeoutint) * time.Second
 
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
@@ -87,14 +92,14 @@ the commands, or if you added them with a different cwd.`,
 		defer jq.Disconnect()
 
 		var jobs []*jobqueue.Job
-		showextra := false
+		showextra := true
 		switch {
 		case set == 0:
 			// get incomplete jobs
-			jobs, err = jq.GetIncomplete()
+			jobs, err = jq.GetIncomplete(1, cmdState, showStd, showEnv)
 		case cmdIdStatus != "":
 			// get all jobs with this identifier (repgroup)
-			jobs, err = jq.GetByRepGroup(cmdIdStatus)
+			jobs, err = jq.GetByRepGroup(cmdIdStatus, 1, cmdState, showStd, showEnv)
 		case cmdFileStatus != "":
 			// get jobs that have the supplied commands. We support the same
 			// format of file that "vrpipe add" takes, but only care about the
@@ -131,12 +136,12 @@ the commands, or if you added them with a different cwd.`,
 			if len(jobs) < desired {
 				warn("%d/%d cmds were not found", desired-len(jobs), desired)
 			}
+			showextra = false
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job
 			job, err = jq.GetByCmd(cmdLine, cmdCwd, showStd, showEnv)
 			jobs = append(jobs, job)
-			showextra = true
 		}
 
 		if err != nil {
@@ -148,15 +153,15 @@ the commands, or if you added them with a different cwd.`,
 			for _, job := range jobs {
 				switch job.State {
 				case "delayed":
-					d++
+					d += 1 + job.Similar
 				case "ready":
-					re++
+					re += 1 + job.Similar
 				case "buried":
-					b++
+					b += 1 + job.Similar
 				case "reserved":
-					ru++
+					ru += 1 + job.Similar
 				case "complete":
-					c++
+					c += 1 + job.Similar
 				}
 			}
 			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndelayed: %d\nburied: %d\n", c, ru, re, d, b)
@@ -222,6 +227,22 @@ the commands, or if you added them with a different cwd.`,
 						fmt.Printf("Env: %s\n", env)
 					}
 				}
+
+				if job.Similar > 0 {
+					fr := ""
+					if job.FailReason != "" {
+						fr = " and problem"
+					}
+					er := ""
+					if job.Exited && job.Exitcode != 0 {
+						if fr != "" {
+							er = ", exit code"
+						} else {
+							er = " and exit code"
+						}
+					}
+					fmt.Printf("+ %d other commands with the same status%s%s\n", job.Similar, er, fr)
+				}
 			}
 		}
 
@@ -237,8 +258,9 @@ func init() {
 	statusCmd.Flags().StringVarP(&cmdIdStatus, "identifier", "i", "", "identifier of the commands you want the status of")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "in -l mode only, also show the most recent STDOUT and STDERR of the command")
-	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -l mode only, also show the environment variables the command ran with")
+	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
+	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
+	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().BoolVarP(&quietMode, "quiet", "q", false, "minimal verbosity: just display status counts")
 
 	statusCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")

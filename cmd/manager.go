@@ -105,7 +105,7 @@ var managerStartCmd = &cobra.Command{
 			args := os.Args
 			hadDeployment := false
 			for _, arg := range args {
-				if arg == "deployment" {
+				if arg == "--deployment" {
 					hadDeployment = true
 					break
 				}
@@ -151,7 +151,10 @@ var managerStartCmd = &cobra.Command{
 var managerStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop pipeline management",
-	Long:  `Gracefully stop the pipeline manager, saving its state.`,
+	Long: `Immediately stop the pipeline manager, saving its state.
+
+Note that any runners that are currently running will die, along with any
+commands they were running. It is more graceful to use use 'drain' instead.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
@@ -207,6 +210,45 @@ var managerStopCmd = &cobra.Command{
 	},
 }
 
+// drain sub-command makes the server stop spawning new runners and stops it
+// letting existing runners reserve jobs, and when there are no more runners
+// running it will exit by itself
+var managerDrainCmd = &cobra.Command{
+	Use:   "drain",
+	Short: "Drain the pipeline manager of running jobs and then stop",
+	Long: `Wait for currently running jobs to finish and then gracefully stop the pipeline manager, saving its state.
+
+While draining you can continue to add new Jobs, but nothing new will start
+running until the drain completes (or the manager is stopped) and the manager is
+then started again.
+
+It is safe to repeat this command to get an update on how long before the drain
+completes.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// first try and connect
+		jq := connect(5 * time.Second)
+		if jq == nil {
+			fatal("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.Manager_port)
+		}
+
+		// we managed to connect to the daemon; ask it to go in to drain mode
+		numLeft, etc, err := jq.DrainServer()
+		if err != nil {
+			fatal("even though I was able to connect to the manager, it failed to enter drain mode: %s", err)
+		}
+
+		if numLeft == 0 {
+			info("vrpipe manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.Manager_port)
+		} else if numLeft == 1 {
+			info("vrpipe manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.Manager_port, numLeft, etc)
+		} else {
+			info("vrpipe manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.Manager_port, numLeft, etc)
+		}
+
+		jq.Disconnect()
+	},
+}
+
 // status sub-command tells if the manger is up or down
 // stop sub-command stops the daemon by sending it a term signal
 var managerStatusCmd = &cobra.Command{
@@ -220,7 +262,7 @@ var managerStatusCmd = &cobra.Command{
 			// confirm
 			jq := connect(5 * time.Second)
 			if jq != nil {
-				fmt.Println("started")
+				reportLiveStatus(jq)
 				return
 			}
 
@@ -232,14 +274,27 @@ var managerStatusCmd = &cobra.Command{
 		if jq == nil {
 			fmt.Println("stopped")
 		} else {
-			fmt.Println("started")
+			reportLiveStatus(jq)
 		}
 	},
+}
+
+// reportLiveStatus is used by the status command on a working connection to
+// distinguish between the server being in a normal 'started' state or the
+// 'drain' state.
+func reportLiveStatus(jq *jobqueue.Client) {
+	sstats, err := jq.ServerStats()
+	if err != nil {
+		fatal("even though I was able to connect to the manager, it wasn't able to tell me about itself: %s", err)
+	}
+	mode := sstats.ServerInfo.Mode
+	fmt.Println(mode)
 }
 
 func init() {
 	RootCmd.AddCommand(managerCmd)
 	managerCmd.AddCommand(managerStartCmd)
+	managerCmd.AddCommand(managerDrainCmd)
 	managerCmd.AddCommand(managerStopCmd)
 	managerCmd.AddCommand(managerStatusCmd)
 
@@ -313,13 +368,14 @@ func sAddr(s *jobqueue.ServerInfo) (addr string) {
 
 func logStarted(s *jobqueue.ServerInfo) {
 	info("vrpipe manager started on %s, pid %d", sAddr(s), s.PID)
+	info("vrpipe's web interface can be reached at %s:%s", s.Host, s.WebPort)
 }
 
 func startJQ(sayStarted bool) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, "vrpipe runner -q %s -s '%s' --deployment %s --server '%s'", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, "vrpipe runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)
@@ -359,6 +415,8 @@ func startJQ(sayStarted bool) {
 			log.Printf("vrpipe manager on %s gracefully stopped (received SIGTERM)\n", addr)
 		case ok && jqerr.Err == jobqueue.ErrClosedInt:
 			log.Printf("vrpipe manager on %s gracefully stopped (received SIGINT)\n", addr)
+		case ok && jqerr.Err == jobqueue.ErrClosedStop:
+			log.Printf("vrpipe manager on %s gracefully stopped (following a drain)\n", addr)
 		default:
 			log.Printf("vrpipe manager on %s exited unexpectedly: %s\n", addr, err)
 		}

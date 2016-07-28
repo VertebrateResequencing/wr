@@ -29,8 +29,15 @@ import (
 	"github.com/boltdb/bolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/ugorji/go/codec"
+	"math"
 	"os"
 	"sort"
+	"strconv"
+)
+
+const (
+	dbDelimiter          = "_::_"
+	jobStatWindowPercent = float32(5)
 )
 
 var (
@@ -40,6 +47,11 @@ var (
 	bucketEnvs         []byte = []byte("envs")
 	bucketStdO         []byte = []byte("stdo")
 	bucketStdE         []byte = []byte("stde")
+	bucketJobMBs       []byte = []byte("jobMBs")
+	bucketJobSecs      []byte = []byte("jobSecs")
+	wipeDevDBOnInit    bool   = true
+	RecMBRound         int    = 100  // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
+	RecSecRound        int    = 1800 // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
 
 // bje implements sort interface so we can sort a slice of []byte triples,
@@ -71,7 +83,7 @@ type db struct {
 // otherwise we start fresh. In development we delete any existing db and force
 // a fresh start.
 func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, msg string, err error) {
-	if deployment == "development" {
+	if wipeDevDBOnInit && deployment == "development" {
 		os.Remove(dbFile)
 		os.Remove(dbBkFile)
 	}
@@ -143,6 +155,14 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		if err != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketStdE, err)
 		}
+		_, err = tx.CreateBucketIfNotExists(bucketJobMBs)
+		if err != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobMBs, err)
+		}
+		_, err = tx.CreateBucketIfNotExists(bucketJobSecs)
+		if err != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, err)
+		}
 		return nil
 	})
 	if err != nil {
@@ -162,13 +182,13 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
 // disaster recovery. It also stores a lookup from the Job.RepGroup to the
 // Job's key, and since this is independent, and we call this prior to checking
-// for dups, we allow the same job to be lookup up by multiple RepGroups.
+// for dups, we allow the same job to be looked up by multiple RepGroups.
 func (db *db) storeNewJobs(jobs []*Job) (err error) {
 	// turn the jobs in to bjes and sort by their keys
 	var encodes bje
 	for _, job := range jobs {
 		key := jobKey(job)
-		rp := append([]byte(job.RepGroup), []byte("_::_")...)
+		rp := append([]byte(job.RepGroup), []byte(dbDelimiter)...)
 		rp = append(rp, []byte(key)...)
 		var encoded []byte
 		enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -207,9 +227,35 @@ func (db *db) archiveJob(key string, job *Job) (err error) {
 }
 
 // deleteLiveJob remove a job from the live bucket, for use when jobs were
-// added in error
+// added in error.
 func (db *db) deleteLiveJob(key string) {
 	db.remove(bucketJobsLive, key)
+	//*** we're not removing the lookup entry from the bucketRTK bucket...
+}
+
+// recoverIncompleteJobs returns all jobs in the live bucket, for use when
+// restarting the server, allowing you start working on any jobs that were
+// stored with storeNewJobs() but not yet archived with archiveJob(). Note that
+// any state changes to the Jobs that may have occurred will be lost: you get
+// back the Jobs exactly as they were when you put them in with storeNewJobs().
+func (db *db) recoverIncompleteJobs() (jobs []*Job, err error) {
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsLive)
+		b.ForEach(func(_, encoded []byte) error {
+			if encoded != nil {
+				dec := codec.NewDecoderBytes(encoded, db.ch)
+				job := &Job{}
+				err = dec.Decode(job)
+				if err != nil {
+					return err
+				}
+				jobs = append(jobs, job)
+			}
+			return nil
+		})
+		return nil
+	})
+	return
 }
 
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
@@ -240,7 +286,7 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err 
 	err = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsComplete)
 		c := tx.Bucket(bucketRTK).Cursor()
-		prefix := []byte(repgroup + "_::_")
+		prefix := []byte(repgroup + dbDelimiter)
 		for k, _ := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = c.Next() {
 			key := bytes.TrimPrefix(k, prefix)
 			encoded := b.Get(key)
@@ -286,15 +332,21 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 	return
 }
 
+// updateJobAfterExit stores the Job's peak memory usage and wall time against
+// the Job's ReqGroup, allowing recommendedReqGroup*(ReqGroup) to work. It also
 // updates the stdout/err associated with a job. we don't want to store these in
 // the job, since that would waste a lot of the queue's memory; we store in db
 // instead, and only retrieve when a client needs to see these. To stop the db
 // file becoming enormous, we only store these if the cmd failed and also delete
 // these from db when the cmd completes successfully. By doing the deletion
 // upfront, we also ensure we have the latest std, which may be nil even on cmd
-// failure.
-func (db *db) updateJobStd(jobkey string, exitcode int, stdo []byte, stde []byte) (err error) {
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+// failure. Since it is not critical to the running of jobs and pipelines that
+// this works 100% of the time, we ignore errors and write to bolt in a
+// goroutine, giving us a significant speed boost.
+func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
+	jobkey := jobKey(job)
+	secs := int(math.Ceil(job.endtime.Sub(job.starttime).Seconds()))
+	go db.bolt.Batch(func(tx *bolt.Tx) error {
 		bo := tx.Bucket(bucketStdO)
 		be := tx.Bucket(bucketStdE)
 		key := []byte(jobkey)
@@ -302,7 +354,7 @@ func (db *db) updateJobStd(jobkey string, exitcode int, stdo []byte, stde []byte
 		be.Delete(key)
 
 		var err error
-		if exitcode != 0 {
+		if job.Exitcode != 0 {
 			if len(stdo) > 0 {
 				err = bo.Put(key, stdo)
 			}
@@ -310,9 +362,19 @@ func (db *db) updateJobStd(jobkey string, exitcode int, stdo []byte, stde []byte
 				err = be.Put(key, stde)
 			}
 		}
+		if err != nil {
+			return err
+		}
+
+		b := tx.Bucket(bucketJobMBs)
+		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.Peakmem)), []byte(strconv.Itoa(job.Peakmem)))
+		if err != nil {
+			return err
+		}
+		b = tx.Bucket(bucketJobSecs)
+		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
 		return err
 	})
-	return
 }
 
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
@@ -334,6 +396,81 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 		}
 		return nil
 	})
+	return
+}
+
+// recommendedReqGroupMemory returns the 95th percentile peak memory usage of
+// all jobs that previously ran with the given reqGroup. If there are too few
+// prior values to calculate a 95th percentile, or if the 95th percentile is
+// very close to the maximum value, returns the maximum value instead. In either
+// case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
+// are no prior values.
+func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
+	mbs, err = db.recommendedReqGroupStat(bucketJobMBs, reqGroup, RecMBRound)
+	return
+}
+
+// recommendReqGroupTime returns the 95th percentile wall time taken of all jobs
+// that previously ran with the given reqGroup. If there are too few prior
+// values to calculate a 95th percentile, or if the 95th percentile is very
+// close to the maximum value, returns the maximum value instead. In either
+// case, the true value is rounded up to the nearest 30mins (but returned in
+// seconds). Returns 0 if there are no prior values.
+func (db *db) recommendedReqGroupTime(reqGroup string) (seconds int, err error) {
+	seconds, err = db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
+	return
+}
+
+// recommendedReqGroupStat is the implementation for the other recommend*()
+// methods.
+func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundAmount int) (recommendation int, err error) {
+	prefix := []byte(reqGroup)
+	max := 0
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(statBucket).Cursor()
+
+		// we seek over the bucket, and to avoid having to do it twice (first to
+		// get the overall count, then to get the 95th percentile), we keep the
+		// previous 5%-sized window of values, updating recommendation as the
+		// window fills
+		count := 0
+		window := jobStatWindowPercent
+		var prev []int
+		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			max, _ = strconv.Atoi(string(v))
+
+			count++
+			if count > 100 {
+				window = (float32(count) / 100) * jobStatWindowPercent
+			}
+
+			prev = append(prev, max)
+			if float32(len(prev)) > window {
+				recommendation, prev = prev[0], prev[1:]
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return
+	}
+
+	if recommendation == 0 {
+		if max == 0 {
+			return
+		}
+		recommendation = max
+	}
+
+	if max-recommendation < roundAmount {
+		recommendation = max
+	}
+
+	if recommendation%roundAmount > 0 {
+		recommendation = int(math.Ceil(float64(recommendation)/float64(roundAmount))) * roundAmount
+	}
+
 	return
 }
 
@@ -365,7 +502,7 @@ func (db *db) retrieve(bucket []byte, key string) (val []byte) {
 // remove does a basic delete of a key from a given bucket. We don't care about
 // errors here.
 func (db *db) remove(bucket []byte, key string) {
-	db.bolt.Batch(func(tx *bolt.Tx) error {
+	go db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
 		b.Delete([]byte(key))
 		return nil

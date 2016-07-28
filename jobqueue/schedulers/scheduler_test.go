@@ -43,6 +43,14 @@ func TestLocal(t *testing.T) {
 		possibleReq := &Requirements{1, 1 * time.Second, 1, ""}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
 
+		Convey("ReserveTimeout() returns 1 second", func() {
+			So(s.ReserveTimeout(), ShouldEqual, 1)
+		})
+
+		Convey("MaxQueueTime() always returns 0", func() {
+			So(s.MaxQueueTime(possibleReq).Seconds(), ShouldEqual, 0)
+		})
+
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)
 		})
@@ -206,6 +214,10 @@ func TestLSF(t *testing.T) {
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, ""}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
 
+		Convey("ReserveTimeout() returns 25 seconds", func() {
+			So(s.ReserveTimeout(), ShouldEqual, 1)
+		})
+
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
@@ -234,6 +246,11 @@ func TestLSF(t *testing.T) {
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
+			})
+
+			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
+				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, ""}).Minutes(), ShouldEqual, 4320)
 			})
 		}
 
@@ -337,7 +354,7 @@ func TestLSF(t *testing.T) {
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
 				numfiles = testDirForFiles(tmpdir)
-				So(numfiles, ShouldBeBetweenOrEqual, newcount, newcount+maxCPU) // we must allow it to run a few extra due to the implementation
+				So(numfiles, ShouldBeBetweenOrEqual, newcount, numfiles*2) // we must allow it to run a few extra due to the implementation
 			})
 		})
 

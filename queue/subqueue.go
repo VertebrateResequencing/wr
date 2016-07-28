@@ -23,14 +23,14 @@ package queue
 
 import (
 	"container/heap"
-	"sort"
 	"sync"
 )
 
 type subQueue struct {
-	mutex   sync.RWMutex
-	items   []*Item
-	sqIndex int
+	mutex     sync.RWMutex
+	items     []*Item
+	sqIndex   int
+	needsSort bool
 }
 
 // create a new subQueue that can hold *Items in "priority" order. sqIndex is
@@ -47,6 +47,7 @@ func (q *subQueue) push(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	heap.Push(q, item)
+	q.needsSort = true
 }
 
 // pop removes the next item from the queue according to its "priority"
@@ -79,6 +80,7 @@ func (q *subQueue) update(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
+	q.needsSort = true
 }
 
 // empty clears out a queue, setting it back to its new state
@@ -86,25 +88,6 @@ func (q *subQueue) empty() {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	q.items = nil
-}
-
-// all correctly sorts all items in the queue and returns a new slice of them.
-func (q *subQueue) all() (items []*Item) {
-	q.mutex.RLock()
-	defer q.mutex.RUnlock()
-	if len(q.items) == 0 {
-		return
-	}
-
-	// q.items is not sorted, and we don't have a way of directly accessing the
-	// heap (?), so we must trigger a sort manually. We create a new slice for
-	// them to avoid issues with items being added to q.items while the user
-	// is looking through q.items.
-	sort.Sort(q)
-	for _, item := range q.items {
-		items = append(items, item)
-	}
-	return
 }
 
 // the following functions are required for the heap implementation, and though

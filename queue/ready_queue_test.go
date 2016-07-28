@@ -101,20 +101,6 @@ func TestReadyQueue(t *testing.T) {
 
 		So(queue.Len(), ShouldEqual, 10)
 
-		Convey("all should return items in priority and then fifo order", func() {
-			all := queue.all()
-			for i := 0; i < 10; i++ {
-				item := all[i]
-				p := 9 - i
-				if i == 4 {
-					p--
-				} else if i == 5 {
-					p++
-				}
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
-			}
-		})
-
 		Convey("Popping them should remove them in priority and then fifo order", func() {
 			for i := 0; i < 10; i++ {
 				item := queue.pop()

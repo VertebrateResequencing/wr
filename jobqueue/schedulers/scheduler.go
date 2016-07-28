@@ -35,14 +35,17 @@ import (
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"math/rand"
+	"sync"
 	"time"
 )
 
 const (
-	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	randIdxBits = 6                  // 6 bits to represent a rand index
-	randIdxMask = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
-	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+	randBytes                           = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randIdxBits                         = 6                  // 6 bits to represent a rand index
+	randIdxMask                         = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	randIdxMax                          = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+	defaultReserveTimeout               = 1                  // implementers of reserveTimeout can just return this
+	infiniteQueueTime     time.Duration = 0
 )
 
 var (
@@ -86,13 +89,17 @@ type scheduleri interface {
 	initialize(deployment string, shell string) error        // do any initial set up to be able to use the job scheduler
 	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
 	busy() bool                                              // achieve the aims of Busy()
+	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
+	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
 }
 
 // the Scheduler struct gives you access to all of the methods you'll need to
 // interact with a job scheduler.
 type Scheduler struct {
-	impl scheduleri
-	Name string
+	impl    scheduleri
+	Name    string
+	limiter map[string]int
+	sync.Mutex
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
@@ -111,6 +118,7 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 		err = Error{name, "New", ErrBadScheduler}
 	} else {
 		s.Name = name
+		s.limiter = make(map[string]int)
 		err = s.impl.initialize(deployment, shell)
 	}
 
@@ -128,7 +136,34 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 // will eventually run unless you call Schedule() again with the same command
 // and a lower count.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
-	return s.impl.schedule(cmd, req, count)
+	// Schedule may get called many times in different go routines, eg. a
+	// succession of calls with the same cmd and req but decrementing count.
+	// Here we arrange that impl.schedule is only called once at a time per
+	// cmd: if not already running we call as normal; if running we don't run
+	// it but return immediately while storing the more recent desired count;
+	// when it finishes running, we re-run with the most recent count, if any
+	s.Lock()
+	if _, limited := s.limiter[cmd]; limited {
+		s.limiter[cmd] = count
+		s.Unlock()
+		return nil
+	}
+	s.limiter[cmd] = count
+	s.Unlock()
+
+	err := s.impl.schedule(cmd, req, count)
+
+	s.Lock()
+	if newcount, limited := s.limiter[cmd]; limited {
+		delete(s.limiter, cmd)
+		s.Unlock()
+		if newcount != count {
+			return s.Schedule(cmd, req, newcount)
+		}
+	} else {
+		s.Unlock()
+	}
+	return err
 }
 
 // Busy reports true if there are any Schedule()d cmds still in the job
@@ -137,6 +172,21 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 // running/ about to run.
 func (s *Scheduler) Busy() bool {
 	return s.impl.busy()
+}
+
+// ReserveTimeout() returns the number of seconds that runners spawned in this
+// scheduler should wait for new jobs to appear in the manager's queue.
+func (s *Scheduler) ReserveTimeout() int {
+	return s.impl.reserveTimeout()
+}
+
+// MaxQueueTime() returns the maximum amount of time that jobs with the given
+// resource requirements are allowed to run for in the job scheduler's queue. If
+// the job scheduler doesn't have a queue system, or if the queue allows jobs to
+// run forever, then this returns a 0 length duration, which should be regarded
+// as "infinite" queue time.
+func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
+	return s.impl.maxQueueTime(req)
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

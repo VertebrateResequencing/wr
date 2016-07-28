@@ -35,7 +35,10 @@ import (
 	"time"
 )
 
-const place = "localhost"
+const (
+	localPlace          = "localhost"
+	localReserveTimeout = 1
+)
 
 var mt = []byte("MemTotal:")
 
@@ -92,13 +95,23 @@ func (s *local) initialize(deployment string, shell string) (err error) {
 	s.maxmb = int(kb / 1024)
 
 	// make our queue
-	s.queue = queue.New(place)
+	s.queue = queue.New(localPlace)
 	s.running = make(map[string]int)
 
 	s.deployment = deployment
 	s.shell = shell
 
 	return
+}
+
+// reserveTimeout achieves the aims of ReserveTimeout().
+func (s *local) reserveTimeout() int {
+	return localReserveTimeout
+}
+
+// maxQueueTime achieves the aims of MaxQueueTime().
+func (s *local) maxQueueTime(req *Requirements) time.Duration {
+	return infiniteQueueTime
 }
 
 // schedule achieves the aims of Schedule().

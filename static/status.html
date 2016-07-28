@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>VRPipe Status</title>
+        
+        <!-- jQuery for various utility, and needed by bootstrap.js -->
+        <script src="/js/jquery-2.2.4.min.js"></script>
+        
+        <!-- Bootstrap for presentation and styling -->
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="/css/bootstrap-3.3.6.min.css">
+        <script src="/js/bootstrap-3.3.6.min.js"></script>
+        
+        <!-- Knockout for event handling -->
+        <script src="/js/knockout-3.4.0.min.js"></script>
+        
+        <!-- Knockstrap to make buttons and things work 2-way between knockout and bootstrap -->
+        <script src="/js/knockstrap-1.3.2.min.js"></script>
+        
+        <!-- Some of our own general helper functions -->
+        <script src="/js/vrpipe-0.0.1.js"></script>
+        <link rel="stylesheet" href="/css/vrpipe-0.0.1.css">
+    </head>
+    <body>
+    
+        <div id="nav" class="navbar navbar-default" role="navigation">
+            <div class="container">
+                <div class="navbar-header">
+                    <span class="navbar-brand">VRPipe Status</span>
+                </div>
+            </div>
+        </div>
+        
+        <div id="status" class="container">
+            <div id="statuserrors" data-bind="foreach: statuserror">
+                <div class="alert alert-danger fade in">
+                    <p data-bind="text: $data"></p>
+                </div>
+            </div>
+            
+            <div style="width: 100%;" class="well well-sm top-margin">
+                <div style="margin: 0 auto;">
+                    <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
+                    <div class="top-margin" data-bind="if: inflight.total() > 0">
+                        <div class="progress" style="margin-bottom: 0">
+                            <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
+                                <span data-bind="text: inflight.delay"></span> delayed
+                            </div>
+                            <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
+                                <span data-bind="text: inflight.ready"></span> pending
+                            </div>
+                            <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
+                                <span data-bind="text: inflight.run"></span> running
+                            </div>
+                            <div class="progress-bar progress-bar-striped progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
+                                <span data-bind="text: inflight.bury"></span> buried
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row bottom-margin">
+                <div class="col-xs-5">
+                    <form data-bind="submit: requestRepGroup">
+                        <div class="input-group">
+                            <span class="input-group-addon" data-toggle="tooltip" data-container="body" title="Enter an identifier to also see the status of all commands added with that identifier.">identifier</span>
+                            <input type="text" class="form-control" data-bind="value: repGroup">
+                            <span class="input-group-btn">
+                                <button class="btn btn-default" type="submit"><span class="glyphicon glyphicon-play-circle"></span></button>
+                            </span>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <div data-bind="foreach: repGroups.sort(function(l,r) { l.id > r.id ? 1 : -1 })">
+                <div style="width: 100%;" class="well well-sm">
+                    <div style="margin: 0 auto;">
+                        <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge" data-bind="text: total"></span></h5>
+                        <div class="top-margin" data-bind="if: total() > 0">
+                            <div class="progress" style="margin-bottom: 0">
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed">
+                                    <span data-bind="text: delay"></span> delayed
+                                </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady">
+                                    <span data-bind="text: ready"></span> pending
+                                </div>
+                                <div class="progress-bar progress-bar-striped active clickable" role="progressbar" data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning">
+                                    <span data-bind="text: run"></span> running
+                                </div>
+                                <div class="progress-bar progress-bar-striped progress-bar-danger clickable" role="progressbar" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried">
+                                    <span data-bind="text: bury"></span> buried
+                                </div>
+                                <div class="progress-bar progress-bar-striped progress-bar-success clickable" role="progressbar" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete">
+                                    <span data-bind="text: complete"></span> complete
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- ko foreach: details -->
+                            <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried', 'panel-success': State == 'complete' }">
+                                <div class="panel-heading">
+                                    <h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
+                                    <small><i data-bind="text: Cwd"></i></small>
+                                </div>
+                                <div class="panel-body keyvals">
+                                    <dl>
+                                        <dt>Attempts</dt>
+                                        <dd data-bind="text: Attempts"></dd>
+                                    </dl>
+                                    <dl>
+                                        <dt>Expected Memory</dt>
+                                        <dd data-bind="text: ExpectedMemory.mbIEC()"></dd>
+                                    </dl>
+                                    <dl>
+                                        <dt>Expected Time</dt>
+                                        <dd data-bind="text: ExpectedTime.toDuration()"></dd>
+                                    </dl>
+                                    <dl>
+                                        <dt>CPUs</dt>
+                                        <dd data-bind="text: CPUs"></dd>
+                                    </dl>
+                                    <!-- ko if: FailReason -->
+                                        <dl>
+                                            <dt>Reason for Failure</dt>
+                                            <dd data-bind="text: FailReason"></dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
+                                    <!-- ko if: Exited -->
+                                        <dl>
+                                            <dt>Exit code</dt>
+                                            <dd data-bind="text: Exitcode"></dd>
+                                        </dl>
+                                        <!-- ko if: Exitcode != 0 -->
+                                            <dl>
+                                                <dt>StdOut</dt>
+                                                <dd>
+                                                    <!-- ko if: StdOut -->
+                                                        <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdOut')">&lt;show&gt;</span>
+                                                    <!-- /ko -->
+                                                    <!-- ko if: ! StdOut -->
+                                                        &lt;none&gt;
+                                                    <!-- /ko -->
+                                                </dd>
+                                            </dl>
+                                            <dl>
+                                                <dt>StdErr</dt>
+                                                <dd>
+                                                    <!-- ko if: StdErr -->
+                                                        <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
+                                                    <!-- /ko -->
+                                                    <!-- ko if: ! StdErr -->
+                                                        &lt;none&gt;
+                                                    <!-- /ko -->
+                                                </dd>
+                                            </dl>
+                                        <!-- /ko -->
+                                        <dl>
+                                            <dt>Peak Memory</dt>
+                                            <dd data-bind="text: Peakmem.mbIEC()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Walltime</dt>
+                                            <dd data-bind="text: Walltime.toDuration()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>CPUtime</dt>
+                                            <dd data-bind="text: CPUtime.toDuration()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Host</dt>
+                                            <dd data-bind="text: Host"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Pid</dt>
+                                            <dd data-bind="text: Pid"></dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
+                                    <!-- ko if: ! Exited && (State == "reserved" || State == "running") -->
+                                        <dl>
+                                            <dt>Walltime</dt>
+                                            <dd data-bind="text: Walltime.toDuration()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Host</dt>
+                                            <dd data-bind="text: Host"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Pid</dt>
+                                            <dd data-bind="text: Pid"></dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
+                                    <dl>
+                                        <dt>Env</dt>
+                                        <dd>
+                                            <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
+                                        </dd>
+                                    </dl>
+                                </div>
+                                <div class="panel-footer clearfix">
+                                    <!-- ko if: Similar -->
+                                        + <span data-bind="text: Similar"></span> other commands
+                                        <!-- ko if: Exitcode != 0  -->
+                                            with same exit code and reason for failure
+                                        <!-- /ko -->
+                                    <!-- /ko -->
+                                    <!-- ko if: State == "delayed" -->
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemove">Remove</button>
+                                    <!-- /ko -->
+                                    <!-- ko if: State == "buried" -->
+                                        <div class="btn-group pull-right">
+                                            <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemove">Remove</button>
+                                            <button type="button" class="btn btn-primary" data-bind="click: $root.confirmRetry">Retry</button>
+                                        </div>
+                                    <!-- /ko -->
+                                </div>
+                            </div>
+                        <!-- /ko -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- action modals -->
+            <div data-bind="modal: {
+                visible: actionModalVisible,
+                dialogCss: 'modal-sm',
+                header: { data: { label: actionModalHeader } },
+                body: { name: 'actionModalBodyTemplate', data: actionDetails },
+                footer: { name: 'actionModalFooterTemplate', data: actionDetails }
+            }"></div>
+            <script type="text/html" id="actionModalBodyTemplate">
+                Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>" that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
+            </script>
+            <script type="text/html" id="actionModalFooterTemplate">
+                <div class="btn-group">
+                    <!-- ko if: count() > 1 -->
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: action().capitalizeFirstLetter() + ' all'"></button>
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action().capitalizeFirstLetter() + ' 1'"></button>
+                    <!-- /ko -->
+                    <!-- ko if: count() == 1 -->
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action().capitalizeFirstLetter()"></button>
+                    <!-- /ko -->
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                </div>
+            </script>
+            
+            <!-- stdout/err modals -->
+            <div data-bind="modal: {
+                visible: stdModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: stdModalHeader } },
+                body: { data: { content: stdOutput } }
+            }"></div>
+            
+            <!-- env modal -->
+            <div data-bind="modal: {
+                visible: envModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Environment Variables' } },
+                body: { name: 'envModalBodyTemplate', data: envVars }
+            }"></div>
+            <script type="text/html" id="envModalBodyTemplate">
+                <div data-bind="foreach: $data">
+                    <span data-bind="text: $data"></span><br>
+                </div>
+            </script>
+            
+            <hr>
+            
+            <footer id="footer">
+                <small>&copy; 2016 Genome Research Limited.</small>
+            </footer>
+        </div>
+        
+        <script type="text/javascript">
+            // turn on bootstrap tooltips
+            $('[data-toggle="tooltip"]').tooltip({'placement': 'top'});
+            
+            // viewmodel for displaying status
+            function StatusViewModel() {
+                var self = this;
+                self.aquiringstatus = ko.observableArray();
+                self.statuserror = ko.observableArray();
+                self.repGroup = ko.observable();
+                self.detailsRepgroup = '';
+                self.detailsState = '';
+                self.detailsOA;
+                
+                self.inflight = {
+                    'delay': ko.observable(0),
+                    'ready': ko.observable(0),
+                    'run': ko.observable(0),
+                    'bury': ko.observable(0),
+                    'delayPct': ko.observable(0),
+                    'readyPct': ko.observable(0),
+                    'runPct': ko.observable(0),
+                    'buryPct': ko.observable(0),
+                    'old_total': 0,
+                    'delay_compute': 0
+                };
+                self.inflight['total'] = ko.computed(function() {
+                    if (self.inflight['delay_compute']) {
+                        return self.inflight['old_total'];
+                    }
+                    
+                    var total = self.inflight['delay']() + self.inflight['ready']() + self.inflight['run']() + self.inflight['bury']();
+                    if (total > 0) {
+                        var multiplier = 100 / total;
+                        var rounded = percentRounder([(multiplier * self.inflight['delay']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['run']()), (multiplier * self.inflight['bury']())], 2);
+                        self.inflight['delayPct'](rounded[0]);
+                        self.inflight['readyPct'](rounded[1]);
+                        self.inflight['runPct'](rounded[2]);
+                        self.inflight['buryPct'](rounded[3]);
+                    }
+                        
+                    self.inflight['old_total'] = total;
+                    return total;
+                });
+                self.rateLimit = 350; // this is a sweetspot that seems to mostly avoid flickering of the progress bars, at least in Safari
+                self.inflight['delay'].extend({ rateLimit: self.rateLimit });
+                self.inflight['ready'].extend({ rateLimit: self.rateLimit });
+                self.inflight['run'].extend({ rateLimit: self.rateLimit });
+                self.inflight['bury'].extend({ rateLimit: self.rateLimit });
+                self.inflight['total'].extend({ rateLimit: self.rateLimit });
+                
+                self.repGroups = ko.observableArray();
+                self.repGroupLookup = {};
+                self.omcount = 0;
+                
+                // set up the websocket
+                if (window.WebSocket === undefined) {
+                    self.statuserror.push("Your browser does not support WebSockets");
+                } else {
+                    self.ws = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws");
+                    self.ws.onopen = function() {
+                        self.ws.send(JSON.stringify({ Request: "current" }));
+                    };
+                    self.ws.onclose = function () {
+                        self.statuserror.push("Connection to the manager has been lost!");
+                        //*** we could poll and try to re-establish the connection...
+                    }
+                    self.ws.onmessage = function (e) {
+                        json = JSON.parse(e.data)
+                        if (json.hasOwnProperty('FromState')) {
+                            // state numbers have changed
+                            rg = json['RepGroup']
+                            var repgroup
+                            if (rg == "+all+") {
+                                repgroup = self.inflight;
+                            } else if (self.repGroupLookup.hasOwnProperty(rg)) {
+                                repgroup = self.repGroups()[self.repGroupLookup[rg]];
+                            } else {
+                                repgroup = {
+                                    'id': rg,
+                                    'delay': ko.observable(0),
+                                    'ready': ko.observable(0),
+                                    'run': ko.observable(0),
+                                    'bury': ko.observable(0),
+                                    'complete': ko.observable(0),
+                                    'delayPct': ko.observable(0),
+                                    'readyPct': ko.observable(0),
+                                    'runPct': ko.observable(0),
+                                    'buryPct': ko.observable(0),
+                                    'completePct': ko.observable(0),
+                                    'details': ko.observableArray(),
+                                    'old_total': 0,
+                                    'delay_compute': 0
+                                };
+                                repgroup['total'] = ko.computed(function() {
+                                    if (repgroup['delay_compute']) {
+                                        return repgroup['old_total'];
+                                    }
+                                    
+                                    var total = repgroup['delay']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['complete']();
+                                    if (total > 0) {
+                                        var multiplier = 100 / total;
+                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['complete']())], 2);
+                                        
+                                        // repgroup['delayPct'](rounded[0]);
+                                        // repgroup['readyPct'](rounded[1]);
+                                        // repgroup['runPct'](rounded[2]);
+                                        // repgroup['buryPct'](rounded[3]);
+                                        // repgroup['completePct'](rounded[4]);
+                                        
+                                        // to avoid the percentage bars
+                                        // totalling over 100 at any point in
+                                        // time, do all decrementing updates
+                                        // first; not sure if this really helps
+                                        // avoid some instances of flickering,
+                                        // but it might...
+                                        var keys = ['delayPct', 'readyPct', 'runPct', 'buryPct', 'completePct'];
+                                        for (var i = 0; i < 5; i++) {
+                                            if (repgroup[keys[i]]() > rounded[i]) {
+                                                repgroup[keys[i]](rounded[i]);
+                                            }
+                                        }
+                                        for (var i = 0; i < 5; i++) {
+                                            if (repgroup[keys[i]]() < rounded[i]) {
+                                                repgroup[keys[i]](rounded[i]);
+                                            }
+                                        }
+                                    }
+                                        
+                                    repgroup['old_total'] = total;
+                                    return total;
+                                });
+                                repgroup['delay'].extend({ rateLimit: self.rateLimit });
+                                repgroup['ready'].extend({ rateLimit: self.rateLimit });
+                                repgroup['run'].extend({ rateLimit: self.rateLimit });
+                                repgroup['bury'].extend({ rateLimit: self.rateLimit });
+                                repgroup['complete'].extend({ rateLimit: self.rateLimit });
+                                repgroup['total'].extend({ rateLimit: self.rateLimit });
+                                
+                                self.repGroups.push(repgroup);
+                                self.repGroupLookup[rg] = self.repGroups().length - 1;
+                            }
+                            
+                            var from, to
+                            switch(json['FromState']) {
+                                case 'delay':
+                                    from = repgroup['delay'];
+                                    break;
+                                case 'ready':
+                                    from = repgroup['ready'];
+                                    break;
+                                case 'run':
+                                    from = repgroup['run'];
+                                    break;
+                                case 'bury':
+                                    from = repgroup['bury'];
+                                    break;
+                            }
+                            
+                            switch(json['ToState']) {
+                                case 'delay':
+                                    to = repgroup['delay'];
+                                    break;
+                                case 'ready':
+                                    to = repgroup['ready'];
+                                    break;
+                                case 'run':
+                                    to = repgroup['run'];
+                                    break;
+                                case 'bury':
+                                    to = repgroup['bury'];
+                                    break;
+                                case 'complete':
+                                    if (rg != "+all+") {
+                                        to = repgroup['complete'];
+                                    }
+                                    break;
+                            }
+                            
+                            repgroup['delay_compute'] = to ? 1 : 0;
+                            var ok = true;
+                            if (from) {
+                                var newfrom = from() - json['Count'];
+                                if (newfrom >= 0) {
+                                    from(newfrom)
+                                } else {
+                                    // some rare wonkiness happens and we're
+                                    // hoping this helps avoid it...
+                                    ok = false;
+                                }
+                            }
+                            repgroup['delay_compute'] = 0;
+                            if (ok && to) {
+                                to(to() + json['Count'])
+                            }
+                        } else if (json.hasOwnProperty('State')) {
+                            rg = json['RepGroup']
+                            if (self.detailsOA && rg == self.detailsRepgroup) {
+                                // the user has clicked on a progress bar for
+                                // a particular repgroup; add to its details
+                                self.detailsOA.push(json)
+                            }
+                        }
+                    }
+                }
+                
+                // act if the user requests a repGroup
+                self.requestRepGroup = function(formElement) {
+                    console.log("requesting rep group " + self.repGroup())
+                    self.ws.send(JSON.stringify({ RepGroup: self.repGroup() }));
+                };
+                
+                // act if the user clicks on the different types of progress
+                // bar for a repGroup
+                self.showRepgroupDelayed = function(repGroup) {
+                    self.showGroupState(repGroup, 'delayed');
+                };
+                self.showRepgroupReady = function(repGroup) {
+                    self.showGroupState(repGroup, 'ready');
+                };
+                self.showRepgroupRunning = function(repGroup) {
+                    self.showGroupState(repGroup, 'reserved'); // which includes 'running'
+                };
+                self.showRepgroupBuried = function(repGroup) {
+                    self.showGroupState(repGroup, 'buried');
+                };
+                self.showRepgroupComplete = function(repGroup) {
+                    self.showGroupState(repGroup, 'complete');
+                };
+                self.showGroupState = function(repGroup, state) {
+                    if (self.detailsOA) {
+                        self.detailsOA([]);
+                    }
+                    
+                    if (repGroup.id == self.detailsRepgroup && state == self.detailsState) {
+                        // stop showing
+                        repGroup.details([]);
+                        self.detailsRepgroup = '';
+                        self.detailsState = '';
+                        self.detailsOA = '';
+                        return;
+                    }
+                    
+                    self.detailsRepgroup = repGroup.id;
+                    self.detailsState = state;
+                    self.detailsOA = repGroup.details;
+                    self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state }));
+                }
+                
+                // act if the user clicks to view stdout/err
+                self.stdModalVisible = ko.observable(false);
+                self.stdModalHeader = ko.observable();
+                self.stdOutput = ko.observable();
+                self.showStd = function(type, job) {
+                    self.stdModalHeader(type);
+                    self.stdOutput(job[type]);
+                    self.stdModalVisible(true);
+                }
+                
+                // act if the user clicks to view env
+                self.envModalVisible = ko.observable(false);
+                self.envVars = ko.observableArray();
+                self.showEnv = function(job) {
+                    self.envVars(job.Env);
+                    self.envModalVisible(true);
+                }
+                
+                // act if the user clicks one of the action buttons in the
+                // details of a progress bar
+                self.actionModalVisible = ko.observable(false);
+                self.actionModalHeader = ko.observable();
+                self.actionDetails = {
+                    action: ko.observable(),
+                    repGroup: ko.observable(),
+                    state: ko.observable(),
+                    exitCode: ko.observable(),
+                    failReason: ko.observable(),
+                    count: ko.observable()
+                };
+                self.jobToActionDetails = function(job, action) {
+                    self.actionDetails.action(action);
+                    self.actionDetails.repGroup(job.RepGroup);
+                    self.actionDetails.state(job.State);
+                    self.actionDetails.exitCode(job.Exitcode);
+                    self.actionDetails.failReason(job.FailReason);
+                    self.actionDetails.count(job.Similar + 1);
+                };
+                self.commitAction = function(all) {
+                    // request the action
+                    self.ws.send(JSON.stringify({
+                        Request: self.actionDetails.action(),
+                        RepGroup: self.actionDetails.repGroup(),
+                        State: self.actionDetails.state(),
+                        Exitcode: self.actionDetails.exitCode(),
+                        FailReason: self.actionDetails.failReason(),
+                        All: all
+                    }));
+                    
+                    // reset the ui
+                    if (self.detailsOA) {
+                        self.detailsOA([]);
+                    }
+                    self.detailsRepgroup = '';
+                    self.detailsState = '';
+                    self.detailsOA = '';
+                    self.actionModalVisible(false);
+                };
+                self.confirmRetry = function(job) {
+                    self.jobToActionDetails(job, 'retry');
+                    self.actionModalHeader('Retry Buried Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmRemove = function(job) {
+                    self.jobToActionDetails(job, 'remove');
+                    self.actionModalHeader('Remove Failed Commands');
+                    self.actionModalVisible(true);
+                };
+            }
+            var svm = new StatusViewModel();
+            ko.applyBindings(svm, $('#status')[0]);
+        </script>
+        
+        <!-- <script type="text/javascript">
+            $(function () {
+                var ws;
+
+                if (window.WebSocket === undefined) {
+                    $("#stream").append("Your browser does not support WebSockets");
+                    return;
+                } else {
+                    ws = initWS();
+                }
+
+                function initWS() {
+                    var socket = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws"),
+                        container = $("#stream")
+                    socket.onopen = function() {
+                        container.append("<p>Socket is open</p>");
+                        ws.send(JSON.stringify({ Request: "current" }));
+                    };
+                    socket.onmessage = function (e) {
+                        container.append("<p>Job changed state:" + e.data + "</p>");
+                    }
+                    socket.onclose = function () {
+                        container.append("<p>Socket closed</p>");
+                    }
+                    return socket;
+                }
+
+                $("#requestRep").click(function (e) {
+                    e.preventDefault();
+                    ws.send(JSON.stringify({ RepGroup: $("#repgroupField").val() }));
+                });
+                
+                $("#requestJobkey").click(function (e) {
+                    e.preventDefault();
+                    ws.send(JSON.stringify({ Key: $("#jobkeyField").val() }));
+                });
+            });
+        </script> -->
+    </body>
+</html>

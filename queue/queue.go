@@ -158,6 +158,13 @@ func (queue *Queue) SetReadyAddedCallback(callback readyAddedCallback) {
 	queue.readyAddedCb = callback
 }
 
+// TriggerReadyAddedCallback allows you to manually trigger your
+// readyAddedCallback at times when no new items have been added to the ready
+// queue.
+func (queue *Queue) TriggerReadyAddedCallback() {
+	queue.readyAdded()
+}
+
 // readyAdded checks if a readyAddedCallback has been set, and if so calls it
 // in a go routine.
 func (queue *Queue) readyAdded() {
@@ -174,10 +181,10 @@ func (queue *Queue) readyAdded() {
 
 // SetChangedCallback sets a callback that will be called when items move from
 // one sub-queue to another. The callback receives the name of the moved-from
-// sub-queue ('new' in the case of entering the queue for the first time), the name of the
-// moved-to sub-queue ('removed' in the case of the item being removed from the
-// queue), and a slice of item.Data of everything that moved in this way. The
-// callback will be initiated in a go routine.
+// sub-queue ('new' in the case of entering the queue for the first time), the
+// name of the moved-to sub-queue ('removed' in the case of the item being
+// removed from the queue), and a slice of item.Data of everything that moved in
+// this way. The callback will be initiated in a go routine.
 func (queue *Queue) SetChangedCallback(callback changedCallback) {
 	queue.changedCb = callback
 }
@@ -352,6 +359,17 @@ func (queue *Queue) Get(key string) (item *Item, err error) {
 	return
 }
 
+// GetRunningData gets all the item.Data of items currently in the run sub-
+// queue.
+func (queue *Queue) GetRunningData() (data []interface{}) {
+	queue.mutex.RLock()
+	for _, item := range queue.runQueue.items {
+		data = append(data, item.Data)
+	}
+	queue.mutex.RUnlock()
+	return
+}
+
 // AllItems() returns the items in the queue. NB: You should NOT do anything
 // to these items - use for read-only purposes.
 func (queue *Queue) AllItems() (items []*Item) {
@@ -479,23 +497,33 @@ func (queue *Queue) ReserveFiltered(filter ReserveFilter) (item *Item, err error
 
 	if queue.closed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrQueueClosed}
+		err = Error{queue.Name, "ReserveFiltered", "", ErrQueueClosed}
 		return
 	}
 
 	// go through the ready queue in order and offer each item's Data to filter
 	// until it returns true: that's the item we'll remove from ready
-	for _, thisItem := range queue.readyQueue.all() {
+	var poppedItems []*Item
+	for {
+		thisItem := queue.readyQueue.pop()
+		if thisItem == nil {
+			break
+		}
+		poppedItems = append(poppedItems, thisItem)
+
 		ok := filter(thisItem.Data)
 		if ok {
 			item = thisItem
 			break
 		}
 	}
+	for _, thisItem := range poppedItems {
+		queue.readyQueue.push(thisItem)
+	}
 
 	if item == nil {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrNothingReady}
+		err = Error{queue.Name, "ReserveFiltered", "", ErrNothingReady}
 		return
 	}
 

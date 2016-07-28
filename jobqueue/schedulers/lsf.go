@@ -363,6 +363,20 @@ func (s *lsf) initialize(deployment string, shell string) error {
 	return nil
 }
 
+// reserveTimeout achieves the aims of ReserveTimeout().
+func (s *lsf) reserveTimeout() int {
+	return defaultReserveTimeout
+}
+
+// maxQueueTime achieves the aims of MaxQueueTime().
+func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
+	queue, err := s.determineQueue(req, 0)
+	if err == nil {
+		return time.Duration(s.queues[queue]["runlimit"]) * time.Second
+	}
+	return infiniteQueueTime
+}
+
 // schedule achieves the aims of Schedule(). Note that if rescheduling a cmd
 // at a lower count, we cannot guarantee that only that number get run; it may
 // end up being a few more.
@@ -528,7 +542,6 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 	// as multiple different arrays, each with a uniqified job name. It gets
 	// uniquified because otherwise none of the jobs in the second array would
 	// start until the first array with the same name ended.
-	toKill := []string{"-b"}
 	var jobPrefix string
 	if cmd == "" {
 		jobPrefix = fmt.Sprintf("vrp%s_", s.deployment[0:1])
@@ -536,56 +549,111 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		jobPrefix = jobName(cmd, s.deployment, false)
 	}
 
-	bjcmd := exec.Command(s.shell, "-c", "bjobs -w")
-	bjout, err := bjcmd.StdoutPipe()
-	if err != nil {
-		err = Error{"lsf", "checkCmd", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
-		return
-	}
-	err = bjcmd.Start()
-	if err != nil {
-		err = Error{"lsf", "checkCmd", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
-		return
-	}
-	bjScanner := bufio.NewScanner(bjout)
+	if max >= 0 {
+		// to avoid a race condition where we collect id[index]s to kill here,
+		// then later kill them all, though some may have started running by
+		// then, we used to collect the jod ids now, then later bmod to allow
+		// 0 running, then repeat the bjobs to find the ones to kill, kill them,
+		// then bmod back to allowing lots to run. However, use of bmod resulted
+		// in big rescheduling delays, and overall it seemed better (in terms of
+		// getting jobs run quicker) to all the race condition and allow some
+		// cmds to start running and then get killed. Hence the bmod-related
+		// code is now commented out.
 
-	reParse := regexp.MustCompile(`^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(` + jobPrefix + `\S+)`)
-	reAid := regexp.MustCompile(`\[(\d+)\]$`)
-	for bjScanner.Scan() {
-		line := bjScanner.Text()
+		// modIds := make(map[string]bool)
+		// cb := func(matches []string) {
+		// 	if matches[2] != "RUN" {
+		// 		modIds[matches[1]] = true
+		// 	}
+		// }
+		// s.parseBjobs(jobPrefix, cb)
 
-		if matches := reParse.FindStringSubmatch(line); matches != nil && len(matches) == 4 {
-			if matches[2] == "EXIT" {
-				continue
-			}
+		// toMod := make([]string, len(modIds)+1)
+		// if len(modIds) > 0 {
+		// 	toMod[0] = "-J%0"
+		// 	i := 1
+		// 	for k := range modIds {
+		// 		toMod[i] = k
+		// 		i++
+		// 	}
+		// 	modcmd := exec.Command("bmod", toMod...)
+		// 	modcmd.Run()
+		// }
+
+		reAid := regexp.MustCompile(`\[(\d+)\]$`)
+		toKill := []string{"-b"}
+		cb := func(matches []string) {
 			count++
-
-			if max >= 0 && count > max && matches[2] != "RUN" {
+			if count > max && matches[2] != "RUN" {
 				sidaid := matches[1]
 				if aidmatch := reAid.FindStringSubmatch(matches[3]); aidmatch != nil && len(aidmatch) == 2 {
 					sidaid = sidaid + "[" + aidmatch[1] + "]"
 				}
 				toKill = append(toKill, sidaid)
+				count--
 			}
+		}
+		s.parseBjobs(jobPrefix, cb)
+
+		if len(toKill) > 1 {
+			killcmd := exec.Command("bkill", toKill...)
+			killcmd.Run()
+		}
+
+		// if len(modIds) > 0 {
+		// 	toMod[0] = "-J%1000000"
+		// 	modcmd := exec.Command("bmod", toMod...)
+		// 	modcmd.Run()
+		// }
+	} else {
+		cb := func(matches []string) {
+			count++
+		}
+		s.parseBjobs(jobPrefix, cb)
+	}
+
+	return
+}
+
+// parseBjobs runs bjobs, filters on a job name prefix, excludes exited jobs and
+// gives matches to
+// `^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(jobPrefix\S+)` to your
+// callback for each bjobs output line.
+type bjobsCB func(matches []string)
+
+func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
+	bjcmd := exec.Command(s.shell, "-c", "bjobs -w")
+	bjout, err := bjcmd.StdoutPipe()
+	if err != nil {
+		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
+		return
+	}
+	err = bjcmd.Start()
+	if err != nil {
+		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
+		return
+	}
+	bjScanner := bufio.NewScanner(bjout)
+
+	reParse := regexp.MustCompile(`^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(` + jobPrefix + `\S+)`)
+	for bjScanner.Scan() {
+		line := bjScanner.Text()
+
+		if matches := reParse.FindStringSubmatch(line); matches != nil && len(matches) == 4 {
+			if matches[2] == "EXIT" || matches[2] == "DONE" {
+				continue
+			}
+			callback(matches)
 		}
 	}
 
 	if serr := bjScanner.Err(); serr != nil {
-		err = Error{"lsf", "checkCmd", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", serr)}
+		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", serr)}
 		return
 	}
 	err = bjcmd.Wait()
 	if err != nil {
-		err = Error{"lsf", "checkCmd", fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
-		return
-	}
-
-	if len(toKill) > 1 {
-		killcmd := exec.Command("bkill", toKill...)
-		killcmd.Run()
-		//*** because of the time between the bsub and this bkill, some more
-		// jobs may have started running, so reschedules to drop the count may
-		// not run the number of jobs expected
+		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
 	}
 	return
 }

@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"fmt"
 	"github.com/sb10/vrpipe/internal"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/spf13/cobra"
@@ -30,6 +31,7 @@ var queuename string
 var schedgrp string
 var reserveint int
 var rserver string
+var maxtime int
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{
@@ -38,7 +40,14 @@ var runnerCmd = &cobra.Command{
 	Long: `A runner runs commands that were queued by the add or setup commands.
 
 You won't normally run this yourself directly - "vrpipe manager" spawns these as
-needed.`,
+needed.
+
+A runner will pick up a queued command and run it. Once that cmd completes, the
+runner will pick up another and so on. Once max_time has been used (or would be
+used based on the expected time to complete of the next queued command), the
+runner stops picking up new commands and exits instead; max_time does not cause
+the runner to kill itself if the cmd it is running takes longer than max_time to
+complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if queuename == "" {
 			fatal("--queue is required")
@@ -58,9 +67,18 @@ needed.`,
 		}
 		defer jq.Disconnect()
 
+		// we'll stop the below loop before using up too much time
+		var endTime time.Time
+		if maxtime > 0 {
+			endTime = time.Now().Add(time.Duration(maxtime) * time.Minute)
+		} else {
+			endTime = time.Now().AddDate(1, 0, 0) // default to allowing us a year to run
+		}
+
 		// loop, reserving and running commands from the queue, until there
 		// aren't any more commands in the queue
 		numrun := 0
+		exitReason := fmt.Sprintf("there are no more commands in queue '%s' in scheduler group '%s'", queuename, schedgrp)
 		for {
 			var job *jobqueue.Job
 			var err error
@@ -77,11 +95,19 @@ needed.`,
 				break
 			}
 
+			// see if we have enough time left to run this
+			if time.Now().Add(job.Time).After(endTime) {
+				jq.Release(job, job.FailReason, 0*time.Second)
+				exitReason = "we're about to hit our maximum time limit"
+				break
+			}
+
 			// actually run the cmd
 			err = jq.Execute(job, config.Runner_exec_shell)
 			if err != nil {
 				warn("%s", err)
 				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {
+					exitReason = "we received a signal to stop"
 					break
 				}
 			} else {
@@ -91,7 +117,7 @@ needed.`,
 			numrun++
 		}
 
-		info("vrpipe runner exiting, having run %d commands, because there are no more commands in queue '%s' in scheduler group '%s'", numrun, queuename, schedgrp)
+		info("vrpipe runner exiting, having run %d commands, because %s", numrun, exitReason)
 	},
 }
 
@@ -102,6 +128,7 @@ func init() {
 	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "cmds", "specify the queue to pull commands from")
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
-	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 25, "how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of vrpipe manager")
 }
