@@ -39,7 +39,7 @@ Implemented so far
   possible, and recoving from drains, stops and crashes
 
 Not yet implemented
------------------------------------
+-------------------
 * While the help mentions pipelines, nothing pipeline-related has been
   implemented (no job dependecies)
 * Get a complete listing of all commands with a given id
@@ -48,4 +48,57 @@ Not yet implemented
 * Security (anyone with an account on your machine can use your
   manager)
 * Re-run button in web interface for successfully completed commands
-* Ability to alter memory/time/env-vars of commands
+* Ability to alter expected memory and time or change env-vars of commands
+
+Usage instructions
+------------------
+The download .zip should contain the vrpipe executable, this README.md and an
+example config file called vrpipe_config.yml, which details all the config
+options available. The main things you need to know are:
+
+* You can use the vrpipe executable directly from where you extracted it, or
+  move it to where you normally install software to.
+* Use the -h option on vrpipe and all its sub commands to get further help
+  and instructions.
+* The default config should be fine for most people, but if you want to change
+  something, copy the example config file to ~/.vrpipe_config.yml and make
+  changes to that. Alternatively, as the example config file explains, add
+  environment variables to your shell login script and then source it.
+* The vrpipe executable must be available at that same absolute path on all
+  compute nodes in your cluster, so you either need to place it on a shared
+  disk, or install it in the same place on all machines (eg. have it as part of
+  your OS image). If you use config files, these must also be readable by all
+  nodes (when you don't have a shared disk, it's best to configure using
+  environment variables).
+* If you are ssh tunnelling to the node where you are running vrpipe and wish
+  to use the web interface, you will have to forward the host and port that it
+  tells you the web interface can be reached on, and/or perhaps also dynamic
+  forward using something like nc. An example .ssh/config is at the end of this
+  document.
+
+Right now, with the limited functionality available, you will run something like
+(change the options as appropriate):
+
+* vrpipe manager start -s lsf
+* vrpipe add -f cmds_in_a_file.txt -m 1G -o 2h -i my_first_cmds -r mycmd_x_mode
+* [view status on the web interface]
+* vrpipe manager stop
+
+(It isn't necessary to stop the manager; you can just leave it running forever.)
+
+Example .ssh/config
+-------------------
+If you're having difficulty accessing the web frontend via an ssh tunnel, the
+following example config file may help. (In this example, 11302 is the web
+interface port.)
+
+Host ssh.myserver.org
+LocalForward 11302 login.internal.myserver.org:11302
+DynamicForward 20002
+ProxyCommand none
+Host *.internal.myserver.org
+User myusername
+ProxyCommand nc -X 5 -x localhost:20002 %h %p
+
+You'll then be able to access the website at
+http://login.internal.myserver.org:11302 or perhaps http://localhost:11302
