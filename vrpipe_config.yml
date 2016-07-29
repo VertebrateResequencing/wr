@@ -19,9 +19,9 @@
 # vrpipe, in which case it is development).
 #
 # If a setting is found in none of the files read, then an environment variable
-# is checked: VRPIPE_<setting name in caps>. Eg. to define the manager_port
+# is checked: VRPIPE_<setting name in caps>. Eg. to define the manager_scheduler
 # option you might do:
-# export VRPIPE_MANAGER_PORT="11301"
+# export VRPIPE_MANAGER_SCHEDULER="lsf"
 #
 # Note that all worker nodes need to be able to see your desired set of config
 # files, so either define them in environment variables or put the config files
@@ -29,11 +29,16 @@
 
 
 # manager_port: What port should the vrpipe manager listen on?
-# This defaults to "11301". Note, this is a string (quoted).
+# This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 0 if
+# production or + 2 if development. Note, this is a string (quoted). The
+# calculated default should hopefully give you port numbers that no other
+# software or other user of vrpipe on your machine is using.
 # NB: It is very important to have different settings for your production
-# manager and your development manager. If you have multiple developers running
-# tests, each individual person should have their own unique manager_port 
-# specified in their personal ~/.vrpipe_config.development.yml file.
+# manager and your development manager. If you have multiple people running
+# vrpipe on the same machine, and you explicitly set this instead of relying on
+# the default, each individual person should have their own unique manager_port
+# specified in their personal ~/.vrpipe_config.development.yml and
+# ~/.vrpipe_config.production.yml files.
 #
 # Before being able to use vrpipe you must start the manager by running 'vrpipe
 # manager'. It will start listening on the specified port on your local host.
@@ -47,13 +52,16 @@
 # For multi-machine systems it is required that all hosts that could end up
 # running a vrpipe command be able to do tcp communication with the host you
 # launch the manager on.
-manager_port: "11301"
+#manager_port: "11301"
 
 # manager_web: What port should the vrpipe manager serve its web interface on?
-# This defaults to "11302". Note, this is a string (quoted).
+# This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 1 if
+# production or + 3 if development. Note, this is a string (quoted). The
+# calculated default should hopefully give you port numbers that no other
+# software or other user of vrpipe on your machine is using.
 # NB: This must be different to the manager_port, and to anyone else's port
 # choice on the same machine.
-manager_web: "11302"
+#manager_web: "11302"
 
 # manager_host: What host was 'vrpipe manager' started on?
 # This is optional and defaults to "localhost".
