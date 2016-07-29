@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/kardianos/osext"
 	"github.com/sb10/vrpipe/internal"
 	"github.com/sb10/vrpipe/jobqueue"
 	"github.com/sevlyar/go-daemon"
@@ -368,14 +369,22 @@ func sAddr(s *jobqueue.ServerInfo) (addr string) {
 
 func logStarted(s *jobqueue.ServerInfo) {
 	info("vrpipe manager started on %s, pid %d", sAddr(s), s.PID)
-	info("vrpipe's web interface can be reached at %s:%s", s.Host, s.WebPort)
+	info("vrpipe's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
 }
 
 func startJQ(sayStarted bool) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
+	// we will spawn runners, which means we need to know the path to ourselves
+	// in case we're not in the user's $PATH
+	exe, err := osext.Executable()
+	if err != nil {
+		log.Printf("vrpipe manager failed to start : %s\n", err)
+		os.Exit(1)
+	}
+
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, "vrpipe runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, exe+" runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)

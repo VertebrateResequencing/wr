@@ -24,6 +24,7 @@ import (
 	"github.com/jinzhu/configor"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,8 +33,8 @@ const (
 )
 
 type Config struct {
-	Manager_port       string `default:"11301"`
-	Manager_web        string `default:"11302"`
+	Manager_port       string `default:""`
+	Manager_web        string `default:""`
 	Manager_host       string `default:"localhost"`
 	Manager_dir        string `default:"~/.vrpipe"`
 	Manager_pid_file   string `default:"pid"`
@@ -48,7 +49,8 @@ type Config struct {
 
 /*
 ConfigLoad loads configuration settings from files and environment
-variables.
+variables. Note, this function exits on error, since without config we can't
+do anything.
 
 We prefer settings in config file in current dir (or the current dir's parent
 dir if the useparentdir option is true (used for test scripts)) over config file
@@ -145,10 +147,19 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 		config.Manager_db_bk_file = filepath.Join(config.Manager_dir, config.Manager_db_bk_file)
 	}
 
+	// if not explicitly set, calculate ports that no one else would be
+	// assigned by us (and hope no other software is using it...)
+	if config.Manager_port == "" {
+		config.Manager_port = calculatePort(config.Deployment, "cli")
+	}
+	if config.Manager_web == "" {
+		config.Manager_web = calculatePort(config.Deployment, "webi")
+	}
+
 	return config
 }
 
-// work out the default deployment
+// DefaultDeployment works out the default deployment.
 func DefaultDeployment() (deployment string) {
 	pwd, err := os.Getwd()
 	if err != nil {
@@ -174,18 +185,50 @@ func DefaultDeployment() (deployment string) {
 	return
 }
 
-// work out the default scheduler (we need this to be able to report this
-// default before we know what deployment the user has actually chosen, ie.
-// before we have a final config)
+// DefaultScheduler works out the default scheduler (we need this to be able to
+// report this default before we know what deployment the user has actually
+// chosen, ie. before we have a final config).
 func DefaultScheduler() (scheduler string) {
 	config := ConfigLoad(DefaultDeployment(), false)
 	return config.Manager_scheduler
 }
 
-// work out the default server (we need this to be able to report this
-// default before we know what deployment the user has actually chosen, ie.
-// before we have a final config)
+// DefaultServer works out the default server (we need this to be able to report
+// this default before we know what deployment the user has actually chosen, ie.
+// before we have a final config).
 func DefaultServer() (server string) {
 	config := ConfigLoad(DefaultDeployment(), false)
 	return config.Manager_host + ":" + config.Manager_port
+}
+
+// Calculate a port number that will be unique to this user, deployment and
+// ptype ("cli" or "webi").
+func calculatePort(deployment string, ptype string) (port string) {
+	uid, err := Userid()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	// our port must be greater than 1024, and by basing on user id we can
+	// avoid conflicts with other users of vrpipe on the same machine; we
+	// multiply by 4 because we have to reserve 4 ports for each user
+	pn := 1021 + (uid * 4)
+
+	// maximum port number is 65535
+	if pn+3 > 65535 {
+		fmt.Println("Could not calculate a suitable unique port number for you, since your user id is so large; please manually set your manager_port and manager_web config options.")
+		os.Exit(1)
+	}
+
+	if deployment == "development" {
+		pn += 2
+	}
+	if ptype == "webi" {
+		pn++
+	}
+
+	// it's easier for the things that use this port number if it's a string
+	// (because it's used as part of a connection string)
+	return strconv.Itoa(pn)
 }
