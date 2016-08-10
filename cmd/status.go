@@ -70,12 +70,12 @@ the commands, or if you added them with a different cwd.`,
 			set++
 		}
 		if set > 1 {
-			fatal("-f, -i and -l are mutually exclusive; only specify one of them")
+			die("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
 		if cmdCwd == "" {
 			pwd, err := os.Getwd()
 			if err != nil {
-				fatal("%s", err)
+				die("%s", err)
 			}
 			cmdCwd = pwd
 		}
@@ -87,7 +87,7 @@ the commands, or if you added them with a different cwd.`,
 
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
-			fatal("%s", err)
+			die("%s", err)
 		}
 		defer jq.Disconnect()
 
@@ -110,7 +110,7 @@ the commands, or if you added them with a different cwd.`,
 			} else {
 				reader, err = os.Open(cmdFileStatus)
 				if err != nil {
-					fatal("could not open file '%s': %s", cmdFileStatus, err)
+					die("could not open file '%s': %s", cmdFileStatus, err)
 				}
 				defer reader.(*os.File).Close()
 			}
@@ -145,7 +145,7 @@ the commands, or if you added them with a different cwd.`,
 		}
 
 		if err != nil {
-			fatal("failed to get jobs corresponding to your settings: %s", err)
+			die("failed to get jobs corresponding to your settings: %s", err)
 		}
 
 		if quietMode {

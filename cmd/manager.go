@@ -74,10 +74,10 @@ var managerStartCmd = &cobra.Command{
 				// try and create the directory
 				err = os.MkdirAll(config.Manager_dir, os.ModePerm)
 				if err != nil {
-					fatal("could not create the working directory '%s': %v", config.Manager_dir, err)
+					die("could not create the working directory '%s': %v", config.Manager_dir, err)
 				}
 			} else {
-				fatal("could not access or create the working directory '%s': %v", config.Manager_dir, err)
+				die("could not access or create the working directory '%s': %v", config.Manager_dir, err)
 			}
 		}
 
@@ -91,7 +91,7 @@ var managerStartCmd = &cobra.Command{
 			if err == nil {
 				pid = sstats.ServerInfo.PID
 			}
-			fatal("vrpipe manager on port %s is already running (pid %d)", config.Manager_port, pid)
+			die("vrpipe manager on port %s is already running (pid %d)", config.Manager_port, pid)
 		}
 
 		// now daemonize unless in foreground mode
@@ -125,18 +125,18 @@ var managerStartCmd = &cobra.Command{
 			}
 			child, err := context.Reborn()
 			if err != nil {
-				fatal("failed to daemonize: %s", err)
+				die("failed to daemonize: %s", err)
 			}
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
 				jq := connect(10 * time.Second)
 				if jq == nil {
-					fatal("vrpipe manager failed to start on port %s after 10s", config.Manager_port)
+					die("vrpipe manager failed to start on port %s after 10s", config.Manager_port)
 				}
 				sstats, err := jq.ServerStats()
 				if err != nil {
-					fatal("vrpipe manager started but doesn't seem to be functional: %s", err)
+					die("vrpipe manager started but doesn't seem to be functional: %s", err)
 				}
 				logStarted(sstats.ServerInfo)
 			} else {
@@ -170,7 +170,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 			// connect
 			jq := connect(1 * time.Second)
 			if jq == nil {
-				fatal("vrpipe manager does not seem to be running on port %s", config.Manager_port)
+				die("vrpipe manager does not seem to be running on port %s", config.Manager_port)
 			}
 		}
 
@@ -189,7 +189,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 			// time to confirm the daemon is really up
 			jq = connect(5 * time.Second)
 			if jq == nil {
-				fatal("according to the pid file %s, vrpipe manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.Manager_pid_file, config.Manager_port, pid)
+				die("according to the pid file %s, vrpipe manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.Manager_pid_file, config.Manager_port, pid)
 			}
 		}
 
@@ -197,7 +197,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		// stop it again
 		sstats, err := jq.ServerStats()
 		if err != nil {
-			fatal("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
+			die("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
 		}
 		spid := sstats.ServerInfo.PID
 		jq.Disconnect()
@@ -229,13 +229,13 @@ completes.`,
 		// first try and connect
 		jq := connect(5 * time.Second)
 		if jq == nil {
-			fatal("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.Manager_port)
+			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.Manager_port)
 		}
 
 		// we managed to connect to the daemon; ask it to go in to drain mode
 		numLeft, etc, err := jq.DrainServer()
 		if err != nil {
-			fatal("even though I was able to connect to the manager, it failed to enter drain mode: %s", err)
+			die("even though I was able to connect to the manager, it failed to enter drain mode: %s", err)
 		}
 
 		if numLeft == 0 {
@@ -267,7 +267,7 @@ var managerStatusCmd = &cobra.Command{
 				return
 			}
 
-			fatal("vrpipe manager on port %s is supposed to be running with pid %d, but is non-responsive", config.Manager_port, pid)
+			die("vrpipe manager on port %s is supposed to be running with pid %d, but is non-responsive", config.Manager_port, pid)
 		}
 
 		// no pid file, so it's supposed to be down; confirm
@@ -286,7 +286,7 @@ var managerStatusCmd = &cobra.Command{
 func reportLiveStatus(jq *jobqueue.Client) {
 	sstats, err := jq.ServerStats()
 	if err != nil {
-		fatal("even though I was able to connect to the manager, it wasn't able to tell me about itself: %s", err)
+		die("even though I was able to connect to the manager, it wasn't able to tell me about itself: %s", err)
 	}
 	mode := sstats.ServerInfo.Mode
 	fmt.Println(mode)

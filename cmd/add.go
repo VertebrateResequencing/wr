@@ -103,10 +103,10 @@ the future when the commands actually get run.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
-			fatal("--file is required")
+			die("--file is required")
 		}
 		if cmdId == "" {
-			fatal("--identifier is required")
+			die("--identifier is required")
 		}
 		var cmdMB int
 		var err error
@@ -115,7 +115,7 @@ the future when the commands actually get run.`,
 		} else {
 			mb, err := bytefmt.ToMegabytes(cmdMem)
 			if err != nil {
-				fatal("--memory was not specified correctly: %s", err)
+				die("--memory was not specified correctly: %s", err)
 			}
 			cmdMB = int(mb)
 		}
@@ -125,17 +125,17 @@ the future when the commands actually get run.`,
 		} else {
 			cmdDuration, err = time.ParseDuration(cmdTime)
 			if err != nil {
-				fatal("--time was not specified correctly: %s", err)
+				die("--time was not specified correctly: %s", err)
 			}
 		}
 		if cmdCPUs < 1 {
 			cmdCPUs = 1
 		}
 		if cmdOvr < 0 || cmdOvr > 2 {
-			fatal("--override must be in the range 0..2")
+			die("--override must be in the range 0..2")
 		}
 		if cmdPri < 0 || cmdPri > 255 {
-			fatal("--priority must be in the range 0..255")
+			die("--priority must be in the range 0..255")
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
@@ -146,14 +146,14 @@ the future when the commands actually get run.`,
 		} else {
 			reader, err = os.Open(cmdFile)
 			if err != nil {
-				fatal("could not open file '%s': %s", cmdFile, err)
+				die("could not open file '%s': %s", cmdFile, err)
 			}
 			defer reader.(*os.File).Close()
 		}
 
 		pwd, err := os.Getwd()
 		if err != nil {
-			fatal("%s", err)
+			die("%s", err)
 		}
 
 		// for network efficiency, read in all commands and create a big slice
@@ -200,7 +200,7 @@ the future when the commands actually get run.`,
 			} else {
 				thismb, err := bytefmt.ToMegabytes(cols[3])
 				if err != nil {
-					fatal("a value in the memory column (%s) was not specified correctly: %s", cols[3], err)
+					die("a value in the memory column (%s) was not specified correctly: %s", cols[3], err)
 				}
 				mb = int(thismb)
 			}
@@ -210,7 +210,7 @@ the future when the commands actually get run.`,
 			} else {
 				dur, err = time.ParseDuration(cols[4])
 				if err != nil {
-					fatal("a value in the time column (%s) was not specified correctly: %s", cols[4], err)
+					die("a value in the time column (%s) was not specified correctly: %s", cols[4], err)
 				}
 			}
 
@@ -219,7 +219,7 @@ the future when the commands actually get run.`,
 			} else {
 				cpus, err = strconv.Atoi(cols[5])
 				if err != nil {
-					fatal("a value in the cpus column (%s) was not specified correctly: %s", cols[5], err)
+					die("a value in the cpus column (%s) was not specified correctly: %s", cols[5], err)
 				}
 			}
 
@@ -228,10 +228,10 @@ the future when the commands actually get run.`,
 			} else {
 				override, err = strconv.Atoi(cols[6])
 				if err != nil {
-					fatal("a value in the override column (%s) was not specified correctly: %s", cols[6], err)
+					die("a value in the override column (%s) was not specified correctly: %s", cols[6], err)
 				}
 				if override < 0 || override > 2 {
-					fatal("override column must contain values in the range 0..2 (not %d)", override)
+					die("override column must contain values in the range 0..2 (not %d)", override)
 				}
 			}
 
@@ -240,10 +240,10 @@ the future when the commands actually get run.`,
 			} else {
 				priority, err = strconv.Atoi(cols[7])
 				if err != nil {
-					fatal("a value in the priority column (%s) was not specified correctly: %s", cols[7], err)
+					die("a value in the priority column (%s) was not specified correctly: %s", cols[7], err)
 				}
 				if priority < 0 || priority > 255 {
-					fatal("priority column must contain values in the range 0..255 (not %d)", priority)
+					die("priority column must contain values in the range 0..255 (not %d)", priority)
 				}
 			}
 
@@ -253,14 +253,14 @@ the future when the commands actually get run.`,
 		// connect to the server
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
-			fatal("%s", err)
+			die("%s", err)
 		}
 		defer jq.Disconnect()
 
 		// add the jobs to the queue
 		inserts, dups, err := jq.Add(jobs)
 		if err != nil {
-			fatal("%s", err)
+			die("%s", err)
 		}
 
 		info("Added %d new commands (%d were duplicates) to the queue under the identifier '%s'", inserts, dups, cmdId)

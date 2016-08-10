@@ -98,8 +98,8 @@ func warn(msg string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, "warning: %s\n", fmt.Sprintf(msg, a...))
 }
 
-// fatal is a convenience to print an error to STDERR and exit indicating error
-func fatal(msg string, a ...interface{}) {
+// die is a convenience to print an error to STDERR and exit indicating error
+func die(msg string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(msg, a...))
 	os.Exit(1)
 }
