@@ -682,7 +682,7 @@ func TestJobqueue(t *testing.T) {
 							So(job2, ShouldNotBeNil)
 							So(job2.State, ShouldEqual, "buried")
 
-							kicked, err := jq.Kick([][2]string{[2]string{"sleep 0.1 && false", "/tmp"}})
+							kicked, err := jq.Kick([][2]string{{"sleep 0.1 && false", "/tmp"}})
 							So(err, ShouldBeNil)
 							So(kicked, ShouldEqual, 1)
 
@@ -722,7 +722,7 @@ func TestJobqueue(t *testing.T) {
 					So(job, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "ready")
 
-					deleted, err := jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					deleted, err := jq.Delete([][2]string{{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
@@ -737,7 +737,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, added.Cmd)
 					So(job.State, ShouldEqual, "reserved")
 
-					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					deleted, err = jq.Delete([][2]string{{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
@@ -752,7 +752,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2.State, ShouldEqual, "buried")
 					So(job2.FailReason, ShouldEqual, "test bury")
 
-					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					deleted, err = jq.Delete([][2]string{{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 1)
 
@@ -856,7 +856,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, -1)
 					So(job.FailReason, ShouldEqual, FailReasonMem)
 					So(job.Memory, ShouldEqual, 1200)
-					jq.Delete([][2]string{[2]string{cmd, "/tmp"}})
+					jq.Delete([][2]string{{cmd, "/tmp"}})
 				})
 
 				RecMBRound = 100 // revert back to normal

@@ -276,7 +276,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 					case "retry":
 						s.rpl.RLock()
-						for key, _ := range s.rpl.lookup[req.RepGroup] {
+						for key := range s.rpl.lookup[req.RepGroup] {
 							item, err := q.Get(key)
 							if err != nil {
 								break
@@ -300,7 +300,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "remove":
 						s.rpl.RLock()
 						var toDelete []string
-						for key, _ := range s.rpl.lookup[req.RepGroup] {
+						for key := range s.rpl.lookup[req.RepGroup] {
 							item, err := q.Get(key)
 							if err != nil {
 								break

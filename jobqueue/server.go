@@ -551,12 +551,12 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				}
 
 				// clear out groups we no longer need
-				for group, _ := range s.sgroupcounts {
+				for group := range s.sgroupcounts {
 					if _, needed := groups[group]; !needed {
 						s.clearSchedulerGroup(group, q)
 					}
 				}
-				for group, _ := range s.sgrouptrigs {
+				for group := range s.sgrouptrigs {
 					if _, needed := groups[group]; !needed {
 						delete(s.sgrouptrigs, group)
 					}
@@ -647,7 +647,7 @@ func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEn
 func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	// look in the in-memory queue for matching jobs
 	s.rpl.RLock()
-	for key, _ := range s.rpl.lookup[repgroup] {
+	for key := range s.rpl.lookup[repgroup] {
 		item, err := q.Get(key)
 		if err == nil && item != nil {
 			job := s.itemToJob(item, false, false)
