@@ -41,7 +41,7 @@ type Config struct {
 	Manager_log_file   string `default:"log"`
 	Manager_db_file    string `default:"db"`
 	Manager_db_bk_file string `default:"db_bk"`
-	Manager_umask      int    `default:007`
+	Manager_umask      int    `default:"007"`
 	Manager_scheduler  string `default:"local"`
 	Runner_exec_shell  string `default:"bash"`
 	Deployment         string `default:"production"`
