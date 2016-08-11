@@ -50,7 +50,7 @@ the runner to kill itself if the cmd it is running takes longer than max_time to
 complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if queuename == "" {
-			fatal("--queue is required")
+			die("--queue is required")
 		}
 
 		// the server receive timeout must be greater than the time we'll wait
@@ -63,7 +63,7 @@ complete.`,
 
 		jq, err := jobqueue.Connect(rserver, queuename, timeout)
 		if err != nil {
-			fatal("%s", err)
+			die("%s", err)
 		}
 		defer jq.Disconnect()
 
@@ -89,7 +89,7 @@ complete.`,
 			}
 
 			if err != nil {
-				fatal("%s", err) //*** we want this in a central log so we can know if/why our runners are failing
+				die("%s", err) //*** we want this in a central log so we can know if/why our runners are failing
 			}
 			if job == nil {
 				break
@@ -103,7 +103,7 @@ complete.`,
 			}
 
 			// actually run the cmd
-			err = jq.Execute(job, config.Runner_exec_shell)
+			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {
 				warn("%s", err)
 				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {

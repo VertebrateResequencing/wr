@@ -72,8 +72,8 @@ func TestJobqueue(t *testing.T) {
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
-	port := config.Manager_port
-	webport := config.Manager_web
+	port := config.ManagerPort
+	webport := config.ManagerWeb
 	addr := "localhost:" + port
 
 	ServerLogClientErrors = false
@@ -92,10 +92,10 @@ func TestJobqueue(t *testing.T) {
 		ClientTouchInterval = 50 * time.Millisecond
 
 		context := &daemon.Context{
-			PidFileName: config.Manager_pid_file,
+			PidFileName: config.ManagerPidFile,
 			PidFilePerm: 0644,
 			WorkDir:     "/",
-			Umask:       config.Manager_umask,
+			Umask:       config.ManagerUmask,
 		}
 		child, err := context.Reborn()
 		if err != nil {
@@ -106,13 +106,13 @@ func TestJobqueue(t *testing.T) {
 			defer context.Release()
 
 			//*** we need a log rotation scheme in place to have this...
-			// logfile, errlog := os.OpenFile(config.Manager_log_file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+			// logfile, errlog := os.OpenFile(config.ManagerLogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 			// if errlog == nil {
 			// 	defer logfile.Close()
 			// 	log.SetOutput(logfile)
 			// }
 
-			server, msg, err := Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+			server, msg, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 			if err != nil {
 				log.Fatalf("test daemon failed to start: %s\n", err)
 			}
@@ -174,7 +174,7 @@ func TestJobqueue(t *testing.T) {
 
 				j1worked := make(chan bool)
 				go func() {
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal && job.State == "delayed" && job.Exited && job.Exitcode == -1 && job.FailReason == FailReasonSignal {
 							j1worked <- true
@@ -185,7 +185,7 @@ func TestJobqueue(t *testing.T) {
 
 				j2worked := make(chan bool)
 				go func() {
-					err = jq.Execute(job2, config.Runner_exec_shell)
+					err = jq.Execute(job2, config.RunnerExecShell)
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == "delayed" && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
 							j2worked <- true
@@ -240,7 +240,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
@@ -456,7 +456,7 @@ func TestJobqueue(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 				So(err, ShouldBeNil)
 
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -495,7 +495,7 @@ func TestJobqueue(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
@@ -513,7 +513,7 @@ func TestJobqueue(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			Convey("You can't execute a job without reserving it", func() {
-				err := jq.Execute(jobs[0], config.Runner_exec_shell)
+				err := jq.Execute(jobs[0], config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
@@ -535,7 +535,7 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, "sleep 0.1 && true")
 				So(job2.State, ShouldEqual, "reserved")
 
-				err = jq.Execute(job, config.Runner_exec_shell)
+				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, "complete")
 				So(job.Exited, ShouldBeTrue)
@@ -577,7 +577,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.Attempts, ShouldEqual, 0)
 				So(job.UntilBuried, ShouldEqual, 3)
 
-				err = jq.Execute(job, config.Runner_exec_shell)
+				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again") // *** fails randomly with a receive time out error instead of the correct error - why?!
 				So(job.State, ShouldEqual, "delayed")
@@ -647,7 +647,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2.State, ShouldEqual, "reserved")
 
 					Convey("After 3 failures it gets buried", func() {
-						err = jq.Execute(job, config.Runner_exec_shell)
+						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
 						So(job.State, ShouldEqual, "delayed")
 						So(job.Exited, ShouldBeTrue)
@@ -663,7 +663,7 @@ func TestJobqueue(t *testing.T) {
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
 
-						err = jq.Execute(job, config.Runner_exec_shell)
+						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
 						So(job.State, ShouldEqual, "buried")
 						So(job.Exited, ShouldBeTrue)
@@ -682,7 +682,7 @@ func TestJobqueue(t *testing.T) {
 							So(job2, ShouldNotBeNil)
 							So(job2.State, ShouldEqual, "buried")
 
-							kicked, err := jq.Kick([][2]string{[2]string{"sleep 0.1 && false", "/tmp"}})
+							kicked, err := jq.Kick([][2]string{{"sleep 0.1 && false", "/tmp"}})
 							So(err, ShouldBeNil)
 							So(kicked, ShouldEqual, 1)
 
@@ -722,7 +722,7 @@ func TestJobqueue(t *testing.T) {
 					So(job, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "ready")
 
-					deleted, err := jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					deleted, err := jq.Delete([][2]string{{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
@@ -737,7 +737,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, added.Cmd)
 					So(job.State, ShouldEqual, "reserved")
 
-					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					deleted, err = jq.Delete([][2]string{{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
@@ -752,7 +752,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2.State, ShouldEqual, "buried")
 					So(job2.FailReason, ShouldEqual, "test bury")
 
-					deleted, err = jq.Delete([][2]string{[2]string{added.Cmd, added.Cwd}})
+					deleted, err = jq.Delete([][2]string{{added.Cmd, added.Cwd}})
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 1)
 
@@ -778,7 +778,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | true")
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, "complete")
 					So(job.Exited, ShouldBeTrue)
@@ -791,7 +791,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | false | true")
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again") //*** can fail with a receive time out; why?!
 					So(job.State, ShouldEqual, "delayed")
@@ -813,7 +813,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "awesjnalakjf --foo")
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [awesjnalakjf --foo] exited with code 127 (command not found), which seems permanent, so it has been buried")
 					So(job.State, ShouldEqual, "buried")
@@ -846,7 +846,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
@@ -856,7 +856,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, -1)
 					So(job.FailReason, ShouldEqual, FailReasonMem)
 					So(job.Memory, ShouldEqual, 1200)
-					jq.Delete([][2]string{[2]string{cmd, "/tmp"}})
+					jq.Delete([][2]string{{cmd, "/tmp"}})
 				})
 
 				RecMBRound = 100 // revert back to normal
@@ -875,7 +875,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "perl -e 'print qq[print\\n]; warn qq[warn\\n]'")
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, "complete")
 					So(job.Exited, ShouldBeTrue)
@@ -904,7 +904,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "perl -e 'print qq[print\\n]; die qq[die\\n]'")
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					<-time.After(50 * time.Millisecond)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "delayed")
@@ -966,7 +966,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'")
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					<-time.After(50 * time.Millisecond)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "delayed")
@@ -1017,7 +1017,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					<-time.After(100 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, "complete")
@@ -1040,7 +1040,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, "reserved")
 
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					<-time.After(100 * time.Millisecond)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command ["+cmd+"] was running fine, but will need to be rerun due to a jobqueue server error")
@@ -1073,7 +1073,7 @@ func TestJobqueue(t *testing.T) {
 			Convey("You can reserve and execute those", func() {
 				for i := 0; i < 3; i++ {
 					job, err := jq.Reserve(50 * time.Millisecond)
-					err = jq.Execute(job, config.Runner_exec_shell)
+					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 				}
 
@@ -1089,7 +1089,7 @@ func TestJobqueue(t *testing.T) {
 
 					for i := 0; i < 4; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
-						err = jq.Execute(job, config.Runner_exec_shell)
+						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
 
@@ -1120,7 +1120,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("You can then reserve and execute the only 4 jobs", func() {
 					for i := 0; i < 4; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
-						err = jq.Execute(job, config.Runner_exec_shell)
+						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
 					job, err := jq.Reserve(10 * time.Millisecond)
@@ -1155,7 +1155,7 @@ func TestJobqueue(t *testing.T) {
 	// db to test some behaviours
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 2 * time.Second
-		server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add 2 jobs", func() {
@@ -1174,7 +1174,7 @@ func TestJobqueue(t *testing.T) {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, "echo 1")
-				err = jq.Execute(job, config.Runner_exec_shell)
+				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, "complete")
 				So(job.Exited, ShouldBeTrue)
@@ -1182,7 +1182,7 @@ func TestJobqueue(t *testing.T) {
 
 				server.Stop()
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1192,7 +1192,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.Cmd, ShouldEqual, "echo 2")
-				err = jq.Execute(job, config.Runner_exec_shell)
+				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, "complete")
 				So(job.Exited, ShouldBeTrue)
@@ -1216,7 +1216,7 @@ func TestJobqueue(t *testing.T) {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, job1Cmd)
-				go jq.Execute(job, config.Runner_exec_shell)
+				go jq.Execute(job, config.RunnerExecShell)
 				So(job.Exited, ShouldBeFalse)
 
 				running, etc, err := jq.DrainServer()
@@ -1240,7 +1240,7 @@ func TestJobqueue(t *testing.T) {
 				So(up, ShouldBeFalse)
 
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1255,7 +1255,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
 				So(job2.Cmd, ShouldEqual, "echo added")
-				err = jq.Execute(job2, config.Runner_exec_shell)
+				err = jq.Execute(job2, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job2.State, ShouldEqual, "complete")
 				So(job2.Exited, ShouldBeTrue)
@@ -1281,7 +1281,7 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
-		server, _, err = Serve(port, webport, "local", config.Runner_exec_shell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir "+runnertmpdir, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment) // +" > /dev/null 2>&1"
+		server, _, err = Serve(port, webport, "local", config.RunnerExecShell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir "+runnertmpdir, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment) // +" > /dev/null 2>&1"
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
@@ -1376,14 +1376,14 @@ func TestJobqueueSpeed(t *testing.T) {
 	// works)
 	if false {
 		config := internal.ConfigLoad("development", true)
-		port := config.Manager_port
-		webport := config.Manager_web
+		port := config.ManagerPort
+		webport := config.ManagerWeb
 		addr := "localhost:" + port
 		rc := ""
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
-		server, _, err := Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+		server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1478,14 +1478,14 @@ func TestJobqueueSpeed(t *testing.T) {
 	/* test speed of bolt db when there are lots of jobs already stored
 		if true {
 			config := internal.ConfigLoad("development", true)
-			port := config.Manager_port
-			webport := config.Manager_web
+			port := config.ManagerPort
+			webport := config.ManagerWeb
 			addr := "localhost:" + port
 			rc := ""
 			n := 10000000 // num jobs to start with
 			b := 10000    // jobs per identifier
 
-			server, _, err := Serve(port, webport, config.Manager_scheduler, config.Runner_exec_shell, rc, config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+			server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -1665,7 +1665,7 @@ func runner() {
 		}
 
 		// actually run the cmd
-		err = jq.Execute(job, config.Runner_exec_shell)
+		err = jq.Execute(job, config.RunnerExecShell)
 		if err != nil {
 			if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal {
 				break

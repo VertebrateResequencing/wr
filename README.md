@@ -3,6 +3,8 @@ vrpipe
 
 ***DO NOT USE YET!***
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/sb10/vrpipe)](https://goreportcard.com/report/github.com/sb10/vrpipe)
+
 But if you want to be adventurous and provide feedback...
 [![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/sb10/vrpipe/master)
 
@@ -80,7 +82,7 @@ Right now, with the limited functionality available, you will run something like
 (change the options as appropriate):
 
 * vrpipe manager start -s lsf
-* vrpipe add -f cmds_in_a_file.txt -m 1G -o 2h -i my_first_cmds -r mycmd_x_mode
+* vrpipe add -f cmds_in_a_file.txt -m 1G -t 2h -i my_first_cmds -r mycmd_x_mode
 * [view status on the web interface]
 * vrpipe manager stop
 

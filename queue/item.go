@@ -161,7 +161,7 @@ func (item *Item) switchReadyRun() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[1] = -1
-	item.reserves += 1
+	item.reserves++
 	item.state = "run"
 }
 
@@ -171,7 +171,7 @@ func (item *Item) switchRunReady() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-	item.timeouts += 1
+	item.timeouts++
 	item.state = "ready"
 }
 
@@ -181,7 +181,7 @@ func (item *Item) switchRunDelay() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-	item.releases += 1
+	item.releases++
 	item.state = "delay"
 }
 
@@ -191,7 +191,7 @@ func (item *Item) switchRunBury() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-	item.buries += 1
+	item.buries++
 	item.state = "bury"
 }
 
@@ -200,7 +200,7 @@ func (item *Item) switchBuryReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[3] = -1
-	item.kicks += 1
+	item.kicks++
 	item.state = "ready"
 }
 

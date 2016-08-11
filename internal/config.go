@@ -29,22 +29,23 @@ import (
 )
 
 const (
-	ConfigCommonBasename = ".vrpipe_config.yml"
+	configCommonBasename = ".vrpipe_config.yml"
 )
 
+// Config holds the configuration options for jobqueue server and client
 type Config struct {
-	Manager_port       string `default:""`
-	Manager_web        string `default:""`
-	Manager_host       string `default:"localhost"`
-	Manager_dir        string `default:"~/.vrpipe"`
-	Manager_pid_file   string `default:"pid"`
-	Manager_log_file   string `default:"log"`
-	Manager_db_file    string `default:"db"`
-	Manager_db_bk_file string `default:"db_bk"`
-	Manager_umask      int    `default:007`
-	Manager_scheduler  string `default:"local"`
-	Runner_exec_shell  string `default:"bash"`
-	Deployment         string `default:"production"`
+	ManagerPort      string `default:""`
+	ManagerWeb       string `default:""`
+	ManagerHost      string `default:"localhost"`
+	ManagerDir       string `default:"~/.vrpipe"`
+	ManagerPidFile   string `default:"pid"`
+	ManagerLogFile   string `default:"log"`
+	ManagerDbFile    string `default:"db"`
+	ManagerDbBkFile  string `default:"db_bk"`
+	ManagerUmask     int    `default:"007"`
+	ManagerScheduler string `default:"local"`
+	RunnerExecShell  string `default:"bash"`
+	Deployment       string `default:"production"`
 }
 
 /*
@@ -91,21 +92,21 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	// read the config files. We have to check file existence before passing
 	// these to configor.Load, or it will complain
 	var configFiles []string
-	configFile := filepath.Join(pwd, ConfigCommonBasename)
+	configFile := filepath.Join(pwd, configCommonBasename)
 	_, err = os.Stat(configFile)
 	if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
 		configFiles = append(configFiles, configFile)
 	}
 	home := os.Getenv("HOME")
 	if home != "" {
-		configFile = filepath.Join(home, ConfigCommonBasename)
+		configFile = filepath.Join(home, configCommonBasename)
 		_, err = os.Stat(configFile)
 		if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
 			configFiles = append(configFiles, configFile)
 		}
 	}
 	if configDir := os.Getenv("VRPIPE_CONFIG_DIR"); configDir != "" {
-		configFile = filepath.Join(configDir, ConfigCommonBasename)
+		configFile = filepath.Join(configDir, configCommonBasename)
 		_, err = os.Stat(configFile)
 		if _, err2 := os.Stat(filepath.Join(configDir, ConfigDeploymentBasename)); err == nil || err2 == nil {
 			configFiles = append(configFiles, configFile)
@@ -117,15 +118,15 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	config.Deployment = deployment
 
 	// convert the possible ~/ in Manager_dir to abs path to user's home
-	if home != "" && strings.HasPrefix(config.Manager_dir, "~/") {
-		mdir := strings.TrimLeft(config.Manager_dir, "~/")
+	if home != "" && strings.HasPrefix(config.ManagerDir, "~/") {
+		mdir := strings.TrimLeft(config.ManagerDir, "~/")
 		mdir = filepath.Join(home, mdir)
-		config.Manager_dir = mdir
+		config.ManagerDir = mdir
 	}
-	config.Manager_dir += "_" + deployment
+	config.ManagerDir += "_" + deployment
 
 	// create the manager dir now, or else we're doomed to failure
-	err = os.MkdirAll(config.Manager_dir, 0700)
+	err = os.MkdirAll(config.ManagerDir, 0700)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -133,27 +134,27 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 
 	// convert the possible relative paths in Manager_*_file to abs paths in
 	// Manager_dir
-	if !filepath.IsAbs(config.Manager_pid_file) {
-		config.Manager_pid_file = filepath.Join(config.Manager_dir, config.Manager_pid_file)
+	if !filepath.IsAbs(config.ManagerPidFile) {
+		config.ManagerPidFile = filepath.Join(config.ManagerDir, config.ManagerPidFile)
 	}
-	if !filepath.IsAbs(config.Manager_log_file) {
-		config.Manager_log_file = filepath.Join(config.Manager_dir, config.Manager_log_file)
+	if !filepath.IsAbs(config.ManagerLogFile) {
+		config.ManagerLogFile = filepath.Join(config.ManagerDir, config.ManagerLogFile)
 	}
-	if !filepath.IsAbs(config.Manager_db_file) {
-		config.Manager_db_file = filepath.Join(config.Manager_dir, config.Manager_db_file)
+	if !filepath.IsAbs(config.ManagerDbFile) {
+		config.ManagerDbFile = filepath.Join(config.ManagerDir, config.ManagerDbFile)
 	}
-	if !filepath.IsAbs(config.Manager_db_bk_file) {
+	if !filepath.IsAbs(config.ManagerDbBkFile) {
 		//*** we need to support this being on a different machine, possibly on an S3-style object store
-		config.Manager_db_bk_file = filepath.Join(config.Manager_dir, config.Manager_db_bk_file)
+		config.ManagerDbBkFile = filepath.Join(config.ManagerDir, config.ManagerDbBkFile)
 	}
 
 	// if not explicitly set, calculate ports that no one else would be
 	// assigned by us (and hope no other software is using it...)
-	if config.Manager_port == "" {
-		config.Manager_port = calculatePort(config.Deployment, "cli")
+	if config.ManagerPort == "" {
+		config.ManagerPort = calculatePort(config.Deployment, "cli")
 	}
-	if config.Manager_web == "" {
-		config.Manager_web = calculatePort(config.Deployment, "webi")
+	if config.ManagerWeb == "" {
+		config.ManagerWeb = calculatePort(config.Deployment, "webi")
 	}
 
 	return config
@@ -190,7 +191,7 @@ func DefaultDeployment() (deployment string) {
 // chosen, ie. before we have a final config).
 func DefaultScheduler() (scheduler string) {
 	config := ConfigLoad(DefaultDeployment(), false)
-	return config.Manager_scheduler
+	return config.ManagerScheduler
 }
 
 // DefaultServer works out the default server (we need this to be able to report
@@ -198,7 +199,7 @@ func DefaultScheduler() (scheduler string) {
 // before we have a final config).
 func DefaultServer() (server string) {
 	config := ConfigLoad(DefaultDeployment(), false)
-	return config.Manager_host + ":" + config.Manager_port
+	return config.ManagerHost + ":" + config.ManagerPort
 }
 
 // Calculate a port number that will be unique to this user, deployment and

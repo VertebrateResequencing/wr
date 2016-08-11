@@ -17,12 +17,12 @@
 //  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
 
 /*
-Package schedulers lets the jobqueue server interact with the local job
+Package scheduler lets the jobqueue server interact with the local job
 scheduler (if any) to submit jobqueue clients and have them run on a compute
 cluster (or local machine). Examples of job schedulers are things like LSF and
 SGE.
 
-It's a psuedo plug-in system in that it is designed so that you can easily add a
+It's a pseudo plug-in system in that it is designed so that you can easily add a
 go file that implements the methods of the scheduleri interface, to support a
 new job scheduler. On the other hand, there is no dynamic loading of these go
 files; they are all imported (they all belong to the scheduler package), and the
@@ -48,6 +48,8 @@ const (
 	infiniteQueueTime     time.Duration = 0
 )
 
+// Err* constants are found in the our returned Errors under err.Err, so you
+// can cast and check if it's a certain type of error.
 var (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
@@ -64,9 +66,9 @@ func (e Error) Error() string {
 	return "scheduler(" + e.Scheduler + ") " + e.Op + "(): " + e.Err
 }
 
-// the Requirements type describes the resource requirements of the commands
-// you want to run, so that when provided to a scheduler it will be able to
-// schedule things appropriately.
+// Requirements describes the resource requirements of the commands you want to
+// run, so that when provided to a scheduler it will be able to schedule things
+// appropriately.
 type Requirements struct {
 	Memory int           // the expected peak memory in MB Cmd will use while running
 	Time   time.Duration // the expected time Cmd will take to run
@@ -74,8 +76,8 @@ type Requirements struct {
 	Other  string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
 }
 
-// the CmdStatus type lets you describe how many of a given cmd are already in
-// the job scheduler, and gives the details of those jobs.
+// CmdStatus lets you describe how many of a given cmd are already in the job
+// scheduler, and gives the details of those jobs.
 type CmdStatus struct {
 	Count   int
 	Running [][2]int // a slice of [id, index] tuples
@@ -93,8 +95,8 @@ type scheduleri interface {
 	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
 }
 
-// the Scheduler struct gives you access to all of the methods you'll need to
-// interact with a job scheduler.
+// Scheduler gives you access to all of the methods you'll need to interact with
+// a job scheduler.
 type Scheduler struct {
 	impl    scheduleri
 	Name    string
@@ -174,13 +176,13 @@ func (s *Scheduler) Busy() bool {
 	return s.impl.busy()
 }
 
-// ReserveTimeout() returns the number of seconds that runners spawned in this
+// ReserveTimeout returns the number of seconds that runners spawned in this
 // scheduler should wait for new jobs to appear in the manager's queue.
 func (s *Scheduler) ReserveTimeout() int {
 	return s.impl.reserveTimeout()
 }
 
-// MaxQueueTime() returns the maximum amount of time that jobs with the given
+// MaxQueueTime returns the maximum amount of time that jobs with the given
 // resource requirements are allowed to run for in the job scheduler's queue. If
 // the job scheduler doesn't have a queue system, or if the queue allows jobs to
 // run forever, then this returns a 0 length duration, which should be regarded

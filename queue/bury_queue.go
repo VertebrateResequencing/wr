@@ -74,7 +74,7 @@ func (q *buryQueue) remove(item *Item) {
 	item.queueIndexes[3] = -1
 }
 
-func (q buryQueue) len() int {
+func (q *buryQueue) len() int {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
 	return len(q.items)

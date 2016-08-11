@@ -31,7 +31,7 @@ import (
 
 // options for this cmd
 var cmdFileStatus string
-var cmdIdStatus string
+var cmdIDStatus string
 var cmdLine string
 var showBuried bool
 var showStd bool
@@ -63,19 +63,19 @@ the commands, or if you added them with a different cwd.`,
 		if cmdFileStatus != "" {
 			set++
 		}
-		if cmdIdStatus != "" {
+		if cmdIDStatus != "" {
 			set++
 		}
 		if cmdLine != "" {
 			set++
 		}
 		if set > 1 {
-			fatal("-f, -i and -l are mutually exclusive; only specify one of them")
+			die("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
 		if cmdCwd == "" {
 			pwd, err := os.Getwd()
 			if err != nil {
-				fatal("%s", err)
+				die("%s", err)
 			}
 			cmdCwd = pwd
 		}
@@ -87,7 +87,7 @@ the commands, or if you added them with a different cwd.`,
 
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
-			fatal("%s", err)
+			die("%s", err)
 		}
 		defer jq.Disconnect()
 
@@ -97,9 +97,9 @@ the commands, or if you added them with a different cwd.`,
 		case set == 0:
 			// get incomplete jobs
 			jobs, err = jq.GetIncomplete(1, cmdState, showStd, showEnv)
-		case cmdIdStatus != "":
+		case cmdIDStatus != "":
 			// get all jobs with this identifier (repgroup)
-			jobs, err = jq.GetByRepGroup(cmdIdStatus, 1, cmdState, showStd, showEnv)
+			jobs, err = jq.GetByRepGroup(cmdIDStatus, 1, cmdState, showStd, showEnv)
 		case cmdFileStatus != "":
 			// get jobs that have the supplied commands. We support the same
 			// format of file that "vrpipe add" takes, but only care about the
@@ -110,7 +110,7 @@ the commands, or if you added them with a different cwd.`,
 			} else {
 				reader, err = os.Open(cmdFileStatus)
 				if err != nil {
-					fatal("could not open file '%s': %s", cmdFileStatus, err)
+					die("could not open file '%s': %s", cmdFileStatus, err)
 				}
 				defer reader.(*os.File).Close()
 			}
@@ -145,7 +145,7 @@ the commands, or if you added them with a different cwd.`,
 		}
 
 		if err != nil {
-			fatal("failed to get jobs corresponding to your settings: %s", err)
+			die("failed to get jobs corresponding to your settings: %s", err)
 		}
 
 		if quietMode {
@@ -255,7 +255,7 @@ func init() {
 
 	// flags specific to this sub-command
 	statusCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want the status of; - means read from STDIN")
-	statusCmd.Flags().StringVarP(&cmdIdStatus, "identifier", "i", "", "identifier of the commands you want the status of")
+	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")

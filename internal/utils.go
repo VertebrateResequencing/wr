@@ -93,7 +93,7 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 // on linux-like systems where 'id -u -n' works.
 func Username() (uname string, err error) {
 	if username == "" {
-		username, err = parseIdCmd("-u", "-n")
+		username, err = parseIDCmd("-u", "-n")
 		if err != nil {
 			return
 		}
@@ -108,7 +108,7 @@ func Username() (uname string, err error) {
 func Userid() (uid int, err error) {
 	if userid == 0 {
 		var uidStr string
-		uidStr, err = parseIdCmd("-u")
+		uidStr, err = parseIDCmd("-u")
 		if err != nil {
 			return
 		}
@@ -121,7 +121,7 @@ func Userid() (uid int, err error) {
 	return
 }
 
-func parseIdCmd(idopts ...string) (user string, err error) {
+func parseIDCmd(idopts ...string) (user string, err error) {
 	idcmd := exec.Command("id", idopts...)
 	var idout []byte
 	idout, err = idcmd.Output()

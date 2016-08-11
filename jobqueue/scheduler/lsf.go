@@ -262,13 +262,13 @@ func (s *lsf) initialize(deployment string, shell string) error {
 	// more limited, since we suppose they might be less busy or will at least
 	// become free sooner
 	criteriaHandling := map[string][]int{
-		"hosts":      []int{10, 1, 25, 2}, // weight, sort order, significant change, default multiplier
-		"max_user":   []int{6, 1, 10, 10},
-		"max":        []int{5, 1, 20, 5},
-		"prio":       []int{4, 1, 50, 0},
-		"chunk_size": []int{10000, 0, 1, 0},
-		"runlimit":   []int{2, 0, 3600, 12},
-		"memlimit":   []int{2, 0, 16000, 10},
+		"hosts":      {10, 1, 25, 2}, // weight, sort order, significant change, default multiplier
+		"max_user":   {6, 1, 10, 10},
+		"max":        {5, 1, 20, 5},
+		"prio":       {4, 1, 50, 0},
+		"chunk_size": {10000, 0, 1, 0},
+		"runlimit":   {2, 0, 3600, 12},
+		"memlimit":   {2, 0, 16000, 10},
 	}
 
 	// fill in some default values for the criteria on all the queues
@@ -348,7 +348,7 @@ func (s *lsf) initialize(deployment string, shell string) error {
 		}
 		s.sortedqs[vp[0]] = internal.SortMapKeysByIntValue(thisRanking, false)
 	}
-	for key, _ := range s.sortedqs {
+	for key := range s.sortedqs {
 		s.sortedqKeys = append(s.sortedqKeys, key)
 	}
 	sort.Sort(sort.IntSlice(s.sortedqKeys))
