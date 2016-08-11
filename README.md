@@ -3,6 +3,8 @@ vrpipe
 
 ***DO NOT USE YET!***
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/sb10/vrpipe)](https://goreportcard.com/report/github.com/sb10/vrpipe)
+
 But if you want to be adventurous and provide feedback...
 [![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/sb10/vrpipe/master)
 
