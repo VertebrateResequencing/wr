@@ -103,7 +103,7 @@ complete.`,
 			}
 
 			// actually run the cmd
-			err = jq.Execute(job, config.Runner_exec_shell)
+			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {
 				warn("%s", err)
 				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {

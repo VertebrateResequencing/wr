@@ -68,16 +68,16 @@ var managerStartCmd = &cobra.Command{
 (unless --foreground option is supplied).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first we need our working directory to exist
-		_, err := os.Stat(config.Manager_dir)
+		_, err := os.Stat(config.ManagerDir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// try and create the directory
-				err = os.MkdirAll(config.Manager_dir, os.ModePerm)
+				err = os.MkdirAll(config.ManagerDir, os.ModePerm)
 				if err != nil {
-					die("could not create the working directory '%s': %v", config.Manager_dir, err)
+					die("could not create the working directory '%s': %v", config.ManagerDir, err)
 				}
 			} else {
-				die("could not access or create the working directory '%s': %v", config.Manager_dir, err)
+				die("could not access or create the working directory '%s': %v", config.ManagerDir, err)
 			}
 		}
 
@@ -91,12 +91,12 @@ var managerStartCmd = &cobra.Command{
 			if err == nil {
 				pid = sstats.ServerInfo.PID
 			}
-			die("vrpipe manager on port %s is already running (pid %d)", config.Manager_port, pid)
+			die("vrpipe manager on port %s is already running (pid %d)", config.ManagerPort, pid)
 		}
 
 		// now daemonize unless in foreground mode
 		if foreground {
-			syscall.Umask(config.Manager_umask)
+			syscall.Umask(config.ManagerUmask)
 			startJQ(true)
 		} else {
 			// when we spawn a child it will be called with our args, but we
@@ -117,11 +117,11 @@ var managerStartCmd = &cobra.Command{
 			}
 
 			context := &daemon.Context{
-				PidFileName: config.Manager_pid_file,
+				PidFileName: config.ManagerPidFile,
 				PidFilePerm: 0644,
 				WorkDir:     "/",
 				Args:        args,
-				Umask:       config.Manager_umask,
+				Umask:       config.ManagerUmask,
 			}
 			child, err := context.Reborn()
 			if err != nil {
@@ -132,7 +132,7 @@ var managerStartCmd = &cobra.Command{
 				// before exiting
 				jq := connect(10 * time.Second)
 				if jq == nil {
-					die("vrpipe manager failed to start on port %s after 10s", config.Manager_port)
+					die("vrpipe manager failed to start on port %s after 10s", config.ManagerPort)
 				}
 				sstats, err := jq.ServerStats()
 				if err != nil {
@@ -161,16 +161,16 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		// exited but left the pid file in place; to best cover all
 		// eventualities we check the pid file first, try and terminate its pid,
 		// then confirm we can't connect
-		pid, err := daemon.ReadPidFile(config.Manager_pid_file)
+		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		var stopped bool
 		if err == nil {
-			stopped = stopdaemon(pid, "pid file "+config.Manager_pid_file)
+			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile)
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
 			jq := connect(1 * time.Second)
 			if jq == nil {
-				die("vrpipe manager does not seem to be running on port %s", config.Manager_port)
+				die("vrpipe manager does not seem to be running on port %s", config.ManagerPort)
 			}
 		}
 
@@ -179,9 +179,9 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 			// we'll do a quick test to confirm the daemon is down
 			jq = connect(10 * time.Millisecond)
 			if jq != nil {
-				warn("according to the pid file %s, vrpipe manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.Manager_pid_file, pid, config.Manager_port)
+				warn("according to the pid file %s, vrpipe manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
-				info("vrpipe manager running on port %s was gracefully shut down", config.Manager_port)
+				info("vrpipe manager running on port %s was gracefully shut down", config.ManagerPort)
 				return
 			}
 		} else {
@@ -189,7 +189,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 			// time to confirm the daemon is really up
 			jq = connect(5 * time.Second)
 			if jq == nil {
-				die("according to the pid file %s, vrpipe manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.Manager_pid_file, config.Manager_port, pid)
+				die("according to the pid file %s, vrpipe manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.ManagerPidFile, config.ManagerPort, pid)
 			}
 		}
 
@@ -204,9 +204,9 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 
 		stopped = stopdaemon(spid, "the manager itself")
 		if stopped {
-			info("vrpipe manager running on port %s was gracefully shut down", config.Manager_port)
+			info("vrpipe manager running on port %s was gracefully shut down", config.ManagerPort)
 		} else {
-			info("I've tried everything; giving up trying to stop the manager", config.Manager_port)
+			info("I've tried everything; giving up trying to stop the manager", config.ManagerPort)
 		}
 	},
 }
@@ -229,7 +229,7 @@ completes.`,
 		// first try and connect
 		jq := connect(5 * time.Second)
 		if jq == nil {
-			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.Manager_port)
+			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.ManagerPort)
 		}
 
 		// we managed to connect to the daemon; ask it to go in to drain mode
@@ -239,11 +239,11 @@ completes.`,
 		}
 
 		if numLeft == 0 {
-			info("vrpipe manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.Manager_port)
+			info("vrpipe manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
 		} else if numLeft == 1 {
-			info("vrpipe manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.Manager_port, numLeft, etc)
+			info("vrpipe manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, numLeft, etc)
 		} else {
-			info("vrpipe manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.Manager_port, numLeft, etc)
+			info("vrpipe manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
 
 		jq.Disconnect()
@@ -258,7 +258,7 @@ var managerStatusCmd = &cobra.Command{
 	Long:  `Find out if the pipeline manager is currently running or not.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// see if pid file suggests it is supposed to be running
-		pid, err := daemon.ReadPidFile(config.Manager_pid_file)
+		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		if err == nil {
 			// confirm
 			jq := connect(5 * time.Second)
@@ -267,7 +267,7 @@ var managerStatusCmd = &cobra.Command{
 				return
 			}
 
-			die("vrpipe manager on port %s is supposed to be running with pid %d, but is non-responsive", config.Manager_port, pid)
+			die("vrpipe manager on port %s is supposed to be running with pid %d, but is non-responsive", config.ManagerPort, pid)
 		}
 
 		// no pid file, so it's supposed to be down; confirm
@@ -305,7 +305,7 @@ func init() {
 }
 
 func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.Manager_port, "test_queue", wait)
+	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, "test_queue", wait)
 	if jqerr == nil {
 		return jq
 	}
@@ -384,16 +384,16 @@ func startJQ(sayStarted bool) {
 	}
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.Manager_port, config.Manager_web, scheduler, config.Runner_exec_shell, exe+" runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.Manager_db_file, config.Manager_db_bk_file, config.Deployment)
+	server, msg, err := jobqueue.Serve(config.ManagerPort, config.ManagerWeb, scheduler, config.RunnerExecShell, exe+" runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)
 	}
 
 	// start logging to configured file
-	logfile, errlog := os.OpenFile(config.Manager_log_file, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	logfile, errlog := os.OpenFile(config.ManagerLogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if errlog != nil {
-		warn("could not log to %s, will log to STDOUT: %v", config.Manager_log_file, errlog)
+		warn("could not log to %s, will log to STDOUT: %v", config.ManagerLogFile, errlog)
 	} else {
 		defer logfile.Close()
 		log.SetOutput(logfile)

@@ -75,7 +75,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					job.EnvKey = envkey
 					job.UntilBuried = 3
 					job.Queue = cr.Queue
-					itemdefs = append(itemdefs, &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
+					itemdefs = append(itemdefs, &queue.ItemDef{Key: jobKey(job), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR})
 				}
 
 				// keep an on-disk record of these new jobs; we sacrifice a lot

@@ -52,6 +52,7 @@ import (
 	"time"
 )
 
+// FailReason* are the reasons for cmd line failure stored on Jobs
 const (
 	FailReasonEnv      = "failed to get environment variables"
 	FailReasonStart    = "command failed to start"
@@ -66,12 +67,15 @@ const (
 	FailReasonResource = "resource requirements cannot be met"
 )
 
+// these global variables are primarily exported for testing purposes; you
+// probably shouldn't change them (*** and they should probably be re-factored
+// as fields of a config struct...)
 var (
 	ClientTouchInterval                  = 15 * time.Second
 	ClientReleaseDelay                   = 30 * time.Second
 	MemoryIncreaseMin            float64 = 1000
-	MemoryIncreaseMultLow        float64 = 2.0
-	MemoryIncreaseMultHigh       float64 = 1.3
+	MemoryIncreaseMultLow                = 2.0
+	MemoryIncreaseMultHigh               = 1.3
 	MemoryIncreaseMultBreakpoint float64 = 8192
 )
 
@@ -226,10 +230,10 @@ func (c *Client) Ping(timeout time.Duration) bool {
 	return true
 }
 
-// Drain tells the server to stop spawning new runners, stop letting existing
-// runners reserve new jobs, and exit once existing runners stop running. You
-// get back a count of existing runners and and an estimated time until
-// completion for the last of those runners.
+// DrainServer tells the server to stop spawning new runners, stop letting
+// existing runners reserve new jobs, and exit once existing runners stop
+// running. You get back a count of existing runners and and an estimated time
+// until completion for the last of those runners.
 func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	resp, err := c.request(&clientRequest{Method: "drain"})
 	if err != nil {

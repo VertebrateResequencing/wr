@@ -39,7 +39,7 @@ var cmdCPUs int
 var cmdOvr int
 var cmdPri int
 var cmdFile string
-var cmdId string
+var cmdID string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -105,7 +105,7 @@ the future when the commands actually get run.`,
 		if cmdFile == "" {
 			die("--file is required")
 		}
-		if cmdId == "" {
+		if cmdID == "" {
 			die("--identifier is required")
 		}
 		var cmdMB int
@@ -247,7 +247,7 @@ the future when the commands actually get run.`,
 				}
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), cmdId))
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), cmdID))
 		}
 
 		// connect to the server
@@ -263,7 +263,7 @@ the future when the commands actually get run.`,
 			die("%s", err)
 		}
 
-		info("Added %d new commands (%d were duplicates) to the queue under the identifier '%s'", inserts, dups, cmdId)
+		info("Added %d new commands (%d were duplicates) to the queue under the identifier '%s'", inserts, dups, cmdID)
 	},
 }
 
@@ -272,7 +272,7 @@ func init() {
 
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
-	addCmd.Flags().StringVarP(&cmdId, "identifier", "i", "manually_added", "identifier for all your commands")
+	addCmd.Flags().StringVarP(&cmdID, "identifier", "i", "manually_added", "identifier for all your commands")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
 	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "r", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")

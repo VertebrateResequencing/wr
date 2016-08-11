@@ -41,17 +41,22 @@ const (
 )
 
 var (
-	bucketJobsLive     []byte = []byte("jobslive")
-	bucketJobsComplete []byte = []byte("jobscomplete")
-	bucketRTK          []byte = []byte("repgroupTokey")
-	bucketEnvs         []byte = []byte("envs")
-	bucketStdO         []byte = []byte("stdo")
-	bucketStdE         []byte = []byte("stde")
-	bucketJobMBs       []byte = []byte("jobMBs")
-	bucketJobSecs      []byte = []byte("jobSecs")
-	wipeDevDBOnInit    bool   = true
-	RecMBRound         int    = 100  // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
-	RecSecRound        int    = 1800 // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
+	bucketJobsLive     = []byte("jobslive")
+	bucketJobsComplete = []byte("jobscomplete")
+	bucketRTK          = []byte("repgroupTokey")
+	bucketEnvs         = []byte("envs")
+	bucketStdO         = []byte("stdo")
+	bucketStdE         = []byte("stde")
+	bucketJobMBs       = []byte("jobMBs")
+	bucketJobSecs      = []byte("jobSecs")
+	wipeDevDBOnInit    = true
+)
+
+// Rec* variables are only exported for testing purposes (*** though they should
+// probably be user configurable somewhere...)
+var (
+	RecMBRound  = 100  // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
+	RecSecRound = 1800 // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
 
 // bje implements sort interface so we can sort a slice of []byte triples,

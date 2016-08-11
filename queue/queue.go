@@ -370,7 +370,7 @@ func (queue *Queue) GetRunningData() (data []interface{}) {
 	return
 }
 
-// AllItems() returns the items in the queue. NB: You should NOT do anything
+// AllItems returns the items in the queue. NB: You should NOT do anything
 // to these items - use for read-only purposes.
 func (queue *Queue) AllItems() (items []*Item) {
 	for _, item := range queue.items {

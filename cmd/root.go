@@ -36,7 +36,7 @@ var addr string
 var timeoutint int
 var cmdCwd string
 
-// This represents the base command when called without any subcommands
+// RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "vrpipe",
 	Short: "VRPipe is a software pipeline management system.",
@@ -85,7 +85,7 @@ func init() {
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	config = internal.ConfigLoad(deployment, false)
-	addr = config.Manager_host + ":" + config.Manager_port
+	addr = config.ManagerHost + ":" + config.ManagerPort
 }
 
 // info is a convenience to print a msg to STDOUT

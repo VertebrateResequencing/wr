@@ -26,7 +26,7 @@ import (
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/grafov/bcast"
-	"github.com/sb10/vrpipe/jobqueue/schedulers"
+	"github.com/sb10/vrpipe/jobqueue/scheduler"
 	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
 	"log"
@@ -39,6 +39,9 @@ import (
 	"time"
 )
 
+// Err* constants are found in the our returned Errors under err.Err, so you
+// can cast and check if it's a certain type of error. ServerMode* constants are
+// used to report on the status of the server, found inside ServerInfo.
 const (
 	ErrInternalError  = "internal error"
 	ErrUnknownCommand = "unknown command"
@@ -58,6 +61,9 @@ const (
 	ServerModeDrain   = "draining"
 )
 
+// these global variables are primarily exported for testing purposes; you
+// probably shouldn't change them (*** and they should probably be re-factored
+// as fields of a config struct...)
 var (
 	ServerInterruptTime   = 1 * time.Second
 	ServerItemTTR         = 60 * time.Second
@@ -132,7 +138,7 @@ type jstateCount struct {
 	Count     int    // num in FromState drop by this much, num in ToState rise by this much
 }
 
-// server represents the server side of the socket that clients Connect() to.
+// Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo *ServerInfo
 	sock       mangos.Socket
@@ -278,7 +284,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 	if len(priorJobs) > 0 {
 		jobsByQueue := make(map[string][]*queue.ItemDef)
 		for _, job := range priorJobs {
-			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{jobKey(job), job, job.Priority, 0 * time.Second, ServerItemTTR})
+			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: jobKey(job), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR})
 		}
 		for qname, itemdefs := range jobsByQueue {
 			q := s.getOrCreateQueue(qname)
