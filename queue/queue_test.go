@@ -836,7 +836,7 @@ func TestQueue(t *testing.T) {
 
 		Convey("It doesn't work if the queue is closed", func() {
 			q.Destroy()
-			added, dups, err = q.AddMany(itemdefs)
+			_, _, err = q.AddMany(itemdefs)
 			So(err, ShouldNotBeNil)
 			qerr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
