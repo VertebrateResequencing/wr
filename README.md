@@ -80,7 +80,7 @@ Right now, with the limited functionality available, you will run something like
 (change the options as appropriate):
 
 * vrpipe manager start -s lsf
-* vrpipe add -f cmds_in_a_file.txt -m 1G -o 2h -i my_first_cmds -r mycmd_x_mode
+* vrpipe add -f cmds_in_a_file.txt -m 1G -t 2h -i my_first_cmds -r mycmd_x_mode
 * [view status on the web interface]
 * vrpipe manager stop
 
