@@ -511,7 +511,10 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		} else {
 			job.Walltime = sjob.endtime.Sub(sjob.starttime)
 		}
-		state = "running"
+
+		if state == "reserved" {
+			job.State = "running"
+		}
 	}
 	s.jobPopulateStdEnv(job, getStd, getEnv)
 	return
