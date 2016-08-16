@@ -1,9 +1,16 @@
 language: go
 sudo: false
 go:
+  - 1.6
   - tip
 before_install:
-  - go get github.com/mattn/goveralls
   - go get golang.org/x/tools/cmd/cover
+  - go get github.com/axw/gocov/gocov
+  - go get github.com/modocache/gover
+  - go get github.com/mattn/goveralls
 script:
-  - $HOME/gopath/bin/goveralls -service=travis-ci
+  - go test -v -coverprofile=queue.coverprofile ./queue
+  - go test -v -coverprofile=sched.coverprofile ./jobqueue/scheduler
+  - go test -v -coverprofile=jq.coverprofile ./jobqueue
+  - $HOME/gopath/bin/gover
+  - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
