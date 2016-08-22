@@ -84,18 +84,18 @@ func TestLocal(t *testing.T) {
 			Convey("It eventually runs them all", func() {
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
-				<-time.After(1000 * time.Millisecond)
+				<-time.After(1100 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, count)
 				So(numfiles, ShouldEqual, count)
 				So(s.Busy(), ShouldBeTrue)
 
 				<-time.After(750 * time.Millisecond) // *** don't know why we need an extra 850ms for the cmds to finish running
 
-				numfiles = testDirForFiles(tmpdir2)
+				numfiles = testDirForFiles(tmpdir2, count)
 				So(numfiles, ShouldEqual, count)
 				So(s.Busy(), ShouldBeFalse)
 			})
@@ -105,7 +105,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
@@ -113,7 +113,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(900 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldEqual, newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -124,7 +124,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
@@ -132,7 +132,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(900 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -143,15 +143,15 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(1650 * time.Millisecond)
+				<-time.After(2000 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldEqual, newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -163,7 +163,7 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(700 * time.Millisecond)
 
-					numfiles := testDirForFiles(tmpdir)
+					numfiles := testDirForFiles(tmpdir, maxCPU)
 					So(numfiles, ShouldEqual, maxCPU)
 
 					err = s.Schedule(cmd, possibleReq, newcount)
@@ -174,7 +174,7 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(900 * time.Millisecond)
 
-					numfiles = testDirForFiles(tmpdir)
+					numfiles = testDirForFiles(tmpdir, newcount+1)
 					So(numfiles, ShouldEqual, newcount+1)
 
 					So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -206,7 +206,7 @@ func TestLSF(t *testing.T) {
 	}
 
 	host, _ := os.Hostname()
-	Convey("You can get a new lsf scheduler", t, func() {
+	SkipConvey("You can get a new lsf scheduler", t, func() {
 		s, err := New("lsf", "development", "bash")
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
@@ -295,7 +295,7 @@ func TestLSF(t *testing.T) {
 
 			Convey("It eventually runs them all", func() {
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, count)
 				So(numfiles, ShouldEqual, count)
 			})
 
@@ -309,13 +309,13 @@ func TestLSF(t *testing.T) {
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldEqual, newcount)
 			})
 
 			Convey("You can Schedule() a new job and have it run while the first is still running", func() {
 				<-time.After(500 * time.Millisecond)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetweenOrEqual, 1, count)
 				So(s.Busy(), ShouldBeTrue)
 
@@ -324,7 +324,7 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, count+1)
 				So(numfiles, ShouldEqual, count+1)
 			})
 		})
@@ -345,7 +345,7 @@ func TestLSF(t *testing.T) {
 
 			Convey("It runs some of them and you can Schedule() again to drop the count", func() {
 				So(waitToFinish(s, 3, 1000), ShouldBeFalse)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetween, 1, count-(maxCPU*2)-2)
 
 				newcount := numfiles + maxCPU
@@ -353,7 +353,7 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldBeBetweenOrEqual, newcount, numfiles*2) // we must allow it to run a few extra due to the implementation
 			})
 		})
@@ -363,10 +363,19 @@ func TestLSF(t *testing.T) {
 	})
 }
 
-func testDirForFiles(tmpdir string) (numfiles int) {
+func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 	files, err := ioutil.ReadDir(tmpdir)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if len(files) < expected {
+		// wait a little longer for things to sync up, by running ls
+		cmd := exec.Command("ls", tmpdir)
+		cmd.Run()
+		files, err = ioutil.ReadDir(tmpdir)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 	return len(files)
 }
