@@ -1,29 +1,29 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package jobqueue
 
 // This file contains the command line interface code of the server.
 
 import (
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/satori/go.uuid"
-	"github.com/sb10/vrpipe/queue"
 	"github.com/ugorji/go/codec"
 	"time"
 )
@@ -83,7 +83,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// disk. The alternative would be to return success to the
 				// client as soon as the jobs were in the in-memory queue, then
 				// lazily persist to disk in a goroutine, but we must guarantee
-				// that jobs are never lost or a pipeline could hopelessly break
+				// that jobs are never lost or a workflow could hopelessly break
 				// if the server node goes down between returning success and
 				// the write to disk succeeding. (If we don't return success to
 				// the client, it won't Remove the job that created the new jobs

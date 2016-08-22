@@ -1,22 +1,22 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-// Package internal houses code for vrpipe's general utility functions
+// Package internal houses code for wr's general utility functions
 package internal
 
 import (
@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	configCommonBasename = ".vrpipe_config.yml"
+	configCommonBasename = ".wr_config.yml"
 )
 
 // Config holds the configuration options for jobqueue server and client
@@ -37,7 +37,7 @@ type Config struct {
 	ManagerPort      string `default:""`
 	ManagerWeb       string `default:""`
 	ManagerHost      string `default:"localhost"`
-	ManagerDir       string `default:"~/.vrpipe"`
+	ManagerDir       string `default:"~/.wr"`
 	ManagerPidFile   string `default:"pid"`
 	ManagerLogFile   string `default:"log"`
 	ManagerDbFile    string `default:"db"`
@@ -55,20 +55,20 @@ do anything.
 
 We prefer settings in config file in current dir (or the current dir's parent
 dir if the useparentdir option is true (used for test scripts)) over config file
-in home directory over config file in dir pointed to by VRPIPE_CONFIG_DIR.
+in home directory over config file in dir pointed to by WR_CONFIG_DIR.
 
-The deployment argument determines if we read .vrpipe_config.production.yml or
-.vrpipe_config.development.yml; we always read .vrpipe_config.yml. If the empty
+The deployment argument determines if we read .wr_config.production.yml or
+.wr_config.development.yml; we always read .wr_config.yml. If the empty
 string is supplied, deployment is development if you're in the git repository
 directory. Otherwise, deployment is taken from the environment variable
-VRPIPE_DEPLOYMENT, and if that's not set it defaults to production.
+WR_DEPLOYMENT, and if that's not set it defaults to production.
 
 Multiple of these files can be used to have settings that are common to
 multiple users and deployments, and settings specific to users or deployments.
 
 Settings found in no file can be set with the environment variable
-VRPIPE_<setting name in caps>, eg.
-export VRPIPE_MANAGER_PORT="11301"
+WR_<setting name in caps>, eg.
+export WR_MANAGER_PORT="11301"
 */
 func ConfigLoad(deployment string, useparentdir bool) Config {
 	pwd, err := os.Getwd()
@@ -86,8 +86,8 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 		deployment = DefaultDeployment()
 	}
 	os.Setenv("CONFIGOR_ENV", deployment)
-	os.Setenv("CONFIGOR_ENV_PREFIX", "VRPIPE")
-	ConfigDeploymentBasename := ".vrpipe_config." + deployment + ".yml"
+	os.Setenv("CONFIGOR_ENV_PREFIX", "WR")
+	ConfigDeploymentBasename := ".wr_config." + deployment + ".yml"
 
 	// read the config files. We have to check file existence before passing
 	// these to configor.Load, or it will complain
@@ -105,7 +105,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 			configFiles = append(configFiles, configFile)
 		}
 	}
-	if configDir := os.Getenv("VRPIPE_CONFIG_DIR"); configDir != "" {
+	if configDir := os.Getenv("WR_CONFIG_DIR"); configDir != "" {
 		configFile = filepath.Join(configDir, configCommonBasename)
 		_, err = os.Stat(configFile)
 		if _, err2 := os.Stat(filepath.Join(configDir, ConfigDeploymentBasename)); err == nil || err2 == nil {
@@ -177,7 +177,7 @@ func DefaultDeployment() (deployment string) {
 		deployment = "production"
 
 		// and allow env var to override with development
-		if deploymentEnv := os.Getenv("VRPIPE_DEPLOYMENT"); deploymentEnv != "" {
+		if deploymentEnv := os.Getenv("WR_DEPLOYMENT"); deploymentEnv != "" {
 			if deploymentEnv == "development" {
 				deployment = "development"
 			}
@@ -212,7 +212,7 @@ func calculatePort(deployment string, ptype string) (port string) {
 	}
 
 	// our port must be greater than 1024, and by basing on user id we can
-	// avoid conflicts with other users of vrpipe on the same machine; we
+	// avoid conflicts with other users of wr on the same machine; we
 	// multiply by 4 because we have to reserve 4 ports for each user
 	pn := 1021 + (uid * 4)
 

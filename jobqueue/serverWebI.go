@@ -1,20 +1,20 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package jobqueue
 
@@ -85,7 +85,7 @@ func webInterfaceStatic(w http.ResponseWriter, r *http.Request) {
 
 	// during development, to avoid having to rebuild and restart manager on
 	// every change to a file in static dir, do:
-	// $ esc -pkg jobqueue -prefix $GOPATH/src/github.com/sb10/vrpipe/static -private -o jobqueue/static.go $GOPATH/src/github.com/sb10/vrpipe/static
+	// $ esc -pkg jobqueue -prefix $GOPATH/src/github.com/VertebrateResequencing/wr/static -private -o jobqueue/static.go $GOPATH/src/github.com/VertebrateResequencing/wr/static
 	// and set the boolean to true. Don't forget to rerun esc without the abs
 	// paths and change the boolean back to false before any commit!
 	doc, err := _escFSByte(false, path)

@@ -1,27 +1,27 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package jobqueue
 
 import (
 	"flag"
 	"fmt"
-	"github.com/sb10/vrpipe/internal"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
@@ -99,7 +99,7 @@ func TestJobqueue(t *testing.T) {
 		}
 		child, err := context.Reborn()
 		if err != nil {
-			log.Fatalf("failed to daemonize for the initial test: %s (you probably need to `vrpipe manager stop`)", err)
+			log.Fatalf("failed to daemonize for the initial test: %s (you probably need to `wr manager stop`)", err)
 		}
 		if child == nil {
 			// daemonized child, that will run until signalled to stop
@@ -1276,7 +1276,7 @@ func TestJobqueue(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		runnertmpdir, err := ioutil.TempDir("", "vrpipe_jobqueue_test_runner_dir_")
+		runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1290,7 +1290,7 @@ func TestJobqueue(t *testing.T) {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
 
-			tmpdir, err := ioutil.TempDir("", "vrpipe_jobqueue_test_output_dir_")
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -1389,7 +1389,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		}
 
 		clientConnectTime := 10 * time.Second
-		jq, err := Connect(addr, "vrpipe.des", clientConnectTime)
+		jq, err := Connect(addr, "wr.des", clientConnectTime)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1416,7 +1416,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		for i := 1; i <= o; i++ {
 			go func(i int) {
 				start := time.After(beginat.Sub(time.Now()))
-				gjq, err := Connect(addr, "vrpipe.des", clientConnectTime)
+				gjq, err := Connect(addr, "wr.des", clientConnectTime)
 				if err != nil {
 					log.Fatal(err)
 				}

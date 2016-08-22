@@ -1,20 +1,20 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package scheduler
 
@@ -64,12 +64,12 @@ func TestLocal(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			tmpdir, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_immediate_output_dir_")
+			tmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_immediate_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
 			defer os.RemoveAll(tmpdir)
-			tmpdir2, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_end_output_dir_")
+			tmpdir2, err := ioutil.TempDir("", "wr_schedulers_local_test_end_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -267,7 +267,7 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			// tmpdir, err := ioutil.TempDir("", "vrpipe_schedulers_lsf_test_output_dir_")
+			// tmpdir, err := ioutil.TempDir("", "wr_schedulers_lsf_test_output_dir_")
 			// if err != nil {
 			// 	log.Fatal(err)
 			// }
@@ -280,7 +280,7 @@ func TestLSF(t *testing.T) {
 			// failing; instead we assume, since this is LSF, that our current
 			// directory is on a shared disk, and just have all the jobs write
 			// their files here directly
-			tmpdir, err := ioutil.TempDir("./", "vrpipe_schedulers_lsf_test_output_dir_")
+			tmpdir, err := ioutil.TempDir("./", "wr_schedulers_lsf_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -330,7 +330,7 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than could reasonably start all at once", func() {
-			tmpdir, err := ioutil.TempDir("./", "vrpipe_schedulers_lsf_test_output_dir_")
+			tmpdir, err := ioutil.TempDir("./", "wr_schedulers_lsf_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
