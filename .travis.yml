@@ -13,3 +13,7 @@ script:
   - go test -v -coverprofile=jq.coverprofile ./jobqueue
   - $HOME/gopath/bin/gover
   - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
+branches:
+  only:
+    - master
+    - develop
