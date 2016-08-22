@@ -4,6 +4,8 @@ wr - workflow runner
 ***DO NOT USE YET!***
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
+[![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=master)](https://travis-ci.org/VertebrateResequencing/wr)
+[![Coverage Status](https://coveralls.io/repos/github/VertebrateResequencing/wr/badge.svg?branch=master)](https://coveralls.io/github/VertebrateResequencing/wr?branch=master)
 
 But if you want to be adventurous and provide feedback...
 [![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/VertebrateResequencing/wr/master)
