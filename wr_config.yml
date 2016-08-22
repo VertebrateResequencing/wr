@@ -1,83 +1,83 @@
 # The format of this file is YAML
 #
-# VRPipe will load its configuration settings from one or more files named
-# .vrpipe_config[.production|.development].yml found in these directories, in
+# wr will load its configuration settings from one or more files named
+# .wr_config[.production|.development].yml found in these directories, in
 # order of precedence:
 # 1) The current directory
 # 2) Your home directory
-# 3) The directory pointed to by the environment variable $VRPIPE_CONFIG_DIR
+# 3) The directory pointed to by the environment variable $WR_CONFIG_DIR
 #
-# .vrpipe_config.yml files are always read, and can be used to define settings
+# .wr_config.yml files are always read, and can be used to define settings
 # common to both production and development deployments.
-# .vrpipe_config.production.yml files are only read in a production context:
-# either a --deployment production option has been passed to the vrpipe
-# executable, or the environment variable $VRPIPE_DEPLOYMENT has been set to
+# .wr_config.production.yml files are only read in a production context:
+# either a --deployment production option has been passed to the wr
+# executable, or the environment variable $WR_DEPLOYMENT has been set to
 # 'production'.
-# A similar story applies for .vrpipe_config.development.yml files, which are
+# A similar story applies for .wr_config.development.yml files, which are
 # used when things are set to 'development'.
 # The default deployment is production (unless you're in the git repository for
-# vrpipe, in which case it is development).
+# wr, in which case it is development).
 #
 # If a setting is found in none of the files read, then an environment variable
-# is checked: VRPIPE_<setting name in caps>. Eg. to define the manager_scheduler
+# is checked: WR_<setting name in caps>. Eg. to define the manager_scheduler
 # option you might do:
-# export VRPIPE_MANAGER_SCHEDULER="lsf"
+# export WR_MANAGER_SCHEDULER="lsf"
 #
 # Note that all worker nodes need to be able to see your desired set of config
 # files, so either define them in environment variables or put the config files
 # on a disc that is mounted and shared across all your compute nodes.
 
 
-# manager_port: What port should the vrpipe manager listen on?
+# manager_port: What port should the wr manager listen on?
 # This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 0 if
 # production or + 2 if development. Note, this is a string (quoted). The
 # calculated default should hopefully give you port numbers that no other
-# software or other user of vrpipe on your machine is using.
+# software or other user of wr on your machine is using.
 # NB: It is very important to have different settings for your production
 # manager and your development manager. If you have multiple people running
-# vrpipe on the same machine, and you explicitly set this instead of relying on
+# wr on the same machine, and you explicitly set this instead of relying on
 # the default, each individual person should have their own unique manager_port
-# specified in their personal ~/.vrpipe_config.development.yml and
-# ~/.vrpipe_config.production.yml files.
+# specified in their personal ~/.wr_config.development.yml and
+# ~/.wr_config.production.yml files.
 #
-# Before being able to use vrpipe you must start the manager by running 'vrpipe
+# Before being able to use wr you must start the manager by running 'wr
 # manager'. It will start listening on the specified port on your local host.
-# Your other invocations of 'vrpipe' also use this option to know what port to
+# Your other invocations of 'wr' also use this option to know what port to
 # connect to, but they'll only succeed if you run them from the same host you
 # started the manager on, or if you have set the manager_host option to the
 # host you started the manager on.
-# vrpipe commands that are spawned by the manager itself are given the real
+# wr commands that are spawned by the manager itself are given the real
 # ip address of the host the manager is running on, so these commands do not
 # need manager_host to be set.
 # For multi-machine systems it is required that all hosts that could end up
-# running a vrpipe command be able to do tcp communication with the host you
+# running a wr command be able to do tcp communication with the host you
 # launch the manager on.
 #manager_port: "11301"
 
-# manager_web: What port should the vrpipe manager serve its web interface on?
+# manager_web: What port should the wr manager serve its web interface on?
 # This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 1 if
 # production or + 3 if development. Note, this is a string (quoted). The
 # calculated default should hopefully give you port numbers that no other
-# software or other user of vrpipe on your machine is using.
+# software or other user of wr on your machine is using.
 # NB: This must be different to the manager_port, and to anyone else's port
 # choice on the same machine.
 #manager_web: "11302"
 
-# manager_host: What host was 'vrpipe manager' started on?
+# manager_host: What host was 'wr manager' started on?
 # This is optional and defaults to "localhost".
 #
-# This option determines where vrpipe commands (other than the manager command)
-# try and connect to your vrpipe manager. You only need to set this if you plan
-# on running vrpipe commands yourself on a host that is different to the one you
-# you plan to start the vrpipe manager on.
+# This option determines where wr commands (other than the manager command)
+# try and connect to your wr manager. You only need to set this if you plan
+# on running wr commands yourself on a host that is different to the one you
+# you plan to start the wr manager on.
 # For more details, see the notes for the manager_port option above.
 manager_host: "localhost"
 
-# manager_dir: Where should the vrpipe manager store its working files?
-# This defaults to a directory prefixed with .vrpipe in your home directory.
+# manager_dir: Where should the wr manager store its working files?
+# This defaults to a directory prefixed with .wr in your home directory.
 #
 # The final directory name will be suffixed with "_[deployment]", eg. by default
-# when developing the directory will be ~/.vrpipe_development. For this reason
+# when developing the directory will be ~/.wr_development. For this reason
 # you do not have to set this differently in your production and development
 # config files. The other file-name-based configuration options like
 # 'manager_pid_file' and 'manager_db_file' also do not need to be altered from
@@ -85,25 +85,25 @@ manager_host: "localhost"
 #
 # The files stored in here are, by default, the manager's pid file, log file and
 # database related files.
-manager_dir: "~/.vrpipe"
+manager_dir: "~/.wr"
 
-# manager_pid_file: Where should vrpipe manager store its pid file?
+# manager_pid_file: Where should wr manager store its pid file?
 # This defaults to a file named "pid" in manager_dir.
 #
 # You can set this to an absolute path to ignore manager_dir; for example if
 # you have the root permissions to set things up, you may prefer to set this to
-# /var/run/vrpipe/pid
+# /var/run/wr/pid
 manager_pid_file: "pid"
 
-# manager_log_file: Where should vrpipe manager store its log file?
+# manager_log_file: Where should wr manager store its log file?
 # This defaults to a file named "log" in manager_dir.
 #
 # You can set this to an absolute path to ignore manager_dir; for example if
 # you have the root permissions to set things up, you may prefer to set this to
-# /var/log/vrpipe/pid
+# /var/log/wr/pid
 manager_log_file: "log"
 
-# manager_db_file: Where should vrpipe manager store its database file?
+# manager_db_file: Where should wr manager store its database file?
 # This defaults to a file named "db" in manager_dir.
 #
 # You can set this to an absolute path to ignore manager_dir. Note that you may
@@ -116,7 +116,7 @@ manager_log_file: "log"
 # set as the values of environment variables.
 manager_db_file: "db"
 
-# manager_db_bk_file: Where should vrpipe manager back up its database file?
+# manager_db_bk_file: Where should wr manager back up its database file?
 # This defaults to a file named "db_bk" in manager_dir.
 #
 # You can set this to an absolute path to ignore manager_dir (and ideally you
@@ -129,7 +129,7 @@ manager_db_file: "db"
 # usage.
 manager_db_bk_file: "db_bk"
 
-# manager_umask: What umask should be used when vrpipe manager creates files?
+# manager_umask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).
 #
@@ -138,9 +138,9 @@ manager_db_bk_file: "db_bk"
 # 002 = world readable, user+group read+writable
 manager_umask: 007
 
-# manager_scheduler: What job scheduler should be used to run 'vrpipe runner'?
+# manager_scheduler: What job scheduler should be used to run 'wr runner'?
 # This defaults to "local" and is overridden by the --scheduler option to
-# 'vrpipe manager start'.
+# 'wr manager start'.
 #
 # "local" means run everything on the local machine.
 # "lsf" means submit to LSF using 'bsub'.

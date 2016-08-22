@@ -1,20 +1,20 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package jobqueue
 
@@ -345,7 +345,7 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 // file becoming enormous, we only store these if the cmd failed and also delete
 // these from db when the cmd completes successfully. By doing the deletion
 // upfront, we also ensure we have the latest std, which may be nil even on cmd
-// failure. Since it is not critical to the running of jobs and pipelines that
+// failure. Since it is not critical to the running of jobs and workflows that
 // this works 100% of the time, we ignore errors and write to bolt in a
 // goroutine, giving us a significant speed boost.
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {

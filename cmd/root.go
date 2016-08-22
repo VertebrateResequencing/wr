@@ -1,20 +1,20 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 // Package cmd is the cobra file that enables subcommands and handles
 // command-line args
@@ -22,7 +22,7 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/sb10/vrpipe/internal"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/spf13/cobra"
 	"os"
 )
@@ -38,31 +38,31 @@ var cmdCwd string
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
-	Use:   "vrpipe",
-	Short: "VRPipe is a software pipeline management system.",
-	Long: `VRPipe is a software pipeline management system.
+	Use:   "wr",
+	Short: "wr is a software workflow management system.",
+	Long: `wr is a software workflow management system and command runner.
 
-You use it to run the same sequence of commands (a "pipeline") on many different
+You use it to run the same sequence of commands (a "workflow") on many different
 input files (which comprise a "datasource").
 
 Initially, you start the management system, which maintains a queue of the
 commands you want to run:
-$ vrpipe manager start
+$ wr manager start
 
 Then you either directly add commands you want to run to the queue:
-$ vrpipe add
+$ wr add
 
-Or you define a pipeline that works out the commands for you:
-Create a pipeline with:                           $ vrpipe create
-Define a datasource with:                         $ vrpipe datasource
-Set up an instance of pipeline + datasource with: $ vrpipe setup
+Or you define a workflow that works out the commands for you:
+Create a workflow with:                           $ wr create
+Define a datasource with:                         $ wr datasource
+Set up an instance of workflow + datasource with: $ wr setup
 
 At this point your commands should be running, and you can monitor their
 progress with:
-$ vrpipe status
+$ wr status
 
 Finally, you can find your output files with:
-$ vrpipe outputs`,
+$ wr outputs`,
 }
 
 // Execute adds all child commands to the root command and sets flags

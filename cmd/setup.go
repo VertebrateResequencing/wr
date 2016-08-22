@@ -1,26 +1,26 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package cmd
 
 import (
 	// "fmt"
-	// "github.com/sb10/vrpipe/jobqueue"
+	// "github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 	// "log"
 )
@@ -28,18 +28,18 @@ import (
 // setupCmd represents the setup command
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Set up a particular instance of a pipeline and run it",
-	Long: `Set up a particular instance of a pipeline and run it.
+	Short: "Set up a particular instance of a workflow and run it",
+	Long: `Set up a particular instance of a workflow and run it.
 
-You use this command to define what pipeline to run, what datasource to use
-(what the pipeline's input data will be), and what options to pass to the steps
-of the pipeline and the pipeline itself.
+You use this command to define what workflow to run, what datasource to use
+(what the workflow's input data will be), and what options to pass to the steps
+of the workflow and the workflow itself.
 
-Once defined the pipeline will immediately start running.`,
+Once defined the workflow will immediately start running.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// fmt.Printf("Setup will try to connect to beanstalk...\n")
 
-		// jobqueue, err := jobqueue.Connect(config.Beanstalk, "vrpipe.des", true)
+		// jobqueue, err := jobqueue.Connect(config.Beanstalk, "wr.des", true)
 		// if err != nil {
 		// 	log.Fatal(err)
 		// }

@@ -1,10 +1,10 @@
 author: Sendu Bala
-description: Software Pipeline System
+description: Software Workflow Runner
 os: darwin linux
 includes:
   - README.md
   - LICENSE
-  - vrpipe_config.yml
+  - wr_config.yml
 excludes:
   - \.git
 script:

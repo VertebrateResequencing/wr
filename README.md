@@ -1,12 +1,14 @@
-vrpipe
+wr - workflow runner
 ======
 
 ***DO NOT USE YET!***
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/sb10/vrpipe)](https://goreportcard.com/report/github.com/sb10/vrpipe)
+[![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
+[![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=master)](https://travis-ci.org/VertebrateResequencing/wr)
+[![Coverage Status](https://coveralls.io/repos/github/VertebrateResequencing/wr/badge.svg?branch=master)](https://coveralls.io/github/VertebrateResequencing/wr?branch=master)
 
 But if you want to be adventurous and provide feedback...
-[![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/sb10/vrpipe/master)
+[![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/VertebrateResequencing/wr/master)
 
 This is an experimental reimplementation of
 https://github.com/VertebrateResequencing/vr-pipe/
@@ -42,7 +44,7 @@ Implemented so far
 
 Not yet implemented
 -------------------
-* While the help mentions pipelines, nothing pipeline-related has been
+* While the help mentions workflows, nothing workflow-related has been
   implemented (no job dependecies)
 * Get a complete listing of all commands with a given id
 * Database backups
@@ -54,25 +56,25 @@ Not yet implemented
 
 Usage instructions
 ------------------
-The download .zip should contain the vrpipe executable, this README.md and an
-example config file called vrpipe_config.yml, which details all the config
+The download .zip should contain the wr executable, this README.md and an
+example config file called wr_config.yml, which details all the config
 options available. The main things you need to know are:
 
-* You can use the vrpipe executable directly from where you extracted it, or
+* You can use the wr executable directly from where you extracted it, or
   move it to where you normally install software to.
-* Use the -h option on vrpipe and all its sub commands to get further help
+* Use the -h option on wr and all its sub commands to get further help
   and instructions.
 * The default config should be fine for most people, but if you want to change
-  something, copy the example config file to ~/.vrpipe_config.yml and make
+  something, copy the example config file to ~/.wr_config.yml and make
   changes to that. Alternatively, as the example config file explains, add
   environment variables to your shell login script and then source it.
-* The vrpipe executable must be available at that same absolute path on all
+* The wr executable must be available at that same absolute path on all
   compute nodes in your cluster, so you either need to place it on a shared
   disk, or install it in the same place on all machines (eg. have it as part of
   your OS image). If you use config files, these must also be readable by all
   nodes (when you don't have a shared disk, it's best to configure using
   environment variables).
-* If you are ssh tunnelling to the node where you are running vrpipe and wish
+* If you are ssh tunnelling to the node where you are running wr and wish
   to use the web interface, you will have to forward the host and port that it
   tells you the web interface can be reached on, and/or perhaps also dynamic
   forward using something like nc. An example .ssh/config is at the end of this
@@ -81,10 +83,10 @@ options available. The main things you need to know are:
 Right now, with the limited functionality available, you will run something like
 (change the options as appropriate):
 
-* vrpipe manager start -s lsf
-* vrpipe add -f cmds_in_a_file.txt -m 1G -t 2h -i my_first_cmds -r mycmd_x_mode
+* wr manager start -s lsf
+* wr add -f cmds_in_a_file.txt -m 1G -t 2h -i my_first_cmds -r mycmd_x_mode
 * [view status on the web interface]
-* vrpipe manager stop
+* wr manager stop
 
 (It isn't necessary to stop the manager; you can just leave it running forever.)
 

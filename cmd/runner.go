@@ -1,27 +1,27 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package cmd
 
 import (
 	"fmt"
-	"github.com/sb10/vrpipe/internal"
-	"github.com/sb10/vrpipe/jobqueue"
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 	"time"
 )
@@ -39,7 +39,7 @@ var runnerCmd = &cobra.Command{
 	Short: "Run queued commands",
 	Long: `A runner runs commands that were queued by the add or setup commands.
 
-You won't normally run this yourself directly - "vrpipe manager" spawns these as
+You won't normally run this yourself directly - "wr manager" spawns these as
 needed.
 
 A runner will pick up a queued command and run it. Once that cmd completes, the
@@ -117,7 +117,7 @@ complete.`,
 			numrun++
 		}
 
-		info("vrpipe runner exiting, having run %d commands, because %s", numrun, exitReason)
+		info("wr runner exiting, having run %d commands, because %s", numrun, exitReason)
 	},
 }
 
@@ -127,8 +127,8 @@ func init() {
 	// flags specific to this sub-command
 	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "cmds", "specify the queue to pull commands from")
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
-	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
+	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
-	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of vrpipe manager")
+	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of wr manager")
 }

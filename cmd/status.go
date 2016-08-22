@@ -1,27 +1,27 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package cmd
 
 import (
 	"bufio"
 	"fmt"
-	"github.com/sb10/vrpipe/jobqueue"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 	"io"
 	"os"
@@ -43,13 +43,13 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of commands",
 	Long: `You can find the status of commands you've previously added using
-"vrpipe add" or "vrpipe setup" by running this command.
+"wr add" or "wr setup" by running this command.
 
 Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
 
-The file to provide -f is in the same format as that taken by "vrpipe add"
+The file to provide -f is in the same format as that taken by "wr add"
 (though only the first 2 columns are considered).
 
 In -f and -l mode you must provide the cwd the commands were set to run in. You
@@ -102,7 +102,7 @@ the commands, or if you added them with a different cwd.`,
 			jobs, err = jq.GetByRepGroup(cmdIDStatus, 1, cmdState, showStd, showEnv)
 		case cmdFileStatus != "":
 			// get jobs that have the supplied commands. We support the same
-			// format of file that "vrpipe add" takes, but only care about the
+			// format of file that "wr add" takes, but only care about the
 			// first 2 columns
 			var reader io.Reader
 			if cmdFileStatus == "-" {
@@ -174,9 +174,9 @@ the commands, or if you added them with a different cwd.`,
 				case "delayed":
 					fmt.Printf("Status: %s following a temporary problem, will become ready soon\n", job.State)
 				case "ready":
-					fmt.Printf("Status: %s to be picked up by a `vrpipe runner`\n", job.State)
+					fmt.Printf("Status: %s to be picked up by a `wr runner`\n", job.State)
 				case "buried":
-					fmt.Printf("Status: %s - you need to fix the problem and then `vrpipe kick`\n", job.State)
+					fmt.Printf("Status: %s - you need to fix the problem and then `wr kick`\n", job.State)
 				case "reserved":
 					fmt.Println("Status: running")
 				case "complete":
@@ -263,5 +263,5 @@ func init() {
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().BoolVarP(&quietMode, "quiet", "q", false, "minimal verbosity: just display status counts")
 
-	statusCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'vrpipe manager'")
+	statusCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

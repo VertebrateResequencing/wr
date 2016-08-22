@@ -1,20 +1,20 @@
 // Copyright © 2016 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-//  This file is part of VRPipe.
+//  This file is part of wr.
 //
-//  VRPipe is free software: you can redistribute it and/or modify
+//  wr is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU Lesser General Public License as published by
 //  the Free Software Foundation, either version 3 of the License, or
 //  (at your option) any later version.
 //
-//  VRPipe is distributed in the hope that it will be useful,
+//  wr is distributed in the hope that it will be useful,
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //  GNU Lesser General Public License for more details.
 //
 //  You should have received a copy of the GNU Lesser General Public License
-//  along with VRPipe. If not, see <http://www.gnu.org/licenses/>.
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 package scheduler
 
@@ -64,12 +64,12 @@ func TestLocal(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			tmpdir, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_immediate_output_dir_")
+			tmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_immediate_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
 			defer os.RemoveAll(tmpdir)
-			tmpdir2, err := ioutil.TempDir("", "vrpipe_schedulers_local_test_end_output_dir_")
+			tmpdir2, err := ioutil.TempDir("", "wr_schedulers_local_test_end_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -84,18 +84,18 @@ func TestLocal(t *testing.T) {
 			Convey("It eventually runs them all", func() {
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
-				<-time.After(1000 * time.Millisecond)
+				<-time.After(1100 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, count)
 				So(numfiles, ShouldEqual, count)
 				So(s.Busy(), ShouldBeTrue)
 
 				<-time.After(750 * time.Millisecond) // *** don't know why we need an extra 850ms for the cmds to finish running
 
-				numfiles = testDirForFiles(tmpdir2)
+				numfiles = testDirForFiles(tmpdir2, count)
 				So(numfiles, ShouldEqual, count)
 				So(s.Busy(), ShouldBeFalse)
 			})
@@ -105,7 +105,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
@@ -113,7 +113,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(900 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldEqual, newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -124,7 +124,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
@@ -132,7 +132,7 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(900 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -143,15 +143,15 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
 				So(numfiles, ShouldEqual, maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(1650 * time.Millisecond)
+				<-time.After(2000 * time.Millisecond)
 
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldEqual, newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -163,7 +163,7 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(700 * time.Millisecond)
 
-					numfiles := testDirForFiles(tmpdir)
+					numfiles := testDirForFiles(tmpdir, maxCPU)
 					So(numfiles, ShouldEqual, maxCPU)
 
 					err = s.Schedule(cmd, possibleReq, newcount)
@@ -174,7 +174,7 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(900 * time.Millisecond)
 
-					numfiles = testDirForFiles(tmpdir)
+					numfiles = testDirForFiles(tmpdir, newcount+1)
 					So(numfiles, ShouldEqual, newcount+1)
 
 					So(waitToFinish(s, 3, 100), ShouldBeTrue)
@@ -206,7 +206,7 @@ func TestLSF(t *testing.T) {
 	}
 
 	host, _ := os.Hostname()
-	Convey("You can get a new lsf scheduler", t, func() {
+	SkipConvey("You can get a new lsf scheduler", t, func() {
 		s, err := New("lsf", "development", "bash")
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
@@ -267,7 +267,7 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			// tmpdir, err := ioutil.TempDir("", "vrpipe_schedulers_lsf_test_output_dir_")
+			// tmpdir, err := ioutil.TempDir("", "wr_schedulers_lsf_test_output_dir_")
 			// if err != nil {
 			// 	log.Fatal(err)
 			// }
@@ -280,7 +280,7 @@ func TestLSF(t *testing.T) {
 			// failing; instead we assume, since this is LSF, that our current
 			// directory is on a shared disk, and just have all the jobs write
 			// their files here directly
-			tmpdir, err := ioutil.TempDir("./", "vrpipe_schedulers_lsf_test_output_dir_")
+			tmpdir, err := ioutil.TempDir("./", "wr_schedulers_lsf_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -295,7 +295,7 @@ func TestLSF(t *testing.T) {
 
 			Convey("It eventually runs them all", func() {
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, count)
 				So(numfiles, ShouldEqual, count)
 			})
 
@@ -309,13 +309,13 @@ func TestLSF(t *testing.T) {
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldEqual, newcount)
 			})
 
 			Convey("You can Schedule() a new job and have it run while the first is still running", func() {
 				<-time.After(500 * time.Millisecond)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetweenOrEqual, 1, count)
 				So(s.Busy(), ShouldBeTrue)
 
@@ -324,13 +324,13 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, count+1)
 				So(numfiles, ShouldEqual, count+1)
 			})
 		})
 
 		Convey("Schedule() lets you schedule more jobs than could reasonably start all at once", func() {
-			tmpdir, err := ioutil.TempDir("./", "vrpipe_schedulers_lsf_test_output_dir_")
+			tmpdir, err := ioutil.TempDir("./", "wr_schedulers_lsf_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -345,7 +345,7 @@ func TestLSF(t *testing.T) {
 
 			Convey("It runs some of them and you can Schedule() again to drop the count", func() {
 				So(waitToFinish(s, 3, 1000), ShouldBeFalse)
-				numfiles := testDirForFiles(tmpdir)
+				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetween, 1, count-(maxCPU*2)-2)
 
 				newcount := numfiles + maxCPU
@@ -353,7 +353,7 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				numfiles = testDirForFiles(tmpdir)
+				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldBeBetweenOrEqual, newcount, numfiles*2) // we must allow it to run a few extra due to the implementation
 			})
 		})
@@ -363,10 +363,19 @@ func TestLSF(t *testing.T) {
 	})
 }
 
-func testDirForFiles(tmpdir string) (numfiles int) {
+func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 	files, err := ioutil.ReadDir(tmpdir)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if len(files) < expected {
+		// wait a little longer for things to sync up, by running ls
+		cmd := exec.Command("ls", tmpdir)
+		cmd.Run()
+		files, err = ioutil.ReadDir(tmpdir)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 	return len(files)
 }
