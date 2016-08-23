@@ -46,6 +46,7 @@ type Config struct {
 	ManagerScheduler string `default:"local"`
 	RunnerExecShell  string `default:"bash"`
 	Deployment       string `default:"production"`
+	DeployPidFile    string `default:"pid_deploy"`
 }
 
 /*

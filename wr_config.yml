@@ -152,3 +152,11 @@ manager_scheduler: "local"
 # Avoid the use of dash on Ubuntu, which is its default sh; bash is STRONGLY
 # recommended.
 runner_exec_shell: "bash"
+
+# deploy_pid_file: Where should 'wr cloud deploy' store its pid file?
+# This defaults to a file named "pid_deploy" in manager_dir.
+#
+# You can set this to an absolute path to ignore manager_dir; for example if
+# you have the root permissions to set things up, you may prefer to set this to
+# /var/run/wr/pid_deploy
+deploy_pid_file: "pid_deploy"

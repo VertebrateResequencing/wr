@@ -68,18 +68,7 @@ var managerStartCmd = &cobra.Command{
 (unless --foreground option is supplied).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first we need our working directory to exist
-		_, err := os.Stat(config.ManagerDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// try and create the directory
-				err = os.MkdirAll(config.ManagerDir, os.ModePerm)
-				if err != nil {
-					die("could not create the working directory '%s': %v", config.ManagerDir, err)
-				}
-			} else {
-				die("could not access or create the working directory '%s': %v", config.ManagerDir, err)
-			}
-		}
+		createWorkingDir()
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
@@ -99,34 +88,7 @@ var managerStartCmd = &cobra.Command{
 			syscall.Umask(config.ManagerUmask)
 			startJQ(true)
 		} else {
-			// when we spawn a child it will be called with our args, but we
-			// must ensure that the --deployment is correct, since the default
-			// for that depends on the dir we are in, and our child is forced to
-			// start in the root dir
-			args := os.Args
-			hadDeployment := false
-			for _, arg := range args {
-				if arg == "--deployment" {
-					hadDeployment = true
-					break
-				}
-			}
-			if !hadDeployment {
-				args = append(args, "--deployment")
-				args = append(args, config.Deployment)
-			}
-
-			context := &daemon.Context{
-				PidFileName: config.ManagerPidFile,
-				PidFilePerm: 0644,
-				WorkDir:     "/",
-				Args:        args,
-				Umask:       config.ManagerUmask,
-			}
-			child, err := context.Reborn()
-			if err != nil {
-				die("failed to daemonize: %s", err)
-			}
+			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
@@ -155,7 +117,7 @@ var managerStopCmd = &cobra.Command{
 	Long: `Immediately stop the workflow manager, saving its state.
 
 Note that any runners that are currently running will die, along with any
-commands they were running. It is more graceful to use use 'drain' instead.`,
+commands they were running. It is more graceful to use 'drain' instead.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
@@ -164,7 +126,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		var stopped bool
 		if err == nil {
-			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile)
+			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile, "manager")
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
@@ -202,7 +164,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		spid := sstats.ServerInfo.PID
 		jq.Disconnect()
 
-		stopped = stopdaemon(spid, "the manager itself")
+		stopped = stopdaemon(spid, "the manager itself", "manager")
 		if stopped {
 			info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
 		} else {
@@ -251,7 +213,6 @@ completes.`,
 }
 
 // status sub-command tells if the manger is up or down
-// stop sub-command stops the daemon by sending it a term signal
 var managerStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of the workflow manager",
@@ -302,69 +263,6 @@ func init() {
 	// flags specific to these sub-commands
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf'] job scheduler")
-}
-
-func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, "test_queue", wait)
-	if jqerr == nil {
-		return jq
-	}
-	return nil
-}
-
-func stopdaemon(pid int, source string) bool {
-	err := syscall.Kill(pid, syscall.SIGTERM)
-	if err != nil {
-		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
-		return false
-	}
-
-	// wait a while for the daemon to gracefully close down
-	giveupseconds := 15
-	giveup := time.After(time.Duration(giveupseconds) * time.Second)
-	ticker := time.NewTicker(50 * time.Millisecond)
-	stopped := make(chan bool, 1)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				err = syscall.Kill(pid, syscall.Signal(0))
-				if err == nil {
-					// pid is still running
-					continue
-				}
-				// assume the error was "no such process" *** should I do a string comparison to confirm?
-				ticker.Stop()
-				stopped <- true
-				return
-			case <-giveup:
-				ticker.Stop()
-				stopped <- false
-				return
-			}
-		}
-	}()
-	ok := <-stopped
-
-	// if it didn't stop, offer to force kill it? That's a bit dangerous...
-	// just warn for now
-	if !ok {
-		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", pid, source, giveupseconds)
-	}
-
-	return ok
-}
-
-// get a nice address to report in logs, preferring hostname, falling back
-// on the ip address if that wasn't set
-func sAddr(s *jobqueue.ServerInfo) (addr string) {
-	addr = s.Host
-	if addr == "localhost" {
-		addr = s.Addr
-	} else {
-		addr += ":" + s.Port
-	}
-	return
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
