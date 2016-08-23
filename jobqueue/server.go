@@ -362,7 +362,7 @@ func (s *Server) Block() (err error) {
 // Stop will cause a graceful shut down of the server.
 func (s *Server) Stop() (err error) {
 	if s.up {
-		s.stop <- true
+		s.stop <- true // results in shutdown()
 		if !s.blocking {
 			err = <-s.done
 			s.db.close()
@@ -903,6 +903,8 @@ func (s *Server) shutdown() {
 	s.db.close()
 
 	//*** we want to persist production queues to disk
+	//*** want to do db backup; in cloud mode we want to copy backup to local
+	// deploy client that spawned us, and also to s3
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this

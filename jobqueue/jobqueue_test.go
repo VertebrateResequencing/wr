@@ -1261,6 +1261,37 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 0)
 			})
+
+			Convey("You can reserve & execute the job, shut down the server and then can't add new jobs and the started job did not complete", func() {
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.Cmd, ShouldEqual, job1Cmd)
+				go jq.Execute(job, config.RunnerExecShell)
+				So(job.Exited, ShouldBeFalse)
+
+				ok := jq.ShutdownServer()
+				So(ok, ShouldBeTrue)
+
+				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+				inserts, already, err = jq.Add(jobs)
+				So(err, ShouldNotBeNil)
+
+				<-time.After(2 * time.Second)
+
+				up := jq.Ping(10 * time.Millisecond)
+				So(up, ShouldBeFalse)
+
+				wipeDevDBOnInit = false
+				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				wipeDevDBOnInit = true
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				job, err = jq.GetByCmd(job1Cmd, "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job.Exited, ShouldBeFalse)
+			})
 		})
 
 		Reset(func() {
@@ -1309,10 +1340,10 @@ func TestJobqueue(t *testing.T) {
 			Convey("After some time the jobs get automatically run", func() {
 				// we need some time for 'go test' to live-compile and run
 				// ourselves in runnermode *** not sure if it's legit for this
-				// to take ~45 seconds though!
+				// to take over 2mins though!
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(120 * time.Second)
+					limit := time.After(240 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {

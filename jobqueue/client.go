@@ -245,6 +245,18 @@ func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	return
 }
 
+// ShutdownServer tells the server to immediately cease all operations. Its last
+// act will be to backup its internal database. Any existing runners will fail.
+// Because the server gets shut down it can't respond with success/failure, so
+// we indirectly report if the server was shut down successfully.
+func (c *Client) ShutdownServer() bool {
+	_, err := c.request(&clientRequest{Method: "shutdown"})
+	if err != nil && err.Error() == "receive time out" {
+		return true
+	}
+	return false
+}
+
 // Stats returns stats of the jobqueue server queue you connected to.
 // func (c *Conn) Stats() (s TubeStats, err error) {
 // 	data, err := c.beanstalk.StatsTube(c.tube)

@@ -58,6 +58,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		} else {
 			sr = &serverResponse{SStats: s.GetServerStats()}
 		}
+	case "shutdown":
+		err := s.Stop()
+		if err != nil {
+			srerr = ErrInternalError
+			qerr = err.Error()
+		}
 	case "add":
 		// add jobs to the queue, and along side keep the environment variables
 		// they're supposed to execute under.
