@@ -28,7 +28,7 @@ import (
 )
 
 // options for this cmd
-var cloudType string
+var provider string
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -165,8 +165,8 @@ func init() {
 	cloudCmd.AddCommand(cloudTearDownCmd)
 
 	// flags specific to these sub-commands
-	cloudDeployCmd.Flags().StringVarP(&cloudType, "type", "t", "openstack", "['openstack'] cloud provider")
-	cloudTearDownCmd.Flags().StringVarP(&cloudType, "type", "t", "openstack", "['openstack'] cloud provider")
+	cloudDeployCmd.Flags().StringVarP(&provider, "provider", "p", "openstack", "['openstack'] cloud provider")
+	cloudTearDownCmd.Flags().StringVarP(&provider, "provider", "p", "openstack", "['openstack'] cloud provider")
 }
 
 func startProxy() {
