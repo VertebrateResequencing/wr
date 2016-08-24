@@ -48,14 +48,14 @@ const (
 	infiniteQueueTime     time.Duration = 0
 )
 
-// Err* constants are found in the our returned Errors under err.Err, so you
-// can cast and check if it's a certain type of error.
+// Err* constants are found in the returned Errors under err.Err, so you can
+// cast and check if it's a certain type of error.
 var (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
 )
 
-// Error records an error and the operation, item and queue that caused it.
+// Error records an error and the operation and scheduler that caused it.
 type Error struct {
 	Scheduler string // the scheduler's Name
 	Op        string // name of the method
