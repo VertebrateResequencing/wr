@@ -105,31 +105,31 @@ func (p *openstackp) initialize() (err error) {
 
 // deploy achieves the aims of Deploy()
 func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err error) {
-	// the resource name prefix can only contain letters, numbers, underscores,
+	// the resource name can only contain letters, numbers, underscores,
 	// spaces and hyphens
-	if !openstackValidResourceNameRegexp.MatchString(resources.NamePrefix) {
+	if !openstackValidResourceNameRegexp.MatchString(resources.ResourceName) {
 		err = Error{"openstack", "deploy", ErrBadResourceName}
 		return
 	}
 
 	// get/create key pair
-	kp, err := keypairs.Get(p.computeClient, resources.NamePrefix).Extract()
+	kp, err := keypairs.Get(p.computeClient, resources.ResourceName).Extract()
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrDefault404); notfound {
 			// create a new keypair; if we don't supply our own public key, it
 			// makes a private key for us
-			kp, err = keypairs.Create(p.computeClient, keypairs.CreateOpts{Name: resources.NamePrefix}).Extract()
+			kp, err = keypairs.Create(p.computeClient, keypairs.CreateOpts{Name: resources.ResourceName}).Extract()
 			if err != nil {
 				return
 			}
 
 			resources.PrivateKey = kp.PrivateKey
 
-			// err = ioutil.WriteFile("./"+resources.NamePrefix+".pem", []byte(kp.PrivateKey), 0600) // this is the file needed to ssh in manually, using ssh -i wr-deployment.pem ubuntu@xxx.xx.xx.xxx *** we need a way of programatically finding or setting the name of the login user...
+			// err = ioutil.WriteFile("./"+resources.ResourceName+".pem", []byte(kp.PrivateKey), 0600) // this is the file needed to ssh in manually, using ssh -i wr-deployment.pem ubuntu@xxx.xx.xx.xxx *** we need a way of programatically finding or setting the name of the login user...
 			// if err != nil {
 			//     return
 			// }
-			// err = ioutil.WriteFile("./"+resources.NamePrefix+".key", []byte(kp.PublicKey), 0600)
+			// err = ioutil.WriteFile("./"+resources.ResourceName+".key", []byte(kp.PublicKey), 0600)
 			// if err != nil {
 			//     return
 			// }
@@ -150,7 +150,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 		}
 
 		for _, g := range groupList {
-			if g.Name == resources.NamePrefix {
+			if g.Name == resources.ResourceName {
 				group = &g
 				foundGroup = true
 				return false, nil
@@ -164,7 +164,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	}
 	if !foundGroup {
 		// create a new security group with rules allowing the desired ports
-		group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.NamePrefix, Description: "access amongst wr-spawned nodes"}).Extract()
+		group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.ResourceName, Description: "access amongst wr-spawned nodes"}).Extract()
 		if err != nil {
 			return
 		}
@@ -188,11 +188,11 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 
 	// get/create network
 	var network *networks.Network
-	networkID, err := networks.IDFromName(p.networkClient, resources.NamePrefix)
+	networkID, err := networks.IDFromName(p.networkClient, resources.ResourceName)
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrResourceNotFound); notfound {
 			// create a network for ourselves
-			network, err = networks.Create(p.networkClient, networks.CreateOpts{Name: resources.NamePrefix, AdminStateUp: gophercloud.Enabled}).Extract()
+			network, err = networks.Create(p.networkClient, networks.CreateOpts{Name: resources.ResourceName, AdminStateUp: gophercloud.Enabled}).Extract()
 			if err != nil {
 				return
 			}
@@ -223,7 +223,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 			CIDR:      "192.168.0.0/16",
 			GatewayIP: gip,
 			IPVersion: 4,
-			Name:      resources.NamePrefix,
+			Name:      resources.ResourceName,
 		}).Extract()
 		if err != nil {
 			return
@@ -234,7 +234,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 
 	// get/create router
 	var routerID string
-	pager = routers.List(p.networkClient, routers.ListOpts{Name: resources.NamePrefix})
+	pager = routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		routerList, err := routers.ExtractRouters(page)
 		if err != nil {
@@ -250,7 +250,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	if routerID == "" {
 		var router *routers.Router
 		router, err = routers.Create(p.networkClient, routers.CreateOpts{
-			Name:         resources.NamePrefix,
+			Name:         resources.ResourceName,
 			GatewayInfo:  &routers.GatewayInfo{NetworkID: p.externalNetworkId},
 			AdminStateUp: gophercloud.Enabled,
 		}).Extract()
@@ -345,15 +345,15 @@ func (p *openstackp) spawn(resources *Resources, os string, minRAM int, minDisk 
 	// create the server with a unique name
 	server, err := servers.Create(p.computeClient, keypairs.CreateOptsExt{
 		servers.CreateOpts{
-			Name:           uniqueResourceName(resources.NamePrefix),
+			Name:           uniqueResourceName(resources.ResourceName),
 			FlavorRef:      flavorID,
 			ImageRef:       imageID,
-			SecurityGroups: []string{resources.NamePrefix},
+			SecurityGroups: []string{resources.ResourceName},
 			Networks:       []servers.Network{servers.Network{UUID: resources.Details["network"]}},
 			// UserData []byte (will be base64-encoded for me)
 			// Metadata map[string]string
 		},
-		resources.NamePrefix, // keypair name
+		resources.ResourceName, // keypair name
 	}).Extract()
 	if err != nil {
 		return
@@ -395,7 +395,7 @@ func (p *openstackp) spawn(resources *Resources, os string, minRAM int, minDisk 
 	} else {
 		// find its auto-assigned internal ip *** there must be a better way of
 		// doing this...
-		allNetworkAddressPages, serr := servers.ListAddressesByNetwork(p.computeClient, serverID, resources.NamePrefix).AllPages()
+		allNetworkAddressPages, serr := servers.ListAddressesByNetwork(p.computeClient, serverID, resources.ResourceName).AllPages()
 		if serr != nil {
 			p.destroyServer(serverID)
 			err = serr
@@ -418,6 +418,19 @@ func (p *openstackp) spawn(resources *Resources, os string, minRAM int, minDisk 
 	return
 }
 
+// checkServer achieves the aims of CheckServer()
+func (p *openstackp) checkServer(serverID string) (bool, error) {
+	server, err := servers.Get(p.computeClient, serverID).Extract()
+	if err != nil {
+		if err.Error() == "Resource not found" {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return server.Status == "ACTIVE", nil
+}
+
 // destroyServer achieves the aims of DestroyServer()
 func (p *openstackp) destroyServer(serverID string) (err error) {
 	err = servers.Delete(p.computeClient, serverID).ExtractErr()
@@ -428,7 +441,7 @@ func (p *openstackp) destroyServer(serverID string) (err error) {
 	// wait for it to really be deleted, or we won't be able to
 	// delete the router and network later; the following returns
 	// an error of "Resource not found" as soon as the server
-	// is not there anymore; we don't care about other others
+	// is not there anymore; we don't care about any others
 	servers.WaitForStatus(p.computeClient, serverID, "xxxx", 60)
 	return
 }
@@ -447,7 +460,7 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 		}
 
 		for _, server := range serverList {
-			if strings.HasPrefix(server.Name, resources.NamePrefix) {
+			if strings.HasPrefix(server.Name, resources.ResourceName) {
 				p.destroyServer(server.ID) // ignore errors, just try to delete others
 			}
 		}

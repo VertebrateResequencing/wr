@@ -21,7 +21,10 @@ Package cloud provides functions to interact with cloud providers such as
 OpenStack and AWS (not yet implemented).
 
 You use it to create cloud resources so that you can spawn servers, then
-remove those resources when you're done.
+delete those resources when you're done.
+
+Please note that the methods in this package are NOT safe to be used by more
+than 1 process at a time.
 
 It's a pseudo plug-in system in that it is designed so that you can easily add a
 go file that implements the methods of the provideri interface, to support a
@@ -33,6 +36,7 @@ must add a case for it to New() and rebuild.
 package cloud
 
 import (
+	"encoding/gob"
 	"github.com/satori/go.uuid"
 	"os"
 	"strings"
@@ -63,9 +67,10 @@ func (e Error) Error() string {
 // those resources when they're no longer needed. There are also fields for
 // important things the user needs to know.
 type Resources struct {
-	NamePrefix string            // the resource name prefix that resources were created with
-	Details    map[string]string // whatever key values the provider needs to describe what it created
-	PrivateKey string            // PEM format string of the key user would need to ssh in to any created servers
+	ResourceName string            // the resource name prefix that resources were created with
+	Details      map[string]string // whatever key values the provider needs to describe what it created
+	PrivateKey   string            // PEM format string of the key user would need to ssh in to any created servers
+	Servers      map[string]string // the serverID => ip mapping of any servers Spawn()ed with an external ip
 }
 
 // this interface must be satisfied to add support for a particular cloud
@@ -75,6 +80,7 @@ type provideri interface {
 	initialize() error                                                                                                                                            // do any initial config set up such as authentication
 	deploy(resources *Resources, requiredPorts []int) error                                                                                                       // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
 	spawn(resources *Resources, os string, minRAM int, minDisk int, minCPUs int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
+	checkServer(serverID string) (working bool, err error)                                                                                                        // achieve the aims of CheckServer()
 	destroyServer(serverID string) error                                                                                                                          // achieve the aims of DestroyServer()
 	tearDown(resources *Resources) error                                                                                                                          // achieve the aims of TearDown()
 }
@@ -84,13 +90,18 @@ type provideri interface {
 type Provider struct {
 	impl      provideri
 	Name      string
+	savePath  string
 	resources *Resources
 }
 
 // New creates a new Provider to interact with the given cloud provider.
 // Possible names so far are "openstack" ("aws" is planned). You must provide a
-// resource name prefix that will be used to name any created cloud resources.
-func New(name string, resourceNamePrefix string) (p *Provider, err error) {
+// resource name that will be used to name any created cloud resources. You must
+// also provide a file path prefix to save details of created resources to (the
+// actual file created will be suffixed with your resourceName). Note that the
+// file could contain created private key details, so should be kept accessible
+// only by you.
+func New(name string, resourceName string, savePath string) (p *Provider, err error) {
 	switch name {
 	case "openstack":
 		p = &Provider{impl: new(openstackp)}
@@ -102,7 +113,14 @@ func New(name string, resourceNamePrefix string) (p *Provider, err error) {
 		err = Error{name, "New", ErrBadProvider}
 	} else {
 		p.Name = name
-		p.resources = &Resources{NamePrefix: resourceNamePrefix, Details: make(map[string]string)}
+		p.savePath = savePath + "." + resourceName
+
+		// load any resources we previously saved, or get an empty set to work
+		// with
+		p.resources, err = p.loadResources()
+		if err != nil {
+			return
+		}
 
 		var missingEnv []string
 		for _, envKey := range p.impl.requiredEnv() {
@@ -123,21 +141,28 @@ func New(name string, resourceNamePrefix string) (p *Provider, err error) {
 // Deploy triggers the creation of required cloud resources such as networks,
 // ssh keys, security profiles and so on, such that you can subsequently Spawn()
 // and ssh to your created server successfully.  If a resource we need already
-// exists with the resourceNamePrefix you supplied to New(), we assume it
-// belongs to us and we don't create another (but report it as created in the
-// return value). You must provide a slice of port numbers that your application
-// needs to be able to communicate to any servers you spawn (eg. [22] for ssh)
-// through. Returns Resources that record what was created, that you should
-// store for later supplying to TearDown(). NB: Every time you run this with the
-// same resourceNamePrefix until you run TearDown(), the returned resources will
-// have the same content (assuming you didn't delete resources manually), except
-// that resources.PrivateKey will only be set the first time you deploy - be
-// sure to save that separately!
-func (p *Provider) Deploy(requiredPorts []int) (resources *Resources, err error) {
-	resources = p.resources
-	err = p.impl.deploy(resources, requiredPorts)
-	// (we return resources even though it's an attribute of p so that user can
-	// serialise it to disk for later input to TearDown)
+// exists with the resourceName you supplied to New(), we assume it belongs to
+// us and we don't create another (so it is safe to call Deploy multiple times
+// with the same args to New() and Deploy(): you don't need to check if you have
+// already deployed). You must provide a slice of port numbers that your
+// application needs to be able to communicate to any servers you spawn (eg.
+// [22] for ssh) through. Saves the resources it created to disk, which are what
+// TearDown() will delete when you call it. (They are saved to disk so that
+// TearDown() can work if you call it in a different session to when you
+// Deploy()ed, and so that PrivateKey() can work if you call it in a different
+// session to the Deploy() call that actually created the ssh key.)
+func (p *Provider) Deploy(requiredPorts []int) (err error) {
+	// impl.deploy should overwrite any existing values in p.resources with
+	// updated values, but should leave other things - such as an existing
+	// PrivateKey when we have not just made a new one - alone
+	err = p.impl.deploy(p.resources, requiredPorts)
+	if err != nil {
+		return
+	}
+
+	// save updated resources to disk
+	err = p.saveResources()
+
 	return
 }
 
@@ -150,22 +175,102 @@ func (p *Provider) Deploy(requiredPorts []int) (resources *Resources, err error)
 // in case you need to sudo on the server. You will need to know the username
 // that you can log in with on your chosen OS image.
 func (p *Provider) Spawn(os string, minRAM int, minDisk int, minCPUs int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
-	return p.impl.spawn(p.resources, os, minRAM, minDisk, minCPUs, externalIP)
+	serverID, serverIP, adminPass, err = p.impl.spawn(p.resources, os, minRAM, minDisk, minCPUs, externalIP)
+
+	if err == nil && externalIP {
+		// update resources and save to disk
+		p.resources.Servers[serverID] = serverIP
+		err = p.saveResources()
+	}
+
+	return
+}
+
+// CheckServer asks the provider if the status of the given server (id retrieved
+// from Spawn() or Servers()) indicates it is working fine. (If it's not and
+// was previously thought to be a spawned server with an external IP, then it
+// will be removed from the results of Servers().)
+func (p *Provider) CheckServer(serverID string) (working bool, err error) {
+	working, err = p.impl.checkServer(serverID)
+
+	if err == nil && !working {
+		// update resources and save to disk
+		if _, present := p.resources.Servers[serverID]; present {
+			delete(p.resources.Servers, serverID)
+			err = p.saveResources()
+		}
+	}
+
+	return
 }
 
 // DestroyServer destroys a server given its id, that you would have gotten from
 // Spawn().
-func (p *Provider) DestroyServer(serverID string) error {
-	return p.impl.destroyServer(serverID)
+func (p *Provider) DestroyServer(serverID string) (err error) {
+	err = p.impl.destroyServer(serverID)
+	if err == nil {
+		// update resources and save to disk
+		delete(p.resources.Servers, serverID)
+		err = p.saveResources()
+	}
+	return
 }
 
-// TearDown deletes all resources recorded in the supplied Resources variable
-// that you stored after calling Deploy(). It also deletes any servers with
-// names that have the resourceNamePrefix given to the initial New() call.
-func (p *Provider) TearDown(resources *Resources) error {
-	// (we don't use p.resources to allow for using this in a different session
-	// to when Deploy() was called)
-	return p.impl.tearDown(resources)
+// Servers returns a mapping of serverID => serverIP for all servers that were
+// Spawn()ed with an externalIP (including those spawned in past sessions where
+// the same arguments to New() were used). You should use CheckServer() before
+// trying to use one of these servers. Do not alter the return value!
+func (p *Provider) Servers() map[string]string {
+	return p.resources.Servers
+}
+
+// TearDown deletes all resources recorded during Deploy() or loaded from a
+// previous session during New(). It also deletes any servers with names
+// prefixed with the resourceName given to the initial New() call.
+func (p *Provider) TearDown() (err error) {
+	err = p.impl.tearDown(p.resources)
+	if err != nil {
+		return
+	}
+
+	// delete our savePath
+	err = p.deleteResourceFile()
+	return
+}
+
+// saveResources saves our resources to our savePath, overwriting any existing
+// content. This is not thread safe!
+func (p *Provider) saveResources() (err error) {
+	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err == nil {
+		defer file.Close()
+		encoder := gob.NewEncoder(file)
+		encoder.Encode(p.resources)
+	}
+	return
+}
+
+// loadResources loads our resources from our savePath, or returns an empty
+// set of resources if savePath doesn't exist.
+func (p *Provider) loadResources() (resources *Resources, err error) {
+	resources = &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]string)}
+	if _, serr := os.Stat(p.savePath); os.IsNotExist(serr) {
+		return
+	}
+
+	file, err := os.Open(p.savePath)
+	if err == nil {
+		defer file.Close()
+		decoder := gob.NewDecoder(file)
+		err = decoder.Decode(resources)
+	}
+	return
+}
+
+// deleteResourceFile deletes our savePath.
+func (p *Provider) deleteResourceFile() (err error) {
+	err = os.Remove(p.savePath)
+	return
 }
 
 // uniqueResourceName takes the given prefix and appends a unique string to it

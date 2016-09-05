@@ -20,11 +20,15 @@ package cloud
 
 import (
 	. "github.com/smartystreets/goconvey/convey"
+	"io/ioutil"
+	"log"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
 const resourceName = "wr_testing"
+const crfile = "cloud.resources"
 
 func TestOpenStack(t *testing.T) {
 	osPrefix := os.Getenv("OS_OS_PREFIX")
@@ -32,49 +36,75 @@ func TestOpenStack(t *testing.T) {
 	if osPrefix == "" {
 		SkipConvey("Without our special OS_OS_PREFIX environment variable, we'll skip openstack tests", t, func() {})
 	} else {
+		crdir, err := ioutil.TempDir("", "wr_testing_cr")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(crdir)
+		crfileprefix := filepath.Join(crdir, "resources")
+
 		Convey("You can get a new OpenStack Provider", t, func() {
-			p, err := New("openstack", resourceName)
+			p, err := New("openstack", resourceName, crfileprefix)
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 
 			Convey("You can deploy to OpenStack", func() {
-				resources, err := p.Deploy([]int{22})
+				err := p.Deploy([]int{22})
 				So(err, ShouldBeNil)
-				So(resources, ShouldNotBeNil)
-				So(resources.NamePrefix, ShouldEqual, resourceName)
-				So(resources.PrivateKey, ShouldNotEqual, "")
+				So(p.resources, ShouldNotBeNil)
+				So(p.resources.ResourceName, ShouldEqual, resourceName)
+				So(p.resources.PrivateKey, ShouldNotBeBlank)
 
-				So(resources.Details["keypair"], ShouldEqual, resourceName)
-				So(resources.Details["secgroup"], ShouldNotEqual, "")
-				So(resources.Details["network"], ShouldNotEqual, "")
-				So(resources.Details["subnet"], ShouldNotEqual, "")
-				So(resources.Details["router"], ShouldNotEqual, "")
+				So(p.resources.Details["keypair"], ShouldEqual, resourceName)
+				So(p.resources.Details["secgroup"], ShouldNotBeBlank)
+				So(p.resources.Details["network"], ShouldNotBeBlank)
+				So(p.resources.Details["subnet"], ShouldNotBeBlank)
+				So(p.resources.Details["router"], ShouldNotBeBlank)
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
 					serverID, serverIP, adminPass, err := p.Spawn(osPrefix, 2048, 20, 1, true)
 					So(err, ShouldBeNil)
-					So(serverID, ShouldNotEqual, "")
-					So(adminPass, ShouldNotEqual, "")
+					So(serverID, ShouldNotBeBlank)
+					So(adminPass, ShouldNotBeBlank)
+					So(serverIP, ShouldNotBeBlank)
 					So(serverIP, ShouldNotStartWith, "192")
+					So(p.resources.Servers[serverID], ShouldNotBeNil)
+					So(p.resources.Servers[serverID], ShouldEqual, serverIP)
+
+					ok, err := p.CheckServer(serverID)
+					So(err, ShouldBeNil)
+					So(ok, ShouldBeTrue)
 
 					Convey("And you can Spawn another with an internal ip", func() {
 						serverID2, serverIP2, adminPass2, err := p.Spawn(osPrefix, 2048, 20, 1, false)
 						So(err, ShouldBeNil)
-						So(serverID2, ShouldNotEqual, "")
-						So(adminPass2, ShouldNotEqual, "")
+						So(serverID2, ShouldNotBeBlank)
+						So(adminPass2, ShouldNotBeBlank)
 						So(serverID2, ShouldNotEqual, serverID)
 						So(adminPass2, ShouldNotEqual, adminPass)
 						So(serverIP2, ShouldStartWith, "192")
+						So(p.resources.Servers[serverID2], ShouldBeBlank)
+
+						ok, err := p.CheckServer(serverID2)
+						So(err, ShouldBeNil)
+						So(ok, ShouldBeTrue)
+
+						servers := p.Servers()
+						So(servers, ShouldResemble, map[string]string{serverID: serverIP})
 
 						Convey("Then you can destroy it", func() {
-							err = p.DestroyServer(serverID)
+							err = p.DestroyServer(serverID2)
 							So(err, ShouldBeNil)
+
+							ok, err = p.CheckServer(serverID2)
+							So(err, ShouldBeNil)
+							So(ok, ShouldBeFalse)
 						})
 					})
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {
-					err = p.TearDown(resources)
+					err = p.TearDown()
 					So(err, ShouldBeNil)
 
 					// *** should really use openstack API to confirm everything is
@@ -82,7 +112,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Reset(func() {
-					p.TearDown(resources)
+					p.TearDown()
 				})
 			})
 
