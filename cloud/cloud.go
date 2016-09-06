@@ -117,7 +117,7 @@ func New(name string, resourceName string, savePath string) (p *Provider, err er
 
 		// load any resources we previously saved, or get an empty set to work
 		// with
-		p.resources, err = p.loadResources()
+		p.resources, err = p.loadResources(resourceName)
 		if err != nil {
 			return
 		}
@@ -224,6 +224,12 @@ func (p *Provider) Servers() map[string]string {
 	return p.resources.Servers
 }
 
+// PrivateKey returns a PEM format string of the private key that was created
+// by Deploy() (on its first invocation with the same arguments to New()).
+func (p *Provider) PrivateKey() string {
+	return p.resources.PrivateKey
+}
+
 // TearDown deletes all resources recorded during Deploy() or loaded from a
 // previous session during New(). It also deletes any servers with names
 // prefixed with the resourceName given to the initial New() call.
@@ -252,7 +258,7 @@ func (p *Provider) saveResources() (err error) {
 
 // loadResources loads our resources from our savePath, or returns an empty
 // set of resources if savePath doesn't exist.
-func (p *Provider) loadResources() (resources *Resources, err error) {
+func (p *Provider) loadResources(resourceName string) (resources *Resources, err error) {
 	resources = &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]string)}
 	if _, serr := os.Stat(p.savePath); os.IsNotExist(serr) {
 		return

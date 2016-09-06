@@ -54,6 +54,7 @@ func TestOpenStack(t *testing.T) {
 				So(p.resources, ShouldNotBeNil)
 				So(p.resources.ResourceName, ShouldEqual, resourceName)
 				So(p.resources.PrivateKey, ShouldNotBeBlank)
+				So(p.PrivateKey(), ShouldEqual, p.resources.PrivateKey)
 
 				So(p.resources.Details["keypair"], ShouldEqual, resourceName)
 				So(p.resources.Details["secgroup"], ShouldNotBeBlank)
