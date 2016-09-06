@@ -148,6 +148,9 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 		//*** we need to support this being on a different machine, possibly on an S3-style object store
 		config.ManagerDbBkFile = filepath.Join(config.ManagerDir, config.ManagerDbBkFile)
 	}
+	if !filepath.IsAbs(config.DeployPidFile) {
+		config.DeployPidFile = filepath.Join(config.ManagerDir, config.DeployPidFile)
+	}
 
 	// if not explicitly set, calculate ports that no one else would be
 	// assigned by us (and hope no other software is using it...)
