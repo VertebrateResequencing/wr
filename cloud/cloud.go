@@ -51,6 +51,10 @@ var (
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
 )
 
+// dnsNameServers holds some public (google) dns name server addresses for use
+// when creating cloud subnets that need internet access.
+var dnsNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
+
 // Error records an error and the operation and provider caused it.
 type Error struct {
 	Provider string // the provider's Name

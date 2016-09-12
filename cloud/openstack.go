@@ -183,6 +183,18 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 				return
 			}
 		}
+
+		// ICMP may help networking work as expected
+		_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
+			ParentGroupID: group.ID,
+			FromPort:      0,
+			ToPort:        0, // *** results in a port of '0', which is not the same as "ALL ICMP" which then says "Any" in the web interface
+			IPProtocol:    "ICMP",
+			CIDR:          "0.0.0.0/0",
+		}).Extract()
+		if err != nil {
+			return
+		}
 	}
 	resources.Details["secgroup"] = group.ID
 
@@ -219,11 +231,12 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 		*gip = "192.168.0.1"
 		var subnet *subnets.Subnet
 		subnet, err = subnets.Create(p.networkClient, subnets.CreateOpts{
-			NetworkID: networkID,
-			CIDR:      "192.168.0.0/16",
-			GatewayIP: gip,
-			IPVersion: 4,
-			Name:      resources.ResourceName,
+			NetworkID:      networkID,
+			CIDR:           "192.168.0.0/16",
+			GatewayIP:      gip,
+			DNSNameservers: dnsNameServers[:], // this is critical, or servers on new networks can't be ssh'd to for many minutes
+			IPVersion:      4,
+			Name:           resources.ResourceName,
 		}).Extract()
 		if err != nil {
 			return
