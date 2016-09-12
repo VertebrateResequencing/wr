@@ -134,8 +134,8 @@ manager_db_bk_file: "db_bk"
 # Note, this is a number (no quotes).
 #
 # Here are examples of alternative umasks:
-# 022 = world readable, user read+writable
-# 002 = world readable, user+group read+writable
+# 022 = world readable, user read+writeable
+# 002 = world readable, user+group read+writeable
 manager_umask: 007
 
 # manager_scheduler: What job scheduler should be used to run 'wr runner'?
