@@ -19,16 +19,16 @@
 # wr, in which case it is development).
 #
 # If a setting is found in none of the files read, then an environment variable
-# is checked: WR_<setting name in caps>. Eg. to define the manager_scheduler
+# is checked: WR_<setting name in caps>. Eg. to define the managerscheduler
 # option you might do:
-# export WR_MANAGER_SCHEDULER="lsf"
+# export WR_MANAGERSCHEDULER="lsf"
 #
 # Note that all worker nodes need to be able to see your desired set of config
 # files, so either define them in environment variables or put the config files
 # on a disc that is mounted and shared across all your compute nodes.
 
 
-# manager_port: What port should the wr manager listen on?
+# managerport: What port should the wr manager listen on?
 # This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 0 if
 # production or + 2 if development. Note, this is a string (quoted). The
 # calculated default should hopefully give you port numbers that no other
@@ -52,18 +52,18 @@
 # For multi-machine systems it is required that all hosts that could end up
 # running a wr command be able to do tcp communication with the host you
 # launch the manager on.
-#manager_port: "11301"
+#managerport: "11301"
 
-# manager_web: What port should the wr manager serve its web interface on?
+# managerweb: What port should the wr manager serve its web interface on?
 # This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 1 if
 # production or + 3 if development. Note, this is a string (quoted). The
 # calculated default should hopefully give you port numbers that no other
 # software or other user of wr on your machine is using.
 # NB: This must be different to the manager_port, and to anyone else's port
 # choice on the same machine.
-#manager_web: "11302"
+#managerweb: "11302"
 
-# manager_host: What host was 'wr manager' started on?
+# managerhost: What host was 'wr manager' started on?
 # This is optional and defaults to "localhost".
 #
 # This option determines where wr commands (other than the manager command)
@@ -71,9 +71,9 @@
 # on running wr commands yourself on a host that is different to the one you
 # you plan to start the wr manager on.
 # For more details, see the notes for the manager_port option above.
-manager_host: "localhost"
+managerhost: "localhost"
 
-# manager_dir: Where should the wr manager store its working files?
+# managerdir: Where should the wr manager store its working files?
 # This defaults to a directory prefixed with .wr in your home directory.
 #
 # The final directory name will be suffixed with "_[deployment]", eg. by default
@@ -85,28 +85,28 @@ manager_host: "localhost"
 #
 # The files stored in here are, by default, the manager's pid file, log file and
 # database related files.
-manager_dir: "~/.wr"
+managerdir: "~/.wr"
 
-# manager_pid_file: Where should wr manager store its pid file?
-# This defaults to a file named "pid" in manager_dir.
+# managerpidfile: Where should wr manager store its pid file?
+# This defaults to a file named "pid" in managerdir.
 #
-# You can set this to an absolute path to ignore manager_dir; for example if
+# You can set this to an absolute path to ignore managerdir; for example if
 # you have the root permissions to set things up, you may prefer to set this to
 # /var/run/wr/pid
-manager_pid_file: "pid"
+managerpidfile: "pid"
 
-# manager_log_file: Where should wr manager store its log file?
-# This defaults to a file named "log" in manager_dir.
+# managerlogfile: Where should wr manager store its log file?
+# This defaults to a file named "log" in managerdir.
 #
-# You can set this to an absolute path to ignore manager_dir; for example if
+# You can set this to an absolute path to ignore managerdir; for example if
 # you have the root permissions to set things up, you may prefer to set this to
 # /var/log/wr/pid
-manager_log_file: "log"
+managerlogfile: "log"
 
-# manager_db_file: Where should wr manager store its database file?
-# This defaults to a file named "db" in manager_dir.
+# managerdbfile: Where should wr manager store its database file?
+# This defaults to a file named "db" in managerdir.
 #
-# You can set this to an absolute path to ignore manager_dir. Note that you may
+# You can set this to an absolute path to ignore managerdir. Note that you may
 # need quite a lot of disk space for this, especially after you've run millions
 # of jobs, since a permanent record of everything you've done is held in this
 # file.
@@ -114,12 +114,12 @@ manager_log_file: "log"
 # WARNING: the database file will eventually contain your environment variables,
 # so you should secure this file and not make it public if you have passwords
 # set as the values of environment variables.
-manager_db_file: "db"
+managerdbfile: "db"
 
-# manager_db_bk_file: Where should wr manager back up its database file?
-# This defaults to a file named "db_bk" in manager_dir.
+# managerdbbkfile: Where should wr manager back up its database file?
+# This defaults to a file named "db_bk" in managerdir.
 #
-# You can set this to an absolute path to ignore manager_dir (and ideally you
+# You can set this to an absolute path to ignore managerdir (and ideally you
 # should set this to a path on a different disk or better yet a different
 # machine).
 #
@@ -127,36 +127,36 @@ manager_db_file: "db"
 # new backup starts it is written to a temp file in the directory you specify
 # before replacing the file at the path you specified, so peaking to 2x disk
 # usage.
-manager_db_bk_file: "db_bk"
+managerdbbkfile: "db_bk"
 
-# manager_umask: What umask should be used when wr manager creates files?
+# managerumask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).
 #
 # Here are examples of alternative umasks:
 # 022 = world readable, user read+writeable
 # 002 = world readable, user+group read+writeable
-manager_umask: 007
+managerumask: 007
 
-# manager_scheduler: What job scheduler should be used to run 'wr runner'?
+# managerscheduler: What job scheduler should be used to run 'wr runner'?
 # This defaults to "local" and is overridden by the --scheduler option to
 # 'wr manager start'.
 #
 # "local" means run everything on the local machine.
 # "lsf" means submit to LSF using 'bsub'.
-manager_scheduler: "local"
+managerscheduler: "local"
 
-# runner_exec_shell: What shell should be used to run commands in?
+# runnerexecshell: What shell should be used to run commands in?
 # This defaults to bash, regardless of your current shell.
 #
 # Avoid the use of dash on Ubuntu, which is its default sh; bash is STRONGLY
 # recommended.
-runner_exec_shell: "bash"
+runnerexecshell: "bash"
 
-# deploy_pid_file: Where should 'wr cloud deploy' store its pid file?
-# This defaults to a file named "pid_deploy" in manager_dir.
+# deploypidfile: Where should 'wr cloud deploy' store its pid file?
+# This defaults to a file named "pid_deploy" in managerdir.
 #
-# You can set this to an absolute path to ignore manager_dir; for example if
+# You can set this to an absolute path to ignore managerdir; for example if
 # you have the root permissions to set things up, you may prefer to set this to
 # /var/run/wr/pid_deploy
-deploy_pid_file: "pid_deploy"
+deploypidfile: "pid_deploy"
