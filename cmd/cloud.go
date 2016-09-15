@@ -25,17 +25,13 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/kardianos/osext"
 	"github.com/pkg/sftp"
-	"github.com/scottkiss/gosshtool"
-	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"io"
 	"io/ioutil"
-	"net"
 	"os"
-	"os/signal"
+	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -53,6 +49,7 @@ const wrConfigFileName = ".wr_config.yml"
 var providerName string
 var osPrefix string
 var osUsername string
+var forceTearDown bool
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -82,11 +79,6 @@ Deploy then daemonizes in to the background to run a proxy server that lets you
 use the normal wr command line utilities such as 'wr add' and view the wr
 website locally, even though the manager is actually running remotely.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		f, _ := os.Create(fmt.Sprintf("/nfs/users/nfs_s/sb10/src/go/src/github.com/VertebrateResequencing/wr/stderr.%d", os.Getpid()))
-		syscall.Dup2(int(f.Fd()), int(os.Stderr.Fd()))
-
-		warn("WR_CLOUD_DEPLOY_SERVERIP is %s", os.Getenv("WR_CLOUD_DEPLOY_SERVERIP"))
-
 		if providerName == "" {
 			die("--provider is required")
 		}
@@ -102,7 +94,7 @@ website locally, even though the manager is actually running remotely.`,
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file); we can't proxy if a manager is already up
-		jq := connect(10 * time.Millisecond)
+		jq := connect(1 * time.Second)
 		if jq != nil {
 			sstats, err := jq.ServerStats()
 			var pid int
@@ -120,12 +112,7 @@ website locally, even though the manager is actually running remotely.`,
 			die("could not get the path to wr: %s", err)
 		}
 
-		// set up cloud resources, start a server, run wr on it; we do this
-		// now, before "forking" our port forwarding child, because we want
-		// info and error lines printed to STDOUT/ERR as we go; on the other
-		// hand, the child can't repeat this so we have the ENV VAR check to
-		// skip
-		serverIP := os.Getenv("WR_CLOUD_DEPLOY_SERVERIP")
+		// get all necessary cloud resources in place
 		mp, err := strconv.Atoi(config.ManagerPort)
 		if err != nil {
 			die("bad manager_port [%s]: %s", config.ManagerPort, err)
@@ -139,69 +126,75 @@ website locally, even though the manager is actually running remotely.`,
 			die("failed to connect to %s: %s", providerName, err)
 		}
 		serverPort := "22"
-		if serverIP == "" {
-			warn("setting up")
-			// get all necessary cloud resources in place
-			info("please wait while %s resources are created...", providerName)
-			err = provider.Deploy([]int{22, mp, wp})
-			if err != nil {
-				die("failed to create resources in %s: %s", providerName, err)
-			}
-
-			// get/spawn a "head node" server
-			info("please wait while a server is spawned on %s...", providerName)
-			servers := provider.Servers()
-			for sID, externalIP := range servers {
-				if ok, _ := provider.CheckServer(sID); ok {
-					serverIP = externalIP
-					break
-				}
-			}
-			if serverIP == "" {
-				_, serverIP, _, err = provider.Spawn(osPrefix, 2048, 20, 1, true)
-				if err != nil {
-					provider.TearDown()
-					die("failed to launch a server in %s: %s", providerName, err)
-				}
-			}
-
-			// ssh to the server, copy over our exe, and start running wr manager
-			// there
-			info("please wait while I start 'wr manager' on the %s server at %s...", providerName, serverIP)
-			bootstrapOnRemote(provider, osUsername, serverIP, serverPort, exe, mp, wp)
-
-			// before deaemonizing, set an env var so that the "forked" child
-			// won't repeat this block (and so it knows the server ip)
-			os.Setenv("WR_CLOUD_DEPLOY_SERVERIP", serverIP)
+		info("please wait while %s resources are created...", providerName)
+		err = provider.Deploy([]int{22, mp, wp})
+		if err != nil {
+			die("failed to create resources in %s: %s", providerName, err)
 		}
 
-		// now daemonize to bring up a port forwarder so user can easily
-		// interact with the remote manager
-		child, context := daemonize(config.DeployPidFile, config.ManagerUmask)
-		if child != nil {
-			warn("parent will check on child")
-			// parent; wait a while for our child to bring up the proxy server
-			// before exiting
-			<-time.After(15 * time.Second)
-			jq := connect(10 * time.Second)
-			if jq == nil {
-				//provider.TearDown()
-				die("could not talk to wr manager on server at %s after 10s", serverIP)
+		// get/spawn a "head node" server
+		var serverIP string
+		usingExistingServer := false
+		servers := provider.Servers()
+		for sID, externalIP := range servers {
+			if ok, _ := provider.CheckServer(sID); ok {
+				serverIP = externalIP
+				usingExistingServer = true
+				info("using existing %s server at %s", providerName, serverIP)
+				break
 			}
-			sstats, err := jq.ServerStats()
+		}
+		if serverIP == "" {
+			info("please wait while a server is spawned on %s...", providerName)
+			_, serverIP, _, err = provider.Spawn(osPrefix, 2048, 20, 1, true)
 			if err != nil {
 				provider.TearDown()
-				die("wr manager on server at %s started but doesn't seem to be functional: %s", serverIP, err)
+				die("failed to launch a server in %s: %s", providerName, err)
 			}
-
-			info("wr manager remotely started on %s", sAddr(sstats.ServerInfo))
-			info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
-		} else {
-			// daemonized child, that will run until signalled to stop
-			defer context.Release()
-			warn("child will start forwarder")
-			startForwarder(serverIP, serverPort, mp, wp, provider, osUsername)
 		}
+
+		// ssh to the server, copy over our exe, and start running wr manager
+		// there
+		info("please wait while I start 'wr manager' on the %s server at %s...", providerName, serverIP)
+		bootstrapOnRemote(provider, osUsername, serverIP, serverPort, exe, mp, wp, usingExistingServer)
+
+		// rather than daemonize and use a go ssh forwarding library or
+		// implement myself using the net package, since I couldn't get them
+		// to work reliably and completely, we'll just spawn ssh -L in the
+		// background and keep note of the pids so we can kill them during
+		// teardown
+		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
+		err = ioutil.WriteFile(keyPath, []byte(provider.PrivateKey()), 0600)
+		if err != nil {
+			provider.TearDown()
+			die("failed to create key file %s: %s", keyPath, err)
+		}
+		err = startForwarding(serverIP, serverPort, osUsername, keyPath, mp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid"))
+		if err != nil {
+			provider.TearDown()
+			die("failed to set up port forwarding to %s:%d: %s", serverIP, mp, err)
+		}
+		err = startForwarding(serverIP, serverPort, osUsername, keyPath, wp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid"))
+		if err != nil {
+			provider.TearDown()
+			die("failed to set up port forwarding to %s:%d: %s", serverIP, wp, err)
+		}
+
+		// check that we can now connect to the remote manager
+		//<-time.After(15 * time.Second)
+		jq = connect(10 * time.Second)
+		if jq == nil {
+			provider.TearDown()
+			die("could not talk to wr manager on server at %s after 10s", serverIP)
+		}
+		sstats, err := jq.ServerStats()
+		if err != nil {
+			provider.TearDown()
+			die("wr manager on server at %s started but doesn't seem to be functional: %s", serverIP, err)
+		}
+
+		info("wr manager remotely started on %s", sAddr(sstats.ServerInfo))
+		info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
 	},
 }
 
@@ -225,34 +218,42 @@ only then request a teardown.`,
 			die("--provider is required")
 		}
 
-		// first check that the deploy proxy server is up
-		pid, piderr := daemon.ReadPidFile(config.DeployPidFile)
-		proxyRunning := false
-		if piderr == nil {
-			err := syscall.Kill(pid, syscall.Signal(0))
-			if err == nil {
-				proxyRunning = true
-			}
-		} else {
-			warn("could not read the pid from pid file %s; is the deploy proxy actually running? [%s]", config.DeployPidFile, piderr)
-		}
+		// first check if the ssh forwarding is up
+		fmPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
+		fmPid, fmRunning := checkProcess(fmPidFile)
 
 		// try and stop the remote manager; doing this results in a graceful
 		// saving of the db locally
-		if proxyRunning {
-			jq := connect(100 * time.Millisecond)
+		noManagerMsg := "; deploy first or use --force option"
+		noManagerForcedMsg := "; tearing down anyway!"
+		if fmRunning {
+			jq := connect(1 * time.Second)
 			if jq != nil {
 				ok := jq.ShutdownServer()
 				if ok {
 					info("the remote wr manager was shut down")
 				} else {
-					warn("there was an error trying to shut down the remote wr manager")
+					msg := "there was an error trying to shut down the remote wr manager"
+					if forceTearDown {
+						warn(msg + noManagerForcedMsg)
+					} else {
+						die(msg + noManagerMsg)
+					}
 				}
 			} else {
-				warn("the remote wr manager could not be connected to in order to shut it down; hopefully it was all ready stopped")
+				msg := "the remote wr manager could not be connected to in order to shut it down"
+				if forceTearDown {
+					warn(msg + noManagerForcedMsg)
+				} else {
+					die(msg + noManagerMsg)
+				}
 			}
 		} else {
-			die("the deploy proxy is not running, so can't safely teardown; deploy first")
+			if forceTearDown {
+				warn("the deploy port forwarding is not running, so the remote manager could not be stopped" + noManagerForcedMsg)
+			} else {
+				die("the deploy port forwarding is not running, so can't safely teardown" + noManagerMsg)
+			}
 		}
 
 		// teardown cloud resources we created
@@ -264,14 +265,22 @@ only then request a teardown.`,
 		if err != nil {
 			die("failed to delete the cloud resources previously created: %s", err)
 		}
+		os.Remove(filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key"))
 		info("deleted all cloud resources previously created")
 
-		// unlike manager, this is hopefully pretty simple and straightforward
-		// to kill, relying on the pid?...
-		if stopdaemon(pid, "pid file "+config.DeployPidFile, "cloud deploy") {
-			info("wr cloud deploy daemon was stopped successfully")
-		} else {
-			die("could not stop the wr cloud deploy daemon (pid %d) running", pid)
+		// kill the ssh forwarders
+		if fmRunning {
+			err = killProcess(fmPid)
+			if err == nil {
+				os.Remove(fmPidFile)
+			}
+		}
+		fwPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
+		if fwPid, fwRunning := checkProcess(fwPidFile); fwRunning {
+			err = killProcess(fwPid)
+			if err == nil {
+				os.Remove(fwPidFile)
+			}
 		}
 	},
 }
@@ -287,142 +296,36 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
-}
-
-func startForwarder(serverIP, serverPort string, mp, wp int, provider *cloud.Provider, user string) {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	<-time.After(10 * time.Second)
-	hostAndPort := serverIP + ":" + serverPort
-
-	// start port forwarding that goes from localhost ports manager_port and
-	// manager_web to the head node we spawned
-	sshConfig := getSSHConfig(provider, user)
-	go listen(mp, sshConfig, hostAndPort)
-	go listen(wp, sshConfig, hostAndPort)
-	if false {
-		server := new(gosshtool.LocalForwardServer)
-		server.LocalBindAddress = fmt.Sprintf(":%d", mp)
-		server.RemoteAddress = fmt.Sprintf("localhost:%d", mp)
-		server.SshServerAddress = serverIP
-		server.SshPrivateKey = provider.PrivateKey()
-		server.SshUserName = user
-		warn("server: %+v", server)
-		server.Start(started)
-		defer server.Stop()
-
-		server2 := new(gosshtool.LocalForwardServer)
-		server2.LocalBindAddress = fmt.Sprintf(":%d", wp)
-		server2.RemoteAddress = fmt.Sprintf("localhost:%d", wp)
-		server2.SshServerAddress = serverIP
-		server2.SshPrivateKey = provider.PrivateKey()
-		server2.SshUserName = user
-		warn("server2: %+v", server2)
-		server2.Start(started)
-		defer server2.Stop()
-	}
-
-	// wait until we receive a signal to stop
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	warn("starting infinite for loop")
-	for {
-		select {
-		case <-sigs:
-			warn("received sig")
-			return
-		}
-	}
-}
-
-func started() {
-	warn("go over ssh server started")
-}
-
-// forwarding based on http://stackoverflow.com/a/21655505/675083
-func listen(port int, sshConfig *ssh.ClientConfig, serverAddress string) {
-	localAddress := fmt.Sprintf("localhost:%d", port)
-	listener, err := net.Listen("tcp", localAddress)
-	if err != nil {
-		die("could not listen on %s: %s", port, err)
-	}
-	warn("listening to %s", localAddress)
-
-	for {
-		mConn, err := listener.Accept()
-		warn("got a message on %s", localAddress)
-		if err == nil {
-			go forward(mConn, sshConfig, serverAddress, localAddress)
-		}
-	}
-}
-
-func forward(localConn net.Conn, config *ssh.ClientConfig, serverAddress string, localAddress string) {
-	// connect to server
-	sshClientConn, err := ssh.Dial("tcp", serverAddress, config)
-	if err != nil {
-		die("ssh.Dial to %s failed: %s", serverAddress, err)
-	}
-	warn("dialed in to %s", serverAddress)
-
-	// connect to local port on remote server
-	sshConn, err := sshClientConn.Dial("tcp", localAddress)
-	if err != nil {
-		die("ssh.Dial to %s failed: %s", localAddress, err)
-	}
-	warn("subdialed to %s", localAddress)
-
-	// copy localConn.Reader to sshConn.Writer
-	go func() {
-		_, err = io.Copy(sshConn, localConn)
-		if err != nil {
-			die("io.Copy l to s failed: %v", err)
-		}
-	}()
-
-	// copy sshConn.Reader to localConn.Writer
-	go func() {
-		_, err = io.Copy(localConn, sshConn)
-		if err != nil {
-			die("io.Copy s to l failed: %v", err)
-		}
-	}()
+	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 }
 
 // *** so far we have only the below usage of doing things via ssh, but this
 // will probably have to move out to a separate ssh package, or perhaps the
 // cloud package in the future...
 
-func getSSHConfig(provider *cloud.Provider, user string) *ssh.ClientConfig {
+func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, serverPort string, exe string, mp int, wp int, wrMayHaveStarted bool) {
 	// parse private key and make config
 	key, err := ssh.ParsePrivateKey([]byte(provider.PrivateKey()))
 	if err != nil {
 		provider.TearDown()
 		die("failed to parse private key: %s", err)
 	}
-	c := &ssh.ClientConfig{
+	sshConfig := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(key),
 		},
 	}
-	warn("ssh.ClientConfig: %+v", c)
-	return c
-}
-
-func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, serverPort string, exe string, mp int, wp int) {
-	sshConfig := getSSHConfig(provider, user)
 
 	// dial in to remote host, allowing certain errors that indicate that the
 	// network or server isn't really ready for ssh yet; wait for up to 35mins
 	// for success (can take this long when the network was only just created!)
-	before := time.Now()
 	hostAndPort := serverIP + ":" + serverPort
 	sshClient, err := ssh.Dial("tcp", hostAndPort, sshConfig)
 	if err != nil {
 		limit := time.After(10 * time.Minute)
 		ticker := time.NewTicker(1 * time.Second)
 		ticks := 0
-		info("waiting for ssh to the server to work...")
 	DIAL:
 		for {
 			select {
@@ -450,13 +353,10 @@ func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, s
 		}
 	}
 
-	info("ssh successful, will start wr manager remotely...")
-	info("that took %s", time.Since(before))
-
 	// upload ourselves
 	remoteExe := filepath.Join(cloudBinDir, "wr")
 	err = uploadFileToRemote(sshClient, exe, remoteExe)
-	if err != nil {
+	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to upload wr to the server at %s: %s", hostAndPort, err)
 	}
@@ -470,15 +370,28 @@ func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, s
 	}
 
 	_, err = runCmdOnRemote(sshClient, "chmod u+x "+remoteExe, false)
-	if err != nil {
+	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to make remote wr executable: %s", err)
 	}
-	_, err = runCmdOnRemote(sshClient, fmt.Sprintf("%s manager start --deployment %s -s local", remoteExe, config.Deployment), true)
-	ioutil.WriteFile("key", []byte(provider.PrivateKey()), 0644)
-	if err != nil {
-		provider.TearDown()
-		die("failed to make start wr manager on the remote server: %s", err)
+
+	// start up the manager
+	var alreadyStarted bool
+	if wrMayHaveStarted {
+		response, err := runCmdOnRemote(sshClient, fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
+		if err != nil && response == "started\n" {
+			alreadyStarted = true
+		}
+	}
+	if !alreadyStarted {
+		_, err = runCmdOnRemote(sshClient, fmt.Sprintf("%s manager start --deployment %s -s local", remoteExe, config.Deployment), true)
+		if err != nil {
+			provider.TearDown()
+			die("failed to make start wr manager on the remote server: %s", err)
+		}
+
+		// wait a few seconds for the manager to start listening on its ports
+		<-time.After(3 * time.Second)
 	}
 }
 
@@ -568,5 +481,60 @@ func makeRemoteParentDirs(sshClient *ssh.Client, dest string) (err error) {
 			return
 		}
 	}
+	return
+}
+
+func startForwarding(serverIP, serverPort, serverUser, keyFile string, port int, pidPath string) (err error) {
+	// first check if pidPath already has a pid and if that pid is alive
+	if pid, running := checkProcess(pidPath); running {
+		//info("assuming the process with id %d is already forwarding port %d to %s:%d", pid, port, serverIP, port)
+		return
+	}
+
+	// start ssh -L running
+	cmd := exec.Command("ssh", "-i", keyFile, "-o", "ExitOnForwardFailure yes", "-qnNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port), fmt.Sprintf("%s@%s", serverUser, serverIP))
+	err = cmd.Start()
+	if err != nil {
+		return
+	}
+
+	// store ssh's pid to file
+	err = ioutil.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
+
+	// don't cmd.Wait(); ssh will continue running in the background after we
+	// exit
+
+	return
+}
+
+func checkProcess(pidPath string) (pid int, running bool) {
+	// read file (treat errors such as file not existing as no process)
+	pidBytes, err := ioutil.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+
+	// convert file contents to pid (also treating errors as no process)
+	pid, err = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		return
+	}
+
+	// see if the pid is running
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	err = process.Signal(syscall.Signal(0))
+	running = err == nil
+	return
+}
+
+func killProcess(pid int) (err error) {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	err = process.Signal(syscall.Signal(9))
 	return
 }
