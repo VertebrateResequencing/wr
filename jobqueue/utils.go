@@ -28,11 +28,28 @@ import (
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"io"
+	"net"
 	"os"
 	"strconv"
 )
 
 var pss = []byte("Pss:")
+
+// CurrentIP returns the IP address of the machine we're running on right now
+func CurrentIP() (ip string) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				ip = ipnet.IP.String()
+			}
+		}
+	}
+	return
+}
 
 // jobKey calculates a unique key to describe the job
 func jobKey(job *Job) string {

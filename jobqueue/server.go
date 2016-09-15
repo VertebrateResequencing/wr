@@ -30,7 +30,6 @@ import (
 	"github.com/grafov/bcast"
 	"github.com/ugorji/go/codec"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -221,18 +220,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	var ip string
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return
-	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ip = ipnet.IP.String()
-			}
-		}
-	}
+	ip := CurrentIP()
 	if ip == "" {
 		err = Error{"", "Serve", "", ErrNoHost}
 		return
