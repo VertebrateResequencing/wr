@@ -73,7 +73,7 @@ var managerStartCmd = &cobra.Command{
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
 		// most obvious case of failure to start
-		jq := connect(10 * time.Millisecond)
+		jq := connect(1 * time.Second)
 		if jq != nil {
 			sstats, err := jq.ServerStats()
 			var pid int
@@ -139,7 +139,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		var jq *jobqueue.Client
 		if stopped {
 			// we'll do a quick test to confirm the daemon is down
-			jq = connect(10 * time.Millisecond)
+			jq = connect(1 * time.Second)
 			if jq != nil {
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
@@ -161,14 +161,34 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		if err != nil {
 			die("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
 		}
-		spid := sstats.ServerInfo.PID
-		jq.Disconnect()
 
-		stopped = stopdaemon(spid, "the manager itself", "manager")
-		if stopped {
-			info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
+		// though it may actually be running on a remote host and we managed to
+		// connect to it via ssh port forwarding; compare the server ip to our
+		// own
+		myAddr := jobqueue.CurrentIP() + ":" + config.ManagerPort
+		sAddr := sstats.ServerInfo.Addr
+		if myAddr == sAddr {
+			jq.Disconnect()
+			stopped = stopdaemon(sstats.ServerInfo.PID, "the manager itself", "manager")
 		} else {
-			info("I've tried everything; giving up trying to stop the manager", config.ManagerPort)
+			// use the client command to stop it
+			stopped = jq.ShutdownServer()
+
+			// since I don't trust using a client connection to shut down the
+			// server, double check I can no longer connect
+			if stopped {
+				jq = connect(1 * time.Second)
+				if jq != nil {
+					warn("I requested shut down of the remote manager at %s, but it still up!", sAddr)
+					stopped = false
+				}
+			}
+		}
+
+		if stopped {
+			info("wr manager running at %s was gracefully shut down", sAddr)
+		} else {
+			info("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
 	},
 }
@@ -232,7 +252,7 @@ var managerStatusCmd = &cobra.Command{
 		}
 
 		// no pid file, so it's supposed to be down; confirm
-		jq := connect(10 * time.Millisecond)
+		jq := connect(1 * time.Second)
 		if jq == nil {
 			fmt.Println("stopped")
 		} else {
