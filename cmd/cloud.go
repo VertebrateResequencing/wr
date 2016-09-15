@@ -486,7 +486,7 @@ func makeRemoteParentDirs(sshClient *ssh.Client, dest string) (err error) {
 
 func startForwarding(serverIP, serverPort, serverUser, keyFile string, port int, pidPath string) (err error) {
 	// first check if pidPath already has a pid and if that pid is alive
-	if pid, running := checkProcess(pidPath); running {
+	if _, running := checkProcess(pidPath); running {
 		//info("assuming the process with id %d is already forwarding port %d to %s:%d", pid, port, serverIP, port)
 		return
 	}
