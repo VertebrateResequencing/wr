@@ -492,7 +492,7 @@ func startForwarding(serverIP, serverPort, serverUser, keyFile string, port int,
 	}
 
 	// start ssh -L running
-	cmd := exec.Command("ssh", "-i", keyFile, "-o", "ExitOnForwardFailure yes", "-qnNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port), fmt.Sprintf("%s@%s", serverUser, serverIP))
+	cmd := exec.Command("ssh", "-i", keyFile, "-o", "ExitOnForwardFailure yes", "-qngNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port), fmt.Sprintf("%s@%s", serverUser, serverIP))
 	err = cmd.Start()
 	if err != nil {
 		return
