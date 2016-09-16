@@ -8,9 +8,9 @@ before_install:
   - go get github.com/modocache/gover
   - go get github.com/mattn/goveralls
 script:
-  - go test -v -coverprofile=queue.coverprofile ./queue
-  - go test -v -coverprofile=sched.coverprofile ./jobqueue/scheduler
-  - go test -v -coverprofile=jq.coverprofile ./jobqueue
-  - go test -v -coverprofile=cloud.coverprofile ./cloud
+  - go test -tags netgo -v -coverprofile=queue.coverprofile ./queue
+  - go test -tags netgo -v -coverprofile=sched.coverprofile ./jobqueue/scheduler
+  - go test -tags netgo -v -coverprofile=jq.coverprofile ./jobqueue
+  - go test -tags netgo -v -coverprofile=cloud.coverprofile ./cloud
   - $HOME/gopath/bin/gover
   - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci

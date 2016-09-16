@@ -1312,7 +1312,7 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
-		server, _, err = Serve(port, webport, "local", config.RunnerExecShell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir "+runnertmpdir, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment) // +" > /dev/null 2>&1"
+		server, _, err = Serve(port, webport, "local", config.RunnerExecShell, "go test -tags netgo -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir "+runnertmpdir, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment) // +" > /dev/null 2>&1"
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
