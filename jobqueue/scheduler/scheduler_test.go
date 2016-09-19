@@ -75,7 +75,7 @@ func TestLocal(t *testing.T) {
 			}
 			defer os.RemoveAll(tmpdir2)
 
-			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
+			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file, though this actually completes in around 1.1s
 			count := maxCPU * 2
 			err = s.Schedule(cmd, possibleReq, count)
 			So(err, ShouldBeNil)
@@ -93,7 +93,7 @@ func TestLocal(t *testing.T) {
 				So(numfiles, ShouldEqual, count)
 				So(s.Busy(), ShouldBeTrue)
 
-				<-time.After(750 * time.Millisecond) // *** don't know why we need an extra 850ms for the cmds to finish running
+				<-time.After(800 * time.Millisecond) // *** don't know why we need an extra 400ms for the cmds to finish running
 
 				numfiles = testDirForFiles(tmpdir2, count)
 				So(numfiles, ShouldEqual, count)
@@ -206,7 +206,7 @@ func TestLSF(t *testing.T) {
 	}
 
 	host, _ := os.Hostname()
-	SkipConvey("You can get a new lsf scheduler", t, func() {
+	Convey("You can get a new lsf scheduler", t, func() {
 		s, err := New("lsf", "development", "bash")
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
