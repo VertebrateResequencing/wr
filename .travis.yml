@@ -10,7 +10,7 @@ before_install:
 script:
   - go test -tags netgo -v -coverprofile=queue.coverprofile ./queue
   - go test -tags netgo -v -coverprofile=sched.coverprofile ./jobqueue/scheduler
-  - go test -tags netgo -v -coverprofile=jq.coverprofile ./jobqueue
+  - WR_MANAGERPORT="11301" go test -tags netgo -v -coverprofile=jq.coverprofile ./jobqueue
   - go test -tags netgo -v -coverprofile=cloud.coverprofile ./cloud
   - $HOME/gopath/bin/gover
   - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
