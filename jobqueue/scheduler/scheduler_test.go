@@ -75,7 +75,25 @@ func TestLocal(t *testing.T) {
 			}
 			defer os.RemoveAll(tmpdir2)
 
-			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file, though this actually completes in around 1.1s
+			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
+
+			// different machines take difference amounts of times to actually
+			// run the above command, so we first need to run the command (in
+			// parallel still, since it is slower to run when many are running
+			// at once) to find how long it takes, as subsequent tests are very
+			// timing dependent
+			err = s.Schedule(cmd, possibleReq, maxCPU)
+			So(err, ShouldBeNil)
+			before := time.Now()
+			var overhead time.Duration
+			for {
+				if !s.Busy() {
+					overhead = time.Since(before) - time.Duration(750*time.Millisecond)
+					break
+				}
+				<-time.After(1 * time.Millisecond)
+			}
+
 			count := maxCPU * 2
 			err = s.Schedule(cmd, possibleReq, count)
 			So(err, ShouldBeNil)
@@ -84,19 +102,19 @@ func TestLocal(t *testing.T) {
 			Convey("It eventually runs them all", func() {
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
-				<-time.After(1100 * time.Millisecond)
+				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, count)
-				So(numfiles, ShouldEqual, count)
+				numfiles = testDirForFiles(tmpdir, maxCPU+count)
+				So(numfiles, ShouldEqual, maxCPU+count)
 				So(s.Busy(), ShouldBeTrue)
 
-				<-time.After(800 * time.Millisecond) // *** don't know why we need an extra 400ms for the cmds to finish running
+				<-time.After(100*time.Millisecond + overhead) // an extra 50ms for leeway
 
-				numfiles = testDirForFiles(tmpdir2, count)
-				So(numfiles, ShouldEqual, count)
+				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
+				So(numfiles, ShouldEqual, maxCPU+count)
 				So(s.Busy(), ShouldBeFalse)
 			})
 
@@ -105,16 +123,16 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(900 * time.Millisecond)
+				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, newcount)
-				So(numfiles, ShouldEqual, newcount)
+				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
+				So(numfiles, ShouldEqual, maxCPU+newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
 			})
@@ -124,35 +142,35 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(900 * time.Millisecond)
+				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles = testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
 			})
 
 			Convey("You can Schedule() again to increase the count", func() {
-				newcount := count + 5
+				newcount := count + 1
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(2000 * time.Millisecond)
+				<-time.After(1500*time.Millisecond + overhead + overhead)
 
-				numfiles = testDirForFiles(tmpdir, newcount)
-				So(numfiles, ShouldEqual, newcount)
+				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
+				So(numfiles, ShouldEqual, maxCPU+newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
 			})
@@ -163,8 +181,8 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(700 * time.Millisecond)
 
-					numfiles := testDirForFiles(tmpdir, maxCPU)
-					So(numfiles, ShouldEqual, maxCPU)
+					numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+					So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 					err = s.Schedule(cmd, possibleReq, newcount)
 					So(err, ShouldBeNil)
@@ -172,10 +190,10 @@ func TestLocal(t *testing.T) {
 					err = s.Schedule(newcmd, possibleReq, 1)
 					So(err, ShouldBeNil)
 
-					<-time.After(900 * time.Millisecond)
+					<-time.After(750*time.Millisecond + overhead)
 
-					numfiles = testDirForFiles(tmpdir, newcount+1)
-					So(numfiles, ShouldEqual, newcount+1)
+					numfiles = testDirForFiles(tmpdir, maxCPU+newcount+1)
+					So(numfiles, ShouldEqual, maxCPU+newcount+1)
 
 					So(waitToFinish(s, 3, 100), ShouldBeTrue)
 				})
