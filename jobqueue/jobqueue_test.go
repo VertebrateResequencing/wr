@@ -470,6 +470,7 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok = err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
+				jq.Disconnect()
 			})
 
 			Convey("You get a nice error if you send the server junk", func() {
@@ -478,6 +479,7 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrUnknownCommand)
+				jq.Disconnect()
 			})
 		})
 
@@ -518,6 +520,7 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrMustReserve)
+				jq.Disconnect()
 			})
 
 			Convey("Once reserved you can execute jobs, and other clients see the correct state on gets", func() {
@@ -1055,6 +1058,8 @@ func TestJobqueue(t *testing.T) {
 					So(job2.Exited, ShouldBeFalse)
 				})
 			})
+
+			jq.Disconnect()
 		})
 
 		Convey("After connecting and adding some jobs under one RepGroup", func() {
