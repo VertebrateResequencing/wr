@@ -223,7 +223,7 @@ completes.`,
 		if numLeft == 0 {
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
 		} else if numLeft == 1 {
-			info("wr manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, numLeft, etc)
+			info("wr manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
 		} else {
 			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
