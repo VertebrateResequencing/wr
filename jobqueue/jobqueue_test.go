@@ -139,6 +139,7 @@ func TestJobqueue(t *testing.T) {
 		defer syscall.Kill(child.Pid, syscall.SIGTERM)
 		jq, err := Connect(addr, "test_queue", 10*time.Second)
 		So(err, ShouldBeNil)
+		defer jq.Disconnect()
 
 		sstats, err := jq.ServerStats()
 		So(err, ShouldBeNil)
@@ -199,6 +200,7 @@ func TestJobqueue(t *testing.T) {
 
 				jq2, err := Connect(addr, "test_queue", clientConnectTime)
 				So(err, ShouldBeNil)
+				defer jq2.Disconnect()
 				job, err = jq2.GetByCmd(cmd, "/tmp", false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
@@ -246,6 +248,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			sstats, err := jq.ServerStats()
 			So(err, ShouldBeNil)
@@ -388,6 +391,7 @@ func TestJobqueue(t *testing.T) {
 									if ticks == 2 {
 										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0), "manually_added"))
 										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
+										defer gojq.Disconnect()
 										gojq.Add(jobs)
 									}
 									continue
@@ -470,7 +474,6 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok = err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
-				jq.Disconnect()
 			})
 
 			Convey("You get a nice error if you send the server junk", func() {
@@ -503,8 +506,10 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect, and add some real jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 			jq2, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq2.Disconnect()
 
 			var jobs []*Job
 			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "manually_added"))
@@ -1058,13 +1063,12 @@ func TestJobqueue(t *testing.T) {
 					So(job2.Exited, ShouldBeFalse)
 				})
 			})
-
-			jq.Disconnect()
 		})
 
 		Convey("After connecting and adding some jobs under one RepGroup", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			var jobs []*Job
 			for i := 0; i < 3; i++ {
@@ -1166,6 +1170,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect, and add 2 jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			var jobs []*Job
 			jobs = append(jobs, NewJob("echo 1", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
@@ -1208,6 +1213,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect and add a non-instant job", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			var jobs []*Job
 			job1Cmd := "sleep 1 && echo noninstant"
@@ -1327,6 +1333,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect, and add some real jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
@@ -1431,6 +1438,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer jq.Disconnect()
 
 		before := time.Now()
 		var jobs []*Job
@@ -1514,103 +1522,104 @@ func TestJobqueueSpeed(t *testing.T) {
 	}
 
 	/* test speed of bolt db when there are lots of jobs already stored
-		if true {
-			config := internal.ConfigLoad("development", true)
-			port := config.ManagerPort
-			webport := config.ManagerWeb
-			addr := "localhost:" + port
-			rc := ""
-			n := 10000000 // num jobs to start with
-			b := 10000    // jobs per identifier
+			if true {
+				config := internal.ConfigLoad("development", true)
+				port := config.ManagerPort
+				webport := config.ManagerWeb
+				addr := "localhost:" + port
+				rc := ""
+				n := 10000000 // num jobs to start with
+				b := 10000    // jobs per identifier
 
-			server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			jq, err := Connect(addr, "cmds", 60*time.Second)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			// get timings when the bolt db is empty
-			total := 0
-			batchNum := 1
-			timeDealingWithBatch(addr, jq, batchNum, b)
-			batchNum++
-			total += b
-
-			// add n jobs in b batches to the completed bolt db bucket to simulate
-			// a well used database
-			before := time.Now()
-			q := server.getOrCreateQueue("cmds")
-			for total < n {
-				var jobs []*Job
-				for i := 0; i < b; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), fmt.Sprintf("batch_%d", batchNum)))
-				}
-				_, _, err := jq.Add(jobs)
-				if err != nil {
-					log.Fatal(err)
-				}
-				fmt.Printf("\nadded batch %d", batchNum)
-
-				// it's too slow to reserve and archive things properly in this
-				// test; this is not a real-world performance concern though, since
-				// normally you wouldn't archive so many jobs in a row in a single
-	            // process...
-				// for {
-				// 	job, _ := jq.Reserve(1 * time.Millisecond)
-				// 	if job == nil {
-				// 		break
-				// 	}
-				// 	jq.Started(job, 123, "host")
-				// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
-				// 	err = jq.Archive(job)
-				// 	if err != nil {
-				// 		log.Fatal(err)
-				// 	}
-				// 	fmt.Print(".")
-				// }
-
-				// ... Instead we bypass the client interface and directly add to
-				// bolt db
-				err = server.db.bolt.Batch(func(tx *bolt.Tx) error {
-					bl := tx.Bucket(bucketJobsLive)
-					b := tx.Bucket(bucketJobsComplete)
-
-					var puterr error
-					for _, job := range jobs {
-						key := jobKey(job)
-						var encoded []byte
-						enc := codec.NewEncoderBytes(&encoded, server.db.ch)
-						enc.Encode(job)
-
-						bl.Delete([]byte(key))
-						q.Remove(key)
-
-						puterr = b.Put([]byte(key), encoded)
-						if puterr != nil {
-							break
-						}
-					}
-					return puterr
-				})
+				server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
 				if err != nil {
 					log.Fatal(err)
 				}
 
+				jq, err := Connect(addr, "cmds", 60*time.Second)
+				if err != nil {
+					log.Fatal(err)
+				}
+	            defer jq.Disconnect()
+
+				// get timings when the bolt db is empty
+				total := 0
+				batchNum := 1
+				timeDealingWithBatch(addr, jq, batchNum, b)
 				batchNum++
 				total += b
+
+				// add n jobs in b batches to the completed bolt db bucket to simulate
+				// a well used database
+				before := time.Now()
+				q := server.getOrCreateQueue("cmds")
+				for total < n {
+					var jobs []*Job
+					for i := 0; i < b; i++ {
+						jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), fmt.Sprintf("batch_%d", batchNum)))
+					}
+					_, _, err := jq.Add(jobs)
+					if err != nil {
+						log.Fatal(err)
+					}
+					fmt.Printf("\nadded batch %d", batchNum)
+
+					// it's too slow to reserve and archive things properly in this
+					// test; this is not a real-world performance concern though, since
+					// normally you wouldn't archive so many jobs in a row in a single
+		            // process...
+					// for {
+					// 	job, _ := jq.Reserve(1 * time.Millisecond)
+					// 	if job == nil {
+					// 		break
+					// 	}
+					// 	jq.Started(job, 123, "host")
+					// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
+					// 	err = jq.Archive(job)
+					// 	if err != nil {
+					// 		log.Fatal(err)
+					// 	}
+					// 	fmt.Print(".")
+					// }
+
+					// ... Instead we bypass the client interface and directly add to
+					// bolt db
+					err = server.db.bolt.Batch(func(tx *bolt.Tx) error {
+						bl := tx.Bucket(bucketJobsLive)
+						b := tx.Bucket(bucketJobsComplete)
+
+						var puterr error
+						for _, job := range jobs {
+							key := jobKey(job)
+							var encoded []byte
+							enc := codec.NewEncoderBytes(&encoded, server.db.ch)
+							enc.Encode(job)
+
+							bl.Delete([]byte(key))
+							q.Remove(key)
+
+							puterr = b.Put([]byte(key), encoded)
+							if puterr != nil {
+								break
+							}
+						}
+						return puterr
+					})
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					batchNum++
+					total += b
+				}
+				e := time.Since(before)
+				log.Printf("Archived %d jobqueue jobs in %d sized groups in %s\n", n, b, e)
+
+				// now re-time how long it takes to deal with a single new batch
+				timeDealingWithBatch(addr, jq, batchNum, b)
+
+				server.Stop()
 			}
-			e := time.Since(before)
-			log.Printf("Archived %d jobqueue jobs in %d sized groups in %s\n", n, b, e)
-
-			// now re-time how long it takes to deal with a single new batch
-			timeDealingWithBatch(addr, jq, batchNum, b)
-
-			server.Stop()
-		}
 	*/
 }
 
@@ -1637,6 +1646,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 		go func() {
 			defer wg.Done()
 			gojq, _ := Connect(addr, "cmds", 10*time.Second)
+            defer gojq.Disconnect()
 			for {
 				job, _ := gojq.Reserve(1 * time.Millisecond)
 				if job == nil {
