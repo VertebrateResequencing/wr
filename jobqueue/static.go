@@ -524,8 +524,8 @@ NSMANFD9O/rpnDQo/OPjemR2KURK31p16fb/BQAA//9NnsW9ftkBAA==
 `,
 	},
 
-	"/css/vrpipe-0.0.1.css": {
-		local:   "static/css/vrpipe-0.0.1.css",
+	"/css/wr-0.0.1.css": {
+		local:   "static/css/wr-0.0.1.css",
 		size:    1741,
 		modtime: 1471854460,
 		compressed: `
@@ -3599,7 +3599,7 @@ w9Vny76PsLQ+wiKIuN3aAu90BLP/DQAA//+BYYzv7UQAAA==
 	"/js/wr-0.0.1.js": {
 		local:   "static/js/wr-0.0.1.js",
 		size:    2934,
-		modtime: 1471854460,
+		modtime: 1471877834,
 		compressed: `
 H4sIAAAJbogA/3xW32/bNhB+119xL63l2bGVH3WypSmwZGsRYNmArttLkAdaoi3CkiiQVBxv8P723ZGU
 KflH3cIxyO/uvvvueOR0Ckvxyitg+F8ptgG5gEUhmdFgcmaAZRk0NRgJ/50nyRgUN42qNDBIpVJc17LK
@@ -3627,7 +3627,7 @@ AAD//wp8q392CwAA
 	"/status.html": {
 		local:   "static/status.html",
 		size:    35934,
-		modtime: 1471856317,
+		modtime: 1471877834,
 		compressed: `
 H4sIAAAJbogA/+w9f3fbNpL/91MgvG4kN5Jsp9t99xzL+1I32e1ue8kl3fb2+fn1USIkMSYJFgSt6rr+
 7jcD8DcBkpClNtc7vja2RcxgZjDA/AAGunzy1Zvr7/759hXZiDC4+uQSf5DAjdZzh0bO1ScEnssNdT31
