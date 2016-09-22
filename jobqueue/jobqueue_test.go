@@ -22,8 +22,10 @@ import (
 	"flag"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
+	// "github.com/boltdb/bolt"
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
+	// "github.com/ugorji/go/codec"
 	"io/ioutil"
 	"log"
 	"math"
@@ -31,10 +33,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
-	// "github.com/boltdb/bolt"
-	// "github.com/ugorji/go/codec"
 	// "sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1280,6 +1280,8 @@ func TestJobqueue(t *testing.T) {
 
 				up := jq.Ping(10 * time.Millisecond)
 				So(up, ShouldBeFalse)
+
+				jq.Disconnect() // user must always Disconnect before connecting again!
 
 				wipeDevDBOnInit = false
 				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)

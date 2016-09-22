@@ -216,7 +216,8 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	return
 }
 
-// Disconnect closes the connection to the jobqueue server.
+// Disconnect closes the connection to the jobqueue server. It is CRITICAL that
+// you call Disconnect() before calling Connect() again in the same process.
 func (c *Client) Disconnect() {
 	c.sock.Close()
 }
