@@ -657,3 +657,16 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 	}
 	return
 }
+
+// cleanup bkills any remaining jobs we created
+func (s *lsf) cleanup(deployment string, shell string) {
+	toKill := []string{"-b"}
+	cb := func(matches []string) {
+		toKill = append(toKill, matches[1])
+	}
+	s.parseBjobs(fmt.Sprintf("vrp%s_", s.deployment[0:1]), cb)
+	if len(toKill) > 1 {
+		killcmd := exec.Command("bkill", toKill...)
+		killcmd.Run()
+	}
+}

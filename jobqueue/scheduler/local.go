@@ -54,6 +54,7 @@ type local struct {
 	running    map[string]int
 	rcount     int
 	mutex      sync.Mutex
+	cleaned    bool
 }
 
 // jobs are what we store in our queue
@@ -155,6 +156,9 @@ func (s *local) busy() bool {
 // processQueue gets the oldest job in the queue, sees if it's possible to
 // run it, does so if it does, otherwise returns the job to the queue
 func (s *local) processQueue() error {
+	if s.cleaned {
+		return nil
+	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	var key, cmd string
@@ -280,4 +284,11 @@ func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
 		s.rcount = 0
 	}
 	s.mutex.Unlock()
+}
+
+// cleanup destroys our internal queue
+func (s *local) cleanup(deployment string, shell string) {
+	s.cleaned = true
+	s.queue.Destroy()
+	return
 }

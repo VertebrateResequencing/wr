@@ -889,6 +889,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 func (s *Server) shutdown() {
 	s.sock.Close()
 	s.db.close()
+	s.scheduler.Cleanup()
 
 	//*** we want to persist production queues to disk
 	//*** want to do db backup; in cloud mode we want to copy backup to local

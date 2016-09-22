@@ -93,6 +93,7 @@ type scheduleri interface {
 	busy() bool                                              // achieve the aims of Busy()
 	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
+	cleanup(deployment string, shell string)                 // do any clean up once you've finished using the job scheduler
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -102,6 +103,8 @@ type Scheduler struct {
 	Name    string
 	limiter map[string]int
 	sync.Mutex
+	deployment string
+	shell      string
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
@@ -122,6 +125,8 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 		s.Name = name
 		s.limiter = make(map[string]int)
 		err = s.impl.initialize(deployment, shell)
+		s.deployment = deployment
+		s.shell = shell
 	}
 
 	return
@@ -189,6 +194,12 @@ func (s *Scheduler) ReserveTimeout() int {
 // as "infinite" queue time.
 func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 	return s.impl.maxQueueTime(req)
+}
+
+// Cleanup means you've finished using a scheduler and it can delete any
+// remaining jobs in its system and clean up any other used resources.
+func (s *Scheduler) Cleanup() {
+	s.impl.cleanup(s.deployment, s.shell)
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-
