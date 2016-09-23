@@ -55,6 +55,7 @@ import (
 // FailReason* are the reasons for cmd line failure stored on Jobs
 const (
 	FailReasonEnv      = "failed to get environment variables"
+	FailReasonCwd      = "working directory does not exist"
 	FailReasonStart    = "command failed to start"
 	FailReasonCPerm    = "command permission problem"
 	FailReasonCFound   = "command not found"
@@ -376,7 +377,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 	cmd.Stderr = &prefixSuffixSaver{N: 4096}
 	cmd.Stdout = &prefixSuffixSaver{N: 4096}
 
-	// we'll run the command from the desired directory
+	// we'll run the command from the desired directory, which must exist or
+	// it will fail
+	if _, err := os.Stat(job.Cwd); os.IsNotExist(err) {
+		c.Bury(job, FailReasonCwd)
+	}
 	cmd.Dir = job.Cwd
 
 	// and we'll run it with the environment variables that were present when
