@@ -287,8 +287,54 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	return
 }
 
+// cheapestServerFlavor achieves the aims of CheapestServerFlavor()
+func (p *openstackp) cheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error) {
+	// get available flavours, pick the one that has the lowest mem, disk and
+	// cpus that meet our minimums
+	//*** should we cache the unfiltered list of all flavours and use that?...
+	pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{MinRAM: minRAM, MinDisk: minDisk})
+	err = pager.EachPage(func(page pagination.Page) (bool, error) {
+		flavorList, err := flavors.ExtractFlavors(page)
+		if err != nil {
+			return false, err
+		}
+
+		for _, f := range flavorList {
+			if f.VCPUs >= minCPUs {
+				choose := false
+				if flavorID == "" {
+					choose = true
+				} else if f.VCPUs < CPUs {
+					choose = true
+				} else if f.VCPUs == CPUs {
+					if f.RAM < ramMB {
+						choose = true
+					} else if f.RAM == ramMB && f.Disk < diskGB {
+						choose = true
+					}
+				}
+
+				if choose {
+					flavorID = f.ID
+					ramMB = f.RAM
+					diskGB = f.Disk
+					CPUs = f.VCPUs
+				}
+			}
+		}
+
+		return true, nil
+	})
+
+	if err == nil && flavorID == "" {
+		err = Error{"openstack", "cheapestServerFlavor", ErrNoFlavor}
+	}
+
+	return
+}
+
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, os string, minRAM int, minDisk int, minCPUs int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, os string, flavorID string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -303,49 +349,6 @@ func (p *openstackp) spawn(resources *Resources, os string, minRAM int, minDisk 
 			if i.Progress == 100 && strings.HasPrefix(i.Name, os) {
 				imageID = i.ID
 				return false, nil
-			}
-		}
-
-		return true, nil
-	})
-	if err != nil {
-		return
-	}
-
-	// get available flavours, pick the one that has the lowest mem, disk and
-	// cpus that meet our minimums
-	pager = flavors.ListDetail(p.computeClient, flavors.ListOpts{MinRAM: minRAM, MinDisk: minDisk})
-	var flavorID string
-	var chosenRAM int
-	var chosenDisk int
-	var chosenCPUs int
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		flavorList, err := flavors.ExtractFlavors(page)
-		if err != nil {
-			return false, err
-		}
-
-		for _, f := range flavorList {
-			if f.VCPUs >= minCPUs {
-				choose := false
-				if flavorID == "" {
-					choose = true
-				} else if f.VCPUs < chosenCPUs {
-					choose = true
-				} else if f.VCPUs == chosenCPUs {
-					if f.RAM < chosenRAM {
-						choose = true
-					} else if f.RAM == chosenRAM && f.Disk < chosenDisk {
-						choose = true
-					}
-				}
-
-				if choose {
-					flavorID = f.ID
-					chosenRAM = f.RAM
-					chosenDisk = f.Disk
-					chosenCPUs = f.VCPUs
-				}
 			}
 		}
 

@@ -63,7 +63,13 @@ func TestOpenStack(t *testing.T) {
 				So(p.resources.Details["router"], ShouldNotBeBlank)
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
-					serverID, serverIP, adminPass, err := p.Spawn(osPrefix, 2048, 20, 1, true)
+					flavor, ramMB, diskGB, CPUs, err := p.CheapestServerFlavor(2048, 20, 1)
+					So(err, ShouldBeNil)
+					So(ramMB, ShouldBeGreaterThanOrEqualTo, 2048)
+					So(diskGB, ShouldBeGreaterThanOrEqualTo, 20)
+					So(CPUs, ShouldBeGreaterThanOrEqualTo, 1)
+
+					serverID, serverIP, adminPass, err := p.Spawn(osPrefix, flavor, true)
 					So(err, ShouldBeNil)
 					So(serverID, ShouldNotBeBlank)
 					So(adminPass, ShouldNotBeBlank)
@@ -77,7 +83,7 @@ func TestOpenStack(t *testing.T) {
 					So(ok, ShouldBeTrue)
 
 					Convey("And you can Spawn another with an internal ip", func() {
-						serverID2, serverIP2, adminPass2, err := p.Spawn(osPrefix, 2048, 20, 1, false)
+						serverID2, serverIP2, adminPass2, err := p.Spawn(osPrefix, flavor, false)
 						So(err, ShouldBeNil)
 						So(serverID2, ShouldNotBeBlank)
 						So(adminPass2, ShouldNotBeBlank)
@@ -101,6 +107,14 @@ func TestOpenStack(t *testing.T) {
 							So(err, ShouldBeNil)
 							So(ok, ShouldBeFalse)
 						})
+					})
+
+					Convey("But you can't even get a server flavor when your requirements are crazy", func() {
+						_, _, _, _, err := p.CheapestServerFlavor(9999999999, 20, 9999999)
+						So(err, ShouldNotBeNil)
+						perr, ok := err.(Error)
+						So(ok, ShouldBeTrue)
+						So(perr.Err, ShouldEqual, ErrNoFlavor)
 					})
 				})
 

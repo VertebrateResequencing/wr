@@ -49,6 +49,7 @@ var (
 	ErrBadProvider     = "unknown provider name"
 	ErrMissingEnv      = "missing environment variables: "
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
+	ErrNoFlavor        = "no server flavor can meet your resource requirements"
 )
 
 // dnsNameServers holds some public (google) dns name server addresses for use
@@ -80,13 +81,14 @@ type Resources struct {
 // this interface must be satisfied to add support for a particular cloud
 // provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                                        // return the environment variables required to function
-	initialize() error                                                                                                                                            // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int) error                                                                                                       // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	spawn(resources *Resources, os string, minRAM int, minDisk int, minCPUs int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
-	checkServer(serverID string) (working bool, err error)                                                                                                        // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                                          // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                                          // achieve the aims of TearDown()
+	requiredEnv() []string                                                                                                                 // return the environment variables required to function
+	initialize() error                                                                                                                     // do any initial config set up such as authentication
+	deploy(resources *Resources, requiredPorts []int) error                                                                                // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	cheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error)               // achieve the aims of CheapestServerFlavor()
+	spawn(resources *Resources, os string, flavor string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
+	checkServer(serverID string) (working bool, err error)                                                                                 // achieve the aims of CheckServer()
+	destroyServer(serverID string) error                                                                                                   // achieve the aims of DestroyServer()
+	tearDown(resources *Resources) error                                                                                                   // achieve the aims of TearDown()
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
@@ -170,16 +172,24 @@ func (p *Provider) Deploy(requiredPorts []int) (err error) {
 	return
 }
 
+// CheapestServerFlavor returns details of the smallest (cheapest) server
+// "flavor" available that satisfies your minimum ram (MB), disk (GB) and CPU
+// (core count) requirements. Use the first return value for passing to Spawn().
+// If no flavor meets your requirements you will get an error matching
+// ErrNoFlavor.
+func (p *Provider) CheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error) {
+	return p.impl.cheapestServerFlavor(minRAM, minDisk, minCPUs)
+}
+
 // Spawn creates a new server using an OS image with a name prefixed with the
-// given os name, and the smallest (cheapest) server "flavour" available that
-// satisfies your minimum ram (MB), disk (GB) and CPU requirements. If you need
-// an external IP so that you can ssh to the server externally, supply true as
-// the last argument. Returns the serverID so that you can later call
-// DestroyServer(). Returns the ip so you can ssh to it, and the admin password
-// in case you need to sudo on the server. You will need to know the username
-// that you can log in with on your chosen OS image.
-func (p *Provider) Spawn(os string, minRAM int, minDisk int, minCPUs int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
-	serverID, serverIP, adminPass, err = p.impl.spawn(p.resources, os, minRAM, minDisk, minCPUs, externalIP)
+// given os name, with the given flavor ID (that you could get from
+// CheapestServerFlavor()). If you need an external IP so that you can ssh to
+// the server externally, supply true as the last argument. Returns the serverID
+// so that you can later call DestroyServer(). Returns the ip so you can ssh to
+// it, and the admin password in case you need to sudo on the server. You will
+// need to know the username that you can log in with on your chosen OS image.
+func (p *Provider) Spawn(os string, flavorID string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
+	serverID, serverIP, adminPass, err = p.impl.spawn(p.resources, os, flavorID, externalIP)
 
 	if err == nil && externalIP {
 		// update resources and save to disk
