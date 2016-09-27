@@ -40,8 +40,8 @@ func TestLocal(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{1, 1 * time.Second, 1, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
+		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, ""}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
 
 		Convey("ReserveTimeout() returns 1 second", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -229,8 +229,8 @@ func TestLSF(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, ""}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -245,30 +245,30 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, ""}, 10)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 10)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "yesterday")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal") // used to be "test" before our memory limits were removed from all queues
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, ""}).Minutes(), ShouldEqual, 4320)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 4320)
 			})
 		}
 

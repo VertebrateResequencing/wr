@@ -73,6 +73,7 @@ type Requirements struct {
 	Memory int           // the expected peak memory in MB Cmd will use while running
 	Time   time.Duration // the expected time Cmd will take to run
 	CPUs   int           // how many processor cores the Cmd will use
+	Disk   int           // the required local disk space in GB the Cmd needs to run
 	Other  string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
 }
 
@@ -203,11 +204,11 @@ func (s *Scheduler) Cleanup() {
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-
-// width (length 37) string unique to the cmd and deployment, and optionally
-// suffixed with a random string (length 9, total length 46).
+// width (length 36) string unique to the cmd and deployment, and optionally
+// suffixed with a random string (length 9, total length 45).
 func jobName(cmd string, deployment string, unique bool) (name string) {
 	l, h := farm.Hash128([]byte(cmd))
-	name = fmt.Sprintf("vrp%s_%016x%016x", deployment[0:1], l, h)
+	name = fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
 
 	if unique {
 		// based on http://stackoverflow.com/a/31832326/675083

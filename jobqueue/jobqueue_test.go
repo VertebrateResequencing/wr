@@ -72,16 +72,22 @@ func TestJobqueue(t *testing.T) {
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
-	port := config.ManagerPort
-	webport := config.ManagerWeb
-	addr := "localhost:" + port
+	serverConfig := ServerConfig{
+		Port:          config.ManagerPort,
+		WebPort:       config.ManagerWeb,
+		SchedulerName: config.ManagerScheduler,
+		Shell:         config.RunnerExecShell,
+		DBFile:        config.ManagerDbFile,
+		DBFileBackup:  config.ManagerDbBkFile,
+		Deployment:    config.Deployment,
+	}
+	addr := "localhost:" + config.ManagerPort
 
 	ServerLogClientErrors = false
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
 	clientConnectTime := 150 * time.Millisecond
-	rc := ""
 
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
@@ -112,7 +118,7 @@ func TestJobqueue(t *testing.T) {
 			// 	log.SetOutput(logfile)
 			// }
 
-			server, msg, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+			server, msg, err := Serve(serverConfig)
 			if err != nil {
 				log.Fatalf("test daemon failed to start: %s\n", err)
 			}
@@ -242,7 +248,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
@@ -252,7 +258,7 @@ func TestJobqueue(t *testing.T) {
 
 			sstats, err := jq.ServerStats()
 			So(err, ShouldBeNil)
-			So(sstats.ServerInfo.Port, ShouldEqual, port)
+			So(sstats.ServerInfo.Port, ShouldEqual, serverConfig.Port)
 			So(sstats.ServerInfo.PID, ShouldBeGreaterThan, 0)
 			So(sstats.ServerInfo.Deployment, ShouldEqual, "development")
 
@@ -460,7 +466,7 @@ func TestJobqueue(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				So(err, ShouldBeNil)
 
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -500,7 +506,7 @@ func TestJobqueue(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
@@ -1164,7 +1170,7 @@ func TestJobqueue(t *testing.T) {
 	// db to test some behaviours
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 2 * time.Second
-		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add 2 jobs", func() {
@@ -1192,7 +1198,7 @@ func TestJobqueue(t *testing.T) {
 
 				server.Stop()
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1251,7 +1257,7 @@ func TestJobqueue(t *testing.T) {
 				So(up, ShouldBeFalse)
 
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1295,7 +1301,7 @@ func TestJobqueue(t *testing.T) {
 				jq.Disconnect() // user must always Disconnect before connecting again!
 
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1325,7 +1331,9 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
-		server, _, err = Serve(port, webport, "local", config.RunnerExecShell, "go test -tags netgo -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir "+runnertmpdir, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment) // +" > /dev/null 2>&1"
+		runningConfig := serverConfig
+		runningConfig.RunnerCmd = "go test -tags netgo -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir // +" > /dev/null 2>&1"
+		server, _, err = Serve(runningConfig)
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
@@ -1417,18 +1425,25 @@ func TestJobqueueSpeed(t *testing.T) {
 		return
 	}
 
+	config := internal.ConfigLoad("development", true)
+	serverConfig := ServerConfig{
+		Port:          config.ManagerPort,
+		WebPort:       config.ManagerWeb,
+		SchedulerName: config.ManagerScheduler,
+		Shell:         config.RunnerExecShell,
+		DBFile:        config.ManagerDbFile,
+		DBFileBackup:  config.ManagerDbBkFile,
+		Deployment:    config.Deployment,
+	}
+	addr := "localhost:" + config.ManagerPort
+
 	// some manual speed tests (don't like the way the benchmarking feature
 	// works)
 	if false {
-		config := internal.ConfigLoad("development", true)
-		port := config.ManagerPort
-		webport := config.ManagerWeb
-		addr := "localhost:" + port
-		rc := ""
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
-		server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err := Serve(serverConfig)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1523,15 +1538,10 @@ func TestJobqueueSpeed(t *testing.T) {
 
 	/* test speed of bolt db when there are lots of jobs already stored
 			if true {
-				config := internal.ConfigLoad("development", true)
-				port := config.ManagerPort
-				webport := config.ManagerWeb
-				addr := "localhost:" + port
-				rc := ""
 				n := 10000000 // num jobs to start with
 				b := 10000    // jobs per identifier
 
-				server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err := Serve(serverConfig)
 				if err != nil {
 					log.Fatal(err)
 				}

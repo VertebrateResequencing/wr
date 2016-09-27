@@ -302,7 +302,16 @@ func startJQ(sayStarted bool) {
 	}
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.ManagerPort, config.ManagerWeb, scheduler, config.RunnerExecShell, exe+" runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+	server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
+		Port:          config.ManagerPort,
+		WebPort:       config.ManagerWeb,
+		SchedulerName: scheduler,
+		Shell:         config.RunnerExecShell,
+		RunnerCmd:     exe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		DBFile:        config.ManagerDbFile,
+		DBFileBackup:  config.ManagerDbBkFile,
+		Deployment:    config.Deployment,
+	})
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)
