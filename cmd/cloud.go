@@ -146,7 +146,12 @@ website locally, even though the manager is actually running remotely.`,
 		}
 		if serverIP == "" {
 			info("please wait while a server is spawned on %s...", providerName)
-			_, serverIP, _, err = provider.Spawn(osPrefix, 2048, 20, 1, true)
+			flavor, _, _, _, err := provider.CheapestServerFlavor(2048, 1, 1)
+			if err != nil {
+				provider.TearDown()
+				die("failed to launch a server in %s: %s", providerName, err)
+			}
+			_, serverIP, _, err = provider.Spawn(osPrefix, flavor, true)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
