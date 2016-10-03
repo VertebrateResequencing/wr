@@ -36,7 +36,7 @@ func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", "development", "bash")
+		s, err := New("local", &SchedulerConfigLocal{"development", "bash"})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -217,7 +217,7 @@ func TestLSF(t *testing.T) {
 	}
 	if err != nil {
 		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err := New("lsf", "development", "bash")
+			_, err := New("lsf", &SchedulerConfigLSF{"development", "bash"})
 			So(err, ShouldNotBeNil)
 		})
 		return
@@ -225,7 +225,7 @@ func TestLSF(t *testing.T) {
 
 	host, _ := os.Hostname()
 	Convey("You can get a new lsf scheduler", t, func() {
-		s, err := New("lsf", "development", "bash")
+		s, err := New("lsf", &SchedulerConfigLSF{"development", "bash"})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 

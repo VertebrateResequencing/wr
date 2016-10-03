@@ -44,17 +44,27 @@ var mt = []byte("MemTotal:")
 
 // local is our implementer of scheduleri
 type local struct {
+	config   *SchedulerConfigLocal
+	maxmb    int
+	maxcores int
+	mb       int
+	cores    int
+	queue    *queue.Queue
+	running  map[string]int
+	rcount   int
+	mutex    sync.Mutex
+	cleaned  bool
+}
+
+// SchedulerConfigLocal represents the configuration options required by the
+// local scheduler. All are required with no usable defaults.
+type SchedulerConfigLocal struct {
+	// deployment is one of "development" or "production".
 	deployment string
-	shell      string
-	maxmb      int
-	maxcores   int
-	mb         int
-	cores      int
-	queue      *queue.Queue
-	running    map[string]int
-	rcount     int
-	mutex      sync.Mutex
-	cleaned    bool
+
+	// shell is the shell to use to run the commands to interact with your job
+	// scheduler; 'bash' is recommended.
+	shell string
 }
 
 // jobs are what we store in our queue
@@ -66,7 +76,8 @@ type job struct {
 
 // initialize finds out about the local machine. Compatible with linux-like
 // systems with /proc/meminfo only!
-func (s *local) initialize(deployment string, shell string) (err error) {
+func (s *local) initialize(config interface{}) (err error) {
+	s.config = config.(*SchedulerConfigLocal)
 	s.maxcores = runtime.NumCPU()
 
 	// get MemTotal from /proc/meminfo
@@ -99,9 +110,6 @@ func (s *local) initialize(deployment string, shell string) (err error) {
 	s.queue = queue.New(localPlace)
 	s.running = make(map[string]int)
 
-	s.deployment = deployment
-	s.shell = shell
-
 	return
 }
 
@@ -123,7 +131,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 
 	// add to the queue
-	key := jobName(cmd, s.deployment, false)
+	key := jobName(cmd, s.config.deployment, false)
 	data := &job{cmd, req, count}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
@@ -198,19 +206,8 @@ func (s *local) processQueue() error {
 			continue
 		}
 
-		// now see if there's remaining capacity to run the job; we don't do any
-		// actual checking of current resources on the machine, but instead rely
-		// on our simple tracking based on how many cpus and memory prior cmds
-		// were /supposed/ to use. This could be bad for misbehaving cmds that
-		// use too much memory, but we will end up killing cmds that do this, so
-		// it shouldn't be too much of an issue.
-		canCount = int(math.Floor(float64(s.maxmb-s.mb) / float64(mbs)))
-		if canCount >= 1 {
-			canCount2 := int(math.Floor(float64(s.maxcores-s.cores) / float64(cpus)))
-			if canCount2 < canCount {
-				canCount = canCount2
-			}
-		}
+		// now see if there's remaining capacity to run the job
+		canCount = s.canCount(mbs, cpus)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -258,9 +255,27 @@ func (s *local) processQueue() error {
 	return nil
 }
 
+// canCount tells you how many jobs with the given mb and cpu requirements it
+// is possible to run, given remaining resources
+func (s *local) canCount(mbs, cpus int) (canCount int) {
+	// we don't do any actual checking of current resources on the machine, but
+	// instead rely on our simple tracking based on how many cpus and memory
+	// prior cmds were /supposed/ to use. This could be bad for misbehaving cmds
+	// that use too much memory, but we will end up killing cmds that do this,
+	// so it shouldn't be too much of an issue.
+	canCount = int(math.Floor(float64(s.maxmb-s.mb) / float64(mbs)))
+	if canCount >= 1 {
+		canCount2 := int(math.Floor(float64(s.maxcores-s.cores) / float64(cpus)))
+		if canCount2 < canCount {
+			canCount = canCount2
+		}
+	}
+	return
+}
+
 // runcmd runs the command, kills it if it goes much over memory or time limits.
 func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
-	ec := exec.Command(s.shell, "-c", cmd)
+	ec := exec.Command(s.config.shell, "-c", cmd)
 	err := ec.Start()
 	if err != nil {
 		fmt.Println(err)
@@ -287,7 +302,7 @@ func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
 }
 
 // cleanup destroys our internal queue
-func (s *local) cleanup(deployment string, shell string) {
+func (s *local) cleanup() {
 	s.cleaned = true
 	s.queue.Destroy()
 	return

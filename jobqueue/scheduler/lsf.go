@@ -36,8 +36,7 @@ import (
 
 // lsf is our implementer of scheduleri
 type lsf struct {
-	deployment         string
-	shell              string
+	config             *SchedulerConfigLSF
 	months             map[string]int
 	dateRegex          *regexp.Regexp
 	bsubRegex          *regexp.Regexp
@@ -47,10 +46,20 @@ type lsf struct {
 	sortedqKeys        []int
 }
 
+// SchedulerConfigLSF represents the configuration options required by the
+// LSF scheduler. All are required with no usable defaults.
+type SchedulerConfigLSF struct {
+	// deployment is one of "development" or "production".
+	deployment string
+
+	// shell is the shell to use to run the commands to interact with your job
+	// scheduler; 'bash' is recommended.
+	shell string
+}
+
 // initialize finds out about lsf's hosts and queues
-func (s *lsf) initialize(deployment string, shell string) error {
-	s.deployment = deployment
-	s.shell = shell
+func (s *lsf) initialize(config interface{}) error {
+	s.config = config.(*SchedulerConfigLSF)
 
 	// set up what should be global vars, but we don't really want these taking
 	// up space if the user never uses LSF
@@ -73,7 +82,7 @@ func (s *lsf) initialize(deployment string, shell string) error {
 
 	// use lsadmin to see what units memlimit (bsub -M) is in
 	s.memLimitMultiplier = float32(1000) // by default assume it's KB
-	cmdout, err := exec.Command(shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output()
+	cmdout, err := exec.Command(s.config.shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output()
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to run [lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS]: %s", err)}
 	}
@@ -92,7 +101,7 @@ func (s *lsf) initialize(deployment string, shell string) error {
 	}
 
 	// parse bqueues -l to figure out what usable queues we have
-	bqcmd := exec.Command(shell, "-c", "bqueues -l")
+	bqcmd := exec.Command(s.config.shell, "-c", "bqueues -l")
 	bqout, err := bqcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bqueues -l]: %s", err)}
@@ -413,7 +422,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	// for checkCmd() to work efficiently we must always set a job name that
 	// corresponds to the cmd. It must also be unique otherwise LSF would not
 	// start running jobs with duplicate names until previous ones complete
-	name := jobName(cmd, s.deployment, true)
+	name := jobName(cmd, s.config.deployment, true)
 	if stillNeeded > 1 {
 		name += fmt.Sprintf("[1-%d]", stillNeeded)
 	}
@@ -421,7 +430,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 
 	// submit to the queue
 	//bsub := "bsub -J " + name + " -o /dev/null -e /dev/null " + reqString + " '" + cmd + "'"
-	//bsubcmd := exec.Command(s.shell, "-c", bsub)
+	//bsubcmd := exec.Command(s.config.shell, "-c", bsub)
 	bsubcmd := exec.Command("bsub", bsubArgs...)
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
@@ -544,9 +553,9 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 	// start until the first array with the same name ended.
 	var jobPrefix string
 	if cmd == "" {
-		jobPrefix = fmt.Sprintf("vrp%s_", s.deployment[0:1])
+		jobPrefix = fmt.Sprintf("wr%s_", s.config.deployment[0:1])
 	} else {
-		jobPrefix = jobName(cmd, s.deployment, false)
+		jobPrefix = jobName(cmd, s.config.deployment, false)
 	}
 
 	if max >= 0 {
@@ -622,7 +631,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 type bjobsCB func(matches []string)
 
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
-	bjcmd := exec.Command(s.shell, "-c", "bjobs -w")
+	bjcmd := exec.Command(s.config.shell, "-c", "bjobs -w")
 	bjout, err := bjcmd.StdoutPipe()
 	if err != nil {
 		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
@@ -659,12 +668,12 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 }
 
 // cleanup bkills any remaining jobs we created
-func (s *lsf) cleanup(deployment string, shell string) {
+func (s *lsf) cleanup() {
 	toKill := []string{"-b"}
 	cb := func(matches []string) {
 		toKill = append(toKill, matches[1])
 	}
-	s.parseBjobs(fmt.Sprintf("vrp%s_", s.deployment[0:1]), cb)
+	s.parseBjobs(fmt.Sprintf("wr%s_", s.config.deployment[0:1]), cb)
 	if len(toKill) > 1 {
 		killcmd := exec.Command("bkill", toKill...)
 		killcmd.Run()

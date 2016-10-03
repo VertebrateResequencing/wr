@@ -89,12 +89,12 @@ type CmdStatus struct {
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize(deployment string, shell string) error        // do any initial set up to be able to use the job scheduler
+	initialize(config interface{}) error                     // do any initial set up to be able to use the job scheduler
 	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
 	busy() bool                                              // achieve the aims of Busy()
 	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
-	cleanup(deployment string, shell string)                 // do any clean up once you've finished using the job scheduler
+	cleanup()                                                // do any clean up once you've finished using the job scheduler
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -104,15 +104,13 @@ type Scheduler struct {
 	Name    string
 	limiter map[string]int
 	sync.Mutex
-	deployment string
-	shell      string
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
-// Possible names so far are "lsf" and "local". You must provide the shell that
-// commands to interact with your job scheduler will be run on; 'bash' is
-// recommended.
-func New(name string, deployment string, shell string) (s *Scheduler, err error) {
+// Possible names so far are "lsf" and "local". You must also provide a config
+// struct appropriate for your chosen scheduler, eg. for the local scheduler you
+// will provide a SchedulerConfigLocal.
+func New(name string, config interface{}) (s *Scheduler, err error) {
 	switch name {
 	case "lsf":
 		s = &Scheduler{impl: new(lsf)}
@@ -125,9 +123,7 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 	} else {
 		s.Name = name
 		s.limiter = make(map[string]int)
-		err = s.impl.initialize(deployment, shell)
-		s.deployment = deployment
-		s.shell = shell
+		err = s.impl.initialize(config)
 	}
 
 	return
@@ -200,7 +196,7 @@ func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 // Cleanup means you've finished using a scheduler and it can delete any
 // remaining jobs in its system and clean up any other used resources.
 func (s *Scheduler) Cleanup() {
-	s.impl.cleanup(s.deployment, s.shell)
+	s.impl.cleanup()
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-
