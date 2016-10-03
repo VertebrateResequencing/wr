@@ -44,7 +44,7 @@ var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 
 // openstackEnvs contains the environment variable names we need to connect to
 // OpenStack
-var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME"}
+var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"}
 
 // openstack is our implementer of provideri
 type openstackp struct {
