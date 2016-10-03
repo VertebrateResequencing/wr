@@ -173,9 +173,10 @@ type ServerConfig struct {
 	// jobs will be submitted to.
 	SchedulerName string
 
-	// Shell executable that should be used for running commands via ("bash" is
-	// recommended).
-	Shell string
+	// SchedulerConfig should define the config options needed by the chosen
+	// scheduler, eg. SchedulerConfigLocal{Deployment: "production", Shell:
+	// "bash"} if using the local scheduler.
+	SchedulerConfig interface{}
 
 	// The command line needed to bring up a jobqueue runner client, which
 	// should contain 6 %s parts which will be replaced with the queue name,
@@ -269,7 +270,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	// we will spawn runner clients via the requested job scheduler
-	sch, err := scheduler.New(config.SchedulerName, config.Deployment, config.Shell)
+	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig)
 	if err != nil {
 		return
 	}

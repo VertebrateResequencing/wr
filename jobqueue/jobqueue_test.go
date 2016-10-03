@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	// "github.com/boltdb/bolt"
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
@@ -73,13 +74,13 @@ func TestJobqueue(t *testing.T) {
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
 	serverConfig := ServerConfig{
-		Port:          config.ManagerPort,
-		WebPort:       config.ManagerWeb,
-		SchedulerName: config.ManagerScheduler,
-		Shell:         config.RunnerExecShell,
-		DBFile:        config.ManagerDbFile,
-		DBFileBackup:  config.ManagerDbBkFile,
-		Deployment:    config.Deployment,
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   config.ManagerScheduler,
+		SchedulerConfig: &jqs.SchedulerConfigLocal{Deployment: "development", Shell: config.RunnerExecShell},
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
 	}
 	addr := "localhost:" + config.ManagerPort
 
@@ -1427,13 +1428,13 @@ func TestJobqueueSpeed(t *testing.T) {
 
 	config := internal.ConfigLoad("development", true)
 	serverConfig := ServerConfig{
-		Port:          config.ManagerPort,
-		WebPort:       config.ManagerWeb,
-		SchedulerName: config.ManagerScheduler,
-		Shell:         config.RunnerExecShell,
-		DBFile:        config.ManagerDbFile,
-		DBFileBackup:  config.ManagerDbBkFile,
-		Deployment:    config.Deployment,
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   config.ManagerScheduler,
+		SchedulerConfig: &jqs.SchedulerConfigLocal{Deployment: "development", Shell: config.RunnerExecShell},
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
 	}
 	addr := "localhost:" + config.ManagerPort
 

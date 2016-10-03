@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/kardianos/osext"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
@@ -301,16 +302,24 @@ func startJQ(sayStarted bool) {
 		os.Exit(1)
 	}
 
+	var schedulerConfig interface{}
+	switch scheduler {
+	case "local":
+		schedulerConfig = &jqs.SchedulerConfigLocal{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+	case "lsf":
+		schedulerConfig = &jqs.SchedulerConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+	}
+
 	// start the jobqueue server
 	server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
-		Port:          config.ManagerPort,
-		WebPort:       config.ManagerWeb,
-		SchedulerName: scheduler,
-		Shell:         config.RunnerExecShell,
-		RunnerCmd:     exe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
-		DBFile:        config.ManagerDbFile,
-		DBFileBackup:  config.ManagerDbBkFile,
-		Deployment:    config.Deployment,
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   scheduler,
+		SchedulerConfig: schedulerConfig,
+		RunnerCmd:       exe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
 	})
 
 	if sayStarted && err == nil {
