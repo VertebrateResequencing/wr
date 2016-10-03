@@ -59,12 +59,12 @@ type local struct {
 // SchedulerConfigLocal represents the configuration options required by the
 // local scheduler. All are required with no usable defaults.
 type SchedulerConfigLocal struct {
-	// deployment is one of "development" or "production".
-	deployment string
+	// Deployment is one of "development" or "production".
+	Deployment string
 
-	// shell is the shell to use to run the commands to interact with your job
+	// Shell is the shell to use to run the commands to interact with your job
 	// scheduler; 'bash' is recommended.
-	shell string
+	Shell string
 }
 
 // jobs are what we store in our queue
@@ -131,7 +131,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 
 	// add to the queue
-	key := jobName(cmd, s.config.deployment, false)
+	key := jobName(cmd, s.config.Deployment, false)
 	data := &job{cmd, req, count}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
@@ -275,7 +275,7 @@ func (s *local) canCount(mbs, cpus int) (canCount int) {
 
 // runcmd runs the command, kills it if it goes much over memory or time limits.
 func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
-	ec := exec.Command(s.config.shell, "-c", cmd)
+	ec := exec.Command(s.config.Shell, "-c", cmd)
 	err := ec.Start()
 	if err != nil {
 		fmt.Println(err)
