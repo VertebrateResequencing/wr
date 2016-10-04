@@ -59,9 +59,6 @@ type local struct {
 // SchedulerConfigLocal represents the configuration options required by the
 // local scheduler. All are required with no usable defaults.
 type SchedulerConfigLocal struct {
-	// Deployment is one of "development" or "production".
-	Deployment string
-
 	// Shell is the shell to use to run the commands to interact with your job
 	// scheduler; 'bash' is recommended.
 	Shell string
@@ -131,7 +128,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 
 	// add to the queue
-	key := jobName(cmd, s.config.Deployment, false)
+	key := jobName(cmd, "n/a", false)
 	data := &job{cmd, req, count}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds

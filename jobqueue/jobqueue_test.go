@@ -76,8 +76,8 @@ func TestJobqueue(t *testing.T) {
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
-		SchedulerName:   config.ManagerScheduler,
-		SchedulerConfig: &jqs.SchedulerConfigLocal{Deployment: "development", Shell: config.RunnerExecShell},
+		SchedulerName:   "local",
+		SchedulerConfig: &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
@@ -1430,8 +1430,8 @@ func TestJobqueueSpeed(t *testing.T) {
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
-		SchedulerName:   config.ManagerScheduler,
-		SchedulerConfig: &jqs.SchedulerConfigLocal{Deployment: "development", Shell: config.RunnerExecShell},
+		SchedulerName:   "local",
+		SchedulerConfig: &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
