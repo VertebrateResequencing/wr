@@ -78,12 +78,21 @@ type Resources struct {
 	Servers      map[string]string // the serverID => ip mapping of any servers Spawn()ed with an external ip
 }
 
+// Quota struct describes the limit on what resources you are allowed to use.
+// 0 values mean that resource is unlimited.
+type Quota struct {
+	Ram       int // total MBs allowed
+	Cores     int // total CPU cores allowed
+	Instances int // max number of instances allowed
+}
+
 // this interface must be satisfied to add support for a particular cloud
 // provider.
 type provideri interface {
 	requiredEnv() []string                                                                                                                 // return the environment variables required to function
 	initialize() error                                                                                                                     // do any initial config set up such as authentication
 	deploy(resources *Resources, requiredPorts []int) error                                                                                // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	getQuota() (*Quota, error)                                                                                                             // achieve the aims of GetQuota()
 	cheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error)               // achieve the aims of CheapestServerFlavor()
 	spawn(resources *Resources, os string, flavor string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
 	checkServer(serverID string) (working bool, err error)                                                                                 // achieve the aims of CheckServer()
@@ -170,6 +179,11 @@ func (p *Provider) Deploy(requiredPorts []int) (err error) {
 	err = p.saveResources()
 
 	return
+}
+
+// GetQuota returns details of the maximum resources the user can request.
+func (p *Provider) GetQuota() (quota *Quota, err error) {
+	return p.impl.getQuota()
 }
 
 // CheapestServerFlavor returns details of the smallest (cheapest) server

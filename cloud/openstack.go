@@ -25,6 +25,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/quotasets"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/secgroups"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/images"
@@ -284,6 +285,20 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	}
 	resources.Details["router"] = routerID
 
+	return
+}
+
+// getQuota achieves the aims of GetQuota().
+func (p *openstackp) getQuota() (quota *Quota, err error) {
+	q, err := quotasets.Get(p.computeClient, os.Getenv("OS_TENANT_ID")).Extract()
+	if err != nil {
+		return
+	}
+	quota = &Quota{
+		Ram:       q.Ram,
+		Cores:     q.Cores,
+		Instances: q.Instances,
+	}
 	return
 }
 

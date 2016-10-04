@@ -48,6 +48,18 @@ func TestOpenStack(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 
+			Convey("You can get your quota details", func() {
+				q, err := p.GetQuota()
+				So(err, ShouldBeNil)
+				// author only tests, where I know the expected results
+				host, _ := os.Hostname()
+				if host == "vr-2-2-02" {
+					So(q.Cores, ShouldEqual, 20)
+					So(q.Instances, ShouldEqual, 10)
+					So(q.Ram, ShouldEqual, 4096)
+				}
+			})
+
 			Convey("You can deploy to OpenStack", func() {
 				err := p.Deploy([]int{22})
 				So(err, ShouldBeNil)
