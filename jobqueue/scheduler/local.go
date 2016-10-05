@@ -52,11 +52,11 @@ type reqChecker func(req *Requirements) error
 // can be run. (We make use of this in the local struct so that other
 // implementers of scheduleri can embed local, use local's processQueue(), but
 // have their own canCounter implementation.)
-type canCounter func(mbs, cpus int) (canCount int)
+type canCounter func(req *Requirements) (canCount int)
 
 // cmdRunners are functions used by processQueue() to actually run cmds.
 // (Their reason for being is the same as for canCounters.)
-type cmdRunner func(cmd string, mbs int, maxt time.Duration)
+type cmdRunner func(cmd string, req *Requirements)
 
 // local is our implementer of scheduleri.
 type local struct {
@@ -190,8 +190,8 @@ func (s *local) processQueue() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	var key, cmd string
-	var count, canCount, mbs, cpus int
-	var t time.Duration
+	var req *Requirements
+	var count, canCount int
 	var j *job
 
 	// get the oldest job
@@ -213,9 +213,7 @@ func (s *local) processQueue() error {
 		toRelease = append(toRelease, key)
 		j = item.Data.(*job)
 		cmd = j.cmd
-		mbs = j.req.Memory
-		cpus = j.req.CPUs
-		t = j.req.Time
+		req = j.req
 		count = j.count
 
 		running := s.running[key]
@@ -227,7 +225,7 @@ func (s *local) processQueue() error {
 		}
 
 		// now see if there's remaining capacity to run the job
-		canCount = s.canCountFunc(mbs, cpus)
+		canCount = s.canCountFunc(req)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -248,15 +246,15 @@ func (s *local) processQueue() error {
 
 	// start running what we can
 	for i := 0; i < canCount; i++ {
-		s.mb += mbs
-		s.cores += cpus
+		s.mb += req.Memory
+		s.cores += req.CPUs
 		s.running[key]++
 
 		go func() {
-			s.runCmdFunc(cmd, mbs, t)
+			s.runCmdFunc(cmd, req)
 			s.mutex.Lock()
-			s.mb -= mbs
-			s.cores -= cpus
+			s.mb -= req.Memory
+			s.cores -= req.CPUs
 			s.running[key]--
 			if s.running[key] <= 0 {
 				delete(s.running, key)
@@ -277,15 +275,15 @@ func (s *local) processQueue() error {
 
 // canCount tells you how many jobs with the given mb and cpu requirements it is
 // possible to run, given remaining resources.
-func (s *local) canCount(mbs, cpus int) (canCount int) {
+func (s *local) canCount(req *Requirements) (canCount int) {
 	// we don't do any actual checking of current resources on the machine, but
 	// instead rely on our simple tracking based on how many cpus and memory
 	// prior cmds were /supposed/ to use. This could be bad for misbehaving cmds
 	// that use too much memory, but we will end up killing cmds that do this,
 	// so it shouldn't be too much of an issue.
-	canCount = int(math.Floor(float64(s.maxmb-s.mb) / float64(mbs)))
+	canCount = int(math.Floor(float64(s.maxmb-s.mb) / float64(req.Memory)))
 	if canCount >= 1 {
-		canCount2 := int(math.Floor(float64(s.maxcores-s.cores) / float64(cpus)))
+		canCount2 := int(math.Floor(float64(s.maxcores-s.cores) / float64(req.CPUs)))
 		if canCount2 < canCount {
 			canCount = canCount2
 		}
@@ -296,7 +294,7 @@ func (s *local) canCount(mbs, cpus int) (canCount int) {
 // runCmd runs the command, kills it if it goes much over memory or time limits.
 // NB: errors are ignored (schedule() only guarantees that the cmds are run
 // count times, not that they are /successful/ that many times).
-func (s *local) runCmd(cmd string, mbs int, maxt time.Duration) {
+func (s *local) runCmd(cmd string, req *Requirements) {
 	ec := exec.Command(s.config.Shell, "-c", cmd)
 	err := ec.Start()
 	if err != nil {
@@ -308,7 +306,8 @@ func (s *local) runCmd(cmd string, mbs int, maxt time.Duration) {
 	s.rcount++
 	s.mutex.Unlock()
 
-	//*** set up monitoring of memory and time usage and kill if >> than mbs or maxt
+	//*** set up monitoring of memory and time usage and kill if >> than
+	// req.Memory or req.Time
 
 	err = ec.Wait()
 	if err != nil {
