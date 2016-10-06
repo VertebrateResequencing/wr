@@ -54,9 +54,10 @@ func TestOpenStack(t *testing.T) {
 				// author only tests, where I know the expected results
 				host, _ := os.Hostname()
 				if host == "vr-2-2-02" {
-					So(q.Cores, ShouldEqual, 20)
-					So(q.Instances, ShouldEqual, 10)
-					So(q.Ram, ShouldEqual, 4096)
+					So(q.MaxCores, ShouldEqual, 20)
+					So(q.MaxInstances, ShouldEqual, 10)
+					So(q.MaxRam, ShouldEqual, 4096)
+					//*** not reliable to try and test for the .Used* values...
 				}
 			})
 

@@ -78,12 +78,15 @@ type Resources struct {
 	Servers      map[string]string // the serverID => ip mapping of any servers Spawn()ed with an external ip
 }
 
-// Quota struct describes the limit on what resources you are allowed to use.
-// 0 values mean that resource is unlimited.
+// Quota struct describes the limit on what resources you are allowed to use (0
+// values mean that resource is unlimited), and how much you have already used.
 type Quota struct {
-	Ram       int // total MBs allowed
-	Cores     int // total CPU cores allowed
-	Instances int // max number of instances allowed
+	MaxRam        int // total MBs allowed
+	MaxCores      int // total CPU cores allowed
+	MaxInstances  int // max number of instances allowed
+	UsedRam       int
+	UsedCores     int
+	UsedInstances int
 }
 
 // this interface must be satisfied to add support for a particular cloud
@@ -181,7 +184,8 @@ func (p *Provider) Deploy(requiredPorts []int) (err error) {
 	return
 }
 
-// GetQuota returns details of the maximum resources the user can request.
+// GetQuota returns details of the maximum resources the user can request, and
+// the current resources used.
 func (p *Provider) GetQuota() (quota *Quota, err error) {
 	return p.impl.getQuota()
 }
