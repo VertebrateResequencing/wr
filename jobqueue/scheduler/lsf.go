@@ -406,13 +406,13 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	}
 	var bsubArgs []string
 
-	megabytes := req.Memory
+	megabytes := req.RAM
 	m := float32(megabytes) * s.memLimitMultiplier
 	//reqString := fmt.Sprintf("-q %s -M%0.0f -R 'select[mem>%d] rusage[mem=%d]'", queue, m, megabytes, megabytes)
 	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d]'", megabytes, megabytes))
-	if req.CPUs > 1 {
-		//reqString += fmt.Sprintf(" -n%d -R 'span[hosts=1]'", req.CPUs)
-		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.CPUs), "-R", "'span[hosts=1]'")
+	if req.Cores > 1 {
+		//reqString += fmt.Sprintf(" -n%d -R 'span[hosts=1]'", req.Cores)
+		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores), "-R", "'span[hosts=1]'")
 	}
 	if req.Other != "" {
 		//reqString += " " + req.Other
@@ -500,7 +500,7 @@ func (s *lsf) busy() bool {
 // to pass this in.
 func (s *lsf) determineQueue(req *Requirements, globalMax int) (chosenQueue string, err error) {
 	seconds := req.Time.Seconds()
-	mb := req.Memory
+	mb := req.RAM
 	sortedQueue := 0
 	if globalMax > 0 {
 		for _, queueKey := range s.sortedqKeys {

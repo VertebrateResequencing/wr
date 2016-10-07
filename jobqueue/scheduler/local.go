@@ -61,9 +61,9 @@ type cmdRunner func(cmd string, req *Requirements) error
 // local is our implementer of scheduleri.
 type local struct {
 	config       *SchedulerConfigLocal
-	maxmb        int
-	maxcores     int
-	mb           int
+	maxRAM       int
+	maxCores     int
+	ram          int
 	cores        int
 	rcount       int
 	mutex        sync.Mutex
@@ -94,8 +94,8 @@ type job struct {
 // systems with /proc/meminfo only!
 func (s *local) initialize(config interface{}) (err error) {
 	s.config = config.(*SchedulerConfigLocal)
-	s.maxcores = runtime.NumCPU()
-	s.maxmb, err = s.procMeminfoMBs()
+	s.maxCores = runtime.NumCPU()
+	s.maxRAM, err = s.procMeminfoMBs()
 	if err != nil {
 		return
 	}
@@ -184,7 +184,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met.
 func (s *local) reqCheck(req *Requirements) error {
-	if req.Memory > s.maxmb || req.CPUs > s.maxcores {
+	if req.RAM > s.maxRAM || req.Cores > s.maxCores {
 		return Error{"local", "schedule", ErrImpossible}
 	}
 	return nil
@@ -255,15 +255,15 @@ func (s *local) processQueue() error {
 
 	// start running what we can
 	for i := 0; i < canCount; i++ {
-		s.mb += req.Memory
-		s.cores += req.CPUs
+		s.ram += req.RAM
+		s.cores += req.Cores
 		s.running[key]++
 
 		go func() {
 			err := s.runCmdFunc(cmd, req)
 			s.mutex.Lock()
-			s.mb -= req.Memory
-			s.cores -= req.CPUs
+			s.ram -= req.RAM
+			s.cores -= req.Cores
 			s.running[key]--
 			if s.running[key] <= 0 {
 				delete(s.running, key)
@@ -284,17 +284,17 @@ func (s *local) processQueue() error {
 	return nil
 }
 
-// canCount tells you how many jobs with the given mb and cpu requirements it is
-// possible to run, given remaining resources.
+// canCount tells you how many jobs with the given RAM and core requirements it
+// is possible to run, given remaining resources.
 func (s *local) canCount(req *Requirements) (canCount int) {
 	// we don't do any actual checking of current resources on the machine, but
-	// instead rely on our simple tracking based on how many cpus and memory
-	// prior cmds were /supposed/ to use. This could be bad for misbehaving cmds
-	// that use too much memory, but we will end up killing cmds that do this,
-	// so it shouldn't be too much of an issue.
-	canCount = int(math.Floor(float64(s.maxmb-s.mb) / float64(req.Memory)))
+	// instead rely on our simple tracking based on how many cores and RAM prior
+	// cmds were /supposed/ to use. This could be bad for misbehaving cmds that
+	// use too much RAM, but we will end up killing cmds that do this, so it
+	// shouldn't be too much of an issue.
+	canCount = int(math.Floor(float64(s.maxRAM-s.ram) / float64(req.RAM)))
 	if canCount >= 1 {
-		canCount2 := int(math.Floor(float64(s.maxcores-s.cores) / float64(req.CPUs)))
+		canCount2 := int(math.Floor(float64(s.maxCores-s.cores) / float64(req.Cores)))
 		if canCount2 < canCount {
 			canCount = canCount2
 		}
@@ -302,7 +302,7 @@ func (s *local) canCount(req *Requirements) (canCount int) {
 	return
 }
 
-// runCmd runs the command, kills it if it goes much over memory or time limits.
+// runCmd runs the command, kills it if it goes much over RAM or time limits.
 // NB: we only return an error if we can't start the cmd, not if the command
 // fails (schedule() only guarantees that the cmds are run count times, not that
 // they are /successful/ that many times).
@@ -318,8 +318,8 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 	s.rcount++
 	s.mutex.Unlock()
 
-	//*** set up monitoring of memory and time usage and kill if >> than
-	// req.Memory or req.Time
+	//*** set up monitoring of RAM and time usage and kill if >> than
+	// req.RAM or req.Time
 
 	err = ec.Wait()
 	if err != nil {

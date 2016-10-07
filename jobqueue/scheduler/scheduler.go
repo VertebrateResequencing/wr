@@ -70,11 +70,11 @@ func (e Error) Error() string {
 // run, so that when provided to a scheduler it will be able to schedule things
 // appropriately.
 type Requirements struct {
-	Memory int           // the expected peak memory in MB Cmd will use while running
-	Time   time.Duration // the expected time Cmd will take to run
-	CPUs   int           // how many processor cores the Cmd will use
-	Disk   int           // the required local disk space in GB the Cmd needs to run
-	Other  string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
+	RAM   int           // the expected peak RAM in MB Cmd will use while running
+	Time  time.Duration // the expected time Cmd will take to run
+	Cores int           // how many processor cores the Cmd will use
+	Disk  int           // the required local disk space in GB the Cmd needs to run
+	Other string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
 }
 
 // CmdStatus lets you describe how many of a given cmd are already in the job
