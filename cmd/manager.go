@@ -305,7 +305,7 @@ func startJQ(sayStarted bool) {
 	var schedulerConfig interface{}
 	switch scheduler {
 	case "local":
-		schedulerConfig = &jqs.SchedulerConfigLocal{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell}
 	case "lsf":
 		schedulerConfig = &jqs.SchedulerConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	}
