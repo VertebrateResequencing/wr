@@ -25,9 +25,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-const resourceName = "wr_testing"
+const resourceName = "wr-testing"
 const crfile = "cloud.resources"
 
 func TestOpenStack(t *testing.T) {
@@ -61,7 +62,7 @@ func TestOpenStack(t *testing.T) {
 				}
 			})
 
-			Convey("You can deploy to OpenStack", func() {
+			Convey("You can deploy to OpenStack and get the cheapest server flavor", func() {
 				err := p.Deploy([]int{22})
 				So(err, ShouldBeNil)
 				So(p.resources, ShouldNotBeNil)
@@ -75,60 +76,149 @@ func TestOpenStack(t *testing.T) {
 				So(p.resources.Details["subnet"], ShouldNotBeBlank)
 				So(p.resources.Details["router"], ShouldNotBeBlank)
 
+				flavor, err := p.CheapestServerFlavor(512, 1, 1)
+				So(err, ShouldBeNil)
+				So(flavor.Memory, ShouldBeGreaterThanOrEqualTo, 512)
+				So(flavor.Disk, ShouldBeGreaterThanOrEqualTo, 1)
+				So(flavor.Cores, ShouldBeGreaterThanOrEqualTo, 1)
+
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
-					flavor, ramMB, diskGB, CPUs, err := p.CheapestServerFlavor(2048, 20, 1)
+					server, err := p.Spawn(osPrefix, flavor.ID, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					So(ramMB, ShouldBeGreaterThanOrEqualTo, 2048)
-					So(diskGB, ShouldBeGreaterThanOrEqualTo, 20)
-					So(CPUs, ShouldBeGreaterThanOrEqualTo, 1)
+					So(server.ID, ShouldNotBeBlank)
+					So(server.AdminPass, ShouldNotBeBlank)
+					So(server.Address, ShouldNotBeBlank)
+					So(server.Address, ShouldNotStartWith, "192")
+					So(p.resources.Servers[server.ID], ShouldNotBeNil)
+					So(p.resources.Servers[server.ID], ShouldEqual, server.Address)
 
-					serverID, serverIP, adminPass, err := p.Spawn(osPrefix, flavor, true)
-					So(err, ShouldBeNil)
-					So(serverID, ShouldNotBeBlank)
-					So(adminPass, ShouldNotBeBlank)
-					So(serverIP, ShouldNotBeBlank)
-					So(serverIP, ShouldNotStartWith, "192")
-					So(p.resources.Servers[serverID], ShouldNotBeNil)
-					So(p.resources.Servers[serverID], ShouldEqual, serverIP)
-
-					ok, err := p.CheckServer(serverID)
+					ok, err := p.CheckServer(server.ID)
 					So(err, ShouldBeNil)
 					So(ok, ShouldBeTrue)
 
-					Convey("And you can Spawn another with an internal ip", func() {
-						serverID2, serverIP2, adminPass2, err := p.Spawn(osPrefix, flavor, false)
+					Convey("And you can Spawn another with an internal ip and destroy it with DestroyServer", func() {
+						server2, err := p.Spawn(osPrefix, flavor.ID, 0*time.Second, false)
 						So(err, ShouldBeNil)
-						So(serverID2, ShouldNotBeBlank)
-						So(adminPass2, ShouldNotBeBlank)
-						So(serverID2, ShouldNotEqual, serverID)
-						So(adminPass2, ShouldNotEqual, adminPass)
-						So(serverIP2, ShouldStartWith, "192")
-						So(p.resources.Servers[serverID2], ShouldBeBlank)
+						So(server2.ID, ShouldNotBeBlank)
+						So(server2.AdminPass, ShouldNotBeBlank)
+						So(server2.ID, ShouldNotEqual, server.ID)
+						So(server2.AdminPass, ShouldNotEqual, server.AdminPass)
+						So(server2.Address, ShouldStartWith, "192")
+						So(p.resources.Servers[server2.ID], ShouldBeBlank)
 
-						ok, err := p.CheckServer(serverID2)
+						ok, err := p.CheckServer(server2.ID)
 						So(err, ShouldBeNil)
 						So(ok, ShouldBeTrue)
 
 						servers := p.Servers()
-						So(servers, ShouldResemble, map[string]string{serverID: serverIP})
+						So(servers, ShouldResemble, map[string]string{server.ID: server.Address})
 
-						Convey("Then you can destroy it", func() {
-							err = p.DestroyServer(serverID2)
-							So(err, ShouldBeNil)
+						err = p.DestroyServer(server2.ID)
+						So(err, ShouldBeNil)
 
-							ok, err = p.CheckServer(serverID2)
-							So(err, ShouldBeNil)
-							So(ok, ShouldBeFalse)
-						})
+						ok, err = p.CheckServer(server2.ID)
+						So(err, ShouldBeNil)
+						So(ok, ShouldBeFalse)
 					})
+				})
 
-					Convey("But you can't even get a server flavor when your requirements are crazy", func() {
-						_, _, _, _, err := p.CheapestServerFlavor(9999999999, 20, 9999999)
-						So(err, ShouldNotBeNil)
-						perr, ok := err.(Error)
-						So(ok, ShouldBeTrue)
-						So(perr.Err, ShouldEqual, ErrNoFlavor)
+				Convey("Once deployed you can Spawn a server with an internal ip", func() {
+					server2, err := p.Spawn(osPrefix, flavor.ID, 0*time.Second, false)
+					So(err, ShouldBeNil)
+
+					ok, err := p.CheckServer(server2.ID)
+					So(err, ShouldBeNil)
+					So(ok, ShouldBeTrue)
+
+					ok = server2.Alive()
+					So(ok, ShouldBeTrue)
+
+					Convey("You can destroy it with Destroy", func() {
+						err = server2.Destroy()
+						So(err, ShouldBeNil)
+
+						ok = server2.Alive()
+						So(ok, ShouldBeFalse)
 					})
+				})
+
+				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
+					server, err := p.Spawn(osPrefix, flavor.ID, 0*time.Second, false)
+					So(err, ShouldBeNil)
+					ok := server.Alive()
+					So(ok, ShouldBeTrue)
+
+					n := server.HasSpaceFor(1, 0, 0)
+					So(n, ShouldEqual, flavor.Cores)
+
+					server.Allocate(flavor.Cores, 100, 0)
+					n = server.HasSpaceFor(1, 0, 0)
+					So(n, ShouldEqual, 0)
+
+					server.Release(flavor.Cores, 100, 0)
+					n = server.HasSpaceFor(1, 0, 0)
+					So(n, ShouldEqual, flavor.Cores)
+
+					n = server.HasSpaceFor(1, flavor.Memory, 0)
+					So(n, ShouldEqual, 1)
+					n = server.HasSpaceFor(1, flavor.Memory+1, 0)
+					So(n, ShouldEqual, 0)
+
+					n = server.HasSpaceFor(1, flavor.Memory, flavor.Disk)
+					So(n, ShouldEqual, 1)
+					n = server.HasSpaceFor(1, flavor.Memory, flavor.Disk+1)
+					So(n, ShouldEqual, 0)
+
+					server.Destroy()
+				})
+
+				Convey("And you can Spawn one with a time to destruction", func() {
+					server3, err := p.Spawn(osPrefix, flavor.ID, 2*time.Second, false)
+					So(err, ShouldBeNil)
+
+					ok := server3.Alive()
+					So(ok, ShouldBeTrue)
+
+					<-time.After(3 * time.Second)
+
+					ok = server3.Alive()
+					So(ok, ShouldBeTrue)
+
+					server3.Allocate(1, 100, 0)
+					server3.Release(1, 100, 0)
+					<-time.After(1 * time.Second)
+					server3.Allocate(1, 100, 0)
+					<-time.After(2 * time.Second)
+
+					ok = server3.Alive()
+					So(ok, ShouldBeTrue)
+
+					server3.Allocate(1, 100, 0)
+					server3.Release(1, 100, 0)
+
+					<-time.After(3 * time.Second)
+
+					ok = server3.Alive()
+					So(ok, ShouldBeTrue)
+
+					server3.Release(1, 100, 0)
+
+					<-time.After(3 * time.Second)
+
+					ok = server3.Alive()
+					So(ok, ShouldBeFalse)
+
+					ok, err = p.CheckServer(server3.ID)
+					So(err, ShouldBeNil)
+					So(ok, ShouldBeFalse)
+				})
+
+				Convey("You can't get a server flavor when your requirements are crazy", func() {
+					_, err := p.CheapestServerFlavor(9999999999, 20, 9999999)
+					So(err, ShouldNotBeNil)
+					perr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(perr.Err, ShouldEqual, ErrNoFlavor)
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {

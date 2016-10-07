@@ -53,7 +53,7 @@ type openstackp struct {
 	networkClient     *gophercloud.ServiceClient
 	poolName          string
 	externalNetworkId string
-	flavors           map[string]flavors.Flavor
+	fmap              map[string]Flavor
 }
 
 // requiredEnv returns envs
@@ -103,7 +103,7 @@ func (p *openstackp) initialize() (err error) {
 	}
 
 	// get the details of all the possible server flavors
-	p.flavors = make(map[string]flavors.Flavor)
+	p.fmap = make(map[string]Flavor)
 	pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		flavorList, err := flavors.ExtractFlavors(page)
@@ -112,7 +112,12 @@ func (p *openstackp) initialize() (err error) {
 		}
 
 		for _, f := range flavorList {
-			p.flavors[f.ID] = f
+			p.fmap[f.ID] = Flavor{
+				ID:     f.ID,
+				Cores:  f.VCPUs,
+				Memory: f.RAM,
+				Disk:   f.Disk,
+			}
 		}
 		return true, nil
 	})
@@ -304,6 +309,11 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	return
 }
 
+// flavors returns all our flavors.
+func (p *openstackp) flavors() map[string]Flavor {
+	return p.fmap
+}
+
 // getQuota achieves the aims of GetQuota().
 func (p *openstackp) getQuota() (quota *Quota, err error) {
 	// query our quota
@@ -328,50 +338,15 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 
 		for _, server := range serverList {
 			quota.UsedInstances++
-			flavor, found := p.flavors[server.Flavor["id"].(string)]
+			f, found := p.fmap[server.Flavor["id"].(string)]
 			if found { // should always be found...
-				quota.UsedCores += flavor.VCPUs
-				quota.UsedRam += flavor.RAM
+				quota.UsedCores += f.Cores
+				quota.UsedRam += f.Memory
 			}
 		}
 
 		return true, nil
 	})
-
-	return
-}
-
-// cheapestServerFlavor achieves the aims of CheapestServerFlavor()
-func (p *openstackp) cheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error) {
-	// from all available flavours, pick the one that has the lowest mem, disk
-	// and cpus that meet our minimums
-	for _, f := range p.flavors {
-		if f.VCPUs >= minCPUs && f.RAM >= minRAM && f.Disk >= minDisk {
-			choose := false
-			if flavorID == "" {
-				choose = true
-			} else if f.VCPUs < CPUs {
-				choose = true
-			} else if f.VCPUs == CPUs {
-				if f.RAM < ramMB {
-					choose = true
-				} else if f.RAM == ramMB && f.Disk < diskGB {
-					choose = true
-				}
-			}
-
-			if choose {
-				flavorID = f.ID
-				ramMB = f.RAM
-				diskGB = f.Disk
-				CPUs = f.VCPUs
-			}
-		}
-	}
-
-	if err == nil && flavorID == "" {
-		err = Error{"openstack", "cheapestServerFlavor", ErrNoFlavor}
-	}
 
 	return
 }

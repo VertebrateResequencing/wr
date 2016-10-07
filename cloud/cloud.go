@@ -40,6 +40,8 @@ import (
 	"github.com/satori/go.uuid"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -50,6 +52,7 @@ var (
 	ErrMissingEnv      = "missing environment variables: "
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
 	ErrNoFlavor        = "no server flavor can meet your resource requirements"
+	ErrBadFlavor       = "no server flavor with that id exists"
 )
 
 // dnsNameServers holds some public (google) dns name server addresses for use
@@ -96,7 +99,7 @@ type provideri interface {
 	initialize() error                                                                                                                     // do any initial config set up such as authentication
 	deploy(resources *Resources, requiredPorts []int) error                                                                                // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
 	getQuota() (*Quota, error)                                                                                                             // achieve the aims of GetQuota()
-	cheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error)               // achieve the aims of CheapestServerFlavor()
+	flavors() map[string]Flavor                                                                                                            // return a map of all server flavors, with their flavor ids as keys
 	spawn(resources *Resources, os string, flavor string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
 	checkServer(serverID string) (working bool, err error)                                                                                 // achieve the aims of CheckServer()
 	destroyServer(serverID string) error                                                                                                   // achieve the aims of DestroyServer()
@@ -110,6 +113,135 @@ type Provider struct {
 	Name      string
 	savePath  string
 	resources *Resources
+}
+
+// Flavor describes a "flavor" of server, which is a certain (virtual) hardware
+// configuration
+type Flavor struct {
+	ID     string
+	Cores  int
+	Memory int // MB
+	Disk   int // GB
+}
+
+// Server provides details of the server that Spawn() created for you, and some
+// methods that let you keep track of how you use that server.
+type Server struct {
+	ID                string
+	Address           string // ip address that you could SSH to
+	AdminPass         string
+	Flavor            Flavor
+	TTD               time.Duration // amount of idle time allowed before destruction
+	usedMemory        int
+	usedCores         int
+	usedDisk          int
+	onDeathrow        bool
+	mutex             sync.Mutex
+	cancelDestruction chan bool
+	destroyed         bool
+	provider          *Provider
+}
+
+// Allocate records that the given resources have now been used up on this
+// server.
+func (s *Server) Allocate(cores, ramMB, diskGB int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.usedCores += cores
+	s.usedMemory += ramMB
+	s.usedDisk += diskGB
+
+	// if the host has initiated its countdown to destruction, cancel that
+	if s.onDeathrow {
+		s.cancelDestruction <- true
+	}
+}
+
+// Release records that the given resources have now been freed.
+func (s *Server) Release(cores, ramMB, diskGB int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.usedCores -= cores
+	s.usedMemory -= ramMB
+	s.usedDisk -= diskGB
+
+	// if the server is now doing nothing, we'll initiate a countdown to
+	// destroying the host
+	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
+		go func() {
+			s.cancelDestruction = make(chan bool)
+			s.onDeathrow = true
+			timeToDie := time.After(s.TTD)
+			for {
+				select {
+				case <-s.cancelDestruction:
+					s.onDeathrow = false
+					return
+				case <-timeToDie:
+					// destroy the server
+					s.onDeathrow = false
+					s.Destroy()
+					return
+				}
+			}
+		}()
+	}
+}
+
+// HasSpaceFor considers the current usage (according to prior Allocation calls)
+// and tells you how many of a cmd needing the given resources can run on this
+// server.
+func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.Memory-s.usedMemory < ramMB) || (s.Flavor.Disk-s.usedDisk < diskGB) {
+		return 0
+	}
+	canDo := (s.Flavor.Cores - s.usedCores) / cores
+	if canDo > 1 {
+		n := (s.Flavor.Memory - s.usedMemory) / ramMB
+		if n < canDo {
+			canDo = n
+		}
+		n = (s.Flavor.Disk - s.usedDisk) / diskGB
+		if n < canDo {
+			canDo = n
+		}
+	}
+	return canDo
+}
+
+// Destroy immediately destroys the server.
+func (s *Server) Destroy() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// if the server has initiated its countdown to destruction, cancel that
+	if s.onDeathrow {
+		s.cancelDestruction <- true
+	}
+
+	err := s.provider.DestroyServer(s.ID)
+	if err != nil {
+		ok, _ := s.provider.CheckServer(s.ID)
+		if ok {
+			return err
+		}
+	}
+
+	s.destroyed = true
+	return nil
+}
+
+// Alive tells you if a server is usable.
+func (s *Server) Alive() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.destroyed {
+		return false
+	}
+	ok, _ := s.provider.CheckServer(s.ID)
+	return ok
 }
 
 // New creates a new Provider to interact with the given cloud provider.
@@ -192,22 +324,47 @@ func (p *Provider) GetQuota() (quota *Quota, err error) {
 
 // CheapestServerFlavor returns details of the smallest (cheapest) server
 // "flavor" available that satisfies your minimum ram (MB), disk (GB) and CPU
-// (core count) requirements. Use the first return value for passing to Spawn().
-// If no flavor meets your requirements you will get an error matching
-// ErrNoFlavor.
-func (p *Provider) CheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (flavorID string, ramMB int, diskGB int, CPUs int, err error) {
-	return p.impl.cheapestServerFlavor(minRAM, minDisk, minCPUs)
+// (core count) requirements. Use the ID property of the return value for
+// passing to Spawn(). If no flavor meets your requirements you will get an
+// error matching ErrNoFlavor.
+func (p *Provider) CheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (fr Flavor, err error) {
+	// from all available flavours, pick the one that has the lowest mem, disk
+	// and cpus that meet our minimums
+	for _, f := range p.impl.flavors() {
+		if f.Cores >= minCPUs && f.Memory >= minRAM && f.Disk >= minDisk {
+			if fr.ID == "" {
+				fr = f
+			} else if f.Cores < fr.Cores {
+				fr = f
+			} else if f.Cores == fr.Cores {
+				if f.Memory < fr.Memory {
+					fr = f
+				} else if f.Memory == fr.Memory && f.Disk < fr.Disk {
+					fr = f
+				}
+			}
+		}
+	}
+
+	if err == nil && fr.ID == "" {
+		err = Error{"openstack", "cheapestServerFlavor", ErrNoFlavor}
+	}
+
+	return
 }
 
 // Spawn creates a new server using an OS image with a name prefixed with the
 // given os name, with the given flavor ID (that you could get from
-// CheapestServerFlavor()). If you need an external IP so that you can ssh to
-// the server externally, supply true as the last argument. Returns the serverID
-// so that you can later call DestroyServer(). Returns the ip so you can ssh to
-// it, and the admin password in case you need to sudo on the server. You will
-// need to know the username that you can log in with on your chosen OS image.
-func (p *Provider) Spawn(os string, flavorID string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
-	serverID, serverIP, adminPass, err = p.impl.spawn(p.resources, os, flavorID, externalIP)
+// CheapestServerFlavor().ID). If you supply a non-zero value for the ttd
+// argument, then this amount of time after the last s.Release() call you make
+// that causes the server to be considered idle, the server will be destroyed.
+// If you need an external IP so that you can ssh to the server externally,
+// supply true as the last argument. Returns a *Server so you can s.Destroy it
+// later, find out its ip address so you can ssh to it, and get its admin
+// password in case you need to sudo on the server. You will need to know the
+// username that you can log in with on your chosen OS image.
+func (p *Provider) Spawn(os string, flavorID string, ttd time.Duration, externalIP bool) (server *Server, err error) {
+	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP)
 
 	if err == nil && externalIP {
 		// update resources and save to disk
@@ -215,11 +372,26 @@ func (p *Provider) Spawn(os string, flavorID string, externalIP bool) (serverID 
 		err = p.saveResources()
 	}
 
+	f, found := p.impl.flavors()[flavorID]
+	if !found {
+		err = Error{"openstack", "Spawn", ErrBadFlavor}
+		return
+	}
+
+	server = &Server{
+		ID:        serverID,
+		Address:   serverIP,
+		AdminPass: adminPass,
+		Flavor:    f,
+		TTD:       ttd,
+		provider:  p,
+	}
+
 	return
 }
 
 // CheckServer asks the provider if the status of the given server (id retrieved
-// from Spawn() or Servers()) indicates it is working fine. (If it's not and
+// via Spawn() or Servers()) indicates it is working fine. (If it's not and
 // was previously thought to be a spawned server with an external IP, then it
 // will be removed from the results of Servers().)
 func (p *Provider) CheckServer(serverID string) (working bool, err error) {
@@ -237,7 +409,7 @@ func (p *Provider) CheckServer(serverID string) (working bool, err error) {
 }
 
 // DestroyServer destroys a server given its id, that you would have gotten from
-// Spawn().
+// the ID property of Spawn()'s return value.
 func (p *Provider) DestroyServer(serverID string) (err error) {
 	err = p.impl.destroyServer(serverID)
 	if err == nil {
