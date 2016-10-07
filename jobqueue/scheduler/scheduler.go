@@ -138,7 +138,8 @@ func New(name string, config interface{}) (s *Scheduler, err error) {
 // are legitimate - it will get rid of all non-running jobs for the cmd). If no
 // error is returned, you know all `count` of your jobs are now scheduled and
 // will eventually run unless you call Schedule() again with the same command
-// and a lower count.
+// and a lower count. NB: there is no guarantee that the jobs run successfully,
+// and no feedback on their success or failure.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	// Schedule may get called many times in different go routines, eg. a
 	// succession of calls with the same cmd and req but decrementing count.
