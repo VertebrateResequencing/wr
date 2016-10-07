@@ -56,7 +56,7 @@ type canCounter func(req *Requirements) (canCount int)
 
 // cmdRunners are functions used by processQueue() to actually run cmds.
 // (Their reason for being is the same as for canCounters.)
-type cmdRunner func(cmd string, req *Requirements)
+type cmdRunner func(cmd string, req *Requirements) error
 
 // local is our implementer of scheduleri.
 type local struct {
@@ -78,8 +78,8 @@ type local struct {
 // SchedulerConfigLocal represents the configuration options required by the
 // local scheduler. All are required with no usable defaults.
 type SchedulerConfigLocal struct {
-	// Shell is the shell to use to run the commands to interact with your job
-	// scheduler; 'bash' is recommended.
+	// Shell is the shell to use to run your commands with; 'bash' is
+	// recommended.
 	Shell string
 }
 
@@ -95,8 +95,27 @@ type job struct {
 func (s *local) initialize(config interface{}) (err error) {
 	s.config = config.(*SchedulerConfigLocal)
 	s.maxcores = runtime.NumCPU()
+	s.maxmb, err = s.procMeminfoMBs()
+	if err != nil {
+		return
+	}
 
-	// get MemTotal from /proc/meminfo
+	// make our queue
+	s.queue = queue.New(localPlace)
+	s.running = make(map[string]int)
+
+	// set our functions for use in schedule() and processQueue()
+	s.reqCheckFunc = s.reqCheck
+	s.canCountFunc = s.canCount
+	s.runCmdFunc = s.runCmd
+
+	return
+}
+
+// procMeminfoMBs parses /proc/meminfo (only available on linux-like systems!)
+// to find the total number of MBs of memory physically installed on the current
+// system.
+func (s *local) procMeminfoMBs() (mbs int, err error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return
@@ -120,17 +139,7 @@ func (s *local) initialize(config interface{}) (err error) {
 	}
 
 	// convert kB to MB
-	s.maxmb = int(kb / 1024)
-
-	// make our queue
-	s.queue = queue.New(localPlace)
-	s.running = make(map[string]int)
-
-	// set our functions for use in schedule() and processQueue()
-	s.reqCheckFunc = s.reqCheck
-	s.canCountFunc = s.canCount
-	s.runCmdFunc = s.runCmd
-
+	mbs = int(kb / 1024)
 	return
 }
 
@@ -251,7 +260,7 @@ func (s *local) processQueue() error {
 		s.running[key]++
 
 		go func() {
-			s.runCmdFunc(cmd, req)
+			err := s.runCmdFunc(cmd, req)
 			s.mutex.Lock()
 			s.mb -= req.Memory
 			s.cores -= req.CPUs
@@ -259,9 +268,11 @@ func (s *local) processQueue() error {
 			if s.running[key] <= 0 {
 				delete(s.running, key)
 			}
-			j.count--
-			if j.count <= 0 {
-				s.queue.Remove(key)
+			if err == nil {
+				j.count--
+				if j.count <= 0 {
+					s.queue.Remove(key)
+				}
 			}
 			s.mutex.Unlock()
 			s.processQueue()
@@ -292,14 +303,15 @@ func (s *local) canCount(req *Requirements) (canCount int) {
 }
 
 // runCmd runs the command, kills it if it goes much over memory or time limits.
-// NB: errors are ignored (schedule() only guarantees that the cmds are run
-// count times, not that they are /successful/ that many times).
-func (s *local) runCmd(cmd string, req *Requirements) {
+// NB: we only return an error if we can't start the cmd, not if the command
+// fails (schedule() only guarantees that the cmds are run count times, not that
+// they are /successful/ that many times).
+func (s *local) runCmd(cmd string, req *Requirements) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd)
 	err := ec.Start()
 	if err != nil {
 		fmt.Println(err)
-		return
+		return err
 	}
 
 	s.mutex.Lock()
@@ -320,6 +332,8 @@ func (s *local) runCmd(cmd string, req *Requirements) {
 		s.rcount = 0
 	}
 	s.mutex.Unlock()
+
+	return nil
 }
 
 // busy returns true if there's anything in our queue or we are still running
