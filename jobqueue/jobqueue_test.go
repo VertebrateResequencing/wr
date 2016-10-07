@@ -319,7 +319,7 @@ func TestJobqueue(t *testing.T) {
 
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
 				for index, job := range jobs {
-					job.Peakmem = index + 1
+					job.PeakRAM = index + 1
 					job.starttime = time.Now()
 					job.endtime = job.starttime.Add(time.Duration(index+1) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
@@ -334,7 +334,7 @@ func TestJobqueue(t *testing.T) {
 
 				for i := 11; i <= 100; i++ {
 					job := NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), "manually_added")
-					job.Peakmem = i * 100
+					job.PeakRAM = i * 100
 					job.starttime = time.Now()
 					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
@@ -555,7 +555,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.State, ShouldEqual, "complete")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
-				So(job.Peakmem, ShouldBeGreaterThan, 0)
+				So(job.PeakRAM, ShouldBeGreaterThan, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				host, _ := os.Hostname()
 				So(job.Host, ShouldEqual, host)
@@ -576,7 +576,7 @@ func TestJobqueue(t *testing.T) {
 				So(job2.State, ShouldEqual, "complete")
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 0)
-				So(job2.Peakmem, ShouldEqual, job.Peakmem)
+				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
 				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
@@ -598,7 +598,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.State, ShouldEqual, "delayed")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 1)
-				So(job.Peakmem, ShouldBeGreaterThan, 0)
+				So(job.PeakRAM, ShouldBeGreaterThan, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				So(job.Host, ShouldEqual, host)
 				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
@@ -618,7 +618,7 @@ func TestJobqueue(t *testing.T) {
 				So(job2.State, ShouldEqual, "delayed")
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 1)
-				So(job2.Peakmem, ShouldEqual, job.Peakmem)
+				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
 				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
@@ -865,12 +865,12 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
-					So(jqerr.Err, ShouldEqual, FailReasonMem)
+					So(jqerr.Err, ShouldEqual, FailReasonRAM)
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, -1)
-					So(job.FailReason, ShouldEqual, FailReasonMem)
-					So(job.Memory, ShouldEqual, 1200)
+					So(job.FailReason, ShouldEqual, FailReasonRAM)
+					So(job.RAM, ShouldEqual, 1200)
 					jq.Delete([][2]string{{cmd, "/tmp"}})
 				})
 

@@ -337,7 +337,7 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 	return
 }
 
-// updateJobAfterExit stores the Job's peak memory usage and wall time against
+// updateJobAfterExit stores the Job's peak RAM usage and wall time against
 // the Job's ReqGroup, allowing recommendedReqGroup*(ReqGroup) to work. It also
 // updates the stdout/err associated with a job. we don't want to store these in
 // the job, since that would waste a lot of the queue's memory; we store in db
@@ -372,7 +372,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
 		}
 
 		b := tx.Bucket(bucketJobMBs)
-		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.Peakmem)), []byte(strconv.Itoa(job.Peakmem)))
+		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
 		if err != nil {
 			return err
 		}

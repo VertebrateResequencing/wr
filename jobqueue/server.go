@@ -512,7 +512,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 						}
 					}
 					if recm == 0 {
-						recm = job.Memory
+						recm = job.RAM
 						noRec = true
 					}
 
@@ -529,14 +529,14 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					}
 
 					if job.Override == 1 {
-						if recm > job.Memory {
-							job.Memory = recm
+						if recm > job.RAM {
+							job.RAM = recm
 						}
 						if recs > int(job.Time.Seconds()) {
 							job.Time = time.Duration(recs) * time.Second
 						}
 					} else {
-						job.Memory = recm
+						job.RAM = recm
 						job.Time = time.Duration(recs) * time.Second
 					}
 				}
@@ -544,7 +544,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				// our req will be job memory + 100 to allow some leeway in
 				// case the job scheduler calculates used memory differently,
 				// and for other memory usage vagaries
-				req := &scheduler.Requirements{job.Memory + 100, job.Time, job.CPUs, 0, ""} // *** how to pass though scheduler extra args?
+				req := &scheduler.Requirements{job.RAM + 100, job.Time, job.Cores, 0, ""} // *** how to pass though scheduler extra args?
 				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.RAM, req.Time.Minutes(), req.Cores)
 
 				if s.rc != "" {

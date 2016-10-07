@@ -212,7 +212,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				var tnil time.Time
 				sjob.starttime = tnil
 				sjob.endtime = tnil
-				sjob.Peakmem = 0
+				sjob.PeakRAM = 0
 				sjob.Exitcode = -1
 
 				// make a copy of the job with some extra stuff filled in (that
@@ -255,7 +255,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		if srerr == "" {
 			job.Exited = true
 			job.Exitcode = cr.Job.Exitcode
-			job.Peakmem = cr.Job.Peakmem
+			job.PeakRAM = cr.Job.PeakRAM
 			job.CPUtime = cr.Job.CPUtime
 			job.endtime = time.Now()
 			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC)
@@ -493,11 +493,11 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		ReqGroup:    sjob.ReqGroup,
 		Cmd:         sjob.Cmd,
 		Cwd:         sjob.Cwd,
-		Memory:      sjob.Memory,
+		RAM:         sjob.RAM,
 		Time:        sjob.Time,
-		CPUs:        sjob.CPUs,
+		Cores:       sjob.Cores,
 		Priority:    sjob.Priority,
-		Peakmem:     sjob.Peakmem,
+		PeakRAM:     sjob.PeakRAM,
 		Exited:      sjob.Exited,
 		Exitcode:    sjob.Exitcode,
 		FailReason:  sjob.FailReason,

@@ -61,7 +61,7 @@ const (
 	FailReasonCFound   = "command not found"
 	FailReasonCExit    = "command invalid exit code"
 	FailReasonExit     = "command exited non-zero"
-	FailReasonMem      = "command used too much memory"
+	FailReasonRAM      = "command used too much RAM"
 	FailReasonTime     = "command used too much time"
 	FailReasonAbnormal = "command failed to complete normally"
 	FailReasonSignal   = "runner received a signal to stop"
@@ -72,12 +72,12 @@ const (
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
 var (
-	ClientTouchInterval                  = 15 * time.Second
-	ClientReleaseDelay                   = 30 * time.Second
-	MemoryIncreaseMin            float64 = 1000
-	MemoryIncreaseMultLow                = 2.0
-	MemoryIncreaseMultHigh               = 1.3
-	MemoryIncreaseMultBreakpoint float64 = 8192
+	ClientTouchInterval               = 15 * time.Second
+	ClientReleaseDelay                = 30 * time.Second
+	RAMIncreaseMin            float64 = 1000
+	RAMIncreaseMultLow                = 2.0
+	RAMIncreaseMultHigh               = 1.3
+	RAMIncreaseMultBreakpoint float64 = 8192
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -102,27 +102,27 @@ type clientRequest struct {
 
 // Job is a struct that represents a command that needs to be run and some
 // associated metadata. ReqGroup is a string that you supply to group together
-// all commands that you expect to have similar memory and time requirements.
-// Memory and Time are added by the system based on past experience of running
-// jobs with the same ReqGroup. If you supply these yourself, your memory and
-// time will be used if there is insufficient past experience, or if you also
-// supply Override, which can be 0 to not override, 1 to override past
-// experience if your supplied values are higher, or 2 to always override.
-// Priority is a number between 0 and 255 inclusive - higher numbered jobs will
-// run before lower numbered ones (the default is 0). If you get a Job back
-// from the server (via Reserve() or Get*()), you should treat the properties as
-// read-only: changing them will have no effect.
+// all commands that you expect to have similar RAM and time requirements. RAM
+// and Time are added by the system based on past experience of running jobs
+// with the same ReqGroup. If you supply these yourself, your RAM and time will
+// be used if there is insufficient past experience, or if you also supply
+// Override, which can be 0 to not override, 1 to override past experience if
+// your supplied values are higher, or 2 to always override. Priority is a
+// number between 0 and 255 inclusive - higher numbered jobs will run before
+// lower numbered ones (the default is 0). If you get a Job back from the server
+// (via Reserve() or Get*()), you should treat the properties as read-only:
+// changing them will have no effect.
 type Job struct {
 	RepGroup       string // a name associated with related Jobs to help group them together when reporting on their status etc.
 	ReqGroup       string
 	Cmd            string
 	Cwd            string        // the working directory to cd to before running Cmd
-	Memory         int           // the expected peak memory in MB Cmd will use while running
+	RAM            int           // the expected peak RAM in MB Cmd will use while running
 	Time           time.Duration // the expected time Cmd will take to run
-	CPUs           int           // how many processor cores the Cmd will use
+	Cores          int           // how many processor cores the Cmd will use
 	Override       uint8
 	Priority       uint8
-	Peakmem        int           // the actual peak memory is recorded here (MB)
+	PeakRAM        int           // the actual peak RAM is recorded here (MB)
 	Exited         bool          // true if the Cmd was run and exited
 	Exitcode       int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
 	FailReason     string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
@@ -146,15 +146,15 @@ type Job struct {
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add().
-func NewJob(cmd string, cwd string, group string, memory int, time time.Duration, cpus int, override uint8, priority uint8, repgroup string) *Job {
+func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, repgroup string) *Job {
 	return &Job{
 		RepGroup: repgroup,
 		ReqGroup: group,
 		Cmd:      cmd,
 		Cwd:      cwd,
-		Memory:   memory,
+		RAM:      ram,
 		Time:     time,
-		CPUs:     cpus,
+		Cores:    cores,
 		Override: override,
 		Priority: priority,
 	}
@@ -343,7 +343,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 }
 
 // Execute runs the given Job's Cmd and blocks until it exits. Internally it
-// calls Started() and Ended() and keeps track of peak memory used. It regularly
+// calls Started() and Ended() and keeps track of peak RAM used. It regularly
 // calls Touch() on the Job so that the server knows we are still alive and
 // handling the Job successfully. It also intercepts SIGTERM, SIGINT, SIGQUIT,
 // SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and returning
@@ -354,7 +354,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // appropriate. The supplied shell is the shell to execute the Cmd under,
 // ideally bash (something that understand the command "set -o pipefail"). You
 // have to have been the one to Reserve() the supplied Job, or this will
-// immediately return an error. NB: the peak memory tracking assumes we are
+// immediately return an error. NB: the peak RAM tracking assumes we are
 // running on a modern linux system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
 	// quickly check upfront that we Reserve()d the job; this isn't required
@@ -459,7 +459,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if err == nil && mem > peakmem {
 					peakmem = mem
 
-					if peakmem > job.Memory {
+					if peakmem > job.RAM {
 						// we don't allow things to use too much memory, or we
 						// could screw up the machine we're running on
 						ranoutMem = true
@@ -521,8 +521,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 			default:
 				dorelease = true
 				if ranoutMem {
-					failreason = FailReasonMem
-					myerr = Error{c.queue, "Execute", jobKey(job), FailReasonMem}
+					failreason = FailReasonRAM
+					myerr = Error{c.queue, "Execute", jobKey(job), FailReasonRAM}
 				} else if signalled {
 					if ranoutTime {
 						failreason = FailReasonTime
@@ -598,11 +598,11 @@ func (c *Client) Touch(job *Job) (err error) {
 
 // Ended updates a Job on the server with information that you've finished
 // running the Job's Cmd. (The Job's Walltime is handled by the server
-// internally, based on you calling this.) Peakmem should be in MB.
-func (c *Client) Ended(job *Job, exitcode int, peakmem int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
+// internally, based on you calling this.) Peakram should be in MB.
+func (c *Client) Ended(job *Job, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
 	job.Exited = true
 	job.Exitcode = exitcode
-	job.Peakmem = peakmem
+	job.PeakRAM = peakram
 	job.CPUtime = cputime
 	if len(stdout) > 0 {
 		job.StdOutC = compress(stdout)
@@ -820,24 +820,24 @@ func (j *Job) StdErr() (stderr string, err error) {
 	return
 }
 
-// updateRecsAfterFailure checks the FailReason and bumps Memory or Time as
+// updateRecsAfterFailure checks the FailReason and bumps RAM or Time as
 // appropriate.
 func (j *Job) updateRecsAfterFailure() {
 	switch j.FailReason {
-	case FailReasonMem:
+	case FailReasonRAM:
 		// increase by 1GB or [100% if under 8GB, 30% if over], whichever is
 		// greater, and round up to nearest 100
 		// *** increase to greater than max seen for jobs in our ReqGroup?
-		updatedMB := float64(j.Peakmem)
-		if updatedMB <= MemoryIncreaseMultBreakpoint {
-			updatedMB *= MemoryIncreaseMultLow
+		updatedMB := float64(j.PeakRAM)
+		if updatedMB <= RAMIncreaseMultBreakpoint {
+			updatedMB *= RAMIncreaseMultLow
 		} else {
-			updatedMB *= MemoryIncreaseMultHigh
+			updatedMB *= RAMIncreaseMultHigh
 		}
-		if updatedMB < float64(j.Peakmem)+MemoryIncreaseMin {
-			updatedMB = float64(j.Peakmem) + MemoryIncreaseMin
+		if updatedMB < float64(j.PeakRAM)+RAMIncreaseMin {
+			updatedMB = float64(j.PeakRAM) + RAMIncreaseMin
 		}
-		j.Memory = int(math.Ceil(updatedMB/100) * 100)
+		j.RAM = int(math.Ceil(updatedMB/100) * 100)
 		j.Override = uint8(1)
 	case FailReasonTime:
 		j.Time += 1 * time.Hour
