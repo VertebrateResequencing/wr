@@ -113,10 +113,10 @@ func (p *openstackp) initialize() (err error) {
 
 		for _, f := range flavorList {
 			p.fmap[f.ID] = Flavor{
-				ID:     f.ID,
-				Cores:  f.VCPUs,
-				Memory: f.RAM,
-				Disk:   f.Disk,
+				ID:    f.ID,
+				Cores: f.VCPUs,
+				RAM:   f.RAM,
+				Disk:  f.Disk,
 			}
 		}
 		return true, nil
@@ -341,7 +341,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 			f, found := p.fmap[server.Flavor["id"].(string)]
 			if found { // should always be found...
 				quota.UsedCores += f.Cores
-				quota.UsedRam += f.Memory
+				quota.UsedRam += f.RAM
 			}
 		}
 

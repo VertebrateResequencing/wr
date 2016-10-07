@@ -47,6 +47,8 @@ const wrConfigFileName = ".wr_config.yml"
 
 // options for this cmd
 var providerName string
+var maxServers int
+var serverKeepAlive int
 var osPrefix string
 var osUsername string
 var forceTearDown bool
@@ -146,16 +148,17 @@ website locally, even though the manager is actually running remotely.`,
 		}
 		if serverIP == "" {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, _, _, _, err := provider.CheapestServerFlavor(2048, 1, 1)
+			flavor, err := provider.CheapestServerFlavor(2048, 1, 1)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			_, serverIP, _, err = provider.Spawn(osPrefix, flavor, true)
+			server, err := provider.Spawn(osPrefix, flavor.ID, 0*time.Second, true)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
+			serverIP = server.IP
 		}
 
 		// ssh to the server, copy over our exe, and start running wr manager
@@ -299,6 +302,8 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", "Ubuntu 16", "prefix name of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
+	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 60, "how long in seconds to keep idle spawned servers alive for")
+	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn (0 means unlimited)")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")

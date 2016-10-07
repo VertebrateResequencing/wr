@@ -76,9 +76,9 @@ func TestOpenStack(t *testing.T) {
 				So(p.resources.Details["subnet"], ShouldNotBeBlank)
 				So(p.resources.Details["router"], ShouldNotBeBlank)
 
-				flavor, err := p.CheapestServerFlavor(512, 1, 1)
+				flavor, err := p.CheapestServerFlavor(1, 512, 1)
 				So(err, ShouldBeNil)
-				So(flavor.Memory, ShouldBeGreaterThanOrEqualTo, 512)
+				So(flavor.RAM, ShouldBeGreaterThanOrEqualTo, 512)
 				So(flavor.Disk, ShouldBeGreaterThanOrEqualTo, 1)
 				So(flavor.Cores, ShouldBeGreaterThanOrEqualTo, 1)
 
@@ -87,10 +87,10 @@ func TestOpenStack(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(server.ID, ShouldNotBeBlank)
 					So(server.AdminPass, ShouldNotBeBlank)
-					So(server.Address, ShouldNotBeBlank)
-					So(server.Address, ShouldNotStartWith, "192")
+					So(server.IP, ShouldNotBeBlank)
+					So(server.IP, ShouldNotStartWith, "192")
 					So(p.resources.Servers[server.ID], ShouldNotBeNil)
-					So(p.resources.Servers[server.ID], ShouldEqual, server.Address)
+					So(p.resources.Servers[server.ID], ShouldEqual, server.IP)
 
 					ok, err := p.CheckServer(server.ID)
 					So(err, ShouldBeNil)
@@ -103,7 +103,7 @@ func TestOpenStack(t *testing.T) {
 						So(server2.AdminPass, ShouldNotBeBlank)
 						So(server2.ID, ShouldNotEqual, server.ID)
 						So(server2.AdminPass, ShouldNotEqual, server.AdminPass)
-						So(server2.Address, ShouldStartWith, "192")
+						So(server2.IP, ShouldStartWith, "192")
 						So(p.resources.Servers[server2.ID], ShouldBeBlank)
 
 						ok, err := p.CheckServer(server2.ID)
@@ -111,7 +111,7 @@ func TestOpenStack(t *testing.T) {
 						So(ok, ShouldBeTrue)
 
 						servers := p.Servers()
-						So(servers, ShouldResemble, map[string]string{server.ID: server.Address})
+						So(servers, ShouldResemble, map[string]string{server.ID: server.IP})
 
 						err = p.DestroyServer(server2.ID)
 						So(err, ShouldBeNil)
@@ -159,14 +159,14 @@ func TestOpenStack(t *testing.T) {
 					n = server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, flavor.Cores)
 
-					n = server.HasSpaceFor(1, flavor.Memory, 0)
+					n = server.HasSpaceFor(1, flavor.RAM, 0)
 					So(n, ShouldEqual, 1)
-					n = server.HasSpaceFor(1, flavor.Memory+1, 0)
+					n = server.HasSpaceFor(1, flavor.RAM+1, 0)
 					So(n, ShouldEqual, 0)
 
-					n = server.HasSpaceFor(1, flavor.Memory, flavor.Disk)
+					n = server.HasSpaceFor(1, flavor.RAM, flavor.Disk)
 					So(n, ShouldEqual, 1)
-					n = server.HasSpaceFor(1, flavor.Memory, flavor.Disk+1)
+					n = server.HasSpaceFor(1, flavor.RAM, flavor.Disk+1)
 					So(n, ShouldEqual, 0)
 
 					server.Destroy()
@@ -178,6 +178,9 @@ func TestOpenStack(t *testing.T) {
 
 					ok := server3.Alive()
 					So(ok, ShouldBeTrue)
+
+					ok = server3.Destroyed()
+					So(ok, ShouldBeFalse)
 
 					<-time.After(3 * time.Second)
 
@@ -208,13 +211,16 @@ func TestOpenStack(t *testing.T) {
 					ok = server3.Alive()
 					So(ok, ShouldBeFalse)
 
+					ok = server3.Destroyed()
+					So(ok, ShouldBeTrue)
+
 					ok, err = p.CheckServer(server3.ID)
 					So(err, ShouldBeNil)
 					So(ok, ShouldBeFalse)
 				})
 
 				Convey("You can't get a server flavor when your requirements are crazy", func() {
-					_, err := p.CheapestServerFlavor(9999999999, 20, 9999999)
+					_, err := p.CheapestServerFlavor(20, 9999999999, 9999999)
 					So(err, ShouldNotBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)

@@ -118,21 +118,21 @@ type Provider struct {
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration
 type Flavor struct {
-	ID     string
-	Cores  int
-	Memory int // MB
-	Disk   int // GB
+	ID    string
+	Cores int
+	RAM   int // MB
+	Disk  int // GB
 }
 
 // Server provides details of the server that Spawn() created for you, and some
 // methods that let you keep track of how you use that server.
 type Server struct {
 	ID                string
-	Address           string // ip address that you could SSH to
+	IP                string // ip address that you could SSH to
 	AdminPass         string
 	Flavor            Flavor
 	TTD               time.Duration // amount of idle time allowed before destruction
-	usedMemory        int
+	usedRAM           int
 	usedCores         int
 	usedDisk          int
 	onDeathrow        bool
@@ -148,7 +148,7 @@ func (s *Server) Allocate(cores, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.usedCores += cores
-	s.usedMemory += ramMB
+	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
 	// if the host has initiated its countdown to destruction, cancel that
@@ -162,7 +162,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.usedCores -= cores
-	s.usedMemory -= ramMB
+	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
 
 	// if the server is now doing nothing, we'll initiate a countdown to
@@ -194,12 +194,12 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.Memory-s.usedMemory < ramMB) || (s.Flavor.Disk-s.usedDisk < diskGB) {
+	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Flavor.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
 	canDo := (s.Flavor.Cores - s.usedCores) / cores
 	if canDo > 1 {
-		n := (s.Flavor.Memory - s.usedMemory) / ramMB
+		n := (s.Flavor.RAM - s.usedRAM) / ramMB
 		if n < canDo {
 			canDo = n
 		}
@@ -231,6 +231,15 @@ func (s *Server) Destroy() error {
 
 	s.destroyed = true
 	return nil
+}
+
+// Destroyed tells you if a server was destroyed using Destroy() or the autmatic
+// destruction due to being idle. It is NOT the opposite of Alive(), since it
+// does not check if the server is still usable.
+func (s *Server) Destroyed() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.destroyed
 }
 
 // Alive tells you if a server is usable.
@@ -327,19 +336,19 @@ func (p *Provider) GetQuota() (quota *Quota, err error) {
 // (core count) requirements. Use the ID property of the return value for
 // passing to Spawn(). If no flavor meets your requirements you will get an
 // error matching ErrNoFlavor.
-func (p *Provider) CheapestServerFlavor(minRAM int, minDisk int, minCPUs int) (fr Flavor, err error) {
-	// from all available flavours, pick the one that has the lowest mem, disk
+func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int) (fr Flavor, err error) {
+	// from all available flavours, pick the one that has the lowest ram, disk
 	// and cpus that meet our minimums
 	for _, f := range p.impl.flavors() {
-		if f.Cores >= minCPUs && f.Memory >= minRAM && f.Disk >= minDisk {
+		if f.Cores >= cores && f.RAM >= ramMB && f.Disk >= diskGB {
 			if fr.ID == "" {
 				fr = f
 			} else if f.Cores < fr.Cores {
 				fr = f
 			} else if f.Cores == fr.Cores {
-				if f.Memory < fr.Memory {
+				if f.RAM < fr.RAM {
 					fr = f
-				} else if f.Memory == fr.Memory && f.Disk < fr.Disk {
+				} else if f.RAM == fr.RAM && f.Disk < fr.Disk {
 					fr = f
 				}
 			}
@@ -380,7 +389,7 @@ func (p *Provider) Spawn(os string, flavorID string, ttd time.Duration, external
 
 	server = &Server{
 		ID:        serverID,
-		Address:   serverIP,
+		IP:        serverIP,
 		AdminPass: adminPass,
 		Flavor:    f,
 		TTD:       ttd,
