@@ -249,6 +249,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
+		<-time.After(1 * time.Second) // try and ensure no server is still using port
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
@@ -501,6 +502,7 @@ func TestJobqueue(t *testing.T) {
 	if server != nil {
 		server.Stop()
 	}
+	<-time.After(2 * time.Second) // try and ensure no server is still using port
 
 	// start these tests anew because I don't want to mess with the timings in
 	// the above tests
