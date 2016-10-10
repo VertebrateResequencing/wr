@@ -36,9 +36,15 @@ must add a case for it to New() and rebuild.
 package cloud
 
 import (
+	"bytes"
 	"encoding/gob"
+	"errors"
+	"github.com/pkg/sftp"
 	"github.com/satori/go.uuid"
+	"golang.org/x/crypto/ssh"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -75,10 +81,10 @@ func (e Error) Error() string {
 // those resources when they're no longer needed. There are also fields for
 // important things the user needs to know.
 type Resources struct {
-	ResourceName string            // the resource name prefix that resources were created with
-	Details      map[string]string // whatever key values the provider needs to describe what it created
-	PrivateKey   string            // PEM format string of the key user would need to ssh in to any created servers
-	Servers      map[string]string // the serverID => ip mapping of any servers Spawn()ed with an external ip
+	ResourceName string             // the resource name prefix that resources were created with
+	Details      map[string]string  // whatever key values the provider needs to describe what it created
+	PrivateKey   string             // PEM format string of the key user would need to ssh in to any created servers
+	Servers      map[string]*Server // the serverID => *Server mapping of any servers Spawn()ed with an external ip
 }
 
 // Quota struct describes the limit on what resources you are allowed to use (0
@@ -129,6 +135,7 @@ type Flavor struct {
 type Server struct {
 	ID                string
 	IP                string // ip address that you could SSH to
+	UserName          string // the username needed to log in to the server
 	AdminPass         string
 	Flavor            Flavor
 	TTD               time.Duration // amount of idle time allowed before destruction
@@ -136,10 +143,11 @@ type Server struct {
 	usedCores         int
 	usedDisk          int
 	onDeathrow        bool
-	mutex             sync.Mutex
+	mutex             sync.RWMutex
 	cancelDestruction chan bool
 	destroyed         bool
 	provider          *Provider
+	sshclient         *ssh.Client
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -192,8 +200,8 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 // and tells you how many of a cmd needing the given resources can run on this
 // server.
 func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Flavor.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
@@ -209,6 +217,168 @@ func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 		}
 	}
 	return canDo
+}
+
+// SSHClient returns an ssh.Client object that could be used to ssh to the
+// server. Requires that port 22 is accessible for SSH.
+func (s *Server) SSHClient() (*ssh.Client, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.sshclient == nil {
+		// parse private key and make config
+		key, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
+		if err != nil {
+			return nil, err
+		}
+		sshConfig := &ssh.ClientConfig{
+			User: s.UserName,
+			Auth: []ssh.AuthMethod{
+				ssh.PublicKeys(key),
+			},
+		}
+
+		// dial in to the server, allowing certain errors that indicate that the
+		// network or server isn't really ready for ssh yet; wait for up to
+		// 5mins for success
+		hostAndPort := s.IP + ":22"
+		s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
+		if err != nil {
+			limit := time.After(5 * time.Minute)
+			ticker := time.NewTicker(1 * time.Second)
+		DIAL:
+			for {
+				select {
+				case <-ticker.C:
+					s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
+					if err != nil {
+					}
+					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
+						continue DIAL
+					}
+					// worked, or failed with a different error: stop trying
+					ticker.Stop()
+					break DIAL
+				case <-limit:
+					ticker.Stop()
+					err = errors.New("giving up waiting for ssh to work")
+					break DIAL
+				}
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return s.sshclient, nil
+}
+
+// RunCmd runs the given command on the server, optionally in the background.
+// You get the command's STDOUT as a string response.
+func (s *Server) RunCmd(cmd string, background bool) (response string, err error) {
+	sshClient, err := s.SSHClient()
+	if err != nil {
+		return
+	}
+
+	// create a session
+	session, err := sshClient.NewSession()
+	if err != nil {
+		return
+	}
+	defer session.Close()
+
+	// run the command, returning stdout
+	if background {
+		cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
+	}
+	var b bytes.Buffer
+	session.Stdout = &b
+	if err = session.Run(cmd); err != nil {
+		return
+	}
+	response = b.String()
+	return
+}
+
+// UploadFile uploads a local file to the given location on the server.
+func (s *Server) UploadFile(source string, dest string) (err error) {
+	sshClient, err := s.SSHClient()
+	if err != nil {
+		return
+	}
+
+	client, err := sftp.NewClient(sshClient)
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	// create all parent dirs of dest
+	err = s.MkDir(dest)
+	if err != nil {
+		return
+	}
+
+	// open source, create dest
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return
+	}
+	defer sourceFile.Close()
+
+	destFile, err := client.Create(dest)
+	if err != nil {
+		return
+	}
+
+	// copy the file content over
+	_, err = io.Copy(destFile, sourceFile)
+	return
+}
+
+// CreateFile creates a new file with the given content on the server.
+func (s *Server) CreateFile(content string, dest string) (err error) {
+	sshClient, err := s.SSHClient()
+	if err != nil {
+		return
+	}
+
+	client, err := sftp.NewClient(sshClient)
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	// create all parent dirs of dest
+	err = s.MkDir(dest)
+	if err != nil {
+		return
+	}
+
+	// create dest
+	destFile, err := client.Create(dest)
+	if err != nil {
+		return
+	}
+
+	// write the content
+	_, err = io.WriteString(destFile, content)
+	return
+}
+
+// MkDir creates a directory (and it's parents as necessary) on the server.
+func (s *Server) MkDir(dest string) (err error) {
+	//*** it would be nice to do this with client.Mkdir, but that doesn't do
+	// the equivalent of mkdir -p, and errors out if dirs already exist... for
+	// now it's easier to just call mkdir
+	dir := filepath.Dir(dest)
+	if dir != "." {
+		_, err = s.RunCmd("mkdir -p "+dir, false)
+		if err != nil {
+			return
+		}
+	}
+	return
 }
 
 // Destroy immediately destroys the server.
@@ -233,9 +403,9 @@ func (s *Server) Destroy() error {
 	return nil
 }
 
-// Destroyed tells you if a server was destroyed using Destroy() or the autmatic
-// destruction due to being idle. It is NOT the opposite of Alive(), since it
-// does not check if the server is still usable.
+// Destroyed tells you if a server was destroyed using Destroy() or the
+// automatic destruction due to being idle. It is NOT the opposite of Alive(),
+// since it does not check if the server is still usable.
 func (s *Server) Destroyed() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -366,34 +536,36 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int) (fr Flavor, er
 // given os name, with the given flavor ID (that you could get from
 // CheapestServerFlavor().ID). If you supply a non-zero value for the ttd
 // argument, then this amount of time after the last s.Release() call you make
-// that causes the server to be considered idle, the server will be destroyed.
-// If you need an external IP so that you can ssh to the server externally,
-// supply true as the last argument. Returns a *Server so you can s.Destroy it
-// later, find out its ip address so you can ssh to it, and get its admin
-// password in case you need to sudo on the server. You will need to know the
-// username that you can log in with on your chosen OS image.
-func (p *Provider) Spawn(os string, flavorID string, ttd time.Duration, externalIP bool) (server *Server, err error) {
-	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP)
-
-	if err == nil && externalIP {
-		// update resources and save to disk
-		p.resources.Servers[serverID] = serverIP
-		err = p.saveResources()
-	}
-
+// (or after the last cmd you started with s.RunCmd exits) that causes the
+// server to be considered idle, the server will be destroyed. If you need an
+// external IP so that you can ssh to the server externally, supply true as the
+// last argument. Returns a *Server so you can s.Destroy it later, find out its
+// ip address so you can ssh to it, and get its admin password in case you need
+// to sudo on the server. You will need to know the username that you can log in
+// with on your chosen OS image.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
 		return
 	}
 
+	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP)
+
 	server = &Server{
 		ID:        serverID,
 		IP:        serverIP,
 		AdminPass: adminPass,
+		UserName:  osUser,
 		Flavor:    f,
 		TTD:       ttd,
 		provider:  p,
+	}
+
+	if err == nil && externalIP {
+		// update resources and save to disk
+		p.resources.Servers[serverID] = server
+		err = p.saveResources()
 	}
 
 	return
@@ -429,11 +601,11 @@ func (p *Provider) DestroyServer(serverID string) (err error) {
 	return
 }
 
-// Servers returns a mapping of serverID => serverIP for all servers that were
-// Spawn()ed with an externalIP (including those spawned in past sessions where
-// the same arguments to New() were used). You should use CheckServer() before
+// Servers returns a mapping of serverID => *Server for all servers that were
+// Spawn()ed with an external IP (including those spawned in past sessions where
+// the same arguments to New() were used). You should use s.Alive() before
 // trying to use one of these servers. Do not alter the return value!
-func (p *Provider) Servers() map[string]string {
+func (p *Provider) Servers() map[string]*Server {
 	return p.resources.Servers
 }
 
@@ -472,7 +644,7 @@ func (p *Provider) saveResources() (err error) {
 // loadResources loads our resources from our savePath, or returns an empty
 // set of resources if savePath doesn't exist.
 func (p *Provider) loadResources(resourceName string) (resources *Resources, err error) {
-	resources = &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]string)}
+	resources = &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]*Server)}
 	if _, serr := os.Stat(p.savePath); os.IsNotExist(serr) {
 		return
 	}
@@ -482,6 +654,13 @@ func (p *Provider) loadResources(resourceName string) (resources *Resources, err
 		defer file.Close()
 		decoder := gob.NewDecoder(file)
 		err = decoder.Decode(resources)
+
+		if err == nil {
+			// add in the ref to ourselves to each of our servers
+			for _, server := range resources.Servers {
+				server.provider = p
+			}
+		}
 	}
 	return
 }

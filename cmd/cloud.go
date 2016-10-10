@@ -19,15 +19,10 @@
 package cmd
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/kardianos/osext"
-	"github.com/pkg/sftp"
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh"
-	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -135,36 +130,35 @@ website locally, even though the manager is actually running remotely.`,
 		}
 
 		// get/spawn a "head node" server
-		var serverIP string
+		var server *cloud.Server
 		usingExistingServer := false
 		servers := provider.Servers()
-		for sID, externalIP := range servers {
-			if ok, _ := provider.CheckServer(sID); ok {
-				serverIP = externalIP
+		for _, thisServer := range servers {
+			if thisServer.Alive() {
 				usingExistingServer = true
-				info("using existing %s server at %s", providerName, serverIP)
+				server = thisServer
+				info("using existing %s server at %s", providerName, server.IP)
 				break
 			}
 		}
-		if serverIP == "" {
+		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
 			flavor, err := provider.CheapestServerFlavor(2048, 1, 1)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err := provider.Spawn(osPrefix, flavor.ID, 0*time.Second, true)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 0*time.Second, true)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			serverIP = server.IP
 		}
 
 		// ssh to the server, copy over our exe, and start running wr manager
 		// there
-		info("please wait while I start 'wr manager' on the %s server at %s...", providerName, serverIP)
-		bootstrapOnRemote(provider, osUsername, serverIP, serverPort, exe, mp, wp, usingExistingServer)
+		info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
+		bootstrapOnRemote(provider, server, exe, mp, wp, usingExistingServer)
 
 		// rather than daemonize and use a go ssh forwarding library or
 		// implement myself using the net package, since I couldn't get them
@@ -177,28 +171,27 @@ website locally, even though the manager is actually running remotely.`,
 			provider.TearDown()
 			die("failed to create key file %s: %s", keyPath, err)
 		}
-		err = startForwarding(serverIP, serverPort, osUsername, keyPath, mp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid"))
+		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid"))
 		if err != nil {
 			provider.TearDown()
-			die("failed to set up port forwarding to %s:%d: %s", serverIP, mp, err)
+			die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 		}
-		err = startForwarding(serverIP, serverPort, osUsername, keyPath, wp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid"))
+		err = startForwarding(server.IP, serverPort, osUsername, keyPath, wp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid"))
 		if err != nil {
 			provider.TearDown()
-			die("failed to set up port forwarding to %s:%d: %s", serverIP, wp, err)
+			die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
 		}
 
 		// check that we can now connect to the remote manager
-		//<-time.After(15 * time.Second)
 		jq = connect(10 * time.Second)
 		if jq == nil {
 			provider.TearDown()
-			die("could not talk to wr manager on server at %s after 10s", serverIP)
+			die("could not talk to wr manager on server at %s after 10s", server.IP)
 		}
 		sstats, err := jq.ServerStats()
 		if err != nil {
 			provider.TearDown()
-			die("wr manager on server at %s started but doesn't seem to be functional: %s", serverIP, err)
+			die("wr manager on server at %s started but doesn't seem to be functional: %s", server.IP, err)
 		}
 
 		info("wr manager remotely started on %s", sAddr(sstats.ServerInfo))
@@ -313,73 +306,24 @@ func init() {
 // will probably have to move out to a separate ssh package, or perhaps the
 // cloud package in the future...
 
-func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, serverPort string, exe string, mp int, wp int, wrMayHaveStarted bool) {
-	// parse private key and make config
-	key, err := ssh.ParsePrivateKey([]byte(provider.PrivateKey()))
-	if err != nil {
-		provider.TearDown()
-		die("failed to parse private key: %s", err)
-	}
-	sshConfig := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(key),
-		},
-	}
-
-	// dial in to remote host, allowing certain errors that indicate that the
-	// network or server isn't really ready for ssh yet; wait for up to 35mins
-	// for success (can take this long when the network was only just created!)
-	hostAndPort := serverIP + ":" + serverPort
-	sshClient, err := ssh.Dial("tcp", hostAndPort, sshConfig)
-	if err != nil {
-		limit := time.After(10 * time.Minute)
-		ticker := time.NewTicker(1 * time.Second)
-		ticks := 0
-	DIAL:
-		for {
-			select {
-			case <-ticker.C:
-				ticks++
-				sshClient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
-				if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
-					if ticks == 2 {
-						info("this may take a few minutes, please be patient...")
-					}
-					continue DIAL
-				}
-				// worked, or failed with a different error: stop trying
-				ticker.Stop()
-				break DIAL
-			case <-limit:
-				ticker.Stop()
-				err = errors.New("giving up waiting for ssh to work")
-				break DIAL
-			}
-		}
-		if err != nil {
-			provider.TearDown()
-			die("failed to connect to the server at %s: %s", hostAndPort, err)
-		}
-	}
-
+func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, wrMayHaveStarted bool) {
 	// upload ourselves
 	remoteExe := filepath.Join(cloudBinDir, "wr")
-	err = uploadFileToRemote(sshClient, exe, remoteExe)
+	err := server.UploadFile(exe, remoteExe)
 	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
-		die("failed to upload wr to the server at %s: %s", hostAndPort, err)
+		die("failed to upload wr to the server at %s: %s", server.IP, err)
 	}
 
 	// create a config file on the remote to have the remote wr work on the same
 	// ports that we'd use locally
-	err = createFileOnRemote(sshClient, fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\n", mp, wp), wrConfigFileName)
+	err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\n", mp, wp), wrConfigFileName)
 	if err != nil {
 		provider.TearDown()
-		die("failed to create our config file on the server at %s: %s", hostAndPort, err)
+		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
 
-	_, err = runCmdOnRemote(sshClient, "chmod u+x "+remoteExe, false)
+	_, err = server.RunCmd("chmod u+x "+remoteExe, false)
 	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to make remote wr executable: %s", err)
@@ -388,13 +332,13 @@ func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, s
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
-		response, err := runCmdOnRemote(sshClient, fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
+		response, err := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
 		if err != nil && response == "started\n" {
 			alreadyStarted = true
 		}
 	}
 	if !alreadyStarted {
-		_, err = runCmdOnRemote(sshClient, fmt.Sprintf("%s manager start --deployment %s -s local", remoteExe, config.Deployment), true)
+		_, err = server.RunCmd(fmt.Sprintf("%s manager start --deployment %s -s openstack", remoteExe, config.Deployment), true)
 		if err != nil {
 			provider.TearDown()
 			die("failed to make start wr manager on the remote server: %s", err)
@@ -403,95 +347,6 @@ func bootstrapOnRemote(provider *cloud.Provider, user string, serverIP string, s
 		// wait a few seconds for the manager to start listening on its ports
 		<-time.After(3 * time.Second)
 	}
-}
-
-func runCmdOnRemote(sshClient *ssh.Client, cmd string, background bool) (response string, err error) {
-	// create a session
-	session, err := sshClient.NewSession()
-	if err != nil {
-		return
-	}
-	defer session.Close()
-
-	if background {
-		cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
-	}
-
-	var b bytes.Buffer
-	session.Stdout = &b
-	if err = session.Run(cmd); err != nil {
-		return
-	}
-	response = b.String()
-	return
-}
-
-func uploadFileToRemote(sshClient *ssh.Client, source string, dest string) (err error) {
-	client, err := sftp.NewClient(sshClient)
-	if err != nil {
-		return
-	}
-	defer client.Close()
-
-	// create all parent dirs of dest
-	err = makeRemoteParentDirs(sshClient, dest)
-	if err != nil {
-		return
-	}
-
-	// open source, create dest
-	sourceFile, err := os.Open(source)
-	if err != nil {
-		return
-	}
-	defer sourceFile.Close()
-
-	destFile, err := client.Create(dest)
-	if err != nil {
-		return
-	}
-
-	// copy the file content over
-	_, err = io.Copy(destFile, sourceFile)
-	return
-}
-
-func createFileOnRemote(sshClient *ssh.Client, content string, dest string) (err error) {
-	client, err := sftp.NewClient(sshClient)
-	if err != nil {
-		return
-	}
-	defer client.Close()
-
-	// create all parent dirs of dest
-	err = makeRemoteParentDirs(sshClient, dest)
-	if err != nil {
-		return
-	}
-
-	// create dest
-	destFile, err := client.Create(dest)
-	if err != nil {
-		return
-	}
-
-	// write the content
-	_, err = io.WriteString(destFile, content)
-	return
-}
-
-func makeRemoteParentDirs(sshClient *ssh.Client, dest string) (err error) {
-	//*** it would be nice to do this with client.Mkdir, but that doesn't do
-	// the equivalent of mkdir -p, and errors out if dirs already exist... for
-	// now it's easier to just call mkdir
-	dir := filepath.Dir(dest)
-	if dir != "." {
-		_, err = runCmdOnRemote(sshClient, "mkdir -p "+dir, false)
-		if err != nil {
-			return
-		}
-	}
-	return
 }
 
 func startForwarding(serverIP, serverPort, serverUser, keyFile string, port int, pidPath string) (err error) {
