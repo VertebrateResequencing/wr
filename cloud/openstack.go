@@ -21,6 +21,7 @@ package cloud
 // This file contains a provideri implementation for OpenStack
 
 import (
+	"errors"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
@@ -37,6 +38,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // openstack only allows certain chars in resource names, so we have a regexp to
@@ -54,6 +56,10 @@ type openstackp struct {
 	poolName          string
 	externalNetworkId string
 	fmap              map[string]Flavor
+	ownName           string
+	networkName       string
+	networkUUID       string
+	securityGroup     string
 }
 
 // requiredEnv returns envs
@@ -125,7 +131,7 @@ func (p *openstackp) initialize() (err error) {
 	return
 }
 
-// deploy achieves the aims of Deploy()
+// deploy achieves the aims of Deploy().
 func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err error) {
 	// the resource name can only contain letters, numbers, underscores,
 	// spaces and hyphens
@@ -160,6 +166,61 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 		}
 	}
 	resources.Details["keypair"] = kp.Name
+
+	// based on hostname, see if we're currently running on an openstack server,
+	// in which case we'll use this server's security group and network.
+	hostname, err := os.Hostname()
+	inCloud := false
+	if err == nil {
+		pager := servers.List(p.computeClient, servers.ListOpts{})
+		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+			serverList, err := servers.ExtractServers(page)
+			if err != nil {
+				return false, err
+			}
+
+			for _, server := range serverList {
+				if server.Name == hostname {
+					p.ownName = hostname
+
+					// get the first networkUUID we come across *** not sure
+					// what the other possibilities are and what else we can do
+					// instead
+					for networkName, _ := range server.Addresses {
+						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
+						if networkUUID != "" {
+							p.networkName = networkName
+							p.networkUUID = networkUUID
+							break
+						}
+					}
+
+					// get the first security group *** again, not sure how to
+					// pick the "best" if more than one
+					for _, smap := range server.SecurityGroups {
+						if value, found := smap["name"]; found && value.(string) != "" {
+							p.securityGroup = value.(string)
+							break
+						}
+					}
+
+					if p.networkUUID != "" && p.securityGroup != "" {
+						inCloud = true
+						return false, nil
+					}
+				}
+			}
+
+			return true, nil
+		})
+	}
+
+	//*** actually, if in cloud, we should create a security group that allows
+	// the given ports, only accessible by things in the current security group
+	// don't create any more resources if we're already running in OpenStack
+	if inCloud {
+		return
+	}
 
 	// get/create security group
 	pager := secgroups.List(p.computeClient)
@@ -219,6 +280,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 		}
 	}
 	resources.Details["secgroup"] = group.ID
+	p.securityGroup = resources.ResourceName
 
 	// get/create network
 	var network *networks.Network
@@ -241,6 +303,8 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 		}
 	}
 	resources.Details["network"] = networkID
+	p.networkName = resources.ResourceName
+	p.networkUUID = networkID
 
 	// get/create subnet
 	var subnetID string
@@ -352,7 +416,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, os string, flavorID string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -364,7 +428,7 @@ func (p *openstackp) spawn(resources *Resources, os string, flavorID string, ext
 		}
 
 		for _, i := range imageList {
-			if i.Progress == 100 && strings.HasPrefix(i.Name, os) {
+			if i.Progress == 100 && strings.HasPrefix(i.Name, osPrefix) {
 				imageID = i.ID
 				return false, nil
 			}
@@ -382,8 +446,8 @@ func (p *openstackp) spawn(resources *Resources, os string, flavorID string, ext
 			Name:           uniqueResourceName(resources.ResourceName),
 			FlavorRef:      flavorID,
 			ImageRef:       imageID,
-			SecurityGroups: []string{resources.ResourceName},
-			Networks:       []servers.Network{servers.Network{UUID: resources.Details["network"]}},
+			SecurityGroups: []string{p.securityGroup},
+			Networks:       []servers.Network{servers.Network{UUID: p.networkUUID}},
 			// UserData []byte (will be base64-encoded for me)
 			// Metadata map[string]string
 		},
@@ -393,9 +457,44 @@ func (p *openstackp) spawn(resources *Resources, os string, flavorID string, ext
 		return
 	}
 
-	// wait for it to come up
-	err = servers.WaitForStatus(p.computeClient, server.ID, "ACTIVE", 60) //*** not sure this timeout really works...
+	// wait for it to come up; servers.WaitForStatus has a timeout, but it
+	// doesn't always work, so we roll our own
+	waitForActive := make(chan error)
+	go func() {
+		timeout := time.After(60 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
+		for {
+			select {
+			case <-ticker.C:
+				current, err := servers.Get(p.computeClient, server.ID).Extract()
+				if err != nil {
+					ticker.Stop()
+					waitForActive <- err
+					return
+				}
+				if current.Status == "ACTIVE" {
+					ticker.Stop()
+					waitForActive <- nil
+					return
+				}
+				if current.Status == "ERROR" {
+					ticker.Stop()
+					waitForActive <- errors.New("there was an error in bringing up the new server")
+					return
+				}
+				continue
+			case <-timeout:
+				ticker.Stop()
+				waitForActive <- errors.New("timed out waiting for server to become ACTIVE")
+				return
+			}
+		}
+	}()
+	err = <-waitForActive
 	if err != nil {
+		// since we're going to return an error that we failed to spawn, try and
+		// delete the bad server in case it is still there
+		servers.Delete(p.computeClient, server.ID)
 		return
 	}
 	// *** NB. it can still take some number of seconds before I can ssh to it
@@ -429,7 +528,7 @@ func (p *openstackp) spawn(resources *Resources, os string, flavorID string, ext
 	} else {
 		// find its auto-assigned internal ip *** there must be a better way of
 		// doing this...
-		allNetworkAddressPages, serr := servers.ListAddressesByNetwork(p.computeClient, serverID, resources.ResourceName).AllPages()
+		allNetworkAddressPages, serr := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
 		if serr != nil {
 			p.destroyServer(serverID)
 			err = serr
@@ -485,7 +584,7 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 	// throughout we'll ignore errors because we want to try and delete
 	// as much as possible; we'll end up returning the last error we encountered
 
-	// delete servers
+	// delete servers, except for ourselves
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -494,7 +593,7 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 		}
 
 		for _, server := range serverList {
-			if strings.HasPrefix(server.Name, resources.ResourceName) {
+			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
 				p.destroyServer(server.ID) // ignore errors, just try to delete others
 			}
 		}
@@ -502,28 +601,34 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 		return true, nil
 	})
 
-	// delete router
-	if id := resources.Details["router"]; id != "" {
-		if subnetid := resources.Details["subnet"]; subnetid != "" {
-			// remove the interface from our router first
-			_, err = routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+	if p.ownName == "" {
+		// delete router
+		if id := resources.Details["router"]; id != "" {
+			if subnetid := resources.Details["subnet"]; subnetid != "" {
+				// remove the interface from our router first
+				_, err = routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+			}
+			err = routers.Delete(p.networkClient, id).ExtractErr()
 		}
-		err = routers.Delete(p.networkClient, id).ExtractErr()
+
+		// delete network (and its subnet)
+		if id := resources.Details["network"]; id != "" {
+			err = networks.Delete(p.networkClient, id).ExtractErr()
+		}
+
+		// delete secgroup
+		if id := resources.Details["secgroup"]; id != "" {
+			err = secgroups.Delete(p.computeClient, id).ExtractErr()
+		}
 	}
 
-	// delete network (and its subnet)
-	if id := resources.Details["network"]; id != "" {
-		err = networks.Delete(p.networkClient, id).ExtractErr()
-	}
-
-	// delete secgroup
-	if id := resources.Details["secgroup"]; id != "" {
-		err = secgroups.Delete(p.computeClient, id).ExtractErr()
-	}
-
-	// delete keypair
+	// delete keypair, unless we're running in OpenStack and securityGroup and
+	// keypair have the same resourcename, indicating our current server needs
+	// the same keypair we used to spawn our servers
 	if id := resources.Details["keypair"]; id != "" {
-		err = keypairs.Delete(p.computeClient, id).ExtractErr()
+		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
+			err = keypairs.Delete(p.computeClient, id).ExtractErr()
+		}
 	}
 
 	return

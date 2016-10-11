@@ -250,8 +250,6 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 				select {
 				case <-ticker.C:
 					s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
-					if err != nil {
-					}
 					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
 						continue DIAL
 					}
@@ -542,7 +540,9 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int) (fr Flavor, er
 // last argument. Returns a *Server so you can s.Destroy it later, find out its
 // ip address so you can ssh to it, and get its admin password in case you need
 // to sudo on the server. You will need to know the username that you can log in
-// with on your chosen OS image.
+// with on your chosen OS image. If you call Spawn() while running on a cloud
+// server, then the newly spawned server will be in the same network and
+// security group as the current server.
 func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
@@ -617,7 +617,9 @@ func (p *Provider) PrivateKey() string {
 
 // TearDown deletes all resources recorded during Deploy() or loaded from a
 // previous session during New(). It also deletes any servers with names
-// prefixed with the resourceName given to the initial New() call.
+// prefixed with the resourceName given to the initial New() call. If currently
+// running on a cloud server, however, it will not delete anything needed by
+// this server.
 func (p *Provider) TearDown() (err error) {
 	err = p.impl.tearDown(p.resources)
 	if err != nil {
