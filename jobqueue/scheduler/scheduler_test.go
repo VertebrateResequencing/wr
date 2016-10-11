@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -374,6 +375,166 @@ func TestLSF(t *testing.T) {
 				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldBeBetweenOrEqual, newcount, numfiles*2) // we must allow it to run a few extra due to the implementation
 			})
+		})
+
+		// wait a while for any remaining jobs to finish
+		So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+	})
+}
+
+func TestOpenstack(t *testing.T) {
+	// check if we have our special openstack-related variable
+	osPrefix := os.Getenv("OS_OS_PREFIX")
+	osUser := os.Getenv("OS_OS_USERNAME")
+	config := &SchedulerConfigOpenStack{
+		ResourceName:   "wr-testing",
+		OSPrefix:       osPrefix,
+		OSUser:         osUser,
+		ServerPorts:    []int{22},
+		ServerKeepTime: 75 * time.Second,
+		Shell:          "bash",
+	}
+	if osPrefix == "" || osUser == "" {
+		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
+			_, err := New("openstack", config)
+			So(err, ShouldNotBeNil)
+		})
+		return
+	}
+
+	host, _ := os.Hostname()
+	Convey("You can get a new openstack scheduler", t, func() {
+		tmpdir, err := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(tmpdir)
+		config.SavePath = filepath.Join(tmpdir, "os_resources")
+
+		s, err := New("openstack", config)
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+		defer s.Cleanup()
+
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, ""}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+
+		Convey("ReserveTimeout() returns 25 seconds", func() {
+			So(s.ReserveTimeout(), ShouldEqual, 1)
+		})
+
+		// author specific tests, based on hostname, where we know what the
+		// expected server types are
+		if host == "vr-2-2-02" {
+			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
+				flavor, err := s.impl.(*opst).determineFlavor(possibleReq)
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "1")
+				So(flavor.RAM, ShouldEqual, 512)
+				So(flavor.Disk, ShouldEqual, 1)
+				So(flavor.Cores, ShouldEqual, 1)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2")
+				So(flavor.RAM, ShouldEqual, 2048)
+				So(flavor.Disk, ShouldEqual, 20)
+				So(flavor.Cores, ShouldEqual, 1)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "95fc0191-e4d1-4188-858e-c2131f177913")
+				So(flavor.RAM, ShouldEqual, 2048)
+				So(flavor.Disk, ShouldEqual, 8)
+				So(flavor.Cores, ShouldEqual, 2)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{3000, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "3")
+				So(flavor.RAM, ShouldEqual, 4096)
+				So(flavor.Disk, ShouldEqual, 40)
+				So(flavor.Cores, ShouldEqual, 2)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{8000, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "4")
+				So(flavor.RAM, ShouldEqual, 8192)
+				So(flavor.Disk, ShouldEqual, 80)
+				So(flavor.Cores, ShouldEqual, 4)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{16000, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2101")
+				So(flavor.RAM, ShouldEqual, 16384)
+				So(flavor.Disk, ShouldEqual, 80)
+				So(flavor.Cores, ShouldEqual, 4)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 8, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "5")
+				So(flavor.RAM, ShouldEqual, 16384)
+				So(flavor.Disk, ShouldEqual, 160)
+				So(flavor.Cores, ShouldEqual, 8)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{32000, 1 * time.Minute, 1, 1, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2102")
+				So(flavor.RAM, ShouldEqual, 32768)
+				So(flavor.Disk, ShouldEqual, 80)
+				So(flavor.Cores, ShouldEqual, 8)
+			})
+
+			Convey("MaxQueueTime() always returns 'infinite'", func() {
+				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 0)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 0)
+			})
+		}
+
+		Convey("Busy() starts off false", func() {
+			So(s.Busy(), ShouldBeFalse)
+		})
+
+		Convey("Schedule() gives impossible error when given impossible reqs", func() {
+			err := s.Schedule("foo", impossibleReq, 1)
+			So(err, ShouldNotBeNil)
+			serr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(serr.Err, ShouldEqual, ErrImpossible)
+		})
+
+		Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
+			cmd := "sleep 10"
+
+			// on authors setup, running the test from a 1 cpu cloud instance,
+			// the following count is sufficient to test spawning instances over
+			// the quota in the test environment
+			count := 35
+			err = s.Schedule(cmd, possibleReq, count)
+			So(err, ShouldBeNil)
+			So(s.Busy(), ShouldBeTrue)
+
+			Convey("It eventually runs them all", func() {
+				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+
+				//*** want to test that servers actually get spawned up to
+				// quota, and that 75s after all cmds run, they get auto-
+				// destroyed
+				<-time.After(80 * time.Second)
+			})
+
+			// *** should also test dropping the count
+
+			// Convey("You can Schedule() again to increase the count", func() {
+			//  // this increase takes us just over the quota
+			//  newcount := count + 2
+			//  err = s.Schedule(cmd, possibleReq, newcount)
+			//  So(err, ShouldBeNil)
+			//  So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+			// })
+
+			//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
+			//*** need to wait until I have file input/output implemented so I
+			// can test if things are really working
 		})
 
 		// wait a while for any remaining jobs to finish

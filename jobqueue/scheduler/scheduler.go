@@ -107,15 +107,17 @@ type Scheduler struct {
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
-// Possible names so far are "lsf" and "local". You must also provide a config
-// struct appropriate for your chosen scheduler, eg. for the local scheduler you
-// will provide a SchedulerConfigLocal.
+// Possible names so far are "lsf", "local" and "openstack". You must also
+// provide a config struct appropriate for your chosen scheduler, eg. for the
+// local scheduler you will provide a SchedulerConfigLocal.
 func New(name string, config interface{}) (s *Scheduler, err error) {
 	switch name {
 	case "lsf":
 		s = &Scheduler{impl: new(lsf)}
 	case "local":
 		s = &Scheduler{impl: new(local)}
+	case "openstack":
+		s = &Scheduler{impl: new(opst)}
 	}
 
 	if s == nil {
@@ -139,7 +141,7 @@ func New(name string, config interface{}) (s *Scheduler, err error) {
 // error is returned, you know all `count` of your jobs are now scheduled and
 // will eventually run unless you call Schedule() again with the same command
 // and a lower count. NB: there is no guarantee that the jobs run successfully,
-// and no feedback on their success or failure.
+// and no feedback on their success or failure is given.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	// Schedule may get called many times in different go routines, eg. a
 	// succession of calls with the same cmd and req but decrementing count.
