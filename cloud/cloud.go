@@ -31,7 +31,7 @@ go file that implements the methods of the provideri interface, to support a
 new cloud provider. On the other hand, there is no dynamic loading of these go
 files; they are all imported (they all belong to the cloud package), and the
 correct one used at run time. To "register" a new provideri implementation you
-must add a case for it to New() and rebuild.
+must add a case for it to New() and RequiredEnv() and rebuild.
 */
 package cloud
 
@@ -419,6 +419,25 @@ func (s *Server) Alive() bool {
 	}
 	ok, _ := s.provider.CheckServer(s.ID)
 	return ok
+}
+
+// RequiredEnv returns the environment variables that are needed by the given
+// provider before New() will work for it. See New() for possible providerNames.
+func RequiredEnv(providerName string) (vars []string, err error) {
+	var p *Provider
+	switch providerName {
+	case "openstack":
+		p = &Provider{impl: new(openstackp)}
+	case "aws":
+		//p = &Provider{impl: new(aws)}
+	}
+
+	if p == nil {
+		err = Error{providerName, "RequiredEnv", ErrBadProvider}
+	} else {
+		vars = p.impl.requiredEnv()
+	}
+	return
 }
 
 // New creates a new Provider to interact with the given cloud provider.

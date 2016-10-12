@@ -45,6 +45,12 @@ func TestOpenStack(t *testing.T) {
 		defer os.RemoveAll(crdir)
 		crfileprefix := filepath.Join(crdir, "resources")
 
+		Convey("You can find out the required environment variables for providers before creating instances with New()", t, func() {
+			vars, err := RequiredEnv("openstack")
+			So(err, ShouldBeNil)
+			So(vars, ShouldResemble, []string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"})
+		})
+
 		Convey("You can get a new OpenStack Provider", t, func() {
 			p, err := New("openstack", resourceName, crfileprefix)
 			So(err, ShouldBeNil)
