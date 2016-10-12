@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -36,12 +37,12 @@ func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", "development", "bash")
+		s, err := New("local", &SchedulerConfigLocal{"bash"})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{1, 1 * time.Second, 1, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
+		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, ""}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
 
 		Convey("ReserveTimeout() returns 1 second", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -76,6 +77,24 @@ func TestLocal(t *testing.T) {
 			defer os.RemoveAll(tmpdir2)
 
 			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
+
+			// different machines take difference amounts of times to actually
+			// run the above command, so we first need to run the command (in
+			// parallel still, since it is slower to run when many are running
+			// at once) to find how long it takes, as subsequent tests are very
+			// timing dependent
+			err = s.Schedule(cmd, possibleReq, maxCPU)
+			So(err, ShouldBeNil)
+			before := time.Now()
+			var overhead time.Duration
+			for {
+				if !s.Busy() {
+					overhead = time.Since(before) - time.Duration(750*time.Millisecond)
+					break
+				}
+				<-time.After(1 * time.Millisecond)
+			}
+
 			count := maxCPU * 2
 			err = s.Schedule(cmd, possibleReq, count)
 			So(err, ShouldBeNil)
@@ -84,19 +103,19 @@ func TestLocal(t *testing.T) {
 			Convey("It eventually runs them all", func() {
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
-				<-time.After(1100 * time.Millisecond)
+				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, count)
-				So(numfiles, ShouldEqual, count)
+				numfiles = testDirForFiles(tmpdir, maxCPU+count)
+				So(numfiles, ShouldEqual, maxCPU+count)
 				So(s.Busy(), ShouldBeTrue)
 
-				<-time.After(750 * time.Millisecond) // *** don't know why we need an extra 850ms for the cmds to finish running
+				<-time.After(100*time.Millisecond + overhead) // an extra 50ms for leeway
 
-				numfiles = testDirForFiles(tmpdir2, count)
-				So(numfiles, ShouldEqual, count)
+				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
+				So(numfiles, ShouldEqual, maxCPU+count)
 				So(s.Busy(), ShouldBeFalse)
 			})
 
@@ -105,16 +124,16 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(900 * time.Millisecond)
+				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, newcount)
-				So(numfiles, ShouldEqual, newcount)
+				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
+				So(numfiles, ShouldEqual, maxCPU+newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
 			})
@@ -124,35 +143,35 @@ func TestLocal(t *testing.T) {
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(900 * time.Millisecond)
+				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles = testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
 			})
 
 			Convey("You can Schedule() again to increase the count", func() {
-				newcount := count + 5
+				newcount := count + 1
 
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU)
-				So(numfiles, ShouldEqual, maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
-				<-time.After(2000 * time.Millisecond)
+				<-time.After(1500*time.Millisecond + overhead + overhead)
 
-				numfiles = testDirForFiles(tmpdir, newcount)
-				So(numfiles, ShouldEqual, newcount)
+				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
+				So(numfiles, ShouldEqual, maxCPU+newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
 			})
@@ -163,8 +182,8 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(700 * time.Millisecond)
 
-					numfiles := testDirForFiles(tmpdir, maxCPU)
-					So(numfiles, ShouldEqual, maxCPU)
+					numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+					So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 					err = s.Schedule(cmd, possibleReq, newcount)
 					So(err, ShouldBeNil)
@@ -172,10 +191,10 @@ func TestLocal(t *testing.T) {
 					err = s.Schedule(newcmd, possibleReq, 1)
 					So(err, ShouldBeNil)
 
-					<-time.After(900 * time.Millisecond)
+					<-time.After(750*time.Millisecond + overhead)
 
-					numfiles = testDirForFiles(tmpdir, newcount+1)
-					So(numfiles, ShouldEqual, newcount+1)
+					numfiles = testDirForFiles(tmpdir, maxCPU+newcount+1)
+					So(numfiles, ShouldEqual, maxCPU+newcount+1)
 
 					So(waitToFinish(s, 3, 100), ShouldBeTrue)
 				})
@@ -199,20 +218,20 @@ func TestLSF(t *testing.T) {
 	}
 	if err != nil {
 		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err := New("lsf", "development", "bash")
+			_, err := New("lsf", &SchedulerConfigLSF{"development", "bash"})
 			So(err, ShouldNotBeNil)
 		})
 		return
 	}
 
 	host, _ := os.Hostname()
-	SkipConvey("You can get a new lsf scheduler", t, func() {
-		s, err := New("lsf", "development", "bash")
+	Convey("You can get a new lsf scheduler", t, func() {
+		s, err := New("lsf", &SchedulerConfigLSF{"development", "bash"})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, ""}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, ""}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -227,30 +246,30 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, ""}, 10)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 10)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "yesterday")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal") // used to be "test" before our memory limits were removed from all queues
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, ""}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, ""}).Minutes(), ShouldEqual, 4320)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 4320)
 			})
 		}
 
@@ -356,6 +375,166 @@ func TestLSF(t *testing.T) {
 				numfiles = testDirForFiles(tmpdir, newcount)
 				So(numfiles, ShouldBeBetweenOrEqual, newcount, numfiles*2) // we must allow it to run a few extra due to the implementation
 			})
+		})
+
+		// wait a while for any remaining jobs to finish
+		So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+	})
+}
+
+func TestOpenstack(t *testing.T) {
+	// check if we have our special openstack-related variable
+	osPrefix := os.Getenv("OS_OS_PREFIX")
+	osUser := os.Getenv("OS_OS_USERNAME")
+	config := &SchedulerConfigOpenStack{
+		ResourceName:   "wr-testing",
+		OSPrefix:       osPrefix,
+		OSUser:         osUser,
+		ServerPorts:    []int{22},
+		ServerKeepTime: 75 * time.Second,
+		Shell:          "bash",
+	}
+	if osPrefix == "" || osUser == "" {
+		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
+			_, err := New("openstack", config)
+			So(err, ShouldNotBeNil)
+		})
+		return
+	}
+
+	host, _ := os.Hostname()
+	Convey("You can get a new openstack scheduler", t, func() {
+		tmpdir, err := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(tmpdir)
+		config.SavePath = filepath.Join(tmpdir, "os_resources")
+
+		s, err := New("openstack", config)
+		So(err, ShouldBeNil)
+		So(s, ShouldNotBeNil)
+		defer s.Cleanup()
+
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, ""}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+
+		Convey("ReserveTimeout() returns 25 seconds", func() {
+			So(s.ReserveTimeout(), ShouldEqual, 1)
+		})
+
+		// author specific tests, based on hostname, where we know what the
+		// expected server types are
+		if host == "vr-2-2-02" {
+			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
+				flavor, err := s.impl.(*opst).determineFlavor(possibleReq)
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "1")
+				So(flavor.RAM, ShouldEqual, 512)
+				So(flavor.Disk, ShouldEqual, 1)
+				So(flavor.Cores, ShouldEqual, 1)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2")
+				So(flavor.RAM, ShouldEqual, 2048)
+				So(flavor.Disk, ShouldEqual, 20)
+				So(flavor.Cores, ShouldEqual, 1)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "95fc0191-e4d1-4188-858e-c2131f177913")
+				So(flavor.RAM, ShouldEqual, 2048)
+				So(flavor.Disk, ShouldEqual, 8)
+				So(flavor.Cores, ShouldEqual, 2)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{3000, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "3")
+				So(flavor.RAM, ShouldEqual, 4096)
+				So(flavor.Disk, ShouldEqual, 40)
+				So(flavor.Cores, ShouldEqual, 2)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{8000, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "4")
+				So(flavor.RAM, ShouldEqual, 8192)
+				So(flavor.Disk, ShouldEqual, 80)
+				So(flavor.Cores, ShouldEqual, 4)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{16000, 1 * time.Minute, 1, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2101")
+				So(flavor.RAM, ShouldEqual, 16384)
+				So(flavor.Disk, ShouldEqual, 80)
+				So(flavor.Cores, ShouldEqual, 4)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 8, 20, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "5")
+				So(flavor.RAM, ShouldEqual, 16384)
+				So(flavor.Disk, ShouldEqual, 160)
+				So(flavor.Cores, ShouldEqual, 8)
+
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{32000, 1 * time.Minute, 1, 1, ""})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2102")
+				So(flavor.RAM, ShouldEqual, 32768)
+				So(flavor.Disk, ShouldEqual, 80)
+				So(flavor.Cores, ShouldEqual, 8)
+			})
+
+			Convey("MaxQueueTime() always returns 'infinite'", func() {
+				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 0)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 0)
+			})
+		}
+
+		Convey("Busy() starts off false", func() {
+			So(s.Busy(), ShouldBeFalse)
+		})
+
+		Convey("Schedule() gives impossible error when given impossible reqs", func() {
+			err := s.Schedule("foo", impossibleReq, 1)
+			So(err, ShouldNotBeNil)
+			serr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(serr.Err, ShouldEqual, ErrImpossible)
+		})
+
+		Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
+			cmd := "sleep 10"
+
+			// on authors setup, running the test from a 1 cpu cloud instance,
+			// the following count is sufficient to test spawning instances over
+			// the quota in the test environment
+			count := 35
+			err = s.Schedule(cmd, possibleReq, count)
+			So(err, ShouldBeNil)
+			So(s.Busy(), ShouldBeTrue)
+
+			Convey("It eventually runs them all", func() {
+				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+
+				//*** want to test that servers actually get spawned up to
+				// quota, and that 75s after all cmds run, they get auto-
+				// destroyed
+				<-time.After(80 * time.Second)
+			})
+
+			// *** should also test dropping the count
+
+			// Convey("You can Schedule() again to increase the count", func() {
+			//  // this increase takes us just over the quota
+			//  newcount := count + 2
+			//  err = s.Schedule(cmd, possibleReq, newcount)
+			//  So(err, ShouldBeNil)
+			//  So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+			// })
+
+			//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
+			//*** need to wait until I have file input/output implemented so I
+			// can test if things are really working
 		})
 
 		// wait a while for any remaining jobs to finish

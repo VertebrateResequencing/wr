@@ -112,16 +112,16 @@
                                         <dd data-bind="text: Attempts"></dd>
                                     </dl>
                                     <dl>
-                                        <dt>Expected Memory</dt>
-                                        <dd data-bind="text: ExpectedMemory.mbIEC()"></dd>
+                                        <dt>Expected RAM</dt>
+                                        <dd data-bind="text: ExpectedRAM.mbIEC()"></dd>
                                     </dl>
                                     <dl>
                                         <dt>Expected Time</dt>
                                         <dd data-bind="text: ExpectedTime.toDuration()"></dd>
                                     </dl>
                                     <dl>
-                                        <dt>CPUs</dt>
-                                        <dd data-bind="text: CPUs"></dd>
+                                        <dt>Cores</dt>
+                                        <dd data-bind="text: Cores"></dd>
                                     </dl>
                                     <!-- ko if: FailReason -->
                                         <dl>
@@ -160,8 +160,8 @@
                                             </dl>
                                         <!-- /ko -->
                                         <dl>
-                                            <dt>Peak Memory</dt>
-                                            <dd data-bind="text: Peakmem.mbIEC()"></dd>
+                                            <dt>Peak RAM</dt>
+                                            <dd data-bind="text: PeakRAM.mbIEC()"></dd>
                                         </dl>
                                         <dl>
                                             <dt>Walltime</dt>

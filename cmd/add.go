@@ -55,7 +55,8 @@ If any of these will be the same for all your commands, you can instead specify
 them as flags.
 
 Cwd is the directory to cd to before running the command. If none is specified,
-the default will be your current directory right now.
+the default will be your current directory right now. (If adding to a remote
+cloud-deployed manager, then cwd will instead default to /tmp.)
 
 Requirments_group is an arbitrary string that identifies the kind of commands
 you are adding, such that future commands you add with this same
@@ -151,10 +152,28 @@ the future when the commands actually get run.`,
 			defer reader.(*os.File).Close()
 		}
 
-		pwd, err := os.Getwd()
+		// we'll default to pwd if the manager is on the same host as us, /tmp
+		// otherwise
+		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
 			die("%s", err)
 		}
+		sstats, err := jq.ServerStats()
+		if err != nil {
+			die("even though I was able to connect to the manager, it failed to tell me its location")
+		}
+		var pwd string
+		var pwd_warning int
+		if jobqueue.CurrentIP()+":"+config.ManagerPort == sstats.ServerInfo.Addr {
+			pwd, err = os.Getwd()
+			if err != nil {
+				die("%s", err)
+			}
+		} else {
+			pwd = "/tmp"
+			pwd_warning = 1
+		}
+		jq.Disconnect()
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
@@ -178,6 +197,10 @@ the future when the commands actually get run.`,
 				if cmdCwd != "" {
 					cwd = cmdCwd
 				} else {
+					if pwd_warning == 1 {
+						warn("command working directories defaulting to /tmp since the manager is running remotely")
+						pwd_warning = 0
+					}
 					cwd = pwd
 				}
 			} else {
@@ -251,7 +274,7 @@ the future when the commands actually get run.`,
 		}
 
 		// connect to the server
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err = jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
 			die("%s", err)
 		}

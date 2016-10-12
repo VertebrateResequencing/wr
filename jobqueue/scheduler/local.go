@@ -42,21 +42,48 @@ const (
 
 var mt = []byte("MemTotal:")
 
-// local is our implementer of scheduleri
+// reqCheckers are functions used by schedule() to see if it is at all possible
+// to ever run a job with the given resource requirements. (We make use of this
+// in the local struct so that other implementers of scheduleri can embed local,
+// use local's schedule(), but have their own reqChecker implementation.)
+type reqChecker func(req *Requirements) error
+
+// canCounters are functions used by processQueue() to see how many of a job
+// can be run. (We make use of this in the local struct so that other
+// implementers of scheduleri can embed local, use local's processQueue(), but
+// have their own canCounter implementation.)
+type canCounter func(req *Requirements) (canCount int)
+
+// cmdRunners are functions used by processQueue() to actually run cmds.
+// (Their reason for being is the same as for canCounters.)
+type cmdRunner func(cmd string, req *Requirements) error
+
+// local is our implementer of scheduleri.
 type local struct {
-	deployment string
-	shell      string
-	maxmb      int
-	maxcores   int
-	mb         int
-	cores      int
-	queue      *queue.Queue
-	running    map[string]int
-	rcount     int
-	mutex      sync.Mutex
+	config       *SchedulerConfigLocal
+	maxRAM       int
+	maxCores     int
+	ram          int
+	cores        int
+	rcount       int
+	mutex        sync.Mutex
+	queue        *queue.Queue
+	running      map[string]int
+	cleaned      bool
+	reqCheckFunc reqChecker
+	canCountFunc canCounter
+	runCmdFunc   cmdRunner
 }
 
-// jobs are what we store in our queue
+// SchedulerConfigLocal represents the configuration options required by the
+// local scheduler. All are required with no usable defaults.
+type SchedulerConfigLocal struct {
+	// Shell is the shell to use to run your commands with; 'bash' is
+	// recommended.
+	Shell string
+}
+
+// jobs are what we store in our queue.
 type job struct {
 	cmd   string
 	req   *Requirements
@@ -65,10 +92,30 @@ type job struct {
 
 // initialize finds out about the local machine. Compatible with linux-like
 // systems with /proc/meminfo only!
-func (s *local) initialize(deployment string, shell string) (err error) {
-	s.maxcores = runtime.NumCPU()
+func (s *local) initialize(config interface{}) (err error) {
+	s.config = config.(*SchedulerConfigLocal)
+	s.maxCores = runtime.NumCPU()
+	s.maxRAM, err = s.procMeminfoMBs()
+	if err != nil {
+		return
+	}
 
-	// get MemTotal from /proc/meminfo
+	// make our queue
+	s.queue = queue.New(localPlace)
+	s.running = make(map[string]int)
+
+	// set our functions for use in schedule() and processQueue()
+	s.reqCheckFunc = s.reqCheck
+	s.canCountFunc = s.canCount
+	s.runCmdFunc = s.runCmd
+
+	return
+}
+
+// procMeminfoMBs parses /proc/meminfo (only available on linux-like systems!)
+// to find the total number of MBs of memory physically installed on the current
+// system.
+func (s *local) procMeminfoMBs() (mbs int, err error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return
@@ -92,15 +139,7 @@ func (s *local) initialize(deployment string, shell string) (err error) {
 	}
 
 	// convert kB to MB
-	s.maxmb = int(kb / 1024)
-
-	// make our queue
-	s.queue = queue.New(localPlace)
-	s.running = make(map[string]int)
-
-	s.deployment = deployment
-	s.shell = shell
-
+	mbs = int(kb / 1024)
 	return
 }
 
@@ -117,12 +156,13 @@ func (s *local) maxQueueTime(req *Requirements) time.Duration {
 // schedule achieves the aims of Schedule().
 func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	// first find out if its at all possible to ever run this cmd
-	if req.Memory > s.maxmb || req.CPUs > s.maxcores {
-		return Error{"local", "schedule", ErrImpossible}
+	err := s.reqCheckFunc(req)
+	if err != nil {
+		return err
 	}
 
 	// add to the queue
-	key := jobName(cmd, s.deployment, false)
+	key := jobName(cmd, "n/a", false)
 	data := &job{cmd, req, count}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
@@ -139,27 +179,28 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	s.mutex.Unlock()
 
 	// try and run the oldest job in the queue
-	err = s.processQueue()
-	return err
+	return s.processQueue()
 }
 
-// busy returns true if there's anything in our queue or we are still running
-// any cmd
-func (s *local) busy() bool {
-	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
-		return false
+// reqCheck gives an ErrImpossible if the given Requirements can not be met.
+func (s *local) reqCheck(req *Requirements) error {
+	if req.RAM > s.maxRAM || req.Cores > s.maxCores {
+		return Error{"local", "schedule", ErrImpossible}
 	}
-	return true
+	return nil
 }
 
-// processQueue gets the oldest job in the queue, sees if it's possible to
-// run it, does so if it does, otherwise returns the job to the queue
+// processQueue gets the oldest job in the queue, sees if it's possible to run
+// it, does so if it does, otherwise returns the job to the queue.
 func (s *local) processQueue() error {
+	if s.cleaned {
+		return nil
+	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	var key, cmd string
-	var count, canCount, mbs, cpus int
-	var t time.Duration
+	var req *Requirements
+	var count, canCount int
 	var j *job
 
 	// get the oldest job
@@ -181,9 +222,7 @@ func (s *local) processQueue() error {
 		toRelease = append(toRelease, key)
 		j = item.Data.(*job)
 		cmd = j.cmd
-		mbs = j.req.Memory
-		cpus = j.req.CPUs
-		t = j.req.Time
+		req = j.req
 		count = j.count
 
 		running := s.running[key]
@@ -194,19 +233,8 @@ func (s *local) processQueue() error {
 			continue
 		}
 
-		// now see if there's remaining capacity to run the job; we don't do any
-		// actual checking of current resources on the machine, but instead rely
-		// on our simple tracking based on how many cpus and memory prior cmds
-		// were /supposed/ to use. This could be bad for misbehaving cmds that
-		// use too much memory, but we will end up killing cmds that do this, so
-		// it shouldn't be too much of an issue.
-		canCount = int(math.Floor(float64(s.maxmb-s.mb) / float64(mbs)))
-		if canCount >= 1 {
-			canCount2 := int(math.Floor(float64(s.maxcores-s.cores) / float64(cpus)))
-			if canCount2 < canCount {
-				canCount = canCount2
-			}
-		}
+		// now see if there's remaining capacity to run the job
+		canCount = s.canCountFunc(req)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -227,22 +255,24 @@ func (s *local) processQueue() error {
 
 	// start running what we can
 	for i := 0; i < canCount; i++ {
-		s.mb += mbs
-		s.cores += cpus
+		s.ram += req.RAM
+		s.cores += req.Cores
 		s.running[key]++
 
 		go func() {
-			s.runcmd(cmd, mbs, t)
+			err := s.runCmdFunc(cmd, req)
 			s.mutex.Lock()
-			s.mb -= mbs
-			s.cores -= cpus
+			s.ram -= req.RAM
+			s.cores -= req.Cores
 			s.running[key]--
 			if s.running[key] <= 0 {
 				delete(s.running, key)
 			}
-			j.count--
-			if j.count <= 0 {
-				s.queue.Remove(key)
+			if err == nil {
+				j.count--
+				if j.count <= 0 {
+					s.queue.Remove(key)
+				}
 			}
 			s.mutex.Unlock()
 			s.processQueue()
@@ -254,20 +284,42 @@ func (s *local) processQueue() error {
 	return nil
 }
 
-// runcmd runs the command, kills it if it goes much over memory or time limits.
-func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
-	ec := exec.Command(s.shell, "-c", cmd)
+// canCount tells you how many jobs with the given RAM and core requirements it
+// is possible to run, given remaining resources.
+func (s *local) canCount(req *Requirements) (canCount int) {
+	// we don't do any actual checking of current resources on the machine, but
+	// instead rely on our simple tracking based on how many cores and RAM prior
+	// cmds were /supposed/ to use. This could be bad for misbehaving cmds that
+	// use too much RAM, but we will end up killing cmds that do this, so it
+	// shouldn't be too much of an issue.
+	canCount = int(math.Floor(float64(s.maxRAM-s.ram) / float64(req.RAM)))
+	if canCount >= 1 {
+		canCount2 := int(math.Floor(float64(s.maxCores-s.cores) / float64(req.Cores)))
+		if canCount2 < canCount {
+			canCount = canCount2
+		}
+	}
+	return
+}
+
+// runCmd runs the command, kills it if it goes much over RAM or time limits.
+// NB: we only return an error if we can't start the cmd, not if the command
+// fails (schedule() only guarantees that the cmds are run count times, not that
+// they are /successful/ that many times).
+func (s *local) runCmd(cmd string, req *Requirements) error {
+	ec := exec.Command(s.config.Shell, "-c", cmd)
 	err := ec.Start()
 	if err != nil {
 		fmt.Println(err)
-		return
+		return err
 	}
 
 	s.mutex.Lock()
 	s.rcount++
 	s.mutex.Unlock()
 
-	//*** set up monitoring of memory and time usage and kill if >> than mbs or maxt
+	//*** set up monitoring of RAM and time usage and kill if >> than
+	// req.RAM or req.Time
 
 	err = ec.Wait()
 	if err != nil {
@@ -280,4 +332,22 @@ func (s *local) runcmd(cmd string, mbs int, maxt time.Duration) {
 		s.rcount = 0
 	}
 	s.mutex.Unlock()
+
+	return nil
+}
+
+// busy returns true if there's anything in our queue or we are still running
+// any cmd
+func (s *local) busy() bool {
+	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
+		return false
+	}
+	return true
+}
+
+// cleanup destroys our internal queue
+func (s *local) cleanup() {
+	s.cleaned = true
+	s.queue.Destroy()
+	return
 }

@@ -22,8 +22,11 @@ import (
 	"flag"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	// "github.com/boltdb/bolt"
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
+	// "github.com/ugorji/go/codec"
 	"io/ioutil"
 	"log"
 	"math"
@@ -31,10 +34,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
-	// "github.com/boltdb/bolt"
-	// "github.com/ugorji/go/codec"
 	// "sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -72,16 +73,22 @@ func TestJobqueue(t *testing.T) {
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
-	port := config.ManagerPort
-	webport := config.ManagerWeb
-	addr := "localhost:" + port
+	serverConfig := ServerConfig{
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   "local",
+		SchedulerConfig: &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell},
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
+	}
+	addr := "localhost:" + config.ManagerPort
 
 	ServerLogClientErrors = false
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
 	clientConnectTime := 150 * time.Millisecond
-	rc := ""
 
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
@@ -112,7 +119,7 @@ func TestJobqueue(t *testing.T) {
 			// 	log.SetOutput(logfile)
 			// }
 
-			server, msg, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+			server, msg, err := Serve(serverConfig)
 			if err != nil {
 				log.Fatalf("test daemon failed to start: %s\n", err)
 			}
@@ -139,6 +146,7 @@ func TestJobqueue(t *testing.T) {
 		defer syscall.Kill(child.Pid, syscall.SIGTERM)
 		jq, err := Connect(addr, "test_queue", 10*time.Second)
 		So(err, ShouldBeNil)
+		defer jq.Disconnect()
 
 		sstats, err := jq.ServerStats()
 		So(err, ShouldBeNil)
@@ -199,6 +207,7 @@ func TestJobqueue(t *testing.T) {
 
 				jq2, err := Connect(addr, "test_queue", clientConnectTime)
 				So(err, ShouldBeNil)
+				defer jq2.Disconnect()
 				job, err = jq2.GetByCmd(cmd, "/tmp", false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
@@ -240,16 +249,18 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		<-time.After(1 * time.Second) // try and ensure no server is still using port
+		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			sstats, err := jq.ServerStats()
 			So(err, ShouldBeNil)
-			So(sstats.ServerInfo.Port, ShouldEqual, port)
+			So(sstats.ServerInfo.Port, ShouldEqual, serverConfig.Port)
 			So(sstats.ServerInfo.PID, ShouldBeGreaterThan, 0)
 			So(sstats.ServerInfo.Deployment, ShouldEqual, "development")
 
@@ -309,7 +320,7 @@ func TestJobqueue(t *testing.T) {
 
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
 				for index, job := range jobs {
-					job.Peakmem = index + 1
+					job.PeakRAM = index + 1
 					job.starttime = time.Now()
 					job.endtime = job.starttime.Add(time.Duration(index+1) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
@@ -324,7 +335,7 @@ func TestJobqueue(t *testing.T) {
 
 				for i := 11; i <= 100; i++ {
 					job := NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), "manually_added")
-					job.Peakmem = i * 100
+					job.PeakRAM = i * 100
 					job.starttime = time.Now()
 					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
@@ -388,6 +399,7 @@ func TestJobqueue(t *testing.T) {
 									if ticks == 2 {
 										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0), "manually_added"))
 										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
+										defer gojq.Disconnect()
 										gojq.Add(jobs)
 									}
 									continue
@@ -456,7 +468,7 @@ func TestJobqueue(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				So(err, ShouldBeNil)
 
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -478,6 +490,7 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrUnknownCommand)
+				jq.Disconnect()
 			})
 		})
 
@@ -489,20 +502,23 @@ func TestJobqueue(t *testing.T) {
 	if server != nil {
 		server.Stop()
 	}
+	<-time.After(2 * time.Second) // try and ensure no server is still using port
 
 	// start these tests anew because I don't want to mess with the timings in
 	// the above tests
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 100 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 			jq2, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq2.Disconnect()
 
 			var jobs []*Job
 			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "manually_added"))
@@ -518,6 +534,7 @@ func TestJobqueue(t *testing.T) {
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrMustReserve)
+				jq.Disconnect()
 			})
 
 			Convey("Once reserved you can execute jobs, and other clients see the correct state on gets", func() {
@@ -540,7 +557,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.State, ShouldEqual, "complete")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
-				So(job.Peakmem, ShouldBeGreaterThan, 0)
+				So(job.PeakRAM, ShouldBeGreaterThan, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				host, _ := os.Hostname()
 				So(job.Host, ShouldEqual, host)
@@ -561,7 +578,7 @@ func TestJobqueue(t *testing.T) {
 				So(job2.State, ShouldEqual, "complete")
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 0)
-				So(job2.Peakmem, ShouldEqual, job.Peakmem)
+				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
 				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
@@ -583,7 +600,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.State, ShouldEqual, "delayed")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 1)
-				So(job.Peakmem, ShouldBeGreaterThan, 0)
+				So(job.PeakRAM, ShouldBeGreaterThan, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				So(job.Host, ShouldEqual, host)
 				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
@@ -603,7 +620,7 @@ func TestJobqueue(t *testing.T) {
 				So(job2.State, ShouldEqual, "delayed")
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 1)
-				So(job2.Peakmem, ShouldEqual, job.Peakmem)
+				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
 				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
@@ -850,12 +867,12 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
-					So(jqerr.Err, ShouldEqual, FailReasonMem)
+					So(jqerr.Err, ShouldEqual, FailReasonRAM)
 					So(job.State, ShouldEqual, "delayed")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, -1)
-					So(job.FailReason, ShouldEqual, FailReasonMem)
-					So(job.Memory, ShouldEqual, 1200)
+					So(job.FailReason, ShouldEqual, FailReasonRAM)
+					So(job.RAM, ShouldEqual, 1200)
 					jq.Delete([][2]string{{cmd, "/tmp"}})
 				})
 
@@ -1060,6 +1077,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("After connecting and adding some jobs under one RepGroup", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			var jobs []*Job
 			for i := 0; i < 3; i++ {
@@ -1155,12 +1173,13 @@ func TestJobqueue(t *testing.T) {
 	// db to test some behaviours
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 2 * time.Second
-		server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add 2 jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			var jobs []*Job
 			jobs = append(jobs, NewJob("echo 1", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
@@ -1182,7 +1201,7 @@ func TestJobqueue(t *testing.T) {
 
 				server.Stop()
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1203,6 +1222,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect and add a non-instant job", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			var jobs []*Job
 			job1Cmd := "sleep 1 && echo noninstant"
@@ -1240,7 +1260,7 @@ func TestJobqueue(t *testing.T) {
 				So(up, ShouldBeFalse)
 
 				wipeDevDBOnInit = false
-				server, _, err = Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
 				jq, err = Connect(addr, "test_queue", clientConnectTime)
@@ -1260,6 +1280,39 @@ func TestJobqueue(t *testing.T) {
 				So(job2.State, ShouldEqual, "complete")
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 0)
+			})
+
+			Convey("You can reserve & execute the job, shut down the server and then can't add new jobs and the started job did not complete", func() {
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job.Cmd, ShouldEqual, job1Cmd)
+				go jq.Execute(job, config.RunnerExecShell)
+				So(job.Exited, ShouldBeFalse)
+
+				ok := jq.ShutdownServer()
+				So(ok, ShouldBeTrue)
+
+				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+				inserts, already, err = jq.Add(jobs)
+				So(err, ShouldNotBeNil)
+
+				<-time.After(2 * time.Second)
+
+				up := jq.Ping(10 * time.Millisecond)
+				So(up, ShouldBeFalse)
+
+				jq.Disconnect() // user must always Disconnect before connecting again!
+
+				wipeDevDBOnInit = false
+				server, _, err = Serve(serverConfig)
+				wipeDevDBOnInit = true
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				job, err = jq.GetByCmd(job1Cmd, "/tmp", false, false)
+				So(err, ShouldBeNil)
+				So(job.Exited, ShouldBeFalse)
 			})
 		})
 
@@ -1281,7 +1334,9 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
-		server, _, err = Serve(port, webport, "local", config.RunnerExecShell, "go test -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir "+runnertmpdir, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment) // +" > /dev/null 2>&1"
+		runningConfig := serverConfig
+		runningConfig.RunnerCmd = "go test -tags netgo -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir // +" > /dev/null 2>&1"
+		server, _, err = Serve(runningConfig)
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
@@ -1289,6 +1344,7 @@ func TestJobqueue(t *testing.T) {
 		Convey("You can connect, and add some real jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
+			defer jq.Disconnect()
 
 			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
 			if err != nil {
@@ -1309,10 +1365,10 @@ func TestJobqueue(t *testing.T) {
 			Convey("After some time the jobs get automatically run", func() {
 				// we need some time for 'go test' to live-compile and run
 				// ourselves in runnermode *** not sure if it's legit for this
-				// to take ~45 seconds though!
+				// to take over 2mins though!
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(120 * time.Second)
+					limit := time.After(240 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {
@@ -1372,18 +1428,25 @@ func TestJobqueueSpeed(t *testing.T) {
 		return
 	}
 
+	config := internal.ConfigLoad("development", true)
+	serverConfig := ServerConfig{
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   "local",
+		SchedulerConfig: &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell},
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
+	}
+	addr := "localhost:" + config.ManagerPort
+
 	// some manual speed tests (don't like the way the benchmarking feature
 	// works)
 	if false {
-		config := internal.ConfigLoad("development", true)
-		port := config.ManagerPort
-		webport := config.ManagerWeb
-		addr := "localhost:" + port
-		rc := ""
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
-		server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+		server, _, err := Serve(serverConfig)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1393,6 +1456,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer jq.Disconnect()
 
 		before := time.Now()
 		var jobs []*Job
@@ -1476,103 +1540,99 @@ func TestJobqueueSpeed(t *testing.T) {
 	}
 
 	/* test speed of bolt db when there are lots of jobs already stored
-		if true {
-			config := internal.ConfigLoad("development", true)
-			port := config.ManagerPort
-			webport := config.ManagerWeb
-			addr := "localhost:" + port
-			rc := ""
-			n := 10000000 // num jobs to start with
-			b := 10000    // jobs per identifier
+			if true {
+				n := 10000000 // num jobs to start with
+				b := 10000    // jobs per identifier
 
-			server, _, err := Serve(port, webport, config.ManagerScheduler, config.RunnerExecShell, rc, config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			jq, err := Connect(addr, "cmds", 60*time.Second)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			// get timings when the bolt db is empty
-			total := 0
-			batchNum := 1
-			timeDealingWithBatch(addr, jq, batchNum, b)
-			batchNum++
-			total += b
-
-			// add n jobs in b batches to the completed bolt db bucket to simulate
-			// a well used database
-			before := time.Now()
-			q := server.getOrCreateQueue("cmds")
-			for total < n {
-				var jobs []*Job
-				for i := 0; i < b; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), fmt.Sprintf("batch_%d", batchNum)))
-				}
-				_, _, err := jq.Add(jobs)
-				if err != nil {
-					log.Fatal(err)
-				}
-				fmt.Printf("\nadded batch %d", batchNum)
-
-				// it's too slow to reserve and archive things properly in this
-				// test; this is not a real-world performance concern though, since
-				// normally you wouldn't archive so many jobs in a row in a single
-	            // process...
-				// for {
-				// 	job, _ := jq.Reserve(1 * time.Millisecond)
-				// 	if job == nil {
-				// 		break
-				// 	}
-				// 	jq.Started(job, 123, "host")
-				// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
-				// 	err = jq.Archive(job)
-				// 	if err != nil {
-				// 		log.Fatal(err)
-				// 	}
-				// 	fmt.Print(".")
-				// }
-
-				// ... Instead we bypass the client interface and directly add to
-				// bolt db
-				err = server.db.bolt.Batch(func(tx *bolt.Tx) error {
-					bl := tx.Bucket(bucketJobsLive)
-					b := tx.Bucket(bucketJobsComplete)
-
-					var puterr error
-					for _, job := range jobs {
-						key := jobKey(job)
-						var encoded []byte
-						enc := codec.NewEncoderBytes(&encoded, server.db.ch)
-						enc.Encode(job)
-
-						bl.Delete([]byte(key))
-						q.Remove(key)
-
-						puterr = b.Put([]byte(key), encoded)
-						if puterr != nil {
-							break
-						}
-					}
-					return puterr
-				})
+				server, _, err := Serve(serverConfig)
 				if err != nil {
 					log.Fatal(err)
 				}
 
+				jq, err := Connect(addr, "cmds", 60*time.Second)
+				if err != nil {
+					log.Fatal(err)
+				}
+	            defer jq.Disconnect()
+
+				// get timings when the bolt db is empty
+				total := 0
+				batchNum := 1
+				timeDealingWithBatch(addr, jq, batchNum, b)
 				batchNum++
 				total += b
+
+				// add n jobs in b batches to the completed bolt db bucket to simulate
+				// a well used database
+				before := time.Now()
+				q := server.getOrCreateQueue("cmds")
+				for total < n {
+					var jobs []*Job
+					for i := 0; i < b; i++ {
+						jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), fmt.Sprintf("batch_%d", batchNum)))
+					}
+					_, _, err := jq.Add(jobs)
+					if err != nil {
+						log.Fatal(err)
+					}
+					fmt.Printf("\nadded batch %d", batchNum)
+
+					// it's too slow to reserve and archive things properly in this
+					// test; this is not a real-world performance concern though, since
+					// normally you wouldn't archive so many jobs in a row in a single
+		            // process...
+					// for {
+					// 	job, _ := jq.Reserve(1 * time.Millisecond)
+					// 	if job == nil {
+					// 		break
+					// 	}
+					// 	jq.Started(job, 123, "host")
+					// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
+					// 	err = jq.Archive(job)
+					// 	if err != nil {
+					// 		log.Fatal(err)
+					// 	}
+					// 	fmt.Print(".")
+					// }
+
+					// ... Instead we bypass the client interface and directly add to
+					// bolt db
+					err = server.db.bolt.Batch(func(tx *bolt.Tx) error {
+						bl := tx.Bucket(bucketJobsLive)
+						b := tx.Bucket(bucketJobsComplete)
+
+						var puterr error
+						for _, job := range jobs {
+							key := jobKey(job)
+							var encoded []byte
+							enc := codec.NewEncoderBytes(&encoded, server.db.ch)
+							enc.Encode(job)
+
+							bl.Delete([]byte(key))
+							q.Remove(key)
+
+							puterr = b.Put([]byte(key), encoded)
+							if puterr != nil {
+								break
+							}
+						}
+						return puterr
+					})
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					batchNum++
+					total += b
+				}
+				e := time.Since(before)
+				log.Printf("Archived %d jobqueue jobs in %d sized groups in %s\n", n, b, e)
+
+				// now re-time how long it takes to deal with a single new batch
+				timeDealingWithBatch(addr, jq, batchNum, b)
+
+				server.Stop()
 			}
-			e := time.Since(before)
-			log.Printf("Archived %d jobqueue jobs in %d sized groups in %s\n", n, b, e)
-
-			// now re-time how long it takes to deal with a single new batch
-			timeDealingWithBatch(addr, jq, batchNum, b)
-
-			server.Stop()
-		}
 	*/
 }
 
@@ -1599,6 +1659,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 		go func() {
 			defer wg.Done()
 			gojq, _ := Connect(addr, "cmds", 10*time.Second)
+            defer gojq.Disconnect()
 			for {
 				job, _ := gojq.Reserve(1 * time.Millisecond)
 				if job == nil {

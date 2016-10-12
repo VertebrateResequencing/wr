@@ -1,18 +1,34 @@
 wr - workflow runner
 ======
 
-***DO NOT USE YET!***
-
-[![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
-[![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=master)](https://travis-ci.org/VertebrateResequencing/wr)
-[![Coverage Status](https://coveralls.io/repos/github/VertebrateResequencing/wr/badge.svg?branch=master)](https://coveralls.io/github/VertebrateResequencing/wr?branch=master)
-
-But if you want to be adventurous and provide feedback...
-[![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/VertebrateResequencing/wr/master)
-
 This is an experimental reimplementation of
 https://github.com/VertebrateResequencing/vr-pipe/
-in the Go programming language
+in the Go programming language.
+
+[![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
+[![GoDoc](https://godoc.org/github.com/VertebrateResequencing/wr?status.svg)](https://godoc.org/github.com/VertebrateResequencing/wr)
+develop branch: 
+[![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=develop)](https://travis-ci.org/VertebrateResequencing/wr)
+[![Coverage Status](https://coveralls.io/repos/github/VertebrateResequencing/wr/badge.svg?branch=develop)](https://coveralls.io/github/VertebrateResequencing/wr?branch=develop)
+
+***DO NOT USE YET!***
+
+But if you want to be adventurous and provide feedback...
+
+Download
+--------
+[![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/VertebrateResequencing/wr/master)
+
+Alternatively, build it yourself:
+
+1. install go on your machine and setup the environment according to:
+[golang.org/doc/install](https://golang.org/doc/install)
+(make sure to set your `$GOPATH`)
+
+2. download, compile, and install wr:
+`go get github.com/VertebrateResequencing/wr`
+
+3. the `wr` executable should now be in `$GOPATH/bin`
 
 What's wrong with the original Perl version?
 --------------------------------------------
@@ -32,7 +48,8 @@ Why Go?
 Implemented so far
 ------------------
 * Adding manually generated commands to the manager's queue
-* Automatically running those commands on the local machine or via LSF
+* Automatically running those commands on the local machine, or via LSF
+  or OpenStack
 * Getting the status of your commands
 * Manually retrying failed commands
 * Automatic retrying of failed commands, using more memory/time reservation

@@ -48,14 +48,14 @@ const (
 	infiniteQueueTime     time.Duration = 0
 )
 
-// Err* constants are found in the our returned Errors under err.Err, so you
-// can cast and check if it's a certain type of error.
+// Err* constants are found in the returned Errors under err.Err, so you can
+// cast and check if it's a certain type of error.
 var (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
 )
 
-// Error records an error and the operation, item and queue that caused it.
+// Error records an error and the operation and scheduler that caused it.
 type Error struct {
 	Scheduler string // the scheduler's Name
 	Op        string // name of the method
@@ -70,10 +70,11 @@ func (e Error) Error() string {
 // run, so that when provided to a scheduler it will be able to schedule things
 // appropriately.
 type Requirements struct {
-	Memory int           // the expected peak memory in MB Cmd will use while running
-	Time   time.Duration // the expected time Cmd will take to run
-	CPUs   int           // how many processor cores the Cmd will use
-	Other  string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
+	RAM   int           // the expected peak RAM in MB Cmd will use while running
+	Time  time.Duration // the expected time Cmd will take to run
+	Cores int           // how many processor cores the Cmd will use
+	Disk  int           // the required local disk space in GB the Cmd needs to run
+	Other string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
 }
 
 // CmdStatus lets you describe how many of a given cmd are already in the job
@@ -88,11 +89,12 @@ type CmdStatus struct {
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize(deployment string, shell string) error        // do any initial set up to be able to use the job scheduler
+	initialize(config interface{}) error                     // do any initial set up to be able to use the job scheduler
 	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
 	busy() bool                                              // achieve the aims of Busy()
 	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
+	cleanup()                                                // do any clean up once you've finished using the job scheduler
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -105,15 +107,17 @@ type Scheduler struct {
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
-// Possible names so far are "lsf" and "local". You must provide the shell that
-// commands to interact with your job scheduler will be run on; 'bash' is
-// recommended.
-func New(name string, deployment string, shell string) (s *Scheduler, err error) {
+// Possible names so far are "lsf", "local" and "openstack". You must also
+// provide a config struct appropriate for your chosen scheduler, eg. for the
+// local scheduler you will provide a SchedulerConfigLocal.
+func New(name string, config interface{}) (s *Scheduler, err error) {
 	switch name {
 	case "lsf":
 		s = &Scheduler{impl: new(lsf)}
 	case "local":
 		s = &Scheduler{impl: new(local)}
+	case "openstack":
+		s = &Scheduler{impl: new(opst)}
 	}
 
 	if s == nil {
@@ -121,7 +125,7 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 	} else {
 		s.Name = name
 		s.limiter = make(map[string]int)
-		err = s.impl.initialize(deployment, shell)
+		err = s.impl.initialize(config)
 	}
 
 	return
@@ -136,7 +140,8 @@ func New(name string, deployment string, shell string) (s *Scheduler, err error)
 // are legitimate - it will get rid of all non-running jobs for the cmd). If no
 // error is returned, you know all `count` of your jobs are now scheduled and
 // will eventually run unless you call Schedule() again with the same command
-// and a lower count.
+// and a lower count. NB: there is no guarantee that the jobs run successfully,
+// and no feedback on their success or failure is given.
 func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	// Schedule may get called many times in different go routines, eg. a
 	// succession of calls with the same cmd and req but decrementing count.
@@ -191,12 +196,18 @@ func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 	return s.impl.maxQueueTime(req)
 }
 
+// Cleanup means you've finished using a scheduler and it can delete any
+// remaining jobs in its system and clean up any other used resources.
+func (s *Scheduler) Cleanup() {
+	s.impl.cleanup()
+}
+
 // jobName could be useful to a scheduleri implementer if it needs a constant-
-// width (length 37) string unique to the cmd and deployment, and optionally
-// suffixed with a random string (length 9, total length 46).
+// width (length 36) string unique to the cmd and deployment, and optionally
+// suffixed with a random string (length 9, total length 45).
 func jobName(cmd string, deployment string, unique bool) (name string) {
 	l, h := farm.Hash128([]byte(cmd))
-	name = fmt.Sprintf("vrp%s_%016x%016x", deployment[0:1], l, h)
+	name = fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
 
 	if unique {
 		// based on http://stackoverflow.com/a/31832326/675083

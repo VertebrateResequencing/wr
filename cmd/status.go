@@ -168,7 +168,7 @@ the commands, or if you added them with a different cwd.`,
 		} else {
 			// print out status information for each job
 			for _, job := range jobs {
-				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Memory, job.Time, job.CPUs)
+				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.RAM, job.Time, job.Cores)
 
 				switch job.State {
 				case "delayed":
@@ -192,7 +192,7 @@ the commands, or if you added them with a different cwd.`,
 					if job.State != "complete" {
 						prefix = "Stats of previous attempt"
 					}
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.Peakmem, job.Walltime, job.CPUtime, job.Host, job.Pid)
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.Walltime, job.CPUtime, job.Host, job.Pid)
 					if showextra && showStd && job.Exitcode != 0 {
 						stdout, err := job.StdOut()
 						if err != nil {

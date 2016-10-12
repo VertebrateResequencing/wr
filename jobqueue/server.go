@@ -30,7 +30,6 @@ import (
 	"github.com/grafov/bcast"
 	"github.com/ugorji/go/codec"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -161,8 +160,49 @@ type Server struct {
 	statusCaster *bcast.Group
 }
 
+// ServerConfig is supplied to Serve() to configure your jobqueue server. All
+// fields are required with no working default unless otherwise noted.
+type ServerConfig struct {
+	// Port for client-server communication.
+	Port string
+
+	// Port for the web interface.
+	WebPort string
+
+	// Name of the desired scheduler (eg. "local" or "lsf" or "openstack") that
+	// jobs will be submitted to.
+	SchedulerName string
+
+	// SchedulerConfig should define the config options needed by the chosen
+	// scheduler, eg. SchedulerConfigLocal{Deployment: "production", Shell:
+	// "bash"} if using the local scheduler.
+	SchedulerConfig interface{}
+
+	// The command line needed to bring up a jobqueue runner client, which
+	// should contain 6 %s parts which will be replaced with the queue name,
+	// scheduler group, deployment ip:host address of the server, reservation
+	// time out and maximum number of minutes allowed, eg.
+	// "my_jobqueue_runner_client --queue %s --group '%s' --deployment %s
+	// --server '%s' --reserve_timeout %d --max_mins %d". If you supply an empty
+	// string (the default), runner clients will not be spawned; for any work to
+	// be done you will have to run your runner client yourself manually.
+	RunnerCmd string
+
+	// Absolute path to where the database file should be saved. The database is
+	// used to ensure no loss of added commands, to keep a permanent history of
+	// all jobs completed, and to keep various stats, amongst other things.
+	DBFile string
+
+	// Absolute path to where the database file should be backed up to.
+	DBFileBackup string
+
+	// Name of the deployment ("development" or "production"); development
+	// databases are deleted and recreated on start up by default.
+	Deployment string
+}
+
 // Serve is for use by a server executable and makes it start listening on
-// localhost at the supplied port for Connect()ions from clients, and then
+// localhost at the configured port for Connect()ions from clients, and then
 // handles those clients. It returns a *Server that you will typically call
 // Block() on to block until until your executable receives a SIGINT or SIGTERM,
 // or you call Stop(), at which point the queues will be safely closed (you'd
@@ -171,16 +211,11 @@ type Server struct {
 // encountered while dealing with clients are logged but otherwise ignored. If
 // it creates a db file or recreates one from backup, it will say what it did in
 // the returned msg string. It also spawns your runner clients as needed,
-// running them via the job scheduler specified by schedulerName, using the
-// supplied shell. It determines the command line to execute for your runner
-// client from the runnerCmd string you supply, which should contain 6 %s parts
-// which will be replaced with the queue name, scheduler group, deployment
-// ip:host address of the server, reservation time out and maximum number of
-// minutes allowed, eg. "my_jobqueue_runner_client --queue %s --group '%s'
-// --deployment %s --server '%s' --reserve_timeout %d --max_mins %d". If you
-// supply an empty string, runner clients will not be spawned; for any work to
-// be done you will have to run your runner client yourself manually.
-func Serve(port string, webPort string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string) (s *Server, msg string, err error) {
+// running them via the configured job scheduler, using the configured shell. It
+// determines the command line to execute for your runner client from the
+// configured RunnerCmd string you supplied.
+func Serve(config ServerConfig) (s *Server, msg string, err error) {
+	// port string, webPort string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -208,7 +243,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 
 	sock.AddTransport(tcp.NewTransport())
 
-	if err = sock.Listen("tcp://0.0.0.0:" + port); err != nil {
+	if err = sock.Listen("tcp://0.0.0.0:" + config.Port); err != nil {
 		return
 	}
 
@@ -221,18 +256,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	var ip string
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return
-	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ip = ipnet.IP.String()
-			}
-		}
-	}
+	ip := CurrentIP()
 	if ip == "" {
 		err = Error{"", "Serve", "", ErrNoHost}
 		return
@@ -246,19 +270,19 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 	}
 
 	// we will spawn runner clients via the requested job scheduler
-	sch, err := scheduler.New(schedulerName, deployment, shell)
+	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig)
 	if err != nil {
 		return
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(dbFile, dbBkFile, deployment)
+	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment)
 	if err != nil {
 		return
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + port, Host: host, Port: port, WebPort: webPort, PID: os.Getpid(), Deployment: deployment, Scheduler: schedulerName, Mode: ServerModeNormal},
+		ServerInfo:   &ServerInfo{Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),
@@ -271,7 +295,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 		sgroupcounts: make(map[string]int),
 		sgrouptrigs:  make(map[string]int),
 		sgtr:         make(map[string]*scheduler.Requirements),
-		rc:           runnerCmd,
+		rc:           config.RunnerCmd,
 		statusCaster: bcast.NewGroup(),
 	}
 
@@ -341,7 +365,7 @@ func Serve(port string, webPort string, schedulerName string, shell string, runn
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", webInterfaceStatic)
 	mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
-	go http.ListenAndServe("0.0.0.0:"+webPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+	go http.ListenAndServe("0.0.0.0:"+config.WebPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
 	go s.statusCaster.Broadcasting(0)
 
 	return
@@ -362,7 +386,7 @@ func (s *Server) Block() (err error) {
 // Stop will cause a graceful shut down of the server.
 func (s *Server) Stop() (err error) {
 	if s.up {
-		s.stop <- true
+		s.stop <- true // results in shutdown()
 		if !s.blocking {
 			err = <-s.done
 			s.db.close()
@@ -488,7 +512,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 						}
 					}
 					if recm == 0 {
-						recm = job.Memory
+						recm = job.RAM
 						noRec = true
 					}
 
@@ -505,14 +529,14 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					}
 
 					if job.Override == 1 {
-						if recm > job.Memory {
-							job.Memory = recm
+						if recm > job.RAM {
+							job.RAM = recm
 						}
 						if recs > int(job.Time.Seconds()) {
 							job.Time = time.Duration(recs) * time.Second
 						}
 					} else {
-						job.Memory = recm
+						job.RAM = recm
 						job.Time = time.Duration(recs) * time.Second
 					}
 				}
@@ -520,8 +544,8 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				// our req will be job memory + 100 to allow some leeway in
 				// case the job scheduler calculates used memory differently,
 				// and for other memory usage vagaries
-				req := &scheduler.Requirements{job.Memory + 100, job.Time, job.CPUs, ""} // *** how to pass though scheduler extra args?
-				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.Memory, req.Time.Minutes(), req.CPUs)
+				req := &scheduler.Requirements{job.RAM + 100, job.Time, job.Cores, 0, ""} // *** how to pass though scheduler extra args?
+				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.RAM, req.Time.Minutes(), req.Cores)
 
 				if s.rc != "" {
 					groups[job.schedulerGroup]++
@@ -901,8 +925,11 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 func (s *Server) shutdown() {
 	s.sock.Close()
 	s.db.close()
+	s.scheduler.Cleanup()
 
 	//*** we want to persist production queues to disk
+	//*** want to do db backup; in cloud mode we want to copy backup to local
+	// deploy client that spawned us, and also to s3
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this

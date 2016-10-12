@@ -22,12 +22,15 @@ import (
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/kardianos/osext"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -68,23 +71,12 @@ var managerStartCmd = &cobra.Command{
 (unless --foreground option is supplied).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first we need our working directory to exist
-		_, err := os.Stat(config.ManagerDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// try and create the directory
-				err = os.MkdirAll(config.ManagerDir, os.ModePerm)
-				if err != nil {
-					die("could not create the working directory '%s': %v", config.ManagerDir, err)
-				}
-			} else {
-				die("could not access or create the working directory '%s': %v", config.ManagerDir, err)
-			}
-		}
+		createWorkingDir()
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
 		// most obvious case of failure to start
-		jq := connect(10 * time.Millisecond)
+		jq := connect(1 * time.Second)
 		if jq != nil {
 			sstats, err := jq.ServerStats()
 			var pid int
@@ -99,34 +91,7 @@ var managerStartCmd = &cobra.Command{
 			syscall.Umask(config.ManagerUmask)
 			startJQ(true)
 		} else {
-			// when we spawn a child it will be called with our args, but we
-			// must ensure that the --deployment is correct, since the default
-			// for that depends on the dir we are in, and our child is forced to
-			// start in the root dir
-			args := os.Args
-			hadDeployment := false
-			for _, arg := range args {
-				if arg == "--deployment" {
-					hadDeployment = true
-					break
-				}
-			}
-			if !hadDeployment {
-				args = append(args, "--deployment")
-				args = append(args, config.Deployment)
-			}
-
-			context := &daemon.Context{
-				PidFileName: config.ManagerPidFile,
-				PidFilePerm: 0644,
-				WorkDir:     "/",
-				Args:        args,
-				Umask:       config.ManagerUmask,
-			}
-			child, err := context.Reborn()
-			if err != nil {
-				die("failed to daemonize: %s", err)
-			}
+			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
@@ -155,7 +120,7 @@ var managerStopCmd = &cobra.Command{
 	Long: `Immediately stop the workflow manager, saving its state.
 
 Note that any runners that are currently running will die, along with any
-commands they were running. It is more graceful to use use 'drain' instead.`,
+commands they were running. It is more graceful to use 'drain' instead.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
@@ -164,7 +129,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		var stopped bool
 		if err == nil {
-			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile)
+			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile, "manager")
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
@@ -177,7 +142,7 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		var jq *jobqueue.Client
 		if stopped {
 			// we'll do a quick test to confirm the daemon is down
-			jq = connect(10 * time.Millisecond)
+			jq = connect(1 * time.Second)
 			if jq != nil {
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
@@ -199,14 +164,34 @@ commands they were running. It is more graceful to use use 'drain' instead.`,
 		if err != nil {
 			die("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
 		}
-		spid := sstats.ServerInfo.PID
-		jq.Disconnect()
 
-		stopped = stopdaemon(spid, "the manager itself")
-		if stopped {
-			info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
+		// though it may actually be running on a remote host and we managed to
+		// connect to it via ssh port forwarding; compare the server ip to our
+		// own
+		myAddr := jobqueue.CurrentIP() + ":" + config.ManagerPort
+		sAddr := sstats.ServerInfo.Addr
+		if myAddr == sAddr {
+			jq.Disconnect()
+			stopped = stopdaemon(sstats.ServerInfo.PID, "the manager itself", "manager")
 		} else {
-			info("I've tried everything; giving up trying to stop the manager", config.ManagerPort)
+			// use the client command to stop it
+			stopped = jq.ShutdownServer()
+
+			// since I don't trust using a client connection to shut down the
+			// server, double check I can no longer connect
+			if stopped {
+				jq = connect(1 * time.Second)
+				if jq != nil {
+					warn("I requested shut down of the remote manager at %s, but it still up!", sAddr)
+					stopped = false
+				}
+			}
+		}
+
+		if stopped {
+			info("wr manager running at %s was gracefully shut down", sAddr)
+		} else {
+			info("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
 	},
 }
@@ -241,7 +226,7 @@ completes.`,
 		if numLeft == 0 {
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
 		} else if numLeft == 1 {
-			info("wr manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, numLeft, etc)
+			info("wr manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
 		} else {
 			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
@@ -251,7 +236,6 @@ completes.`,
 }
 
 // status sub-command tells if the manger is up or down
-// stop sub-command stops the daemon by sending it a term signal
 var managerStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of the workflow manager",
@@ -271,7 +255,7 @@ var managerStatusCmd = &cobra.Command{
 		}
 
 		// no pid file, so it's supposed to be down; confirm
-		jq := connect(10 * time.Millisecond)
+		jq := connect(1 * time.Second)
 		if jq == nil {
 			fmt.Println("stopped")
 		} else {
@@ -301,70 +285,12 @@ func init() {
 
 	// flags specific to these sub-commands
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
-	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf'] job scheduler")
-}
-
-func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, "test_queue", wait)
-	if jqerr == nil {
-		return jq
-	}
-	return nil
-}
-
-func stopdaemon(pid int, source string) bool {
-	err := syscall.Kill(pid, syscall.SIGTERM)
-	if err != nil {
-		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
-		return false
-	}
-
-	// wait a while for the daemon to gracefully close down
-	giveupseconds := 15
-	giveup := time.After(time.Duration(giveupseconds) * time.Second)
-	ticker := time.NewTicker(50 * time.Millisecond)
-	stopped := make(chan bool, 1)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				err = syscall.Kill(pid, syscall.Signal(0))
-				if err == nil {
-					// pid is still running
-					continue
-				}
-				// assume the error was "no such process" *** should I do a string comparison to confirm?
-				ticker.Stop()
-				stopped <- true
-				return
-			case <-giveup:
-				ticker.Stop()
-				stopped <- false
-				return
-			}
-		}
-	}()
-	ok := <-stopped
-
-	// if it didn't stop, offer to force kill it? That's a bit dangerous...
-	// just warn for now
-	if !ok {
-		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", pid, source, giveupseconds)
-	}
-
-	return ok
-}
-
-// get a nice address to report in logs, preferring hostname, falling back
-// on the ip address if that wasn't set
-func sAddr(s *jobqueue.ServerInfo) (addr string) {
-	addr = s.Host
-	if addr == "localhost" {
-		addr = s.Addr
-	} else {
-		addr += ":" + s.Port
-	}
-	return
+	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf','openstack'] job scheduler")
+	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", "Ubuntu 16", "for cloud schedulers, prefix name of the OS image your servers should use")
+	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", "ubuntu", "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
+	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", 2048, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
+	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
@@ -383,8 +309,38 @@ func startJQ(sayStarted bool) {
 		os.Exit(1)
 	}
 
+	var schedulerConfig interface{}
+	switch scheduler {
+	case "local":
+		schedulerConfig = &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell}
+	case "lsf":
+		schedulerConfig = &jqs.SchedulerConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+	case "openstack":
+		mport, _ := strconv.Atoi(config.ManagerPort)
+		schedulerConfig = &jqs.SchedulerConfigOpenStack{
+			ResourceName:   "wr-" + config.Deployment,
+			SavePath:       filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+			ServerPorts:    []int{22, mport},
+			OSPrefix:       osPrefix,
+			OSUser:         osUsername,
+			OSRAM:          osRAM,
+			ServerKeepTime: time.Duration(serverKeepAlive) * time.Second,
+			MaxInstances:   maxServers,
+			Shell:          config.RunnerExecShell,
+		}
+	}
+
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(config.ManagerPort, config.ManagerWeb, scheduler, config.RunnerExecShell, exe+" runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d", config.ManagerDbFile, config.ManagerDbBkFile, config.Deployment)
+	server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   scheduler,
+		SchedulerConfig: schedulerConfig,
+		RunnerCmd:       exe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
+	})
 
 	if sayStarted && err == nil {
 		logStarted(server.ServerInfo)
