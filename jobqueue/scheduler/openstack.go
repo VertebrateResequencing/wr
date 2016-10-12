@@ -27,7 +27,9 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/satori/go.uuid"
+	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -491,6 +493,19 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			delete(s.standins, standinID)
 			s.mutex.Unlock()
 			return err
+		}
+
+		// check that the exe of the cmd we're supposed to run exists on the new
+		// server, and if not, copy it over *** this is just a hack to get wr
+		// working, need to think of a better way of doing this...
+		exe := strings.Split(cmd, " ")[0]
+		if _, err = os.Stat(exe); err == nil {
+			if stdout, err := server.RunCmd("file "+exe, false); err == nil && strings.Contains(stdout, "No such file") {
+				err = server.UploadFile(exe, exe)
+				if err == nil {
+					server.RunCmd("chmod u+x "+exe, false)
+				}
+			}
 		}
 
 		s.mutex.Lock()
