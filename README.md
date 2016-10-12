@@ -48,7 +48,8 @@ Why Go?
 Implemented so far
 ------------------
 * Adding manually generated commands to the manager's queue
-* Automatically running those commands on the local machine or via LSF
+* Automatically running those commands on the local machine, or via LSF
+  or OpenStack
 * Getting the status of your commands
 * Manually retrying failed commands
 * Automatic retrying of failed commands, using more memory/time reservation
