@@ -46,6 +46,7 @@ var maxServers int
 var serverKeepAlive int
 var osPrefix string
 var osUsername string
+var osRAM int
 var forceTearDown bool
 
 // cloudCmd represents the cloud command
@@ -143,7 +144,7 @@ website locally, even though the manager is actually running remotely.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, err := provider.CheapestServerFlavor(2048, 1, 1)
+			flavor, err := provider.CheapestServerFlavor(1, 2048, 1) // *** how do we know how much memory the user-chosen OS needs?...
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -166,11 +167,6 @@ website locally, even though the manager is actually running remotely.`,
 		// background and keep note of the pids so we can kill them during
 		// teardown
 		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
-		err = ioutil.WriteFile(keyPath, []byte(provider.PrivateKey()), 0600)
-		if err != nil {
-			provider.TearDown()
-			die("failed to create key file %s: %s", keyPath, err)
-		}
 		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid"))
 		if err != nil {
 			provider.TearDown()
@@ -295,16 +291,13 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", "Ubuntu 16", "prefix name of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
-	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 60, "how long in seconds to keep idle spawned servers alive for")
-	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn (0 means unlimited)")
+	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", 2048, "ram (MB) needed by the OS image specified by --os")
+	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 120, "how long in seconds to keep idle spawned servers alive for")
+	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 }
-
-// *** so far we have only the below usage of doing things via ssh, but this
-// will probably have to move out to a separate ssh package, or perhaps the
-// cloud package in the future...
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, wrMayHaveStarted bool) {
 	// upload ourselves
@@ -329,6 +322,27 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		die("failed to make remote wr executable: %s", err)
 	}
 
+	// copy over our cloud resource details, including our ssh key
+	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".wr-"+config.Deployment)
+	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".wr-"+config.Deployment)
+	err = server.UploadFile(localResourceFile, remoteResourceFile)
+	if err != nil && !wrMayHaveStarted {
+		provider.TearDown()
+		die("failed to upload wr cloud resources file to the server at %s: %s", server.IP, err)
+	}
+	localKeyFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
+	err = ioutil.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600)
+	if err != nil {
+		provider.TearDown()
+		die("failed to create key file %s: %s", localKeyFile, err)
+	}
+	remoteKeyFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".key")
+	err = server.UploadFile(localKeyFile, remoteKeyFile)
+	if err != nil && !wrMayHaveStarted {
+		provider.TearDown()
+		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
+	}
+
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
@@ -338,7 +352,16 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 	}
 	if !alreadyStarted {
-		_, err = server.RunCmd(fmt.Sprintf("%s manager start --deployment %s -s openstack", remoteExe, config.Deployment), true)
+		// build a command prefix that sets all the required env vars for this
+		// provider
+		envvarPrefix := ""
+		envvars, _ := cloud.RequiredEnv(providerName)
+		for _, envvar := range envvars {
+			envvarPrefix += fmt.Sprintf("%s=\"%s\" ", envvar, os.Getenv(envvar))
+		}
+
+		// get the manager running
+		_, err = server.RunCmd(fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o %s -r %d -m %d -u %s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername), false)
 		if err != nil {
 			provider.TearDown()
 			die("failed to make start wr manager on the remote server: %s", err)

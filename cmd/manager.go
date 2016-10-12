@@ -28,7 +28,9 @@ import (
 	"github.com/spf13/cobra"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -283,7 +285,12 @@ func init() {
 
 	// flags specific to these sub-commands
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
-	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf'] job scheduler")
+	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf','openstack'] job scheduler")
+	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", "Ubuntu 16", "for cloud schedulers, prefix name of the OS image your servers should use")
+	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", "ubuntu", "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
+	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", 2048, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
+	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
@@ -308,6 +315,19 @@ func startJQ(sayStarted bool) {
 		schedulerConfig = &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell}
 	case "lsf":
 		schedulerConfig = &jqs.SchedulerConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+	case "openstack":
+		mport, _ := strconv.Atoi(config.ManagerPort)
+		schedulerConfig = &jqs.SchedulerConfigOpenStack{
+			ResourceName:   "wr-" + config.Deployment,
+			SavePath:       filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+			ServerPorts:    []int{22, mport},
+			OSPrefix:       osPrefix,
+			OSUser:         osUsername,
+			OSRAM:          osRAM,
+			ServerKeepTime: time.Duration(serverKeepAlive) * time.Second,
+			MaxInstances:   maxServers,
+			Shell:          config.RunnerExecShell,
+		}
 	}
 
 	// start the jobqueue server
