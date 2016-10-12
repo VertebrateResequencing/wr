@@ -57,7 +57,7 @@ Implemented so far
 * Learning of how much memory and time commands take for best resource
   utilization
 * Draining the queue if you want to stop the system as gracefully as
-  possible, and recoving from drains, stops and crashes
+  possible, and recovering from drains, stops and crashes
 
 Not yet implemented
 -------------------
