@@ -82,7 +82,9 @@ working directory with the cmds you want to run; you will have to make sure
 these make sense when the cmd is run on the OS you specify.
 
 Deploy can work with any given OS image because it uploads wr to any server it
-creates; your OS image does not have to have wr installed on it.`,
+creates; your OS image does not have to have wr installed on it. The only
+requirements of the OS image are that it support ssh and sftp on port 22, and
+that it be a linux-like system with /proc/*/smaps.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if providerName == "" {
 			die("--provider is required")
