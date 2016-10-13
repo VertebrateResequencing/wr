@@ -9,4 +9,4 @@ excludes:
   - \.git
 script:
   - go get -tags netgo -v
-  - go build -tags netgo
+  - go build -tags netgo -ldflags "-X github.com/VertebrateResequencing/wr/cmd.wrVersion=`git describe --tags --always --long --dirty`"
