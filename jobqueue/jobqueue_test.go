@@ -1365,10 +1365,10 @@ func TestJobqueue(t *testing.T) {
 			Convey("After some time the jobs get automatically run", func() {
 				// we need some time for 'go test' to live-compile and run
 				// ourselves in runnermode *** not sure if it's legit for this
-				// to take over 2mins though!
+				// to take ~3mins though!
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(240 * time.Second)
+					limit := time.After(300 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {
