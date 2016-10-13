@@ -502,43 +502,47 @@ func TestOpenstack(t *testing.T) {
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
 
-		Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
-			cmd := "sleep 10"
+		// *** we need to not actually run the real scheduling tests if we're
+		// not running in openstack... not sure how to detect that...
+		if host != "vr-2-2-02" {
+			Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
+				cmd := "sleep 10"
 
-			// on authors setup, running the test from a 1 cpu cloud instance,
-			// the following count is sufficient to test spawning instances over
-			// the quota in the test environment
-			count := 35
-			err = s.Schedule(cmd, possibleReq, count)
-			So(err, ShouldBeNil)
-			So(s.Busy(), ShouldBeTrue)
+				// on authors setup, running the test from a 1 cpu cloud instance,
+				// the following count is sufficient to test spawning instances over
+				// the quota in the test environment
+				count := 35
+				err = s.Schedule(cmd, possibleReq, count)
+				So(err, ShouldBeNil)
+				So(s.Busy(), ShouldBeTrue)
 
-			Convey("It eventually runs them all", func() {
-				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+				Convey("It eventually runs them all", func() {
+					So(waitToFinish(s, 300, 1000), ShouldBeTrue)
 
-				//*** want to test that servers actually get spawned up to
-				// quota, and that 75s after all cmds run, they get auto-
-				// destroyed
-				<-time.After(80 * time.Second)
+					//*** want to test that servers actually get spawned up to
+					// quota, and that 75s after all cmds run, they get auto-
+					// destroyed
+					<-time.After(80 * time.Second)
+				})
+
+				// *** should also test dropping the count
+
+				// Convey("You can Schedule() again to increase the count", func() {
+				//  // this increase takes us just over the quota
+				//  newcount := count + 2
+				//  err = s.Schedule(cmd, possibleReq, newcount)
+				//  So(err, ShouldBeNil)
+				//  So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+				// })
+
+				//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
+				//*** need to wait until I have file input/output implemented so I
+				// can test if things are really working
 			})
 
-			// *** should also test dropping the count
-
-			// Convey("You can Schedule() again to increase the count", func() {
-			//  // this increase takes us just over the quota
-			//  newcount := count + 2
-			//  err = s.Schedule(cmd, possibleReq, newcount)
-			//  So(err, ShouldBeNil)
-			//  So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-			// })
-
-			//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
-			//*** need to wait until I have file input/output implemented so I
-			// can test if things are really working
-		})
-
-		// wait a while for any remaining jobs to finish
-		So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+			// wait a while for any remaining jobs to finish
+			So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+		}
 	})
 }
 
