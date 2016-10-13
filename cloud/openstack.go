@@ -186,7 +186,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 					// get the first networkUUID we come across *** not sure
 					// what the other possibilities are and what else we can do
 					// instead
-					for networkName := range server.Addresses {
+					for networkName, _ := range server.Addresses {
 						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
 						if networkUUID != "" {
 							p.networkName = networkName
@@ -442,16 +442,16 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// create the server with a unique name
 	server, err := servers.Create(p.computeClient, keypairs.CreateOptsExt{
-		servers.CreateOpts{
+		CreateOptsBuilder: servers.CreateOpts{
 			Name:           uniqueResourceName(resources.ResourceName),
 			FlavorRef:      flavorID,
 			ImageRef:       imageID,
 			SecurityGroups: []string{p.securityGroup},
-			Networks:       []servers.Network{{UUID: p.networkUUID}},
+			Networks:       []servers.Network{servers.Network{UUID: p.networkUUID}},
 			// UserData []byte (will be base64-encoded for me)
 			// Metadata map[string]string
 		},
-		resources.ResourceName, // keypair name
+		KeyName: resources.ResourceName,
 	}).Extract()
 	if err != nil {
 		return
