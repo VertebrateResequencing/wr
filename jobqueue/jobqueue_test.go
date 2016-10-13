@@ -372,7 +372,7 @@ func TestJobqueue(t *testing.T) {
 					Convey("Adding one while waiting on a Reserve will return the new job", func() {
 						worked := make(chan bool)
 						go func() {
-							job, err := jq.Reserve(100 * time.Millisecond)
+							job, err := jq.Reserve(1000 * time.Millisecond)
 							if err != nil {
 								worked <- false
 								return
@@ -390,7 +390,7 @@ func TestJobqueue(t *testing.T) {
 
 						ok := make(chan bool)
 						go func() {
-							ticker := time.NewTicker(15 * time.Millisecond)
+							ticker := time.NewTicker(100 * time.Millisecond)
 							ticks := 0
 							for {
 								select {
@@ -405,7 +405,7 @@ func TestJobqueue(t *testing.T) {
 									continue
 								case w := <-worked:
 									ticker.Stop()
-									if w && ticks <= 6 {
+									if w && ticks <= 8 {
 										ok <- true
 									}
 									ok <- false
@@ -414,7 +414,7 @@ func TestJobqueue(t *testing.T) {
 							}
 						}()
 
-						<-time.After(55 * time.Millisecond)
+						<-time.After(1100 * time.Millisecond)
 						So(<-ok, ShouldBeTrue)
 					})
 				})
