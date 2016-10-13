@@ -186,7 +186,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 					// get the first networkUUID we come across *** not sure
 					// what the other possibilities are and what else we can do
 					// instead
-					for networkName, _ := range server.Addresses {
+					for networkName := range server.Addresses {
 						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
 						if networkUUID != "" {
 							p.networkName = networkName
@@ -447,7 +447,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			FlavorRef:      flavorID,
 			ImageRef:       imageID,
 			SecurityGroups: []string{p.securityGroup},
-			Networks:       []servers.Network{servers.Network{UUID: p.networkUUID}},
+			Networks:       []servers.Network{{UUID: p.networkUUID}},
 			// UserData []byte (will be base64-encoded for me)
 			// Metadata map[string]string
 		},
