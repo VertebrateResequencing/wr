@@ -27,6 +27,9 @@ Alternatively, build it yourself:
 
 2. download, compile, and install wr:
 `go get github.com/VertebrateResequencing/wr`
+`go get -tags netgo github.com/VertebrateResequencing/wr/...`
+`cd %GOPATH/src/github.com/VertebrateResequencing/wr`
+`go install -tags netgo`
 
 3. the `wr` executable should now be in `$GOPATH/bin`
 
