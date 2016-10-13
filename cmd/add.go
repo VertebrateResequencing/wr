@@ -163,7 +163,7 @@ the future when the commands actually get run.`,
 			die("even though I was able to connect to the manager, it failed to tell me its location")
 		}
 		var pwd string
-		var pwd_warning int
+		var pwdWarning int
 		if jobqueue.CurrentIP()+":"+config.ManagerPort == sstats.ServerInfo.Addr {
 			pwd, err = os.Getwd()
 			if err != nil {
@@ -171,7 +171,7 @@ the future when the commands actually get run.`,
 			}
 		} else {
 			pwd = "/tmp"
-			pwd_warning = 1
+			pwdWarning = 1
 		}
 		jq.Disconnect()
 
@@ -197,9 +197,9 @@ the future when the commands actually get run.`,
 				if cmdCwd != "" {
 					cwd = cmdCwd
 				} else {
-					if pwd_warning == 1 {
+					if pwdWarning == 1 {
 						warn("command working directories defaulting to /tmp since the manager is running remotely")
-						pwd_warning = 0
+						pwdWarning = 0
 					}
 					cwd = pwd
 				}

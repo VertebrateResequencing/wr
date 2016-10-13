@@ -37,7 +37,7 @@ func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", &SchedulerConfigLocal{"bash"})
+		s, err := New("local", &ConfigLocal{"bash"})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -218,7 +218,7 @@ func TestLSF(t *testing.T) {
 	}
 	if err != nil {
 		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err := New("lsf", &SchedulerConfigLSF{"development", "bash"})
+			_, err := New("lsf", &ConfigLSF{"development", "bash"})
 			So(err, ShouldNotBeNil)
 		})
 		return
@@ -226,7 +226,7 @@ func TestLSF(t *testing.T) {
 
 	host, _ := os.Hostname()
 	Convey("You can get a new lsf scheduler", t, func() {
-		s, err := New("lsf", &SchedulerConfigLSF{"development", "bash"})
+		s, err := New("lsf", &ConfigLSF{"development", "bash"})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -386,7 +386,7 @@ func TestOpenstack(t *testing.T) {
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
-	config := &SchedulerConfigOpenStack{
+	config := &ConfigOpenStack{
 		ResourceName:   "wr-testing",
 		OSPrefix:       osPrefix,
 		OSUser:         osUser,

@@ -54,7 +54,7 @@ type openstackp struct {
 	computeClient     *gophercloud.ServiceClient
 	networkClient     *gophercloud.ServiceClient
 	poolName          string
-	externalNetworkId string
+	externalNetworkID string
 	fmap              map[string]Flavor
 	ownName           string
 	networkName       string
@@ -103,7 +103,7 @@ func (p *openstackp) initialize() (err error) {
 	if p.poolName == "" {
 		p.poolName = "nova"
 	}
-	p.externalNetworkId, err = networks.IDFromName(p.networkClient, p.poolName)
+	p.externalNetworkID, err = networks.IDFromName(p.networkClient, p.poolName)
 	if err != nil {
 		return
 	}
@@ -186,7 +186,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 					// get the first networkUUID we come across *** not sure
 					// what the other possibilities are and what else we can do
 					// instead
-					for networkName, _ := range server.Addresses {
+					for networkName := range server.Addresses {
 						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
 						if networkUUID != "" {
 							p.networkName = networkName
@@ -350,7 +350,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 		var router *routers.Router
 		router, err = routers.Create(p.networkClient, routers.CreateOpts{
 			Name:         resources.ResourceName,
-			GatewayInfo:  &routers.GatewayInfo{NetworkID: p.externalNetworkId},
+			GatewayInfo:  &routers.GatewayInfo{NetworkID: p.externalNetworkID},
 			AdminStateUp: gophercloud.Enabled,
 		}).Extract()
 		if err != nil {
@@ -386,7 +386,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 		return
 	}
 	quota = &Quota{
-		MaxRam:       q.Ram,
+		MaxRAM:       q.Ram,
 		MaxCores:     q.Cores,
 		MaxInstances: q.Instances,
 	}
@@ -405,7 +405,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 			f, found := p.fmap[server.Flavor["id"].(string)]
 			if found { // should always be found...
 				quota.UsedCores += f.Cores
-				quota.UsedRam += f.RAM
+				quota.UsedRAM += f.RAM
 			}
 		}
 
@@ -447,7 +447,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			FlavorRef:      flavorID,
 			ImageRef:       imageID,
 			SecurityGroups: []string{p.securityGroup},
-			Networks:       []servers.Network{servers.Network{UUID: p.networkUUID}},
+			Networks:       []servers.Network{{UUID: p.networkUUID}},
 			// UserData []byte (will be base64-encoded for me)
 			// Metadata map[string]string
 		},

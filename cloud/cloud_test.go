@@ -64,7 +64,7 @@ func TestOpenStack(t *testing.T) {
 				if host == "vr-2-2-02" {
 					So(q.MaxCores, ShouldEqual, 96)
 					So(q.MaxInstances, ShouldEqual, 64)
-					So(q.MaxRam, ShouldEqual, 65536)
+					So(q.MaxRAM, ShouldEqual, 65536)
 					//*** not reliable to try and test for the .Used* values...
 				}
 			})

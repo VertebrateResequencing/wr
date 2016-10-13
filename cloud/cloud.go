@@ -90,10 +90,10 @@ type Resources struct {
 // Quota struct describes the limit on what resources you are allowed to use (0
 // values mean that resource is unlimited), and how much you have already used.
 type Quota struct {
-	MaxRam        int // total MBs allowed
+	MaxRAM        int // total MBs allowed
 	MaxCores      int // total CPU cores allowed
 	MaxInstances  int // max number of instances allowed
-	UsedRam       int
+	UsedRAM       int
 	UsedCores     int
 	UsedInstances int
 }

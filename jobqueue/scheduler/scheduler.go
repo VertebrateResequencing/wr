@@ -109,7 +109,7 @@ type Scheduler struct {
 // New creates a new Scheduler to interact with the given job scheduler.
 // Possible names so far are "lsf", "local" and "openstack". You must also
 // provide a config struct appropriate for your chosen scheduler, eg. for the
-// local scheduler you will provide a SchedulerConfigLocal.
+// local scheduler you will provide a ConfigLocal.
 func New(name string, config interface{}) (s *Scheduler, err error) {
 	switch name {
 	case "lsf":

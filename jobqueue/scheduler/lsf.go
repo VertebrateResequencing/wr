@@ -36,7 +36,7 @@ import (
 
 // lsf is our implementer of scheduleri
 type lsf struct {
-	config             *SchedulerConfigLSF
+	config             *ConfigLSF
 	months             map[string]int
 	dateRegex          *regexp.Regexp
 	bsubRegex          *regexp.Regexp
@@ -46,9 +46,9 @@ type lsf struct {
 	sortedqKeys        []int
 }
 
-// SchedulerConfigLSF represents the configuration options required by the
-// LSF scheduler. All are required with no usable defaults.
-type SchedulerConfigLSF struct {
+// ConfigLSF represents the configuration options required by the LSF scheduler.
+// All are required with no usable defaults.
+type ConfigLSF struct {
 	// deployment is one of "development" or "production".
 	Deployment string
 
@@ -59,7 +59,7 @@ type SchedulerConfigLSF struct {
 
 // initialize finds out about lsf's hosts and queues
 func (s *lsf) initialize(config interface{}) error {
-	s.config = config.(*SchedulerConfigLSF)
+	s.config = config.(*ConfigLSF)
 
 	// set up what should be global vars, but we don't really want these taking
 	// up space if the user never uses LSF

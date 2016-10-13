@@ -174,7 +174,7 @@ type ServerConfig struct {
 	SchedulerName string
 
 	// SchedulerConfig should define the config options needed by the chosen
-	// scheduler, eg. SchedulerConfigLocal{Deployment: "production", Shell:
+	// scheduler, eg. scheduler.ConfigLocal{Deployment: "production", Shell:
 	// "bash"} if using the local scheduler.
 	SchedulerConfig interface{}
 

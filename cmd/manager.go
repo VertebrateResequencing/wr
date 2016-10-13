@@ -312,12 +312,12 @@ func startJQ(sayStarted bool) {
 	var schedulerConfig interface{}
 	switch scheduler {
 	case "local":
-		schedulerConfig = &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.ConfigLocal{Shell: config.RunnerExecShell}
 	case "lsf":
-		schedulerConfig = &jqs.SchedulerConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
-		schedulerConfig = &jqs.SchedulerConfigOpenStack{
+		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:   "wr-" + config.Deployment,
 			SavePath:       filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
 			ServerPorts:    []int{22, mport},

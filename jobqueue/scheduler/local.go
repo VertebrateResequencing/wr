@@ -60,7 +60,7 @@ type cmdRunner func(cmd string, req *Requirements) error
 
 // local is our implementer of scheduleri.
 type local struct {
-	config       *SchedulerConfigLocal
+	config       *ConfigLocal
 	maxRAM       int
 	maxCores     int
 	ram          int
@@ -75,9 +75,9 @@ type local struct {
 	runCmdFunc   cmdRunner
 }
 
-// SchedulerConfigLocal represents the configuration options required by the
-// local scheduler. All are required with no usable defaults.
-type SchedulerConfigLocal struct {
+// ConfigLocal represents the configuration options required by the local
+// scheduler. All are required with no usable defaults.
+type ConfigLocal struct {
 	// Shell is the shell to use to run your commands with; 'bash' is
 	// recommended.
 	Shell string
@@ -93,7 +93,7 @@ type job struct {
 // initialize finds out about the local machine. Compatible with linux-like
 // systems with /proc/meminfo only!
 func (s *local) initialize(config interface{}) (err error) {
-	s.config = config.(*SchedulerConfigLocal)
+	s.config = config.(*ConfigLocal)
 	s.maxCores = runtime.NumCPU()
 	s.maxRAM, err = s.procMeminfoMBs()
 	if err != nil {

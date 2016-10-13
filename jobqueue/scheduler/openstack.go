@@ -34,14 +34,14 @@ import (
 	"time"
 )
 
-const GB = uint64(1.07374182e9)
-const unquotadVal = 1000000 // a "large" number for use when we don't have quota
+const gb = uint64(1.07374182e9) // for byte to GB conversion
+const unquotadVal = 1000000     // a "large" number for use when we don't have quota
 
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
 type opst struct {
 	local
-	config             *SchedulerConfigOpenStack
+	config             *ConfigOpenStack
 	provider           *cloud.Provider
 	quotaMaxInstances  int
 	quotaMaxCores      int
@@ -57,10 +57,10 @@ type opst struct {
 	stopWaitingToSpawn chan bool
 }
 
-// SchedulerConfigOpenStack represents the configuration options required by the
+// ConfigOpenStack represents the configuration options required by the
 // OpenStack scheduler. All are required with no usable defaults, unless
 // otherwise noted.
-type SchedulerConfigOpenStack struct {
+type ConfigOpenStack struct {
 	// ResourceName is the resource name prefix used to name any resources (such
 	// as keys, security groups and servers) that need to be created.
 	ResourceName string
@@ -193,7 +193,7 @@ func (s *standin) waitForServer() (server *cloud.Server) {
 
 // initialize sets up an openstack scheduler.
 func (s *opst) initialize(config interface{}) (err error) {
-	s.config = config.(*SchedulerConfigOpenStack)
+	s.config = config.(*ConfigOpenStack)
 	if s.config.OSRAM == 0 {
 		s.config.OSRAM = 2048
 	}
@@ -218,7 +218,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 		return
 	}
 	s.quotaMaxCores = quota.MaxCores
-	s.quotaMaxRAM = quota.MaxRam
+	s.quotaMaxRAM = quota.MaxRAM
 	s.quotaMaxInstances = quota.MaxInstances
 	if s.config.MaxInstances > 0 && s.config.MaxInstances < s.quotaMaxInstances {
 		s.quotaMaxInstances = s.config.MaxInstances
@@ -240,7 +240,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 		Flavor: cloud.Flavor{
 			RAM:   maxRAM,
 			Cores: runtime.NumCPU(),
-			Disk:  int(usage.Size() / GB),
+			Disk:  int(usage.Size() / gb),
 		},
 	}
 
@@ -250,7 +250,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.runCmdFunc = s.runCmd
 
 	// pass through our shell config to our local embed
-	s.local.config = &SchedulerConfigLocal{Shell: s.config.Shell}
+	s.local.config = &ConfigLocal{Shell: s.config.Shell}
 
 	s.standins = make(map[string]*standin)
 	s.stopWaitingToSpawn = make(chan bool)
@@ -334,20 +334,20 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	if s.quotaMaxInstances > 0 { // this instead of quota.MaxInstances because our own config may be lower
 		remainingInstances = s.quotaMaxInstances - quota.UsedInstances - s.reservedInstances
 	}
-	remainingRam := unquotadVal
-	if quota.MaxRam > 0 {
-		remainingRam = quota.MaxRam - quota.UsedRam - s.reservedRAM
+	remainingRAM := unquotadVal
+	if quota.MaxRAM > 0 {
+		remainingRAM = quota.MaxRAM - quota.UsedRAM - s.reservedRAM
 	}
 	remainingCores := unquotadVal
 	if quota.MaxCores > 0 {
 		remainingCores = quota.MaxCores - quota.UsedCores - s.reservedCores
 	}
-	if remainingInstances < 1 || remainingRam < flavor.RAM || remainingCores < flavor.Cores {
+	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores {
 		return
 	}
 	spawnable := remainingInstances
 	if spawnable > 1 {
-		n := remainingRam / flavor.RAM // dividing ints == floor
+		n := remainingRAM / flavor.RAM // dividing ints == floor
 		if n < spawnable {
 			spawnable = n
 		}
