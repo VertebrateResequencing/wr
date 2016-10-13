@@ -152,15 +152,6 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 			}
 
 			resources.PrivateKey = kp.PrivateKey
-
-			// err = ioutil.WriteFile("./"+resources.ResourceName+".pem", []byte(kp.PrivateKey), 0600) // this is the file needed to ssh in manually, using ssh -i wr-deployment.pem ubuntu@xxx.xx.xx.xxx *** we need a way of programatically finding or setting the name of the login user...
-			// if err != nil {
-			//     return
-			// }
-			// err = ioutil.WriteFile("./"+resources.ResourceName+".key", []byte(kp.PublicKey), 0600)
-			// if err != nil {
-			//     return
-			// }
 		} else {
 			return
 		}
