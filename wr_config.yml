@@ -84,7 +84,8 @@ managerhost: "localhost"
 # their defaults.
 #
 # The files stored in here are, by default, the manager's pid file, log file and
-# database related files.
+# database related files. Files needed by `wr cloud deploy` are also stored
+# here.
 managerdir: "~/.wr"
 
 # managerpidfile: Where should wr manager store its pid file?
@@ -144,6 +145,9 @@ managerumask: 007
 #
 # "local" means run everything on the local machine.
 # "lsf" means submit to LSF using 'bsub'.
+# "openstack" means spawn additional openstack servers in the current network
+# as necessary to run your commands, and destroy them afterwards. NB: this only
+# works if you are starting the manager on an OpenStack server!
 managerscheduler: "local"
 
 # runnerexecshell: What shell should be used to run commands in?
@@ -152,11 +156,3 @@ managerscheduler: "local"
 # Avoid the use of dash on Ubuntu, which is its default sh; bash is STRONGLY
 # recommended.
 runnerexecshell: "bash"
-
-# deploypidfile: Where should 'wr cloud deploy' store its pid file?
-# This defaults to a file named "pid_deploy" in managerdir.
-#
-# You can set this to an absolute path to ignore managerdir; for example if
-# you have the root permissions to set things up, you may prefer to set this to
-# /var/run/wr/pid_deploy
-deploypidfile: "pid_deploy"
