@@ -21,17 +21,30 @@ Download
 
 Alternatively, build it yourself:
 
-1. install go on your machine and setup the environment according to:
+1. Install go on your machine and setup the environment according to:
 [golang.org/doc/install](https://golang.org/doc/install)
-(make sure to set your `$GOPATH`)
+(make sure to set your `$GOPATH`). An example way of setting up a personal Go
+installation in your home directory would be:
 
-2. download, compile, and install wr:
+        wget "https://storage.googleapis.com/golang/go1.7.1.linux-amd64.tar.gz"
+        tar -xvzf go1.7.1.linux-amd64.tar.gz && rm go1.7.1.linux-amd64.tar.gz
+        export GOROOT=$HOME/go
+        export PATH=$PATH:$GOROOT/bin
+        mkdir work
+        export GOPATH=$HOME/work
+        export PATH=$GOPATH/bin:$PATH
 
-        go get -u -tags netgo github.com/VertebrateResequencing/wr/...
+2. Download, compile, and install wr:
+
+        go get -u -d -tags netgo github.com/VertebrateResequencing/wr
         cd $GOPATH/src/github.com/VertebrateResequencing/wr
-        go install -tags netgo -ldflags "-X github.com/VertebrateResequencing/wr/cmd.wrVersion=`git describe --tags --always --long --dirty`"
+        make
 
-3. the `wr` executable should now be in `$GOPATH/bin`
+3. The `wr` executable should now be in `$GOPATH/bin`
+
+If you don't have 'make' installed, you can instead replace step 2 above with
+just `go get -u -tags netgo github.com/VertebrateResequencing/wr`, but note that
+`wr version` will not work.
 
 What's wrong with the original Perl version?
 --------------------------------------------
