@@ -9,6 +9,7 @@ build:
 	go build -tags netgo ${LDFLAGS}
 
 install:
+	rm -f ${GOPATH}/bin/wr
 	go install -tags netgo ${LDFLAGS}
 
 test:
