@@ -17,7 +17,7 @@ But if you want to be adventurous and provide feedback...
 
 Download
 --------
-[![gorelease](https://dn-gorelease.qbox.me/gorelease-download-blue.svg)](https://gobuild.io/VertebrateResequencing/wr/master)
+[![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
 Alternatively, build it yourself:
 
