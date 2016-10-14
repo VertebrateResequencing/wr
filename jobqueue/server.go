@@ -174,7 +174,7 @@ type ServerConfig struct {
 	SchedulerName string
 
 	// SchedulerConfig should define the config options needed by the chosen
-	// scheduler, eg. SchedulerConfigLocal{Deployment: "production", Shell:
+	// scheduler, eg. scheduler.ConfigLocal{Deployment: "production", Shell:
 	// "bash"} if using the local scheduler.
 	SchedulerConfig interface{}
 
@@ -544,7 +544,13 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				// our req will be job memory + 100 to allow some leeway in
 				// case the job scheduler calculates used memory differently,
 				// and for other memory usage vagaries
-				req := &scheduler.Requirements{job.RAM + 100, job.Time, job.Cores, 0, ""} // *** how to pass though scheduler extra args?
+				req := &scheduler.Requirements{
+					RAM:   job.RAM + 100,
+					Time:  job.Time,
+					Cores: job.Cores,
+					Disk:  0,
+					Other: "", // *** how to pass though scheduler extra args?
+				}
 				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.RAM, req.Time.Minutes(), req.Cores)
 
 				if s.rc != "" {

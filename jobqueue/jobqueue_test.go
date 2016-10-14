@@ -77,7 +77,7 @@ func TestJobqueue(t *testing.T) {
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   "local",
-		SchedulerConfig: &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell},
+		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
@@ -88,7 +88,7 @@ func TestJobqueue(t *testing.T) {
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
-	clientConnectTime := 150 * time.Millisecond
+	clientConnectTime := 500 * time.Millisecond
 
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
@@ -372,7 +372,7 @@ func TestJobqueue(t *testing.T) {
 					Convey("Adding one while waiting on a Reserve will return the new job", func() {
 						worked := make(chan bool)
 						go func() {
-							job, err := jq.Reserve(100 * time.Millisecond)
+							job, err := jq.Reserve(1000 * time.Millisecond)
 							if err != nil {
 								worked <- false
 								return
@@ -390,7 +390,7 @@ func TestJobqueue(t *testing.T) {
 
 						ok := make(chan bool)
 						go func() {
-							ticker := time.NewTicker(15 * time.Millisecond)
+							ticker := time.NewTicker(100 * time.Millisecond)
 							ticks := 0
 							for {
 								select {
@@ -405,7 +405,7 @@ func TestJobqueue(t *testing.T) {
 									continue
 								case w := <-worked:
 									ticker.Stop()
-									if w && ticks <= 6 {
+									if w && ticks <= 8 {
 										ok <- true
 									}
 									ok <- false
@@ -414,7 +414,7 @@ func TestJobqueue(t *testing.T) {
 							}
 						}()
 
-						<-time.After(55 * time.Millisecond)
+						<-time.After(1100 * time.Millisecond)
 						So(<-ok, ShouldBeTrue)
 					})
 				})
@@ -1365,10 +1365,10 @@ func TestJobqueue(t *testing.T) {
 			Convey("After some time the jobs get automatically run", func() {
 				// we need some time for 'go test' to live-compile and run
 				// ourselves in runnermode *** not sure if it's legit for this
-				// to take over 2mins though!
+				// to take ~3mins though!
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(240 * time.Second)
+					limit := time.After(300 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {
@@ -1433,7 +1433,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   "local",
-		SchedulerConfig: &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell},
+		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,

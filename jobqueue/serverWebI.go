@@ -46,7 +46,7 @@ type jstatusReq struct {
 
 // jstatus is the job info we send to the status webpage (only real difference
 // to Job is that the times are seconds instead of *time.Duration... *** not
-// really sure if we really need this and should just give the webapge Jobs
+// really sure if we really need this and should just give the webpage Jobs
 // directly instead).
 type jstatus struct {
 	Key          string

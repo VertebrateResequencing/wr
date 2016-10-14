@@ -73,9 +73,18 @@ var cloudDeployCmd = &cobra.Command{
 Deploy creates all the necessary cloud resources (networks, keys, security
 profiles etc.) and starts a cloud server, on which 'wr manager' is run.
 
-Deploy then daemonizes in to the background to run a proxy server that lets you
-use the normal wr command line utilities such as 'wr add' and view the wr
-website locally, even though the manager is actually running remotely.`,
+Deploy then sets up ssh forwarding in the background that lets you use the
+normal wr command line utilities such as 'wr add' and view the wr website
+locally, even though the manager is actually running remotely. Note that this
+precludes starting wr manager locally as well. Also be aware of the way that
+'wr add' works, with it associating your current environment variables and
+working directory with the cmds you want to run; you will have to make sure
+these make sense when the cmd is run on the OS you specify.
+
+Deploy can work with any given OS image because it uploads wr to any server it
+creates; your OS image does not have to have wr installed on it. The only
+requirements of the OS image are that it support ssh and sftp on port 22, and
+that it be a linux-like system with /proc/*/smaps.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if providerName == "" {
 			die("--provider is required")

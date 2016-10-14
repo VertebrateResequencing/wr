@@ -60,7 +60,12 @@ process that is spawned when you run this dies, your workflows will become
 stalled until you run the 'start' sub-command again.
 
 If the manager fails to start or dies unexpectedly, you can check the logs which
-are by default found in ~/.wr_[deployment]/log.`,
+are by default found in ~/.wr_[deployment]/log.
+
+If using the openstack scheduler, note that you must be running on an openstack
+server already. Instead you can use 'wr cloud deploy -p openstack' to create an
+openstack server on which wr manager will be started in openstack mode for
+you.`,
 }
 
 // start sub-command starts the daemon
@@ -312,12 +317,12 @@ func startJQ(sayStarted bool) {
 	var schedulerConfig interface{}
 	switch scheduler {
 	case "local":
-		schedulerConfig = &jqs.SchedulerConfigLocal{Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.ConfigLocal{Shell: config.RunnerExecShell}
 	case "lsf":
-		schedulerConfig = &jqs.SchedulerConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
-		schedulerConfig = &jqs.SchedulerConfigOpenStack{
+		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:   "wr-" + config.Deployment,
 			SavePath:       filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
 			ServerPorts:    []int{22, mport},
