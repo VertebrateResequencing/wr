@@ -84,7 +84,12 @@ these make sense when the cmd is run on the OS you specify.
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
 requirements of the OS image are that it support ssh and sftp on port 22, and
-that it be a linux-like system with /proc/*/smaps.`,
+that it be a 64bit linux-like system with /proc/*/smaps, /tmp and some local
+writeable disk space in the home directory.
+
+Note that when specifying the OpenStack environment variable 'OS_AUTH_URL', it
+must work from within an OpenStack server running your chosen OS image. This is
+most likely to succeed if you use an IP address instead of a host name.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if providerName == "" {
 			die("--provider is required")
