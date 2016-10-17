@@ -289,7 +289,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									if err != nil {
 										break
 									}
-									job.UntilBuried = 3
+									job.UntilBuried = job.Retries + 1
 									if !req.All {
 										break
 									}

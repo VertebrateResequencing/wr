@@ -156,8 +156,8 @@ func TestJobqueue(t *testing.T) {
 			cmd := "perl -e 'for (1..3) { sleep(1) }'"
 			cmd2 := "perl -e 'for (2..4) { sleep(1) }'"
 			var jobs []*Job
-			jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 4*time.Second, 1, uint8(0), uint8(0), "3secs_pass"))
-			jobs = append(jobs, NewJob(cmd2, "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "3secs_fail"))
+			jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 4*time.Second, 1, uint8(0), uint8(0), uint8(3), "3secs_pass"))
+			jobs = append(jobs, NewJob(cmd2, "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "3secs_fail"))
 			RecSecRound = 1
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
@@ -272,7 +272,7 @@ func TestJobqueue(t *testing.T) {
 				} else if i == 4 {
 					pri = 7
 				}
-				jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(pri), "manually_added"))
+				jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(pri), uint8(3), "manually_added"))
 			}
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
@@ -334,7 +334,7 @@ func TestJobqueue(t *testing.T) {
 				So(rtime, ShouldEqual, 1800)
 
 				for i := 11; i <= 100; i++ {
-					job := NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), "manually_added")
+					job := NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), uint8(3), "manually_added")
 					job.PeakRAM = i * 100
 					job.starttime = time.Now()
 					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
@@ -397,7 +397,7 @@ func TestJobqueue(t *testing.T) {
 								case <-ticker.C:
 									ticks++
 									if ticks == 2 {
-										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0), "manually_added"))
+										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", 10, 20*time.Hour, 1, uint8(0), uint8(0), uint8(3), "manually_added"))
 										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
 										defer gojq.Disconnect()
 										gojq.Add(jobs)
@@ -422,7 +422,7 @@ func TestJobqueue(t *testing.T) {
 
 			Convey("You can subsequently add more jobs", func() {
 				for i := 10; i < 20; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "new_group", 2048, 1*time.Hour, 2, uint8(0), uint8(0), "manually_added"))
+					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "new_group", 2048, 1*time.Hour, 2, uint8(0), uint8(0), uint8(3), "manually_added"))
 				}
 				inserts, already, err := jq.Add(jobs)
 				So(err, ShouldBeNil)
@@ -521,8 +521,8 @@ func TestJobqueue(t *testing.T) {
 			defer jq2.Disconnect()
 
 			var jobs []*Job
-			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "manually_added"))
-			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(2), "manually_added"))
+			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(2), "manually_added"))
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -596,7 +596,7 @@ func TestJobqueue(t *testing.T) {
 
 				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
-				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again") // *** fails randomly with a receive time out error instead of the correct error - why?!
+				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again")
 				So(job.State, ShouldEqual, "delayed")
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 1)
@@ -663,7 +663,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, "reserved")
 
-					Convey("After 3 failures it gets buried", func() {
+					Convey("After 2 retries (3 attempts) it gets buried", func() {
 						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
 						So(job.State, ShouldEqual, "delayed")
@@ -783,8 +783,8 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("Cmds with pipes in them are handled correctly", func() {
 					jobs = nil
-					jobs = append(jobs, NewJob("sleep 0.1 && true | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
-					jobs = append(jobs, NewJob("sleep 0.1 && true | false | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					jobs = append(jobs, NewJob("sleep 0.1 && true | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_pass"))
+					jobs = append(jobs, NewJob("sleep 0.1 && true | false | true", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_fail"))
 					inserts, _, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
@@ -819,7 +819,7 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("Invalid commands are immediately buried", func() {
 					jobs = nil
-					jobs = append(jobs, NewJob("awesjnalakjf --foo", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					jobs = append(jobs, NewJob("awesjnalakjf --foo", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_fail"))
 					inserts, _, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -851,7 +851,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("If a job uses too much memory it is killed and we recommend more next time", func() {
 					jobs = nil
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
-					jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "run_out_of_mem"))
+					jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "run_out_of_mem"))
 					RecMBRound = 1
 					inserts, already, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
@@ -880,8 +880,8 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("The stdout/err of jobs is only kept for failed jobs", func() {
 					jobs = nil
-					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
-					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_pass"))
+					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_fail"))
 					inserts, _, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
@@ -950,7 +950,7 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("The stdout/err of jobs is limited in size", func() {
 					jobs = nil
-					jobs = append(jobs, NewJob("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_fail"))
+					jobs = append(jobs, NewJob("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_fail"))
 					inserts, _, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -1024,7 +1024,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("Jobs that take longer than the ttr can execute successfully, unless the clienttouchinterval is > ttr", func() {
 					jobs = nil
 					cmd := "perl -e 'for (1..3) { sleep(1) }'"
-					jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "should_pass"))
+					jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "should_pass"))
 					inserts, _, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -1081,7 +1081,7 @@ func TestJobqueue(t *testing.T) {
 
 			var jobs []*Job
 			for i := 0; i < 3; i++ {
-				jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "rp1"))
+				jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "rp1"))
 			}
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
@@ -1098,7 +1098,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("Then you can add dups and a new one under a new RepGroup and reserve/execute all of them", func() {
 					jobs = nil
 					for i := 0; i < 4; i++ {
-						jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "rp2"))
+						jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "rp2"))
 					}
 					inserts, already, err := jq.Add(jobs)
 					So(err, ShouldBeNil)
@@ -1128,7 +1128,7 @@ func TestJobqueue(t *testing.T) {
 			Convey("You can add dups and a new one under a new RepGroup", func() {
 				jobs = nil
 				for i := 0; i < 4; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), "rp2"))
+					jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "rp2"))
 				}
 				inserts, already, err := jq.Add(jobs)
 				So(err, ShouldBeNil)
@@ -1182,8 +1182,8 @@ func TestJobqueue(t *testing.T) {
 			defer jq.Disconnect()
 
 			var jobs []*Job
-			jobs = append(jobs, NewJob("echo 1", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
-			jobs = append(jobs, NewJob("echo 2", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+			jobs = append(jobs, NewJob("echo 1", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "manually_added"))
+			jobs = append(jobs, NewJob("echo 2", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "manually_added"))
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -1226,7 +1226,7 @@ func TestJobqueue(t *testing.T) {
 
 			var jobs []*Job
 			job1Cmd := "sleep 1 && echo noninstant"
-			jobs = append(jobs, NewJob(job1Cmd, "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+			jobs = append(jobs, NewJob(job1Cmd, "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "nij"))
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -1244,7 +1244,7 @@ func TestJobqueue(t *testing.T) {
 				So(running, ShouldEqual, 1)
 				So(etc.Minutes(), ShouldBeLessThanOrEqualTo, 30)
 
-				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "nij"))
 				inserts, already, err = jq.Add(jobs)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
@@ -1292,7 +1292,7 @@ func TestJobqueue(t *testing.T) {
 				ok := jq.ShutdownServer()
 				So(ok, ShouldBeTrue)
 
-				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), "nij"))
+				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", 10, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "nij"))
 				inserts, already, err = jq.Add(jobs)
 				So(err, ShouldNotBeNil)
 
@@ -1355,7 +1355,7 @@ func TestJobqueue(t *testing.T) {
 			var jobs []*Job
 			count := maxCPU * 2
 			for i := 0; i < count; i++ {
-				jobs = append(jobs, NewJob(fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), tmpdir, "perl", 1, 1*time.Second, 1, uint8(0), uint8(0), "manually_added"))
+				jobs = append(jobs, NewJob(fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), tmpdir, "perl", 1, 1*time.Second, 1, uint8(0), uint8(0), uint8(3), "manually_added"))
 			}
 			inserts, already, err := jq.Add(jobs)
 			So(err, ShouldBeNil)
@@ -1461,7 +1461,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		before := time.Now()
 		var jobs []*Job
 		for i := 0; i < n; i++ {
-			jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), "manually_added"))
+			jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", 1024, 4*time.Hour, 1, uint8(0), uint8(0), uint8(3), "manually_added"))
 		}
 		inserts, already, err := jq.Add(jobs)
 		if err != nil {
@@ -1569,7 +1569,7 @@ func TestJobqueueSpeed(t *testing.T) {
 				for total < n {
 					var jobs []*Job
 					for i := 0; i < b; i++ {
-						jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), fmt.Sprintf("batch_%d", batchNum)))
+						jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), uint8(3), fmt.Sprintf("batch_%d", batchNum)))
 					}
 					_, _, err := jq.Add(jobs)
 					if err != nil {
@@ -1642,7 +1642,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 	var jobs []*Job
 	batchName := fmt.Sprintf("batch_%d", batchNum)
 	for i := 0; i < b; i++ {
-		jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), batchName))
+		jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", 1024, 4*time.Hour, 1, uint8(0), uint8(0), uint8(3), batchName))
 	}
 	_, _, err := jq.Add(jobs)
 	if err != nil {
