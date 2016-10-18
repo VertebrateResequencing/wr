@@ -88,7 +88,7 @@ func TestJobqueue(t *testing.T) {
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
-	clientConnectTime := 500 * time.Millisecond
+	clientConnectTime := 1500 * time.Millisecond
 
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
