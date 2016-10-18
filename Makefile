@@ -44,7 +44,7 @@ dist:
 	gopack pack -o dist.zip
 	# go get -u github.com/aktau/github-release
 	github-release release --tag ${TAG} --pre-release
-	github-release upload --tag ${TAG} --name wr-linux-amd64.zip --file dist.zip
+	github-release upload --tag ${TAG} --name wr-linux-x86-64.zip --file dist.zip
 	@rm -f wr dist.zip
 
 .PHONY: build test report lint vet inef spell install clean dist
