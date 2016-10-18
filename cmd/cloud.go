@@ -87,6 +87,12 @@ requirements of the OS image are that it support ssh and sftp on port 22, and
 that it be a 64bit linux-like system with /proc/*/smaps, /tmp and some local
 writeable disk space in the home directory.
 
+The openstack provider needs these environment variables to be set:
+OS_TENANT_ID, OS_AUTH_URL, OS_PASSWORD, OS_REGION_NAME, OS_USERNAME
+You can get these values by logging in to your OpenStack dashboard web interface
+and navigating to Compute -> Access & Security. From there click the 'API
+Access' tab and then click the 'Download Openstack RC File' button.
+
 Note that when specifying the OpenStack environment variable 'OS_AUTH_URL', it
 must work from within an OpenStack server running your chosen OS image. This is
 most likely to succeed if you use an IP address instead of a host name.`,
