@@ -164,7 +164,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, err := provider.CheapestServerFlavor(1, 2048, 1) // *** how do we know how much memory the user-chosen OS needs?...
+			flavor, err := provider.CheapestServerFlavor(1, osRAM, 1)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
