@@ -122,6 +122,7 @@ type Job struct {
 	Cores          int           // how many processor cores the Cmd will use
 	Override       uint8
 	Priority       uint8
+	Retries        uint8         // the number of times to retry running a Cmd if it fails
 	PeakRAM        int           // the actual peak RAM is recorded here (MB)
 	Exited         bool          // true if the Cmd was run and exited
 	Exitcode       int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
@@ -146,7 +147,7 @@ type Job struct {
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add().
-func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, repgroup string) *Job {
+func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, retries uint8, repgroup string) *Job {
 	return &Job{
 		RepGroup: repgroup,
 		ReqGroup: group,
@@ -157,6 +158,7 @@ func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, c
 		Cores:    cores,
 		Override: override,
 		Priority: priority,
+		Retries:  retries,
 	}
 }
 

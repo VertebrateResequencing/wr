@@ -3,6 +3,7 @@ description: Software Workflow Runner
 os: darwin linux
 includes:
   - README.md
+  - CHANGELOG.md
   - LICENSE
   - wr_config.yml
 excludes:

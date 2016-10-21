@@ -158,7 +158,7 @@ the commands, or if you added them with a different cwd.`,
 					re += 1 + job.Similar
 				case "buried":
 					b += 1 + job.Similar
-				case "reserved":
+				case "reserved", "running":
 					ru += 1 + job.Similar
 				case "complete":
 					c += 1 + job.Similar
@@ -177,7 +177,7 @@ the commands, or if you added them with a different cwd.`,
 					fmt.Printf("Status: %s to be picked up by a `wr runner`\n", job.State)
 				case "buried":
 					fmt.Printf("Status: %s - you need to fix the problem and then `wr kick`\n", job.State)
-				case "reserved":
+				case "reserved", "running":
 					fmt.Println("Status: running")
 				case "complete":
 					fmt.Printf("Status: %s\n", job.State)

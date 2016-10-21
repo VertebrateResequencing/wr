@@ -89,9 +89,9 @@ Not yet implemented
 
 Usage instructions
 ------------------
-The download .zip should contain the wr executable, this README.md and an
-example config file called wr_config.yml, which details all the config
-options available. The main things you need to know are:
+The download .zip should contain the wr executable, this README.md, a
+CHANGELOG.md and an example config file called wr_config.yml, which details all
+the config options available. The main things you need to know are:
 
 * You can use the wr executable directly from where you extracted it, or
   move it to where you normally install software to.

@@ -110,9 +110,12 @@ func TestLocal(t *testing.T) {
 
 				numfiles = testDirForFiles(tmpdir, maxCPU+count)
 				So(numfiles, ShouldEqual, maxCPU+count)
-				So(s.Busy(), ShouldBeTrue)
+				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
+				if numfiles < maxCPU+count {
+					So(s.Busy(), ShouldBeTrue)
+				}
 
-				<-time.After(100*time.Millisecond + overhead) // an extra 50ms for leeway
+				<-time.After(200*time.Millisecond + overhead) // an extra 150ms for leeway
 
 				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
 				So(numfiles, ShouldEqual, maxCPU+count)

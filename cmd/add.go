@@ -38,6 +38,7 @@ var cmdMem string
 var cmdCPUs int
 var cmdOvr int
 var cmdPri int
+var cmdRet int
 var cmdFile string
 var cmdID string
 
@@ -50,7 +51,7 @@ var addCmd = &cobra.Command{
 You can supply your commands by putting them in a text file (1 per line), or
 by piping them in. In addition to the command itself, you can specify additional
 optional tab-separated columns as follows:
-command cwd requirements_group memory time cpus override priority
+command cwd requirements_group memory time cpus override priority retries
 If any of these will be the same for all your commands, you can instead specify
 them as flags.
 
@@ -92,6 +93,13 @@ estimate.
 
 Priority defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities.
+
+Retries defines how many times a command will be retried automatically if it
+fails. Automatic retries are helpful in the case of transient errors, or errors
+due to running out of memory or time (when retried, they will be retried with
+more memory/time reserved). Once this number of retries is reached, the command
+will be "buried" until you take manual action to fix the problem and press the
+retry button in the web interface.
 
 The identifier option is an arbitrary name you can give your commands so you can
 query their status later. If you split your commands into multiple batches with
@@ -137,6 +145,9 @@ the future when the commands actually get run.`,
 		}
 		if cmdPri < 0 || cmdPri > 255 {
 			die("--priority must be in the range 0..255")
+		}
+		if cmdRet < 0 || cmdRet > 255 {
+			die("--retries must be in the range 0..255")
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
@@ -187,7 +198,7 @@ the future when the commands actually get run.`,
 			}
 
 			var cmd, cwd, rg string
-			var mb, cpus, override, priority int
+			var mb, cpus, override, priority, retries int
 			var dur time.Duration
 
 			// command cwd requirements_group memory time cpus override priority
@@ -270,7 +281,19 @@ the future when the commands actually get run.`,
 				}
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), cmdID))
+			if colsn < 9 || cols[8] == "" {
+				retries = cmdRet
+			} else {
+				retries, err = strconv.Atoi(cols[8])
+				if err != nil {
+					die("a value in the retries column (%s) was not specified correctly: %s", cols[8], err)
+				}
+				if priority < 0 || priority > 255 {
+					die("retries column must contain values in the range 0..255 (not %d)", retries)
+				}
+			}
+
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), cmdID))
 		}
 
 		// connect to the server
@@ -297,12 +320,13 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
 	addCmd.Flags().StringVarP(&cmdID, "identifier", "i", "manually_added", "identifier for all your commands")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
-	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "r", "", "group name for commands with similar reqs")
+	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "g", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
 	addCmd.Flags().IntVar(&cmdCPUs, "cpus", 1, "cpu cores needed")
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override?")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority")
+	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

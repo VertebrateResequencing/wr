@@ -79,7 +79,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				var itemdefs []*queue.ItemDef
 				for _, job := range cr.Jobs {
 					job.EnvKey = envkey
-					job.UntilBuried = 3
+					job.UntilBuried = job.Retries + 1
 					job.Queue = cr.Queue
 					itemdefs = append(itemdefs, &queue.ItemDef{Key: jobKey(job), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR})
 				}
@@ -359,7 +359,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				err = q.Kick(jobkey)
 				if err == nil {
 					job := item.Data.(*Job)
-					job.UntilBuried = 3
+					job.UntilBuried = job.Retries + 1
 					kicked++
 				}
 			}
@@ -497,6 +497,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		Time:        sjob.Time,
 		Cores:       sjob.Cores,
 		Priority:    sjob.Priority,
+		Retries:     sjob.Retries,
 		PeakRAM:     sjob.PeakRAM,
 		Exited:      sjob.Exited,
 		Exitcode:    sjob.Exitcode,

@@ -206,8 +206,8 @@
                                 <div class="panel-footer clearfix">
                                     <!-- ko if: Similar -->
                                         + <span data-bind="text: Similar"></span> other commands
-                                        <!-- ko if: Exitcode != 0  -->
-                                            with same exit code and reason for failure
+                                        <!-- ko if: Exited -->
+                                            with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
                                         <!-- /ko -->
                                     <!-- /ko -->
                                     <!-- ko if: State == "delayed" -->
