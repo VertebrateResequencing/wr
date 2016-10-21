@@ -241,6 +241,7 @@ func TestJobqueue(t *testing.T) {
 	var server *Server
 	var err error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
+		<-time.After(2 * time.Second) // try and ensure no server is still using port
 		_, err = Connect(addr, "test_queue", clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
@@ -249,7 +250,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		<-time.After(1 * time.Second) // try and ensure no server is still using port
+		<-time.After(2 * time.Second) // try and ensure no server is still using port
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
@@ -340,7 +341,7 @@ func TestJobqueue(t *testing.T) {
 					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
 				}
-				<-time.After(100 * time.Millisecond)
+				<-time.After(500 * time.Millisecond)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 9500)
@@ -414,7 +415,7 @@ func TestJobqueue(t *testing.T) {
 							}
 						}()
 
-						<-time.After(1100 * time.Millisecond)
+						<-time.After(2 * time.Second)
 						So(<-ok, ShouldBeTrue)
 					})
 				})
