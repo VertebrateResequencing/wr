@@ -806,7 +806,13 @@ func TestQueue(t *testing.T) {
 
 		var itemdefs []*ItemDef
 		for i := 0; i < 10; i++ {
-			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 100 * time.Millisecond, 1 * time.Minute})
+			itemdefs = append(itemdefs, &ItemDef{
+				Key:      fmt.Sprintf("key_%d", i),
+				Data:     "data",
+				Priority: 0,
+				Delay:    100 * time.Millisecond,
+				TTR:      1 * time.Minute,
+			})
 		}
 
 		added, dups, err := q.AddMany(itemdefs)
@@ -820,7 +826,13 @@ func TestQueue(t *testing.T) {
 		So(dups, ShouldEqual, 10)
 
 		for i := 10; i < 20; i++ {
-			itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", i), "data", 0, 50 * time.Millisecond, 1 * time.Minute})
+			itemdefs = append(itemdefs, &ItemDef{
+				Key:      fmt.Sprintf("key_%d", i),
+				Data:     "data",
+				Priority: 0,
+				Delay:    50 * time.Millisecond,
+				TTR:      1 * time.Minute,
+			})
 		}
 
 		added, dups, err = q.AddMany(itemdefs)
@@ -828,7 +840,13 @@ func TestQueue(t *testing.T) {
 		So(added, ShouldEqual, 10)
 		So(dups, ShouldEqual, 10)
 
-		itemdefs = append(itemdefs, &ItemDef{fmt.Sprintf("key_%d", 99), "data", 0, 0 * time.Millisecond, 1 * time.Minute})
+		itemdefs = append(itemdefs, &ItemDef{
+			Key:      fmt.Sprintf("key_%d", 99),
+			Data:     "data",
+			Priority: 0,
+			Delay:    0 * time.Millisecond,
+			TTR:      1 * time.Minute,
+		})
 		added, dups, err = q.AddMany(itemdefs)
 		So(err, ShouldBeNil)
 		So(added, ShouldEqual, 1)
@@ -841,6 +859,69 @@ func TestQueue(t *testing.T) {
 			qerr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
 			So(qerr.Err, ShouldEqual, ErrQueueClosed)
+		})
+	})
+
+	Convey("Once some items with dependencies have been added to the queue", t, func() {
+		// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
+		queue := New("dep queue")
+		_, err := queue.Add("key_1", "1", 0, 0*time.Second, 30*time.Second)
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_2", "2", 0, 0*time.Second, 30*time.Second)
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_3", "3", 0, 0*time.Second, 30*time.Second)
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_4", "4", 0, 0*time.Second, 30*time.Second, []string{"key_1"})
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_5", "5", 0, 0*time.Second, 30*time.Second, []string{"key_2", "key_3"})
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_6", "6", 0, 0*time.Second, 30*time.Second, []string{"key_3", "key_4"})
+		So(err, ShouldBeNil)
+		fivesixdep, err := queue.Add("key_7", "7", 0, 0*time.Second, 30*time.Second, []string{"key_5", "key_6"})
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_8", "8", 0, 0*time.Second, 30*time.Second, []string{"key_5"})
+		So(err, ShouldBeNil)
+
+		So(fivesixdep.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
+
+		Convey("Only the non-dependent items are immediately ready", func() {
+			depTestFunc(queue)
+		})
+	})
+
+	Convey("Once some items with dependencies have been added to the queue en-masse", t, func() {
+		// same setup as in previous test
+		queue := New("dep many queue")
+
+		var itemdefs []*ItemDef
+		itemdefs = append(itemdefs, &ItemDef{
+			Key:  "key_1",
+			Data: "1",
+			TTR:  30 * time.Second,
+		})
+		itemdefs = append(itemdefs, &ItemDef{
+			Key:  "key_2",
+			Data: "2",
+			TTR:  30 * time.Second,
+		})
+		itemdefs = append(itemdefs, &ItemDef{"key_3", "3", 0, 0 * time.Second, 30 * time.Second, []string{}})
+		itemdefs = append(itemdefs, &ItemDef{"key_4", "4", 0, 0 * time.Second, 30 * time.Second, []string{"key_1"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_5", "5", 0, 0 * time.Second, 30 * time.Second, []string{"key_2", "key_3"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_6", "6", 0, 0 * time.Second, 30 * time.Second, []string{"key_3", "key_4"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_7", "7", 0, 0 * time.Second, 30 * time.Second, []string{"key_5", "key_6"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_8", "8", 0, 0 * time.Second, 30 * time.Second, []string{"key_5"}})
+
+		added, dups, err := queue.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 8)
+		So(dups, ShouldEqual, 0)
+
+		item7, err := queue.Get("key_7")
+		So(err, ShouldBeNil)
+		So(item7.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
+
+		Convey("Only the non-dependent items are immediately ready", func() {
+			depTestFunc(queue)
 		})
 	})
 }
@@ -864,4 +945,94 @@ func checkChanged(changedChan chan *changedStruct, from string, to string, count
 		}
 	}
 	return
+}
+
+func depTestFunc(queue *Queue) {
+	stats := queue.Stats()
+	So(stats.Items, ShouldEqual, 8)
+	So(stats.Delayed, ShouldEqual, 0)
+	So(stats.Ready, ShouldEqual, 3)
+	So(stats.Running, ShouldEqual, 0)
+	So(stats.Buried, ShouldEqual, 0)
+	So(stats.Dependant, ShouldEqual, 5)
+
+	Convey("Once parent items are removed, dependent items become ready", func() {
+		item, err := queue.Get("key_4")
+		So(item.Stats().State, ShouldEqual, "dependent")
+
+		err = queue.Remove("key_1")
+		So(err, ShouldBeNil)
+		<-time.After(6 * time.Millisecond)
+
+		So(item.Stats().State, ShouldEqual, "ready")
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 7)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 3)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+		So(stats.Dependant, ShouldEqual, 4)
+
+		item, err = queue.Get("key_6")
+		So(item.Stats().State, ShouldEqual, "dependent")
+
+		err = queue.Remove("key_3")
+		So(err, ShouldBeNil)
+		<-time.After(6 * time.Millisecond)
+
+		So(item.Stats().State, ShouldEqual, "dependent")
+
+		stats = queue.Stats()
+		So(stats.Items, ShouldEqual, 6)
+		So(stats.Ready, ShouldEqual, 2)
+		So(stats.Dependant, ShouldEqual, 4)
+
+		err = queue.Remove("key_4")
+		So(err, ShouldBeNil)
+		<-time.After(6 * time.Millisecond)
+
+		So(item.Stats().State, ShouldEqual, "ready")
+
+		stats = queue.Stats()
+		So(stats.Items, ShouldEqual, 5)
+		So(stats.Ready, ShouldEqual, 2)
+		So(stats.Dependant, ShouldEqual, 3)
+
+		err = queue.Remove("key_6")
+		So(err, ShouldBeNil)
+		<-time.After(6 * time.Millisecond)
+
+		stats = queue.Stats()
+		So(stats.Items, ShouldEqual, 4)
+		So(stats.Ready, ShouldEqual, 1)
+		So(stats.Dependant, ShouldEqual, 3)
+
+		item, err = queue.Get("key_5")
+		So(item.Stats().State, ShouldEqual, "dependent")
+
+		err = queue.Remove("key_2")
+		So(err, ShouldBeNil)
+		<-time.After(6 * time.Millisecond)
+
+		So(item.Stats().State, ShouldEqual, "ready")
+
+		stats = queue.Stats()
+		So(stats.Items, ShouldEqual, 3)
+		So(stats.Ready, ShouldEqual, 1)
+		So(stats.Dependant, ShouldEqual, 2)
+
+		item7, err := queue.Get("key_7")
+		So(item7.Stats().State, ShouldEqual, "dependent")
+		item8, err := queue.Get("key_8")
+		So(item8.Stats().State, ShouldEqual, "dependent")
+
+		err = queue.Remove("key_5")
+		So(err, ShouldBeNil)
+		<-time.After(6 * time.Millisecond)
+
+		So(item7.Stats().State, ShouldEqual, "ready")
+		So(item8.Stats().State, ShouldEqual, "ready")
+		So(item7.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
+	})
 }
