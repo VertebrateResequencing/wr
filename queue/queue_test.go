@@ -873,7 +873,7 @@ func TestQueue(t *testing.T) {
 		So(err, ShouldBeNil)
 		_, err = queue.Add("key_4", "4", 0, 0*time.Second, 30*time.Second, []string{"key_1"})
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_5", "5", 0, 0*time.Second, 30*time.Second, []string{"key_2", "key_3"})
+		_, err = queue.Add("key_5", "5", 0, 0*time.Second, 30*time.Second, []string{"key_1", "key_2", "key_3"})
 		So(err, ShouldBeNil)
 		_, err = queue.Add("key_6", "6", 0, 0*time.Second, 30*time.Second, []string{"key_3", "key_4"})
 		So(err, ShouldBeNil)
