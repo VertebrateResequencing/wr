@@ -51,11 +51,6 @@ func CurrentIP() (ip string) {
 	return
 }
 
-// jobKey calculates a unique key to describe the job
-func jobKey(job *Job) string {
-	return byteKey([]byte(fmt.Sprintf("%s.%s", job.Cwd, job.Cmd)))
-}
-
 // byteKey calculates a unique key that describes a byte slice
 func byteKey(b []byte) string {
 	l, h := farm.Hash128(b)

@@ -164,7 +164,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						stdout, _ := jobs[0].StdOut()
 						env, _ := jobs[0].Env()
 						status := jstatus{
-							Key:          jobKey(jobs[0]),
+							Key:          jobs[0].key(),
 							RepGroup:     jobs[0].RepGroup,
 							Cmd:          jobs[0].Cmd,
 							State:        jobs[0].State,
@@ -241,7 +241,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								stdout, _ := job.StdOut()
 								env, _ := job.Env()
 								status := jstatus{
-									Key:          jobKey(job),
+									Key:          job.key(),
 									RepGroup:     req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
 									Cmd:          job.Cmd,
 									State:        job.State,

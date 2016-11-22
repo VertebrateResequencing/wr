@@ -46,6 +46,7 @@ const (
 	ErrUnknownCommand = "unknown command"
 	ErrBadRequest     = "bad request (missing arguments?)"
 	ErrBadJob         = "bad job (not in queue or correct sub-queue)"
+	ErrBadDependency  = "bad job dependency (neither in queue nor already completed)"
 	ErrMissingJob     = "corresponding job not found"
 	ErrUnknown        = "unknown error"
 	ErrClosedInt      = "queues closed due to SIGINT"
@@ -308,7 +309,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	if len(priorJobs) > 0 {
 		jobsByQueue := make(map[string][]*queue.ItemDef)
 		for _, job := range priorJobs {
-			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: jobKey(job), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR})
+			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.JobKeys()})
 		}
 		for qname, itemdefs := range jobsByQueue {
 			q := s.getOrCreateQueue(qname)

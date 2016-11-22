@@ -192,7 +192,7 @@ func (db *db) storeNewJobs(jobs []*Job) (err error) {
 	// turn the jobs in to bjes and sort by their keys
 	var encodes bje
 	for _, job := range jobs {
-		key := jobKey(job)
+		key := job.key()
 		rp := append([]byte(job.RepGroup), []byte(dbDelimiter)...)
 		rp = append(rp, []byte(key)...)
 		var encoded []byte
@@ -349,7 +349,7 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 // this works 100% of the time, we ignore errors and write to bolt in a
 // goroutine, giving us a significant speed boost.
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
-	jobkey := jobKey(job)
+	jobkey := job.key()
 	secs := int(math.Ceil(job.endtime.Sub(job.starttime).Seconds()))
 	go db.bolt.Batch(func(tx *bolt.Tx) error {
 		bo := tx.Bucket(bucketStdO)

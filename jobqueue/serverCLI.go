@@ -76,38 +76,67 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrDBError
 				qerr = err.Error()
 			} else {
-				var itemdefs []*queue.ItemDef
+				// first check the validity of any dependencies specified in the
+				// list of jobs; they must either already be complete, currently
+				// be in the queue, or have been specified earlier in the
+				// supplied list of jobs *** should also check for cycles...
+				okDeps := make(map[string]bool)
+			depCheck:
 				for _, job := range cr.Jobs {
-					job.EnvKey = envkey
-					job.UntilBuried = job.Retries + 1
-					job.Queue = cr.Queue
-					itemdefs = append(itemdefs, &queue.ItemDef{Key: jobKey(job), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR})
-				}
+					for _, dep := range job.Dependencies.Deps {
+						depKey := dep.key()
+						if okDeps[depKey] {
+							continue
+						}
 
-				// keep an on-disk record of these new jobs; we sacrifice a lot
-				// of speed by waiting on this database write to persist to
-				// disk. The alternative would be to return success to the
-				// client as soon as the jobs were in the in-memory queue, then
-				// lazily persist to disk in a goroutine, but we must guarantee
-				// that jobs are never lost or a workflow could hopelessly break
-				// if the server node goes down between returning success and
-				// the write to disk succeeding. (If we don't return success to
-				// the client, it won't Remove the job that created the new jobs
-				// from the queue and when we recover, at worst the creating job
-				// will be run again - no jobs get lost.)
-				err = s.db.storeNewJobs(cr.Jobs)
-				if err != nil {
-					srerr = ErrDBError
-					qerr = err.Error()
-				} else {
-					// add the jobs to the in-memory job queue
-					added, dups, err := s.enqueueItems(q, itemdefs)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
+						jobs, _, _ := s.getJobsByKeys(q, []string{depKey}, false, false)
+						if len(jobs) == 0 {
+							srerr = ErrBadDependency
+							break depCheck
+						}
+
+						okDeps[depKey] = true
 					}
 
-					sr = &serverResponse{Added: added, Existed: dups}
+					okDeps[job.key()] = true
+				}
+
+				if srerr == "" {
+					// create itemdefs for the jobs
+					var itemdefs []*queue.ItemDef
+					for _, job := range cr.Jobs {
+						job.EnvKey = envkey
+						job.UntilBuried = job.Retries + 1
+						job.Queue = cr.Queue
+						itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.JobKeys()})
+					}
+
+					// keep an on-disk record of these new jobs; we sacrifice a
+					// lot of speed by waiting on this database write to persist
+					// to disk. The alternative would be to return success to
+					// the client as soon as the jobs were in the in-memory
+					// queue, then lazily persist to disk in a goroutine, but we
+					// must guarantee that jobs are never lost or a workflow
+					// could hopelessly break if the server node goes down
+					// between returning success and the write to disk
+					// succeeding. (If we don't return success to the client, it
+					// won't Remove the job that created the new jobs from the
+					// queue and when we recover, at worst the creating job will
+					// be run again - no jobs get lost.)
+					err = s.db.storeNewJobs(cr.Jobs)
+					if err != nil {
+						srerr = ErrDBError
+						qerr = err.Error()
+					} else {
+						// add the jobs to the in-memory job queue
+						added, dups, err := s.enqueueItems(q, itemdefs)
+						if err != nil {
+							srerr = ErrInternalError
+							qerr = err.Error()
+						}
+
+						sr = &serverResponse{Added: added, Existed: dups}
+					}
 				}
 			}
 		}
@@ -269,7 +298,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if !job.Exited || job.Exitcode != 0 || job.starttime.IsZero() || job.endtime.IsZero() {
 				srerr = ErrBadRequest
 			} else {
-				key := jobKey(job)
+				key := job.key()
 				job.State = "complete"
 				job.FailReason = ""
 				job.Walltime = job.endtime.Sub(job.starttime)
@@ -425,7 +454,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		}
 		key := ""
 		if cr.Job != nil {
-			key = jobKey(cr.Job)
+			key = cr.Job.key()
 		}
 		return Error{cr.Queue, cr.Method, key, qerr}
 	}
@@ -453,7 +482,7 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 		return
 	}
 
-	item, err := q.Get(jobKey(cr.Job))
+	item, err := q.Get(cr.Job.key())
 	if err != nil || item.Stats().State != "run" {
 		errs = ErrBadJob
 		return
@@ -483,6 +512,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		state = "reserved"
 	case "bury":
 		state = "buried"
+	case "dependent":
+		state = "dependent"
 	}
 
 	// we're going to fill in some properties of the Job and return
@@ -531,7 +562,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 // extracting them from the database.
 func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 	if getStd && job.Exited && job.Exitcode != 0 {
-		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(jobKey(job))
+		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.key())
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)

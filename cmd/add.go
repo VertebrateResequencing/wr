@@ -41,6 +41,7 @@ var cmdPri int
 var cmdRet int
 var cmdFile string
 var cmdID string
+var cmdDeps string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -51,9 +52,10 @@ var addCmd = &cobra.Command{
 You can supply your commands by putting them in a text file (1 per line), or
 by piping them in. In addition to the command itself, you can specify additional
 optional tab-separated columns as follows:
-command cwd requirements_group memory time cpus override priority retries
+cmd cwd requirements_group memory time cpus override priority retries id deps
 If any of these will be the same for all your commands, you can instead specify
-them as flags.
+them as flags (which are treated as defaults in the case that they are
+unspecified in the text file, but otherwise ignored).
 
 Cwd is the directory to cd to before running the command. If none is specified,
 the default will be your current directory right now. (If adding to a remote
@@ -101,10 +103,19 @@ more memory/time reserved). Once this number of retries is reached, the command
 will be "buried" until you take manual action to fix the problem and press the
 retry button in the web interface.
 
-The identifier option is an arbitrary name you can give your commands so you can
-query their status later. If you split your commands into multiple batches with
-different requirements_groups, you can give all the different batches the same
-identifier, so you can track them in one go.
+Id is an arbitrary name you can give your commands so you can query their status
+later. If you split your commands into multiple batches with different
+requirements_groups, you can give all the different batches the same identifier,
+so you can track them in one go.
+
+Deps defines the dependencies of this command. Starting from column 11 you can
+specify other commands that must complete before this command will start. The
+specification of the other commands is done by having the command line in one
+column, and it's cwd in the next, then repeating in subsequent columns for every
+other dependency. So a command with 1 dependency would have 12 columns, and one
+with 2 dependencies would have 14 columns and so on. Dependencies must have
+either been specified earlier in the file, or must already have been added to
+the queue.
 
 NB: Your commands will run with the environment variables you had when you
 added them, not the possibly different environment variables you could have in
@@ -115,7 +126,7 @@ the future when the commands actually get run.`,
 			die("--file is required")
 		}
 		if cmdID == "" {
-			die("--identifier is required")
+			cmdID = "manually_added"
 		}
 		var cmdMB int
 		var err error
@@ -150,6 +161,16 @@ the future when the commands actually get run.`,
 			die("--retries must be in the range 0..255")
 		}
 		timeout := time.Duration(timeoutint) * time.Second
+
+		var defaultDeps []*jobqueue.Dependency
+		if cmdDeps != "" {
+			cols := strings.Split(cmdDeps, "\\t")
+			if len(cols)%2 != 0 {
+				warn("--deps has cols (%s) of len %d which %2 == %d", cols, len(cols), len(cols)%2)
+				die("--deps must have an even number of tab-separated columns")
+			}
+			defaultDeps = colsToDeps(cols)
+		}
 
 		// open file or set up to read from STDIN
 		var reader io.Reader
@@ -197,11 +218,12 @@ the future when the commands actually get run.`,
 				continue
 			}
 
-			var cmd, cwd, rg string
+			var cmd, cwd, rg, id string
 			var mb, cpus, override, priority, retries int
 			var dur time.Duration
+			var deps *jobqueue.Dependencies
 
-			// command cwd requirements_group memory time cpus override priority
+			// cmd cwd requirements_group memory time cpus override priority retries id deps
 			cmd = cols[0]
 
 			if colsn < 2 || cols[1] == "" {
@@ -293,7 +315,23 @@ the future when the commands actually get run.`,
 				}
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), cmdID))
+			if colsn < 10 || cols[9] == "" {
+				id = cmdID
+			} else {
+				id = cols[9]
+			}
+
+			if colsn < 11 || cols[10] == "" {
+				deps = jobqueue.NewDependencies(defaultDeps...)
+			} else {
+				// all remaining columns specify deps
+				if colsn%2 != 0 {
+					die("there must be an even number of dependency columns")
+				}
+				deps = jobqueue.NewDependencies(colsToDeps(cols[10:])...)
+			}
+
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), id, deps))
 		}
 
 		// connect to the server
@@ -318,7 +356,7 @@ func init() {
 
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
-	addCmd.Flags().StringVarP(&cmdID, "identifier", "i", "manually_added", "identifier for all your commands")
+	addCmd.Flags().StringVarP(&cmdID, "id", "i", "manually_added", "identifier for your commands")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
 	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "g", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
@@ -327,6 +365,15 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override?")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
+	addCmd.Flags().StringVarP(&cmdDeps, "deps", "d", "", "dependencies of your commands, in the form \"command1\\tcwd1\\tcommand2\\tcwd2...\"")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
+}
+
+// convert cmd,cwd columns in to Dependency
+func colsToDeps(cols []string) (deps []*jobqueue.Dependency) {
+	for i := 0; i < len(cols); i += 2 {
+		deps = append(deps, jobqueue.NewDependency(cols[i], cols[i+1]))
+	}
+	return
 }
