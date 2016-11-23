@@ -48,7 +48,7 @@
                             <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
                                 <span data-bind="text: inflight.delay"></span> delayed
                             </div>
-                            <div class="progress-bar progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.dependentPct() + '%' }">
+                            <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.dependentPct() + '%' }">
                                 <span data-bind="text: inflight.dependent"></span> dependent
                             </div>
                             <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
@@ -65,6 +65,7 @@
                 </div>
             </div>
             
+            <!-- *** not yet implemented
             <div class="row bottom-margin">
                 <div class="col-xs-5">
                     <form data-bind="submit: requestRepGroup">
@@ -78,8 +79,9 @@
                     </form>
                 </div>
             </div>
+            -->
             
-            <div data-bind="foreach: repGroups.sort(function(l,r) { l.id > r.id ? 1 : -1 })">
+            <div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
                 <div style="width: 100%;" class="well well-sm">
                     <div style="margin: 0 auto;">
                         <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge" data-bind="text: total"></span></h5>
@@ -88,7 +90,7 @@
                                 <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed">
                                     <span data-bind="text: delay"></span> delayed
                                 </div>
-                                <div class="progress-bar progress-bar-warning clickable" role="progressbar" data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent">
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent">
                                     <span data-bind="text: dependent"></span> dependent
                                 </div>
                                 <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady">
@@ -339,9 +341,9 @@
                 self.inflight['bury'].extend({ rateLimit: self.rateLimit });
                 self.inflight['total'].extend({ rateLimit: self.rateLimit });
                 
-                self.repGroups = ko.observableArray();
+                self.repGroups = [];
                 self.repGroupLookup = {};
-                self.omcount = 0;
+                self.sortableRepGroups = ko.observableArray();
                 
                 // set up the websocket
                 if (window.WebSocket === undefined) {
@@ -364,7 +366,7 @@
                             if (rg == "+all+") {
                                 repgroup = self.inflight;
                             } else if (self.repGroupLookup.hasOwnProperty(rg)) {
-                                repgroup = self.repGroups()[self.repGroupLookup[rg]];
+                                repgroup = self.repGroups[self.repGroupLookup[rg]];
                             } else {
                                 repgroup = {
                                     'id': rg,
@@ -431,7 +433,13 @@
                                 repgroup['total'].extend({ rateLimit: self.rateLimit });
                                 
                                 self.repGroups.push(repgroup);
-                                self.repGroupLookup[rg] = self.repGroups().length - 1;
+                                self.repGroupLookup[rg] = self.repGroups.length - 1;
+                                
+                                // because of our lookup, repGroup sort order
+                                // must not change, but we want them displayed
+                                // sorted, so we also push to an independent
+                                // observableArray
+                                self.sortableRepGroups.push(repgroup);
                             }
                             
                             var from, to
@@ -506,7 +514,8 @@
                 // act if the user requests a repGroup
                 self.requestRepGroup = function(formElement) {
                     console.log("requesting rep group " + self.repGroup())
-                    self.ws.send(JSON.stringify({ RepGroup: self.repGroup() }));
+                    self.ws.send(JSON.stringify({ Request: 'search', RepGroup: self.repGroup() })); 
+                    // *** not yet implemented in the manager, does nothing
                 };
                 
                 // act if the user clicks on the different types of progress
