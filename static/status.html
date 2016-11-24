@@ -102,6 +102,9 @@
                                 <div class="progress-bar progress-bar-danger clickable" role="progressbar" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried">
                                     <span data-bind="text: bury"></span> buried
                                 </div>
+                                <div class="progress-bar progress-bar-danger" role="progressbar" data-bind="style: { width: deletePct() + '%' }">
+                                    <span data-bind="text: deleted"></span> deleted
+                                </div>
                                 <div class="progress-bar progress-bar-success clickable" role="progressbar" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete">
                                     <span data-bind="text: complete"></span> complete
                                 </div>
@@ -218,8 +221,11 @@
                                             with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
                                         <!-- /ko -->
                                     <!-- /ko -->
-                                    <!-- ko if: State == "delayed" || State == "dependent" -->
+                                    <!-- ko if: State == "delayed" -->
                                         <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemove">Remove</button>
+                                    <!-- /ko -->
+                                    <!-- ko if: State == "dependent" -->
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDep">Remove</button>
                                     <!-- /ko -->
                                     <!-- ko if: State == "buried" -->
                                         <div class="btn-group pull-right">
@@ -243,7 +249,14 @@
                 footer: { name: 'actionModalFooterTemplate', data: actionDetails }
             }"></div>
             <script type="text/html" id="actionModalBodyTemplate">
-                Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>" that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
+                Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>"
+                <!-- ko if: exited -->
+                    that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
+                <!-- /ko -->
+                <!-- ko if: ! exited -->
+                    ?
+                <!-- /ko -->
+                <small>(removal of commands that have other commands depending on them will silently fail)</small>
             </script>
             <script type="text/html" id="actionModalFooterTemplate">
                 <div class="btn-group">
@@ -376,12 +389,14 @@
                                     'ready': ko.observable(0),
                                     'run': ko.observable(0),
                                     'bury': ko.observable(0),
+                                    'deleted': ko.observable(0),
                                     'complete': ko.observable(0),
                                     'delayPct': ko.observable(0),
                                     'dependentPct': ko.observable(0),
                                     'readyPct': ko.observable(0),
                                     'runPct': ko.observable(0),
                                     'buryPct': ko.observable(0),
+                                    'deletePct': ko.observable(0),
                                     'completePct': ko.observable(0),
                                     'details': ko.observableArray(),
                                     'old_total': 0,
@@ -392,16 +407,10 @@
                                         return repgroup['old_total'];
                                     }
                                     
-                                    var total = repgroup['delay']() + repgroup['dependent']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['complete']();
+                                    var total = repgroup['delay']() + repgroup['dependent']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['deleted']() + repgroup['complete']();
                                     if (total > 0) {
                                         var multiplier = 100 / total;
-                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['complete']())], 2);
-                                        
-                                        // repgroup['delayPct'](rounded[0]);
-                                        // repgroup['readyPct'](rounded[1]);
-                                        // repgroup['runPct'](rounded[2]);
-                                        // repgroup['buryPct'](rounded[3]);
-                                        // repgroup['completePct'](rounded[4]);
+                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 2);
                                         
                                         // to avoid the percentage bars
                                         // totalling over 100 at any point in
@@ -409,13 +418,13 @@
                                         // first; not sure if this really helps
                                         // avoid some instances of flickering,
                                         // but it might...
-                                        var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'buryPct', 'completePct'];
-                                        for (var i = 0; i < 6; i++) {
+                                        var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'buryPct', 'deletePct', 'completePct'];
+                                        for (var i = 0; i < 7; i++) {
                                             if (repgroup[keys[i]]() > rounded[i]) {
                                                 repgroup[keys[i]](rounded[i]);
                                             }
                                         }
-                                        for (var i = 0; i < 6; i++) {
+                                        for (var i = 0; i < 7; i++) {
                                             if (repgroup[keys[i]]() < rounded[i]) {
                                                 repgroup[keys[i]](rounded[i]);
                                             }
@@ -430,6 +439,7 @@
                                 repgroup['ready'].extend({ rateLimit: self.rateLimit });
                                 repgroup['run'].extend({ rateLimit: self.rateLimit });
                                 repgroup['bury'].extend({ rateLimit: self.rateLimit });
+                                repgroup['deleted'].extend({ rateLimit: self.rateLimit });
                                 repgroup['complete'].extend({ rateLimit: self.rateLimit });
                                 repgroup['total'].extend({ rateLimit: self.rateLimit });
                                 
@@ -493,6 +503,11 @@
                                     case 'complete':
                                         if (rg != "+all+") {
                                             to = repgroup['complete'];
+                                        }
+                                        break;
+                                    case 'deleted':
+                                        if (rg != "+all+") {
+                                            to = repgroup['deleted'];
                                         }
                                         break;
                                 }
@@ -608,6 +623,7 @@
                     action: ko.observable(),
                     repGroup: ko.observable(),
                     state: ko.observable(),
+                    exited: ko.observable(),
                     exitCode: ko.observable(),
                     failReason: ko.observable(),
                     count: ko.observable()
@@ -616,6 +632,7 @@
                     self.actionDetails.action(action);
                     self.actionDetails.repGroup(job.RepGroup);
                     self.actionDetails.state(job.State);
+                    self.actionDetails.exitCode(job.Exited);
                     self.actionDetails.exitCode(job.Exitcode);
                     self.actionDetails.failReason(job.FailReason);
                     self.actionDetails.count(job.Similar + 1);
@@ -648,6 +665,11 @@
                 self.confirmRemove = function(job) {
                     self.jobToActionDetails(job, 'remove');
                     self.actionModalHeader('Remove Failed Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmRemoveDep = function(job) {
+                    self.jobToActionDetails(job, 'remove');
+                    self.actionModalHeader('Remove Dependent Commands');
                     self.actionModalVisible(true);
                 };
             }

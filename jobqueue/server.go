@@ -605,7 +605,16 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 		// update the status webpage with the minimal work and data transfer
 		q.SetChangedCallback(func(from string, to string, data []interface{}) {
 			if to == "removed" {
-				to = "complete"
+				// things are removed from the queue if deleted or completed;
+				// disambiguate
+				to = "deleted"
+				for _, inter := range data {
+					job := inter.(*Job)
+					if job.State == "complete" {
+						to = "complete"
+						break
+					}
+				}
 			}
 
 			// overall count

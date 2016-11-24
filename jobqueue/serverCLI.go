@@ -405,6 +405,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if err != nil || item.Stats().State != "bury" {
 					continue
 				}
+
+				// we can't allow the removal of jobs that have dependencies, as
+				// *queue would regard that as satisfying the dependency and
+				// downstream jobs would start
+				hasDeps, err := q.HasDependents(jobkey)
+				if err != nil || hasDeps {
+					continue
+				}
+
 				err = q.Remove(jobkey)
 				if err == nil {
 					deleted++

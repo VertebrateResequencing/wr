@@ -306,17 +306,26 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 							stats := item.Stats()
-							if stats.State == "bury" || stats.State == "delay" {
+							if stats.State == "bury" || stats.State == "delay" || stats.State == "dependent" {
 								job := item.Data.(*Job)
 								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									err := q.Remove(key)
+									// we can't allow the removal of jobs that
+									// have dependencies, as *queue would regard
+									// that as satisfying the dependency and
+									// downstream jobs would start
+									hasDeps, err := q.HasDependents(key)
+									if err != nil || hasDeps {
+										continue
+									}
+
+									err = q.Remove(key)
 									if err != nil {
 										break
 									}
 									if err == nil {
 										s.db.deleteLiveJob(key)
 										toDelete = append(toDelete, key)
-										if stats.State != "bury" {
+										if stats.State == "delay" {
 											s.decrementGroupCount(job.schedulerGroup, q)
 										}
 									}
