@@ -344,6 +344,7 @@
                 self.repGroups = [];
                 self.repGroupLookup = {};
                 self.sortableRepGroups = ko.observableArray();
+                self.ignore = {};
                 
                 // set up the websocket
                 if (window.WebSocket === undefined) {
@@ -461,51 +462,74 @@
                                     break;
                             }
                             
-                            switch(json['ToState']) {
-                                case 'delay':
-                                    to = repgroup['delay'];
-                                    break;
-                                case 'dependent':
-                                    to = repgroup['dependent'];
-                                    break;
-                                case 'ready':
-                                    to = repgroup['ready'];
-                                    break;
-                                case 'run':
-                                    to = repgroup['run'];
-                                    break;
-                                case 'bury':
-                                    to = repgroup['bury'];
-                                    break;
-                                case 'complete':
-                                    if (rg != "+all+") {
-                                        to = repgroup['complete'];
+                            if (self.ignore.hasOwnProperty(json['RepGroup']) && self.ignore[json['RepGroup']].hasOwnProperty(json['ToState']) && self.ignore[json['RepGroup']][json['ToState']] >= json['Count']) {
+                                // ignore this 'to' transition, because things
+                                // are out of order and we already accounted for
+                                // it
+                                self.ignore[json['RepGroup']][json['ToState']] -= json['Count'];
+                                if (self.ignore[json['RepGroup']][json['ToState']] == 0) {
+                                    delete self.ignore[json['RepGroup']][json['ToState']];
+                                    if (Object.keys(self.ignore[json['RepGroup']]).length == 0) {
+                                        delete self.ignore[json['RepGroup']];
                                     }
-                                    break;
+                                }
+                            } else {
+                                switch(json['ToState']) {
+                                    case 'delay':
+                                        to = repgroup['delay'];
+                                        break;
+                                    case 'dependent':
+                                        to = repgroup['dependent'];
+                                        break;
+                                    case 'ready':
+                                        to = repgroup['ready'];
+                                        break;
+                                    case 'run':
+                                        to = repgroup['run'];
+                                        break;
+                                    case 'bury':
+                                        to = repgroup['bury'];
+                                        break;
+                                    case 'complete':
+                                        if (rg != "+all+") {
+                                            to = repgroup['complete'];
+                                        }
+                                        break;
+                                }
                             }
                             
                             repgroup['delay_compute'] = to ? 1 : 0;
-                            var ok = true;
                             if (from) {
                                 var newfrom = from() - json['Count'];
                                 if (newfrom >= 0) {
-                                    from(newfrom)
+                                    from(newfrom);
                                 } else {
-                                    // some rare wonkiness happens and we're
-                                    // hoping this helps avoid it...
-                                    ok = false;
+                                    // sometimes transitions can arrive out of
+                                    // order; we'll let this one go through, and
+                                    // mark to ignore the previous transition
+                                    // when it comes in later
+                                    if (! self.ignore.hasOwnProperty(json['RepGroup'])) {
+                                        self.ignore[json['RepGroup']] = {};
+                                    }
+                                    if (self.ignore[json['RepGroup']].hasOwnProperty[json['FromState']]) {
+                                        self.ignore[json['RepGroup']][json['FromState']] += json['Count'];
+                                    } else {
+                                        self.ignore[json['RepGroup']][json['FromState']] = json['Count'];
+                                    }
+                                    
+                                    from(0);
                                 }
                             }
                             repgroup['delay_compute'] = 0;
-                            if (ok && to) {
-                                to(to() + json['Count'])
+                            if (to) {
+                                to(to() + json['Count']);
                             }
                         } else if (json.hasOwnProperty('State')) {
                             rg = json['RepGroup']
                             if (self.detailsOA && rg == self.detailsRepgroup) {
                                 // the user has clicked on a progress bar for
                                 // a particular repgroup; add to its details
-                                self.detailsOA.push(json)
+                                self.detailsOA.push(json);
                             }
                         }
                     }
@@ -630,44 +654,5 @@
             var svm = new StatusViewModel();
             ko.applyBindings(svm, $('#status')[0]);
         </script>
-        
-        <!-- <script type="text/javascript">
-            $(function () {
-                var ws;
-
-                if (window.WebSocket === undefined) {
-                    $("#stream").append("Your browser does not support WebSockets");
-                    return;
-                } else {
-                    ws = initWS();
-                }
-
-                function initWS() {
-                    var socket = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws"),
-                        container = $("#stream")
-                    socket.onopen = function() {
-                        container.append("<p>Socket is open</p>");
-                        ws.send(JSON.stringify({ Request: "current" }));
-                    };
-                    socket.onmessage = function (e) {
-                        container.append("<p>Job changed state:" + e.data + "</p>");
-                    }
-                    socket.onclose = function () {
-                        container.append("<p>Socket closed</p>");
-                    }
-                    return socket;
-                }
-
-                $("#requestRep").click(function (e) {
-                    e.preventDefault();
-                    ws.send(JSON.stringify({ RepGroup: $("#repgroupField").val() }));
-                });
-                
-                $("#requestJobkey").click(function (e) {
-                    e.preventDefault();
-                    ws.send(JSON.stringify({ Key: $("#jobkeyField").val() }));
-                });
-            });
-        </script> -->
     </body>
 </html>
