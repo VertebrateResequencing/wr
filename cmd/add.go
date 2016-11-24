@@ -211,6 +211,7 @@ the future when the commands actually get run.`,
 		// of Jobs and Add() them in one go afterwards
 		var jobs []*jobqueue.Job
 		scanner := bufio.NewScanner(reader)
+		defaultedId := false
 		for scanner.Scan() {
 			cols := strings.Split(scanner.Text(), "\t")
 			colsn := len(cols)
@@ -317,6 +318,7 @@ the future when the commands actually get run.`,
 
 			if colsn < 10 || cols[9] == "" {
 				id = cmdID
+				defaultedId = true
 			} else {
 				id = cols[9]
 			}
@@ -347,7 +349,11 @@ the future when the commands actually get run.`,
 			die("%s", err)
 		}
 
-		info("Added %d new commands (%d were duplicates) to the queue under the identifier '%s'", inserts, dups, cmdID)
+		if defaultedId {
+			info("Added %d new commands (%d were duplicates) to the queue using default identifier '%s'", inserts, dups, cmdID)
+		} else {
+			info("Added %d new commands (%d were duplicates) to the queue", inserts, dups)
+		}
 	},
 }
 
