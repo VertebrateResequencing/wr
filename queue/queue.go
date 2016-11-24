@@ -768,7 +768,7 @@ func (queue *Queue) Remove(key string) (err error) {
 		return
 	}
 
-	// update our dependants, if any
+	// transfer any dependants to the ready queue
 	addedReady := false
 	var addedReadyItems []*Item
 	if deps, exists := queue.dependants[key]; exists {
@@ -785,6 +785,17 @@ func (queue *Queue) Remove(key string) (err error) {
 			}
 		}
 		delete(queue.dependants, key)
+	}
+
+	// if this item is dependent on other items, update those items that this is
+	// no longer dependent upon them (so HasDependents() will be correct)
+	for _, parent := range item.dependencies {
+		if deps, exists := queue.dependants[parent]; exists {
+			delete(deps, key)
+			if len(deps) == 0 {
+				delete(queue.dependants, parent)
+			}
+		}
 	}
 
 	// remove from the queue
@@ -816,6 +827,23 @@ func (queue *Queue) Remove(key string) (err error) {
 		queue.readyAdded()
 	}
 
+	return
+}
+
+// HasDependents tells you if the item with the given key has any other items
+// depending upon it. You'd want to check this before Remove()ing this item if
+// you're removing it because it was undesired as opposed to complete, as
+// Remove() always triggers dependent items to become ready.
+func (queue *Queue) HasDependents(key string) (has bool, err error) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	if queue.closed {
+		err = Error{queue.Name, "Remove", key, ErrQueueClosed}
+		return
+	}
+
+	_, has = queue.dependants[key]
 	return
 }
 

@@ -887,6 +887,22 @@ func TestQueue(t *testing.T) {
 		Convey("Only the non-dependent items are immediately ready", func() {
 			depTestFunc(queue)
 		})
+
+		Convey("HasDependents works", func() {
+			hasDeps, err := queue.HasDependents("key_8")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeFalse)
+			hasDeps, err = queue.HasDependents("key_2")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeTrue)
+
+			err = queue.Remove("key_5")
+			So(err, ShouldBeNil)
+
+			hasDeps, err = queue.HasDependents("key_2")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeFalse)
+		})
 	})
 
 	Convey("Once some items with dependencies have been added to the queue en-masse", t, func() {
