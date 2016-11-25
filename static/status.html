@@ -10,8 +10,8 @@
         <!-- Bootstrap for presentation and styling -->
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <link rel="stylesheet" href="/css/bootstrap-3.3.6.min.css">
-        <script src="/js/bootstrap-3.3.6.min.js"></script>
+        <link rel="stylesheet" href="/css/bootstrap-3.3.7.min.css">
+        <script src="/js/bootstrap-3.3.7.min.js"></script>
         
         <!-- Knockout for event handling -->
         <script src="/js/knockout-3.4.0.min.js"></script>
@@ -46,19 +46,29 @@
                     <div class="top-margin" data-bind="if: inflight.total() > 0">
                         <div class="progress" style="margin-bottom: 0">
                             <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
-                                <span data-bind="text: inflight.delay"></span> delayed
+                                <!-- ko if: inflight.delay() > 0 -->
+                                    <span data-bind="text: inflight.delay"></span> delayed
+                                <!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.dependentPct() + '%' }">
-                                <span data-bind="text: inflight.dependent"></span> dependent
+                                <!-- ko if: inflight.dependent() > 0 -->
+                                    <span data-bind="text: inflight.dependent"></span> dependent
+                                <!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
-                                <span data-bind="text: inflight.ready"></span> pending
+                                <!-- ko if: inflight.ready() > 0 -->
+                                    <span data-bind="text: inflight.ready"></span> pending
+                                <!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
-                                <span data-bind="text: inflight.run"></span> running
+                                <!-- ko if: inflight.run() > 0 -->
+                                    <span data-bind="text: inflight.run"></span> running
+                                <!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
-                                <span data-bind="text: inflight.bury"></span> buried
+                                <!-- ko if: inflight.bury() > 0 -->
+                                    <span data-bind="text: inflight.bury"></span> buried
+                                <!-- /ko -->
                             </div>
                         </div>
                     </div>
@@ -87,26 +97,40 @@
                         <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge" data-bind="text: total"></span></h5>
                         <div class="top-margin" data-bind="if: total() > 0">
                             <div class="progress" style="margin-bottom: 0">
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed">
-                                    <span data-bind="text: delay"></span> delayed
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed, attr: { 'aria-valuenow': delayPct() }">
+                                    <!-- ko if: delay() > 0 -->
+                                        <span data-bind="text: delay"></span> delayed
+                                    <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent">
-                                    <span data-bind="text: dependent"></span> dependent
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent, attr: { 'aria-valuenow': dependentPct() }">
+                                    <!-- ko if: dependent() > 0 -->
+                                        <span data-bind="text: dependent"></span> dependent
+                                    <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady">
-                                    <span data-bind="text: ready"></span> pending
+                                <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady, attr: { 'aria-valuenow': readyPct() }">
+                                    <!-- ko if: ready() > 0 -->
+                                        <span data-bind="text: ready"></span> pending
+                                    <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active clickable" role="progressbar" data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning">
-                                    <span data-bind="text: run"></span> running
+                                <div class="progress-bar progress-bar-striped active clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning, attr: { 'aria-valuenow': runPct() }">
+                                    <!-- ko if: run() > 0 -->
+                                        <span data-bind="text: run"></span> running
+                                    <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-danger clickable" role="progressbar" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried">
-                                    <span data-bind="text: bury"></span> buried
+                                <div class="progress-bar progress-bar-danger clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried, attr: { 'aria-valuenow': buryPct() }">
+                                    <!-- ko if: bury() > 0 -->
+                                        <span data-bind="text: bury"></span> buried
+                                    <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-danger" role="progressbar" data-bind="style: { width: deletePct() + '%' }">
-                                    <span data-bind="text: deleted"></span> deleted
+                                <div class="progress-bar progress-bar-danger" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: deletePct() + '%' }, attr: { 'aria-valuenow': deletePct() }">
+                                    <!-- ko if: deleted() > 0 -->
+                                        <span data-bind="text: deleted"></span> deleted
+                                    <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-success clickable" role="progressbar" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete">
-                                    <span data-bind="text: complete"></span> complete
+                                <div class="progress-bar progress-bar-success clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete, attr: { 'aria-valuenow': completePct() }">
+                                    <!-- ko if: complete() > 0 -->
+                                        <span data-bind="text: complete"></span> complete
+                                    <!-- /ko -->
                                 </div>
                             </div>
                         </div>
@@ -217,7 +241,7 @@
                                 <div class="panel-footer clearfix">
                                     <!-- ko if: Similar -->
                                         + <span data-bind="text: Similar"></span> other commands
-                                        <!-- ko if: Exited -->
+                                        <!-- ko if: Exited && Exitcode != 0 -->
                                             with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
                                         <!-- /ko -->
                                     <!-- /ko -->
@@ -303,6 +327,8 @@
             // turn on bootstrap tooltips
             $('[data-toggle="tooltip"]').tooltip({'placement': 'top'});
             
+            ko.options.deferUpdates = true;
+            
             // viewmodel for displaying status
             function StatusViewModel() {
                 var self = this;
@@ -312,18 +338,19 @@
                 self.detailsRepgroup = '';
                 self.detailsState = '';
                 self.detailsOA;
+                self.rateLimit = 350;
                 
                 self.inflight = {
-                    'delay': ko.observable(0),
-                    'dependent': ko.observable(0),
-                    'ready': ko.observable(0),
-                    'run': ko.observable(0),
-                    'bury': ko.observable(0),
-                    'delayPct': ko.observable(0),
-                    'dependentPct': ko.observable(0),
-                    'readyPct': ko.observable(0),
-                    'runPct': ko.observable(0),
-                    'buryPct': ko.observable(0),
+                    'delay': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'run': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'bury': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'delayPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'dependentPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'readyPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'runPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'buryPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'old_total': 0,
                     'delay_compute': 0
                 };
@@ -335,7 +362,12 @@
                     var total = self.inflight['delay']() + self.inflight['dependent']() + self.inflight['ready']() + self.inflight['run']() + self.inflight['bury']();
                     if (total > 0) {
                         var multiplier = 100 / total;
-                        var rounded = percentRounder([(multiplier * self.inflight['delay']()), (multiplier * self.inflight['dependent']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['run']()), (multiplier * self.inflight['bury']())], 2);
+                        // we scale to 98 to avoid a bug in bootstrap progress
+                        // bars which will result in the right-most bar
+                        // flickering out of existence, even though we never
+                        // total over 100
+                        var scaled = percentScaler([(multiplier * self.inflight['delay']()), (multiplier * self.inflight['dependent']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['run']()), (multiplier * self.inflight['bury']())], 98);
+                        var rounded = percentRounder(scaled, 2);
                         self.inflight['delayPct'](rounded[0]);
                         self.inflight['dependentPct'](rounded[1]);
                         self.inflight['readyPct'](rounded[2]);
@@ -345,14 +377,7 @@
                         
                     self.inflight['old_total'] = total;
                     return total;
-                });
-                self.rateLimit = 350; // this is a sweetspot that seems to mostly avoid flickering of the progress bars, at least in Safari
-                self.inflight['delay'].extend({ rateLimit: self.rateLimit });
-                self.inflight['dependent'].extend({ rateLimit: self.rateLimit });
-                self.inflight['ready'].extend({ rateLimit: self.rateLimit });
-                self.inflight['run'].extend({ rateLimit: self.rateLimit });
-                self.inflight['bury'].extend({ rateLimit: self.rateLimit });
-                self.inflight['total'].extend({ rateLimit: self.rateLimit });
+                }).extend({ rateLimit: self.rateLimit });
                 
                 self.repGroups = [];
                 self.repGroupLookup = {};
@@ -384,13 +409,13 @@
                             } else {
                                 repgroup = {
                                     'id': rg,
-                                    'delay': ko.observable(0),
-                                    'dependent': ko.observable(0),
-                                    'ready': ko.observable(0),
-                                    'run': ko.observable(0),
-                                    'bury': ko.observable(0),
-                                    'deleted': ko.observable(0),
-                                    'complete': ko.observable(0),
+                                    'delay': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'run': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'bury': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'deleted': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'complete': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                                     'delayPct': ko.observable(0),
                                     'dependentPct': ko.observable(0),
                                     'readyPct': ko.observable(0),
@@ -410,7 +435,13 @@
                                     var total = repgroup['delay']() + repgroup['dependent']() + repgroup['ready']() + repgroup['run']() + repgroup['bury']() + repgroup['deleted']() + repgroup['complete']();
                                     if (total > 0) {
                                         var multiplier = 100 / total;
-                                        var rounded = percentRounder([(multiplier * repgroup['delay']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 2);
+                                        // we scale to 98 to avoid a bug in
+                                        // bootstrap progress bars which will
+                                        // result in the right-most bar
+                                        // flickering out of existence, even
+                                        // though we never total over 100
+                                        var scaled = percentScaler([(multiplier * repgroup['delay']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['run']()), (multiplier * repgroup['bury']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 98);
+                                        var rounded = percentRounder(scaled, 2);
                                         
                                         // to avoid the percentage bars
                                         // totalling over 100 at any point in
@@ -430,18 +461,10 @@
                                             }
                                         }
                                     }
-                                        
+                                    
                                     repgroup['old_total'] = total;
                                     return total;
-                                });
-                                repgroup['delay'].extend({ rateLimit: self.rateLimit });
-                                repgroup['dependent'].extend({ rateLimit: self.rateLimit });
-                                repgroup['ready'].extend({ rateLimit: self.rateLimit });
-                                repgroup['run'].extend({ rateLimit: self.rateLimit });
-                                repgroup['bury'].extend({ rateLimit: self.rateLimit });
-                                repgroup['deleted'].extend({ rateLimit: self.rateLimit });
-                                repgroup['complete'].extend({ rateLimit: self.rateLimit });
-                                repgroup['total'].extend({ rateLimit: self.rateLimit });
+                                }).extend({ rateLimit: self.rateLimit });
                                 
                                 self.repGroups.push(repgroup);
                                 self.repGroupLookup[rg] = self.repGroups.length - 1;
@@ -526,7 +549,7 @@
                                     if (! self.ignore.hasOwnProperty(json['RepGroup'])) {
                                         self.ignore[json['RepGroup']] = {};
                                     }
-                                    if (self.ignore[json['RepGroup']].hasOwnProperty[json['FromState']]) {
+                                    if (self.ignore[json['RepGroup']].hasOwnProperty(json['FromState'])) {
                                         self.ignore[json['RepGroup']][json['FromState']] += json['Count'];
                                     } else {
                                         self.ignore[json['RepGroup']][json['FromState']] = json['Count'];
