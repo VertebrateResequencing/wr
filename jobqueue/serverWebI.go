@@ -110,6 +110,8 @@ func webInterfaceStatic(w http.ResponseWriter, r *http.Request) {
 		} else if strings.HasSuffix(path, ".woff2") {
 			w.Header().Set("Content-Type", "application/font-woff2")
 		}
+	} else if strings.HasSuffix(path, "favicon.ico") {
+		w.Header().Set("Content-Type", "image/x-icon")
 	}
 
 	w.Write(doc)

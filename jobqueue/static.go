@@ -550,6 +550,16 @@ K+unroIKwSXs3wAAAP//iZmgis0GAAA=
 `,
 	},
 
+	"/favicon.ico": {
+		local:   "static/favicon.ico",
+		size:    198,
+		modtime: 1480325451,
+		compressed: `
+H4sIAAAJbogA/2JgYARCAQEmBhDYAMRiQKwBxAJArMAAkQcBBwYEYILSP378YCgvLwez2ZAw+wMGrID/
+AwMD1wYEphYABAAA//9I1OttxgAAAA==
+`,
+	},
+
 	"/fonts/glyphicons-halflings-regular.eot": {
 		local:   "static/fonts/glyphicons-halflings-regular.eot",
 		size:    20127,
