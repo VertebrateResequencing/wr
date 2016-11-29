@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -134,7 +135,7 @@ type rgToKeys struct {
 type jstateCount struct {
 	RepGroup  string // "+all+" is the special group representing all live jobs across all RepGroups
 	FromState string // one of 'new', 'delay', 'ready', 'run' or 'bury'
-	ToState   string // one of 'delay', 'ready', 'run', 'bury' or 'complete'
+	ToState   string // one of 'delay', 'dependent', 'ready', 'run', 'bury' or 'complete'
 	Count     int    // num in FromState drop by this much, num in ToState rise by this much
 }
 
@@ -322,6 +323,9 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 	// set up responding to command-line clients and signals
 	go func() {
+		// log panics and die
+		defer s.logPanic("jobqueue serving", true)
+
 		for {
 			select {
 			case sig := <-sigs:
@@ -353,6 +357,9 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 				// parse the request, do the desired work and respond to the client
 				go func() {
+					// log panics and continue
+					defer s.logPanic("jobqueue server client handling", false)
+
 					herr := s.handleRequest(m)
 					if ServerLogClientErrors && herr != nil {
 						log.Println(herr)
@@ -363,11 +370,16 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}()
 
 	// set up the web interface
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", webInterfaceStatic)
-	mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
-	go http.ListenAndServe("0.0.0.0:"+config.WebPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
-	go s.statusCaster.Broadcasting(0)
+	go func() {
+		// log panics and die
+		defer s.logPanic("jobqueue web server", true)
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", webInterfaceStatic)
+		mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
+		go http.ListenAndServe("0.0.0.0:"+config.WebPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+		go s.statusCaster.Broadcasting(0)
+	}()
 
 	return
 }
@@ -953,4 +965,19 @@ func (s *Server) shutdown() {
 		q.Destroy()
 	}
 	s.qs = nil
+}
+
+// logPanic is for (ideally temporary) use in a go routine, deferred at the
+// start of it, to figure out what is causing runtime panics that are killing
+// the server. If the die bool is true, the program exits, otherwise it
+// continues, after logging the error message and stack trace (to whatever
+// log.SetOutput is set to). Desc string should be used to describe briefly what
+// the goroutine you call this in does.
+func (s *Server) logPanic(desc string, die bool) {
+	if err := recover(); err != nil {
+		log.Printf("internal error in %s: %s\n%s\n", desc, err, debug.Stack())
+		if die {
+			os.Exit(1)
+		}
+	}
 }

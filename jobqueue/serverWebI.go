@@ -146,6 +146,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 		// go routine to read client requests and respond to them
 		go func(conn *websocket.Conn) {
+			// log panics and die
+			defer s.logPanic("jobqueue websocket client handling", true)
+
 			for {
 				req := jstatusReq{}
 				err := conn.ReadJSON(&req)
@@ -352,6 +355,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 		// go routine to push changes to the client
 		go func(conn *websocket.Conn) {
+			// log panics and die
+			defer s.logPanic("jobqueue websocket status updating", true)
+
 			statusReceiver := s.statusCaster.Join()
 			for status := range statusReceiver.In {
 				writeMutex.Lock()
