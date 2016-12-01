@@ -207,13 +207,18 @@ func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 	}
 	canDo := (s.Flavor.Cores - s.usedCores) / cores
 	if canDo > 1 {
-		n := (s.Flavor.RAM - s.usedRAM) / ramMB
-		if n < canDo {
-			canDo = n
+		var n int
+		if ramMB > 0 {
+			n = (s.Flavor.RAM - s.usedRAM) / ramMB
+			if n < canDo {
+				canDo = n
+			}
 		}
-		n = (s.Flavor.Disk - s.usedDisk) / diskGB
-		if n < canDo {
-			canDo = n
+		if diskGB > 0 {
+			n = (s.Flavor.Disk - s.usedDisk) / diskGB
+			if n < canDo {
+				canDo = n
+			}
 		}
 	}
 	return canDo

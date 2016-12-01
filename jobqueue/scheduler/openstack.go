@@ -360,13 +360,18 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	// finally, calculate how many reqs we can get running on that many servers
 	perServer := flavor.Cores / reqForSpawn.Cores
 	if perServer > 1 {
-		n := flavor.RAM / reqForSpawn.RAM
-		if n < perServer {
-			perServer = n
+		var n int
+		if reqForSpawn.RAM > 0 {
+			n = flavor.RAM / reqForSpawn.RAM
+			if n < perServer {
+				perServer = n
+			}
 		}
-		n = flavor.Disk / reqForSpawn.Disk
-		if n < perServer {
-			perServer = n
+		if reqForSpawn.Disk > 0 {
+			n = flavor.Disk / reqForSpawn.Disk
+			if n < perServer {
+				perServer = n
+			}
 		}
 	}
 	canCount += spawnable * perServer
