@@ -85,6 +85,10 @@ type ConfigOpenStack struct {
 	// also satisfies this regex.)
 	FlavorRegex string
 
+	// PostCreationScript is the []byte content of a script you want after a
+	// server is Spawn()ed.
+	PostCreationScript []byte
+
 	// ServerPorts are the TCP port numbers you need to be open for
 	// communication with any spawned servers. At a minimum you will need to
 	// specify []int{22}.
@@ -496,7 +500,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				return err
 			}
 		}
-		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false)
+		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false, s.config.PostCreationScript)
 		if err != nil {
 			s.mutex.Lock()
 			s.spawningNow--

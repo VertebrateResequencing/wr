@@ -26,6 +26,7 @@ import (
 	"github.com/kardianos/osext"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -91,10 +92,19 @@ var managerStartCmd = &cobra.Command{
 			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, pid)
 		}
 
+		var postCreation []byte
+		if postCreationScript != "" {
+			var err error
+			postCreation, err = ioutil.ReadFile(postCreationScript)
+			if err != nil {
+				die("--cloud_script %s could not be read: %s", postCreationScript, err)
+			}
+		}
+
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
-			startJQ(true)
+			startJQ(true, postCreation)
 		} else {
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask)
 			if child != nil {
@@ -112,7 +122,7 @@ var managerStartCmd = &cobra.Command{
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer context.Release()
-				startJQ(false)
+				startJQ(false, postCreation)
 			}
 		}
 	},
@@ -295,6 +305,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", "ubuntu", "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", 2048, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", "", "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
+	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", "", "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
 }
@@ -304,7 +315,7 @@ func logStarted(s *jobqueue.ServerInfo) {
 	info("wr's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
 }
 
-func startJQ(sayStarted bool) {
+func startJQ(sayStarted bool, postCreation []byte) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// we will spawn runners, which means we need to know the path to ourselves
@@ -324,16 +335,17 @@ func startJQ(sayStarted bool) {
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
 		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:   "wr-" + config.Deployment,
-			SavePath:       filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
-			ServerPorts:    []int{22, mport},
-			OSPrefix:       osPrefix,
-			OSUser:         osUsername,
-			OSRAM:          osRAM,
-			FlavorRegex:    flavorRegex,
-			ServerKeepTime: time.Duration(serverKeepAlive) * time.Second,
-			MaxInstances:   maxServers,
-			Shell:          config.RunnerExecShell,
+			ResourceName:       "wr-" + config.Deployment,
+			SavePath:           filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+			ServerPorts:        []int{22, mport},
+			OSPrefix:           osPrefix,
+			OSUser:             osUsername,
+			OSRAM:              osRAM,
+			FlavorRegex:        flavorRegex,
+			PostCreationScript: postCreation,
+			ServerKeepTime:     time.Duration(serverKeepAlive) * time.Second,
+			MaxInstances:       maxServers,
+			Shell:              config.RunnerExecShell,
 		}
 	}
 

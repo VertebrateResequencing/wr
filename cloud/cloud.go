@@ -103,15 +103,15 @@ type Quota struct {
 // this interface must be satisfied to add support for a particular cloud
 // provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                 // return the environment variables required to function
-	initialize() error                                                                                                                     // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int) error                                                                                // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	getQuota() (*Quota, error)                                                                                                             // achieve the aims of GetQuota()
-	flavors() map[string]Flavor                                                                                                            // return a map of all server flavors, with their flavor ids as keys
-	spawn(resources *Resources, os string, flavor string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
-	checkServer(serverID string) (working bool, err error)                                                                                 // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                   // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                   // achieve the aims of TearDown()
+	requiredEnv() []string                                                                                                                                            // return the environment variables required to function
+	initialize() error                                                                                                                                                // do any initial config set up such as authentication
+	deploy(resources *Resources, requiredPorts []int) error                                                                                                           // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	getQuota() (*Quota, error)                                                                                                                                        // achieve the aims of GetQuota()
+	flavors() map[string]Flavor                                                                                                                                       // return a map of all server flavors, with their flavor ids as keys
+	spawn(resources *Resources, os string, flavor string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
+	checkServer(serverID string) (working bool, err error)                                                                                                            // achieve the aims of CheckServer()
+	destroyServer(serverID string) error                                                                                                                              // achieve the aims of DestroyServer()
+	tearDown(resources *Resources) error                                                                                                                              // achieve the aims of TearDown()
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
@@ -585,15 +585,17 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int, regex string) 
 // to sudo on the server. You will need to know the username that you can log in
 // with on your chosen OS image. If you call Spawn() while running on a cloud
 // server, then the newly spawned server will be in the same network and
-// security group as the current server.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool) (server *Server, err error) {
+// security group as the current server. postCreationScript is the []byte
+// contents of a script that will be run on the server after it has been
+// created, before it is used for anything else; empty slice means do nothing.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool, postCreationScript []byte) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
 		return
 	}
 
-	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP)
+	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP, postCreationScript)
 
 	server = &Server{
 		ID:        serverID,
