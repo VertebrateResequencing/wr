@@ -45,6 +45,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,7 @@ var (
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
 	ErrNoFlavor        = "no server flavor can meet your resource requirements"
 	ErrBadFlavor       = "no server flavor with that id exists"
+	ErrBadRegex        = "your flavor regular expression was not valid"
 )
 
 // dnsNameServers holds some public (google) dns name server addresses for use
@@ -125,6 +127,7 @@ type Provider struct {
 // configuration
 type Flavor struct {
 	ID    string
+	Name  string
 	Cores int
 	RAM   int // MB
 	Disk  int // GB
@@ -525,13 +528,29 @@ func (p *Provider) GetQuota() (quota *Quota, err error) {
 
 // CheapestServerFlavor returns details of the smallest (cheapest) server
 // "flavor" available that satisfies your minimum ram (MB), disk (GB) and CPU
-// (core count) requirements. Use the ID property of the return value for
-// passing to Spawn(). If no flavor meets your requirements you will get an
-// error matching ErrNoFlavor.
-func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int) (fr Flavor, err error) {
+// (core count) requirements, and that also matches the given regex (empty
+// string for the regex means not limited by regex). Use the ID property of the
+// return value for passing to Spawn(). If no flavor meets your requirements you
+// will get an error matching ErrNoFlavor.
+func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int, regex string) (fr Flavor, err error) {
 	// from all available flavours, pick the one that has the lowest ram, disk
-	// and cpus that meet our minimums
+	// and cpus that meet our minimums, and also matches the regex
+	var r *regexp.Regexp
+	if regex != "" {
+		r, err = regexp.Compile(regex)
+		if err != nil {
+			err = Error{"openstack", "cheapestServerFlavor", ErrBadRegex}
+			return
+		}
+	}
+
 	for _, f := range p.impl.flavors() {
+		if regex != "" {
+			if !r.MatchString(f.Name) {
+				continue
+			}
+		}
+
 		if f.Cores >= cores && f.RAM >= ramMB && f.Disk >= diskGB {
 			if fr.ID == "" {
 				fr = f

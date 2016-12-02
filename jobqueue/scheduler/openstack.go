@@ -43,6 +43,7 @@ type opst struct {
 	local
 	config             *ConfigOpenStack
 	provider           *cloud.Provider
+	flavorRegex        string
 	quotaMaxInstances  int
 	quotaMaxCores      int
 	quotaMaxRAM        int
@@ -72,9 +73,17 @@ type ConfigOpenStack struct {
 	// OSUser is the login username of your chosen Operating System.
 	OSUser string
 
-	// OSRAM is the minimum RAM in MB needed to bring up a server instance that runs
-	// your Operating System image. It defaults to 2048.
+	// OSRAM is the minimum RAM in MB needed to bring up a server instance that
+	// runs your Operating System image. It defaults to 2048.
 	OSRAM int
+
+	// FlavorRegex is a regular expression that you can use to limit what
+	// flavors of server will be created to run commands on. The default of an
+	// empty string means there is no limit, and any available flavor can be
+	// used. (The flavor chosen for a command will be the flavor with the least
+	// specifications (RAM, CPUs, Disk) capable of running the command, that
+	// also satisfies this regex.)
+	FlavorRegex string
 
 	// ServerPorts are the TCP port numbers you need to be open for
 	// communication with any spawned servers. At a minimum you will need to
@@ -274,7 +283,7 @@ func (s *opst) reqCheck(req *Requirements) error {
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
 // amongst those that are capable of running it.
 func (s *opst) determineFlavor(req *Requirements) (flavor cloud.Flavor, err error) {
-	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, req.Disk)
+	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, req.Disk, s.config.FlavorRegex)
 	if err != nil {
 		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
 			err = Error{"openstack", "determineFlavor", ErrImpossible}

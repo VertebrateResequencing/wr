@@ -83,7 +83,7 @@ func TestOpenStack(t *testing.T) {
 				So(p.resources.Details["subnet"], ShouldNotBeBlank)
 				So(p.resources.Details["router"], ShouldNotBeBlank)
 
-				flavor, err := p.CheapestServerFlavor(1, 2048, 1)
+				flavor, err := p.CheapestServerFlavor(1, 2048, 1, "")
 				So(err, ShouldBeNil)
 				So(flavor.RAM, ShouldBeGreaterThanOrEqualTo, 2048)
 				So(flavor.Disk, ShouldBeGreaterThanOrEqualTo, 1)
@@ -255,11 +255,29 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can't get a server flavor when your requirements are crazy", func() {
-					_, err := p.CheapestServerFlavor(20, 9999999999, 9999999)
+					_, err := p.CheapestServerFlavor(20, 9999999999, 9999999, "")
 					So(err, ShouldNotBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
+				})
+
+				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
+					flavor, err := p.CheapestServerFlavor(1, 50, 1, "^!!!!!!!!!!!!!!$")
+					So(err, ShouldNotBeNil)
+					perr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(perr.Err, ShouldEqual, ErrNoFlavor)
+
+					flavor, err = p.CheapestServerFlavor(1, 50, 1, "^!!!!(")
+					So(err, ShouldNotBeNil)
+					perr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(perr.Err, ShouldEqual, ErrBadRegex)
+
+					flavor, err = p.CheapestServerFlavor(1, 50, 1, ".*$")
+					So(err, ShouldBeNil)
+					So(flavor, ShouldNotBeNil)
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {

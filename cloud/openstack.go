@@ -120,6 +120,7 @@ func (p *openstackp) initialize() (err error) {
 		for _, f := range flavorList {
 			p.fmap[f.ID] = Flavor{
 				ID:    f.ID,
+				Name:  f.Name,
 				Cores: f.VCPUs,
 				RAM:   f.RAM,
 				Disk:  f.Disk,
