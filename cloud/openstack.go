@@ -620,6 +620,7 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 	if id := resources.Details["keypair"]; id != "" {
 		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
 			err = keypairs.Delete(p.computeClient, id).ExtractErr()
+			resources.PrivateKey = ""
 		}
 	}
 

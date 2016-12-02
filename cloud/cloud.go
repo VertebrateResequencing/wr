@@ -43,6 +43,7 @@ import (
 	"github.com/satori/go.uuid"
 	"golang.org/x/crypto/ssh"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -233,9 +234,15 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if s.sshclient == nil {
+		if s.provider.PrivateKey() == "" {
+			log.Printf("resource file %s did not contain the ssh key\n", s.provider.savePath)
+			return nil, errors.New("missing ssh key")
+		}
+
 		// parse private key and make config
 		key, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
 		if err != nil {
+			log.Printf("failure to parse the private key: %s\n", err)
 			return nil, err
 		}
 		sshConfig := &ssh.ClientConfig{
@@ -664,15 +671,18 @@ func (p *Provider) PrivateKey() string {
 // previous session during New(). It also deletes any servers with names
 // prefixed with the resourceName given to the initial New() call. If currently
 // running on a cloud server, however, it will not delete anything needed by
-// this server.
+// this server, including the resource file that contains the private key.
 func (p *Provider) TearDown() (err error) {
 	err = p.impl.tearDown(p.resources)
 	if err != nil {
 		return
 	}
 
-	// delete our savePath
-	err = p.deleteResourceFile()
+	// delete our savePath unless our resources still contains the private key,
+	// indicating it is still in the cloud and could be needed in the future
+	if p.resources.PrivateKey == "" {
+		err = p.deleteResourceFile()
+	}
 	return
 }
 
@@ -709,6 +719,7 @@ func (p *Provider) loadResources(resourceName string) (resources *Resources, err
 			}
 		}
 	}
+
 	return
 }
 
