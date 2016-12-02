@@ -395,8 +395,6 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 
 		var postCreation string
 		if postCreationScript != "" {
-			postCreation = "-p " + postCreationScript
-
 			// copy over the post creation script to the server so remote
 			// manager can use it
 			remoteScriptFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".script")
@@ -405,6 +403,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 				provider.TearDown()
 				die("failed to upload wr cloud script file to the server at %s: %s", server.IP, err)
 			}
+
+			postCreation = " -p " + remoteScriptFile
 		}
 
 		// get the manager running
