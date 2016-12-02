@@ -125,8 +125,10 @@ func createWorkingDir() {
 
 // daemonize spawns a child copy of ourselves with the correct deployment (we
 // need to be careful because the default deployment depends on current dir, and
-// the child is forced to run from /).
-func daemonize(pidFile string, umask int) (child *os.Process, context *daemon.Context) {
+// the child is forced to run from /). Supplying extraArgs can override earlier
+// args (to eg. re-specify an option with a relative path with an absolute
+// path).
+func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Process, context *daemon.Context) {
 	args := os.Args
 	hadDeployment := false
 	for _, arg := range args {
@@ -138,6 +140,10 @@ func daemonize(pidFile string, umask int) (child *os.Process, context *daemon.Co
 	if !hadDeployment {
 		args = append(args, "--deployment")
 		args = append(args, config.Deployment)
+	}
+
+	for _, extra := range extraArgs {
+		args = append(args, extra)
 	}
 
 	context = &daemon.Context{

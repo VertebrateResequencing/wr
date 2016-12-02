@@ -93,11 +93,25 @@ var managerStartCmd = &cobra.Command{
 		}
 
 		var postCreation []byte
+		var extraArgs []string
 		if postCreationScript != "" {
 			var err error
 			postCreation, err = ioutil.ReadFile(postCreationScript)
 			if err != nil {
 				die("--cloud_script %s could not be read: %s", postCreationScript, err)
+			}
+
+			// daemon runs from /, so we need to convert relative to absolute
+			// path *** and then pretty hackily, re-specify the option by
+			// repeating it on the end of os.Args, where the daemonization code
+			// will pick it up
+			pcsAbs, err := filepath.Abs(postCreationScript)
+			if err != nil {
+				die("--cloud_script %s could not be converted to an absolute path: %s", postCreationScript, err)
+			}
+			if pcsAbs != postCreationScript {
+				extraArgs = append(extraArgs, "--cloud_script")
+				extraArgs = append(extraArgs, pcsAbs)
 			}
 		}
 
@@ -106,7 +120,7 @@ var managerStartCmd = &cobra.Command{
 			syscall.Umask(config.ManagerUmask)
 			startJQ(true, postCreation)
 		} else {
-			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask)
+			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
