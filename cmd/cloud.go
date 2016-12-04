@@ -411,7 +411,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		_, err = server.RunCmd(fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o %s -r %d -m %d -u %s%s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreation), false)
 		if err != nil {
 			provider.TearDown()
-			die("failed to make start wr manager on the remote server: %s", err)
+			die("failed to start wr manager on the remote server: %s", err)
 		}
 
 		// wait a few seconds for the manager to start listening on its ports
