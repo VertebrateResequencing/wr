@@ -393,7 +393,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			envvarPrefix += fmt.Sprintf("%s=\"%s\" ", envvar, os.Getenv(envvar))
 		}
 
-		var postCreation string
+		var postCreationArg string
 		if postCreationScript != "" {
 			// copy over the post creation script to the server so remote
 			// manager can use it
@@ -404,11 +404,17 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 				die("failed to upload wr cloud script file to the server at %s: %s", server.IP, err)
 			}
 
-			postCreation = " -p " + remoteScriptFile
+			postCreationArg = " -p " + remoteScriptFile
+		}
+
+		var flavorArg string
+		if flavorRegex != "" {
+			flavorArg = " -l '" + flavorRegex + "'"
 		}
 
 		// get the manager running
-		_, err = server.RunCmd(fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o %s -r %d -m %d -u %s%s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreation), false)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg)
+		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()
 			die("failed to start wr manager on the remote server: %s", err)
