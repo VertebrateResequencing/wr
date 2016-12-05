@@ -503,6 +503,32 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			}
 		}
 		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false, s.config.PostCreationScript)
+
+		if err == nil {
+			// check that the exe of the cmd we're supposed to run exists on the
+			// new server, and if not, copy it over *** this is just a hack to
+			// get wr working, need to think of a better way of doing this...
+			exe := strings.Split(cmd, " ")[0]
+			if _, err = os.Stat(exe); err == nil {
+				if stdout, err := server.RunCmd("file "+exe, false); err == nil {
+					if strings.Contains(stdout, "No such file") {
+						err = server.UploadFile(exe, exe)
+						if err == nil {
+							server.RunCmd("chmod u+x "+exe, false)
+						} else {
+							server.Destroy()
+						}
+					}
+				} else {
+					server.Destroy()
+				}
+			} else {
+				server.Destroy()
+			}
+		}
+
+		// handle Spawn() or upload-of-exe errors now, by noting we failed and
+		// unreserving resources
 		if err != nil {
 			s.mutex.Lock()
 			s.spawningNow--
@@ -513,21 +539,6 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			delete(s.standins, standinID)
 			s.mutex.Unlock()
 			return err
-		}
-
-		// check that the exe of the cmd we're supposed to run exists on the new
-		// server, and if not, copy it over *** this is just a hack to get wr
-		// working, need to think of a better way of doing this...
-		exe := strings.Split(cmd, " ")[0]
-		if _, err = os.Stat(exe); err == nil {
-			if stdout, err := server.RunCmd("file "+exe, false); err == nil && strings.Contains(stdout, "No such file") {
-				err = server.UploadFile(exe, exe)
-				if err == nil {
-					server.RunCmd("chmod u+x "+exe, false)
-				} else {
-					return err
-				}
-			}
 		}
 
 		s.mutex.Lock()
