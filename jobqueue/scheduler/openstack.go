@@ -194,9 +194,11 @@ func (s *standin) waitForServer() (server *cloud.Server) {
 				s.mutex.RLock()
 				if s.work || s.fail {
 					ticker.Stop()
+					s.mutex.RUnlock()
 					done <- s.server
 					return
 				}
+				s.mutex.RUnlock()
 				continue
 			}
 		}
@@ -522,6 +524,8 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				err = server.UploadFile(exe, exe)
 				if err == nil {
 					server.RunCmd("chmod u+x "+exe, false)
+				} else {
+					return err
 				}
 			}
 		}
