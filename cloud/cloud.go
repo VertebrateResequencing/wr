@@ -181,8 +181,15 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	// destroying the host
 	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
 		go func() {
-			s.cancelDestruction = make(chan bool)
+			s.mutex.Lock()
+			if s.onDeathrow {
+				s.mutex.Unlock()
+				return
+			}
+			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
 			s.onDeathrow = true
+			s.mutex.Unlock()
+
 			timeToDie := time.After(s.TTD)
 			for {
 				select {
