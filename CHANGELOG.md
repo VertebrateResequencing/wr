@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
+## [0.2.0] - 2016-12-06
+### Added
+- Added commands can now be dependent on previously added commands.
+- Status web page now has a favicon.
+- `wr cloud deploy` (and `wr manager start`) now take options to limit what
+  cloud flavors can be used, and to specify a post-creation script.
+- Manager now has improved logging of a variety of errors.
+
+
+### Fixed
+- Status web page now correctly sorts the RepGroups.
+- Status web page progress bars no longer get stuck in 'ready' state, even when
+  complete.
+- Status web page progress bars no longer flicker.
+- Manager works with latest versions of OpenStack (which do not generate DER
+  format SSH private keys).
+- Manager running on OpenStack no longer stops spawning new servers when it
+  should.
+
+### Changed
+- Format of file taken by `wr add -f` now had additional columns for specifying
+  dependencies.
+- Status web page no longer shows the unimplemented search box.
+- Status web page now show deleted commands as deleted instead of complete.
+
+
 ## [0.1.1] - 2016-10-21
 ### Added
 - `wr cloud deploy -h` now includes additional help text to explain OpenStack
