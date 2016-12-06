@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/queue"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -273,6 +274,10 @@ func (s *local) processQueue() error {
 				if j.count <= 0 {
 					s.queue.Remove(key)
 				}
+			} else if err.Error() != "giving up waiting to spawn" {
+				// *** we shouldn't really log from a library call, but have no
+				// other way of letting the user know about these errors?...
+				log.Printf("jobqueue scheduler runCmd error: %s\n", err)
 			}
 			s.mutex.Unlock()
 			s.processQueue()
