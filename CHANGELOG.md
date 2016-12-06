@@ -12,7 +12,6 @@ project adheres to [Semantic Versioning](http://semver.org/).
   cloud flavors can be used, and to specify a post-creation script.
 - Manager now has improved logging of a variety of errors.
 
-
 ### Fixed
 - Status web page now correctly sorts the RepGroups.
 - Status web page progress bars no longer get stuck in 'ready' state, even when
