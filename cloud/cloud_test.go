@@ -83,14 +83,14 @@ func TestOpenStack(t *testing.T) {
 				So(p.resources.Details["subnet"], ShouldNotBeBlank)
 				So(p.resources.Details["router"], ShouldNotBeBlank)
 
-				flavor, err := p.CheapestServerFlavor(1, 2048, 1)
+				flavor, err := p.CheapestServerFlavor(1, 2048, 1, "")
 				So(err, ShouldBeNil)
 				So(flavor.RAM, ShouldBeGreaterThanOrEqualTo, 2048)
 				So(flavor.Disk, ShouldBeGreaterThanOrEqualTo, 1)
 				So(flavor.Cores, ShouldBeGreaterThanOrEqualTo, 1)
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, true, []byte{})
 					So(err, ShouldBeNil)
 					So(server.ID, ShouldNotBeBlank)
 					So(server.AdminPass, ShouldNotBeBlank)
@@ -104,7 +104,7 @@ func TestOpenStack(t *testing.T) {
 					So(ok, ShouldBeTrue)
 
 					Convey("And you can Spawn another with an internal ip and destroy it with DestroyServer", func() {
-						server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, false)
+						server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, false, []byte{})
 						So(err, ShouldBeNil)
 						So(server2.ID, ShouldNotBeBlank)
 						So(server2.AdminPass, ShouldNotBeBlank)
@@ -131,7 +131,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Once deployed you can Spawn a server with an internal ip", func() {
-					server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, false)
+					server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, false, []byte{})
 					So(err, ShouldBeNil)
 
 					ok, err := p.CheckServer(server2.ID)
@@ -151,7 +151,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 0*time.Second, true, []byte("#!/bin/bash\necho bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
 					ok := server.Alive()
 					So(ok, ShouldBeTrue)
@@ -202,13 +202,20 @@ func TestOpenStack(t *testing.T) {
 						stdout, err = server.RunCmd("cat /tmp/foo/bar/a/c/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "uploadable content")
+
+						<-time.After(5 * time.Second) // make sure the post creation script has had time to run?!
+
+						stdout, err = server.RunCmd("cat /tmp/post_creation_script_output", false)
+						So(err, ShouldBeNil)
+						So(stdout, ShouldEqual, "bar\n")
+
 					})
 
 					server.Destroy()
 				})
 
 				Convey("You can Spawn a server with a time to destruction", func() {
-					server3, err := p.Spawn(osPrefix, osUser, flavor.ID, 2*time.Second, false)
+					server3, err := p.Spawn(osPrefix, osUser, flavor.ID, 2*time.Second, false, []byte{})
 					So(err, ShouldBeNil)
 
 					ok := server3.Alive()
@@ -255,11 +262,29 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can't get a server flavor when your requirements are crazy", func() {
-					_, err := p.CheapestServerFlavor(20, 9999999999, 9999999)
+					_, err := p.CheapestServerFlavor(20, 9999999999, 9999999, "")
 					So(err, ShouldNotBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
+				})
+
+				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
+					flavor, err := p.CheapestServerFlavor(1, 50, 1, "^!!!!!!!!!!!!!!$")
+					So(err, ShouldNotBeNil)
+					perr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(perr.Err, ShouldEqual, ErrNoFlavor)
+
+					flavor, err = p.CheapestServerFlavor(1, 50, 1, "^!!!!(")
+					So(err, ShouldNotBeNil)
+					perr, ok = err.(Error)
+					So(ok, ShouldBeTrue)
+					So(perr.Err, ShouldEqual, ErrBadRegex)
+
+					flavor, err = p.CheapestServerFlavor(1, 50, 1, ".*$")
+					So(err, ShouldBeNil)
+					So(flavor, ShouldNotBeNil)
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {

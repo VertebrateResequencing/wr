@@ -241,6 +241,7 @@ func TestJobqueue(t *testing.T) {
 	var server *Server
 	var err error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
+		<-time.After(2 * time.Second) // try and ensure no server is still using port
 		_, err = Connect(addr, "test_queue", clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
@@ -249,7 +250,7 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		<-time.After(1 * time.Second) // try and ensure no server is still using port
+		<-time.After(2 * time.Second) // try and ensure no server is still using port
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
@@ -340,7 +341,7 @@ func TestJobqueue(t *testing.T) {
 					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
 				}
-				<-time.After(100 * time.Millisecond)
+				<-time.After(500 * time.Millisecond)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 9500)
@@ -414,7 +415,7 @@ func TestJobqueue(t *testing.T) {
 							}
 						}()
 
-						<-time.After(1100 * time.Millisecond)
+						<-time.After(2 * time.Second)
 						So(<-ok, ShouldBeTrue)
 					})
 				})
@@ -1160,6 +1161,170 @@ func TestJobqueue(t *testing.T) {
 			})
 		})
 
+		Convey("After connecting and adding some jobs under some RepGroups", func() {
+			jq, err := Connect(addr, "dep_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			var jobs []*Job
+			jobs = append(jobs, NewJob("echo deptest1", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep1"))
+			jobs = append(jobs, NewJob("echo deptest2", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep2"))
+			jobs = append(jobs, NewJob("echo deptest3", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep3"))
+			inserts, already, err := jq.Add(jobs)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 3)
+			So(already, ShouldEqual, 0)
+
+			Convey("You can reserve and execute one of them", func() {
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				err = jq.Execute(job, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				//<-time.After(6 * time.Millisecond)
+
+				gottenJobs, err := jq.GetByRepGroup("dep1", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(gottenJobs), ShouldEqual, 1)
+				So(gottenJobs[0].State, ShouldEqual, "complete")
+
+				Convey("You can then add jobs dependent on the initial jobs and themselves", func() {
+					// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
+					jobs = nil
+					d1 := NewDependency("echo deptest1", "/tmp")
+					d2 := NewDependency("echo deptest2", "/tmp")
+					d3 := NewDependency("echo deptest3", "/tmp")
+					jobs = append(jobs, NewJob("echo deptest4", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep4", NewDependencies(d1)))
+					d4 := NewDependency("echo deptest4", "/tmp")
+					jobs = append(jobs, NewJob("echo deptest5", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep5", NewDependencies(d1, d2, d3)))
+					d5 := NewDependency("echo deptest5", "/tmp")
+					jobs = append(jobs, NewJob("echo deptest6", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep6", NewDependencies(d3, d4)))
+					d6 := NewDependency("echo deptest6", "/tmp")
+					jobs = append(jobs, NewJob("echo deptest7", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep7", NewDependencies(d5, d6)))
+					jobs = append(jobs, NewJob("echo deptest8", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep8", NewDependencies(d5)))
+
+					inserts, already, err := jq.Add(jobs)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 5)
+					So(already, ShouldEqual, 0)
+
+					Convey("They are then only reservable according to the dependency chain", func() {
+						j2, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(j2.RepGroup, ShouldEqual, "dep2")
+						j3, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(j3.RepGroup, ShouldEqual, "dep3")
+						j4, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(j4.RepGroup, ShouldEqual, "dep4")
+						jNil, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(jNil, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+						err = jq.Execute(j4, config.RunnerExecShell)
+						So(err, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+						// touch what we've reserved, since it's been a while
+						jq.Touch(j2)
+						jq.Touch(j3)
+
+						err = jq.Execute(j3, config.RunnerExecShell)
+						So(err, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "ready")
+
+						jq.Touch(j2)
+
+						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+						err = jq.Execute(j2, config.RunnerExecShell)
+						So(err, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "ready")
+
+						j5, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(j5.RepGroup, ShouldEqual, "dep5")
+						j6, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(j6.RepGroup, ShouldEqual, "dep6")
+						jNil, err = jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(jNil, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+						err = jq.Execute(j5, config.RunnerExecShell)
+						So(err, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "ready")
+
+						jq.Touch(j6)
+
+						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+						err = jq.Execute(j6, config.RunnerExecShell)
+						So(err, ShouldBeNil)
+
+						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
+						So(err, ShouldBeNil)
+						So(len(gottenJobs), ShouldEqual, 1)
+						So(gottenJobs[0].State, ShouldEqual, "ready")
+					})
+				})
+
+				Convey("You can't add jobs with bad dependencies", func() {
+					jobs = nil
+					d1 := NewDependency("echo deptest1", "/tmp")
+					d2 := NewDependency("echo deptest2", "/tmp")
+					d3 := NewDependency("echo deptest3", "/tmp")
+					d5 := NewDependency("echo deptest5", "/tmp")
+					jobs = append(jobs, NewJob("echo deptest4", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep4", NewDependencies(d5)))
+					jobs = append(jobs, NewJob("echo deptest5", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep5", NewDependencies(d1, d2, d3)))
+
+					inserts, already, err := jq.Add(jobs)
+					So(err, ShouldNotBeNil)
+					So(inserts, ShouldEqual, 0)
+					So(already, ShouldEqual, 0)
+
+					jqerr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(jqerr.Err, ShouldEqual, ErrBadDependency)
+
+					//*** do a test for cycles if/when that's implemented
+				})
+			})
+		})
+
 		Reset(func() {
 			server.Stop()
 		})
@@ -1603,7 +1768,7 @@ func TestJobqueueSpeed(t *testing.T) {
 
 						var puterr error
 						for _, job := range jobs {
-							key := jobKey(job)
+							key := job.key()
 							var encoded []byte
 							enc := codec.NewEncoderBytes(&encoded, server.db.ch)
 							enc.Encode(job)

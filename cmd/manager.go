@@ -26,6 +26,7 @@ import (
 	"github.com/kardianos/osext"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -91,12 +92,35 @@ var managerStartCmd = &cobra.Command{
 			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, pid)
 		}
 
+		var postCreation []byte
+		var extraArgs []string
+		if postCreationScript != "" {
+			var err error
+			postCreation, err = ioutil.ReadFile(postCreationScript)
+			if err != nil {
+				die("--cloud_script %s could not be read: %s", postCreationScript, err)
+			}
+
+			// daemon runs from /, so we need to convert relative to absolute
+			// path *** and then pretty hackily, re-specify the option by
+			// repeating it on the end of os.Args, where the daemonization code
+			// will pick it up
+			pcsAbs, err := filepath.Abs(postCreationScript)
+			if err != nil {
+				die("--cloud_script %s could not be converted to an absolute path: %s", postCreationScript, err)
+			}
+			if pcsAbs != postCreationScript {
+				extraArgs = append(extraArgs, "--cloud_script")
+				extraArgs = append(extraArgs, pcsAbs)
+			}
+		}
+
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
-			startJQ(true)
+			startJQ(true, postCreation)
 		} else {
-			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask)
+			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
@@ -112,7 +136,7 @@ var managerStartCmd = &cobra.Command{
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer context.Release()
-				startJQ(false)
+				startJQ(false, postCreation)
 			}
 		}
 	},
@@ -294,6 +318,8 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", "Ubuntu 16", "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", "ubuntu", "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", 2048, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", "", "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
+	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", "", "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
 }
@@ -303,7 +329,7 @@ func logStarted(s *jobqueue.ServerInfo) {
 	info("wr's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
 }
 
-func startJQ(sayStarted bool) {
+func startJQ(sayStarted bool, postCreation []byte) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// we will spawn runners, which means we need to know the path to ourselves
@@ -323,15 +349,17 @@ func startJQ(sayStarted bool) {
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
 		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:   "wr-" + config.Deployment,
-			SavePath:       filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
-			ServerPorts:    []int{22, mport},
-			OSPrefix:       osPrefix,
-			OSUser:         osUsername,
-			OSRAM:          osRAM,
-			ServerKeepTime: time.Duration(serverKeepAlive) * time.Second,
-			MaxInstances:   maxServers,
-			Shell:          config.RunnerExecShell,
+			ResourceName:       "wr-" + config.Deployment,
+			SavePath:           filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+			ServerPorts:        []int{22, mport},
+			OSPrefix:           osPrefix,
+			OSUser:             osUsername,
+			OSRAM:              osRAM,
+			FlavorRegex:        flavorRegex,
+			PostCreationScript: postCreation,
+			ServerKeepTime:     time.Duration(serverKeepAlive) * time.Second,
+			MaxInstances:       maxServers,
+			Shell:              config.RunnerExecShell,
 		}
 	}
 

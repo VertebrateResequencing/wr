@@ -29,7 +29,10 @@ interaction with clients on the network.
 Items start in the delay queue. After the item's delay time, they automatically
 move to the ready queue. From there you can Reserve() an item to get the highest
 priority (or for those with equal priority, the oldest one (fifo)) which
-switches it from the ready queue to the run queue.
+switches it from the ready queue to the run queue. Items can also have
+dependencies, in which case they start in the dependency queue and only move to
+the ready queue (bypassing the delay queue) once once all its dependencies have
+been Remove()d from the queue.
 
 In the run queue the item starts a time-to-release (ttr) countdown; when that
 runs out the item is placed back on the ready queue. This is to handle a
@@ -96,10 +99,12 @@ type Queue struct {
 	Name              string
 	mutex             sync.RWMutex
 	items             map[string]*Item
+	dependants        map[string]map[string]*Item
 	delayQueue        *subQueue
 	readyQueue        *subQueue
 	runQueue          *subQueue
 	buryQueue         *buryQueue
+	depQueue          *depQueue
 	delayNotification chan bool
 	delayClose        chan bool
 	delayTime         time.Time
@@ -113,20 +118,22 @@ type Queue struct {
 
 // Stats holds information about the Queue's state.
 type Stats struct {
-	Items   int
-	Delayed int
-	Ready   int
-	Running int
-	Buried  int
+	Items     int
+	Delayed   int
+	Ready     int
+	Running   int
+	Buried    int
+	Dependant int
 }
 
 // ItemDef makes it possible to supply a slice of Add() args to AddMany().
 type ItemDef struct {
-	Key      string
-	Data     interface{}
-	Priority uint8 // highest priority is 255
-	Delay    time.Duration
-	TTR      time.Duration
+	Key          string
+	Data         interface{}
+	Priority     uint8 // highest priority is 255
+	Delay        time.Duration
+	TTR          time.Duration
+	Dependencies []string
 }
 
 // New is a helper to create instance of the Queue struct.
@@ -134,10 +141,12 @@ func New(name string) *Queue {
 	queue := &Queue{
 		Name:              name,
 		items:             make(map[string]*Item),
+		dependants:        make(map[string]map[string]*Item),
 		delayQueue:        newSubQueue(0),
 		readyQueue:        newSubQueue(1),
 		runQueue:          newSubQueue(2),
 		buryQueue:         newBuryQueue(),
+		depQueue:          newDependencyQueue(),
 		ttrNotification:   make(chan bool, 1),
 		ttrClose:          make(chan bool, 1),
 		ttrTime:           time.Now(),
@@ -219,6 +228,7 @@ func (queue *Queue) Destroy() (err error) {
 	queue.readyQueue.empty()
 	queue.runQueue.empty()
 	queue.buryQueue.empty()
+	queue.depQueue.empty()
 	queue.closed = true
 	return
 }
@@ -230,23 +240,27 @@ func (queue *Queue) Stats() *Stats {
 	defer queue.mutex.RUnlock()
 
 	return &Stats{
-		Items:   len(queue.items),
-		Delayed: queue.delayQueue.len(),
-		Ready:   queue.readyQueue.len(),
-		Running: queue.runQueue.len(),
-		Buried:  queue.buryQueue.len(),
+		Items:     len(queue.items),
+		Delayed:   queue.delayQueue.len(),
+		Ready:     queue.readyQueue.len(),
+		Running:   queue.runQueue.len(),
+		Buried:    queue.buryQueue.len(),
+		Dependant: queue.depQueue.len(),
 	}
 }
 
-// Add is a thread-safe way to add new items to the queue. After delay they
-// will switch to the ready sub-queue from where they can be Reserve()d. Once
-// reserved, they have ttr to Remove() the item, otherwise it gets released
-// back to the ready sub-queue. The priority determines which item will be
-// next to be Reserve()d, with priority 255 (the max) items coming before lower
-// priority ones (with 0 being the lowest). Items with the same priority
-// number are Reserve()d on a fifo basis. It returns an item, which may have
+// Add is a thread-safe way to add new items to the queue. After delay they will
+// switch to the ready sub-queue from where they can be Reserve()d. Once
+// reserved, they have ttr to Remove() the item, otherwise it gets released back
+// to the ready sub-queue. The priority determines which item will be next to be
+// Reserve()d, with priority 255 (the max) items coming before lower priority
+// ones (with 0 being the lowest). Items with the same priority number are
+// Reserve()d on a fifo basis. The final argument to Add() is an optional slice
+// of item ids on which this item depends: this item will first enter the
+// dependency sub-queue and only transfer to the ready sub-queue when items with
+// these ids do not exist in the queue. Add() returns an item, which may have
 // already existed (in which case, nothing was actually added or changed).
-func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) (item *Item, err error) {
+func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (item *Item, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -265,6 +279,15 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 	item = newItem(key, data, priority, delay, ttr)
 	queue.items[key] = item
 
+	// check dependencies
+	if len(deps) == 1 && len(deps[0]) > 0 {
+		if queue.setItemDependencies(item, deps[0]) {
+			queue.mutex.Unlock()
+			queue.changed("new", "dependant", []*Item{item})
+			return
+		}
+	}
+
 	if delay.Nanoseconds() == 0 {
 		// put it directly on the ready queue
 		item.switchDelayReady()
@@ -282,6 +305,34 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 	return
 }
 
+// setItemDependencies sets the given item keys as the dependencies of the given
+// item, and places the item in the dependency queue if the dependencies are
+// currently present in the overall queue. Returns true if the item was added to
+// the dependency queue.
+func (queue *Queue) setItemDependencies(item *Item, deps []string) bool {
+	item.setDependencies(deps)
+	var hasDeps bool
+	for _, dep := range deps {
+		if _, exists := queue.items[dep]; exists {
+			hasDeps = true
+			if _, exists := queue.dependants[dep]; !exists {
+				queue.dependants[dep] = make(map[string]*Item)
+			}
+			queue.dependants[dep][item.Key] = item
+		} else {
+			// not in queue, assume it was already resolved
+			item.resolveDependency(dep)
+		}
+	}
+
+	if hasDeps {
+		item.switchDelayDependent()
+		queue.depQueue.push(item)
+		return true
+	}
+	return false
+}
+
 // AddMany is like Add(), except that you supply a slice of *ItemDef, and it
 // returns the number that were actually added and the number of items that were
 // not added because they were duplicates of items already in the queue. If an
@@ -296,10 +347,9 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 	}
 
 	deferredTrigger := false
-	addedReady := false
-	addedDelay := false
 	var addedReadyItems []*Item
 	var addedDelayItems []*Item
+	var addedDepItems []*Item
 	for _, def := range items {
 		_, existed := queue.items[def.Key]
 		if existed {
@@ -310,16 +360,21 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 		item := newItem(def.Key, def.Data, def.Priority, def.Delay, def.TTR)
 		queue.items[def.Key] = item
 
-		if def.Delay.Nanoseconds() == 0 {
+		var hadDeps bool
+		if len(def.Dependencies) > 0 {
+			hadDeps = queue.setItemDependencies(item, def.Dependencies)
+		}
+
+		if hadDeps {
+			addedDepItems = append(addedDepItems, item)
+		} else if def.Delay.Nanoseconds() == 0 {
 			// put it directly on the ready queue
 			item.switchDelayReady()
 			queue.readyQueue.push(item)
 			addedReadyItems = append(addedReadyItems, item)
-			addedReady = true
 		} else {
 			queue.delayQueue.push(item)
 			addedDelayItems = append(addedDelayItems, item)
-			addedDelay = true
 			if !deferredTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
 				defer queue.delayNotificationTrigger(item)
 				deferredTrigger = true
@@ -330,12 +385,15 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 	}
 
 	queue.mutex.Unlock()
-	if addedReady {
+	if len(addedReadyItems) > 0 {
 		queue.changed("new", "ready", addedReadyItems)
 		queue.readyAdded()
 	}
-	if addedDelay {
+	if len(addedDelayItems) > 0 {
 		queue.changed("new", "delay", addedDelayItems)
+	}
+	if len(addedDepItems) > 0 {
+		queue.changed("new", "dependent", addedDepItems)
 	}
 	return
 }
@@ -379,12 +437,13 @@ func (queue *Queue) AllItems() (items []*Item) {
 	return
 }
 
-// Update is a thread-safe way to change the data, priority, delay or ttr of an
-// item. You must supply all of these as per Add() - just supply the old values
-// of those you are not changing. The old values can be found by getting the
-// item with Get() (giving you item.Key and item.Data), and then calling
-// item.Stats to get stats.Priority, stats.Delay and stats.TTR.
-func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) (err error) {
+// Update is a thread-safe way to change the data, priority, delay, ttr or
+// dependencies of an item. You must supply all of these as per Add() - just
+// supply the old values of those you are not changing (except for dependencies,
+// which remain optional). The old values can be found by getting the item with
+// Get() (giving you item.Key, item.Data and item.Dependencies()), and then
+// calling item.Stats() to get stats.Priority, stats.Delay and stats.TTR.
+func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (err error) {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
 
@@ -400,6 +459,10 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 	}
 
 	item.Data = data
+	if len(deps) == 1 && len(deps[0]) > 0 {
+		item.setDependencies(deps[0])
+		//*** and detect a change and do something appropriate?...
+	}
 
 	if item.state == "delay" && item.delay != delay {
 		item.delay = delay
@@ -690,10 +753,10 @@ func (queue *Queue) Kick(key string) (err error) {
 // Remove is a thread-safe way to remove an item from the queue.
 func (queue *Queue) Remove(key string) (err error) {
 	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Remove", key, ErrQueueClosed}
+		queue.mutex.Unlock()
 		return
 	}
 
@@ -701,7 +764,38 @@ func (queue *Queue) Remove(key string) (err error) {
 	item, existed := queue.items[key]
 	if !existed {
 		err = Error{queue.Name, "Remove", key, ErrNotFound}
+		queue.mutex.Unlock()
 		return
+	}
+
+	// transfer any dependants to the ready queue
+	addedReady := false
+	var addedReadyItems []*Item
+	if deps, exists := queue.dependants[key]; exists {
+		for _, dep := range deps {
+			done := dep.resolveDependency(key)
+			if done {
+				queue.depQueue.remove(dep)
+
+				// put it directly on the ready queue, regardless of delay value
+				dep.switchDependentReady()
+				queue.readyQueue.push(dep)
+				addedReadyItems = append(addedReadyItems, dep)
+				addedReady = true
+			}
+		}
+		delete(queue.dependants, key)
+	}
+
+	// if this item is dependent on other items, update those items that this is
+	// no longer dependent upon them (so HasDependents() will be correct)
+	for _, parent := range item.dependencies {
+		if deps, exists := queue.dependants[parent]; exists {
+			delete(deps, key)
+			if len(deps) == 0 {
+				delete(queue.dependants, parent)
+			}
+		}
 	}
 
 	// remove from the queue
@@ -721,9 +815,35 @@ func (queue *Queue) Remove(key string) (err error) {
 	case "bury":
 		queue.buryQueue.remove(item)
 		queue.changed("bury", "removed", []*Item{item})
+	case "dependent":
+		queue.depQueue.remove(item)
+		queue.changed("dependent", "removed", []*Item{item})
 	}
 	item.removalCleanup()
 
+	queue.mutex.Unlock()
+	if addedReady {
+		queue.changed("dependent", "ready", addedReadyItems)
+		queue.readyAdded()
+	}
+
+	return
+}
+
+// HasDependents tells you if the item with the given key has any other items
+// depending upon it. You'd want to check this before Remove()ing this item if
+// you're removing it because it was undesired as opposed to complete, as
+// Remove() always triggers dependent items to become ready.
+func (queue *Queue) HasDependents(key string) (has bool, err error) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	if queue.closed {
+		err = Error{queue.Name, "Remove", key, ErrQueueClosed}
+		return
+	}
+
+	_, has = queue.dependants[key]
 	return
 }
 

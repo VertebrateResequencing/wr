@@ -47,6 +47,8 @@ var serverKeepAlive int
 var osPrefix string
 var osUsername string
 var osRAM int
+var flavorRegex string
+var postCreationScript string
 var forceTearDown bool
 
 // cloudCmd represents the cloud command
@@ -107,6 +109,15 @@ most likely to succeed if you use an IP address instead of a host name.`,
 			die("--username is required")
 		}
 
+		var postCreation []byte
+		if postCreationScript != "" {
+			var err error
+			postCreation, err = ioutil.ReadFile(postCreationScript)
+			if err != nil {
+				die("--script %s could not be read: %s", postCreationScript, err)
+			}
+		}
+
 		// first we need our working directory to exist
 		createWorkingDir()
 
@@ -164,12 +175,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, err := provider.CheapestServerFlavor(1, osRAM, 1)
+			flavor, err := provider.CheapestServerFlavor(1, osRAM, 1, flavorRegex)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 0*time.Second, true)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 0*time.Second, true, postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -312,6 +323,8 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", "Ubuntu 16", "prefix name of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", 2048, "ram (MB) needed by the OS image specified by --os")
+	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", "", "a regular expression to limit server flavors that can be automatically picked")
+	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", "", "path to a start-up script that will be run on each server created")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 120, "how long in seconds to keep idle spawned servers alive for")
 	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 
@@ -380,11 +393,31 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			envvarPrefix += fmt.Sprintf("%s=\"%s\" ", envvar, os.Getenv(envvar))
 		}
 
+		var postCreationArg string
+		if postCreationScript != "" {
+			// copy over the post creation script to the server so remote
+			// manager can use it
+			remoteScriptFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".script")
+			err = server.UploadFile(postCreationScript, remoteScriptFile)
+			if err != nil && !wrMayHaveStarted {
+				provider.TearDown()
+				die("failed to upload wr cloud script file to the server at %s: %s", server.IP, err)
+			}
+
+			postCreationArg = " -p " + remoteScriptFile
+		}
+
+		var flavorArg string
+		if flavorRegex != "" {
+			flavorArg = " -l '" + flavorRegex + "'"
+		}
+
 		// get the manager running
-		_, err = server.RunCmd(fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o %s -r %d -m %d -u %s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername), false)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg)
+		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()
-			die("failed to make start wr manager on the remote server: %s", err)
+			die("failed to start wr manager on the remote server: %s", err)
 		}
 
 		// wait a few seconds for the manager to start listening on its ports

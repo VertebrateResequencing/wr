@@ -134,7 +134,7 @@ type Job struct {
 	StdErrC        []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
 	StdOutC        []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
 	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
-	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried' or 'complete'
+	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
 	Attempts       uint32        // the number of times the job had ever entered 'running' state
 	UntilBuried    uint8         // the remaining number of Release()s allowed before being buried instead
 	starttime      time.Time     // the time the cmd starts running is recorded here
@@ -144,11 +144,46 @@ type Job struct {
 	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
 	Similar        int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
 	Queue          string        // the name of the queue the Job was added to
+	Dependencies   *Dependencies // the jobs that must be complete before this job starts
 }
 
-// NewJob makes it a little easier to make a new Job, for use with Add().
-func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, retries uint8, repgroup string) *Job {
-	return &Job{
+// Dependencies is a struct that holds a slice of *Dependency, for use in
+// Job.Dependencies. It describes the jobs that must be complete before the Job
+// you associate this with will start.
+type Dependencies struct {
+	Deps []*Dependency
+}
+
+// JobKeys converts the constituent Dependency structs in to internal job keys
+// that uniquely identify these jobs.
+func (d *Dependencies) JobKeys() (jobKeys []string) {
+	for _, dep := range d.Deps {
+		jobKeys = append(jobKeys, dep.key())
+	}
+	return
+}
+
+// Dependency is a struct that describes a Job purely in terms of its Cmd and
+// Cwd, for use in Dependencies.
+type Dependency struct {
+	Cmd string
+	Cwd string
+}
+
+// key calculates a unique key to describe the dependency, which will be the
+// same key you'd get from *Job.key() on a Job made with the same Cmd and Cwd.
+func (d *Dependency) key() string {
+	return byteKey([]byte(fmt.Sprintf("%s.%s", d.Cwd, d.Cmd)))
+}
+
+// NewJob makes it a little easier to make a new Job, for use with Add(). The
+// last argument is optional (and may only be specified once); note that it will
+// be an error (matching ErrBadDependency) to specify dependencies that haven't
+// already been Archive()d, aren't currently in the queue, or were not specified
+// earlier in the slice of Jobs that this Job will be a part of when supplied to
+// Add().
+func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, retries uint8, repgroup string, deps ...*Dependencies) *Job {
+	job := &Job{
 		RepGroup: repgroup,
 		ReqGroup: group,
 		Cmd:      cmd,
@@ -159,6 +194,29 @@ func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, c
 		Override: override,
 		Priority: priority,
 		Retries:  retries,
+	}
+
+	if len(deps) == 1 {
+		job.Dependencies = deps[0]
+	} else {
+		job.Dependencies = NewDependencies()
+	}
+
+	return job
+}
+
+// NewDependencies makes it a little easier to make a new Dependencies, for use
+// in NewJob().
+func NewDependencies(deps ...*Dependency) *Dependencies {
+	return &Dependencies{Deps: deps[:]}
+}
+
+// NewDependency makes it a little easier to make a new *Dependency, for use in
+// NewDependencies().
+func NewDependency(cmd string, cwd string) *Dependency {
+	return &Dependency{
+		Cmd: cmd,
+		Cwd: cwd,
 	}
 }
 
@@ -290,6 +348,10 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 // there. If any were already there, you will not get an error, but the
 // returned 'existed' count will be > 0. Note that no cross-queue checking is
 // done, so you need to be careful not to add the same job to different queues.
+// Note that if you add jobs to the queue that were previously added, Execute()d
+// and were successfully Archive()d, the existed count will be 0 and the jobs
+// will be treated like new ones, though when Archive()d again, the new Job will
+// replace the old one in the database.
 func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
 	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.compressEnv()})
 	if err != nil {
@@ -364,7 +426,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
 	if !uuid.Equal(c.clientid, job.ReservedBy) {
-		return Error{c.queue, "Execute", jobKey(job), ErrMustReserve}
+		return Error{c.queue, "Execute", job.key(), ErrMustReserve}
 	}
 
 	// we support arbitrary shell commands that may include semi-colons,
@@ -391,7 +453,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	env, err := job.Env()
 	if err != nil {
 		c.Bury(job, FailReasonEnv)
-		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", jobKey(job), err)
+		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", job.key(), err)
 	}
 	cmd.Env = env
 
@@ -524,14 +586,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 				dorelease = true
 				if ranoutMem {
 					failreason = FailReasonRAM
-					myerr = Error{c.queue, "Execute", jobKey(job), FailReasonRAM}
+					myerr = Error{c.queue, "Execute", job.key(), FailReasonRAM}
 				} else if signalled {
 					if ranoutTime {
 						failreason = FailReasonTime
-						myerr = Error{c.queue, "Execute", jobKey(job), FailReasonTime}
+						myerr = Error{c.queue, "Execute", job.key(), FailReasonTime}
 					} else {
 						failreason = FailReasonSignal
-						myerr = Error{c.queue, "Execute", jobKey(job), FailReasonSignal}
+						myerr = Error{c.queue, "Execute", job.key(), FailReasonSignal}
 					}
 				} else {
 					failreason = FailReasonExit
@@ -847,6 +909,11 @@ func (j *Job) updateRecsAfterFailure() {
 	}
 }
 
+// key calculates a unique key to describe the job
+func (j *Job) key() string {
+	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)))
+}
+
 // request the server do something and get back its response. We can only cope
 // with one request at a time per client, or we'll get replies back in the
 // wrong order, hence we lock.
@@ -884,7 +951,7 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	if sr.Err != "" {
 		key := ""
 		if cr.Job != nil {
-			key = jobKey(cr.Job)
+			key = cr.Job.key()
 		}
 		err = Error{cr.Queue, cr.Method, key, sr.Err}
 	}

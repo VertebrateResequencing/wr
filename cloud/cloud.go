@@ -43,8 +43,10 @@ import (
 	"github.com/satori/go.uuid"
 	"golang.org/x/crypto/ssh"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +61,7 @@ var (
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
 	ErrNoFlavor        = "no server flavor can meet your resource requirements"
 	ErrBadFlavor       = "no server flavor with that id exists"
+	ErrBadRegex        = "your flavor regular expression was not valid"
 )
 
 // dnsNameServers holds some public (google) dns name server addresses for use
@@ -101,15 +104,15 @@ type Quota struct {
 // this interface must be satisfied to add support for a particular cloud
 // provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                 // return the environment variables required to function
-	initialize() error                                                                                                                     // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int) error                                                                                // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	getQuota() (*Quota, error)                                                                                                             // achieve the aims of GetQuota()
-	flavors() map[string]Flavor                                                                                                            // return a map of all server flavors, with their flavor ids as keys
-	spawn(resources *Resources, os string, flavor string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
-	checkServer(serverID string) (working bool, err error)                                                                                 // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                   // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                   // achieve the aims of TearDown()
+	requiredEnv() []string                                                                                                                                            // return the environment variables required to function
+	initialize() error                                                                                                                                                // do any initial config set up such as authentication
+	deploy(resources *Resources, requiredPorts []int) error                                                                                                           // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	getQuota() (*Quota, error)                                                                                                                                        // achieve the aims of GetQuota()
+	flavors() map[string]Flavor                                                                                                                                       // return a map of all server flavors, with their flavor ids as keys
+	spawn(resources *Resources, os string, flavor string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
+	checkServer(serverID string) (working bool, err error)                                                                                                            // achieve the aims of CheckServer()
+	destroyServer(serverID string) error                                                                                                                              // achieve the aims of DestroyServer()
+	tearDown(resources *Resources) error                                                                                                                              // achieve the aims of TearDown()
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
@@ -125,6 +128,7 @@ type Provider struct {
 // configuration
 type Flavor struct {
 	ID    string
+	Name  string
 	Cores int
 	RAM   int // MB
 	Disk  int // GB
@@ -177,8 +181,15 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	// destroying the host
 	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
 		go func() {
-			s.cancelDestruction = make(chan bool)
+			s.mutex.Lock()
+			if s.onDeathrow {
+				s.mutex.Unlock()
+				return
+			}
+			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
 			s.onDeathrow = true
+			s.mutex.Unlock()
+
 			timeToDie := time.After(s.TTD)
 			for {
 				select {
@@ -207,13 +218,18 @@ func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 	}
 	canDo := (s.Flavor.Cores - s.usedCores) / cores
 	if canDo > 1 {
-		n := (s.Flavor.RAM - s.usedRAM) / ramMB
-		if n < canDo {
-			canDo = n
+		var n int
+		if ramMB > 0 {
+			n = (s.Flavor.RAM - s.usedRAM) / ramMB
+			if n < canDo {
+				canDo = n
+			}
 		}
-		n = (s.Flavor.Disk - s.usedDisk) / diskGB
-		if n < canDo {
-			canDo = n
+		if diskGB > 0 {
+			n = (s.Flavor.Disk - s.usedDisk) / diskGB
+			if n < canDo {
+				canDo = n
+			}
 		}
 	}
 	return canDo
@@ -225,9 +241,15 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if s.sshclient == nil {
+		if s.provider.PrivateKey() == "" {
+			log.Printf("resource file %s did not contain the ssh key\n", s.provider.savePath)
+			return nil, errors.New("missing ssh key")
+		}
+
 		// parse private key and make config
 		key, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
 		if err != nil {
+			log.Printf("failure to parse the private key: %s\n", err)
 			return nil, err
 		}
 		sshConfig := &ssh.ClientConfig{
@@ -520,13 +542,29 @@ func (p *Provider) GetQuota() (quota *Quota, err error) {
 
 // CheapestServerFlavor returns details of the smallest (cheapest) server
 // "flavor" available that satisfies your minimum ram (MB), disk (GB) and CPU
-// (core count) requirements. Use the ID property of the return value for
-// passing to Spawn(). If no flavor meets your requirements you will get an
-// error matching ErrNoFlavor.
-func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int) (fr Flavor, err error) {
+// (core count) requirements, and that also matches the given regex (empty
+// string for the regex means not limited by regex). Use the ID property of the
+// return value for passing to Spawn(). If no flavor meets your requirements you
+// will get an error matching ErrNoFlavor.
+func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int, regex string) (fr Flavor, err error) {
 	// from all available flavours, pick the one that has the lowest ram, disk
-	// and cpus that meet our minimums
+	// and cpus that meet our minimums, and also matches the regex
+	var r *regexp.Regexp
+	if regex != "" {
+		r, err = regexp.Compile(regex)
+		if err != nil {
+			err = Error{"openstack", "cheapestServerFlavor", ErrBadRegex}
+			return
+		}
+	}
+
 	for _, f := range p.impl.flavors() {
+		if regex != "" {
+			if !r.MatchString(f.Name) {
+				continue
+			}
+		}
+
 		if f.Cores >= cores && f.RAM >= ramMB && f.Disk >= diskGB {
 			if fr.ID == "" {
 				fr = f
@@ -561,15 +599,17 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int) (fr Flavor, er
 // to sudo on the server. You will need to know the username that you can log in
 // with on your chosen OS image. If you call Spawn() while running on a cloud
 // server, then the newly spawned server will be in the same network and
-// security group as the current server.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool) (server *Server, err error) {
+// security group as the current server. postCreationScript is the []byte
+// contents of a script that will be run on the server after it has been
+// created, before it is used for anything else; empty slice means do nothing.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool, postCreationScript []byte) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
 		return
 	}
 
-	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP)
+	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP, postCreationScript)
 
 	server = &Server{
 		ID:        serverID,
@@ -638,15 +678,18 @@ func (p *Provider) PrivateKey() string {
 // previous session during New(). It also deletes any servers with names
 // prefixed with the resourceName given to the initial New() call. If currently
 // running on a cloud server, however, it will not delete anything needed by
-// this server.
+// this server, including the resource file that contains the private key.
 func (p *Provider) TearDown() (err error) {
 	err = p.impl.tearDown(p.resources)
 	if err != nil {
 		return
 	}
 
-	// delete our savePath
-	err = p.deleteResourceFile()
+	// delete our savePath unless our resources still contains the private key,
+	// indicating it is still in the cloud and could be needed in the future
+	if p.resources.PrivateKey == "" {
+		err = p.deleteResourceFile()
+	}
 	return
 }
 
@@ -683,6 +726,7 @@ func (p *Provider) loadResources(resourceName string) (resources *Resources, err
 			}
 		}
 	}
+
 	return
 }
 

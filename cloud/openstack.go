@@ -21,6 +21,10 @@ package cloud
 // This file contains a provideri implementation for OpenStack
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
@@ -35,6 +39,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	"golang.org/x/crypto/ssh"
 	"os"
 	"regexp"
 	"strings"
@@ -120,6 +125,7 @@ func (p *openstackp) initialize() (err error) {
 		for _, f := range flavorList {
 			p.fmap[f.ID] = Flavor{
 				ID:    f.ID,
+				Name:  f.Name,
 				Cores: f.VCPUs,
 				RAM:   f.RAM,
 				Disk:  f.Disk,
@@ -144,14 +150,29 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	kp, err := keypairs.Get(p.computeClient, resources.ResourceName).Extract()
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrDefault404); notfound {
-			// create a new keypair; if we don't supply our own public key, it
-			// makes a private key for us
-			kp, err = keypairs.Create(p.computeClient, keypairs.CreateOpts{Name: resources.ResourceName}).Extract()
+			// create a new keypair; we can't just let Openstack create one for
+			// us because in latest versions it does not return a DER encoded
+			// key, which is what GO built-in library supports.
+			privateKey, errk := rsa.GenerateKey(rand.Reader, 1024)
+			if errk != nil {
+				err = errk
+				return
+			}
+			privateKeyPEM := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}
+			privateKeyPEMBytes := pem.EncodeToMemory(privateKeyPEM)
+			pub, errk := ssh.NewPublicKey(&privateKey.PublicKey)
+			if errk != nil {
+				err = errk
+				return err
+			}
+			publicKeyStr := ssh.MarshalAuthorizedKey(pub)
+
+			kp, err = keypairs.Create(p.computeClient, keypairs.CreateOpts{Name: resources.ResourceName, PublicKey: string(publicKeyStr)}).Extract()
 			if err != nil {
 				return
 			}
 
-			resources.PrivateKey = kp.PrivateKey
+			resources.PrivateKey = string(privateKeyPEMBytes)
 		} else {
 			return
 		}
@@ -407,7 +428,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -439,7 +460,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			ImageRef:       imageID,
 			SecurityGroups: []string{p.securityGroup},
 			Networks:       []servers.Network{{UUID: p.networkUUID}},
-			// UserData []byte (will be base64-encoded for me)
+			UserData:       postCreationScript,
 			// Metadata map[string]string
 		},
 		KeyName: resources.ResourceName,
@@ -619,6 +640,7 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 	if id := resources.Details["keypair"]; id != "" {
 		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
 			err = keypairs.Delete(p.computeClient, id).ExtractErr()
+			resources.PrivateKey = ""
 		}
 	}
 

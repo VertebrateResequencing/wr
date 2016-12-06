@@ -48,6 +48,18 @@ var percentRounder = function(floats, min) {
     return ints;
 };
 
+// given an array of ints that are supposed to be percentages, scale them so
+// that they are a percent of the given value.
+var percentScaler = function(ints, max) {
+    var floats = [];
+    for (var i = 0; i < ints.length; i++) {
+        var unscaled = ints[i];
+        var scaled = (unscaled / 100) * max;
+        floats.push(scaled);
+    }
+    return floats;
+}
+
 // Number(1234).toDuration() returns a string converting the seconds supplied
 // to a human readable format from days to milliseconds, skipping unnecessary
 // parts

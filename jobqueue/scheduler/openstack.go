@@ -43,6 +43,7 @@ type opst struct {
 	local
 	config             *ConfigOpenStack
 	provider           *cloud.Provider
+	flavorRegex        string
 	quotaMaxInstances  int
 	quotaMaxCores      int
 	quotaMaxRAM        int
@@ -72,9 +73,21 @@ type ConfigOpenStack struct {
 	// OSUser is the login username of your chosen Operating System.
 	OSUser string
 
-	// OSRAM is the minimum RAM in MB needed to bring up a server instance that runs
-	// your Operating System image. It defaults to 2048.
+	// OSRAM is the minimum RAM in MB needed to bring up a server instance that
+	// runs your Operating System image. It defaults to 2048.
 	OSRAM int
+
+	// FlavorRegex is a regular expression that you can use to limit what
+	// flavors of server will be created to run commands on. The default of an
+	// empty string means there is no limit, and any available flavor can be
+	// used. (The flavor chosen for a command will be the flavor with the least
+	// specifications (RAM, CPUs, Disk) capable of running the command, that
+	// also satisfies this regex.)
+	FlavorRegex string
+
+	// PostCreationScript is the []byte content of a script you want after a
+	// server is Spawn()ed.
+	PostCreationScript []byte
 
 	// ServerPorts are the TCP port numbers you need to be open for
 	// communication with any spawned servers. At a minimum you will need to
@@ -181,9 +194,11 @@ func (s *standin) waitForServer() (server *cloud.Server) {
 				s.mutex.RLock()
 				if s.work || s.fail {
 					ticker.Stop()
+					s.mutex.RUnlock()
 					done <- s.server
 					return
 				}
+				s.mutex.RUnlock()
 				continue
 			}
 		}
@@ -274,7 +289,7 @@ func (s *opst) reqCheck(req *Requirements) error {
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
 // amongst those that are capable of running it.
 func (s *opst) determineFlavor(req *Requirements) (flavor cloud.Flavor, err error) {
-	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, req.Disk)
+	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, req.Disk, s.config.FlavorRegex)
 	if err != nil {
 		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
 			err = Error{"openstack", "determineFlavor", ErrImpossible}
@@ -360,13 +375,18 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	// finally, calculate how many reqs we can get running on that many servers
 	perServer := flavor.Cores / reqForSpawn.Cores
 	if perServer > 1 {
-		n := flavor.RAM / reqForSpawn.RAM
-		if n < perServer {
-			perServer = n
+		var n int
+		if reqForSpawn.RAM > 0 {
+			n = flavor.RAM / reqForSpawn.RAM
+			if n < perServer {
+				perServer = n
+			}
 		}
-		n = flavor.Disk / reqForSpawn.Disk
-		if n < perServer {
-			perServer = n
+		if reqForSpawn.Disk > 0 {
+			n = flavor.Disk / reqForSpawn.Disk
+			if n < perServer {
+				perServer = n
+			}
 		}
 	}
 	canCount += spawnable * perServer
@@ -482,7 +502,33 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				return err
 			}
 		}
-		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false)
+		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false, s.config.PostCreationScript)
+
+		if err == nil {
+			// check that the exe of the cmd we're supposed to run exists on the
+			// new server, and if not, copy it over *** this is just a hack to
+			// get wr working, need to think of a better way of doing this...
+			exe := strings.Split(cmd, " ")[0]
+			if _, err = os.Stat(exe); err == nil {
+				if stdout, err := server.RunCmd("file "+exe, false); err == nil {
+					if strings.Contains(stdout, "No such file") {
+						err = server.UploadFile(exe, exe)
+						if err == nil {
+							server.RunCmd("chmod u+x "+exe, false)
+						} else {
+							server.Destroy()
+						}
+					}
+				} else {
+					server.Destroy()
+				}
+			} else {
+				server.Destroy()
+			}
+		}
+
+		// handle Spawn() or upload-of-exe errors now, by noting we failed and
+		// unreserving resources
 		if err != nil {
 			s.mutex.Lock()
 			s.spawningNow--
@@ -493,19 +539,6 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			delete(s.standins, standinID)
 			s.mutex.Unlock()
 			return err
-		}
-
-		// check that the exe of the cmd we're supposed to run exists on the new
-		// server, and if not, copy it over *** this is just a hack to get wr
-		// working, need to think of a better way of doing this...
-		exe := strings.Split(cmd, " ")[0]
-		if _, err = os.Stat(exe); err == nil {
-			if stdout, err := server.RunCmd("file "+exe, false); err == nil && strings.Contains(stdout, "No such file") {
-				err = server.UploadFile(exe, exe)
-				if err == nil {
-					server.RunCmd("chmod u+x "+exe, false)
-				}
-			}
 		}
 
 		s.mutex.Lock()

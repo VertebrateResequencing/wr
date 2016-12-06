@@ -110,6 +110,8 @@ func webInterfaceStatic(w http.ResponseWriter, r *http.Request) {
 		} else if strings.HasSuffix(path, ".woff2") {
 			w.Header().Set("Content-Type", "application/font-woff2")
 		}
+	} else if strings.HasSuffix(path, "favicon.ico") {
+		w.Header().Set("Content-Type", "image/x-icon")
 	}
 
 	w.Write(doc)
@@ -144,6 +146,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 		// go routine to read client requests and respond to them
 		go func(conn *websocket.Conn) {
+			// log panics and die
+			defer s.logPanic("jobqueue websocket client handling", true)
+
 			for {
 				req := jstatusReq{}
 				err := conn.ReadJSON(&req)
@@ -164,7 +169,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						stdout, _ := jobs[0].StdOut()
 						env, _ := jobs[0].Env()
 						status := jstatus{
-							Key:          jobKey(jobs[0]),
+							Key:          jobs[0].key(),
 							RepGroup:     jobs[0].RepGroup,
 							Cmd:          jobs[0].Cmd,
 							State:        jobs[0].State,
@@ -241,7 +246,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								stdout, _ := job.StdOut()
 								env, _ := job.Env()
 								status := jstatus{
-									Key:          jobKey(job),
+									Key:          job.key(),
 									RepGroup:     req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
 									Cmd:          job.Cmd,
 									State:        job.State,
@@ -306,17 +311,26 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 							stats := item.Stats()
-							if stats.State == "bury" || stats.State == "delay" {
+							if stats.State == "bury" || stats.State == "delay" || stats.State == "dependent" {
 								job := item.Data.(*Job)
 								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									err := q.Remove(key)
+									// we can't allow the removal of jobs that
+									// have dependencies, as *queue would regard
+									// that as satisfying the dependency and
+									// downstream jobs would start
+									hasDeps, err := q.HasDependents(key)
+									if err != nil || hasDeps {
+										continue
+									}
+
+									err = q.Remove(key)
 									if err != nil {
 										break
 									}
 									if err == nil {
 										s.db.deleteLiveJob(key)
 										toDelete = append(toDelete, key)
-										if stats.State != "bury" {
+										if stats.State == "delay" {
 											s.decrementGroupCount(job.schedulerGroup, q)
 										}
 									}
@@ -341,6 +355,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 		// go routine to push changes to the client
 		go func(conn *websocket.Conn) {
+			// log panics and die
+			defer s.logPanic("jobqueue websocket status updating", true)
+
 			statusReceiver := s.statusCaster.Join()
 			for status := range statusReceiver.In {
 				writeMutex.Lock()
