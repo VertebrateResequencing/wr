@@ -203,7 +203,7 @@ func TestOpenStack(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "uploadable content")
 
-						<-time.After(1 * time.Second) // make sure the post creation script has had time to run?!
+						<-time.After(5 * time.Second) // make sure the post creation script has had time to run?!
 
 						stdout, err = server.RunCmd("cat /tmp/post_creation_script_output", false)
 						So(err, ShouldBeNil)
