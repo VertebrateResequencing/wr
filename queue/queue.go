@@ -311,8 +311,20 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 // the dependency queue.
 func (queue *Queue) setItemDependencies(item *Item, deps []string) bool {
 	item.setDependencies(deps)
-	var hasDeps bool
-	for _, dep := range deps {
+	hasDeps := queue.setQueueDeps(item)
+	if hasDeps {
+		item.switchDelayDependent()
+		queue.depQueue.push(item)
+		return true
+	}
+	return false
+}
+
+// setQueueDeps updates the queue's lookup of parent items to their dependent
+// children when you give it a child item (that has had some dependencies set on
+// it). Returns true if your item has any unresolved dependencies.
+func (queue *Queue) setQueueDeps(item *Item) (hasDeps bool) {
+	for _, dep := range item.Dependencies() {
 		if _, exists := queue.items[dep]; exists {
 			hasDeps = true
 			if _, exists := queue.dependants[dep]; !exists {
@@ -324,11 +336,16 @@ func (queue *Queue) setItemDependencies(item *Item, deps []string) bool {
 			item.resolveDependency(dep)
 		}
 	}
+	return
+}
 
-	if hasDeps {
-		item.switchDelayDependent()
-		queue.depQueue.push(item)
-		return true
+// itemHasDeps returns true if the item has unresolved dependencies according
+// to the queue's lookup of parent items to their dependent children.
+func (queue *Queue) itemHasDeps(item *Item) bool {
+	for _, dep := range item.Dependencies() {
+		if _, exists := queue.items[dep]; exists {
+			return true
+		}
 	}
 	return false
 }
@@ -445,36 +462,120 @@ func (queue *Queue) AllItems() (items []*Item) {
 // calling item.Stats() to get stats.Priority, stats.Delay and stats.TTR.
 func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (err error) {
 	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Update", key, ErrQueueClosed}
+		queue.mutex.Unlock()
 		return
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
 		err = Error{queue.Name, "Update", key, ErrNotFound}
+		queue.mutex.Unlock()
 		return
 	}
 
+	var changedFrom string
+	var addedReady bool
 	item.Data = data
-	if len(deps) == 1 && len(deps[0]) > 0 {
-		item.setDependencies(deps[0])
-		//*** and detect a change and do something appropriate?...
+	if len(deps) == 1 {
+		// check if dependencies actually changed
+		oldDeps := make(map[string]bool)
+		for _, dep := range item.Dependencies() {
+			oldDeps[dep] = true
+		}
+		newDeps := 0
+		for _, dep := range deps[0] {
+			if !oldDeps[dep] {
+				newDeps++
+			}
+			delete(oldDeps, dep)
+		}
+		var toRemove []string
+		for dep := range oldDeps {
+			toRemove = append(toRemove, dep)
+		}
+
+		if len(toRemove) > 0 || newDeps > 0 {
+			// remove any existing dependencies from our lookup
+			for _, dep := range toRemove {
+				if _, exists := queue.items[dep]; exists {
+					delete(queue.dependants[dep], key)
+					if len(queue.dependants[dep]) == 0 {
+						delete(queue.dependants, dep)
+					}
+				}
+			}
+
+			// set the new dependencies and update our lookup
+			item.setDependencies(deps[0])
+			hasDeps := queue.setQueueDeps(item)
+
+			// if we now have unresolved dependencies and we're not in dependent
+			// state, switch to dependent queue
+			if hasDeps && item.state != "dependent" {
+				pushToDep := true
+				switch item.state {
+				case "delay":
+					queue.delayQueue.remove(item)
+					item.switchDelayDependent()
+					changedFrom = "delay"
+				case "ready":
+					queue.readyQueue.remove(item)
+					item.switchReadyDependent()
+					changedFrom = "ready"
+				case "run":
+					queue.runQueue.remove(item)
+					item.switchRunDependent()
+					changedFrom = "run"
+				case "bury":
+					// leave buried things buried; Kick() will put it on the
+					// dependent queue if they are still unresolved by then
+					pushToDep = false
+				}
+				if pushToDep {
+					queue.depQueue.push(item)
+				}
+			} else if !hasDeps && item.state == "dependent" {
+				// switch to ready queue
+				queue.depQueue.remove(item)
+				item.switchDependentReady()
+				queue.readyQueue.push(item)
+				addedReady = true
+			}
+		}
 	}
 
-	if item.state == "delay" && item.delay != delay {
+	if item.delay != delay {
 		item.delay = delay
-		item.restart()
-		queue.delayQueue.update(item)
-	} else if item.state == "ready" && item.priority != priority {
+		if item.state == "delay" {
+			item.restart()
+			queue.delayQueue.update(item)
+		}
+	} else if item.priority != priority || addedReady {
 		item.priority = priority
-		queue.readyQueue.update(item)
-	} else if item.state == "run" && item.ttr != ttr {
+		if item.state == "ready" {
+			queue.readyQueue.update(item)
+		}
+	} else if item.ttr != ttr {
 		item.ttr = ttr
-		item.touch()
-		queue.runQueue.update(item)
+		if item.state == "run" {
+			item.touch()
+			queue.runQueue.update(item)
+		}
+	}
+
+	if addedReady {
+		queue.mutex.Unlock()
+		queue.readyAdded()
+		queue.changed("dependent", "ready", []*Item{item})
+	} else {
+		queue.mutex.Unlock()
+	}
+
+	if changedFrom != "" {
+		queue.changed(changedFrom, "dependent", []*Item{item})
 	}
 
 	return
@@ -685,10 +786,10 @@ func (queue *Queue) Release(key string) (err error) {
 // the user takes some action and changes something.
 func (queue *Queue) Bury(key string) (err error) {
 	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Bury", key, ErrQueueClosed}
+		queue.mutex.Unlock()
 		return
 	}
 
@@ -696,12 +797,14 @@ func (queue *Queue) Bury(key string) (err error) {
 	item, ok := queue.items[key]
 	if !ok {
 		err = Error{queue.Name, "Bury", key, ErrNotFound}
+		queue.mutex.Unlock()
 		return
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == "run"; !ok {
 		err = Error{queue.Name, "Bury", key, ErrNotRunning}
+		queue.mutex.Unlock()
 		return
 	}
 
@@ -709,6 +812,7 @@ func (queue *Queue) Bury(key string) (err error) {
 	queue.runQueue.remove(item)
 	queue.buryQueue.push(item)
 	item.switchRunBury()
+	queue.mutex.Unlock()
 	queue.changed("run", "bury", []*Item{item})
 
 	return
@@ -740,13 +844,20 @@ func (queue *Queue) Kick(key string) (err error) {
 		return
 	}
 
-	// switch from bury to ready queue
+	// switch from bury to ready or dependent queue
 	queue.buryQueue.remove(item)
-	queue.readyQueue.push(item)
-	item.switchBuryReady()
-	queue.mutex.Unlock()
-	queue.changed("bury", "ready", []*Item{item})
-	queue.readyAdded()
+	if queue.itemHasDeps(item) {
+		queue.depQueue.push(item)
+		item.switchBuryDependent()
+		queue.mutex.Unlock()
+		queue.changed("bury", "dependent", []*Item{item})
+	} else {
+		queue.readyQueue.push(item)
+		item.switchBuryReady()
+		queue.mutex.Unlock()
+		queue.changed("bury", "ready", []*Item{item})
+		queue.readyAdded()
+	}
 	return
 }
 
@@ -774,10 +885,10 @@ func (queue *Queue) Remove(key string) (err error) {
 	if deps, exists := queue.dependants[key]; exists {
 		for _, dep := range deps {
 			done := dep.resolveDependency(key)
-			if done {
+			if done && dep.state == "dependent" {
 				queue.depQueue.remove(dep)
 
-				// put it directly on the ready queue, regardless of delay value
+				// put it straight on the ready queue, regardless of delay value
 				dep.switchDependentReady()
 				queue.readyQueue.push(dep)
 				addedReadyItems = append(addedReadyItems, dep)
@@ -788,7 +899,7 @@ func (queue *Queue) Remove(key string) (err error) {
 	}
 
 	// if this item is dependent on other items, update those items that this is
-	// no longer dependent upon them (so HasDependents() will be correct)
+	// no longer dependent upon them
 	for _, parent := range item.dependencies {
 		if deps, exists := queue.dependants[parent]; exists {
 			delete(deps, key)

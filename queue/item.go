@@ -125,6 +125,8 @@ func (item *Item) Dependencies() []string {
 // only records the dependencies on the item; it does not trigger any dependency
 // related actions or updates.
 func (item *Item) setDependencies(deps []string) {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
 	item.dependencies = deps[:]
 	item.remainingDeps = make(map[string]bool)
 	for _, key := range item.dependencies {
@@ -193,6 +195,7 @@ func (item *Item) switchDelayDependent() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[0] = -1
+	item.readyAt = time.Time{}
 	item.state = "dependent"
 }
 
@@ -211,6 +214,14 @@ func (item *Item) switchReadyRun() {
 	item.queueIndexes[1] = -1
 	item.reserves++
 	item.state = "run"
+}
+
+// update after we've switched from the ready to the dependent sub-queue
+func (item *Item) switchReadyDependent() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.queueIndexes[1] = -1
+	item.state = "dependent"
 }
 
 // update after we've switched from the run to the ready sub-queue
@@ -243,6 +254,16 @@ func (item *Item) switchRunBury() {
 	item.state = "bury"
 }
 
+// update after we've switched from the run to the dependent sub-queue
+func (item *Item) switchRunDependent() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.queueIndexes[2] = -1
+	item.releaseAt = time.Time{}
+	item.releases++
+	item.state = "dependent"
+}
+
 // update after we've switched from the bury to the ready sub-queue
 func (item *Item) switchBuryReady() {
 	item.mutex.Lock()
@@ -250,6 +271,15 @@ func (item *Item) switchBuryReady() {
 	item.queueIndexes[3] = -1
 	item.kicks++
 	item.state = "ready"
+}
+
+// update after we've switched from the bury to the dependent sub-queue
+func (item *Item) switchBuryDependent() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.queueIndexes[3] = -1
+	item.kicks++
+	item.state = "dependent"
 }
 
 // once removed from its queue, we clear out various properties just in case

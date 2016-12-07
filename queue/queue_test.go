@@ -903,6 +903,147 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeFalse)
 		})
+
+		Convey("You can update dependencies", func() {
+			four, err := queue.Get("key_4")
+			So(err, ShouldBeNil)
+			fourStats := four.Stats()
+			So(four.Dependencies(), ShouldResemble, []string{"key_1"})
+			So(fourStats.State, ShouldEqual, "dependent")
+			hasDeps, err := queue.HasDependents("key_1")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeTrue)
+
+			err = queue.Update("key_4", four.Data, fourStats.Priority, fourStats.Delay, fourStats.TTR, []string{})
+			So(err, ShouldBeNil)
+
+			So(four.Dependencies(), ShouldResemble, []string{})
+			So(four.Stats().State, ShouldEqual, "ready")
+			hasDeps, err = queue.HasDependents("key_1")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeTrue)
+
+			five, err := queue.Get("key_5")
+			So(err, ShouldBeNil)
+			fiveStats := five.Stats()
+			So(five.Dependencies(), ShouldResemble, []string{"key_1", "key_2", "key_3"})
+			So(fiveStats.State, ShouldEqual, "dependent")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			So(err, ShouldBeNil)
+
+			So(five.Dependencies(), ShouldResemble, []string{"key_2", "key_3"})
+			hasDeps, err = queue.HasDependents("key_1")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeFalse)
+
+			err = queue.Remove("key_2")
+			So(err, ShouldBeNil)
+			err = queue.Remove("key_3")
+			So(err, ShouldBeNil)
+			<-time.After(6 * time.Millisecond)
+
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "ready")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			So(err, ShouldBeNil)
+
+			So(five.Dependencies(), ShouldResemble, []string{"key_2", "key_1", "key_3"})
+			hasDeps, err = queue.HasDependents("key_1")
+			So(err, ShouldBeNil)
+			So(hasDeps, ShouldBeTrue)
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "dependent")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			So(err, ShouldBeNil)
+
+			So(five.Stats().State, ShouldEqual, "ready")
+
+			five, err = queue.ReserveFiltered(func(data interface{}) bool {
+				td := data.(string)
+				if td == "5" {
+					return true
+				}
+				return false
+			})
+			So(err, ShouldBeNil)
+			So(five, ShouldNotBeNil)
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "run")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			So(err, ShouldBeNil)
+
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "dependent")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			So(err, ShouldBeNil)
+
+			So(five.Stats().State, ShouldEqual, "ready")
+
+			five, err = queue.ReserveFiltered(func(data interface{}) bool {
+				td := data.(string)
+				if td == "5" {
+					return true
+				}
+				return false
+			})
+			So(err, ShouldBeNil)
+			So(five, ShouldNotBeNil)
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "run")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, 1*time.Second, fiveStats.TTR, []string{"key_2", "key_3"})
+			So(err, ShouldBeNil)
+
+			queue.Release(five.Key)
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "delay")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			So(err, ShouldBeNil)
+
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "dependent")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			So(err, ShouldBeNil)
+
+			So(five.Stats().State, ShouldEqual, "ready")
+
+			five, err = queue.ReserveFiltered(func(data interface{}) bool {
+				td := data.(string)
+				if td == "5" {
+					return true
+				}
+				return false
+			})
+			So(err, ShouldBeNil)
+			So(five, ShouldNotBeNil)
+			So(five.Stats().State, ShouldEqual, "run")
+
+			queue.Bury(five.Key)
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "bury")
+
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			So(err, ShouldBeNil)
+
+			So(five.Stats().State, ShouldEqual, "bury")
+
+			queue.Kick(five.Key)
+			So(five.Stats().State, ShouldEqual, "dependent")
+
+			err = queue.Remove("key_1")
+			So(err, ShouldBeNil)
+			<-time.After(6 * time.Millisecond)
+
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, "ready")
+		})
 	})
 
 	Convey("Once some items with dependencies have been added to the queue en-masse", t, func() {
