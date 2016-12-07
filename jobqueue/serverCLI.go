@@ -292,10 +292,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	case "jarchive":
 		// remove the job from the queue, rpl and live bucket and add to
 		// complete bucket
+		var item *queue.Item
 		var job *Job
-		_, job, srerr = s.getij(cr, q)
+		item, job, srerr = s.getij(cr, q)
 		if srerr == "" {
-			if !job.Exited || job.Exitcode != 0 || job.starttime.IsZero() || job.endtime.IsZero() {
+			// first check the item is still in the run queue (eg. the job
+			// wasn't released by another process; unlike the other methods,
+			// queue package does not check we're in the run queue when
+			// Remove()ing, since you can remove from any queue)
+			if running := item.Stats().State == "run"; !running {
+				srerr = ErrBadJob
+			} else if !job.Exited || job.Exitcode != 0 || job.starttime.IsZero() || job.endtime.IsZero() {
+				// the job must also have gone through jend
 				srerr = ErrBadRequest
 			} else {
 				key := job.key()
@@ -317,8 +325,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							delete(m, key)
 						}
 						s.rpl.Unlock()
-
-						//log.Println("jarchive will decrement")
 						s.decrementGroupCount(job.schedulerGroup, q)
 					}
 				}
@@ -368,7 +374,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrInternalError
 				qerr = err.Error()
 			} else {
-				//log.Println("jbury will decrement")
 				s.decrementGroupCount(job.schedulerGroup, q)
 			}
 		}
