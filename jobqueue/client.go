@@ -630,7 +630,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if dobury {
 		err = c.Bury(job, failreason)
 	} else if dorelease {
-		err = c.Release(job, failreason, ClientReleaseDelay) // which buries after 3 fails in a row
+		err = c.Release(job, failreason, ClientReleaseDelay) // which buries after job.Retries fails in a row
 	} else if doarchive {
 		err = c.Archive(job)
 	}
@@ -696,10 +696,10 @@ func (c *Client) Archive(job *Job) (err error) {
 // else can later. Note that you must reserve a job before you can release it.
 // The delay arg is the duration to wait after your call to Release() before
 // anyone else can Reserve() this job again - could help you stop immediately
-// Reserve()ing the job again yourself. You can only Release() the same job 3
-// times if it has been run and failed; a subsequent call to Release() will
-// instead result in a Bury(). (If the job's Cmd was not run, you can Release()
-// an unlimited number of times.)
+// Reserve()ing the job again yourself. You can only Release() the same job as
+// many times as its Retries value if it has been run and failed; a subsequent
+// call to Release() will instead result in a Bury(). (If the job's Cmd was not
+// run, you can Release() an unlimited number of times.)
 func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err error) {
 	job.FailReason = failreason
 	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, Timeout: delay})
