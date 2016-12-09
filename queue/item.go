@@ -127,6 +127,8 @@ func (item *Item) Dependencies() []string {
 // UnresolvedDependencies returns the keys of the other items we are still
 // dependent upon.
 func (item *Item) UnresolvedDependencies() []string {
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
 	deps := make([]string, len(item.remainingDeps))
 	i := 0
 	for dep := range item.remainingDeps {
