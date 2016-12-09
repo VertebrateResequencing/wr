@@ -467,7 +467,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 	if len(deps) == 1 {
 		// check if dependencies actually changed
 		oldDeps := make(map[string]bool)
-		for _, dep := range item.Dependencies() {
+		for _, dep := range item.UnresolvedDependencies() {
 			oldDeps[dep] = true
 		}
 		newDeps := 0
