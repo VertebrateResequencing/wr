@@ -116,9 +116,24 @@ func (item *Item) Stats() *ItemStats {
 	}
 }
 
-// Dependencies returns the keys of the other items we are dependent upon.
+// Dependencies returns the keys of the other items we are dependent upon. Note,
+// do not add these back during a queue.Update(), or you could end up adding
+// back dependencies that already got resolved, leaving you in a permanent
+// dependent state; use UnresolvedDependencies() for that purpose instead.
 func (item *Item) Dependencies() []string {
 	return item.dependencies[:]
+}
+
+// UnresolvedDependencies returns the keys of the other items we are still
+// dependent upon.
+func (item *Item) UnresolvedDependencies() []string {
+	deps := make([]string, len(item.remainingDeps))
+	i := 0
+	for dep := range item.remainingDeps {
+		deps[i] = dep
+		i++
+	}
+	return deps
 }
 
 // setDependencies sets the keys of the other items we are dependent upon. This

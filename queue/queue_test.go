@@ -1029,7 +1029,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, "bury")
 
-			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			err = queue.Update("key_5", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_1"})
 			So(err, ShouldBeNil)
 
 			So(five.Stats().State, ShouldEqual, "bury")
@@ -1041,8 +1041,23 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			<-time.After(6 * time.Millisecond)
 
-			fiveStats = five.Stats()
-			So(fiveStats.State, ShouldEqual, "ready")
+			So(five.Stats().State, ShouldEqual, "ready")
+		})
+
+		Convey("You can add dependencies on non-exist items and resolve them later", func() {
+			ten, err := queue.Add("key_10", "10", 0, 0*time.Second, 30*time.Second, []string{"key_9"})
+			So(err, ShouldBeNil)
+			So(ten.Stats().State, ShouldEqual, "dependent")
+
+			_, err = queue.Add("key_9", "9", 0, 0*time.Second, 30*time.Second, []string{})
+			So(err, ShouldBeNil)
+			So(ten.Stats().State, ShouldEqual, "dependent")
+
+			err = queue.Remove("key_9")
+			So(err, ShouldBeNil)
+			<-time.After(6 * time.Millisecond)
+
+			So(ten.Stats().State, ShouldEqual, "ready")
 		})
 	})
 

@@ -31,8 +31,8 @@ move to the ready queue. From there you can Reserve() an item to get the highest
 priority (or for those with equal priority, the oldest one (fifo)) which
 switches it from the ready queue to the run queue. Items can also have
 dependencies, in which case they start in the dependency queue and only move to
-the ready queue (bypassing the delay queue) once once all its dependencies have
-been Remove()d from the queue.
+the ready queue (bypassing the delay queue) once all its dependencies have been
+Remove()d from the queue.
 
 In the run queue the item starts a time-to-release (ttr) countdown; when that
 runs out the item is placed back on the ready queue. This is to handle a
@@ -258,7 +258,7 @@ func (queue *Queue) Stats() *Stats {
 // Reserve()d on a fifo basis. The final argument to Add() is an optional slice
 // of item ids on which this item depends: this item will first enter the
 // dependency sub-queue and only transfer to the ready sub-queue when items with
-// these ids do not exist in the queue. Add() returns an item, which may have
+// these ids get Remove()d from the queue. Add() returns an item, which may have
 // already existed (in which case, nothing was actually added or changed).
 func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (item *Item, err error) {
 	queue.mutex.Lock()
@@ -281,11 +281,10 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 
 	// check dependencies
 	if len(deps) == 1 && len(deps[0]) > 0 {
-		if queue.setItemDependencies(item, deps[0]) {
-			queue.mutex.Unlock()
-			queue.changed("new", "dependant", []*Item{item})
-			return
-		}
+		queue.setItemDependencies(item, deps[0])
+		queue.mutex.Unlock()
+		queue.changed("new", "dependant", []*Item{item})
+		return
 	}
 
 	if delay.Nanoseconds() == 0 {
@@ -306,37 +305,27 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 }
 
 // setItemDependencies sets the given item keys as the dependencies of the given
-// item, and places the item in the dependency queue if the dependencies are
-// currently present in the overall queue. Returns true if the item was added to
-// the dependency queue.
-func (queue *Queue) setItemDependencies(item *Item, deps []string) bool {
+// item, and places the item in the dependency queue. Note that you can be
+// dependent on items that do not exist in the queue; the item will remain in
+// dependent queue until you add items with the given deps keys and then
+// Remove() them.
+func (queue *Queue) setItemDependencies(item *Item, deps []string) {
 	item.setDependencies(deps)
-	hasDeps := queue.setQueueDeps(item)
-	if hasDeps {
-		item.switchDelayDependent()
-		queue.depQueue.push(item)
-		return true
-	}
-	return false
+	queue.setQueueDeps(item)
+	item.switchDelayDependent()
+	queue.depQueue.push(item)
 }
 
 // setQueueDeps updates the queue's lookup of parent items to their dependent
 // children when you give it a child item (that has had some dependencies set on
-// it). Returns true if your item has any unresolved dependencies.
-func (queue *Queue) setQueueDeps(item *Item) (hasDeps bool) {
+// it).
+func (queue *Queue) setQueueDeps(item *Item) {
 	for _, dep := range item.Dependencies() {
-		if _, exists := queue.items[dep]; exists {
-			hasDeps = true
-			if _, exists := queue.dependants[dep]; !exists {
-				queue.dependants[dep] = make(map[string]*Item)
-			}
-			queue.dependants[dep][item.Key] = item
-		} else {
-			// not in queue, assume it was already resolved
-			item.resolveDependency(dep)
+		if _, exists := queue.dependants[dep]; !exists {
+			queue.dependants[dep] = make(map[string]*Item)
 		}
+		queue.dependants[dep][item.Key] = item
 	}
-	return
 }
 
 // itemHasDeps returns true if the item has unresolved dependencies according
@@ -377,12 +366,8 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 		item := newItem(def.Key, def.Data, def.Priority, def.Delay, def.TTR)
 		queue.items[def.Key] = item
 
-		var hadDeps bool
 		if len(def.Dependencies) > 0 {
-			hadDeps = queue.setItemDependencies(item, def.Dependencies)
-		}
-
-		if hadDeps {
+			queue.setItemDependencies(item, def.Dependencies)
 			addedDepItems = append(addedDepItems, item)
 		} else if def.Delay.Nanoseconds() == 0 {
 			// put it directly on the ready queue
@@ -458,8 +443,8 @@ func (queue *Queue) AllItems() (items []*Item) {
 // dependencies of an item. You must supply all of these as per Add() - just
 // supply the old values of those you are not changing (except for dependencies,
 // which remain optional). The old values can be found by getting the item with
-// Get() (giving you item.Key, item.Data and item.Dependencies()), and then
-// calling item.Stats() to get stats.Priority, stats.Delay and stats.TTR.
+// Get() (giving you item.Key, item.Data and item.UnresolvedDependencies()), and
+// then calling item.Stats() to get stats.Priority, stats.Delay and stats.TTR.
 func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (err error) {
 	queue.mutex.Lock()
 
@@ -498,7 +483,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 		}
 
 		if len(toRemove) > 0 || newDeps > 0 {
-			// remove any existing dependencies from our lookup
+			// remove any invalid dependencies from our lookup
 			for _, dep := range toRemove {
 				if _, exists := queue.items[dep]; exists {
 					delete(queue.dependants[dep], key)
@@ -510,11 +495,11 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 
 			// set the new dependencies and update our lookup
 			item.setDependencies(deps[0])
-			hasDeps := queue.setQueueDeps(item)
+			queue.setQueueDeps(item)
 
 			// if we now have unresolved dependencies and we're not in dependent
 			// state, switch to dependent queue
-			if hasDeps && item.state != "dependent" {
+			if item.state != "dependent" {
 				pushToDep := true
 				switch item.state {
 				case "delay":
@@ -537,7 +522,7 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 				if pushToDep {
 					queue.depQueue.push(item)
 				}
-			} else if !hasDeps && item.state == "dependent" {
+			} else {
 				// switch to ready queue
 				queue.depQueue.remove(item)
 				item.switchDependentReady()
