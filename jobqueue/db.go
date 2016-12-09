@@ -253,14 +253,7 @@ func (db *db) storeNewJobs(jobs []*Job) (jobsToQueue []*Job, jobsToUpdate []*Job
 		// first determine if any of these new jobs are the parent of previously
 		// stored jobs
 		if len(depGroups) > 0 {
-			dgs := make([]string, len(depGroups))
-			i := 0
-			for depGroup := range depGroups {
-				dgs[i] = depGroup
-				i++
-			}
-
-			jobsToQueue, jobsToUpdate, err = db.retrieveDependentJobs(dgs, newJobKeys)
+			jobsToQueue, jobsToUpdate, err = db.retrieveDependentJobs(depGroups, newJobKeys)
 
 			// arrange to have resurrected complete jobs stored in the live
 			// bucket again
@@ -473,10 +466,10 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err 
 // is returned in the jobsToUpdate return value. If it is found in the complete
 // bucket, and is not true in the supplied newJobKeys map, then it is returned
 // in the jobsToQueue return value.
-func (db *db) retrieveDependentJobs(depGroups []string, newJobKeys map[string]bool) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
+func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[string]bool) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
 	// first convert the depGroups in to sorted prefixes, for linear searching
 	var prefixes sobsd
-	for _, depGroup := range depGroups {
+	for depGroup := range depGroups {
 		prefixes = append(prefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
 	}
 	sort.Sort(prefixes)
@@ -486,38 +479,62 @@ func (db *db) retrieveDependentJobs(depGroups []string, newJobKeys map[string]bo
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		lookupBucket := tx.Bucket(bucketRDTK).Cursor()
 		doneKeys := make(map[string]bool)
-		for _, bsd := range prefixes {
-			for k, _ := lookupBucket.Seek(bsd[0]); bytes.HasPrefix(k, bsd[0]); k, _ = lookupBucket.Next() {
-				key := bytes.TrimPrefix(k, bsd[0])
-				keyStr := string(key)
-				if doneKeys[keyStr] {
-					continue
-				}
-
-				encoded := newJobBucket.Get(key)
-				live := false
-				if len(encoded) > 0 {
-					live = true
-				} else if !newJobKeys[keyStr] {
-					encoded = completeJobBucket.Get(key)
-				}
-
-				if len(encoded) > 0 {
-					dec := codec.NewDecoderBytes(encoded, db.ch)
-					job := &Job{}
-					err = dec.Decode(job)
-					if err != nil {
-						return err
+		for {
+			newDepGroups := make(map[string]bool)
+			for _, bsd := range prefixes {
+				for k, _ := lookupBucket.Seek(bsd[0]); bytes.HasPrefix(k, bsd[0]); k, _ = lookupBucket.Next() {
+					key := bytes.TrimPrefix(k, bsd[0])
+					keyStr := string(key)
+					if doneKeys[keyStr] {
+						continue
 					}
 
-					if live {
-						jobsToUpdate = append(jobsToUpdate, job)
-					} else {
-						jobsToQueue = append(jobsToQueue, job)
+					encoded := newJobBucket.Get(key)
+					live := false
+					if len(encoded) > 0 {
+						live = true
+					} else if !newJobKeys[keyStr] {
+						encoded = completeJobBucket.Get(key)
 					}
-				}
 
-				doneKeys[keyStr] = true
+					if len(encoded) > 0 {
+						dec := codec.NewDecoderBytes(encoded, db.ch)
+						job := &Job{}
+						err = dec.Decode(job)
+						if err != nil {
+							return err
+						}
+
+						// since we're going to add this job, we also need to
+						// check its DepGroups and repeat this loop on any new
+						// ones
+						for _, depGroup := range job.DepGroups {
+							if depGroup != "" && !depGroups[depGroup] {
+								newDepGroups[depGroup] = true
+							}
+						}
+
+						if live {
+							jobsToUpdate = append(jobsToUpdate, job)
+						} else {
+							jobsToQueue = append(jobsToQueue, job)
+						}
+					}
+
+					doneKeys[keyStr] = true
+				}
+			}
+
+			if len(newDepGroups) > 0 {
+				var newPrefixes sobsd
+				for depGroup := range newDepGroups {
+					newPrefixes = append(newPrefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
+					depGroups[depGroup] = true
+				}
+				sort.Sort(newPrefixes)
+				prefixes = newPrefixes
+			} else {
+				break
 			}
 		}
 		return nil

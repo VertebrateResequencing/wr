@@ -1503,13 +1503,20 @@ func TestJobqueue(t *testing.T) {
 						Convey("DepGroup dependencies are live, bringing back jobs if new jobs are added that match their dependencies", func() {
 							jobs = nil
 							dfinal := NewDepGroupDependency("final")
-							jobs = append(jobs, NewJob("echo after final", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "afterfinal", []string{}, NewDependencies(dfinal)))
+							jobs = append(jobs, NewJob("echo after final", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "afterfinal", []string{"afterfinal"}, NewDependencies(dfinal)))
+							dafinal := NewDepGroupDependency("afterfinal")
+							jobs = append(jobs, NewJob("echo after after-final", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "after-afterfinal", []string{}, NewDependencies(dafinal)))
 							inserts, already, err := jq.Add(jobs)
 							So(err, ShouldBeNil)
-							So(inserts, ShouldEqual, 1)
+							So(inserts, ShouldEqual, 2)
 							So(already, ShouldEqual, 0)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
 							So(gottenJobs[0].State, ShouldEqual, "dependent")
@@ -1564,12 +1571,77 @@ func TestJobqueue(t *testing.T) {
 							So(len(gottenJobs), ShouldEqual, 1)
 							So(gottenJobs[0].State, ShouldEqual, "complete")
 
+							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "ready")
+
 							inserts, already, err = jq.Add(jobs)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 2) // the job I added, and the resurrected afterfinal job
 							So(already, ShouldEqual, 0)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+							j9, err = jq.Reserve(50 * time.Millisecond)
+							So(err, ShouldBeNil)
+							So(j9.RepGroup, ShouldEqual, "dep9")
+							err = jq.Execute(j9, config.RunnerExecShell)
+							So(err, ShouldBeNil)
+
+							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "ready")
+
+							faf, err = jq.Reserve(50 * time.Millisecond)
+							So(err, ShouldBeNil)
+							So(faf.RepGroup, ShouldEqual, "afterfinal")
+							err = jq.Execute(faf, config.RunnerExecShell)
+							So(err, ShouldBeNil)
+
+							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "complete")
+
+							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "ready")
+
+							faaf, err := jq.Reserve(50 * time.Millisecond)
+							So(err, ShouldBeNil)
+							So(faaf.RepGroup, ShouldEqual, "after-afterfinal")
+							err = jq.Execute(faaf, config.RunnerExecShell)
+							So(err, ShouldBeNil)
+
+							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "complete")
+
+							jobs = nil
+							jobs = append(jobs, NewJob("echo deptest10", "/tmp", "fake_group", 10, 10*time.Second, 1, uint8(0), uint8(0), uint8(3), "dep10", []string{"final"}))
+							inserts, already, err = jq.Add(jobs)
+							So(err, ShouldBeNil)
+							So(inserts, ShouldEqual, 3)
+							So(already, ShouldEqual, 0)
+
+							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
+							So(err, ShouldBeNil)
+							So(len(gottenJobs), ShouldEqual, 1)
+							So(gottenJobs[0].State, ShouldEqual, "dependent")
+
+							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
 							So(gottenJobs[0].State, ShouldEqual, "dependent")
