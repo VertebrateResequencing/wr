@@ -43,7 +43,9 @@ const (
 var (
 	bucketJobsLive     = []byte("jobslive")
 	bucketJobsComplete = []byte("jobscomplete")
-	bucketRTK          = []byte("repgroupTokey")
+	bucketRTK          = []byte("repgroupToKey")
+	bucketDTK          = []byte("depgroupToKey")
+	bucketRDTK         = []byte("reverseDepgroupToKey")
 	bucketEnvs         = []byte("envs")
 	bucketStdO         = []byte("stdo")
 	bucketStdE         = []byte("stde")
@@ -53,29 +55,34 @@ var (
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
-// probably be user configurable somewhere...)
+// probably be user configurable somewhere...).
 var (
 	RecMBRound  = 100  // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
 	RecSecRound = 1800 // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
 
-// bje implements sort interface so we can sort a slice of []byte triples,
-// needed for efficient Puts in to the database
-type bje [][3][]byte
+// sobsd ('slice of byte slice doublets') implements sort interface so we can
+// sort a slice of []byte doublets, sorting on the first byte slice, needed for
+// efficient Puts in to the database.
+type sobsd [][2][]byte
 
-func (s bje) Len() int {
+func (s sobsd) Len() int {
 	return len(s)
 }
-func (s bje) Swap(i, j int) {
+func (s sobsd) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
-func (s bje) Less(i, j int) bool {
+func (s sobsd) Less(i, j int) bool {
 	cmp := bytes.Compare(s[i][0], s[j][0])
 	if cmp == -1 {
 		return true
 	}
 	return false
 }
+
+// sobsdStorer is the kind of function that stores the contents of a sobsd in
+// a particular bucket
+type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
 	bolt     *bolt.DB
@@ -148,6 +155,14 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		if err != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketRTK, err)
 		}
+		_, err = tx.CreateBucketIfNotExists(bucketDTK)
+		if err != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketDTK, err)
+		}
+		_, err = tx.CreateBucketIfNotExists(bucketRDTK)
+		if err != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRDTK, err)
+		}
 		_, err = tx.CreateBucketIfNotExists(bucketEnvs)
 		if err != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketEnvs, err)
@@ -185,26 +200,167 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 }
 
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
-// disaster recovery. It also stores a lookup from the Job.RepGroup to the
-// Job's key, and since this is independent, and we call this prior to checking
-// for dups, we allow the same job to be looked up by multiple RepGroups.
-func (db *db) storeNewJobs(jobs []*Job) (err error) {
-	// turn the jobs in to bjes and sort by their keys
-	var encodes bje
+// disaster recovery. It also stores a lookup from the Job.RepGroup to the Job's
+// key, and since this is independent, and we call this prior to checking for
+// dups, we allow the same job to be looked up by multiple RepGroups. Likewise,
+// we store a lookup for the Job.DepGroups and .Dependencies.DepGroups().
+//
+// While storing it also checks if any previously stored jobs depend on a dep
+// group that an input job is a member of. If not, jobsToQueue return value will
+// be identical to the input job slice. Otherwise, if the affected job was
+// Archive()d (and not currently being re-run), then it will be appended to (a
+// copy of) the input job slice and returned in jobsToQueue. If the affected job
+// was in the live bucket (currently queued), it will be returned in the
+// jobsToUpdate slice: you should use queue methods to update the job in the
+// queue.
+func (db *db) storeNewJobs(jobs []*Job) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
+	// turn the jobs in to sobsd and sort by their keys, likewise for the
+	// lookups
+	var encodedJobs sobsd
+	var rgLookups sobsd
+	var dgLookups sobsd
+	var rdgLookups sobsd
+	depGroups := make(map[string]bool)
+	newJobKeys := make(map[string]bool)
 	for _, job := range jobs {
-		key := job.key()
-		rp := append([]byte(job.RepGroup), []byte(dbDelimiter)...)
-		rp = append(rp, []byte(key)...)
+		keyStr := job.key()
+		newJobKeys[keyStr] = true
+		key := []byte(keyStr)
+
+		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(job.RepGroup, key), nil})
+
+		for _, depGroup := range job.DepGroups {
+			if depGroup != "" {
+				dgLookups = append(dgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
+				depGroups[depGroup] = true
+			}
+		}
+
+		for _, depGroup := range job.Dependencies.DepGroups() {
+			rdgLookups = append(rdgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
+		}
+
 		var encoded []byte
 		enc := codec.NewEncoderBytes(&encoded, db.ch)
 		err = enc.Encode(job)
 		if err != nil {
 			return
 		}
-		encodes = append(encodes, [3][]byte{[]byte(key), encoded, rp})
+		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 	}
-	sort.Sort(encodes)
-	err = db.storeBatchedEncodedJobs(bucketJobsLive, encodes)
+
+	if len(encodedJobs) > 0 {
+		// first determine if any of these new jobs are the parent of previously
+		// stored jobs
+		if len(depGroups) > 0 {
+			dgs := make([]string, len(depGroups))
+			i := 0
+			for depGroup := range depGroups {
+				dgs[i] = depGroup
+				i++
+			}
+
+			jobsToQueue, jobsToUpdate, err = db.retrieveDependentJobs(dgs, newJobKeys)
+
+			// arrange to have resurrected complete jobs stored in the live
+			// bucket again
+			for _, job := range jobsToQueue {
+				key := []byte(job.key())
+				var encoded []byte
+				enc := codec.NewEncoderBytes(&encoded, db.ch)
+				err = enc.Encode(job)
+				if err != nil {
+					return
+				}
+				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
+			}
+
+			if len(jobsToQueue) > 0 {
+				jobsToQueue = append(jobsToQueue, jobs...)
+			} else {
+				jobsToQueue = jobs
+			}
+		} else {
+			jobsToQueue = jobs
+		}
+
+		// now go ahead and store the lookups and jobs
+		numStores := 2
+		if len(dgLookups) > 0 {
+			numStores++
+		}
+		if len(rdgLookups) > 0 {
+			numStores++
+		}
+		errors := make(chan error, numStores)
+
+		go func() {
+			sort.Sort(rgLookups)
+			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
+		}()
+
+		if len(dgLookups) > 0 {
+			go func() {
+				sort.Sort(dgLookups)
+				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
+			}()
+		}
+
+		if len(rdgLookups) > 0 {
+			go func() {
+				sort.Sort(rdgLookups)
+				errors <- db.storeBatched(bucketRDTK, rdgLookups, db.storeLookups)
+			}()
+		}
+
+		go func() {
+			sort.Sort(encodedJobs)
+			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
+		}()
+
+		seen := 0
+		for thisErr := range errors {
+			if thisErr != nil {
+				err = thisErr
+			}
+
+			seen++
+			if seen == numStores {
+				close(errors)
+				break
+			}
+		}
+	}
+
+	// *** on error, because we were batching, and doing lookups separately to
+	// each other and jobs, we should go through and remove anything we did
+	// manage to add... (but this isn't so critical, since on failure here,
+	// they are not added to the in-memory queue and user gets an error and they
+	// would try to add everything back again; conversely, if we try to retrieve
+	// non-existent jobs based on lookups that shouldn't be there, they are
+	// silently skipped)
+
+	return
+}
+
+// generateLookupKey creates a lookup key understood by the retrieval methods,
+// concatenating prefix with a delimiter and the job key.
+func (db *db) generateLookupKey(prefix string, jobKey []byte) []byte {
+	key := append([]byte(prefix), []byte(dbDelimiter)...)
+	key = append(key, jobKey...)
+	return key
+}
+
+// checkIfLive tells you if a job with the given key is currently in the live
+// bucket.
+func (db *db) checkIfLive(key string) (isLive bool, err error) {
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		if newJobBucket.Get([]byte(key)) != nil {
+			isLive = true
+		}
+		return nil
+	})
 	return
 }
 
@@ -235,7 +391,7 @@ func (db *db) archiveJob(key string, job *Job) (err error) {
 // added in error.
 func (db *db) deleteLiveJob(key string) {
 	db.remove(bucketJobsLive, key)
-	//*** we're not removing the lookup entry from the bucketRTK bucket...
+	//*** we're not removing the lookup entries from the bucket*TK buckets...
 }
 
 // recoverIncompleteJobs returns all jobs in the live bucket, for use when
@@ -286,16 +442,18 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool
 
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the
 // completed jobs bucket (ie. those that have gone through the queue and been
-// Archive()d).
+// Archive()d), but not those that are also currently live (ie. are being
+// re-run).
 func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err error) {
 	err = db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketJobsComplete)
-		c := tx.Bucket(bucketRTK).Cursor()
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		lookupBucket := tx.Bucket(bucketRTK).Cursor()
 		prefix := []byte(repgroup + dbDelimiter)
-		for k, _ := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 			key := bytes.TrimPrefix(k, prefix)
-			encoded := b.Get(key)
-			if len(encoded) > 0 {
+			encoded := completeJobBucket.Get(key)
+			if len(encoded) > 0 && newJobBucket.Get(key) == nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
 				err = dec.Decode(job)
@@ -303,6 +461,96 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err 
 					return err
 				}
 				jobs = append(jobs, job)
+			}
+		}
+		return nil
+	})
+	return
+}
+
+// retrieveDependentJobs gets previously stored jobs that had a dependency on
+// one for the input depGroups. If the job is found in the live bucket, then it
+// is returned in the jobsToUpdate return value. If it is found in the complete
+// bucket, and is not true in the supplied newJobKeys map, then it is returned
+// in the jobsToQueue return value.
+func (db *db) retrieveDependentJobs(depGroups []string, newJobKeys map[string]bool) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
+	// first convert the depGroups in to sorted prefixes, for linear searching
+	var prefixes sobsd
+	for _, depGroup := range depGroups {
+		prefixes = append(prefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
+	}
+	sort.Sort(prefixes)
+
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		lookupBucket := tx.Bucket(bucketRDTK).Cursor()
+		doneKeys := make(map[string]bool)
+		for _, bsd := range prefixes {
+			for k, _ := lookupBucket.Seek(bsd[0]); bytes.HasPrefix(k, bsd[0]); k, _ = lookupBucket.Next() {
+				key := bytes.TrimPrefix(k, bsd[0])
+				keyStr := string(key)
+				if doneKeys[keyStr] {
+					continue
+				}
+
+				encoded := newJobBucket.Get(key)
+				live := false
+				if len(encoded) > 0 {
+					live = true
+				} else if !newJobKeys[keyStr] {
+					encoded = completeJobBucket.Get(key)
+				}
+
+				if len(encoded) > 0 {
+					dec := codec.NewDecoderBytes(encoded, db.ch)
+					job := &Job{}
+					err = dec.Decode(job)
+					if err != nil {
+						return err
+					}
+
+					if live {
+						jobsToUpdate = append(jobsToUpdate, job)
+					} else {
+						jobsToQueue = append(jobsToQueue, job)
+					}
+				}
+
+				doneKeys[keyStr] = true
+			}
+		}
+		return nil
+	})
+	return
+}
+
+// retrieveIncompleteJobKeysByDepGroup gets jobs with the given RepGroup from
+// the live bucket (ie. those that have been added to the queue and not yet
+// Archive()d - even if they've been added and archived in the past).
+func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) (jobKeys []string, err error) {
+	return db.retrieveIncompleteJobsKeysByGroup(depgroup, bucketDTK)
+}
+
+// retrieveIncompleteJobKeysByDepGroupDependency gets jobs that had a dependency
+// on jobs with the given RepGroup from the live bucket (ie. those that have
+// been added to the queue and not yet Archive()d - even if they've been added
+// and archived in the past).
+func (db *db) retrieveIncompleteJobKeysByDepGroupDependency(depgroup string) (jobKeys []string, err error) {
+	return db.retrieveIncompleteJobsKeysByGroup(depgroup, bucketRDTK)
+}
+
+// retrieveIncompleteJobsKeysByGroup gets job keys with the given group (using
+// the lookup from the given bucket) from the live jobs bucket.
+func (db *db) retrieveIncompleteJobsKeysByGroup(group string, bucket []byte) (jobKeys []string, err error) {
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		lookupBucket := tx.Bucket(bucket).Cursor()
+		prefix := []byte(group + dbDelimiter)
+		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
+			key := bytes.TrimPrefix(k, prefix)
+			if newJobBucket.Get(key) != nil {
+				jobKeys = append(jobKeys, string(key))
 			}
 		}
 		return nil
@@ -514,10 +762,12 @@ func (db *db) remove(bucket []byte, key string) {
 	})
 }
 
-func (db *db) storeBatchedEncodedJobs(bucket []byte, encodes bje) (err error) {
-	// we want to add in batches of size encodes/10, minimum 1000, rounded to
+// storeBatched stores items in the db in batches for efficiency. bucket is the
+// name of the bucket to store in.
+func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) (err error) {
+	// we want to add in batches of size data/10, minimum 1000, rounded to
 	// the nearest 1000
-	num := len(encodes)
+	num := len(data)
 	batchSize := num / 10
 	rem := batchSize % 1000
 	if rem > 500 {
@@ -531,7 +781,7 @@ func (db *db) storeBatchedEncodedJobs(bucket []byte, encodes bje) (err error) {
 
 	// based on https://github.com/boltdb/bolt/issues/337#issue-64861745
 	if num < batchSize {
-		err = db.storeEncodedJobs(bucket, encodes)
+		err = storer(bucket, data)
 		return
 	}
 
@@ -539,14 +789,14 @@ func (db *db) storeBatchedEncodedJobs(bucket []byte, encodes bje) (err error) {
 	offset := num - (num % batchSize)
 
 	for i := 0; i < batches; i++ {
-		err = db.storeEncodedJobs(bucket, encodes[i*batchSize:(i+1)*batchSize])
+		err = storer(bucket, data[i*batchSize:(i+1)*batchSize])
 		if err != nil {
 			return
 		}
 	}
 
 	if offset != 0 {
-		err = db.storeEncodedJobs(bucket, encodes[offset:])
+		err = storer(bucket, data[offset:])
 		if err != nil {
 			return
 		}
@@ -554,17 +804,28 @@ func (db *db) storeBatchedEncodedJobs(bucket []byte, encodes bje) (err error) {
 	return
 }
 
-func (db *db) storeEncodedJobs(bucket []byte, encodes bje) (err error) {
+// storeLookups is a sobsdStorer for storing Job.[somevalue]->Job.Key() lookups
+// in the db.
+func (db *db) storeLookups(bucket []byte, lookups sobsd) (err error) {
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
-		bjobs := tx.Bucket(bucket)
-		brtk := tx.Bucket(bucketRTK)
-		for _, triple := range encodes {
-			err := bjobs.Put(triple[0], triple[1])
+		lookup := tx.Bucket(bucket)
+		for _, doublet := range lookups {
+			err = lookup.Put(doublet[0], nil)
 			if err != nil {
 				return err
 			}
+		}
+		return nil
+	})
+	return
+}
 
-			err = brtk.Put(triple[2], nil)
+// storeEncodedJobs is a sobsdStorer for storing Jobs in the db.
+func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) (err error) {
+	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		bjobs := tx.Bucket(bucket)
+		for _, doublet := range encodes {
+			err := bjobs.Put(doublet[0], doublet[1])
 			if err != nil {
 				return err
 			}

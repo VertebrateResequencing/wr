@@ -76,39 +76,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrDBError
 				qerr = err.Error()
 			} else {
-				// first check the validity of any dependencies specified in the
-				// list of jobs; they must either already be complete, currently
-				// be in the queue, or have been specified earlier in the
-				// supplied list of jobs *** should also check for cycles...
-				okDeps := make(map[string]bool)
-			depCheck:
-				for _, job := range cr.Jobs {
-					for _, dep := range job.Dependencies.Deps {
-						depKey := dep.key()
-						if okDeps[depKey] {
-							continue
-						}
-
-						jobs, _, _ := s.getJobsByKeys(q, []string{depKey}, false, false)
-						if len(jobs) == 0 {
-							srerr = ErrBadDependency
-							break depCheck
-						}
-
-						okDeps[depKey] = true
-					}
-
-					okDeps[job.key()] = true
-				}
-
 				if srerr == "" {
 					// create itemdefs for the jobs
-					var itemdefs []*queue.ItemDef
 					for _, job := range cr.Jobs {
 						job.EnvKey = envkey
 						job.UntilBuried = job.Retries + 1
 						job.Queue = cr.Queue
-						itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.JobKeys()})
 					}
 
 					// keep an on-disk record of these new jobs; we sacrifice a
@@ -123,19 +96,49 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					// won't Remove the job that created the new jobs from the
 					// queue and when we recover, at worst the creating job will
 					// be run again - no jobs get lost.)
-					err = s.db.storeNewJobs(cr.Jobs)
+					jobsToQueue, jobsToUpdate, err := s.db.storeNewJobs(cr.Jobs)
 					if err != nil {
 						srerr = ErrDBError
 						qerr = err.Error()
 					} else {
-						// add the jobs to the in-memory job queue
-						added, dups, err := s.enqueueItems(q, itemdefs)
-						if err != nil {
-							srerr = ErrInternalError
-							qerr = err.Error()
+						// now that jobs are in the db we can get dependencies
+						// fully, so now we can build our itemdefs *** we really
+						// need to test for cycles, because if the user creates
+						// one, we won't let them delete the bad jobs!
+						// storeNewJobs() returns jobsToQueue, which is all of
+						// cr.Jobs plus any previously Archive()d jobs that were
+						// resurrected because of one of their DepGroup
+						// dependencies being in cr.Jobs
+						var itemdefs []*queue.ItemDef
+						for _, job := range jobsToQueue {
+							itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
 						}
 
-						sr = &serverResponse{Added: added, Existed: dups}
+						// storeNewJobs also returns jobsToUpdate, which are
+						// those jobs currently in the queue that need their
+						// dependencies updated because they just changed when
+						// we stored cr.Jobs
+						var updateErr error
+						for _, job := range jobsToUpdate {
+							thisErr := q.Update(job.key(), job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
+							if thisErr != nil {
+								updateErr = thisErr
+								break
+							}
+						}
+
+						if updateErr != nil {
+							srerr = ErrInternalError
+							qerr = updateErr.Error()
+						} else {
+							// add the jobs to the in-memory job queue
+							added, dups, err := s.enqueueItems(q, itemdefs)
+							if err != nil {
+								srerr = ErrInternalError
+								qerr = err.Error()
+							}
+							sr = &serverResponse{Added: added, Existed: dups}
+						}
 					}
 				}
 			}

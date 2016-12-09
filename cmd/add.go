@@ -40,7 +40,8 @@ var cmdOvr int
 var cmdPri int
 var cmdRet int
 var cmdFile string
-var cmdID string
+var cmdRepGroup string
+var cmdDepGroups string
 var cmdDeps string
 
 // addCmd represents the add command
@@ -52,7 +53,7 @@ var addCmd = &cobra.Command{
 You can supply your commands by putting them in a text file (1 per line), or
 by piping them in. In addition to the command itself, you can specify additional
 optional tab-separated columns as follows:
-cmd cwd requirements_group memory time cpus override priority retries id deps
+cmd cwd req_grp memory time cpus override priority retries rep_grp dep_grps deps
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
 unspecified in the text file, but otherwise ignored).
@@ -61,11 +62,11 @@ Cwd is the directory to cd to before running the command. If none is specified,
 the default will be your current directory right now. (If adding to a remote
 cloud-deployed manager, then cwd will instead default to /tmp.)
 
-Requirments_group is an arbitrary string that identifies the kind of commands
-you are adding, such that future commands you add with this same
-requirements_group are likely to have similar memory and time requirements. It
-defaults to the basename of the first word in your command, which it assumes to
-be the name of your executable.
+Req_grp is an arbitrary string that identifies the kind of commands you are
+adding, such that future commands you add with this same requirements_group are
+likely to have similar memory and time requirements. It defaults to the basename
+of the first word in your command, which it assumes to be the name of your
+executable.
 
 By providing the memory and time hints, wr manager can do a better job of
 spawning runners to handle these commands. The manager learns how much memory
@@ -103,19 +104,24 @@ more memory/time reserved). Once this number of retries is reached, the command
 will be "buried" until you take manual action to fix the problem and press the
 retry button in the web interface.
 
-Id is an arbitrary name you can give your commands so you can query their status
-later. If you split your commands into multiple batches with different
-requirements_groups, you can give all the different batches the same identifier,
-so you can track them in one go.
+Rep_grp is an arbitrary group you can give your commands so you can query their
+status later. This is only used for reporting and presentation purposes when
+viewing status.
 
-Deps defines the dependencies of this command. Starting from column 11 you can
+Dep_grps is a comma-separated list of arbitrary names you can associate with a
+command, so that you can then refer to this job (and others with the same
+dep_grp) in another job's deps.
+
+Deps defines the dependencies of this command. Starting from column 12 you can
 specify other commands that must complete before this command will start. The
 specification of the other commands is done by having the command line in one
 column, and it's cwd in the next, then repeating in subsequent columns for every
-other dependency. So a command with 1 dependency would have 12 columns, and one
-with 2 dependencies would have 14 columns and so on. Dependencies must have
-either been specified earlier in the file, or must already have been added to
-the queue.
+other dependency. So a command with 1 dependency would have 13 columns, and one
+with 2 dependencies would have 14 columns and so on.
+Alternatively, the command slot can be used to specify a comma-separated list of
+the dep_grp of other commands, and the cwd slot can be set to the word 'groups'.
+In this case, the system will automatically re-run commands if new commands with
+the dep_grps they are dependent upon are added to the queue.
 
 NB: Your commands will run with the environment variables you had when you
 added them, not the possibly different environment variables you could have in
@@ -125,8 +131,8 @@ the future when the commands actually get run.`,
 		if cmdFile == "" {
 			die("--file is required")
 		}
-		if cmdID == "" {
-			cmdID = "manually_added"
+		if cmdRepGroup == "" {
+			cmdRepGroup = "manually_added"
 		}
 		var cmdMB int
 		var err error
@@ -162,11 +168,15 @@ the future when the commands actually get run.`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
+		var defaultDepGroups []string
+		if cmdDepGroups != "" {
+			defaultDepGroups = strings.Split(cmdDepGroups, ",")
+		}
+
 		var defaultDeps []*jobqueue.Dependency
 		if cmdDeps != "" {
 			cols := strings.Split(cmdDeps, "\\t")
 			if len(cols)%2 != 0 {
-				warn("--deps has cols (%s) of len %d which %2 == %d", cols, len(cols), len(cols)%2)
 				die("--deps must have an even number of tab-separated columns")
 			}
 			defaultDeps = colsToDeps(cols)
@@ -211,7 +221,7 @@ the future when the commands actually get run.`,
 		// of Jobs and Add() them in one go afterwards
 		var jobs []*jobqueue.Job
 		scanner := bufio.NewScanner(reader)
-		defaultedID := false
+		defaultedRepG := false
 		for scanner.Scan() {
 			cols := strings.Split(scanner.Text(), "\t")
 			colsn := len(cols)
@@ -219,9 +229,10 @@ the future when the commands actually get run.`,
 				continue
 			}
 
-			var cmd, cwd, rg, id string
+			var cmd, cwd, rg, repg string
 			var mb, cpus, override, priority, retries int
 			var dur time.Duration
+			var depGroups []string
 			var deps *jobqueue.Dependencies
 
 			// cmd cwd requirements_group memory time cpus override priority retries id deps
@@ -317,23 +328,30 @@ the future when the commands actually get run.`,
 			}
 
 			if colsn < 10 || cols[9] == "" {
-				id = cmdID
-				defaultedID = true
+				repg = cmdRepGroup
+				defaultedRepG = true
 			} else {
-				id = cols[9]
+				repg = cols[9]
 			}
 
 			if colsn < 11 || cols[10] == "" {
+				depGroups = defaultDepGroups
+			} else {
+				depGroups = strings.Split(cols[10], ",")
+			}
+
+			if colsn < 12 || cols[11] == "" {
 				deps = jobqueue.NewDependencies(defaultDeps...)
 			} else {
 				// all remaining columns specify deps
-				if colsn%2 != 0 {
+				depCols := cols[11:]
+				if len(depCols)%2 != 0 {
 					die("there must be an even number of dependency columns")
 				}
-				deps = jobqueue.NewDependencies(colsToDeps(cols[10:])...)
+				deps = jobqueue.NewDependencies(colsToDeps(depCols)...)
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), id, deps))
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
 		}
 
 		// connect to the server
@@ -349,8 +367,8 @@ the future when the commands actually get run.`,
 			die("%s", err)
 		}
 
-		if defaultedID {
-			info("Added %d new commands (%d were duplicates) to the queue using default identifier '%s'", inserts, dups, cmdID)
+		if defaultedRepG {
+			info("Added %d new commands (%d were duplicates) to the queue using default identifier '%s'", inserts, dups, cmdRepGroup)
 		} else {
 			info("Added %d new commands (%d were duplicates) to the queue", inserts, dups)
 		}
@@ -362,24 +380,31 @@ func init() {
 
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
-	addCmd.Flags().StringVarP(&cmdID, "id", "i", "manually_added", "identifier for your commands")
+	addCmd.Flags().StringVarP(&cmdRepGroup, "report_grp", "i", "manually_added", "reporting group for your commands")
+	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
-	addCmd.Flags().StringVarP(&reqGroup, "requirements_group", "g", "", "group name for commands with similar reqs")
+	addCmd.Flags().StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
 	addCmd.Flags().IntVar(&cmdCPUs, "cpus", 1, "cpu cores needed")
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override?")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
-	addCmd.Flags().StringVarP(&cmdDeps, "deps", "d", "", "dependencies of your commands, in the form \"command1\\tcwd1\\tcommand2\\tcwd2...\"")
+	addCmd.Flags().StringVarP(&cmdDeps, "deps", "d", "", "dependencies of your commands, in the form \"command1\\tcwd1\\tcommand2\\tcwd2...\" or \"dep_grp1,dep_grp2...\\tgroups\"")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
-// convert cmd,cwd columns in to Dependency
+// convert cmd,cwd or depgroups,"groups" columns in to Dependency
 func colsToDeps(cols []string) (deps []*jobqueue.Dependency) {
 	for i := 0; i < len(cols); i += 2 {
-		deps = append(deps, jobqueue.NewDependency(cols[i], cols[i+1]))
+		if cols[i+1] == "groups" {
+			for _, depgroup := range strings.Split(cols[i], ",") {
+				deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
+			}
+		} else {
+			deps = append(deps, jobqueue.NewCmdDependency(cols[i], cols[i+1]))
+		}
 	}
 	return
 }

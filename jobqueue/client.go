@@ -115,6 +115,7 @@ type clientRequest struct {
 type Job struct {
 	RepGroup       string // a name associated with related Jobs to help group them together when reporting on their status etc.
 	ReqGroup       string
+	DepGroups      []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
 	Cmd            string
 	Cwd            string        // the working directory to cd to before running Cmd
 	RAM            int           // the expected peak RAM in MB Cmd will use while running
@@ -154,46 +155,96 @@ type Dependencies struct {
 	Deps []*Dependency
 }
 
-// JobKeys converts the constituent Dependency structs in to internal job keys
-// that uniquely identify these jobs.
-func (d *Dependencies) JobKeys() (jobKeys []string) {
+// incompleteJobKeys converts the constituent Dependency structs in to internal
+// job keys that uniquely identify the jobs we are dependent upon. Note that if
+// you have dependencies that are specified with DepGroups, then you should re-
+// call this and update every time a new Job is added with with one of our
+// DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
+// are incomplete (they could have been Archive()d in the past if they are now
+// being re-run).
+func (d *Dependencies) incompleteJobKeys(db *db) []string {
+	// we initially store in a map to avoid duplicates
+	jobKeys := make(map[string]bool)
 	for _, dep := range d.Deps {
-		jobKeys = append(jobKeys, dep.key())
+		for _, key := range dep.incompleteJobKeys(db) {
+			jobKeys[key] = true
+		}
+	}
+
+	keys := make([]string, len(jobKeys))
+	i := 0
+	for key := range jobKeys {
+		keys[i] = key
+		i++
+	}
+
+	return keys
+}
+
+// DepGroups returns all the DepGroups of our constituent Dependency structs.
+func (d *Dependencies) DepGroups() (depGroups []string) {
+	for _, dep := range d.Deps {
+		if dep.DepGroup != "" {
+			depGroups = append(depGroups, dep.DepGroup)
+		}
 	}
 	return
 }
 
 // Dependency is a struct that describes a Job purely in terms of its Cmd and
-// Cwd, for use in Dependencies.
+// Cwd, or in terms of a Job's DepGroup, for use in Dependencies. If DepGroup
+// is specified, then Cmd/Cwd is ignored.
 type Dependency struct {
-	Cmd string
-	Cwd string
+	Cmd      string
+	Cwd      string
+	DepGroup string
+}
+
+// incompleteJobKeys calculates the job keys that this dependency refers to. For
+// a Dependency made with Cmd/Cwd, you will get a single key which will be the
+// same key you'd get from *Job.key() on a Job made with the same Cmd and Cwd.
+// For a Dependency made with a DepGroup, you will get the *Job.Key()s of all
+// the jobs in the queue and database that have that DepGroup in their
+// DepGroups. You will only get keys for jobs that are currently in the queue.
+func (d *Dependency) incompleteJobKeys(db *db) []string {
+	if d.DepGroup != "" {
+		keys, _ := db.retrieveIncompleteJobKeysByDepGroup(d.DepGroup) // *** we're just throwing away the error here...
+		return keys
+	}
+	jobKey := byteKey([]byte(fmt.Sprintf("%s.%s", d.Cwd, d.Cmd)))
+	live, _ := db.checkIfLive(jobKey)
+	if live {
+		return []string{jobKey}
+	}
+	return []string{}
 }
 
 // key calculates a unique key to describe the dependency, which will be the
 // same key you'd get from *Job.key() on a Job made with the same Cmd and Cwd.
+// If the Dependency was not specified with Cmd and Cwd, then this returns an
+// empty string that you should check for before trying to use the value.
 func (d *Dependency) key() string {
+	if d.Cmd == "" {
+		return ""
+	}
 	return byteKey([]byte(fmt.Sprintf("%s.%s", d.Cwd, d.Cmd)))
 }
 
 // NewJob makes it a little easier to make a new Job, for use with Add(). The
-// last argument is optional (and may only be specified once); note that it will
-// be an error (matching ErrBadDependency) to specify dependencies that haven't
-// already been Archive()d, aren't currently in the queue, or were not specified
-// earlier in the slice of Jobs that this Job will be a part of when supplied to
-// Add().
-func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, retries uint8, repgroup string, deps ...*Dependencies) *Job {
+// last argument is optional (and may only be specified once).
+func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, retries uint8, repgroup string, depgroups []string, deps ...*Dependencies) *Job {
 	job := &Job{
-		RepGroup: repgroup,
-		ReqGroup: group,
-		Cmd:      cmd,
-		Cwd:      cwd,
-		RAM:      ram,
-		Time:     time,
-		Cores:    cores,
-		Override: override,
-		Priority: priority,
-		Retries:  retries,
+		RepGroup:  repgroup,
+		ReqGroup:  group,
+		DepGroups: depgroups,
+		Cmd:       cmd,
+		Cwd:       cwd,
+		RAM:       ram,
+		Time:      time,
+		Cores:     cores,
+		Override:  override,
+		Priority:  priority,
+		Retries:   retries,
 	}
 
 	if len(deps) == 1 {
@@ -211,12 +262,20 @@ func NewDependencies(deps ...*Dependency) *Dependencies {
 	return &Dependencies{Deps: deps[:]}
 }
 
-// NewDependency makes it a little easier to make a new *Dependency, for use in
-// NewDependencies().
-func NewDependency(cmd string, cwd string) *Dependency {
+// NewCmdDependency makes it a little easier to make a new *Dependency based on
+// Cmd+Cwd, for use in NewDependencies().
+func NewCmdDependency(cmd string, cwd string) *Dependency {
 	return &Dependency{
 		Cmd: cmd,
 		Cwd: cwd,
+	}
+}
+
+// NewDepGroupDependency makes it a little easier to make a new *Dependency
+// based on a dep group, for use in NewDependencies().
+func NewDepGroupDependency(depgroup string) *Dependency {
+	return &Dependency{
+		DepGroup: depgroup,
 	}
 }
 
