@@ -60,6 +60,8 @@ Or you define a workflow that works out the commands for you:
 Create a workflow with:                           $ wr create
 Define a datasource with:                         $ wr datasource
 Set up an instance of workflow + datasource with: $ wr setup
+[create, datasource and setup commands are not yet implemented; just use add for
+now]
 
 At this point your commands should be running, and you can monitor their
 progress with:

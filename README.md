@@ -74,11 +74,15 @@ Implemented so far
   utilization
 * Draining the queue if you want to stop the system as gracefully as
   possible, and recovering from drains, stops and crashes
+* Specifying command dependencies, and allowing for automation by these
+  dependencies being "live", automatically re-running commands if their
+  dependencies get re-run or added to.
 
 Not yet implemented
 -------------------
 * While the help mentions workflows, nothing workflow-related has been
-  implemented (no job dependecies)
+  implemented (though you can manually build a workflow by specifying command
+  dependencies)
 * Get a complete listing of all commands with a given id
 * Database backups
 * Checkpointing for long running commands
@@ -122,6 +126,18 @@ Right now, with the limited functionality available, you will run something like
 * wr manager stop
 
 (It isn't necessary to stop the manager; you can just leave it running forever.)
+
+For usage on OpenStack, while you can bring up your own OpenStack server, ssh
+there and run `wr manager start -s openstack [options]` as normal it's easier
+to:
+
+* wr cloud deploy [options]
+* wr add [options]
+* [view status on the web interface]
+* wr cloud teardown
+
+This way, you don't have to directly interact with OpenStack at all, or even
+know how it works.
 
 Example .ssh/config
 -------------------

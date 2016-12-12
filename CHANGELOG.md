@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
+
+## [0.3.0] - 2016-12-12
+### Added
+- Added commands can now be dependent on previously added commands, using
+  arbitrary and multiple dependency groups for "live" dependencies.
+- Status web page now shows dependency information.
+
+### Fixed
+- Updated help text to note what is not implemented yet.
+
+### Changed
+- Format of file taken by `wr add -f` now has an additional column for
+  specifying dependency group-based dependencies, which changes the column
+  order. Old files that had dependencies specified are no longer compatible!
+
+
 ## [0.2.0] - 2016-12-06
 ### Added
 - Added commands can now be dependent on previously added commands.
