@@ -82,7 +82,7 @@ Not yet implemented
 -------------------
 * While the help mentions workflows, nothing workflow-related has been
   implemented (though you can manually build a workflow by specifying command
-  dependecies)
+  dependencies)
 * Get a complete listing of all commands with a given id
 * Database backups
 * Checkpointing for long running commands
