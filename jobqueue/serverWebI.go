@@ -45,12 +45,14 @@ type jstatusReq struct {
 }
 
 // jstatus is the job info we send to the status webpage (only real difference
-// to Job is that the times are seconds instead of *time.Duration... *** not
-// really sure if we really need this and should just give the webpage Jobs
-// directly instead).
+// to Job is that the times are seconds instead of *time.Duration, and
+// dependencies become job cmd+cwd or depgroup strings... *** not really sure if
+// we really need this and should just give the webpage Jobs directly instead).
 type jstatus struct {
 	Key          string
 	RepGroup     string
+	DepGroups    []string
+	Dependencies []string
 	Cmd          string
 	State        string
 	Cwd          string
@@ -171,6 +173,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						status := jstatus{
 							Key:          jobs[0].key(),
 							RepGroup:     jobs[0].RepGroup,
+							DepGroups:    jobs[0].DepGroups,
+							Dependencies: jobs[0].Dependencies.Stringify(),
 							Cmd:          jobs[0].Cmd,
 							State:        jobs[0].State,
 							Cwd:          jobs[0].Cwd,
@@ -248,6 +252,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								status := jstatus{
 									Key:          job.key(),
 									RepGroup:     req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
+									DepGroups:    job.DepGroups,
+									Dependencies: job.Dependencies.Stringify(),
 									Cmd:          job.Cmd,
 									State:        job.State,
 									Cwd:          job.Cwd,

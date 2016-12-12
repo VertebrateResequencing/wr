@@ -91,6 +91,10 @@
             </div>
             -->
             
+            <!-- ko if: sortableRepGroups().length > 0 -->
+                <hr>
+            <!-- /ko -->
+             
             <div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
                 <div style="width: 100%;" class="well well-sm">
                     <div style="margin: 0 auto;">
@@ -231,6 +235,24 @@
                                         </dl>
                                     <!-- /ko -->
                                     
+                                    <!-- ko if: DepGroups -->
+                                        <dl>
+                                            <dt>DepGroups</dt>
+                                            <dd>
+                                                <span class="clickable" data-bind="click: $root.showDepGroups">&lt;show&gt;</span>
+                                            </dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
+                                    <!-- ko if: Dependencies -->
+                                        <dl>
+                                            <dt>Dependencies</dt>
+                                            <dd>
+                                                <span class="clickable" data-bind="click: $root.showDependencies">&lt;show&gt;</span>
+                                            </dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
                                     <dl>
                                         <dt>Env</dt>
                                         <dd>
@@ -301,6 +323,22 @@
                 dialogCss: 'modal-lg',
                 header: { data: { label: stdModalHeader } },
                 body: { data: { content: stdOutput } }
+            }"></div>
+            
+            <!-- depgroups modal -->
+            <div data-bind="modal: {
+                visible: dgModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Dependency Groups' } },
+                body: { name: 'envModalBodyTemplate', data: dgVars }
+            }"></div>
+            
+            <!-- dependencies modal -->
+            <div data-bind="modal: {
+                visible: depModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Dependencies' } },
+                body: { name: 'envModalBodyTemplate', data: depVars }
             }"></div>
             
             <!-- env modal -->
@@ -628,6 +666,22 @@
                     self.stdModalHeader(type);
                     self.stdOutput(job[type]);
                     self.stdModalVisible(true);
+                }
+                
+                // act if the user clicks to view DepGroups
+                self.dgModalVisible = ko.observable(false);
+                self.dgVars = ko.observableArray();
+                self.showDepGroups = function(job) {
+                    self.dgVars(job.DepGroups);
+                    self.dgModalVisible(true);
+                }
+                
+                // act if the user clicks to view Dependencies
+                self.depModalVisible = ko.observable(false);
+                self.depVars = ko.observableArray();
+                self.showDependencies = function(job) {
+                    self.depVars(job.Dependencies);
+                    self.depModalVisible(true);
                 }
                 
                 // act if the user clicks to view env

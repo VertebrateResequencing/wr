@@ -191,6 +191,19 @@ func (d *Dependencies) DepGroups() (depGroups []string) {
 	return
 }
 
+// Stringify converts our constituent Dependency structs in to a slice of
+// strings, each of which could be a DepGroup or a Cmd+Cwd.
+func (d *Dependencies) Stringify() (strings []string) {
+	for _, dep := range d.Deps {
+		if dep.DepGroup != "" {
+			strings = append(strings, dep.DepGroup)
+		} else if dep.Cmd != "" {
+			strings = append(strings, dep.Cmd+" ["+dep.Cwd+"]")
+		}
+	}
+	return
+}
+
 // Dependency is a struct that describes a Job purely in terms of its Cmd and
 // Cwd, or in terms of a Job's DepGroup, for use in Dependencies. If DepGroup
 // is specified, then Cmd/Cwd is ignored.
