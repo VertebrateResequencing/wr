@@ -5,6 +5,11 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.3.1] - 2016-12-16
+### Fixed
+- `wr cloud deploy` now creates working ssh tunnels for typical ssh configs.
+
+
 ## [0.3.0] - 2016-12-12
 ### Added
 - Added commands can now be dependent on previously added commands, using
