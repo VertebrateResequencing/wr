@@ -20,13 +20,13 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/pivotal-golang/bytefmt"
 	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +44,23 @@ var cmdRepGroup string
 var cmdDepGroups string
 var cmdDeps string
 
+// addCmdOpts is the struct we decode user's JSON options in to
+type addCmdOpts struct {
+	Cmd      string                 `json:"cmd"`
+	Cwd      string                 `json:"cwd"`
+	ReqGrp   string                 `json:"req_grp"`
+	Memory   string                 `json:"memory"`
+	Time     string                 `json:"time"`
+	CPUs     *int                   `json:"cpus"`
+	Override *int                   `json:"override"`
+	Priority *int                   `json:"priority"`
+	Retries  *int                   `json:"retries"`
+	RepGrp   string                 `json:"rep_grp"`
+	DepGrps  []string               `json:"dep_grps"`
+	Deps     []string               `json:"deps"`
+	CmdDeps  []*jobqueue.Dependency `json:"cmd_deps"`
+}
+
 // addCmd represents the add command
 var addCmd = &cobra.Command{
 	Use:   "add",
@@ -51,82 +68,100 @@ var addCmd = &cobra.Command{
 	Long: `Manually add commands you want run to the queue.
 
 You can supply your commands by putting them in a text file (1 per line), or
-by piping them in. In addition to the command itself, you can specify additional
-optional tab-separated columns as follows:
+by piping them in. In addition to the command itself, you can specify command-
+specific options using a JSON object in (tab separated) column 2, or
+alternatively have only a JSON object in column 1 that also specifies the
+command as one of the name:value pairs. The possible options are:
+
 cmd cwd req_grp memory time cpus override priority retries rep_grp dep_grps deps
+cmd_deps
+
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
-unspecified in the text file, but otherwise ignored).
+unspecified in the text file, but otherwise ignored). The meaning of each option
+is detailed below.
 
-Cwd is the directory to cd to before running the command. If none is specified,
-the default will be your current directory right now. (If adding to a remote
-cloud-deployed manager, then cwd will instead default to /tmp.)
+A JSON object can written by starting and ending it with curly braces. Names and
+single values are put in double quotes (except for numbers, which are left bare)
+and the pair separated with a colon, and pairs separated from each other with
+commas. Options that take array values have their double-quoted values
+separated by commas and enclosed in square brackets. For example (on one line):
+{"cmd":"myexe -f input > output","cwd":"/path/to/cwd","priority":1,"dep_grps":
+["dg2","dg3"],"deps":["dg1"]}
 
-Req_grp is an arbitrary string that identifies the kind of commands you are
-adding, such that future commands you add with this same requirements_group are
+"cwd" is the directory to cd to before running the command. If none is
+specified, the default will be your current directory right now. (If adding to a
+remote cloud-deployed manager, then cwd will instead default to /tmp.)
+
+"req_grp" is an arbitrary string that identifies the kind of commands you are
+adding, such that future commands you add with this same requirements group are
 likely to have similar memory and time requirements. It defaults to the basename
 of the first word in your command, which it assumes to be the name of your
 executable.
 
-By providing the memory and time hints, wr manager can do a better job of
-spawning runners to handle these commands. The manager learns how much memory
-and time commands in the same requirements_group actually used in the past, and
-will use its own values unless you set an override. For this learning to work
-well, you should have reason to believe that all the commands you add with the
-same requirements_group will have similar memory and time requirements, and you
-should pick the name in a consistent way such that you'll use it again in the
-future.
+"memory" and "time" let you provide hints to wr manager so that it can do a
+better job of spawning runners to handle these commands. "memory" values should
+specify a unit, eg "100M" for 100 megabytes, or "1G" for 1 gigabyte. "time"
+values should do the same, eg. "30m" for 30 minutes, or "1h" for 1 hour.
+"cpus" tells wr manager exactly how many CPU cores your command needs.
+
+The manager learns how much memory and time commands in the same req_grp
+actually used in the past, and will use its own values unless you set an
+override. For this learning to work well, you should have reason to believe that
+all the commands you add with the same req_grp will have similar memory and time
+requirements, and you should pick the name in a consistent way such that you'll
+use it again in the future.
 
 For example, if you want to run an executable called "exop", and you know that
 the memory and time requirements of exop vary with the size of its input file,
 you might batch your commands so that all the input files in one batch have
-sizes in a certain range, and then provide a requirements_group that describes
-this, eg. "exop.1-2G" for inputs in the 1 to 2 GB range.
+sizes in a certain range, and then provide a req_grp that describes this, eg.
+"exop.1-2Ginputs" for inputs in the 1 to 2 GB range.
 
-(Don't name your requirements_group after the expected requirements themselves,
-such as "5GB.1hr", because then the manager can't learn about your commands - it
-is only learning about how good your estimates are! The name of your executable
-should almost always be part of the requirements_group name.)
+(Don't name your req_grp after the expected requirements themselves, such as
+"5GBram.1hr", because then the manager can't learn about your commands - it is
+only learning about how good your estimates are! The name of your executable
+should almost always be part of the req_grp name.)
 
-Override defines if your memory and time should be used instead of the manager's
-estimate.
-0: do not override wr's learned values for memory and time (if any)
-1: override if yours are higher
-2: always override
+"override" defines if your memory and time should be used instead of the
+manager's estimate. Possible values are:
+0 = do not override wr's learned values for memory and time (if any)
+1 = override if yours are higher
+2 = always override
 
-Priority defines how urgent a particular command is; those with higher
-priorities will start running before those with lower priorities.
+"priority" defines how urgent a particular command is; those with higher
+priorities will start running before those with lower priorities. The range of
+possible values is 0 (default) to 255. Commands with the same priority will be
+started in the order they were added.
 
-Retries defines how many times a command will be retried automatically if it
+"retries" defines how many times a command will be retried automatically if it
 fails. Automatic retries are helpful in the case of transient errors, or errors
 due to running out of memory or time (when retried, they will be retried with
 more memory/time reserved). Once this number of retries is reached, the command
-will be "buried" until you take manual action to fix the problem and press the
+will be 'buried' until you take manual action to fix the problem and press the
 retry button in the web interface.
 
-Rep_grp is an arbitrary group you can give your commands so you can query their
-status later. This is only used for reporting and presentation purposes when
-viewing status.
+"rep_grp" is an arbitrary group you can give your commands so you can query
+their status later. This is only used for reporting and presentation purposes
+when viewing status.
 
-Dep_grps is a comma-separated list of arbitrary names you can associate with a
-command, so that you can then refer to this job (and others with the same
-dep_grp) in another job's deps.
+"dep_grps" is an array of arbitrary names you can associate with a command, so
+that you can then refer to this job (and others with the same dep_grp) in
+another job's deps.
 
-Deps defines the dependencies of this command. Starting from column 12 you can
-specify other commands that must complete before this command will start. The
-specification of the other commands is done by having the command line in one
-column, and it's cwd in the next, then repeating in subsequent columns for every
-other dependency. So a command with 1 dependency would have 13 columns, and one
-with 2 dependencies would have 14 columns and so on.
-Alternatively, the command slot can be used to specify a comma-separated list of
-the dep_grp of other commands, and the cwd slot can be set to the word 'groups'.
-In this case, the system will automatically re-run commands if new commands with
-the dep_grps they are dependent upon are added to the queue.
+"deps" and "cmd_deps" define the dependencies of this command. The commands that
+these refer to must complete before this command will start. The value for
+"deps" is an array of the dep_grp of other commands. Dependencies specified in
+this way are 'live', causing this command to be automatically re-run if any
+commands with any of the dep_grps it is dependent upon get added to the queue.
+The value for "cmd_deps" is an array of JSON objects with "cmd" and "cwd"
+name:value pairs. These are static dependencies; once resolved they do not get
+re-evaluated.
 
 NB: Your commands will run with the environment variables you had when you
 added them, not the possibly different environment variables you could have in
 the future when the commands actually get run.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
 			die("--file is required")
@@ -222,11 +257,35 @@ the future when the commands actually get run.`,
 		var jobs []*jobqueue.Job
 		scanner := bufio.NewScanner(reader)
 		defaultedRepG := false
+		lineNum := 0
 		for scanner.Scan() {
+			lineNum++
 			cols := strings.Split(scanner.Text(), "\t")
 			colsn := len(cols)
 			if colsn < 1 || cols[0] == "" {
 				continue
+			}
+			if colsn > 2 {
+				die("line %d has too many columns; check `wr add -h`", lineNum)
+			}
+
+			var cmdOpts addCmdOpts
+			var jsonErr error
+			if colsn == 2 {
+				jsonErr = json.Unmarshal([]byte(cols[1]), &cmdOpts)
+				if jsonErr == nil {
+					cmdOpts.Cmd = cols[0]
+				}
+			} else {
+				if strings.HasPrefix(cols[0], "{") {
+					jsonErr = json.Unmarshal([]byte(cols[0]), &cmdOpts)
+				} else {
+					cmdOpts = addCmdOpts{Cmd: cols[0]}
+				}
+			}
+
+			if jsonErr != nil {
+				die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
 			}
 
 			var cmd, cwd, rg, repg string
@@ -235,10 +294,12 @@ the future when the commands actually get run.`,
 			var depGroups []string
 			var deps *jobqueue.Dependencies
 
-			// cmd cwd requirements_group memory time cpus override priority retries id deps
-			cmd = cols[0]
+			cmd = cmdOpts.Cmd
+			if cmd == "" {
+				die("line %d does not specify a cmd", lineNum)
+			}
 
-			if colsn < 2 || cols[1] == "" {
+			if cmdOpts.Cwd == "" {
 				if cmdCwd != "" {
 					cwd = cmdCwd
 				} else {
@@ -249,10 +310,10 @@ the future when the commands actually get run.`,
 					cwd = pwd
 				}
 			} else {
-				cwd = cols[1]
+				cwd = cmdOpts.Cwd
 			}
 
-			if colsn < 3 || cols[2] == "" {
+			if cmdOpts.RepGrp == "" {
 				if reqGroup != "" {
 					rg = reqGroup
 				} else {
@@ -260,95 +321,87 @@ the future when the commands actually get run.`,
 					rg = filepath.Base(parts[0])
 				}
 			} else {
-				rg = cols[2]
+				rg = cmdOpts.RepGrp
 			}
 
-			if colsn < 4 || cols[3] == "" {
+			if cmdOpts.Memory == "" {
 				mb = cmdMB
 			} else {
-				thismb, err := bytefmt.ToMegabytes(cols[3])
+				thismb, err := bytefmt.ToMegabytes(cmdOpts.Memory)
 				if err != nil {
-					die("a value in the memory column (%s) was not specified correctly: %s", cols[3], err)
+					die("line %d's memory value (%s) was not specified correctly: %s", lineNum, cmdOpts.Memory, err)
 				}
 				mb = int(thismb)
 			}
 
-			if colsn < 5 || cols[4] == "" {
+			if cmdOpts.Time == "" {
 				dur = cmdDuration
 			} else {
-				dur, err = time.ParseDuration(cols[4])
+				dur, err = time.ParseDuration(cmdOpts.Time)
 				if err != nil {
-					die("a value in the time column (%s) was not specified correctly: %s", cols[4], err)
+					die("line %d's time value (%s) was not specified correctly: %s", lineNum, cmdOpts.Time, err)
 				}
 			}
 
-			if colsn < 6 || cols[5] == "" {
+			if cmdOpts.CPUs == nil {
 				cpus = cmdCPUs
 			} else {
-				cpus, err = strconv.Atoi(cols[5])
-				if err != nil {
-					die("a value in the cpus column (%s) was not specified correctly: %s", cols[5], err)
-				}
+				cpus = *cmdOpts.CPUs
 			}
 
-			if colsn < 7 || cols[6] == "" {
+			if cmdOpts.Override == nil {
 				override = cmdOvr
 			} else {
-				override, err = strconv.Atoi(cols[6])
-				if err != nil {
-					die("a value in the override column (%s) was not specified correctly: %s", cols[6], err)
-				}
+				override = *cmdOpts.Override
 				if override < 0 || override > 2 {
-					die("override column must contain values in the range 0..2 (not %d)", override)
+					die("line %d's override value (%d) is not in the range 0..2", lineNum, override)
 				}
 			}
 
-			if colsn < 8 || cols[7] == "" {
+			if cmdOpts.Priority == nil {
 				priority = cmdPri
 			} else {
-				priority, err = strconv.Atoi(cols[7])
-				if err != nil {
-					die("a value in the priority column (%s) was not specified correctly: %s", cols[7], err)
-				}
+				priority = *cmdOpts.Priority
 				if priority < 0 || priority > 255 {
-					die("priority column must contain values in the range 0..255 (not %d)", priority)
+					die("line %d's priority value (%d) is not in the range 0..255", lineNum, priority)
 				}
 			}
 
-			if colsn < 9 || cols[8] == "" {
+			if cmdOpts.Retries == nil {
 				retries = cmdRet
 			} else {
-				retries, err = strconv.Atoi(cols[8])
-				if err != nil {
-					die("a value in the retries column (%s) was not specified correctly: %s", cols[8], err)
-				}
-				if priority < 0 || priority > 255 {
-					die("retries column must contain values in the range 0..255 (not %d)", retries)
+				retries = *cmdOpts.Retries
+				if retries < 0 || retries > 255 {
+					die("line %d's retries value (%d) is not in the range 0..255", lineNum, retries)
 				}
 			}
 
-			if colsn < 10 || cols[9] == "" {
+			if cmdOpts.RepGrp == "" {
 				repg = cmdRepGroup
 				defaultedRepG = true
 			} else {
-				repg = cols[9]
+				repg = cmdOpts.RepGrp
 			}
 
-			if colsn < 11 || cols[10] == "" {
+			if len(cmdOpts.DepGrps) == 0 {
 				depGroups = defaultDepGroups
 			} else {
-				depGroups = strings.Split(cols[10], ",")
+				depGroups = cmdOpts.DepGrps
 			}
 
-			if colsn < 12 || cols[11] == "" {
+			if len(cmdOpts.Deps) == 0 && len(cmdOpts.CmdDeps) == 0 {
 				deps = jobqueue.NewDependencies(defaultDeps...)
 			} else {
-				// all remaining columns specify deps
-				depCols := cols[11:]
-				if len(depCols)%2 != 0 {
-					die("there must be an even number of dependency columns")
+				var theseDeps []*jobqueue.Dependency
+				if len(cmdOpts.CmdDeps) > 0 {
+					theseDeps = cmdOpts.CmdDeps
 				}
-				deps = jobqueue.NewDependencies(colsToDeps(depCols)...)
+				if len(cmdOpts.Deps) > 0 {
+					for _, depgroup := range cmdOpts.Deps {
+						theseDeps = append(theseDeps, jobqueue.NewDepGroupDependency(depgroup))
+					}
+				}
+				deps = jobqueue.NewDependencies(theseDeps...)
 			}
 
 			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
