@@ -22,7 +22,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"github.com/VertebrateResequencing/wr/jobqueue"
-	jsch "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/pivotal-golang/bytefmt"
 	"github.com/spf13/cobra"
 	"io"
@@ -37,6 +37,7 @@ var reqGroup string
 var cmdTime string
 var cmdMem string
 var cmdCPUs int
+var cmdDisk int
 var cmdOvr int
 var cmdPri int
 var cmdRet int
@@ -53,6 +54,7 @@ type addCmdOpts struct {
 	Memory   string                 `json:"memory"`
 	Time     string                 `json:"time"`
 	CPUs     *int                   `json:"cpus"`
+	Disk     *int                   `json:"disk"`
 	Override *int                   `json:"override"`
 	Priority *int                   `json:"priority"`
 	Retries  *int                   `json:"retries"`
@@ -74,8 +76,8 @@ specific options using a JSON object in (tab separated) column 2, or
 alternatively have only a JSON object in column 1 that also specifies the
 command as one of the name:value pairs. The possible options are:
 
-cmd cwd req_grp memory time cpus override priority retries rep_grp dep_grps deps
-cmd_deps
+cmd cwd req_grp memory time override cpus disk priority retries rep_grp dep_grps
+deps cmd_deps
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -104,7 +106,6 @@ executable.
 better job of spawning runners to handle these commands. "memory" values should
 specify a unit, eg "100M" for 100 megabytes, or "1G" for 1 gigabyte. "time"
 values should do the same, eg. "30m" for 30 minutes, or "1h" for 1 hour.
-"cpus" tells wr manager exactly how many CPU cores your command needs.
 
 The manager learns how much memory and time commands in the same req_grp
 actually used in the past, and will use its own values unless you set an
@@ -129,6 +130,13 @@ manager's estimate. Possible values are:
 0 = do not override wr's learned values for memory and time (if any)
 1 = override if yours are higher
 2 = always override
+
+"cpus" tells wr manager exactly how many CPU cores your command needs.
+
+"disk" tells wr manager how much free disk space (in GB) your command needs. If
+you know that where your command will store its outputs to will not run out of
+disk space, set this to 0 to avoid unnecessary disk space checks (or possible
+volume creation, in the case of cloud schedulers).
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
@@ -270,6 +278,7 @@ the future when the commands actually get run.`,
 				die("line %d has too many columns; check `wr add -h`", lineNum)
 			}
 
+			// determine all the options for this command
 			var cmdOpts addCmdOpts
 			var jsonErr error
 			if colsn == 2 {
@@ -290,7 +299,7 @@ the future when the commands actually get run.`,
 			}
 
 			var cmd, cwd, rg, repg string
-			var mb, cpus, override, priority, retries int
+			var mb, cpus, disk, override, priority, retries int
 			var dur time.Duration
 			var depGroups []string
 			var deps *jobqueue.Dependencies
@@ -344,12 +353,6 @@ the future when the commands actually get run.`,
 				}
 			}
 
-			if cmdOpts.CPUs == nil {
-				cpus = cmdCPUs
-			} else {
-				cpus = *cmdOpts.CPUs
-			}
-
 			if cmdOpts.Override == nil {
 				override = cmdOvr
 			} else {
@@ -357,6 +360,18 @@ the future when the commands actually get run.`,
 				if override < 0 || override > 2 {
 					die("line %d's override value (%d) is not in the range 0..2", lineNum, override)
 				}
+			}
+
+			if cmdOpts.CPUs == nil {
+				cpus = cmdCPUs
+			} else {
+				cpus = *cmdOpts.CPUs
+			}
+
+			if cmdOpts.Disk == nil {
+				disk = cmdDisk
+			} else {
+				disk = *cmdOpts.Disk
 			}
 
 			if cmdOpts.Priority == nil {
@@ -405,9 +420,10 @@ the future when the commands actually get run.`,
 				deps = jobqueue.NewDependencies(theseDeps...)
 			}
 
+			// scheduler-specific options
 			other := make(map[string]string)
-			disk := 0
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, &jsch.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other}, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
+
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other}, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
 		}
 
 		// connect to the server
@@ -443,8 +459,9 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
 	addCmd.Flags().IntVar(&cmdCPUs, "cpus", 1, "cpu cores needed")
-	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override?")
-	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority")
+	addCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required [0 means do not check disk space] (default 0)")
+	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
+	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	addCmd.Flags().StringVarP(&cmdDeps, "deps", "d", "", "dependencies of your commands, in the form \"command1\\tcwd1\\tcommand2\\tcwd2...\" or \"dep_grp1,dep_grp2...\\tgroups\"")
 
