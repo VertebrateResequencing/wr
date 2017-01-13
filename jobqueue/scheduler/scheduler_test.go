@@ -32,6 +32,7 @@ import (
 )
 
 var maxCPU = runtime.NumCPU()
+var otherReqs = make(map[string]string)
 
 func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
@@ -41,8 +42,8 @@ func TestLocal(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 1 second", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -54,6 +55,17 @@ func TestLocal(t *testing.T) {
 
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)
+		})
+
+		Convey("Requirements.Stringify() works", func() {
+			So(possibleReq.Stringify(), ShouldEqual, "1:0:1:20")
+			testReq := &Requirements{RAM: 300, Time: 2 * time.Hour, Cores: 2}
+			So(testReq.Stringify(), ShouldEqual, "300:120:2:0")
+			other := make(map[string]string)
+			other["foo"] = "bar"
+			other["goo"] = "lar"
+			testReq.Other = other
+			So(testReq.Stringify(), ShouldEqual, "300:120:2:0:foo=bar:goo=lar")
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
@@ -233,8 +245,8 @@ func TestLSF(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -249,30 +261,30 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 10)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs}, 10)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "yesterday")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal") // used to be "test" before our memory limits were removed from all queues
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 4320)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}).Minutes(), ShouldEqual, 4320)
 			})
 		}
 
@@ -419,8 +431,8 @@ func TestOpenstack(t *testing.T) {
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -437,49 +449,49 @@ func TestOpenstack(t *testing.T) {
 				So(flavor.Disk, ShouldEqual, 1)
 				So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2")
 				So(flavor.RAM, ShouldEqual, 2048)
 				So(flavor.Disk, ShouldEqual, 20)
 				So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "95fc0191-e4d1-4188-858e-c2131f177913")
 				So(flavor.RAM, ShouldEqual, 2048)
 				So(flavor.Disk, ShouldEqual, 8)
 				So(flavor.Cores, ShouldEqual, 2)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{3000, 1 * time.Minute, 1, 20, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{3000, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "3")
 				So(flavor.RAM, ShouldEqual, 4096)
 				So(flavor.Disk, ShouldEqual, 40)
 				So(flavor.Cores, ShouldEqual, 2)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{8000, 1 * time.Minute, 1, 20, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{8000, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "4")
 				So(flavor.RAM, ShouldEqual, 8192)
 				So(flavor.Disk, ShouldEqual, 80)
 				So(flavor.Cores, ShouldEqual, 4)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{16000, 1 * time.Minute, 1, 20, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{16000, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2101")
 				So(flavor.RAM, ShouldEqual, 16384)
 				So(flavor.Disk, ShouldEqual, 80)
 				So(flavor.Cores, ShouldEqual, 4)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 8, 20, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 8, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "5")
 				So(flavor.RAM, ShouldEqual, 16384)
 				So(flavor.Disk, ShouldEqual, 160)
 				So(flavor.Cores, ShouldEqual, 8)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{32000, 1 * time.Minute, 1, 1, ""})
+				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{32000, 1 * time.Minute, 1, 1, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2102")
 				So(flavor.RAM, ShouldEqual, 32768)
@@ -489,7 +501,7 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("MaxQueueTime() always returns 'infinite'", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 0)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 0)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}).Minutes(), ShouldEqual, 0)
 			})
 		}
 

@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	jsch "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/pivotal-golang/bytefmt"
 	"github.com/spf13/cobra"
 	"io"
@@ -404,7 +405,9 @@ the future when the commands actually get run.`,
 				deps = jobqueue.NewDependencies(theseDeps...)
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, mb, dur, cpus, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
+			other := make(map[string]string)
+			disk := 0
+			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, &jsch.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other}, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
 		}
 
 		// connect to the server
