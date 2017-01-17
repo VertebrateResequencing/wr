@@ -27,8 +27,9 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/satori/go.uuid"
-	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,14 +68,18 @@ type ConfigOpenStack struct {
 	ResourceName string
 
 	// OSPrefix is the prefix or full name of the Operating System image you
-	// wish spawned servers to run.
+	// wish spawned servers to run by default (overridden during Schedule() by a
+	// Requirements.Other["cloud_os"] value)
 	OSPrefix string
 
-	// OSUser is the login username of your chosen Operating System.
+	// OSUser is the login username of your chosen Operating System from
+	// OSPrefix. (Overridden during Schedule() by a
+	// Requirements.Other["cloud_user"] value.)
 	OSUser string
 
 	// OSRAM is the minimum RAM in MB needed to bring up a server instance that
-	// runs your Operating System image. It defaults to 2048.
+	// runs your Operating System image. It defaults to 2048. (Overridden during
+	// Schedule() by a Requirements.Other["cloud_os_ram"] value.)
 	OSRAM int
 
 	// FlavorRegex is a regular expression that you can use to limit what
@@ -85,8 +90,9 @@ type ConfigOpenStack struct {
 	// also satisfies this regex.)
 	FlavorRegex string
 
-	// PostCreationScript is the []byte content of a script you want after a
-	// server is Spawn()ed.
+	// PostCreationScript is the []byte content of a script you want executed
+	// after a server is Spawn()ed. (Overridden during Schedule() by a
+	// Requirements.Other["cloud_script"] value.)
 	PostCreationScript []byte
 
 	// ServerPorts are the TCP port numbers you need to be open for
@@ -117,6 +123,7 @@ type ConfigOpenStack struct {
 type standin struct {
 	id        string
 	flavor    cloud.Flavor
+	os        string
 	usedRAM   int
 	usedCores int
 	usedDisk  int
@@ -127,8 +134,8 @@ type standin struct {
 }
 
 // newStandin returns a new standin server
-func newStandin(id string, flavor cloud.Flavor) *standin {
-	return &standin{id: id, flavor: flavor}
+func newStandin(id string, flavor cloud.Flavor, osPrefix string) *standin {
+	return &standin{id: id, flavor: flavor, os: osPrefix}
 }
 
 // allocate is like cloud.Server.Allocate()
@@ -252,6 +259,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	usage := du.NewDiskUsage(".")
 	s.servers["localhost"] = &cloud.Server{
 		IP: "127.0.0.1",
+		OS: s.config.OSPrefix,
 		Flavor: cloud.Flavor{
 			RAM:   maxRAM,
 			Cores: runtime.NumCPU(),
@@ -327,16 +335,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 
 	// now we get the smallest server type that can run our job, and calculate
 	// how many we could spawn before exceeding our quota
-	reqForSpawn := req
-	if req.RAM < s.config.OSRAM {
-		reqForSpawn = &Requirements{
-			RAM:   s.config.OSRAM,
-			Time:  req.Time,
-			Cores: req.Cores,
-			Disk:  req.Disk,
-			Other: req.Other,
-		}
-	}
+	reqForSpawn := s.reqForSpawn(req)
 	flavor, err := s.determineFlavor(reqForSpawn)
 	if err != nil {
 		return
@@ -393,6 +392,35 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	return
 }
 
+// reqForSpawn checks the input Requirements and if the configured OSRAM (or
+// overriding that, the Requirements.Other["cloud_os_ram"]) is higher that the
+// Requirements.RAM, returns a new Requirements with the higher RAM value.
+// Otherwise returns the input.
+func (s *opst) reqForSpawn(req *Requirements) *Requirements {
+	reqForSpawn := req
+	var osRAM int
+	if val, defined := req.Other["cloud_os_ram"]; defined {
+		i, err := strconv.Atoi(val)
+		if err == nil {
+			osRAM = i
+		} else {
+			osRAM = s.config.OSRAM
+		}
+	} else {
+		osRAM = s.config.OSRAM
+	}
+	if req.RAM < osRAM {
+		reqForSpawn = &Requirements{
+			RAM:   osRAM,
+			Time:  req.Time,
+			Cores: req.Cores,
+			Disk:  req.Disk,
+			Other: req.Other,
+		}
+	}
+	return reqForSpawn
+}
+
 // runCmd runs the command on next available server, or creates a new server if
 // none are available. NB: we only return an error if we can't start the cmd,
 // not if the command fails (schedule() only guarantees that the cmds are run
@@ -400,6 +428,13 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// look through space on existing servers to see if we can run cmd on one
 	// of them
+	var osPrefix string
+	if val, defined := req.Other["cloud_os"]; defined {
+		osPrefix = val
+	} else {
+		osPrefix = s.config.OSPrefix
+	}
+
 	s.mutex.Lock()
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
@@ -407,7 +442,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			delete(s.servers, sid)
 			continue
 		}
-		if thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if thisServer.OS == osPrefix && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			break
 		}
@@ -417,7 +452,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// *** this is untested
 	if server == nil {
 		for _, standinServer := range s.standins {
-			if standinServer.hasSpaceFor(req) > 0 {
+			if standinServer.os == osPrefix && standinServer.hasSpaceFor(req) > 0 {
 				standinServer.allocate(req)
 				s.mutex.Unlock()
 				server = standinServer.waitForServer()
@@ -429,17 +464,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// else spawn the smallest server that can run this cmd, recording our new
 	// quota usage.
 	if server == nil {
-		reqForSpawn := req
-		if req.RAM < s.config.OSRAM {
-			reqForSpawn = &Requirements{
-				RAM:   s.config.OSRAM,
-				Time:  req.Time,
-				Cores: req.Cores,
-				Disk:  req.Disk,
-				Other: req.Other,
-			}
-		}
-		flavor, err := s.determineFlavor(reqForSpawn)
+		flavor, err := s.determineFlavor(s.reqForSpawn(req))
 		if err != nil {
 			s.mutex.Unlock()
 			return err
@@ -459,7 +484,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.reservedRAM += flavor.RAM
 
 		standinID := uuid.NewV4().String()
-		standinServer := newStandin(standinID, flavor)
+		standinServer := newStandin(standinID, flavor, osPrefix)
 		standinServer.allocate(req)
 		s.standins[standinID] = standinServer
 		s.mutex.Unlock()
@@ -502,19 +527,33 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				return err
 			}
 		}
-		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false, s.config.PostCreationScript)
+
+		var osUser string
+		var osScript []byte
+		if val, defined := req.Other["cloud_user"]; defined {
+			osUser = val
+		} else {
+			osUser = s.config.OSUser
+		}
+		if val, defined := req.Other["cloud_script"]; defined {
+			osScript = []byte(val)
+		} else {
+			osScript = s.config.PostCreationScript
+		}
+
+		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, s.config.ServerKeepTime, false, osScript)
 
 		if err == nil {
 			// check that the exe of the cmd we're supposed to run exists on the
 			// new server, and if not, copy it over *** this is just a hack to
 			// get wr working, need to think of a better way of doing this...
 			exe := strings.Split(cmd, " ")[0]
-			if _, err = os.Stat(exe); err == nil {
-				if stdout, err := server.RunCmd("file "+exe, false); err == nil {
+			if exePath, err := exec.LookPath(exe); err == nil {
+				if stdout, err := server.RunCmd("file "+exePath, false); err == nil {
 					if strings.Contains(stdout, "No such file") {
-						err = server.UploadFile(exe, exe)
+						err = server.UploadFile(exePath, exePath)
 						if err == nil {
-							server.RunCmd("chmod u+x "+exe, false)
+							server.RunCmd("chmod u+x "+exePath, false)
 						} else {
 							server.Destroy()
 						}
