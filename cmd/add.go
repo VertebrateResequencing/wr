@@ -26,8 +26,10 @@ import (
 	"github.com/pivotal-golang/bytefmt"
 	"github.com/spf13/cobra"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,20 +50,24 @@ var cmdDeps string
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
-	Cmd      string                 `json:"cmd"`
-	Cwd      string                 `json:"cwd"`
-	ReqGrp   string                 `json:"req_grp"`
-	Memory   string                 `json:"memory"`
-	Time     string                 `json:"time"`
-	CPUs     *int                   `json:"cpus"`
-	Disk     *int                   `json:"disk"`
-	Override *int                   `json:"override"`
-	Priority *int                   `json:"priority"`
-	Retries  *int                   `json:"retries"`
-	RepGrp   string                 `json:"rep_grp"`
-	DepGrps  []string               `json:"dep_grps"`
-	Deps     []string               `json:"deps"`
-	CmdDeps  []*jobqueue.Dependency `json:"cmd_deps"`
+	Cmd         string                 `json:"cmd"`
+	Cwd         string                 `json:"cwd"`
+	ReqGrp      string                 `json:"req_grp"`
+	Memory      string                 `json:"memory"`
+	Time        string                 `json:"time"`
+	CPUs        *int                   `json:"cpus"`
+	Disk        *int                   `json:"disk"`
+	Override    *int                   `json:"override"`
+	Priority    *int                   `json:"priority"`
+	Retries     *int                   `json:"retries"`
+	RepGrp      string                 `json:"rep_grp"`
+	DepGrps     []string               `json:"dep_grps"`
+	Deps        []string               `json:"deps"`
+	CmdDeps     []*jobqueue.Dependency `json:"cmd_deps"`
+	CloudOS     string                 `json:"cloud_os"`
+	CloudUser   string                 `json:"cloud_user"`
+	CloudScript string                 `json:"cloud_script"`
+	CloudOSRam  *int                   `json:"cloud_os_ram"`
 }
 
 // addCmd represents the add command
@@ -77,12 +83,12 @@ alternatively have only a JSON object in column 1 that also specifies the
 command as one of the name:value pairs. The possible options are:
 
 cmd cwd req_grp memory time override cpus disk priority retries rep_grp dep_grps
-deps cmd_deps
+deps cmd_deps cloud_os cloud_user cloud_os_ram cloud_script
 
-If any of these will be the same for all your commands, you can instead specify
-them as flags (which are treated as defaults in the case that they are
-unspecified in the text file, but otherwise ignored). The meaning of each option
-is detailed below.
+If any of these (except the cloud ones) will be the same for all your commands,
+you can instead specify them as flags (which are treated as defaults in the case
+that they are unspecified in the text file, but otherwise ignored). The meaning
+of each option is detailed below.
 
 A JSON object can written by starting and ending it with curly braces. Names and
 single values are put in double quotes (except for numbers, which are left bare)
@@ -168,6 +174,14 @@ commands with any of the dep_grps it is dependent upon get added to the queue.
 The value for "cmd_deps" is an array of JSON objects with "cmd" and "cwd"
 name:value pairs. These are static dependencies; once resolved they do not get
 re-evaluated.
+
+The "cloud_*" related options let you override the defaults of your cloud
+deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
+2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
+will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
+"CentOS 7", "cloud_user" to "centos", "cloud_os_ram" to 4096, and "cloud_script"
+to "~/my_centos_post_creation_script.sh", then this command will run on a cloud
+node running CentOS (with at least 4GB ram).
 
 NB: Your commands will run with the environment variables you had when you
 added them, not the possibly different environment variables you could have in
@@ -424,6 +438,24 @@ the future when the commands actually get run.`,
 
 			// scheduler-specific options
 			other := make(map[string]string)
+			if cmdOpts.CloudOS != "" {
+				other["cloud_os"] = cmdOpts.CloudOS
+			}
+			if cmdOpts.CloudUser != "" {
+				other["cloud_user"] = cmdOpts.CloudUser
+			}
+			if cmdOpts.CloudScript != "" {
+				var postCreation []byte
+				postCreation, err = ioutil.ReadFile(cmdOpts.CloudScript)
+				if err != nil {
+					die("line %d's cloud_script value (%s) could not be read: %s", lineNum, cmdOpts.CloudScript, err)
+				}
+				other["cloud_script"] = string(postCreation)
+			}
+			if cmdOpts.CloudOSRam != nil {
+				osRam := *cmdOpts.CloudOSRam
+				other["cloud_os_ram"] = strconv.Itoa(osRam)
+			}
 
 			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other}, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
 		}
