@@ -107,6 +107,7 @@ type provideri interface {
 	requiredEnv() []string                                                                                                                                            // return the environment variables required to function
 	initialize() error                                                                                                                                                // do any initial config set up such as authentication
 	deploy(resources *Resources, requiredPorts []int) error                                                                                                           // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	inCloud() bool                                                                                                                                                    // achieve the aims of InCloud()
 	getQuota() (*Quota, error)                                                                                                                                        // achieve the aims of GetQuota()
 	flavors() map[string]Flavor                                                                                                                                       // return a map of all server flavors, with their flavor ids as keys
 	spawn(resources *Resources, os string, flavor string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
@@ -544,6 +545,13 @@ func (p *Provider) Deploy(requiredPorts []int) (err error) {
 	err = p.saveResources()
 
 	return
+}
+
+// InCloud tells you if your process is currently running on a cloud server
+// where the *Server related methods will all work correctly. (That is, if this
+// returns true, you are on the same network as any server you Spawn().)
+func (p *Provider) InCloud() bool {
+	return p.impl.inCloud()
 }
 
 // GetQuota returns details of the maximum resources the user can request, and

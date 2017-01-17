@@ -56,6 +56,14 @@ func TestOpenStack(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 
+			Convey("InCloud() returns false", func() {
+				So(p.InCloud(), ShouldBeFalse)
+				//*** unless we're running this test in the cloud... and how do
+				// we test it returns true when we ARE in the cloud? (jobqueue
+				// scheduler test uses this method to only run tests when in the
+				// cloud)
+			})
+
 			Convey("You can get your quota details", func() {
 				q, err := p.GetQuota()
 				So(err, ShouldBeNil)

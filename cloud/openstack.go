@@ -179,58 +179,10 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	}
 	resources.Details["keypair"] = kp.Name
 
-	// based on hostname, see if we're currently running on an openstack server,
-	// in which case we'll use this server's security group and network.
-	hostname, err := os.Hostname()
-	inCloud := false
-	if err == nil {
-		pager := servers.List(p.computeClient, servers.ListOpts{})
-		err = pager.EachPage(func(page pagination.Page) (bool, error) {
-			serverList, err := servers.ExtractServers(page)
-			if err != nil {
-				return false, err
-			}
-
-			for _, server := range serverList {
-				if server.Name == hostname {
-					p.ownName = hostname
-
-					// get the first networkUUID we come across *** not sure
-					// what the other possibilities are and what else we can do
-					// instead
-					for networkName := range server.Addresses {
-						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
-						if networkUUID != "" {
-							p.networkName = networkName
-							p.networkUUID = networkUUID
-							break
-						}
-					}
-
-					// get the first security group *** again, not sure how to
-					// pick the "best" if more than one
-					for _, smap := range server.SecurityGroups {
-						if value, found := smap["name"]; found && value.(string) != "" {
-							p.securityGroup = value.(string)
-							break
-						}
-					}
-
-					if p.networkUUID != "" && p.securityGroup != "" {
-						inCloud = true
-						return false, nil
-					}
-				}
-			}
-
-			return true, nil
-		})
-	}
-
+	// don't create any more resources if we're already running in OpenStack
 	//*** actually, if in cloud, we should create a security group that allows
 	// the given ports, only accessible by things in the current security group
-	// don't create any more resources if we're already running in OpenStack
-	if inCloud {
+	if p.inCloud() {
 		return
 	}
 
@@ -383,6 +335,58 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	resources.Details["router"] = routerID
 
 	return
+}
+
+// inCloud checks if we're currently running on an OpenStack server based on our
+// hostname matching a host in OpenStack.
+func (p *openstackp) inCloud() bool {
+	hostname, err := os.Hostname()
+	inCloud := false
+	if err == nil {
+		pager := servers.List(p.computeClient, servers.ListOpts{})
+		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+			serverList, err := servers.ExtractServers(page)
+			if err != nil {
+				return false, err
+			}
+
+			for _, server := range serverList {
+				if server.Name == hostname {
+					p.ownName = hostname
+
+					// get the first networkUUID we come across *** not sure
+					// what the other possibilities are and what else we can do
+					// instead
+					for networkName := range server.Addresses {
+						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
+						if networkUUID != "" {
+							p.networkName = networkName
+							p.networkUUID = networkUUID
+							break
+						}
+					}
+
+					// get the first security group *** again, not sure how to
+					// pick the "best" if more than one
+					for _, smap := range server.SecurityGroups {
+						if value, found := smap["name"]; found && value.(string) != "" {
+							p.securityGroup = value.(string)
+							break
+						}
+					}
+
+					if p.networkUUID != "" && p.securityGroup != "" {
+						inCloud = true
+						return false, nil
+					}
+				}
+			}
+
+			return true, nil
+		})
+	}
+
+	return inCloud
 }
 
 // flavors returns all our flavors.
