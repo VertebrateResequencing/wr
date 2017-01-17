@@ -139,6 +139,7 @@ type Flavor struct {
 type Server struct {
 	ID                string
 	IP                string // ip address that you could SSH to
+	OS                string // the name of the Operating System image
 	UserName          string // the username needed to log in to the server
 	AdminPass         string
 	Flavor            Flavor
@@ -267,6 +268,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 		if err != nil {
 			limit := time.After(5 * time.Minute)
 			ticker := time.NewTicker(1 * time.Second)
+			ticks := 0
 		DIAL:
 			for {
 				select {
@@ -275,9 +277,19 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
 						continue DIAL
 					}
-					// worked, or failed with a different error: stop trying
-					ticker.Stop()
-					break DIAL
+
+					// if it worked, we stop trying; if it failed again with a
+					// different error, we keep trying for at least 15 seconds
+					// to allow for the vagueries of OS start ups (eg. CentOS
+					// brings up sshd and starts rejecting connections before
+					// the centos user gets added)
+					ticks++
+					if err == nil || ticks == 15 {
+						ticker.Stop()
+						break DIAL
+					} else {
+						continue DIAL
+					}
 				case <-limit:
 					ticker.Stop()
 					err = errors.New("giving up waiting for ssh to work")
@@ -614,6 +626,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Dur
 	server = &Server{
 		ID:        serverID,
 		IP:        serverIP,
+		OS:        os,
 		AdminPass: adminPass,
 		UserName:  osUser,
 		Flavor:    f,
