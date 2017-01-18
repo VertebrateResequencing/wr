@@ -23,6 +23,7 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ricochet2200/go-disk-usage/du"
@@ -551,10 +552,16 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			if exePath, err := exec.LookPath(exe); err == nil {
 				if stdout, err := server.RunCmd("file "+exePath, false); err == nil {
 					if strings.Contains(stdout, "No such file") {
+						// *** NB this will fail if exePath is in a dir we can't
+						// create on the remote server, eg. if it is in our home
+						// dir, but the remote server has a different user, or
+						// presumably if it is somewhere requiring root
+						// permission
 						err = server.UploadFile(exePath, exePath)
 						if err == nil {
 							server.RunCmd("chmod u+x "+exePath, false)
 						} else {
+							err = errors.New(fmt.Sprintf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err))
 							server.Destroy()
 						}
 					}

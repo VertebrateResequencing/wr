@@ -33,8 +33,11 @@ import (
 	"time"
 )
 
-// cloudBinDir is where we will upload executables to our created cloud server
-const cloudBinDir = ".wr/bin"
+// cloudBinDir is where we will upload executables to our created cloud server;
+// it needs to be somewhere that is likely to be writable on all OS images, and
+// in particular not in the home dir since we may want to run commands on
+// spawned servers that are running different OS images with different user.
+const cloudBinDir = "/tmp"
 
 // wrConfigFileName is the name of our main config file, which we need when we
 // create on on our created cloud server
@@ -333,7 +336,7 @@ func init() {
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, wrMayHaveStarted bool) {
-	// upload ourselves
+	// upload ourselves to /tmp
 	remoteExe := filepath.Join(cloudBinDir, "wr")
 	err := server.UploadFile(exe, remoteExe)
 	if err != nil && !wrMayHaveStarted {
