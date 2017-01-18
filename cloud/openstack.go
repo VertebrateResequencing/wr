@@ -477,7 +477,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
-		timeout := time.After(60 * time.Second)
+		timeout := time.After(120 * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		for {
 			select {
