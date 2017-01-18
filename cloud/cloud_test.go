@@ -56,13 +56,11 @@ func TestOpenStack(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 
-			Convey("InCloud() returns false", func() {
-				So(p.InCloud(), ShouldBeFalse)
-				//*** unless we're running this test in the cloud... and how do
-				// we test it returns true when we ARE in the cloud? (jobqueue
-				// scheduler test uses this method to only run tests when in the
-				// cloud)
-			})
+			// *** don't know how to test InCloud(), since I don't know if we
+			// are in the cloud or not without asking InCloud()! But we make use
+			// of the answer to make other tests work properly, so it is
+			// indirectly tested
+			inCloud := p.InCloud()
 
 			Convey("You can get your quota details", func() {
 				q, err := p.GetQuota()
@@ -86,10 +84,17 @@ func TestOpenStack(t *testing.T) {
 				So(p.PrivateKey(), ShouldEqual, p.resources.PrivateKey)
 
 				So(p.resources.Details["keypair"], ShouldEqual, resourceName)
-				So(p.resources.Details["secgroup"], ShouldNotBeBlank)
-				So(p.resources.Details["network"], ShouldNotBeBlank)
-				So(p.resources.Details["subnet"], ShouldNotBeBlank)
-				So(p.resources.Details["router"], ShouldNotBeBlank)
+				if inCloud {
+					So(p.resources.Details["secgroup"], ShouldBeBlank)
+					So(p.resources.Details["network"], ShouldBeBlank)
+					So(p.resources.Details["subnet"], ShouldBeBlank)
+					So(p.resources.Details["router"], ShouldBeBlank)
+				} else {
+					So(p.resources.Details["secgroup"], ShouldNotBeBlank)
+					So(p.resources.Details["network"], ShouldNotBeBlank)
+					So(p.resources.Details["subnet"], ShouldNotBeBlank)
+					So(p.resources.Details["router"], ShouldNotBeBlank)
+				}
 
 				flavor, err := p.CheapestServerFlavor(1, 2048, 1, "")
 				So(err, ShouldBeNil)
@@ -309,6 +314,8 @@ func TestOpenStack(t *testing.T) {
 			})
 
 			// *** we need all the tests for negative and failure cases
+
+			p.TearDown()
 		})
 	}
 }
