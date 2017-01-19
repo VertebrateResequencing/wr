@@ -345,7 +345,7 @@ func (p *openstackp) inCloud() bool {
 	inCloud := false
 	if err == nil {
 		pager := servers.List(p.computeClient, servers.ListOpts{})
-		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+		pager.EachPage(func(page pagination.Page) (bool, error) {
 			serverList, err := servers.ExtractServers(page)
 			if err != nil {
 				return false, err
@@ -480,14 +480,6 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		UserData:       postCreationScript,
 	}
 	if diskGB > flavor.Disk {
-		var blockDevices []bootfromvolume.BlockDevice
-		blockDevices = append(blockDevices, bootfromvolume.BlockDevice{
-			UUID:                imageID,
-			SourceType:          bootfromvolume.SourceImage,
-			DeleteOnTermination: true,
-			DestinationType:     bootfromvolume.DestinationVolume,
-			VolumeSize:          diskGB,
-		})
 		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
 				CreateOptsBuilder: createOpts,

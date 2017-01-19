@@ -592,8 +592,9 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			// new server, and if not, copy it over *** this is just a hack to
 			// get wr working, need to think of a better way of doing this...
 			exe := strings.Split(cmd, " ")[0]
-			if exePath, err := exec.LookPath(exe); err == nil {
-				if stdout, err := server.RunCmd("file "+exePath, false); err == nil {
+			var exePath, stdout string
+			if exePath, err = exec.LookPath(exe); err == nil {
+				if stdout, err = server.RunCmd("file "+exePath, false); err == nil {
 					if strings.Contains(stdout, "No such file") {
 						// *** NB this will fail if exePath is in a dir we can't
 						// create on the remote server, eg. if it is in our home
@@ -604,7 +605,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 						if err == nil {
 							server.RunCmd("chmod u+x "+exePath, false)
 						} else {
-							err = errors.New(fmt.Sprintf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err))
+							err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 							server.Destroy()
 						}
 					}

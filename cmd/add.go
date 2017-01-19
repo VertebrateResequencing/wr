@@ -454,8 +454,8 @@ the future when the commands actually get run.`,
 				other["cloud_script"] = string(postCreation)
 			}
 			if cmdOpts.CloudOSRam != nil {
-				osRam := *cmdOpts.CloudOSRam
-				other["cloud_os_ram"] = strconv.Itoa(osRam)
+				osRAM := *cmdOpts.CloudOSRam
+				other["cloud_os_ram"] = strconv.Itoa(osRAM)
 			}
 
 			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other}, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
