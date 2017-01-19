@@ -484,7 +484,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
 				CreateOptsBuilder: createOpts,
 				BlockDevice: []bootfromvolume.BlockDevice{
-					bootfromvolume.BlockDevice{
+					{
 						UUID:                imageID,
 						SourceType:          bootfromvolume.SourceImage,
 						DeleteOnTermination: true,
