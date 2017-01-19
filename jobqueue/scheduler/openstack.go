@@ -23,12 +23,14 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/satori/go.uuid"
-	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,9 +49,11 @@ type opst struct {
 	quotaMaxInstances  int
 	quotaMaxCores      int
 	quotaMaxRAM        int
+	quotaMaxVolume     int
 	reservedInstances  int
 	reservedCores      int
 	reservedRAM        int
+	reservedVolume     int
 	servers            map[string]*cloud.Server
 	standins           map[string]*standin
 	waitingToSpawn     int
@@ -67,14 +71,18 @@ type ConfigOpenStack struct {
 	ResourceName string
 
 	// OSPrefix is the prefix or full name of the Operating System image you
-	// wish spawned servers to run.
+	// wish spawned servers to run by default (overridden during Schedule() by a
+	// Requirements.Other["cloud_os"] value)
 	OSPrefix string
 
-	// OSUser is the login username of your chosen Operating System.
+	// OSUser is the login username of your chosen Operating System from
+	// OSPrefix. (Overridden during Schedule() by a
+	// Requirements.Other["cloud_user"] value.)
 	OSUser string
 
 	// OSRAM is the minimum RAM in MB needed to bring up a server instance that
-	// runs your Operating System image. It defaults to 2048.
+	// runs your Operating System image. It defaults to 2048. (Overridden during
+	// Schedule() by a Requirements.Other["cloud_os_ram"] value.)
 	OSRAM int
 
 	// FlavorRegex is a regular expression that you can use to limit what
@@ -85,8 +93,9 @@ type ConfigOpenStack struct {
 	// also satisfies this regex.)
 	FlavorRegex string
 
-	// PostCreationScript is the []byte content of a script you want after a
-	// server is Spawn()ed.
+	// PostCreationScript is the []byte content of a script you want executed
+	// after a server is Spawn()ed. (Overridden during Schedule() by a
+	// Requirements.Other["cloud_script"] value.)
 	PostCreationScript []byte
 
 	// ServerPorts are the TCP port numbers you need to be open for
@@ -117,6 +126,8 @@ type ConfigOpenStack struct {
 type standin struct {
 	id        string
 	flavor    cloud.Flavor
+	disk      int
+	os        string
 	usedRAM   int
 	usedCores int
 	usedDisk  int
@@ -127,8 +138,8 @@ type standin struct {
 }
 
 // newStandin returns a new standin server
-func newStandin(id string, flavor cloud.Flavor) *standin {
-	return &standin{id: id, flavor: flavor}
+func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string) *standin {
+	return &standin{id: id, flavor: flavor, disk: disk, os: osPrefix}
 }
 
 // allocate is like cloud.Server.Allocate()
@@ -144,7 +155,7 @@ func (s *standin) allocate(req *Requirements) {
 func (s *standin) hasSpaceFor(req *Requirements) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	if (s.flavor.Cores-s.usedCores < req.Cores) || (s.flavor.RAM-s.usedRAM < req.RAM) || (s.flavor.Disk-s.usedDisk < req.Disk) {
+	if (s.flavor.Cores-s.usedCores < req.Cores) || (s.flavor.RAM-s.usedRAM < req.RAM) || (s.disk-s.usedDisk < req.Disk) {
 		return 0
 	}
 	canDo := (s.flavor.Cores - s.usedCores) / req.Cores
@@ -153,7 +164,7 @@ func (s *standin) hasSpaceFor(req *Requirements) int {
 		if n < canDo {
 			canDo = n
 		}
-		n = (s.flavor.Disk - s.usedDisk) / req.Disk
+		n = (s.disk - s.usedDisk) / req.Disk
 		if n < canDo {
 			canDo = n
 		}
@@ -232,9 +243,26 @@ func (s *opst) initialize(config interface{}) (err error) {
 	if err != nil {
 		return
 	}
-	s.quotaMaxCores = quota.MaxCores
-	s.quotaMaxRAM = quota.MaxRAM
-	s.quotaMaxInstances = quota.MaxInstances
+	if quota.MaxCores == 0 {
+		s.quotaMaxCores = unquotadVal
+	} else {
+		s.quotaMaxCores = quota.MaxCores
+	}
+	if quota.MaxRAM == 0 {
+		s.quotaMaxRAM = unquotadVal
+	} else {
+		s.quotaMaxRAM = quota.MaxRAM
+	}
+	if quota.MaxVolume == 0 {
+		s.quotaMaxVolume = unquotadVal
+	} else {
+		s.quotaMaxVolume = quota.MaxVolume
+	}
+	if quota.MaxInstances == 0 {
+		s.quotaMaxInstances = unquotadVal
+	} else {
+		s.quotaMaxInstances = quota.MaxInstances
+	}
 	if s.config.MaxInstances > 0 && s.config.MaxInstances < s.quotaMaxInstances {
 		s.quotaMaxInstances = s.config.MaxInstances
 	}
@@ -250,13 +278,16 @@ func (s *opst) initialize(config interface{}) (err error) {
 		return
 	}
 	usage := du.NewDiskUsage(".")
+	diskSize := int(usage.Size() / gb)
 	s.servers["localhost"] = &cloud.Server{
 		IP: "127.0.0.1",
+		OS: s.config.OSPrefix,
 		Flavor: cloud.Flavor{
 			RAM:   maxRAM,
 			Cores: runtime.NumCPU(),
-			Disk:  int(usage.Size() / gb),
+			Disk:  diskSize,
 		},
+		Disk: diskSize,
 	}
 
 	// set our functions for use in schedule() and processQueue()
@@ -277,7 +308,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 // based on our quota and the available server flavours.
 func (s *opst) reqCheck(req *Requirements) error {
 	// check if possible vs quota
-	if req.RAM > s.quotaMaxRAM || req.Cores > s.quotaMaxCores {
+	if req.RAM > s.quotaMaxRAM || req.Cores > s.quotaMaxCores || req.Disk > s.quotaMaxVolume {
 		return Error{"openstack", "schedule", ErrImpossible}
 	}
 
@@ -289,7 +320,7 @@ func (s *opst) reqCheck(req *Requirements) error {
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
 // amongst those that are capable of running it.
 func (s *opst) determineFlavor(req *Requirements) (flavor cloud.Flavor, err error) {
-	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, req.Disk, s.config.FlavorRegex)
+	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, s.config.FlavorRegex)
 	if err != nil {
 		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
 			err = Error{"openstack", "determineFlavor", ErrImpossible}
@@ -327,16 +358,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 
 	// now we get the smallest server type that can run our job, and calculate
 	// how many we could spawn before exceeding our quota
-	reqForSpawn := req
-	if req.RAM < s.config.OSRAM {
-		reqForSpawn = &Requirements{
-			RAM:   s.config.OSRAM,
-			Time:  req.Time,
-			Cores: req.Cores,
-			Disk:  req.Disk,
-			Other: req.Other,
-		}
-	}
+	reqForSpawn := s.reqForSpawn(req)
 	flavor, err := s.determineFlavor(reqForSpawn)
 	if err != nil {
 		return
@@ -357,7 +379,12 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	if quota.MaxCores > 0 {
 		remainingCores = quota.MaxCores - quota.UsedCores - s.reservedCores
 	}
-	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores {
+	remainingVolume := unquotadVal
+	checkVolume := req.Disk > flavor.Disk // we'll only use up volume if we need more than the flavor offers
+	if quota.MaxVolume > 0 && checkVolume {
+		remainingVolume = quota.MaxVolume - quota.UsedVolume - s.reservedVolume
+	}
+	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores || remainingVolume < req.Disk {
 		return
 	}
 	spawnable := remainingInstances
@@ -369,6 +396,12 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		n = remainingCores / flavor.Cores
 		if n < spawnable {
 			spawnable = n
+		}
+		if checkVolume {
+			n = remainingVolume / req.Disk
+			if n < spawnable {
+				spawnable = n
+			}
 		}
 	}
 
@@ -383,7 +416,13 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 			}
 		}
 		if reqForSpawn.Disk > 0 {
-			n = flavor.Disk / reqForSpawn.Disk
+			if checkVolume {
+				// we'll be creating volumes to exactly match required disk
+				// space
+				n = 1
+			} else {
+				n = flavor.Disk / reqForSpawn.Disk
+			}
 			if n < perServer {
 				perServer = n
 			}
@@ -393,6 +432,35 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	return
 }
 
+// reqForSpawn checks the input Requirements and if the configured OSRAM (or
+// overriding that, the Requirements.Other["cloud_os_ram"]) is higher that the
+// Requirements.RAM, returns a new Requirements with the higher RAM value.
+// Otherwise returns the input.
+func (s *opst) reqForSpawn(req *Requirements) *Requirements {
+	reqForSpawn := req
+	var osRAM int
+	if val, defined := req.Other["cloud_os_ram"]; defined {
+		i, err := strconv.Atoi(val)
+		if err == nil {
+			osRAM = i
+		} else {
+			osRAM = s.config.OSRAM
+		}
+	} else {
+		osRAM = s.config.OSRAM
+	}
+	if req.RAM < osRAM {
+		reqForSpawn = &Requirements{
+			RAM:   osRAM,
+			Time:  req.Time,
+			Cores: req.Cores,
+			Disk:  req.Disk,
+			Other: req.Other,
+		}
+	}
+	return reqForSpawn
+}
+
 // runCmd runs the command on next available server, or creates a new server if
 // none are available. NB: we only return an error if we can't start the cmd,
 // not if the command fails (schedule() only guarantees that the cmds are run
@@ -400,6 +468,13 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// look through space on existing servers to see if we can run cmd on one
 	// of them
+	var osPrefix string
+	if val, defined := req.Other["cloud_os"]; defined {
+		osPrefix = val
+	} else {
+		osPrefix = s.config.OSPrefix
+	}
+
 	s.mutex.Lock()
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
@@ -407,7 +482,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			delete(s.servers, sid)
 			continue
 		}
-		if thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if thisServer.OS == osPrefix && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			break
 		}
@@ -417,7 +492,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// *** this is untested
 	if server == nil {
 		for _, standinServer := range s.standins {
-			if standinServer.hasSpaceFor(req) > 0 {
+			if standinServer.os == osPrefix && standinServer.hasSpaceFor(req) > 0 {
 				standinServer.allocate(req)
 				s.mutex.Unlock()
 				server = standinServer.waitForServer()
@@ -429,21 +504,12 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// else spawn the smallest server that can run this cmd, recording our new
 	// quota usage.
 	if server == nil {
-		reqForSpawn := req
-		if req.RAM < s.config.OSRAM {
-			reqForSpawn = &Requirements{
-				RAM:   s.config.OSRAM,
-				Time:  req.Time,
-				Cores: req.Cores,
-				Disk:  req.Disk,
-				Other: req.Other,
-			}
-		}
-		flavor, err := s.determineFlavor(reqForSpawn)
+		flavor, err := s.determineFlavor(s.reqForSpawn(req))
 		if err != nil {
 			s.mutex.Unlock()
 			return err
 		}
+		volumeAffected := req.Disk > flavor.Disk
 
 		// because spawning can take a while, we record that we're going to use
 		// up some of our quota and unlock so other things can proceed
@@ -457,9 +523,12 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.reservedInstances++
 		s.reservedCores += flavor.Cores
 		s.reservedRAM += flavor.RAM
+		if volumeAffected {
+			s.reservedVolume += req.Disk
+		}
 
 		standinID := uuid.NewV4().String()
-		standinServer := newStandin(standinID, flavor)
+		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix)
 		standinServer.allocate(req)
 		s.standins[standinID] = standinServer
 		s.mutex.Unlock()
@@ -502,20 +571,41 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				return err
 			}
 		}
-		server, err = s.provider.Spawn(s.config.OSPrefix, s.config.OSUser, flavor.ID, s.config.ServerKeepTime, false, s.config.PostCreationScript)
+
+		var osUser string
+		var osScript []byte
+		if val, defined := req.Other["cloud_user"]; defined {
+			osUser = val
+		} else {
+			osUser = s.config.OSUser
+		}
+		if val, defined := req.Other["cloud_script"]; defined {
+			osScript = []byte(val)
+		} else {
+			osScript = s.config.PostCreationScript
+		}
+
+		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, osScript)
 
 		if err == nil {
 			// check that the exe of the cmd we're supposed to run exists on the
 			// new server, and if not, copy it over *** this is just a hack to
 			// get wr working, need to think of a better way of doing this...
 			exe := strings.Split(cmd, " ")[0]
-			if _, err = os.Stat(exe); err == nil {
-				if stdout, err := server.RunCmd("file "+exe, false); err == nil {
+			var exePath, stdout string
+			if exePath, err = exec.LookPath(exe); err == nil {
+				if stdout, err = server.RunCmd("file "+exePath, false); err == nil {
 					if strings.Contains(stdout, "No such file") {
-						err = server.UploadFile(exe, exe)
+						// *** NB this will fail if exePath is in a dir we can't
+						// create on the remote server, eg. if it is in our home
+						// dir, but the remote server has a different user, or
+						// presumably if it is somewhere requiring root
+						// permission
+						err = server.UploadFile(exePath, exePath)
 						if err == nil {
-							server.RunCmd("chmod u+x "+exe, false)
+							server.RunCmd("chmod u+x "+exePath, false)
 						} else {
+							err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 							server.Destroy()
 						}
 					}
@@ -535,6 +625,9 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			s.reservedInstances--
 			s.reservedCores -= flavor.Cores
 			s.reservedRAM -= flavor.RAM
+			if volumeAffected {
+				s.reservedVolume -= req.Disk
+			}
 			standinServer.failed()
 			delete(s.standins, standinID)
 			s.mutex.Unlock()
@@ -546,6 +639,9 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.reservedInstances--
 		s.reservedCores -= flavor.Cores
 		s.reservedRAM -= flavor.RAM
+		if volumeAffected {
+			s.reservedVolume -= req.Disk
+		}
 		s.servers[server.ID] = server
 		standinServer.worked(server)
 		delete(s.standins, standinID)

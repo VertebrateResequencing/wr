@@ -408,15 +408,13 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 
 	megabytes := req.RAM
 	m := float32(megabytes) * s.memLimitMultiplier
-	//reqString := fmt.Sprintf("-q %s -M%0.0f -R 'select[mem>%d] rusage[mem=%d]'", queue, m, megabytes, megabytes)
 	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d]'", megabytes, megabytes))
 	if req.Cores > 1 {
-		//reqString += fmt.Sprintf(" -n%d -R 'span[hosts=1]'", req.Cores)
 		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores), "-R", "'span[hosts=1]'")
 	}
-	if req.Other != "" {
-		//reqString += " " + req.Other
-		bsubArgs = append(bsubArgs, req.Other) // *** this probably won't work?
+	if len(req.Other) > 0 {
+		// *** not yet implemented; would check this map for lsf-related keys
+		// and handle them appropriately...
 	}
 
 	// for checkCmd() to work efficiently we must always set a job name that
@@ -429,8 +427,6 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
 	// submit to the queue
-	//bsub := "bsub -J " + name + " -o /dev/null -e /dev/null " + reqString + " '" + cmd + "'"
-	//bsubcmd := exec.Command(s.config.Shell, "-c", bsub)
 	bsubcmd := exec.Command("bsub", bsubArgs...)
 	bsubout, err := bsubcmd.Output()
 	if err != nil {

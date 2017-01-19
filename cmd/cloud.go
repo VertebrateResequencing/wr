@@ -33,8 +33,11 @@ import (
 	"time"
 )
 
-// cloudBinDir is where we will upload executables to our created cloud server
-const cloudBinDir = ".wr/bin"
+// cloudBinDir is where we will upload executables to our created cloud server;
+// it needs to be somewhere that is likely to be writable on all OS images, and
+// in particular not in the home dir since we may want to run commands on
+// spawned servers that are running different OS images with different user.
+const cloudBinDir = "/tmp"
 
 // wrConfigFileName is the name of our main config file, which we need when we
 // create on on our created cloud server
@@ -175,12 +178,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, err := provider.CheapestServerFlavor(1, osRAM, 1, flavorRegex)
+			flavor, err := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 0*time.Second, true, postCreation)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 1, 0*time.Second, true, postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -333,7 +336,7 @@ func init() {
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, wrMayHaveStarted bool) {
-	// upload ourselves
+	// upload ourselves to /tmp
 	remoteExe := filepath.Join(cloudBinDir, "wr")
 	err := server.UploadFile(exe, remoteExe)
 	if err != nil && !wrMayHaveStarted {

@@ -28,6 +28,7 @@ import (
 	"errors"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/quotasets"
@@ -179,58 +180,10 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	}
 	resources.Details["keypair"] = kp.Name
 
-	// based on hostname, see if we're currently running on an openstack server,
-	// in which case we'll use this server's security group and network.
-	hostname, err := os.Hostname()
-	inCloud := false
-	if err == nil {
-		pager := servers.List(p.computeClient, servers.ListOpts{})
-		err = pager.EachPage(func(page pagination.Page) (bool, error) {
-			serverList, err := servers.ExtractServers(page)
-			if err != nil {
-				return false, err
-			}
-
-			for _, server := range serverList {
-				if server.Name == hostname {
-					p.ownName = hostname
-
-					// get the first networkUUID we come across *** not sure
-					// what the other possibilities are and what else we can do
-					// instead
-					for networkName := range server.Addresses {
-						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
-						if networkUUID != "" {
-							p.networkName = networkName
-							p.networkUUID = networkUUID
-							break
-						}
-					}
-
-					// get the first security group *** again, not sure how to
-					// pick the "best" if more than one
-					for _, smap := range server.SecurityGroups {
-						if value, found := smap["name"]; found && value.(string) != "" {
-							p.securityGroup = value.(string)
-							break
-						}
-					}
-
-					if p.networkUUID != "" && p.securityGroup != "" {
-						inCloud = true
-						return false, nil
-					}
-				}
-			}
-
-			return true, nil
-		})
-	}
-
+	// don't create any more resources if we're already running in OpenStack
 	//*** actually, if in cloud, we should create a security group that allows
 	// the given ports, only accessible by things in the current security group
-	// don't create any more resources if we're already running in OpenStack
-	if inCloud {
+	if p.inCloud() {
 		return
 	}
 
@@ -385,6 +338,58 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	return
 }
 
+// inCloud checks if we're currently running on an OpenStack server based on our
+// hostname matching a host in OpenStack.
+func (p *openstackp) inCloud() bool {
+	hostname, err := os.Hostname()
+	inCloud := false
+	if err == nil {
+		pager := servers.List(p.computeClient, servers.ListOpts{})
+		pager.EachPage(func(page pagination.Page) (bool, error) {
+			serverList, err := servers.ExtractServers(page)
+			if err != nil {
+				return false, err
+			}
+
+			for _, server := range serverList {
+				if server.Name == hostname {
+					p.ownName = hostname
+
+					// get the first networkUUID we come across *** not sure
+					// what the other possibilities are and what else we can do
+					// instead
+					for networkName := range server.Addresses {
+						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
+						if networkUUID != "" {
+							p.networkName = networkName
+							p.networkUUID = networkUUID
+							break
+						}
+					}
+
+					// get the first security group *** again, not sure how to
+					// pick the "best" if more than one
+					for _, smap := range server.SecurityGroups {
+						if value, found := smap["name"]; found && value.(string) != "" {
+							p.securityGroup = value.(string)
+							break
+						}
+					}
+
+					if p.networkUUID != "" && p.securityGroup != "" {
+						inCloud = true
+						return false, nil
+					}
+				}
+			}
+
+			return true, nil
+		})
+	}
+
+	return inCloud
+}
+
 // flavors returns all our flavors.
 func (p *openstackp) flavors() map[string]Flavor {
 	return p.fmap
@@ -401,6 +406,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 		MaxRAM:       q.Ram,
 		MaxCores:     q.Cores,
 		MaxInstances: q.Instances,
+		// MaxVolume:    q.Volume, //*** https://github.com/gophercloud/gophercloud/issues/234#issuecomment-273666521 : no support for getting volume quotas...
 	}
 
 	// query all servers to figure out what we've used of our quota
@@ -419,6 +425,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 				quota.UsedCores += f.Cores
 				quota.UsedRAM += f.RAM
 			}
+			//*** how to find out how much volume storage this is using?...
 		}
 
 		return true, nil
@@ -428,7 +435,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -451,20 +458,50 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		return
 	}
+	if imageID == "" {
+		err = errors.New("no OS image with prefix [" + osPrefix + "] was found")
+		return
+	}
+
+	flavor, found := p.fmap[flavorID]
+	if !found {
+		err = errors.New("invalid flavor ID: " + flavorID)
+		return
+	}
 
 	// create the server with a unique name
-	server, err := servers.Create(p.computeClient, keypairs.CreateOptsExt{
-		CreateOptsBuilder: servers.CreateOpts{
-			Name:           uniqueResourceName(resources.ResourceName),
-			FlavorRef:      flavorID,
-			ImageRef:       imageID,
-			SecurityGroups: []string{p.securityGroup},
-			Networks:       []servers.Network{{UUID: p.networkUUID}},
-			UserData:       postCreationScript,
-			// Metadata map[string]string
-		},
-		KeyName: resources.ResourceName,
-	}).Extract()
+	var server *servers.Server
+	createOpts := servers.CreateOpts{
+		Name:           uniqueResourceName(resources.ResourceName),
+		FlavorRef:      flavorID,
+		ImageRef:       imageID,
+		SecurityGroups: []string{p.securityGroup},
+		Networks:       []servers.Network{{UUID: p.networkUUID}},
+		UserData:       postCreationScript,
+	}
+	if diskGB > flavor.Disk {
+		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
+			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
+				CreateOptsBuilder: createOpts,
+				BlockDevice: []bootfromvolume.BlockDevice{
+					{
+						UUID:                imageID,
+						SourceType:          bootfromvolume.SourceImage,
+						DeleteOnTermination: true,
+						DestinationType:     bootfromvolume.DestinationVolume,
+						VolumeSize:          diskGB,
+					},
+				},
+			},
+			KeyName: resources.ResourceName,
+		}).Extract()
+	} else {
+		server, err = servers.Create(p.computeClient, keypairs.CreateOptsExt{
+			CreateOptsBuilder: createOpts,
+			KeyName:           resources.ResourceName,
+		}).Extract()
+	}
+
 	if err != nil {
 		return
 	}
@@ -473,7 +510,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
-		timeout := time.After(60 * time.Second)
+		timeout := time.After(120 * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		for {
 			select {

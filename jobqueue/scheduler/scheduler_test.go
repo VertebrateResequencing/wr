@@ -26,12 +26,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
 var maxCPU = runtime.NumCPU()
+var otherReqs = make(map[string]string)
 
 func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
@@ -41,8 +45,8 @@ func TestLocal(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 1 second", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -54,6 +58,17 @@ func TestLocal(t *testing.T) {
 
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)
+		})
+
+		Convey("Requirements.Stringify() works", func() {
+			So(possibleReq.Stringify(), ShouldEqual, "1:0:1:20")
+			testReq := &Requirements{RAM: 300, Time: 2 * time.Hour, Cores: 2}
+			So(testReq.Stringify(), ShouldEqual, "300:120:2:0")
+			other := make(map[string]string)
+			other["foo"] = "bar"
+			other["goo"] = "lar"
+			testReq.Other = other
+			So(testReq.Stringify(), ShouldEqual, "300:120:2:0:foo=bar:goo=lar")
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
@@ -233,8 +248,8 @@ func TestLSF(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -249,30 +264,30 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, ""}, 10)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs}, 10)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "yesterday")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal") // used to be "test" before our memory limits were removed from all queues
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, ""}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 4320)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}).Minutes(), ShouldEqual, 4320)
 			})
 		}
 
@@ -389,12 +404,14 @@ func TestOpenstack(t *testing.T) {
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
+	rName := "wr-testing"
 	config := &ConfigOpenStack{
-		ResourceName:   "wr-testing",
+		ResourceName:   rName,
 		OSPrefix:       osPrefix,
 		OSUser:         osUser,
+		OSRAM:          2048,
 		ServerPorts:    []int{22},
-		ServerKeepTime: 75 * time.Second,
+		ServerKeepTime: 15 * time.Second,
 		Shell:          "bash",
 	}
 	if osPrefix == "" || osUser == "" {
@@ -418,9 +435,10 @@ func TestOpenstack(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()
+		oss := s.impl.(*opst)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, ""}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, ""}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
@@ -430,56 +448,58 @@ func TestOpenstack(t *testing.T) {
 		// expected server types are
 		if host == "vr-2-2-02" {
 			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
-				flavor, err := s.impl.(*opst).determineFlavor(possibleReq)
+				flavor, err := oss.determineFlavor(possibleReq)
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "1")
 				So(flavor.RAM, ShouldEqual, 512)
 				So(flavor.Disk, ShouldEqual, 1)
 				So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, ""})
+				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "1") // we now ignore the 20GB disk requirement
+
+				flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2")
 				So(flavor.RAM, ShouldEqual, 2048)
-				So(flavor.Disk, ShouldEqual, 20)
-				So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, ""})
+				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "95fc0191-e4d1-4188-858e-c2131f177913")
 				So(flavor.RAM, ShouldEqual, 2048)
 				So(flavor.Disk, ShouldEqual, 8)
 				So(flavor.Cores, ShouldEqual, 2)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{3000, 1 * time.Minute, 1, 20, ""})
+				flavor, err = oss.determineFlavor(&Requirements{3000, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "3")
 				So(flavor.RAM, ShouldEqual, 4096)
 				So(flavor.Disk, ShouldEqual, 40)
 				So(flavor.Cores, ShouldEqual, 2)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{8000, 1 * time.Minute, 1, 20, ""})
+				flavor, err = oss.determineFlavor(&Requirements{8000, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "4")
 				So(flavor.RAM, ShouldEqual, 8192)
 				So(flavor.Disk, ShouldEqual, 80)
 				So(flavor.Cores, ShouldEqual, 4)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{16000, 1 * time.Minute, 1, 20, ""})
+				flavor, err = oss.determineFlavor(&Requirements{16000, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2101")
 				So(flavor.RAM, ShouldEqual, 16384)
 				So(flavor.Disk, ShouldEqual, 80)
 				So(flavor.Cores, ShouldEqual, 4)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{100, 1 * time.Minute, 8, 20, ""})
+				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 8, 20, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "5")
 				So(flavor.RAM, ShouldEqual, 16384)
 				So(flavor.Disk, ShouldEqual, 160)
 				So(flavor.Cores, ShouldEqual, 8)
 
-				flavor, err = s.impl.(*opst).determineFlavor(&Requirements{32000, 1 * time.Minute, 1, 1, ""})
+				flavor, err = oss.determineFlavor(&Requirements{32000, 1 * time.Minute, 1, 1, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2102")
 				So(flavor.RAM, ShouldEqual, 32768)
@@ -489,7 +509,7 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("MaxQueueTime() always returns 'infinite'", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 0)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, ""}).Minutes(), ShouldEqual, 0)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}).Minutes(), ShouldEqual, 0)
 			})
 		}
 
@@ -505,28 +525,87 @@ func TestOpenstack(t *testing.T) {
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
 
-		// *** we need to not actually run the real scheduling tests if we're
-		// not running in openstack... not sure how to detect that...
-		if host != "vr-2-2-02" {
+		// we need to not actually run the real scheduling tests if we're not
+		// running in openstack, because the scheduler will try to ssh to
+		// the servers it spawns
+		_, err = exec.LookPath("nova")
+		if err == nil && oss.provider.InCloud() {
 			Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
-				cmd := "sleep 10"
-
-				// on authors setup, running the test from a 1 cpu cloud instance,
-				// the following count is sufficient to test spawning instances over
-				// the quota in the test environment
-				count := 35
-				err = s.Schedule(cmd, possibleReq, count)
-				So(err, ShouldBeNil)
-				So(s.Busy(), ShouldBeTrue)
+				oFile := filepath.Join(tmpdir, "out")
 
 				Convey("It eventually runs them all", func() {
-					So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+					// on authors setup, running the test from a 1 cpu cloud
+					// instance, the following count is sufficient to test spawning
+					// instances over the quota in the test environment
+					count := 35
+					cmd := "sleep 10 && (echo default > " + oFile + ") || true"
+					err = s.Schedule(cmd, possibleReq, count)
+					So(err, ShouldBeNil)
+					So(s.Busy(), ShouldBeTrue)
 
-					//*** want to test that servers actually get spawned up to
-					// quota, and that 75s after all cmds run, they get auto-
-					// destroyed
-					<-time.After(80 * time.Second)
+					spawnedCh := make(chan int)
+					go func() {
+						<-time.After(time.Duration(int(((count*10)+15)/3)) * time.Second)
+						spawnedCh <- novaCountServers(rName, "")
+						return
+					}()
+
+					So(waitToFinish(s, ((count*10)+15), 1000), ShouldBeTrue)
+					spawned := <-spawnedCh
+					close(spawnedCh)
+					So(spawned, ShouldBeBetweenOrEqual, 4, count)
+
+					foundServers := novaCountServers(rName, "")
+					So(foundServers, ShouldBeBetweenOrEqual, 1, 6)
+
+					// after the last run, they are all auto- destroyed
+					<-time.After(20 * time.Second)
+
+					foundServers = novaCountServers(rName, "")
+					So(foundServers, ShouldEqual, 0)
+
+					// at least one of the cmds should have run on the local
+					// machine
+					_, err := os.Stat(oFile)
+					So(err, ShouldBeNil)
 				})
+
+				if osPrefix != "CentOS 7" {
+					Convey("They can be run again, overriding the default os image and ram", func() {
+						oReqs := make(map[string]string)
+						oReqs["cloud_os"] = "CentOS 7"
+						oReqs["cloud_user"] = "centos"
+						oReqs["cloud_os_ram"] = "4096"
+						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+						newCount := 3
+						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
+						err = s.Schedule(cmd, newReq, newCount)
+						So(err, ShouldBeNil)
+						So(s.Busy(), ShouldBeTrue)
+
+						spawnedCh := make(chan int, 1)
+						go func() {
+							wait := int(((newCount * 10) + 15) / 2)
+							<-time.After(time.Duration(wait) * time.Second)
+							spawnedCh <- novaCountServers(rName, oReqs["cloud_os"]) // *** also want to test that the spawned servers are on 4GB ram flavors
+							return
+						}()
+
+						So(waitToFinish(s, (((newCount*10)*3)+15), 1000), ShouldBeTrue)
+						spawned := <-spawnedCh
+						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
+
+						<-time.After(30 * time.Second)
+
+						foundServers := novaCountServers(rName, "")
+						So(foundServers, ShouldEqual, 0)
+
+						// none of the cmds should have run on the local machine
+						_, err := os.Stat(oFile)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+					})
+				}
 
 				// *** should also test dropping the count
 
@@ -541,10 +620,13 @@ func TestOpenstack(t *testing.T) {
 				//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
 				//*** need to wait until I have file input/output implemented so I
 				// can test if things are really working
+				// })
 			})
 
 			// wait a while for any remaining jobs to finish
 			So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+		} else {
+			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova installed", func() {})
 		}
 	})
 }
@@ -587,5 +669,37 @@ func waitToFinish(s *Scheduler, maxS int, interval int) bool {
 			}
 		}
 	}()
-	return <-done
+	answer := <-done
+	return answer
+}
+
+func novaCountServers(rName, osPrefix string) int {
+	if osPrefix == "" {
+		cmd := exec.Command("bash", "-c", "nova list | grep -c "+rName)
+		out, err := cmd.Output()
+		if err == nil {
+			count, err := strconv.Atoi(strings.TrimSpace(string(out)))
+			if err == nil {
+				return count
+			}
+		}
+	} else {
+		cmd := exec.Command("bash", "-c", "nova list | grep "+rName)
+		out, err := cmd.Output()
+		if err == nil {
+			r := regexp.MustCompile(rName + "-\\S+")
+			count := 0
+			for _, name := range r.FindAll(out, -1) {
+				showCmd := exec.Command("bash", "-c", "nova show "+string(name)+" | grep image")
+				showOut, err := showCmd.Output()
+				if err == nil {
+					if strings.Contains(string(showOut), osPrefix) {
+						count++
+					}
+				}
+			}
+			return count
+		}
+	}
+	return 0
 }

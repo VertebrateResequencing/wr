@@ -37,6 +37,7 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tcp"
@@ -117,10 +118,8 @@ type Job struct {
 	ReqGroup       string
 	DepGroups      []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
 	Cmd            string
-	Cwd            string        // the working directory to cd to before running Cmd
-	RAM            int           // the expected peak RAM in MB Cmd will use while running
-	Time           time.Duration // the expected time Cmd will take to run
-	Cores          int           // how many processor cores the Cmd will use
+	Cwd            string                  // the working directory to cd to before running Cmd
+	Requirements   *scheduler.Requirements // the resources this Cmd needs to run
 	Override       uint8
 	Priority       uint8
 	Retries        uint8         // the number of times to retry running a Cmd if it fails
@@ -245,19 +244,17 @@ func (d *Dependency) key() string {
 
 // NewJob makes it a little easier to make a new Job, for use with Add(). The
 // last argument is optional (and may only be specified once).
-func NewJob(cmd string, cwd string, group string, ram int, time time.Duration, cores int, override uint8, priority uint8, retries uint8, repgroup string, depgroups []string, deps ...*Dependencies) *Job {
+func NewJob(cmd string, cwd string, group string, reqs *scheduler.Requirements, override uint8, priority uint8, retries uint8, repgroup string, depgroups []string, deps ...*Dependencies) *Job {
 	job := &Job{
-		RepGroup:  repgroup,
-		ReqGroup:  group,
-		DepGroups: depgroups,
-		Cmd:       cmd,
-		Cwd:       cwd,
-		RAM:       ram,
-		Time:      time,
-		Cores:     cores,
-		Override:  override,
-		Priority:  priority,
-		Retries:   retries,
+		RepGroup:     repgroup,
+		ReqGroup:     group,
+		DepGroups:    depgroups,
+		Cmd:          cmd,
+		Cwd:          cwd,
+		Requirements: reqs,
+		Override:     override,
+		Priority:     priority,
+		Retries:      retries,
 	}
 
 	if len(deps) == 1 {
@@ -537,7 +534,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	defer signal.Stop(sigs)
 
 	// start running the command
-	endT := time.Now().Add(job.Time)
+	endT := time.Now().Add(job.Requirements.Time)
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
@@ -595,7 +592,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if err == nil && mem > peakmem {
 					peakmem = mem
 
-					if peakmem > job.RAM {
+					if peakmem > job.Requirements.RAM {
 						// we don't allow things to use too much memory, or we
 						// could screw up the machine we're running on
 						ranoutMem = true
@@ -973,10 +970,10 @@ func (j *Job) updateRecsAfterFailure() {
 		if updatedMB < float64(j.PeakRAM)+RAMIncreaseMin {
 			updatedMB = float64(j.PeakRAM) + RAMIncreaseMin
 		}
-		j.RAM = int(math.Ceil(updatedMB/100) * 100)
+		j.Requirements.RAM = int(math.Ceil(updatedMB/100) * 100)
 		j.Override = uint8(1)
 	case FailReasonTime:
-		j.Time += 1 * time.Hour
+		j.Requirements.Time += 1 * time.Hour
 		j.Override = uint8(1)
 	}
 }

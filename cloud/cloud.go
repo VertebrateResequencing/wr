@@ -96,23 +96,26 @@ type Quota struct {
 	MaxRAM        int // total MBs allowed
 	MaxCores      int // total CPU cores allowed
 	MaxInstances  int // max number of instances allowed
+	MaxVolume     int // max GBs of volume storage that can be allocated
 	UsedRAM       int
 	UsedCores     int
 	UsedInstances int
+	UsedVolume    int
 }
 
 // this interface must be satisfied to add support for a particular cloud
 // provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                                            // return the environment variables required to function
-	initialize() error                                                                                                                                                // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int) error                                                                                                           // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	getQuota() (*Quota, error)                                                                                                                                        // achieve the aims of GetQuota()
-	flavors() map[string]Flavor                                                                                                                                       // return a map of all server flavors, with their flavor ids as keys
-	spawn(resources *Resources, os string, flavor string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
-	checkServer(serverID string) (working bool, err error)                                                                                                            // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                                              // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                                              // achieve the aims of TearDown()
+	requiredEnv() []string                                                                                                                                                        // return the environment variables required to function
+	initialize() error                                                                                                                                                            // do any initial config set up such as authentication
+	deploy(resources *Resources, requiredPorts []int) error                                                                                                                       // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	inCloud() bool                                                                                                                                                                // achieve the aims of InCloud()
+	getQuota() (*Quota, error)                                                                                                                                                    // achieve the aims of GetQuota()
+	flavors() map[string]Flavor                                                                                                                                                   // return a map of all server flavors, with their flavor ids as keys
+	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
+	checkServer(serverID string) (working bool, err error)                                                                                                                        // achieve the aims of CheckServer()
+	destroyServer(serverID string) error                                                                                                                                          // achieve the aims of DestroyServer()
+	tearDown(resources *Resources) error                                                                                                                                          // achieve the aims of TearDown()
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
@@ -139,9 +142,11 @@ type Flavor struct {
 type Server struct {
 	ID                string
 	IP                string // ip address that you could SSH to
+	OS                string // the name of the Operating System image
 	UserName          string // the username needed to log in to the server
 	AdminPass         string
 	Flavor            Flavor
+	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
 	usedRAM           int
 	usedCores         int
@@ -213,7 +218,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Flavor.Disk-s.usedDisk < diskGB) {
+	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
 	canDo := (s.Flavor.Cores - s.usedCores) / cores
@@ -226,7 +231,7 @@ func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 			}
 		}
 		if diskGB > 0 {
-			n = (s.Flavor.Disk - s.usedDisk) / diskGB
+			n = (s.Disk - s.usedDisk) / diskGB
 			if n < canDo {
 				canDo = n
 			}
@@ -267,6 +272,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 		if err != nil {
 			limit := time.After(5 * time.Minute)
 			ticker := time.NewTicker(1 * time.Second)
+			ticks := 0
 		DIAL:
 			for {
 				select {
@@ -275,9 +281,19 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
 						continue DIAL
 					}
-					// worked, or failed with a different error: stop trying
-					ticker.Stop()
-					break DIAL
+
+					// if it worked, we stop trying; if it failed again with a
+					// different error, we keep trying for at least 15 seconds
+					// to allow for the vagueries of OS start ups (eg. CentOS
+					// brings up sshd and starts rejecting connections before
+					// the centos user gets added)
+					ticks++
+					if err == nil || ticks == 15 {
+						ticker.Stop()
+						break DIAL
+					} else {
+						continue DIAL
+					}
 				case <-limit:
 					ticker.Stop()
 					err = errors.New("giving up waiting for ssh to work")
@@ -534,6 +550,13 @@ func (p *Provider) Deploy(requiredPorts []int) (err error) {
 	return
 }
 
+// InCloud tells you if your process is currently running on a cloud server
+// where the *Server related methods will all work correctly. (That is, if this
+// returns true, you are on the same network as any server you Spawn().)
+func (p *Provider) InCloud() bool {
+	return p.impl.inCloud()
+}
+
 // GetQuota returns details of the maximum resources the user can request, and
 // the current resources used.
 func (p *Provider) GetQuota() (quota *Quota, err error) {
@@ -541,12 +564,15 @@ func (p *Provider) GetQuota() (quota *Quota, err error) {
 }
 
 // CheapestServerFlavor returns details of the smallest (cheapest) server
-// "flavor" available that satisfies your minimum ram (MB), disk (GB) and CPU
-// (core count) requirements, and that also matches the given regex (empty
-// string for the regex means not limited by regex). Use the ID property of the
-// return value for passing to Spawn(). If no flavor meets your requirements you
-// will get an error matching ErrNoFlavor.
-func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int, regex string) (fr Flavor, err error) {
+// "flavor" available that satisfies your minimum ram (MB) and CPU (core count)
+// requirements, and that also matches the given regex (empty string for the
+// regex means not limited by regex). Use the ID property of the return value
+// for passing to Spawn(). If no flavor meets your requirements you will get an
+// error matching ErrNoFlavor. You don't test for size of disk here, because
+// during Spawn() you will request a certain amount of disk space, and if that
+// is larger than the flavor's root disk a larger volume will be created
+// automatically.
+func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flavor, err error) {
 	// from all available flavours, pick the one that has the lowest ram, disk
 	// and cpus that meet our minimums, and also matches the regex
 	var r *regexp.Regexp
@@ -565,7 +591,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int, regex string) 
 			}
 		}
 
-		if f.Cores >= cores && f.RAM >= ramMB && f.Disk >= diskGB {
+		if f.Cores >= cores && f.RAM >= ramMB {
 			if fr.ID == "" {
 				fr = f
 			} else if f.Cores < fr.Cores {
@@ -589,34 +615,43 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB, diskGB int, regex string) 
 
 // Spawn creates a new server using an OS image with a name prefixed with the
 // given os name, with the given flavor ID (that you could get from
-// CheapestServerFlavor().ID). If you supply a non-zero value for the ttd
-// argument, then this amount of time after the last s.Release() call you make
-// (or after the last cmd you started with s.RunCmd exits) that causes the
-// server to be considered idle, the server will be destroyed. If you need an
-// external IP so that you can ssh to the server externally, supply true as the
-// last argument. Returns a *Server so you can s.Destroy it later, find out its
-// ip address so you can ssh to it, and get its admin password in case you need
-// to sudo on the server. You will need to know the username that you can log in
-// with on your chosen OS image. If you call Spawn() while running on a cloud
-// server, then the newly spawned server will be in the same network and
-// security group as the current server. postCreationScript is the []byte
-// contents of a script that will be run on the server after it has been
-// created, before it is used for anything else; empty slice means do nothing.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, ttd time.Duration, externalIP bool, postCreationScript []byte) (server *Server, err error) {
+// CheapestServerFlavor().ID) and at least the given amount of disk space
+// (creating a temporary volume of the required size if the flavor's root disk
+// is too small). If you supply a non-zero value for the ttd argument, then this
+// amount of time after the last s.Release() call you make (or after the last
+// cmd you started with s.RunCmd exits) that causes the server to be considered
+// idle, the server will be destroyed. If you need an external IP so that you
+// can ssh to the server externally, supply true as the last argument. Returns a
+// *Server so you can s.Destroy it later, find out its ip address so you can ssh
+// to it, and get its admin password in case you need to sudo on the server. You
+// will need to know the username that you can log in with on your chosen OS
+// image. If you call Spawn() while running on a cloud server, then the newly
+// spawned server will be in the same network and security group as the current
+// server. postCreationScript is the []byte contents of a script that will be
+// run on the server after it has been created, before it is used for anything
+// else; empty slice means do nothing.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool, postCreationScript []byte) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
 		return
 	}
 
-	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, externalIP, postCreationScript)
+	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP, postCreationScript)
+
+	maxDisk := f.Disk
+	if diskGB > maxDisk {
+		maxDisk = diskGB
+	}
 
 	server = &Server{
 		ID:        serverID,
 		IP:        serverIP,
+		OS:        os,
 		AdminPass: adminPass,
 		UserName:  osUser,
 		Flavor:    f,
+		Disk:      maxDisk,
 		TTD:       ttd,
 		provider:  p,
 	}

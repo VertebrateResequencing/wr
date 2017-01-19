@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 )
@@ -70,11 +71,30 @@ func (e Error) Error() string {
 // run, so that when provided to a scheduler it will be able to schedule things
 // appropriately.
 type Requirements struct {
-	RAM   int           // the expected peak RAM in MB Cmd will use while running
-	Time  time.Duration // the expected time Cmd will take to run
-	Cores int           // how many processor cores the Cmd will use
-	Disk  int           // the required local disk space in GB the Cmd needs to run
-	Other string        // an arbitrary string that will be passed through to the job scheduler, defining further resource requirements
+	RAM   int               // the expected peak RAM in MB Cmd will use while running
+	Time  time.Duration     // the expected time Cmd will take to run
+	Cores int               // how many processor cores the Cmd will use
+	Disk  int               // the required local disk space in GB the Cmd needs to run
+	Other map[string]string // a map that will be passed through to the job scheduler, defining further arbitrary resource requirements
+}
+
+// Stringify represents the contents of the Requirements as a string, sorting
+// the keys of Other to ensure the same result is returned for the same content
+// every time.
+func (req *Requirements) Stringify() string {
+	var other string
+	if len(req.Other) > 0 {
+		otherKeys := make([]string, 0, len(req.Other))
+		for key := range req.Other {
+			otherKeys = append(otherKeys, key)
+		}
+		sort.Strings(otherKeys)
+		for _, key := range otherKeys {
+			other += ":" + key + "=" + req.Other[key]
+		}
+	}
+
+	return fmt.Sprintf("%d:%.0f:%d:%d%s", req.RAM, req.Time.Minutes(), req.Cores, req.Disk, other)
 }
 
 // CmdStatus lets you describe how many of a given cmd are already in the job

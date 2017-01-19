@@ -464,8 +464,8 @@ func (s *Server) GetServerStats() *ServerStats {
 
 			// work out when this Job is going to end, and update etc if later
 			job := inter.(*Job)
-			if !job.starttime.IsZero() && job.Time.Seconds() > 0 {
-				endTime := job.starttime.Add(job.Time)
+			if !job.starttime.IsZero() && job.Requirements.Time.Seconds() > 0 {
+				endTime := job.starttime.Add(job.Requirements.Time)
 				if endTime.After(etc) {
 					etc = endTime
 				}
@@ -524,7 +524,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 						}
 					}
 					if recm == 0 {
-						recm = job.RAM
+						recm = job.Requirements.RAM
 						noRec = true
 					}
 
@@ -536,34 +536,35 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 						}
 					}
 					if recs == 0 {
-						recs = int(job.Time.Seconds())
+						recs = int(job.Requirements.Time.Seconds())
 						noRec = true
 					}
 
 					if job.Override == 1 {
-						if recm > job.RAM {
-							job.RAM = recm
+						if recm > job.Requirements.RAM {
+							job.Requirements.RAM = recm
 						}
-						if recs > int(job.Time.Seconds()) {
-							job.Time = time.Duration(recs) * time.Second
+						if recs > int(job.Requirements.Time.Seconds()) {
+							job.Requirements.Time = time.Duration(recs) * time.Second
 						}
 					} else {
-						job.RAM = recm
-						job.Time = time.Duration(recs) * time.Second
+						job.Requirements.RAM = recm
+						job.Requirements.Time = time.Duration(recs) * time.Second
 					}
 				}
 
-				// our req will be job memory + 100 to allow some leeway in
-				// case the job scheduler calculates used memory differently,
-				// and for other memory usage vagaries
+				// our req will be like the jobs but with memory + 100 to allow
+				// some leeway in case the job scheduler calculates used memory
+				// differently, and for other memory usage vagaries
 				req := &scheduler.Requirements{
-					RAM:   job.RAM + 100,
-					Time:  job.Time,
-					Cores: job.Cores,
-					Disk:  0,
-					Other: "", // *** how to pass though scheduler extra args?
+					RAM:   job.Requirements.RAM + 100,
+					Time:  job.Requirements.Time,
+					Cores: job.Requirements.Cores,
+					Disk:  job.Requirements.Disk,
+					Other: job.Requirements.Other,
 				}
-				job.schedulerGroup = fmt.Sprintf("%d:%.0f:%d", req.RAM, req.Time.Minutes(), req.Cores)
+
+				job.schedulerGroup = req.Stringify()
 
 				if s.rc != "" {
 					groups[job.schedulerGroup]++

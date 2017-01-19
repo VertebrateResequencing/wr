@@ -5,6 +5,21 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.4.0] - 2017-01-19
+### Added
+- `wr add --disk` causes the creation of suitable sized temporary volumes when
+  using the OpenStack scheduler, if necessary.
+- New `wr add` command-specific options now allow specifying which cloud OS
+  image to use to run that command.
+
+### Fixed
+- Improved error message if an invalid OS image name prefix is supplied
+
+### Changed
+- Format of file taken by `wr add -f` has changed completely; read the help
+- Backwards incompatible internal API changes for the cloud package
+
+
 ## [0.3.1] - 2016-12-16
 ### Fixed
 - `wr cloud deploy` now creates working ssh tunnels for typical ssh configs.
