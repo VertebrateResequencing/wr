@@ -178,12 +178,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, err := provider.CheapestServerFlavor(1, osRAM, 1, flavorRegex)
+			flavor, err := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 0*time.Second, true, postCreation)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 1, 0*time.Second, true, postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)

@@ -457,10 +457,7 @@ func TestOpenstack(t *testing.T) {
 
 				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
 				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2")
-				So(flavor.RAM, ShouldEqual, 2048)
-				So(flavor.Disk, ShouldEqual, 20)
-				So(flavor.Cores, ShouldEqual, 1)
+				So(flavor.ID, ShouldEqual, "1") // we now ignore the 20GB disk requirement
 
 				flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
 				So(err, ShouldBeNil)
@@ -594,11 +591,11 @@ func TestOpenstack(t *testing.T) {
 							return
 						}()
 
-						So(waitToFinish(s, (((newCount*10)*2)+15), 1000), ShouldBeTrue)
+						So(waitToFinish(s, (((newCount*10)*3)+15), 1000), ShouldBeTrue)
 						spawned := <-spawnedCh
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
-						<-time.After(20 * time.Second)
+						<-time.After(30 * time.Second)
 
 						foundServers := novaCountServers(rName, "")
 						So(foundServers, ShouldEqual, 0)

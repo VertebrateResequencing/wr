@@ -28,6 +28,7 @@ import (
 	"errors"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/quotasets"
@@ -405,6 +406,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 		MaxRAM:       q.Ram,
 		MaxCores:     q.Cores,
 		MaxInstances: q.Instances,
+		// MaxVolume:    q.Volume, //*** https://github.com/gophercloud/gophercloud/issues/234#issuecomment-273666521 : no support for getting volume quotas...
 	}
 
 	// query all servers to figure out what we've used of our quota
@@ -423,6 +425,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 				quota.UsedCores += f.Cores
 				quota.UsedRAM += f.RAM
 			}
+			//*** how to find out how much volume storage this is using?...
 		}
 
 		return true, nil
@@ -432,7 +435,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -455,20 +458,58 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		return
 	}
+	if imageID == "" {
+		err = errors.New("no OS image with prefix [" + osPrefix + "] was found")
+		return
+	}
+
+	flavor, found := p.fmap[flavorID]
+	if !found {
+		err = errors.New("invalid flavor ID: " + flavorID)
+		return
+	}
 
 	// create the server with a unique name
-	server, err := servers.Create(p.computeClient, keypairs.CreateOptsExt{
-		CreateOptsBuilder: servers.CreateOpts{
-			Name:           uniqueResourceName(resources.ResourceName),
-			FlavorRef:      flavorID,
-			ImageRef:       imageID,
-			SecurityGroups: []string{p.securityGroup},
-			Networks:       []servers.Network{{UUID: p.networkUUID}},
-			UserData:       postCreationScript,
-			// Metadata map[string]string
-		},
-		KeyName: resources.ResourceName,
-	}).Extract()
+	var server *servers.Server
+	createOpts := servers.CreateOpts{
+		Name:           uniqueResourceName(resources.ResourceName),
+		FlavorRef:      flavorID,
+		ImageRef:       imageID,
+		SecurityGroups: []string{p.securityGroup},
+		Networks:       []servers.Network{{UUID: p.networkUUID}},
+		UserData:       postCreationScript,
+	}
+	if diskGB > flavor.Disk {
+		var blockDevices []bootfromvolume.BlockDevice
+		blockDevices = append(blockDevices, bootfromvolume.BlockDevice{
+			UUID:                imageID,
+			SourceType:          bootfromvolume.SourceImage,
+			DeleteOnTermination: true,
+			DestinationType:     bootfromvolume.DestinationVolume,
+			VolumeSize:          diskGB,
+		})
+		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
+			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
+				CreateOptsBuilder: createOpts,
+				BlockDevice: []bootfromvolume.BlockDevice{
+					bootfromvolume.BlockDevice{
+						UUID:                imageID,
+						SourceType:          bootfromvolume.SourceImage,
+						DeleteOnTermination: true,
+						DestinationType:     bootfromvolume.DestinationVolume,
+						VolumeSize:          diskGB,
+					},
+				},
+			},
+			KeyName: resources.ResourceName,
+		}).Extract()
+	} else {
+		server, err = servers.Create(p.computeClient, keypairs.CreateOptsExt{
+			CreateOptsBuilder: createOpts,
+			KeyName:           resources.ResourceName,
+		}).Extract()
+	}
+
 	if err != nil {
 		return
 	}

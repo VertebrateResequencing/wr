@@ -143,8 +143,9 @@ manager's estimate. Possible values are:
 you know that where your command will store its outputs to will not run out of
 disk space, set this to 0 to avoid unnecessary disk space checks (or possible
 volume creation, in the case of cloud schedulers).
-[disk space reservation and checking is not currently implemented by any
-scheduler]
+[disk space reservation and checking is not currently implemented, except for
+the openstack scheduler which will create temporary volumes of the specified
+size if necessary]
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
