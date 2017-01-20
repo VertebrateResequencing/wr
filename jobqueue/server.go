@@ -200,6 +200,13 @@ type ServerConfig struct {
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
 	Deployment string
+
+	// CIDR is the IP address range of your network. When the server needs to
+	// know its own IP address, it uses this CIDR to confirm it got it correct
+	// (ie. it picked the correct network interface). You can leave this unset,
+	// in which case it will do its best to pick correctly. (This is only a
+	// possible issue if you have multiple network interfaces.)
+	CIDR string
 }
 
 // Serve is for use by a server executable and makes it start listening on
@@ -257,7 +264,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	ip := CurrentIP()
+	ip := CurrentIP(config.CIDR)
 	if ip == "" {
 		err = Error{"", "Serve", "", ErrNoHost}
 		return

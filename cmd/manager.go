@@ -197,7 +197,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// though it may actually be running on a remote host and we managed to
 		// connect to it via ssh port forwarding; compare the server ip to our
 		// own
-		myAddr := jobqueue.CurrentIP() + ":" + config.ManagerPort
+		myAddr := jobqueue.CurrentIP("") + ":" + config.ManagerPort
 		sAddr := sstats.ServerInfo.Addr
 		if myAddr == sAddr {
 			jq.Disconnect()

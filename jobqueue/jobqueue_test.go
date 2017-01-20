@@ -92,6 +92,13 @@ func TestJobqueue(t *testing.T) {
 
 	standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
+	Convey("CurrentIP() works", t, func() {
+		ip := CurrentIP("")
+		So(ip, ShouldNotBeBlank)
+		So(CurrentIP("9.9.9.9/24"), ShouldBeBlank)
+		So(CurrentIP(ip+"/16"), ShouldEqual, ip)
+	})
+
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
 	// "fork", and that means these must be the first tests to run or else we

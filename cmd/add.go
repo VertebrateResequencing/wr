@@ -267,7 +267,7 @@ the future when the commands actually get run.`,
 		}
 		var pwd string
 		var pwdWarning int
-		if jobqueue.CurrentIP()+":"+config.ManagerPort == sstats.ServerInfo.Addr {
+		if jobqueue.CurrentIP("")+":"+config.ManagerPort == sstats.ServerInfo.Addr {
 			pwd, err = os.Getwd()
 			if err != nil {
 				die("%s", err)
