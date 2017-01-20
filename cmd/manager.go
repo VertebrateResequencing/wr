@@ -377,6 +377,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
+		CIDR:            cloudCIDR,
 	})
 
 	if sayStarted && err == nil {
