@@ -128,6 +128,10 @@ type ConfigOpenStack struct {
 	// GatewayIP is the gateway ip adress for the subnet that will be created
 	// with the given CIDR. It defaults to 192.168.0.1.
 	GatewayIP string
+
+	// DNSNameServers is a slice of DNS IP addresses to use for lookups on the
+	// created subnet. It defaults to Google's: []string{"8.8.4.4", "8.8.8.8"}
+	DNSNameServers []string
 }
 
 // standin describes a server that we're in the middle of spawning, allowing us
@@ -243,9 +247,10 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.provider = provider
 
 	err = provider.Deploy(&cloud.DeployConfig{
-		RequiredPorts: s.config.ServerPorts,
-		GatewayIP:     s.config.GatewayIP,
-		CIDR:          s.config.CIDR,
+		RequiredPorts:  s.config.ServerPorts,
+		GatewayIP:      s.config.GatewayIP,
+		CIDR:           s.config.CIDR,
+		DNSNameServers: s.config.DNSNameServers,
 	})
 	if err != nil {
 		return

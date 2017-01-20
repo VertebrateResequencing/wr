@@ -141,7 +141,7 @@ func (p *openstackp) initialize() (err error) {
 }
 
 // deploy achieves the aims of Deploy().
-func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string) (err error) {
+func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) (err error) {
 	// the resource name can only contain letters, numbers, underscores,
 	// spaces and hyphens
 	if !openstackValidResourceNameRegexp.MatchString(resources.ResourceName) {
@@ -294,7 +294,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			NetworkID:      networkID,
 			CIDR:           cidr,
 			GatewayIP:      gip,
-			DNSNameservers: dnsNameServers[:], // this is critical, or servers on new networks can't be ssh'd to for many minutes
+			DNSNameservers: dnsNameServers, // this is critical, or servers on new networks can't be ssh'd to for many minutes
 			IPVersion:      4,
 			Name:           resources.ResourceName,
 		}).Extract()

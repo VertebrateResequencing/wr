@@ -64,9 +64,9 @@ var (
 	ErrBadRegex        = "your flavor regular expression was not valid"
 )
 
-// dnsNameServers holds some public (google) dns name server addresses for use
-// when creating cloud subnets that need internet access.
-var dnsNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
+// defaultDNSNameServers holds some public (google) dns name server addresses
+// for use when creating cloud subnets that need internet access.
+var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
 // defaultCIDR is a useful range allowing 16382 servers to be spawned, with a
 // defaultGateWayIP at the start of that range
@@ -113,7 +113,7 @@ type Quota struct {
 type provideri interface {
 	requiredEnv() []string                                                                                                                                                        // return the environment variables required to function
 	initialize() error                                                                                                                                                            // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string) error                                                                                               // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error                                                                      // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
 	inCloud() bool                                                                                                                                                                // achieve the aims of InCloud()
 	getQuota() (*Quota, error)                                                                                                                                                    // achieve the aims of GetQuota()
 	flavors() map[string]Flavor                                                                                                                                                   // return a map of all server flavors, with their flavor ids as keys
@@ -138,10 +138,13 @@ type Provider struct {
 // network and subnet need to be created, the GatewayIP and CIDR options will be
 // used; they default to 192.168.0.1 and 192.168.0.0:18 respectively, allowing
 // for 16381 servers to be Spawn()d later, with a maximum ip of 192.168.63.254.
+// DNSNameServers is a slice of DNS name server IPs. It defaults to Google's:
+// []string{"8.8.4.4", "8.8.8.8"}.
 type DeployConfig struct {
-	RequiredPorts []int
-	GatewayIP     string
-	CIDR          string
+	RequiredPorts  []int
+	GatewayIP      string
+	CIDR           string
+	DNSNameServers []string
 }
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
@@ -559,11 +562,15 @@ func (p *Provider) Deploy(config *DeployConfig) (err error) {
 	if cidr == "" {
 		cidr = defaultCIDR
 	}
+	dnsNameServers := config.DNSNameServers
+	if dnsNameServers == nil {
+		dnsNameServers = defaultDNSNameServers[:]
+	}
 
 	// impl.deploy should overwrite any existing values in p.resources with
 	// updated values, but should leave other things - such as an existing
 	// PrivateKey when we have not just made a new one - alone
-	err = p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr)
+	err = p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr, dnsNameServers)
 	if err != nil {
 		return
 	}

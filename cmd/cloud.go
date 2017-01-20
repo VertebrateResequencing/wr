@@ -54,6 +54,7 @@ var flavorRegex string
 var postCreationScript string
 var cloudGatewayIP string
 var cloudCIDR string
+var cloudDNS string
 var forceTearDown bool
 
 // cloudCmd represents the cloud command
@@ -162,9 +163,10 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		serverPort := "22"
 		info("please wait while %s resources are created...", providerName)
 		err = provider.Deploy(&cloud.DeployConfig{
-			RequiredPorts: []int{22, mp, wp},
-			GatewayIP:     cloudGatewayIP,
-			CIDR:          cloudCIDR,
+			RequiredPorts:  []int{22, mp, wp},
+			GatewayIP:      cloudGatewayIP,
+			CIDR:           cloudCIDR,
+			DNSNameServers: strings.Split(cloudDNS, ","),
 		})
 		if err != nil {
 			die("failed to create resources in %s: %s", providerName, err)
@@ -338,6 +340,7 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", "192.168.0.1", "gateway IP for the created subnet")
 	cloudDeployCmd.Flags().StringVar(&cloudCIDR, "network_cidr", "192.168.0.0/18", "CIDR of the created subnet")
+	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", "8.8.4.4,8.8.8.8", "comma separated DNS name server IPs to use in the created subnet")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
@@ -424,7 +427,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 
 		// get the manager running
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg, cloudGatewayIP, cloudCIDR)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg, cloudGatewayIP, cloudCIDR, cloudDNS)
 		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()
