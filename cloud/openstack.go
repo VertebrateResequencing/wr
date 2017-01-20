@@ -41,6 +41,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
 	"golang.org/x/crypto/ssh"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -55,7 +56,7 @@ var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 // OpenStack
 var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"}
 
-// openstack is our implementer of provideri
+// openstackp is our implementer of provideri
 type openstackp struct {
 	computeClient     *gophercloud.ServiceClient
 	networkClient     *gophercloud.ServiceClient
@@ -66,6 +67,7 @@ type openstackp struct {
 	networkName       string
 	networkUUID       string
 	securityGroup     string
+	ipNet             *net.IPNet
 }
 
 // requiredEnv returns envs
@@ -139,11 +141,18 @@ func (p *openstackp) initialize() (err error) {
 }
 
 // deploy achieves the aims of Deploy().
-func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err error) {
+func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string) (err error) {
 	// the resource name can only contain letters, numbers, underscores,
 	// spaces and hyphens
 	if !openstackValidResourceNameRegexp.MatchString(resources.ResourceName) {
 		err = Error{"openstack", "deploy", ErrBadResourceName}
+		return
+	}
+
+	// spawn() needs to figure out which of a server's ips are local, so we
+	// parse and store the CIDR
+	_, p.ipNet, err = net.ParseCIDR(cidr)
+	if err != nil {
 		return
 	}
 
@@ -279,11 +288,11 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int) (err erro
 	} else {
 		// add a big enough subnet
 		var gip = new(string)
-		*gip = "192.168.0.1"
+		*gip = gatewayIP
 		var subnet *subnets.Subnet
 		subnet, err = subnets.Create(p.networkClient, subnets.CreateOpts{
 			NetworkID:      networkID,
-			CIDR:           "192.168.0.0/16",
+			CIDR:           cidr,
 			GatewayIP:      gip,
 			DNSNameservers: dnsNameServers[:], // this is critical, or servers on new networks can't be ssh'd to for many minutes
 			IPVersion:      4,
@@ -590,9 +599,14 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			return
 		}
 		for _, address := range allNetworkAddresses {
-			if address.Version == 4 && strings.HasPrefix(address.Address, "192.168") {
-				serverIP = address.Address
-				break
+			if address.Version == 4 {
+				ip := net.ParseIP(address.Address)
+				if ip != nil {
+					if p.ipNet.Contains(ip) {
+						serverIP = address.Address
+						break
+					}
+				}
 			}
 		}
 	}

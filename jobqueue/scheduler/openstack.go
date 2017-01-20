@@ -118,6 +118,16 @@ type ConfigOpenStack struct {
 	// Shell is the shell to use to run your commands with; 'bash' is
 	// recommended.
 	Shell string
+
+	// CIDR describes the range of network ips that can be used to spawn
+	// OpenStack servers on which to run our commands. The default is
+	// "192.168.0.0/18", which allows for 16381 servers to be spawned. This
+	// range ends at 192.168.63.254.
+	CIDR string
+
+	// GatewayIP is the gateway ip adress for the subnet that will be created
+	// with the given CIDR. It defaults to 192.168.0.1.
+	GatewayIP string
 }
 
 // standin describes a server that we're in the middle of spawning, allowing us
@@ -232,7 +242,11 @@ func (s *opst) initialize(config interface{}) (err error) {
 	}
 	s.provider = provider
 
-	err = provider.Deploy(s.config.ServerPorts)
+	err = provider.Deploy(&cloud.DeployConfig{
+		RequiredPorts: s.config.ServerPorts,
+		GatewayIP:     s.config.GatewayIP,
+		CIDR:          s.config.CIDR,
+	})
 	if err != nil {
 		return
 	}

@@ -322,6 +322,8 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", "", "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
+	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", "192.168.0.1", "for cloud schedulers, gateway IP for the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", "192.168.0.0/18", "for cloud schedulers, CIDR of the created subnet")
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
@@ -360,6 +362,8 @@ func startJQ(sayStarted bool, postCreation []byte) {
 			ServerKeepTime:     time.Duration(serverKeepAlive) * time.Second,
 			MaxInstances:       maxServers,
 			Shell:              config.RunnerExecShell,
+			GatewayIP:          cloudGatewayIP,
+			CIDR:               cloudCIDR,
 		}
 	}
 

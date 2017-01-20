@@ -68,6 +68,11 @@ var (
 // when creating cloud subnets that need internet access.
 var dnsNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
+// defaultCIDR is a useful range allowing 16382 servers to be spawned, with a
+// defaultGateWayIP at the start of that range
+const defaultGateWayIP = "192.168.0.1"
+const defaultCIDR = "192.168.0.0/18"
+
 // Error records an error and the operation and provider caused it.
 type Error struct {
 	Provider string // the provider's Name
@@ -108,7 +113,7 @@ type Quota struct {
 type provideri interface {
 	requiredEnv() []string                                                                                                                                                        // return the environment variables required to function
 	initialize() error                                                                                                                                                            // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int) error                                                                                                                       // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string) error                                                                                               // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
 	inCloud() bool                                                                                                                                                                // achieve the aims of InCloud()
 	getQuota() (*Quota, error)                                                                                                                                                    // achieve the aims of GetQuota()
 	flavors() map[string]Flavor                                                                                                                                                   // return a map of all server flavors, with their flavor ids as keys
@@ -125,6 +130,18 @@ type Provider struct {
 	Name      string
 	savePath  string
 	resources *Resources
+}
+
+// DeployConfig are the configuration options that you supply to Deploy().
+// RequiredPorts is the slice of port numbers that your application needs to be
+// able to communicate to any servers you spawn (eg. [22] for ssh) through. If a
+// network and subnet need to be created, the GatewayIP and CIDR options will be
+// used; they default to 192.168.0.1 and 192.168.0.0:18 respectively, allowing
+// for 16381 servers to be Spawn()d later, with a maximum ip of 192.168.63.254.
+type DeployConfig struct {
+	RequiredPorts []int
+	GatewayIP     string
+	CIDR          string
 }
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
@@ -528,18 +545,25 @@ func New(name string, resourceName string, savePath string) (p *Provider, err er
 // exists with the resourceName you supplied to New(), we assume it belongs to
 // us and we don't create another (so it is safe to call Deploy multiple times
 // with the same args to New() and Deploy(): you don't need to check if you have
-// already deployed). You must provide a slice of port numbers that your
-// application needs to be able to communicate to any servers you spawn (eg.
-// [22] for ssh) through. Saves the resources it created to disk, which are what
-// TearDown() will delete when you call it. (They are saved to disk so that
+// already deployed). Deploy() saves the resources it created to disk, which are
+// what TearDown() will delete when you call it. (They are saved to disk so that
 // TearDown() can work if you call it in a different session to when you
 // Deploy()ed, and so that PrivateKey() can work if you call it in a different
 // session to the Deploy() call that actually created the ssh key.)
-func (p *Provider) Deploy(requiredPorts []int) (err error) {
+func (p *Provider) Deploy(config *DeployConfig) (err error) {
+	gatewayIP := config.GatewayIP
+	if gatewayIP == "" {
+		gatewayIP = defaultGateWayIP
+	}
+	cidr := config.CIDR
+	if cidr == "" {
+		cidr = defaultCIDR
+	}
+
 	// impl.deploy should overwrite any existing values in p.resources with
 	// updated values, but should leave other things - such as an existing
 	// PrivateKey when we have not just made a new one - alone
-	err = p.impl.deploy(p.resources, requiredPorts)
+	err = p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr)
 	if err != nil {
 		return
 	}
