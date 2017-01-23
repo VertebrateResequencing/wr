@@ -557,6 +557,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		UntilBuried:  sjob.UntilBuried,
 		ReservedBy:   sjob.ReservedBy,
 		EnvKey:       sjob.EnvKey,
+		EnvOverride:  sjob.EnvOverride,
 		Dependencies: sjob.Dependencies,
 	}
 

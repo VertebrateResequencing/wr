@@ -64,6 +64,7 @@ type addCmdOpts struct {
 	DepGrps     []string               `json:"dep_grps"`
 	Deps        []string               `json:"deps"`
 	CmdDeps     []*jobqueue.Dependency `json:"cmd_deps"`
+	Env         []string               `json:"env"`
 	CloudOS     string                 `json:"cloud_os"`
 	CloudUser   string                 `json:"cloud_user"`
 	CloudScript string                 `json:"cloud_script"`
@@ -83,12 +84,12 @@ alternatively have only a JSON object in column 1 that also specifies the
 command as one of the name:value pairs. The possible options are:
 
 cmd cwd req_grp memory time override cpus disk priority retries rep_grp dep_grps
-deps cmd_deps cloud_os cloud_user cloud_os_ram cloud_script
+deps cmd_deps cloud_os cloud_user cloud_os_ram cloud_script env
 
-If any of these (except the cloud ones) will be the same for all your commands,
-you can instead specify them as flags (which are treated as defaults in the case
-that they are unspecified in the text file, but otherwise ignored). The meaning
-of each option is detailed below.
+If any of these (except the cloud ones and env) will be the same for all your
+commands, you can instead specify them as flags (which are treated as defaults
+in the case that they are unspecified in the text file, but otherwise ignored).
+The meaning of each option is detailed below.
 
 A JSON object can written by starting and ending it with curly braces. Names and
 single values are put in double quotes (except for numbers, which are left bare)
@@ -184,9 +185,15 @@ will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
 to "~/my_centos_post_creation_script.sh", then this command will run on a cloud
 node running CentOS (with at least 4GB ram).
 
-NB: Your commands will run with the environment variables you had when you
-added them, not the possibly different environment variables you could have in
-the future when the commands actually get run.`,
+"env" is an array of "key=value" environment variables, which override or add to
+the environment variables the command will see when it runs. The base variables
+that are overwritten depend on if you run 'wr add' on the same machine as you
+started the manager (local, vs remote). In the local case, commands will use
+base variables as they were at the moment in time you run 'wr add', so to set a
+certain environment variable for all commands, you can just set it prior to
+calling 'wr add'. In the remote case the command will use base variables as they
+were on the machine where the manager is running at the moment the manager was
+started.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
@@ -266,15 +273,17 @@ the future when the commands actually get run.`,
 			die("even though I was able to connect to the manager, it failed to tell me its location")
 		}
 		var pwd string
-		var pwdWarning int
+		var remoteWarning int
+		var envVars []string
 		if jobqueue.CurrentIP("")+":"+config.ManagerPort == sstats.ServerInfo.Addr {
 			pwd, err = os.Getwd()
 			if err != nil {
 				die("%s", err)
 			}
+			envVars = os.Environ()
 		} else {
 			pwd = "/tmp"
-			pwdWarning = 1
+			remoteWarning = 1
 		}
 		jq.Disconnect()
 
@@ -318,6 +327,7 @@ the future when the commands actually get run.`,
 			var cmd, cwd, rg, repg string
 			var mb, cpus, disk, override, priority, retries int
 			var dur time.Duration
+			var envOverride []byte
 			var depGroups []string
 			var deps *jobqueue.Dependencies
 
@@ -330,9 +340,9 @@ the future when the commands actually get run.`,
 				if cmdCwd != "" {
 					cwd = cmdCwd
 				} else {
-					if pwdWarning == 1 {
+					if remoteWarning == 1 {
 						warn("command working directories defaulting to /tmp since the manager is running remotely")
-						pwdWarning = 0
+						remoteWarning = 0
 					}
 					cwd = pwd
 				}
@@ -437,6 +447,10 @@ the future when the commands actually get run.`,
 				deps = jobqueue.NewDependencies(theseDeps...)
 			}
 
+			if len(cmdOpts.Env) > 0 {
+				envOverride = jq.CompressEnv(cmdOpts.Env)
+			}
+
 			// scheduler-specific options
 			other := make(map[string]string)
 			if cmdOpts.CloudOS != "" {
@@ -458,7 +472,19 @@ the future when the commands actually get run.`,
 				other["cloud_os_ram"] = strconv.Itoa(osRAM)
 			}
 
-			jobs = append(jobs, jobqueue.NewJob(cmd, cwd, rg, &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other}, uint8(override), uint8(priority), uint8(retries), repg, depGroups, deps))
+			jobs = append(jobs, &jobqueue.Job{
+				RepGroup:     repg,
+				Cmd:          cmd,
+				Cwd:          cwd,
+				ReqGroup:     rg,
+				Requirements: &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
+				Override:     uint8(override),
+				Priority:     uint8(priority),
+				Retries:      uint8(retries),
+				DepGroups:    depGroups,
+				Dependencies: deps,
+				EnvOverride:  envOverride,
+			})
 		}
 
 		// connect to the server
@@ -469,7 +495,7 @@ the future when the commands actually get run.`,
 		defer jq.Disconnect()
 
 		// add the jobs to the queue
-		inserts, dups, err := jq.Add(jobs)
+		inserts, dups, err := jq.Add(jobs, envVars)
 		if err != nil {
 			die("%s", err)
 		}

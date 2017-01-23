@@ -48,6 +48,7 @@ var rdeployment string
 var rserver string
 var rtimeout int
 var maxmins int
+var envVars = os.Environ()
 
 func init() {
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
@@ -95,6 +96,7 @@ func TestJobqueue(t *testing.T) {
 	Convey("CurrentIP() works", t, func() {
 		ip := CurrentIP("")
 		So(ip, ShouldNotBeBlank)
+		fmt.Printf("\nip: %s\n", ip)
 		So(CurrentIP("9.9.9.9/24"), ShouldBeBlank)
 		So(CurrentIP(ip+"/16"), ShouldEqual, ip)
 	})
@@ -168,7 +170,7 @@ func TestJobqueue(t *testing.T) {
 			jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "3secs_pass", []string{}))
 			jobs = append(jobs, NewJob(cmd2, "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "3secs_fail", []string{}))
 			RecSecRound = 1
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -284,13 +286,13 @@ func TestJobqueue(t *testing.T) {
 				}
 				jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, uint8(0), uint8(pri), uint8(3), "manually_added", []string{}))
 			}
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 10)
 			So(already, ShouldEqual, 0)
 
 			Convey("You can't add the same jobs to the queue again", func() {
-				inserts, already, err := jq.Add(jobs)
+				inserts, already, err := jq.Add(jobs, envVars)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 0)
 				So(already, ShouldEqual, 10)
@@ -410,7 +412,7 @@ func TestJobqueue(t *testing.T) {
 										jobs = append(jobs, NewJob("new", "/fake/cwd", "add_group", &jqs.Requirements{RAM: 10, Time: 20 * time.Hour, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
 										defer gojq.Disconnect()
-										gojq.Add(jobs)
+										gojq.Add(jobs, envVars)
 									}
 									continue
 								case w := <-worked:
@@ -434,7 +436,7 @@ func TestJobqueue(t *testing.T) {
 				for i := 10; i < 20; i++ {
 					jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "new_group", &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 2}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 				}
-				inserts, already, err := jq.Add(jobs)
+				inserts, already, err := jq.Add(jobs, envVars)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 10)
 				So(already, ShouldEqual, 10)
@@ -465,6 +467,91 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 				})
+			})
+
+			Convey("You can add more jobs, but without any environment variables", func() {
+				os.Setenv("wr_jobqueue_test_no_envvar", "a")
+				inserts, already, err := jq.Add([]*Job{NewJob("echo $wr_jobqueue_test_no_envvar && false", "/tmp", "new_group", standardReqs, uint8(0), uint8(100), uint8(0), "noenvvar", []string{})}, []string{})
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.RepGroup, ShouldEqual, "noenvvar")
+
+				env, err := job.Env()
+				So(err, ShouldBeNil)
+				So(env, ShouldNotBeEmpty)
+
+				os.Setenv("wr_jobqueue_test_no_envvar", "b")
+				err = jq.Execute(job, config.RunnerExecShell)
+				So(err, ShouldNotBeNil)
+				So(job.FailReason, ShouldEqual, FailReasonExit)
+				stdout, err := job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "b")
+
+				// by comparison, compare normal behaviour, where the initial
+				// value of the envvar gets used for the job
+				os.Setenv("wr_jobqueue_test_no_envvar", "a")
+				inserts, already, err = jq.Add([]*Job{NewJob("echo $wr_jobqueue_test_no_envvar && false && false", "/tmp", "new_group", standardReqs, uint8(0), uint8(101), uint8(0), "withenvvar", []string{})}, os.Environ())
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				job, err = jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.RepGroup, ShouldEqual, "withenvvar")
+
+				env, err = job.Env()
+				So(err, ShouldBeNil)
+				So(env, ShouldNotBeEmpty)
+
+				os.Setenv("wr_jobqueue_test_no_envvar", "b")
+				err = jq.Execute(job, config.RunnerExecShell)
+				So(err, ShouldNotBeNil)
+				So(job.FailReason, ShouldEqual, FailReasonExit)
+				stdout, err = job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "a")
+			})
+
+			Convey("You can add more jobs, overriding certain environment variables", func() {
+				os.Setenv("wr_jobqueue_test_no_envvar", "a")
+				inserts, already, err := jq.Add([]*Job{&Job{
+					Cmd:          "echo $wr_jobqueue_test_no_envvar && echo $wr_jobqueue_test_no_envvar2 && false",
+					Cwd:          "/tmp",
+					RepGroup:     "noenvvar",
+					ReqGroup:     "new_group",
+					Requirements: standardReqs,
+					Priority:     uint8(100),
+					Retries:      uint8(0),
+					Dependencies: NewDependencies(),
+					EnvOverride:  jq.CompressEnv([]string{"wr_jobqueue_test_no_envvar=c", "wr_jobqueue_test_no_envvar2=d"}),
+				}}, []string{})
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				job, err := jq.Reserve(50 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.RepGroup, ShouldEqual, "noenvvar")
+
+				env, err := job.Env()
+				So(err, ShouldBeNil)
+				So(env, ShouldNotBeEmpty)
+
+				os.Setenv("wr_jobqueue_test_no_envvar", "b")
+				err = jq.Execute(job, config.RunnerExecShell)
+				So(err, ShouldNotBeNil)
+				So(job.FailReason, ShouldEqual, FailReasonExit)
+				stdout, err := job.StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "c\nd")
 			})
 
 			Convey("You can stop the server by sending it a SIGTERM or SIGINT", func() {
@@ -533,7 +620,7 @@ func TestJobqueue(t *testing.T) {
 			var jobs []*Job
 			jobs = append(jobs, NewJob("sleep 0.1 && true", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(2), "manually_added", []string{}))
 			jobs = append(jobs, NewJob("sleep 0.1 && false", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(2), "manually_added", []string{}))
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -795,7 +882,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = nil
 					jobs = append(jobs, NewJob("sleep 0.1 && true | true", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_pass", []string{}))
 					jobs = append(jobs, NewJob("sleep 0.1 && true | false | true", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_fail", []string{}))
-					inserts, _, err := jq.Add(jobs)
+					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
 
@@ -830,7 +917,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("Invalid commands are immediately buried", func() {
 					jobs = nil
 					jobs = append(jobs, NewJob("awesjnalakjf --foo", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_fail", []string{}))
-					inserts, _, err := jq.Add(jobs)
+					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 
@@ -863,7 +950,7 @@ func TestJobqueue(t *testing.T) {
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
 					jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "run_out_of_mem", []string{}))
 					RecMBRound = 1
-					inserts, already, err := jq.Add(jobs)
+					inserts, already, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 					So(already, ShouldEqual, 0)
@@ -892,7 +979,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = nil
 					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_pass", []string{}))
 					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_fail", []string{}))
-					inserts, _, err := jq.Add(jobs)
+					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
 
@@ -961,7 +1048,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("The stdout/err of jobs is limited in size", func() {
 					jobs = nil
 					jobs = append(jobs, NewJob("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_fail", []string{}))
-					inserts, _, err := jq.Add(jobs)
+					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 
@@ -1035,7 +1122,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = nil
 					cmd := "perl -e 'for (1..3) { sleep(1) }'"
 					jobs = append(jobs, NewJob(cmd, "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_pass", []string{}))
-					inserts, _, err := jq.Add(jobs)
+					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 
@@ -1058,7 +1145,7 @@ func TestJobqueue(t *testing.T) {
 
 					// same again, but we'll alter the clienttouchinterval to be invalid
 					ClientTouchInterval = 150 * time.Millisecond
-					inserts, _, err = jq.Add(jobs)
+					inserts, _, err = jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
 
@@ -1093,7 +1180,7 @@ func TestJobqueue(t *testing.T) {
 			for i := 0; i < 3; i++ {
 				jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "rp1", []string{}))
 			}
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 3)
 			So(already, ShouldEqual, 0)
@@ -1110,7 +1197,7 @@ func TestJobqueue(t *testing.T) {
 					for i := 0; i < 4; i++ {
 						jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "rp2", []string{}))
 					}
-					inserts, already, err := jq.Add(jobs)
+					inserts, already, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 4)
 					So(already, ShouldEqual, 0)
@@ -1140,7 +1227,7 @@ func TestJobqueue(t *testing.T) {
 				for i := 0; i < 4; i++ {
 					jobs = append(jobs, NewJob(fmt.Sprintf("echo rgduptest %d", i), "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "rp2", []string{}))
 				}
-				inserts, already, err := jq.Add(jobs)
+				inserts, already, err := jq.Add(jobs, envVars)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 3)
@@ -1179,7 +1266,7 @@ func TestJobqueue(t *testing.T) {
 			jobs = append(jobs, NewJob("echo deptest1", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep1", []string{}))
 			jobs = append(jobs, NewJob("echo deptest2", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep2", []string{}))
 			jobs = append(jobs, NewJob("echo deptest3", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep3", []string{}))
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 3)
 			So(already, ShouldEqual, 0)
@@ -1213,7 +1300,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = append(jobs, NewJob("echo deptest7", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep7", []string{}, NewDependencies(d5, d6)))
 					jobs = append(jobs, NewJob("echo deptest8", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep8", []string{}, NewDependencies(d5)))
 
-					inserts, already, err := jq.Add(jobs)
+					inserts, already, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 5)
 					So(already, ShouldEqual, 0)
@@ -1334,7 +1421,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = append(jobs, NewJob("echo deptest4", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep4", []string{}, NewDependencies(d5)))
 					jobs = append(jobs, NewJob("echo deptest5", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep5", []string{}))
 
-					inserts, already, err := jq.Add(jobs)
+					inserts, already, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
 					So(already, ShouldEqual, 0)
@@ -1370,7 +1457,7 @@ func TestJobqueue(t *testing.T) {
 			jobs = append(jobs, NewJob("echo deptest1", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep1", []string{"dep1", "dep1+2+3"}))
 			jobs = append(jobs, NewJob("echo deptest2", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep2", []string{"dep2", "dep1+2+3"}))
 			jobs = append(jobs, NewJob("echo deptest3", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep3", []string{"dep3", "dep1+2+3"}))
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 3)
 			So(already, ShouldEqual, 0)
@@ -1404,7 +1491,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = append(jobs, NewJob("echo deptest7", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep7", []string{"final"}, NewDependencies(d5, d6)))
 					jobs = append(jobs, NewJob("echo deptest8", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep8", []string{"final"}, NewDependencies(d5)))
 
-					inserts, already, err := jq.Add(jobs)
+					inserts, already, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 5)
 					So(already, ShouldEqual, 0)
@@ -1515,7 +1602,7 @@ func TestJobqueue(t *testing.T) {
 							jobs = append(jobs, NewJob("echo after final", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "afterfinal", []string{"afterfinal"}, NewDependencies(dfinal)))
 							dafinal := NewDepGroupDependency("afterfinal")
 							jobs = append(jobs, NewJob("echo after after-final", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "after-afterfinal", []string{}, NewDependencies(dafinal)))
-							inserts, already, err := jq.Add(jobs)
+							inserts, already, err := jq.Add(jobs, envVars)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 2)
 							So(already, ShouldEqual, 0)
@@ -1548,7 +1635,7 @@ func TestJobqueue(t *testing.T) {
 
 							jobs = nil
 							jobs = append(jobs, NewJob("echo deptest9", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep9", []string{"final"}))
-							inserts, already, err = jq.Add(jobs)
+							inserts, already, err = jq.Add(jobs, envVars)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 1)
 							So(already, ShouldEqual, 0)
@@ -1585,7 +1672,7 @@ func TestJobqueue(t *testing.T) {
 							So(len(gottenJobs), ShouldEqual, 1)
 							So(gottenJobs[0].State, ShouldEqual, "ready")
 
-							inserts, already, err = jq.Add(jobs)
+							inserts, already, err = jq.Add(jobs, envVars)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 2) // the job I added, and the resurrected afterfinal job
 							So(already, ShouldEqual, 0)
@@ -1640,7 +1727,7 @@ func TestJobqueue(t *testing.T) {
 
 							jobs = nil
 							jobs = append(jobs, NewJob("echo deptest10", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep10", []string{"final"}))
-							inserts, already, err = jq.Add(jobs)
+							inserts, already, err = jq.Add(jobs, envVars)
 							So(err, ShouldBeNil)
 							So(inserts, ShouldEqual, 3)
 							So(already, ShouldEqual, 0)
@@ -1672,7 +1759,7 @@ func TestJobqueue(t *testing.T) {
 					jobs = append(jobs, NewJob("echo deptest4", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep4", []string{}, NewDependencies(d5)))
 					jobs = append(jobs, NewJob("echo deptest5", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "dep5", []string{"dep5"}))
 
-					inserts, already, err := jq.Add(jobs)
+					inserts, already, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
 					So(already, ShouldEqual, 0)
@@ -1723,7 +1810,7 @@ func TestJobqueue(t *testing.T) {
 			var jobs []*Job
 			jobs = append(jobs, NewJob("echo 1", "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 			jobs = append(jobs, NewJob("echo 2", "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
@@ -1766,7 +1853,7 @@ func TestJobqueue(t *testing.T) {
 			var jobs []*Job
 			job1Cmd := "sleep 1 && echo noninstant"
 			jobs = append(jobs, NewJob(job1Cmd, "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "nij", []string{}))
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -1784,7 +1871,7 @@ func TestJobqueue(t *testing.T) {
 				So(etc.Minutes(), ShouldBeLessThanOrEqualTo, 30)
 
 				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "nij", []string{}))
-				inserts, already, err = jq.Add(jobs)
+				inserts, already, err = jq.Add(jobs, envVars)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 1)
@@ -1832,7 +1919,7 @@ func TestJobqueue(t *testing.T) {
 				So(ok, ShouldBeTrue)
 
 				jobs = append(jobs, NewJob("echo added", "/tmp", "fake_group", &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "nij", []string{}))
-				inserts, already, err = jq.Add(jobs)
+				inserts, already, err = jq.Add(jobs, envVars)
 				So(err, ShouldNotBeNil)
 
 				<-time.After(2 * time.Second)
@@ -1896,7 +1983,7 @@ func TestJobqueue(t *testing.T) {
 			for i := 0; i < count; i++ {
 				jobs = append(jobs, NewJob(fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), tmpdir, "perl", &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 			}
-			inserts, already, err := jq.Add(jobs)
+			inserts, already, err := jq.Add(jobs, envVars)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, count)
 			So(already, ShouldEqual, 0)
@@ -2002,7 +2089,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		for i := 0; i < n; i++ {
 			jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i), "/fake/cwd", "fake_group", &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 		}
-		inserts, already, err := jq.Add(jobs)
+		inserts, already, err := jq.Add(jobs, envVars)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -2110,7 +2197,7 @@ func TestJobqueueSpeed(t *testing.T) {
 					for i := 0; i < b; i++ {
 						jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", &jqs.Requirements{RAM: 1024, Time: 4*time.Hour, Cores: 1}, uint8(0), uint8(0), uint8(3), fmt.Sprintf("batch_%d", batchNum), []string{}))
 					}
-					_, _, err := jq.Add(jobs)
+					_, _, err := jq.Add(jobs, envVars)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -2183,7 +2270,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 	for i := 0; i < b; i++ {
 		jobs = append(jobs, NewJob(fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), "/fake/cwd", "reqgroup", &jqs.Requirements{RAM: 1024, Time: 4*time.Hour, Cores: 1}, uint8(0), uint8(0), uint8(3), batchName, []string{}))
 	}
-	_, _, err := jq.Add(jobs)
+	_, _, err := jq.Add(jobs, envVars)
 	if err != nil {
 		log.Fatal(err)
 	}
