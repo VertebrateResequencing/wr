@@ -345,6 +345,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	}
 
 	var schedulerConfig interface{}
+	serverCIDR := ""
 	switch scheduler {
 	case "local":
 		schedulerConfig = &jqs.ConfigLocal{Shell: config.RunnerExecShell}
@@ -368,6 +369,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 			CIDR:               cloudCIDR,
 			DNSNameServers:     strings.Split(cloudDNS, ","),
 		}
+		serverCIDR = cloudCIDR
 	}
 
 	// start the jobqueue server
@@ -380,7 +382,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
-		CIDR:            cloudCIDR,
+		CIDR:            serverCIDR,
 	})
 
 	if sayStarted && err == nil {
