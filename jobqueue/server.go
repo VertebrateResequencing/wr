@@ -560,15 +560,21 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					}
 				}
 
-				// our req will be like the jobs but with memory + 100 to allow
-				// some leeway in case the job scheduler calculates used memory
-				// differently, and for other memory usage vagaries
-				req := &scheduler.Requirements{
-					RAM:   job.Requirements.RAM + 100,
-					Time:  job.Requirements.Time,
-					Cores: job.Requirements.Cores,
-					Disk:  job.Requirements.Disk,
-					Other: job.Requirements.Other,
+				var req *scheduler.Requirements
+				if job.Requirements.RAM < 924 {
+					// our req will be like the jobs but with memory + 100 to
+					// allow some leeway in case the job scheduler calculates
+					// used memory differently, and for other memory usage
+					// vagaries
+					req = &scheduler.Requirements{
+						RAM:   job.Requirements.RAM + 100,
+						Time:  job.Requirements.Time,
+						Cores: job.Requirements.Cores,
+						Disk:  job.Requirements.Disk,
+						Other: job.Requirements.Other,
+					}
+				} else {
+					req = job.Requirements
 				}
 
 				job.schedulerGroup = req.Stringify()

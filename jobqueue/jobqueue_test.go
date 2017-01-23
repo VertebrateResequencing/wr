@@ -443,12 +443,12 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("You can reserve jobs for a particular scheduler group", func() {
 					for i := 10; i < 20; i++ {
-						job, err := jq.ReserveScheduled(10*time.Millisecond, "2148:60:2:0")
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2:0")
 						So(err, ShouldBeNil)
 						So(job, ShouldNotBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
 					}
-					job, err := jq.ReserveScheduled(10*time.Millisecond, "2148:60:2:0")
+					job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2:0")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 
@@ -459,11 +459,11 @@ func TestJobqueue(t *testing.T) {
 						} else if i == 4 {
 							jid = 7
 						}
-						job, err := jq.ReserveScheduled(10*time.Millisecond, "1124:240:1:0")
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
 						So(err, ShouldBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 					}
-					job, err = jq.ReserveScheduled(10*time.Millisecond, "1124:240:1:0")
+					job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 				})
