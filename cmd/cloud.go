@@ -389,6 +389,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		provider.TearDown()
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}
+	_, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
+	_, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
 
 	// start up the manager
 	var alreadyStarted bool
