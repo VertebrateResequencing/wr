@@ -38,6 +38,7 @@ import (
 
 const gb = uint64(1.07374182e9) // for byte to GB conversion
 const unquotadVal = 1000000     // a "large" number for use when we don't have quota
+const secsBetweenSpawns = 30    // *** this may change to just spawning sequentially?...
 
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
@@ -534,7 +535,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		// up some of our quota and unlock so other things can proceed
 		numSpawning := s.waitingToSpawn + s.spawningNow
 		if numSpawning == 0 {
-			s.nextSpawnTime = time.Now().Add(10 * time.Second)
+			s.nextSpawnTime = time.Now().Add(secsBetweenSpawns * time.Second)
 			s.spawningNow++
 		} else {
 			s.waitingToSpawn++
@@ -553,7 +554,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.mutex.Unlock()
 
 		// now spawn, but don't overload the system by trying to spawn too many
-		// at once; wait at least 10 seconds between each spawn
+		// at once; wait at least secsBetweenSpawns seconds between each spawn
 		if numSpawning > 0 {
 			done := make(chan error)
 			go func() {
@@ -563,7 +564,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 					case <-ticker.C:
 						s.mutex.Lock()
 						if time.Now().After(s.nextSpawnTime) {
-							s.nextSpawnTime = time.Now().Add(10 * time.Second)
+							s.nextSpawnTime = time.Now().Add(secsBetweenSpawns * time.Second)
 							s.waitingToSpawn--
 							s.spawningNow++
 							s.mutex.Unlock()
