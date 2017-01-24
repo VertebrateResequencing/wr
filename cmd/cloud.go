@@ -50,6 +50,7 @@ var serverKeepAlive int
 var osPrefix string
 var osUsername string
 var osRAM int
+var osDisk int
 var flavorRegex string
 var postCreationScript string
 var cloudGatewayIP string
@@ -191,7 +192,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 1, 0*time.Second, true, postCreation)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true, postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -334,6 +335,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", "Ubuntu 16", "prefix name of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", 2048, "ram (MB) needed by the OS image specified by --os")
+	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", 1, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", "", "a regular expression to limit server flavors that can be automatically picked")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", "", "path to a start-up script that will be run on each server created")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 120, "how long in seconds to keep idle spawned servers alive for")
@@ -428,8 +430,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			flavorArg = " -l '" + flavorRegex + "'"
 		}
 
+		var osDiskArg string
+		if osDisk > 0 {
+			osDiskArg = " -d " + strconv.Itoa(osDisk)
+		}
+
 		// get the manager running
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg, cloudGatewayIP, cloudCIDR, cloudDNS)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS)
 		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()
