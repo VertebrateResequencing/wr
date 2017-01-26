@@ -84,8 +84,8 @@ type ConfigOpenStack struct {
 	OSRAM int
 
 	// OSDisk is the minimum disk in GB with which to bring up a server instance
-	// that runs your Operating System image. It defaults to 1. (Overridden during
-	// Schedule() by a Requirements.Other["cloud_os_disk"] value.)
+	// that runs your Operating System image. It defaults to 1. (Overridden
+	// during Schedule() by a Requirements.Disk value.)
 	OSDisk int
 
 	// FlavorRegex is a regular expression that you can use to limit what
@@ -291,6 +291,9 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.config = config.(*ConfigOpenStack)
 	if s.config.OSRAM == 0 {
 		s.config.OSRAM = 2048
+	}
+	if s.config.OSDisk == 0 {
+		s.config.OSDisk = 1
 	}
 
 	// create a cloud provider for openstack, that we'll use to interact with
@@ -508,10 +511,12 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 
 // reqForSpawn checks the input Requirements and if the configured OSRAM (or
 // overriding that, the Requirements.Other["cloud_os_ram"]) is higher that the
-// Requirements.RAM, returns a new Requirements with the higher RAM value.
+// Requirements.RAM, or Requirements.Disk is not set and OSDisk is configured,
+// returns a new Requirements with the higher RAM/ configured Disk value.
 // Otherwise returns the input.
 func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 	reqForSpawn := req
+
 	var osRAM int
 	if val, defined := req.Other["cloud_os_ram"]; defined {
 		i, err := strconv.Atoi(val)
@@ -523,12 +528,18 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 	} else {
 		osRAM = s.config.OSRAM
 	}
+
+	disk := req.Disk
+	if disk == 0 {
+		disk = s.config.OSDisk
+	}
+
 	if req.RAM < osRAM {
 		reqForSpawn = &Requirements{
 			RAM:   osRAM,
 			Time:  req.Time,
 			Cores: req.Cores,
-			Disk:  req.Disk,
+			Disk:  disk,
 			Other: req.Other,
 		}
 	}
