@@ -521,7 +521,7 @@ func TestJobqueue(t *testing.T) {
 
 			Convey("You can add more jobs, overriding certain environment variables", func() {
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
-				inserts, already, err := jq.Add([]*Job{&Job{
+				inserts, already, err := jq.Add([]*Job{{
 					Cmd:          "echo $wr_jobqueue_test_no_envvar && echo $wr_jobqueue_test_no_envvar2 && false",
 					Cwd:          "/tmp",
 					RepGroup:     "noenvvar",
