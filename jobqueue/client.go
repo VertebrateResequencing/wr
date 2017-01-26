@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -134,6 +134,7 @@ type Job struct {
 	StdErrC        []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
 	StdOutC        []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
 	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
+	EnvOverride    []byte        // if set (using output of CompressEnv()), they will be returned in the results of job.Env()
 	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
 	Attempts       uint32        // the number of times the job had ever entered 'running' state
 	UntilBuried    uint8         // the remaining number of Release()s allowed before being buried instead
@@ -414,15 +415,17 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 }
 
 // Add adds new jobs to the job queue, but only if those jobs aren't already in
-// there. If any were already there, you will not get an error, but the
-// returned 'existed' count will be > 0. Note that no cross-queue checking is
-// done, so you need to be careful not to add the same job to different queues.
-// Note that if you add jobs to the queue that were previously added, Execute()d
-// and were successfully Archive()d, the existed count will be 0 and the jobs
-// will be treated like new ones, though when Archive()d again, the new Job will
-// replace the old one in the database.
-func (c *Client) Add(jobs []*Job) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.compressEnv()})
+// there. If any were already there, you will not get an error, but the returned
+// 'existed' count will be > 0. Note that no cross-queue checking is done, so
+// you need to be careful not to add the same job to different queues. Note that
+// if you add jobs to the queue that were previously added, Execute()d and were
+// successfully Archive()d, the existed count will be 0 and the jobs will be
+// treated like new ones, though when Archive()d again, the new Job will replace
+// the old one in the database. The envVars argument is a slice of ("key=value")
+// strings with the environment variables you want to be set when the job's cmd
+// actually runs. Typically you would pass in os.Environ().
+func (c *Client) Add(jobs []*Job, envVars []string) (added int, existed int, err error) {
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars)})
 	if err != nil {
 		return
 	}
@@ -487,8 +490,10 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // appropriate. The supplied shell is the shell to execute the Cmd under,
 // ideally bash (something that understand the command "set -o pipefail"). You
 // have to have been the one to Reserve() the supplied Job, or this will
-// immediately return an error. NB: the peak RAM tracking assumes we are
-// running on a modern linux system with /proc/*/smaps.
+// immediately return an error. If the job was Add()ed with out any environment
+// variables, then the current environment variables will be used. NB: the peak
+// RAM tracking assumes we are running on a modern linux system with
+// /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
@@ -518,7 +523,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 	cmd.Dir = job.Cwd
 
 	// and we'll run it with the environment variables that were present when
-	// the command was first added to the queue *** we need a way for users to update a job with new env vars
+	// the command was first added to the queue (or if none, current env vars,
+	// and in either case, including any overrides) *** we need a way for users
+	// to update a job with new env vars
 	env, err := job.Env()
 	if err != nil {
 		c.Bury(job, FailReasonEnv)
@@ -634,6 +641,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 	dorelease := false
 	doarchive := false
 	failreason := ""
+	var mayBeTemp string
+	if job.UntilBuried > 1 {
+		mayBeTemp = ", which may be a temporary issue, so it will be tried again"
+	}
 	if err != nil {
 		// there was a problem running the command
 		if exitError, ok := err.(*exec.ExitError); ok {
@@ -666,7 +677,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 					}
 				} else {
 					failreason = FailReasonExit
-					myerr = fmt.Errorf("command [%s] exited with code %d, which may be a temporary issue, so it will be tried again", job.Cmd, exitcode)
+					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
 				}
 			}
 		} else {
@@ -674,7 +685,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			exitcode = 255
 			dorelease = true
 			failreason = FailReasonAbnormal
-			myerr = fmt.Errorf("command [%s] failed to complete normally (%v), which may be a temporary issue, so it will be tried again", job.Cmd, err)
+			myerr = fmt.Errorf("command [%s] failed to complete normally (%v)%s", job.Cmd, err, mayBeTemp)
 		}
 	} else {
 		// the command worked fine
@@ -900,10 +911,17 @@ func (c *Client) GetIncomplete(limit int, state string, getStd bool, getEnv bool
 	return
 }
 
-// Env decompresses and decodes job.EnvC (the output of compressEnv(), which are
+// Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are
 // the environment variables the Job's Cmd should run/ran under). Note that EnvC
 // is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().
+// If no environment variables were passed in when the job was Add()ed to the
+// queue, returns current environment variables instead. In both cases, alters
+// the return value to apply any overrides stored in job.EnvOverride.
 func (j *Job) Env() (env []string, err error) {
+	if len(j.EnvC) == 0 {
+		return
+	}
+
 	decompressed, err := decompress(j.EnvC)
 	if err != nil {
 		return
@@ -916,6 +934,45 @@ func (j *Job) Env() (env []string, err error) {
 		return
 	}
 	env = es.Environ
+
+	if len(env) == 0 {
+		env = os.Environ()
+	}
+
+	if len(j.EnvOverride) > 0 {
+		decompressed, err = decompress(j.EnvOverride)
+		if err != nil {
+			return
+		}
+		ch = new(codec.BincHandle)
+		dec = codec.NewDecoderBytes([]byte(decompressed), ch)
+		es = &envStr{}
+		err = dec.Decode(es)
+		if err != nil {
+			return
+		}
+
+		if len(es.Environ) > 0 {
+			override := make(map[string]string)
+			for _, envvar := range es.Environ {
+				pair := strings.Split(envvar, "=")
+				override[pair[0]] = envvar
+			}
+
+			for i, envvar := range env {
+				pair := strings.Split(envvar, "=")
+				if replace, do := override[pair[0]]; do {
+					env[i] = replace
+					delete(override, pair[0])
+				}
+			}
+
+			for _, envvar := range override {
+				env = append(env, envvar)
+			}
+		}
+	}
+
 	return
 }
 
@@ -1027,13 +1084,13 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	return
 }
 
-// compressEnv encodes the current user environment variables and then
-// compresses that, so that for Add() the server can store it on disc without
-// holding it in memory, and pass the compressed bytes back to us when we need
-// to know the Env (during Execute()).
-func (c *Client) compressEnv() []byte {
+// CompressEnv encodes the given environment variables (slice of "key=value"
+// strings) and then compresses that, so that for Add() the server can store it
+// on disc without holding it in memory, and pass the compressed bytes back to
+// us when we need to know the Env (during Execute()).
+func (c *Client) CompressEnv(envars []string) []byte {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	enc.Encode(&envStr{os.Environ()})
+	enc.Encode(&envStr{envars})
 	return compress(encoded)
 }

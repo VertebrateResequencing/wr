@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -557,6 +557,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		UntilBuried:  sjob.UntilBuried,
 		ReservedBy:   sjob.ReservedBy,
 		EnvKey:       sjob.EnvKey,
+		EnvOverride:  sjob.EnvOverride,
 		Dependencies: sjob.Dependencies,
 	}
 

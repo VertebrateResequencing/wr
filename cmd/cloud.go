@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -50,8 +50,12 @@ var serverKeepAlive int
 var osPrefix string
 var osUsername string
 var osRAM int
+var osDisk int
 var flavorRegex string
 var postCreationScript string
+var cloudGatewayIP string
+var cloudCIDR string
+var cloudDNS string
 var forceTearDown bool
 
 // cloudCmd represents the cloud command
@@ -159,7 +163,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 		serverPort := "22"
 		info("please wait while %s resources are created...", providerName)
-		err = provider.Deploy([]int{22, mp, wp})
+		err = provider.Deploy(&cloud.DeployConfig{
+			RequiredPorts:  []int{22, mp, wp},
+			GatewayIP:      cloudGatewayIP,
+			CIDR:           cloudCIDR,
+			DNSNameServers: strings.Split(cloudDNS, ","),
+		})
 		if err != nil {
 			die("failed to create resources in %s: %s", providerName, err)
 		}
@@ -183,7 +192,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, 1, 0*time.Second, true, postCreation)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true, postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -326,10 +335,14 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", "Ubuntu 16", "prefix name of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", 2048, "ram (MB) needed by the OS image specified by --os")
+	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", 1, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", "", "a regular expression to limit server flavors that can be automatically picked")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", "", "path to a start-up script that will be run on each server created")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 120, "how long in seconds to keep idle spawned servers alive for")
 	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn; 0 means unlimited (default 0)")
+	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", "192.168.0.1", "gateway IP for the created subnet")
+	cloudDeployCmd.Flags().StringVar(&cloudCIDR, "network_cidr", "192.168.0.0/18", "CIDR of the created subnet")
+	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", "8.8.4.4,8.8.8.8", "comma separated DNS name server IPs to use in the created subnet")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
@@ -378,6 +391,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		provider.TearDown()
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}
+	_, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
+	_, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
 
 	// start up the manager
 	var alreadyStarted bool
@@ -415,8 +430,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			flavorArg = " -l '" + flavorRegex + "'"
 		}
 
+		var osDiskArg string
+		if osDisk > 0 {
+			osDiskArg = " -d " + strconv.Itoa(osDisk)
+		}
+
 		// get the manager running
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS)
 		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()

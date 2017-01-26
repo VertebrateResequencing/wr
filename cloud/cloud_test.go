@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -77,7 +77,7 @@ func TestOpenStack(t *testing.T) {
 			})
 
 			Convey("You can deploy to OpenStack and get the cheapest server flavor", func() {
-				err := p.Deploy([]int{22})
+				err := p.Deploy(&DeployConfig{RequiredPorts: []int{22}})
 				So(err, ShouldBeNil)
 				So(p.resources, ShouldNotBeNil)
 				So(p.resources.ResourceName, ShouldEqual, resourceName)

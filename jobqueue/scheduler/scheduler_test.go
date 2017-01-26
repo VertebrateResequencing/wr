@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -532,6 +532,7 @@ func TestOpenstack(t *testing.T) {
 		if err == nil && oss.provider.InCloud() {
 			Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
 				oFile := filepath.Join(tmpdir, "out")
+				spawnTime := 50 // how long it typically takes a server to become usable on author's test system
 
 				Convey("It eventually runs them all", func() {
 					// on authors setup, running the test from a 1 cpu cloud
@@ -550,7 +551,7 @@ func TestOpenstack(t *testing.T) {
 						return
 					}()
 
-					So(waitToFinish(s, ((count*10)+15), 1000), ShouldBeTrue)
+					So(waitToFinish(s, ((count*10)+15)*2, 1000), ShouldBeTrue)
 					spawned := <-spawnedCh
 					close(spawnedCh)
 					So(spawned, ShouldBeBetweenOrEqual, 4, count)
@@ -558,8 +559,8 @@ func TestOpenstack(t *testing.T) {
 					foundServers := novaCountServers(rName, "")
 					So(foundServers, ShouldBeBetweenOrEqual, 1, 6)
 
-					// after the last run, they are all auto- destroyed
-					<-time.After(20 * time.Second)
+					// after the last run, they are all auto-destroyed
+					<-time.After(30 * time.Second)
 
 					foundServers = novaCountServers(rName, "")
 					So(foundServers, ShouldEqual, 0)
@@ -571,11 +572,12 @@ func TestOpenstack(t *testing.T) {
 				})
 
 				if osPrefix != "CentOS 7" {
+					oReqs := make(map[string]string)
+					oReqs["cloud_os"] = "CentOS 7"
+					oReqs["cloud_user"] = "centos"
+					oReqs["cloud_os_ram"] = "4096"
+
 					Convey("They can be run again, overriding the default os image and ram", func() {
-						oReqs := make(map[string]string)
-						oReqs["cloud_os"] = "CentOS 7"
-						oReqs["cloud_user"] = "centos"
-						oReqs["cloud_os_ram"] = "4096"
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 						newCount := 3
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
@@ -585,13 +587,13 @@ func TestOpenstack(t *testing.T) {
 
 						spawnedCh := make(chan int, 1)
 						go func() {
-							wait := int(((newCount * 10) + 15) / 2)
+							wait := int(((newCount * (10 + spawnTime)) + 15) / 2)
 							<-time.After(time.Duration(wait) * time.Second)
 							spawnedCh <- novaCountServers(rName, oReqs["cloud_os"]) // *** also want to test that the spawned servers are on 4GB ram flavors
 							return
 						}()
 
-						So(waitToFinish(s, (((newCount*10)*3)+15), 1000), ShouldBeTrue)
+						So(waitToFinish(s, ((newCount*(10+spawnTime))+15)*2, 1000), ShouldBeTrue)
 						spawned := <-spawnedCh
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
@@ -605,7 +607,62 @@ func TestOpenstack(t *testing.T) {
 						So(err, ShouldNotBeNil)
 						So(os.IsNotExist(err), ShouldBeTrue)
 					})
+
+					numCores := 4
+					multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 6 * numCores, oReqs})
+					if err == nil && multiCoreFlavor.Cores >= numCores {
+						oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
+						jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+						confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
+						if err == nil && confirmFlavor.Cores >= numCores {
+							Convey("You can run multiple jobs at once on multi-core servers", func() {
+								cmd := "sleep 30"
+								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+								err = s.Schedule(cmd, jobReq, numCores)
+								So(err, ShouldBeNil)
+								So(s.Busy(), ShouldBeTrue)
+
+								waitSecs := spawnTime + 20 + 30 // 20 for extra leeway, 30 for the cmd's run time
+								spawnedCh := make(chan int, 1)
+								go func() {
+									maxSpawned := 0
+									ticker := time.NewTicker(1 * time.Second)
+									limit := time.After(time.Duration(waitSecs-5) * time.Second)
+									for {
+										select {
+										case <-ticker.C:
+											spawned := novaCountServers(rName, oReqs["cloud_os"])
+											if spawned > maxSpawned {
+												maxSpawned = spawned
+											}
+											continue
+										case <-limit:
+											ticker.Stop()
+											spawnedCh <- maxSpawned
+											return
+										}
+									}
+								}()
+
+								// wait for enough time to have spawned a server
+								// and run both commands in parallel, but not
+								// sequentially *** but how long does it take to
+								// spawn?! (50s in authors test area, but this
+								// will vary...) we need better confirmation of
+								// parallel run...
+								So(waitToFinish(s, waitSecs, 1000), ShouldBeTrue)
+								spawned := <-spawnedCh
+								So(spawned, ShouldEqual, 1)
+							})
+						} else {
+							SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
+						}
+					} else {
+						SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
+					}
 				}
+
+				// *** I have no tests for when servers fail to start...
 
 				// *** should also test dropping the count
 

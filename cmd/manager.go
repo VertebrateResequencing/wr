@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -197,7 +198,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// though it may actually be running on a remote host and we managed to
 		// connect to it via ssh port forwarding; compare the server ip to our
 		// own
-		myAddr := jobqueue.CurrentIP() + ":" + config.ManagerPort
+		myAddr := jobqueue.CurrentIP("") + ":" + config.ManagerPort
 		sAddr := sstats.ServerInfo.Addr
 		if myAddr == sAddr {
 			jq.Disconnect()
@@ -318,10 +319,14 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", "Ubuntu 16", "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", "ubuntu", "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", 2048, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", 1, "for cloud schedulers, minimum disk (GB) for servers")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", "", "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", "", "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
+	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", "192.168.0.1", "for cloud schedulers, gateway IP for the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", "192.168.0.0/18", "for cloud schedulers, CIDR of the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", "8.8.4.4,8.8.8.8", "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
@@ -341,6 +346,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	}
 
 	var schedulerConfig interface{}
+	serverCIDR := ""
 	switch scheduler {
 	case "local":
 		schedulerConfig = &jqs.ConfigLocal{Shell: config.RunnerExecShell}
@@ -355,12 +361,17 @@ func startJQ(sayStarted bool, postCreation []byte) {
 			OSPrefix:           osPrefix,
 			OSUser:             osUsername,
 			OSRAM:              osRAM,
+			OSDisk:             osDisk,
 			FlavorRegex:        flavorRegex,
 			PostCreationScript: postCreation,
 			ServerKeepTime:     time.Duration(serverKeepAlive) * time.Second,
 			MaxInstances:       maxServers,
 			Shell:              config.RunnerExecShell,
+			GatewayIP:          cloudGatewayIP,
+			CIDR:               cloudCIDR,
+			DNSNameServers:     strings.Split(cloudDNS, ","),
 		}
+		serverCIDR = cloudCIDR
 	}
 
 	// start the jobqueue server
@@ -373,6 +384,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
+		CIDR:            serverCIDR,
 	})
 
 	if sayStarted && err == nil {

@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -30,35 +30,79 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 )
 
 var pss = []byte("Pss:")
 
-// CurrentIP returns the IP address of the machine we're running on right now
-func CurrentIP() (ip string) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return
+// CurrentIP returns the IP address of the machine we're running on right now.
+// The cidr argument can be an empty string, but if set to the CIDR of the
+// machine's primary network, it helps us be sure of getting the correct IP
+// address (for when there are multiple network interfaces on the machine).
+func CurrentIP(cidr string) (ip string) {
+	var ipNet *net.IPNet
+	if cidr != "" {
+		_, ipn, err := net.ParseCIDR(cidr)
+		if err == nil {
+			ipNet = ipn
+		}
+		// *** ignoring error since I don't want to change the return value of
+		// this method...
 	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ip = ipnet.IP.String()
+
+	// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
+	// cross-linux&MacOS solution that works reliably...
+	out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output()
+	if err == nil {
+		ip = string(out)
+
+		// paranoid confirmation this ip is in our CIDR
+		if ip != "" && ipNet != nil {
+			pip := net.ParseIP(ip)
+			if pip != nil {
+				if !ipNet.Contains(pip) {
+					ip = ""
+				}
 			}
 		}
 	}
+
+	// if the above fails, fall back on manually going through all our network
+	// interfaces
+	if ip == "" {
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return
+		}
+		for _, address := range addrs {
+			if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
+				if thisIPNet.IP.To4() != nil {
+					if ipNet != nil {
+						if ipNet.Contains(thisIPNet.IP) {
+							ip = thisIPNet.IP.String()
+							break
+						}
+					} else {
+						ip = thisIPNet.IP.String()
+						break
+					}
+				}
+			}
+		}
+	}
+
 	return
 }
 
-// byteKey calculates a unique key that describes a byte slice
+// byteKey calculates a unique key that describes a byte slice.
 func byteKey(b []byte) string {
 	l, h := farm.Hash128(b)
 	return fmt.Sprintf("%016x%016x", l, h)
 }
 
 // copy a file *** should be updated to handle source being on a different
-// machine or in an S3-style object store
+// machine or in an S3-style object store.
 func copyFile(source string, dest string) (err error) {
 	in, err := os.Open(source)
 	if err != nil {
@@ -84,7 +128,7 @@ func copyFile(source string, dest string) (err error) {
 
 // compress uses zlib to compress stuff, for transferring big stuff like
 // stdout, stderr and environment variables over the network, and for storing
-// of same on disk
+// of same on disk.
 func compress(data []byte) []byte {
 	var compressed bytes.Buffer
 	w, _ := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
@@ -93,7 +137,7 @@ func compress(data []byte) []byte {
 	return compressed.Bytes()
 }
 
-// decompress uses zlib to decompress stuff compressed by compress()
+// decompress uses zlib to decompress stuff compressed by compress().
 func decompress(compressed []byte) (data []byte, err error) {
 	b := bytes.NewReader(compressed)
 	r, err := zlib.NewReader(b)
@@ -107,7 +151,7 @@ func decompress(compressed []byte) (data []byte, err error) {
 }
 
 // get the current memory usage of a pid, relying on modern linux /proc/*/smaps
-// (based on http://stackoverflow.com/a/31881979/675083)
+// (based on http://stackoverflow.com/a/31881979/675083).
 func currentMemory(pid int) (int, error) {
 	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
 	if err != nil {
