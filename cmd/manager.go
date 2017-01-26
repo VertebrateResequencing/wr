@@ -323,7 +323,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", "", "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", "", "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
-	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
+	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", -1, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
 	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", "192.168.0.1", "for cloud schedulers, gateway IP for the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", "192.168.0.0/18", "for cloud schedulers, CIDR of the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", "8.8.4.4,8.8.8.8", "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")

@@ -115,7 +115,9 @@ type ConfigOpenStack struct {
 	ServerKeepTime time.Duration
 
 	// MaxInstances is the maximum number of instances we are allowed to spawn.
-	// A 0 value (the default) means we will be limited by your quota, if any.
+	// -1 means we will be limited by your quota, if any. 0 (the default) means
+	// no additional instances will be spawned (commands will run locally on the
+	// same instance the manager is running on).
 	MaxInstances int
 
 	// Shell is the shell to use to run your commands with; 'bash' is
@@ -349,7 +351,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	} else {
 		s.quotaMaxInstances = quota.MaxInstances
 	}
-	if s.config.MaxInstances > 0 && s.config.MaxInstances < s.quotaMaxInstances {
+	if s.config.MaxInstances > -1 && s.config.MaxInstances < s.quotaMaxInstances {
 		s.quotaMaxInstances = s.config.MaxInstances
 	}
 
@@ -454,7 +456,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		return
 	}
 	remainingInstances := unquotadVal
-	if s.quotaMaxInstances > 0 { // this instead of quota.MaxInstances because our own config may be lower
+	if s.quotaMaxInstances > -1 { // this instead of quota.MaxInstances because our own config may be lower
 		remainingInstances = s.quotaMaxInstances - quota.UsedInstances - s.reservedInstances
 	}
 	remainingRAM := unquotadVal
