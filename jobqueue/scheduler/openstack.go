@@ -187,18 +187,27 @@ func (s *standin) allocate(req *Requirements) {
 func (s *standin) hasSpaceFor(req *Requirements) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	if (s.flavor.Cores-s.usedCores < req.Cores) || (s.flavor.RAM-s.usedRAM < req.RAM) || (s.disk-s.usedDisk < req.Disk) {
+	cores := req.Cores
+	if cores == 0 {
+		cores = 1
+	}
+	if (s.flavor.Cores-s.usedCores < cores) || (s.flavor.RAM-s.usedRAM < req.RAM) || (s.disk-s.usedDisk < req.Disk) {
 		return 0
 	}
-	canDo := (s.flavor.Cores - s.usedCores) / req.Cores
+	canDo := (s.flavor.Cores - s.usedCores) / cores
 	if canDo > 1 {
-		n := (s.flavor.RAM - s.usedRAM) / req.RAM
-		if n < canDo {
-			canDo = n
+		var n int
+		if req.RAM > 0 {
+			n = (s.flavor.RAM - s.usedRAM) / req.RAM
+			if n < canDo {
+				canDo = n
+			}
 		}
-		n = (s.disk - s.usedDisk) / req.Disk
-		if n < canDo {
-			canDo = n
+		if req.Disk > 0 {
+			n = (s.disk - s.usedDisk) / req.Disk
+			if n < canDo {
+				canDo = n
+			}
 		}
 	}
 	return canDo
