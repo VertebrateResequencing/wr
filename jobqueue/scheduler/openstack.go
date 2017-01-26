@@ -83,6 +83,11 @@ type ConfigOpenStack struct {
 	// Schedule() by a Requirements.Other["cloud_os_ram"] value.)
 	OSRAM int
 
+	// OSDisk is the minimum disk in GB with which to bring up a server instance
+	// that runs your Operating System image. It defaults to 1. (Overridden during
+	// Schedule() by a Requirements.Other["cloud_os_disk"] value.)
+	OSDisk int
+
 	// FlavorRegex is a regular expression that you can use to limit what
 	// flavors of server will be created to run commands on. The default of an
 	// empty string means there is no limit, and any available flavor can be
