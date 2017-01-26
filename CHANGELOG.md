@@ -5,6 +5,31 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.5.0] - 2017-01-26
+### Added
+- `wr cloud deploy` now has options for setting your network CIDR, gateway IP,
+  DNS name servers and minimum disk size.
+- `wr add` command-specific options now allow specifying environment variable
+  overrides.
+
+### Fixed
+- Manager's IP is now calculated correctly on hosts with multiple network
+  interfaces.
+- `wr cloud deploy` applies appropriate private permissions to the ssh key file
+  it copies over to the "head" node.
+- Numerous fixes made to OpenStack scheduler, allowing it to work as expected
+  with multi-core flavors and not overload the system by spawning new servers
+  sequentially.
+
+### Changed
+- Using `wr add` with a remote manager now no longer associates local
+  environment variables with the command; commands run with the remote variables
+  instead.
+- Memory requirements are no longer increased by 100MB unless the resulting
+  figure would be less than 1GB.
+- Backwards incompatible internal API changes for the jobqueue package.
+
+
 ## [0.4.0] - 2017-01-19
 ### Added
 - `wr add --disk` causes the creation of suitable sized temporary volumes when
@@ -13,11 +38,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   image to use to run that command.
 
 ### Fixed
-- Improved error message if an invalid OS image name prefix is supplied
+- Improved error message if an invalid OS image name prefix is supplied.
 
 ### Changed
-- Format of file taken by `wr add -f` has changed completely; read the help
-- Backwards incompatible internal API changes for the cloud package
+- Format of file taken by `wr add -f` has changed completely; read the help.
+- Backwards incompatible internal API changes for the cloud package.
 
 
 ## [0.3.1] - 2016-12-16
