@@ -449,6 +449,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
 	var imageID string
+	var imageDisk int
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		imageList, err := images.ExtractImages(page)
 		if err != nil {
@@ -458,6 +459,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		for _, i := range imageList {
 			if i.Progress == 100 && strings.HasPrefix(i.Name, osPrefix) {
 				imageID = i.ID
+				imageDisk = i.MinDisk
 				return false, nil
 			}
 		}
@@ -476,6 +478,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if !found {
 		err = errors.New("invalid flavor ID: " + flavorID)
 		return
+	}
+
+	// if the OS image itself specifies a minimum disk size and it's higher than
+	// requested disk, increase our requested disk
+	if imageDisk > diskGB {
+		diskGB = imageDisk
 	}
 
 	// create the server with a unique name
