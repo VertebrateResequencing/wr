@@ -705,7 +705,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			exe := strings.Split(cmd, " ")[0]
 			var exePath, stdout string
 			if exePath, err = exec.LookPath(exe); err == nil {
-				if stdout, err = server.RunCmd("file "+exePath, false); err == nil {
+				if stdout, err = server.RunCmd("file "+exePath, false); stdout != "" {
 					if strings.Contains(stdout, "No such file") {
 						// *** NB this will fail if exePath is in a dir we can't
 						// create on the remote server, eg. if it is in our home
@@ -719,11 +719,16 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 							err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 							server.Destroy()
 						}
+					} else if err != nil {
+						err = fmt.Errorf("Could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
+						server.Destroy()
 					}
 				} else {
+					err = fmt.Errorf("Could not check exe with [file %s]: %s", exePath, err)
 					server.Destroy()
 				}
 			} else {
+				err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
 				server.Destroy()
 			}
 		}

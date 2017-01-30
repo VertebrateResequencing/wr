@@ -329,7 +329,8 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 }
 
 // RunCmd runs the given command on the server, optionally in the background.
-// You get the command's STDOUT as a string response.
+// You get the command's STDOUT as a string response (even if there was an
+// error).
 func (s *Server) RunCmd(cmd string, background bool) (response string, err error) {
 	sshClient, err := s.SSHClient()
 	if err != nil {
@@ -350,6 +351,9 @@ func (s *Server) RunCmd(cmd string, background bool) (response string, err error
 	var b bytes.Buffer
 	session.Stdout = &b
 	if err = session.Run(cmd); err != nil {
+		if b.Len() > 0 {
+			response = b.String()
+		}
 		return
 	}
 	response = b.String()
