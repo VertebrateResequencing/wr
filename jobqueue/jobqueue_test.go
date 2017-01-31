@@ -27,14 +27,17 @@ import (
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
 	// "github.com/ugorji/go/codec"
+	"github.com/shirou/gopsutil/process"
 	"io/ioutil"
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	// "sync"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -1960,8 +1963,18 @@ func TestJobqueue(t *testing.T) {
 			log.Fatal(err)
 		}
 		defer os.RemoveAll(runnertmpdir)
+
+		// our runnerCmd will be running ourselves in --runnermode, so first
+		// we'll compile ourselves to the tmpdir
+		runnerCmd := filepath.Join(runnertmpdir, "runner")
+		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
+		err = cmd.Run()
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = "go test -tags netgo -run TestJobqueue ../jobqueue -args --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir // +" > /dev/null 2>&1"
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir // +" > /dev/null 2>&1"
 		server, _, err = Serve(runningConfig)
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
@@ -1989,12 +2002,10 @@ func TestJobqueue(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			Convey("After some time the jobs get automatically run", func() {
-				// we need some time for 'go test' to live-compile and run
-				// ourselves in runnermode *** not sure if it's legit for this
-				// to take ~3mins though!
+				// wait for the jobs to get run
 				done := make(chan bool, 1)
 				go func() {
-					limit := time.After(300 * time.Second)
+					limit := time.After(30 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
 						select {
@@ -2035,8 +2046,117 @@ func TestJobqueue(t *testing.T) {
 				for range files {
 					ranClean++
 				}
-				So(ranClean, ShouldEqual, maxCPU)
+				So(ranClean, ShouldEqual, maxCPU+1) // +1 for the runner exe
 			})
+		})
+
+		Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
+			<-time.After(10 * time.Second)
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			jobs := []*Job{NewJob(fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 1), runnertmpdir, "perl2sim", &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{})}
+
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// wait for this first command to start running
+			running := make(chan bool, 1)
+			go func() {
+				limit := time.After(30 * time.Second)
+				ticker := time.NewTicker(500 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						pids, err := process.Pids()
+						if err == nil {
+							for _, pid := range pids {
+								p, err := process.NewProcess(pid)
+								if err == nil {
+									cmd, err := p.Cmdline()
+									if err == nil {
+										if strings.Contains(cmd, runnertmpdir+"2sim") {
+											status, err := p.Status()
+											if err == nil && status == "S" {
+												ticker.Stop()
+												running <- true
+												return
+											}
+										}
+									}
+								}
+							}
+						}
+						if !server.HasRunners() {
+							ticker.Stop()
+							running <- false
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						running <- false
+						return
+					}
+				}
+			}()
+			So(<-running, ShouldBeTrue)
+
+			jobs = []*Job{NewJob(fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 2), runnertmpdir, "perl2sim", &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{})}
+
+			inserts, already, err = jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// wait for the jobs to get run, and while waiting we'll check to
+			// see if we get both of our commands running at once
+			numRanSimultaneously := make(chan int, 1)
+			go func() {
+				limit := time.After(30 * time.Second)
+				ticker := time.NewTicker(500 * time.Millisecond)
+				maxSimultaneous := 0
+				for {
+					select {
+					case <-ticker.C:
+						pids, err := process.Pids()
+						if err == nil {
+							simultaneous := 0
+							for _, pid := range pids {
+								p, err := process.NewProcess(pid)
+								if err == nil {
+									cmd, err := p.Cmdline()
+									if err == nil {
+										if strings.Contains(cmd, runnertmpdir+"2sim") {
+											status, err := p.Status()
+											if err == nil && status == "S" {
+												simultaneous++
+											}
+										}
+									}
+								}
+							}
+							if simultaneous > maxSimultaneous {
+								maxSimultaneous = simultaneous
+							}
+						}
+						if !server.HasRunners() {
+							ticker.Stop()
+							numRanSimultaneously <- maxSimultaneous
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						numRanSimultaneously <- maxSimultaneous
+						return
+					}
+				}
+			}()
+			So(<-numRanSimultaneously, ShouldEqual, 2)
 		})
 
 		Reset(func() {
@@ -2315,6 +2435,17 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 */
 
 func runner() {
+	ServerItemTTR = 100 * time.Millisecond
+	ClientTouchInterval = 50 * time.Millisecond
+
+	// uncomment and fill out log path to debug "exit status 1" outputs when
+	// running the test:
+	// logfile, errlog := os.OpenFile("/.../log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// if errlog == nil {
+	// 	defer logfile.Close()
+	// 	log.SetOutput(logfile)
+	// }
+
 	if queuename == "" {
 		log.Fatal("queue missing")
 	}
@@ -2332,10 +2463,6 @@ func runner() {
 	//  this limit)
 
 	jq, err := Connect(addr, queuename, timeout)
-
-	//*** it only takes some milliseconds to go from entering the script to get
-	// here, and running in runnermode manually takes less than 2 seconds, so
-	// I've no idea why during the test there's a 15s+ overhead!
 
 	if err != nil {
 		log.Fatalf("connect err: %s\n", err)

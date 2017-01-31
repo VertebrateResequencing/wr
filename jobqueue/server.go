@@ -603,7 +603,11 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					// of no-longer-needed pending runners in the job
 					// scheduler
 					s.sgcmutex.Lock()
-					s.sgroupcounts[group] = count
+					countIncRunning := count
+					if s.sgroupcounts[group] > 0 {
+						countIncRunning += s.sgroupcounts[group]
+					}
+					s.sgroupcounts[group] = countIncRunning
 					s.sgcmutex.Unlock()
 					s.scheduleRunners(q, group)
 
