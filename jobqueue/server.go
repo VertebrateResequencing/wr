@@ -511,6 +511,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 
 			// calculate, set and count jobs by schedulerGroup
 			groups := make(map[string]int)
+			groupsScheduledCounts := make(map[string]int)
 			recMBs := make(map[string]int)
 			recSecs := make(map[string]int)
 			noRecGroups := make(map[string]bool)
@@ -577,9 +578,18 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					req = job.Requirements
 				}
 
+				prevSchedGroup := job.schedulerGroup
 				job.schedulerGroup = req.Stringify()
+				if prevSchedGroup != "" && prevSchedGroup != job.schedulerGroup {
+					job.scheduledRunner = false
+				}
 
 				if s.rc != "" {
+					if job.scheduledRunner {
+						groupsScheduledCounts[job.schedulerGroup]++
+					} else {
+						job.scheduledRunner = true
+					}
 					groups[job.schedulerGroup]++
 
 					if noRec {
@@ -606,6 +616,9 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					countIncRunning := count
 					if s.sgroupcounts[group] > 0 {
 						countIncRunning += s.sgroupcounts[group]
+					}
+					if groupsScheduledCounts[group] > 0 {
+						countIncRunning -= groupsScheduledCounts[group]
 					}
 					s.sgroupcounts[group] = countIncRunning
 					s.sgcmutex.Unlock()
@@ -643,6 +656,15 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 						to = "complete"
 						break
 					}
+				}
+			}
+
+			// if we change from running, mark that we have not scheduled a
+			// runner for the jobs
+			if from == "running" {
+				for _, inter := range data {
+					job := inter.(*Job)
+					job.scheduledRunner = false
 				}
 			}
 
@@ -904,7 +926,6 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 	}
 
 	if doClear {
-		//log.Printf("group [%s] count dropped to 0, will clear\n", group)
 		s.clearSchedulerGroup(group, q)
 	}
 }
@@ -919,7 +940,6 @@ func (s *Server) decrementGroupCount(schedulerGroup string, q *queue.Queue) {
 		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
 			s.sgroupcounts[schedulerGroup]--
 			doSchedule = true
-			//log.Printf("decremented group [%s] to %d\n", schedulerGroup, s.sgroupcounts[schedulerGroup])
 			if count, set := s.sgrouptrigs[schedulerGroup]; set {
 				s.sgrouptrigs[schedulerGroup]++
 				if count >= 100 {
@@ -960,7 +980,6 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
-		//log.Printf("telling scheduler we need 0 for group [%s]\n", schedulerGroup)
 		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 	}
 }

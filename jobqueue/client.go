@@ -114,38 +114,39 @@ type clientRequest struct {
 // (via Reserve() or Get*()), you should treat the properties as read-only:
 // changing them will have no effect.
 type Job struct {
-	RepGroup       string // a name associated with related Jobs to help group them together when reporting on their status etc.
-	ReqGroup       string
-	DepGroups      []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
-	Cmd            string
-	Cwd            string                  // the working directory to cd to before running Cmd
-	Requirements   *scheduler.Requirements // the resources this Cmd needs to run
-	Override       uint8
-	Priority       uint8
-	Retries        uint8         // the number of times to retry running a Cmd if it fails
-	PeakRAM        int           // the actual peak RAM is recorded here (MB)
-	Exited         bool          // true if the Cmd was run and exited
-	Exitcode       int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
-	FailReason     string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
-	Pid            int           // the pid of the running or ran process is recorded here
-	Host           string        // the host the process is running or did run on is recorded here
-	Walltime       time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
-	CPUtime        time.Duration // if the job ran, the CPU time is recorded here
-	StdErrC        []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
-	StdOutC        []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
-	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
-	EnvOverride    []byte        // if set (using output of CompressEnv()), they will be returned in the results of job.Env()
-	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
-	Attempts       uint32        // the number of times the job had ever entered 'running' state
-	UntilBuried    uint8         // the remaining number of Release()s allowed before being buried instead
-	starttime      time.Time     // the time the cmd starts running is recorded here
-	endtime        time.Time     // the time the cmd stops running is recorded here
-	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
-	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
-	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
-	Similar        int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
-	Queue          string        // the name of the queue the Job was added to
-	Dependencies   *Dependencies // the jobs that must be complete before this job starts
+	RepGroup        string // a name associated with related Jobs to help group them together when reporting on their status etc.
+	ReqGroup        string
+	DepGroups       []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
+	Cmd             string
+	Cwd             string                  // the working directory to cd to before running Cmd
+	Requirements    *scheduler.Requirements // the resources this Cmd needs to run
+	Override        uint8
+	Priority        uint8
+	Retries         uint8         // the number of times to retry running a Cmd if it fails
+	PeakRAM         int           // the actual peak RAM is recorded here (MB)
+	Exited          bool          // true if the Cmd was run and exited
+	Exitcode        int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
+	FailReason      string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
+	Pid             int           // the pid of the running or ran process is recorded here
+	Host            string        // the host the process is running or did run on is recorded here
+	Walltime        time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
+	CPUtime         time.Duration // if the job ran, the CPU time is recorded here
+	StdErrC         []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
+	StdOutC         []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
+	EnvC            []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
+	EnvOverride     []byte        // if set (using output of CompressEnv()), they will be returned in the results of job.Env()
+	State           string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
+	Attempts        uint32        // the number of times the job had ever entered 'running' state
+	UntilBuried     uint8         // the remaining number of Release()s allowed before being buried instead
+	starttime       time.Time     // the time the cmd starts running is recorded here
+	endtime         time.Time     // the time the cmd stops running is recorded here
+	schedulerGroup  string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
+	ReservedBy      uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
+	EnvKey          string        // on the server we don't store EnvC with the job, but look it up in db via this key
+	Similar         int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
+	Queue           string        // the name of the queue the Job was added to
+	Dependencies    *Dependencies // the jobs that must be complete before this job starts
+	scheduledRunner bool          // the server uses this to track if it already scheduled a runner for this job
 }
 
 // Dependencies is a struct that holds a slice of *Dependency, for use in
