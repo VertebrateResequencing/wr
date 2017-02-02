@@ -157,6 +157,7 @@ type Server struct {
 	sgrouptrigs  map[string]int
 	sgtr         map[string]*scheduler.Requirements
 	sgcmutex     sync.Mutex
+	racmutex     sync.Mutex
 	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
 	statusCaster *bcast.Group
 }
@@ -223,7 +224,6 @@ type ServerConfig struct {
 // determines the command line to execute for your runner client from the
 // configured RunnerCmd string you supplied.
 func Serve(config ServerConfig) (s *Server, msg string, err error) {
-	// port string, webPort string, schedulerName string, shell string, runnerCmd string, dbFile string, dbBkFile string, deployment string
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -509,55 +509,51 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				return
 			}
 
+			// we must only ever run this 1 at a time
+			s.racmutex.Lock()
+			defer s.racmutex.Unlock()
+
 			// calculate, set and count jobs by schedulerGroup
 			groups := make(map[string]int)
+			groupToReqs := make(map[string]*scheduler.Requirements)
 			groupsScheduledCounts := make(map[string]int)
-			recMBs := make(map[string]int)
-			recSecs := make(map[string]int)
 			noRecGroups := make(map[string]bool)
 			for _, inter := range allitemdata {
 				job := inter.(*Job)
+
 				// depending on job.Override, get memory and time
 				// recommendations, which are rounded to get fewer larger
 				// groups
 				noRec := false
 				if job.Override != 2 {
-					var recm int
-					var done bool
-					var err error
-					if recm, done = recMBs[job.ReqGroup]; !done {
-						recm, err = s.db.recommendedReqGroupMemory(job.ReqGroup)
-						if err == nil {
-							recMBs[job.ReqGroup] = recm
+					var recommendedReq *scheduler.Requirements
+					if rec, existed := groupToReqs[job.ReqGroup]; existed {
+						recommendedReq = rec
+					} else {
+						recm, _ := s.db.recommendedReqGroupMemory(job.ReqGroup)
+						recs, _ := s.db.recommendedReqGroupTime(job.ReqGroup)
+						if recm == 0 || recs == 0 {
+							groupToReqs[job.ReqGroup] = nil
+						} else {
+							recommendedReq = &scheduler.Requirements{RAM: recm, Time: time.Duration(recs) * time.Second}
+							groupToReqs[job.ReqGroup] = recommendedReq
 						}
-					}
-					if recm == 0 {
-						recm = job.Requirements.RAM
-						noRec = true
 					}
 
-					var recs int
-					if recs, done = recSecs[job.ReqGroup]; !done {
-						recs, err = s.db.recommendedReqGroupTime(job.ReqGroup)
-						if err == nil {
-							recSecs[job.ReqGroup] = recs
-						}
-					}
-					if recs == 0 {
-						recs = int(job.Requirements.Time.Seconds())
-						noRec = true
-					}
-
-					if job.Override == 1 {
-						if recm > job.Requirements.RAM {
-							job.Requirements.RAM = recm
-						}
-						if recs > int(job.Requirements.Time.Seconds()) {
-							job.Requirements.Time = time.Duration(recs) * time.Second
+					if recommendedReq != nil {
+						if job.Override == 1 {
+							if recommendedReq.RAM > job.Requirements.RAM {
+								job.Requirements.RAM = recommendedReq.RAM
+							}
+							if recommendedReq.Time > job.Requirements.Time {
+								job.Requirements.Time = recommendedReq.Time
+							}
+						} else {
+							job.Requirements.RAM = recommendedReq.RAM
+							job.Requirements.Time = recommendedReq.Time
 						}
 					} else {
-						job.Requirements.RAM = recm
-						job.Requirements.Time = time.Duration(recs) * time.Second
+						noRec = true
 					}
 				}
 
@@ -605,6 +601,21 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 			}
 
 			if s.rc != "" {
+				// clear out groups we no longer need
+				s.sgcmutex.Lock()
+				for group := range s.sgroupcounts {
+					if _, needed := groups[group]; !needed {
+						s.sgroupcounts[group] = 0
+						go s.clearSchedulerGroup(group, q)
+					}
+				}
+				for group := range s.sgrouptrigs {
+					if _, needed := groups[group]; !needed {
+						delete(s.sgrouptrigs, group)
+					}
+				}
+				s.sgcmutex.Unlock()
+
 				// schedule runners for each group in the job scheduler
 				for group, count := range groups {
 					// we also keep a count of how many we request for this
@@ -621,24 +632,18 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 						countIncRunning -= groupsScheduledCounts[group]
 					}
 					s.sgroupcounts[group] = countIncRunning
-					s.sgcmutex.Unlock()
-					s.scheduleRunners(q, group)
 
+					// if we got no resource requirement recommendations for
+					// this group, we'll set up a retrigger of this ready
+					// callback after 100 runners have been run
 					if _, noRec := noRecGroups[group]; noRec && count > 100 {
-						s.sgrouptrigs[group] = 0
+						if _, existed := s.sgrouptrigs[group]; !existed {
+							s.sgrouptrigs[group] = 0
+						}
 					}
-				}
 
-				// clear out groups we no longer need
-				for group := range s.sgroupcounts {
-					if _, needed := groups[group]; !needed {
-						s.clearSchedulerGroup(group, q)
-					}
-				}
-				for group := range s.sgrouptrigs {
-					if _, needed := groups[group]; !needed {
-						delete(s.sgrouptrigs, group)
-					}
+					s.sgcmutex.Unlock()
+					go s.scheduleRunners(q, group)
 				}
 			}
 		})
@@ -868,9 +873,8 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 
 	doClear := false
 	groupCount := s.sgroupcounts[group]
-	if groupCount < 0 {
+	if groupCount <= 0 {
 		s.sgroupcounts[group] = 0
-		groupCount = 0
 		doClear = true
 	}
 	s.sgcmutex.Unlock()
@@ -943,7 +947,7 @@ func (s *Server) decrementGroupCount(schedulerGroup string, q *queue.Queue) {
 			if count, set := s.sgrouptrigs[schedulerGroup]; set {
 				s.sgrouptrigs[schedulerGroup]++
 				if count >= 100 {
-					s.sgrouptrigs[schedulerGroup] = 0
+					delete(s.sgrouptrigs, schedulerGroup)
 					if s.sgroupcounts[schedulerGroup] > 10 {
 						doTrigger = true
 					}

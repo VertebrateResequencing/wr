@@ -1955,9 +1955,13 @@ func TestJobqueue(t *testing.T) {
 
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 200 * time.Millisecond
+		ServerItemTTR = 10 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
-		runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
+		pwd, err := os.Getwd()
+		if err != nil {
+			log.Fatal(err)
+		}
+		runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1973,7 +1977,7 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir // +" > /dev/null 2>&1"
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
 		server, _, err = Serve(runningConfig)
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
@@ -2159,18 +2163,39 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, and add 2 large batches of jobs sequentially", func() {
+			// if possible, we want these tests to use the LSF scheduler which
+			// reveals more issues
+			lsfMode := false
+			count := 1000
+			count2 := 100
+			_, err := exec.LookPath("lsadmin")
+			if err == nil {
+				_, err = exec.LookPath("bqueues")
+			}
+			if err == nil {
+				lsfMode = true
+				count = 10000
+				count2 = 1000
+				lsfConfig := runningConfig
+				lsfConfig.SchedulerName = "lsf"
+				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing"}
+				server.Stop()
+				server, _, err = Serve(lsfConfig)
+				So(err, ShouldBeNil)
+			}
+
+			clientConnectTime = 10 * time.Second
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
-			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			tmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
 			defer os.RemoveAll(tmpdir)
 
 			var jobs []*Job
-			count := 1000
 			for i := 0; i < count; i++ {
 				jobs = append(jobs, NewJob(fmt.Sprintf("perl -e 'open($fh, q[>batch1.%d]); print $fh q[foo]; close($fh)'", i), tmpdir, "perl", &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 			}
@@ -2181,9 +2206,10 @@ func TestJobqueue(t *testing.T) {
 
 			// wait for 101 of them to complete
 			done := make(chan bool, 1)
+			fourHundredCount := 0
 			go func() {
 				limit := time.After(30 * time.Second)
-				ticker := time.NewTicker(500 * time.Millisecond)
+				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
 					case <-ticker.C:
@@ -2197,6 +2223,10 @@ func TestJobqueue(t *testing.T) {
 								ticker.Stop()
 								done <- true
 								return
+							} else if fourHundredCount == 0 {
+								if count, existed := server.sgroupcounts["400:0:1:0"]; existed {
+									fourHundredCount = count
+								}
 							}
 						}
 						continue
@@ -2208,10 +2238,10 @@ func TestJobqueue(t *testing.T) {
 				}
 			}()
 			So(<-done, ShouldBeTrue)
+			So(fourHundredCount, ShouldBeBetweenOrEqual, count/2, count)
 
 			// now add a new batch of jobs with the same reqs and reqgroup
 			jobs = nil
-			count2 := 100
 			for i := 0; i < count2; i++ {
 				jobs = append(jobs, NewJob(fmt.Sprintf("perl -e 'open($fh, q[>batch2.%d]); print $fh q[foo]; close($fh)'", i), tmpdir, "perl", &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
 			}
@@ -2222,16 +2252,21 @@ func TestJobqueue(t *testing.T) {
 
 			// wait for all the jobs to get run
 			done = make(chan bool, 1)
+			twoHundredCount := 0
 			go func() {
-				limit := time.After(30 * time.Second)
-				ticker := time.NewTicker(500 * time.Millisecond)
+				limit := time.After(60 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
 					case <-ticker.C:
-						if !server.HasRunners() {
+						if twoHundredCount > 0 && !server.HasRunners() {
 							ticker.Stop()
 							done <- true
 							return
+						} else if twoHundredCount == 0 {
+							if count, existed := server.sgroupcounts["200:30:1:0"]; existed {
+								twoHundredCount = count
+							}
 						}
 						continue
 					case <-limit:
@@ -2242,6 +2277,7 @@ func TestJobqueue(t *testing.T) {
 				}
 			}()
 			So(<-done, ShouldBeTrue)
+			So(twoHundredCount, ShouldBeBetween, fourHundredCount/2, count+count2)
 
 			files, err := ioutil.ReadDir(tmpdir)
 			if err != nil {
@@ -2253,22 +2289,20 @@ func TestJobqueue(t *testing.T) {
 			}
 			So(ran, ShouldEqual, count+count2)
 
-			// we should end up running maxCPU*2 runners, because the first set
-			// will be for our given reqs, and the second set will be for when
-			// the system learns actual memory usage
-			files, err = ioutil.ReadDir(runnertmpdir)
-			if err != nil {
-				log.Fatal(err)
-			}
-			ranClean := 0
-			for range files {
-				ranClean++
-			}
-			So(ranClean, ShouldBeBetweenOrEqual, (maxCPU * 2), (maxCPU*2)+1) // *** not sure why it's sometimes 1 less than expected...
-
-			// *** under LSF we want to test that we never request more
-			// than count+count2 runners... but I think the above test on local
-			// fails without the fix for LSF, so good enough?
+			if !lsfMode {
+				// we should end up running maxCPU*2 runners, because the first set
+				// will be for our given reqs, and the second set will be for when
+				// the system learns actual memory usage
+				files, err = ioutil.ReadDir(runnertmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ranClean := 0
+				for range files {
+					ranClean++
+				}
+				So(ranClean, ShouldBeBetweenOrEqual, (maxCPU * 2), (maxCPU*2)+1) // *** not sure why it's sometimes 1 less than expected...
+			} // *** else under LSF we want to test that we never request more than count+count2 runners...
 		})
 
 		Reset(func() {
@@ -2547,7 +2581,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 */
 
 func runner() {
-	ServerItemTTR = 200 * time.Millisecond
+	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
 	// uncomment and fill out log path to debug "exit status 1" outputs when
