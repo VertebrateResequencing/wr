@@ -26,6 +26,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
@@ -48,12 +49,18 @@ import (
 	"time"
 )
 
+// newServerTimeout is how long we wait for a server to go from 'BUILD' state to
+// something else; hopefully it is OK for this to be very large, since if
+// there's an actual problem bringing up a server it should return an error or
+// go to a different state, at which point we no longer consider the timeout.
+const newServerTimeout = 20 * time.Minute
+
 // openstack only allows certain chars in resource names, so we have a regexp to
-// check
+// check.
 var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 
 // openstackEnvs contains the environment variable names we need to connect to
-// OpenStack
+// OpenStack.
 var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"}
 
 // openstackp is our implementer of provideri
@@ -70,13 +77,13 @@ type openstackp struct {
 	ipNet             *net.IPNet
 }
 
-// requiredEnv returns envs
+// requiredEnv returns envs.
 func (p *openstackp) requiredEnv() []string {
 	return openstackEnvs[:]
 }
 
 // initialize uses our required environment variables to authenticate with
-// OpenStack and create some clients we will use in the other methods
+// OpenStack and create some clients we will use in the other methods.
 func (p *openstackp) initialize() (err error) {
 	// authenticate
 	opts, err := openstack.AuthOptionsFromEnv()
@@ -527,7 +534,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
-		timeout := time.After(240 * time.Second)
+		timeout := time.After(newServerTimeout)
 		ticker := time.NewTicker(1 * time.Second)
 		for {
 			select {
@@ -560,7 +567,10 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		// since we're going to return an error that we failed to spawn, try and
 		// delete the bad server in case it is still there
-		servers.Delete(p.computeClient, server.ID)
+		delerr := servers.Delete(p.computeClient, server.ID).ExtractErr()
+		if delerr != nil {
+			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
+		}
 		return
 	}
 	// *** NB. it can still take some number of seconds before I can ssh to it
