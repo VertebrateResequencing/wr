@@ -20,10 +20,10 @@ package cmd
 
 import (
 	"bufio"
+	"code.cloudfoundry.org/bytefmt"
 	"encoding/json"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/pivotal-golang/bytefmt"
 	"github.com/spf13/cobra"
 	"io"
 	"io/ioutil"
