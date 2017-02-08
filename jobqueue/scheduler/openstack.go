@@ -151,6 +151,7 @@ type standin struct {
 	usedCores      int
 	usedDisk       int
 	mutex          sync.RWMutex
+	alreadyFailed  bool
 	nowWaiting     int // for waitForServer()
 	endWait        chan *cloud.Server
 	waitingToSpawn bool // for isExtraneous() and opst's runCmd()
@@ -246,12 +247,19 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 // start up; anything that is waiting on waitForServer() will then receive nil.
 func (s *standin) failed() {
 	s.mutex.RLock()
+	if s.alreadyFailed {
+		s.mutex.RUnlock()
+		return
+	}
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
 		s.endWait <- nil
 	} else {
 		s.mutex.RUnlock()
 	}
+	s.mutex.Lock()
+	s.alreadyFailed = true
+	s.mutex.Unlock()
 }
 
 // worked is what you call once the server that this is a standin for has
@@ -324,6 +332,10 @@ func (s *opst) initialize(config interface{}) (err error) {
 	if err != nil {
 		return
 	}
+
+	// to debug spawned servers that don't work correctly:
+	// keyFile := filepath.Join("/tmp", "key")
+	// ioutil.WriteFile(keyFile, []byte(provider.PrivateKey()), 0600)
 
 	// query our quota maximums for cpu and memory and total number of
 	// instances; 0 will mean unlimited
@@ -600,6 +612,17 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 	}
 
+	// *** sometimes, when we're configured to not spawn any servers, we can
+	// still manage to get here without a server due to timing issues? Guard
+	// against proceeding if we'd spawn more servers than configured
+	if s.quotaMaxInstances > -1 {
+		numServers := len(s.servers) + len(s.standins)
+		if numServers >= s.quotaMaxInstances {
+			s.mutex.Unlock()
+			return errors.New("giving up waiting to spawn")
+		}
+	}
+
 	// else spawn the smallest server that can run this cmd, recording our new
 	// quota usage.
 	if server == nil {
@@ -645,7 +668,6 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 					case <-standinServer.noLongerNeeded:
 						s.mutex.Lock()
 						s.waitingToSpawn--
-						standinServer.failed()
 						delete(s.standins, standinID)
 						s.mutex.Unlock()
 						done <- errors.New("giving up waiting to spawn")
