@@ -404,21 +404,28 @@ func TestOpenstack(t *testing.T) {
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
+	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	rName := "wr-testing"
 	config := &ConfigOpenStack{
 		ResourceName:   rName,
 		OSPrefix:       osPrefix,
 		OSUser:         osUser,
 		OSRAM:          2048,
+		FlavorRegex:    flavorRegex,
 		ServerPorts:    []int{22},
 		ServerKeepTime: 15 * time.Second,
 		Shell:          "bash",
+		MaxInstances:   -1,
 	}
 	if osPrefix == "" || osUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
 			_, err := New("openstack", config)
 			So(err, ShouldNotBeNil)
 		})
+		return
+	}
+	if flavorRegex == "" {
+		SkipConvey("OpenStack scheduler tests are skipped without special OS_FLAVOR_REGEX environment variable being set", t, func() {})
 		return
 	}
 
@@ -532,13 +539,13 @@ func TestOpenstack(t *testing.T) {
 		if err == nil && oss.provider.InCloud() {
 			Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
 				oFile := filepath.Join(tmpdir, "out")
-				spawnTime := 50 // how long it typically takes a server to become usable on author's test system
 
 				Convey("It eventually runs them all", func() {
-					// on authors setup, running the test from a 1 cpu cloud
-					// instance, the following count is sufficient to test spawning
-					// instances over the quota in the test environment
-					count := 35
+					// on authors setup, running the test from a 2 cpu cloud
+					// instance, the following count is sufficient to test
+					// spawning instances over the quota in the test environment
+					count := 130
+					eta := 240
 					cmd := "sleep 10 && (echo default > " + oFile + ") || true"
 					err = s.Schedule(cmd, possibleReq, count)
 					So(err, ShouldBeNil)
@@ -546,12 +553,12 @@ func TestOpenstack(t *testing.T) {
 
 					spawnedCh := make(chan int)
 					go func() {
-						<-time.After(time.Duration(int(((count*10)+15)/3)) * time.Second)
+						<-time.After(time.Duration(int(eta/2)) * time.Second)
 						spawnedCh <- novaCountServers(rName, "")
 						return
 					}()
 
-					So(waitToFinish(s, ((count*10)+15)*2, 1000), ShouldBeTrue)
+					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 					spawned := <-spawnedCh
 					close(spawnedCh)
 					So(spawned, ShouldBeBetweenOrEqual, 4, count)
@@ -571,15 +578,17 @@ func TestOpenstack(t *testing.T) {
 					So(err, ShouldBeNil)
 				})
 
-				if osPrefix != "CentOS 7" {
+				// *** test if we have a Centos 7 image to use...
+				if osPrefix != "Centos 7" {
 					oReqs := make(map[string]string)
-					oReqs["cloud_os"] = "CentOS 7"
+					oReqs["cloud_os"] = "Centos 7"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
 					Convey("They can be run again, overriding the default os image and ram", func() {
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 						newCount := 3
+						eta := 60
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
 						err = s.Schedule(cmd, newReq, newCount)
 						So(err, ShouldBeNil)
@@ -587,13 +596,13 @@ func TestOpenstack(t *testing.T) {
 
 						spawnedCh := make(chan int, 1)
 						go func() {
-							wait := int(((newCount * (10 + spawnTime)) + 15) / 2)
+							wait := int(eta / 2)
 							<-time.After(time.Duration(wait) * time.Second)
 							spawnedCh <- novaCountServers(rName, oReqs["cloud_os"]) // *** also want to test that the spawned servers are on 4GB ram flavors
 							return
 						}()
 
-						So(waitToFinish(s, ((newCount*(10+spawnTime))+15)*2, 1000), ShouldBeTrue)
+						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 						spawned := <-spawnedCh
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
@@ -617,12 +626,12 @@ func TestOpenstack(t *testing.T) {
 						if err == nil && confirmFlavor.Cores >= numCores {
 							Convey("You can run multiple jobs at once on multi-core servers", func() {
 								cmd := "sleep 30"
-								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
 								err = s.Schedule(cmd, jobReq, numCores)
 								So(err, ShouldBeNil)
 								So(s.Busy(), ShouldBeTrue)
 
-								waitSecs := spawnTime + 20 + 30 // 20 for extra leeway, 30 for the cmd's run time
+								waitSecs := 90
 								spawnedCh := make(chan int, 1)
 								go func() {
 									maxSpawned := 0
