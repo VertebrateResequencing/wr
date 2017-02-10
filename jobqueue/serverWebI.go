@@ -49,29 +49,30 @@ type jstatusReq struct {
 // dependencies become job cmd+cwd or depgroup strings... *** not really sure if
 // we really need this and should just give the webpage Jobs directly instead).
 type jstatus struct {
-	Key          string
-	RepGroup     string
-	DepGroups    []string
-	Dependencies []string
-	Cmd          string
-	State        string
-	Cwd          string
-	ExpectedRAM  int
-	ExpectedTime float64
-	Cores        int
-	PeakRAM      int
-	Exited       bool
-	Exitcode     int
-	FailReason   string
-	Pid          int
-	Host         string
-	Walltime     float64
-	CPUtime      float64
-	StdErr       string
-	StdOut       string
-	Env          []string
-	Attempts     uint32
-	Similar      int
+	Key           string
+	RepGroup      string
+	DepGroups     []string
+	Dependencies  []string
+	Cmd           string
+	State         string
+	Cwd           string
+	ExpectedRAM   int
+	ExpectedTime  float64
+	RequestedDisk int
+	Cores         int
+	PeakRAM       int
+	Exited        bool
+	Exitcode      int
+	FailReason    string
+	Pid           int
+	Host          string
+	Walltime      float64
+	CPUtime       float64
+	StdErr        string
+	StdOut        string
+	Env           []string
+	Attempts      uint32
+	Similar       int
 }
 
 // webInterfaceStatic is a http handler for our static documents in static.go
@@ -171,28 +172,29 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						stdout, _ := jobs[0].StdOut()
 						env, _ := jobs[0].Env()
 						status := jstatus{
-							Key:          jobs[0].key(),
-							RepGroup:     jobs[0].RepGroup,
-							DepGroups:    jobs[0].DepGroups,
-							Dependencies: jobs[0].Dependencies.Stringify(),
-							Cmd:          jobs[0].Cmd,
-							State:        jobs[0].State,
-							Cwd:          jobs[0].Cwd,
-							ExpectedRAM:  jobs[0].Requirements.RAM,
-							ExpectedTime: jobs[0].Requirements.Time.Seconds(),
-							Cores:        jobs[0].Requirements.Cores,
-							PeakRAM:      jobs[0].PeakRAM,
-							Exited:       jobs[0].Exited,
-							Exitcode:     jobs[0].Exitcode,
-							FailReason:   jobs[0].FailReason,
-							Pid:          jobs[0].Pid,
-							Host:         jobs[0].Host,
-							Walltime:     jobs[0].Walltime.Seconds(),
-							CPUtime:      jobs[0].CPUtime.Seconds(),
-							StdErr:       stderr,
-							StdOut:       stdout,
-							Env:          env,
-							Attempts:     jobs[0].Attempts,
+							Key:           jobs[0].key(),
+							RepGroup:      jobs[0].RepGroup,
+							DepGroups:     jobs[0].DepGroups,
+							Dependencies:  jobs[0].Dependencies.Stringify(),
+							Cmd:           jobs[0].Cmd,
+							State:         jobs[0].State,
+							Cwd:           jobs[0].Cwd,
+							ExpectedRAM:   jobs[0].Requirements.RAM,
+							ExpectedTime:  jobs[0].Requirements.Time.Seconds(),
+							RequestedDisk: jobs[0].Requirements.Disk,
+							Cores:         jobs[0].Requirements.Cores,
+							PeakRAM:       jobs[0].PeakRAM,
+							Exited:        jobs[0].Exited,
+							Exitcode:      jobs[0].Exitcode,
+							FailReason:    jobs[0].FailReason,
+							Pid:           jobs[0].Pid,
+							Host:          jobs[0].Host,
+							Walltime:      jobs[0].Walltime.Seconds(),
+							CPUtime:       jobs[0].CPUtime.Seconds(),
+							StdErr:        stderr,
+							StdOut:        stdout,
+							Env:           env,
+							Attempts:      jobs[0].Attempts,
 						}
 						writeMutex.Lock()
 						err = conn.WriteJSON(status)
@@ -250,29 +252,30 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								stdout, _ := job.StdOut()
 								env, _ := job.Env()
 								status := jstatus{
-									Key:          job.key(),
-									RepGroup:     req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
-									DepGroups:    job.DepGroups,
-									Dependencies: job.Dependencies.Stringify(),
-									Cmd:          job.Cmd,
-									State:        job.State,
-									Cwd:          job.Cwd,
-									ExpectedRAM:  job.Requirements.RAM,
-									ExpectedTime: job.Requirements.Time.Seconds(),
-									Cores:        job.Requirements.Cores,
-									PeakRAM:      job.PeakRAM,
-									Exited:       job.Exited,
-									Exitcode:     job.Exitcode,
-									FailReason:   job.FailReason,
-									Pid:          job.Pid,
-									Host:         job.Host,
-									Walltime:     job.Walltime.Seconds(),
-									CPUtime:      job.CPUtime.Seconds(),
-									Attempts:     job.Attempts,
-									Similar:      job.Similar,
-									StdErr:       stderr,
-									StdOut:       stdout,
-									Env:          env,
+									Key:           job.key(),
+									RepGroup:      req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
+									DepGroups:     job.DepGroups,
+									Dependencies:  job.Dependencies.Stringify(),
+									Cmd:           job.Cmd,
+									State:         job.State,
+									Cwd:           job.Cwd,
+									ExpectedRAM:   job.Requirements.RAM,
+									ExpectedTime:  job.Requirements.Time.Seconds(),
+									RequestedDisk: job.Requirements.Disk,
+									Cores:         job.Requirements.Cores,
+									PeakRAM:       job.PeakRAM,
+									Exited:        job.Exited,
+									Exitcode:      job.Exitcode,
+									FailReason:    job.FailReason,
+									Pid:           job.Pid,
+									Host:          job.Host,
+									Walltime:      job.Walltime.Seconds(),
+									CPUtime:       job.CPUtime.Seconds(),
+									Attempts:      job.Attempts,
+									Similar:       job.Similar,
+									StdErr:        stderr,
+									StdOut:        stdout,
+									Env:           env,
 								}
 								err = conn.WriteJSON(status)
 								if err != nil {

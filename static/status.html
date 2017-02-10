@@ -158,6 +158,12 @@
                                         <dt>Expected Time</dt>
                                         <dd data-bind="text: ExpectedTime.toDuration()"></dd>
                                     </dl>
+                                    <!-- ko if: RequestedDisk > 0 -->
+                                        <dl>
+                                            <dt>Requested Disk</dt>
+                                            <dd><span data-bind="text: RequestedDisk"></span> GB</dd>
+                                        </dl>
+                                    <!-- /ko -->
                                     <dl>
                                         <dt>Cores</dt>
                                         <dd data-bind="text: Cores"></dd>
