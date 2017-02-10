@@ -164,7 +164,12 @@
                                     </dl>
                                     <!-- ko if: FailReason -->
                                         <dl>
-                                            <dt>Reason for Failure</dt>
+                                            <!-- ko if: State == 'running' -->
+                                                <dt>Previous Failure</dt>
+                                            <!-- /ko -->
+                                            <!-- ko if: State != 'running' -->
+                                                <dt>Reason for Failure</dt>
+                                            <!-- /ko -->
                                             <dd data-bind="text: FailReason"></dd>
                                         </dl>
                                     <!-- /ko -->
