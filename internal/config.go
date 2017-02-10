@@ -46,6 +46,17 @@ type Config struct {
 	ManagerScheduler string `default:"local"`
 	RunnerExecShell  string `default:"bash"`
 	Deployment       string `default:"production"`
+	CloudFlavor      string `default:""`
+	CloudKeepAlive   int    `default:"120"`
+	CloudServers     int    `default:"-1"`
+	CloudCIDR        string `default:"192.168.0.0/18"`
+	CloudGateway     string `default:"192.168.0.1"`
+	CloudDNS         string `default:"8.8.4.4,8.8.8.8"`
+	CloudOS          string `default:"Ubuntu Xenial"`
+	CloudUser        string `default:"ubuntu"`
+	CloudRAM         int    `default:"2048"`
+	CloudDisk        int    `default:"1"`
+	CloudScript      string `default:""`
 }
 
 /*
@@ -186,19 +197,18 @@ func DefaultDeployment() (deployment string) {
 	return
 }
 
-// DefaultScheduler works out the default scheduler (we need this to be able to
-// report this default before we know what deployment the user has actually
-// chosen, ie. before we have a final config).
-func DefaultScheduler() (scheduler string) {
-	config := ConfigLoad(DefaultDeployment(), false)
-	return config.ManagerScheduler
+// DefaultConfig works out the default config for when we need to be able to
+// report the default before we know what deployment the user has actually
+// chosen, ie. before we have a final config.
+func DefaultConfig() Config {
+	return ConfigLoad(DefaultDeployment(), false)
 }
 
 // DefaultServer works out the default server (we need this to be able to report
 // this default before we know what deployment the user has actually chosen, ie.
 // before we have a final config).
 func DefaultServer() (server string) {
-	config := ConfigLoad(DefaultDeployment(), false)
+	config := DefaultConfig()
 	return config.ManagerHost + ":" + config.ManagerPort
 }
 
