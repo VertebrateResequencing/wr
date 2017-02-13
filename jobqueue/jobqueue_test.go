@@ -1120,6 +1120,36 @@ func TestJobqueue(t *testing.T) {
 					})
 				})
 
+				Convey("The stdout/err of jobs is filtered for \\r blocks", func() {
+					jobs = nil
+					progressCmd := "perl -e '$|++; print qq[a\nb\n\nprogress: 98%\r]; for (99..100) { print qq[progress: $_%\r]; sleep(1); } print qq[\n\nc\n]; exit(1)'"
+					jobs = append(jobs, NewJob(progressCmd, "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(0), "should_fail", []string{}))
+					inserts, _, err := jq.Add(jobs, envVars)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					expectedout := "a\nb\n\nprogress: 98%\n[...]\nprogress: 100%\n\nc\n"
+					expectedout = strings.TrimSpace(expectedout)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, progressCmd)
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.RunnerExecShell)
+					<-time.After(3 * time.Second)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "buried")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+					stdout, err := job.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, expectedout)
+					stderr, err := job.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, "")
+				})
+
 				Convey("Jobs that take longer than the ttr can execute successfully, unless the clienttouchinterval is > ttr", func() {
 					jobs = nil
 					cmd := "perl -e 'for (1..3) { sleep(1) }'"

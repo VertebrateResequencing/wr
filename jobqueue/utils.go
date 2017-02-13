@@ -36,6 +36,11 @@ import (
 
 var pss = []byte("Pss:")
 
+// cr, lf and ellipses get used by stdFilter()
+var cr = []byte("\r")
+var lf = []byte("\n")
+var ellipses = []byte("[...]\n")
+
 // CurrentIP returns the IP address of the machine we're running on right now.
 // The cidr argument can be an empty string, but if set to the CIDR of the
 // machine's primary network, it helps us be sure of getting the correct IP
@@ -243,4 +248,26 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// stdFilter keeps only the first and last line of any contiguous block of \r
+// terminated lines (to mostly eliminate progress bars), intended for use with
+// stdout/err streaming input, outputting to a prefixSuffixSaver.
+func stdFilter(std io.Reader, out io.Writer) {
+	scanner := bufio.NewScanner(std)
+	go func() {
+		for scanner.Scan() {
+			p := scanner.Bytes()
+			lines := bytes.Split(p, cr)
+			out.Write(lines[0])
+			if len(lines) > 1 {
+				out.Write(lf)
+				if len(lines) > 2 {
+					out.Write(ellipses)
+				}
+				out.Write(lines[len(lines)-1])
+			}
+			out.Write(lf)
+		}
+	}()
 }

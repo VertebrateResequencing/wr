@@ -512,9 +512,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 	cmd := exec.Command(shell, "-c", jc)
 
-	// we'll store up to 4kb of the head and tail of command's STDERR and STDOUT
-	cmd.Stderr = &prefixSuffixSaver{N: 4096}
-	cmd.Stdout = &prefixSuffixSaver{N: 4096}
+	// we'll filter STDERR/OUT of the cmd to keep only the first and last line
+	// of any contiguous block of \r terminated lines (to mostly eliminate
+	// progress bars), and  we'll store only up to 4kb of their head and tail
+	errReader, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create a pipe for STDERR from cmd [%s]: %s", jc, err)
+	}
+	stderr := &prefixSuffixSaver{N: 4096}
+	stdFilter(errReader, stderr)
+	outReader, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create a pipe for STDOUT from cmd [%s]: %s", jc, err)
+	}
+	stdout := &prefixSuffixSaver{N: 4096}
+	stdFilter(outReader, stdout)
 
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
@@ -697,7 +709,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// though we may have bailed or had some other problem, we always try and
 	// update our job end state
-	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(cmd.Stdout.(*prefixSuffixSaver).Bytes()), bytes.TrimSpace(cmd.Stderr.(*prefixSuffixSaver).Bytes()))
+	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed
