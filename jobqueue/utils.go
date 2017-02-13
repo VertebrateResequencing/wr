@@ -252,9 +252,12 @@ func minInt(a, b int) int {
 
 // stdFilter keeps only the first and last line of any contiguous block of \r
 // terminated lines (to mostly eliminate progress bars), intended for use with
-// stdout/err streaming input, outputting to a prefixSuffixSaver.
-func stdFilter(std io.Reader, out io.Writer) {
+// stdout/err streaming input, outputting to a prefixSuffixSaver. Because you
+// must finish reading from the input before continuing, it returns a channel
+// that you should wait to receive something from.
+func stdFilter(std io.Reader, out io.Writer) chan bool {
 	scanner := bufio.NewScanner(std)
+	done := make(chan bool)
 	go func() {
 		for scanner.Scan() {
 			p := scanner.Bytes()
@@ -269,5 +272,7 @@ func stdFilter(std io.Reader, out io.Writer) {
 			}
 			out.Write(lf)
 		}
+		done <- true
 	}()
+	return done
 }

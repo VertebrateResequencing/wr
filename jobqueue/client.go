@@ -520,13 +520,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 		return fmt.Errorf("failed to create a pipe for STDERR from cmd [%s]: %s", jc, err)
 	}
 	stderr := &prefixSuffixSaver{N: 4096}
-	stdFilter(errReader, stderr)
+	stderrWait := stdFilter(errReader, stderr)
 	outReader, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create a pipe for STDOUT from cmd [%s]: %s", jc, err)
 	}
 	stdout := &prefixSuffixSaver{N: 4096}
-	stdFilter(outReader, stdout)
+	stdoutWait := stdFilter(outReader, stdout)
 
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
@@ -625,6 +625,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}()
 
 	// wait for the command to exit
+	<-stderrWait
+	<-stdoutWait
 	err = cmd.Wait()
 	ticker.Stop()
 	memTicker.Stop()
