@@ -28,6 +28,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/satori/go.uuid"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -58,6 +59,7 @@ type opst struct {
 	standins          map[string]*standin
 	spawningNow       bool
 	waitingToSpawn    int
+	debugMode         bool
 }
 
 // ConfigOpenStack represents the configuration options required by the
@@ -584,7 +586,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		osPrefix = s.config.OSPrefix
 	}
 
+	uniqueDebug := uuid.NewV4().String()
+
 	s.mutex.Lock()
+	s.debug("\na %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
 		if thisServer.Destroyed() {
@@ -593,6 +598,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 		if thisServer.OS == osPrefix && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
+			s.debug("b %s using existing server %s\n", uniqueDebug, server.IP)
 			break
 		}
 	}
@@ -603,29 +609,33 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			if standinServer.os == osPrefix && standinServer.hasSpaceFor(req) > 0 {
 				standinServer.allocate(req)
 				s.mutex.Unlock()
+				s.debug("c %s will use standin %s, unlocked\n", uniqueDebug, standinServer.id)
 				server = standinServer.waitForServer()
 				if server == nil || server.Destroyed() {
+					s.debug("d %s giving up waiting on standin %s\n", uniqueDebug, standinServer.id)
 					return errors.New("giving up waiting to spawn")
 				}
 				s.mutex.Lock()
+				s.debug("e %s got server %s from standin %s, locked\n", uniqueDebug, server.IP, standinServer.id)
 			}
-		}
-	}
-
-	// *** sometimes, when we're configured to not spawn any servers, we can
-	// still manage to get here without a server due to timing issues? Guard
-	// against proceeding if we'd spawn more servers than configured
-	if s.quotaMaxInstances > -1 {
-		numServers := len(s.servers) + len(s.standins)
-		if numServers >= s.quotaMaxInstances {
-			s.mutex.Unlock()
-			return errors.New("giving up waiting to spawn")
 		}
 	}
 
 	// else spawn the smallest server that can run this cmd, recording our new
 	// quota usage.
 	if server == nil {
+		// *** sometimes, when we're configured to not spawn any servers, we can
+		// still manage to get here without a server due to timing issues? Guard
+		// against proceeding if we'd spawn more servers than configured
+		if s.quotaMaxInstances > -1 {
+			numServers := len(s.servers) + len(s.standins)
+			if numServers >= s.quotaMaxInstances {
+				s.mutex.Unlock()
+				s.debug("f %s over quota, unlocked\n", uniqueDebug)
+				return errors.New("giving up waiting to spawn")
+			}
+		}
+
 		flavor, err := s.determineFlavor(s.reqForSpawn(req))
 		if err != nil {
 			s.mutex.Unlock()
@@ -646,6 +656,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix)
 		standinServer.allocate(req)
 		s.standins[standinID] = standinServer
+		s.debug("g %s made new standin %s\n", uniqueDebug, standinID)
 
 		// now spawn, but don't overload the system by trying to spawn too many
 		// at once; wait until we are no longer in the middle of spawning
@@ -659,18 +670,24 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 					select {
 					case <-standinServer.readyToSpawn:
 						s.mutex.Lock()
+						s.debug("h %s locked and ready to spawn standin %s\n", uniqueDebug, standinID)
 						s.waitingToSpawn--
 						s.spawningNow = true
 						standinServer.willBeUsed()
 						s.mutex.Unlock()
+						s.debug("i %s unlocked\n", uniqueDebug)
 						done <- nil
+						s.debug("j %s sent nil on done channel\n", uniqueDebug)
 						return
 					case <-standinServer.noLongerNeeded:
 						s.mutex.Lock()
+						s.debug("k %s locked, standin %s no longer needed\n", uniqueDebug, standinID)
 						s.waitingToSpawn--
 						delete(s.standins, standinID)
 						s.mutex.Unlock()
+						s.debug("l %s unlocked\n", uniqueDebug)
 						done <- errors.New("giving up waiting to spawn")
+						s.debug("m %s sent give up error on done channel\n", uniqueDebug)
 						return
 					}
 				}
@@ -683,6 +700,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			s.spawningNow = true
 			standinServer.willBeUsed()
 			s.mutex.Unlock()
+			s.debug("n %s will use the standin straightaway, unlocked\n", uniqueDebug)
 		}
 
 		var osUser string
@@ -698,18 +716,23 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			osScript = s.config.PostCreationScript
 		}
 
+		s.debug("o %s will spawn\n", uniqueDebug)
 		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, osScript)
+		s.debug("p %s spawned\n", uniqueDebug)
 
 		// if we have standins that are waiting to spawn, tell one of them to go
 		// ahead
 		s.mutex.Lock()
+		s.debug("q %s locked\n", uniqueDebug)
 		s.spawningNow = false
 		if s.waitingToSpawn > 0 {
 			for _, otherStandinServer := range s.standins {
 				//*** we're not locking otherStandinServer to check
 				//    waitingToSpawn... is this going to be a problem?
 				if otherStandinServer.waitingToSpawn {
+					s.debug("r %s will send true to readyToSpawn on standin %s\n", uniqueDebug, otherStandinServer.id)
 					otherStandinServer.readyToSpawn <- true
+					s.debug("s %s sent true to other standin\n", uniqueDebug)
 					break
 				}
 			}
@@ -720,6 +743,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		// time for ssh to come and for the following block to complete, so we
 		// unlock again
 		s.mutex.Unlock()
+		s.debug("t %s unlocked prior to exe check\n", uniqueDebug)
 		if err == nil {
 			// check that the exe of the cmd we're supposed to run exists on the
 			// new server, and if not, copy it over *** this is just a hack to
@@ -756,6 +780,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 
 		s.mutex.Lock()
+		s.debug("u %s locked after exe check\n", uniqueDebug)
 		s.reservedInstances--
 		s.reservedCores -= flavor.Cores
 		s.reservedRAM -= flavor.RAM
@@ -765,17 +790,24 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 		// handle Spawn() or upload-of-exe errors now, by noting we failed
 		if err != nil {
+			s.debug("v %s will fail standin due to err %s\n", uniqueDebug, err)
 			standinServer.failed()
 			s.mutex.Unlock()
+			s.debug("w %s unlocked after failing standin\n", uniqueDebug)
 			return err
 		}
 
+		s.debug("x %s completed new server %s\n", uniqueDebug, server.IP)
+
 		s.servers[server.ID] = server
 		standinServer.worked(server)
+		s.debug("y %s told standin it worked\n", uniqueDebug)
 	}
 
 	server.Allocate(req.Cores, req.RAM, req.Disk)
 	s.mutex.Unlock()
+
+	s.debug("z %s unlocked, server %s will runCmd\n", uniqueDebug, server.IP)
 
 	// now we have a server, ssh over and run the cmd on it
 	var err error
@@ -788,24 +820,30 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		// bad and destroy it
 		if err != nil {
 			server.Destroy()
+			s.debug("z2 %s destroyed server %s since it hit err [%s]\n", uniqueDebug, server.IP, err)
 			return err
 		}
 	}
+	s.debug("z3 %s server %s ran the command\n", uniqueDebug, server.IP)
 
 	// having run a command, this server is now available for another; signal a
 	// runCmd call that is waiting its turn to spawn a new server to give up
 	// waiting and potentially get scheduled on us instead
 	s.mutex.Lock()
+	s.debug("z4 %s locked to release server %s\n", uniqueDebug, server.IP)
 	server.Release(req.Cores, req.RAM, req.Disk)
 	if s.waitingToSpawn > 0 {
 		for _, otherStandinServer := range s.standins {
 			if otherStandinServer.isExtraneous(server) {
+				s.debug("z5 %s other standin %s is extraneous, will send nolongerneeded\n", uniqueDebug, otherStandinServer.id)
 				otherStandinServer.noLongerNeeded <- true
+				s.debug("z6 %s sent nolongerneeded to otherstandin\n", uniqueDebug)
 				break
 			}
 		}
 	}
 	s.mutex.Unlock()
+	s.debug("z7 %s unlocked, returning\n", uniqueDebug)
 
 	return err
 }
@@ -828,4 +866,10 @@ func (s *opst) cleanup() {
 
 	// teardown any cloud resources created
 	s.provider.TearDown()
+}
+
+func (s *opst) debug(msg string, a ...interface{}) {
+	if s.debugMode {
+		fmt.Fprintf(os.Stdout, "%s: %s", time.Now().Format(time.Stamp), fmt.Sprintf(msg, a...))
+	}
 }
