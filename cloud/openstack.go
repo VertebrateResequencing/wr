@@ -27,6 +27,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/VividCortex/ewma"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
@@ -49,11 +50,13 @@ import (
 	"time"
 )
 
-// newServerTimeout is how long we wait for a server to go from 'BUILD' state to
-// something else; hopefully it is OK for this to be very large, since if
-// there's an actual problem bringing up a server it should return an error or
-// go to a different state, at which point we no longer consider the timeout.
-const newServerTimeout = 20 * time.Minute
+// initialServerSpawnTimeout is how long we wait for the first server we ever
+// spawn to go from 'BUILD' state to something else; hopefully it is OK for this
+// to be very large, since if there's an actual problem bringing up a server it
+// should return an error or go to a different state, at which point we no
+// longer consider the timeout. This is only used for the initial wait time;
+// subsequently we learn how long recent builds actually take.
+const initialServerSpawnTimeout = 20 * time.Minute
 
 // openstack only allows certain chars in resource names, so we have a regexp to
 // check.
@@ -75,6 +78,7 @@ type openstackp struct {
 	networkUUID       string
 	securityGroup     string
 	ipNet             *net.IPNet
+	spawnTimes        ewma.MovingAverage
 }
 
 // requiredEnv returns envs.
@@ -143,6 +147,10 @@ func (p *openstackp) initialize() (err error) {
 		}
 		return true, nil
 	})
+
+	// to get a reasonable new server timeout we'll keep track of how long it
+	// takes to spawn them using an exponentially weighted moving average
+	p.spawnTimes = ewma.NewMovingAverage()
 
 	return
 }
@@ -534,8 +542,13 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
-		timeout := time.After(newServerTimeout)
+		timeoutS := p.spawnTimes.Value() * 4
+		if timeoutS <= 0 {
+			timeoutS = initialServerSpawnTimeout.Seconds()
+		}
+		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
+		start := time.Now()
 		for {
 			select {
 			case <-ticker.C:
@@ -547,6 +560,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				}
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
+					p.spawnTimes.Add(time.Since(start).Seconds())
 					waitForActive <- nil
 					return
 				}
