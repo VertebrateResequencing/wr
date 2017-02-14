@@ -669,23 +669,12 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				for {
 					select {
 					case <-standinServer.readyToSpawn:
-						s.mutex.Lock()
-						s.debug("h %s locked and ready to spawn standin %s\n", uniqueDebug, standinID)
-						s.waitingToSpawn--
-						s.spawningNow = true
-						standinServer.willBeUsed()
-						s.mutex.Unlock()
-						s.debug("i %s unlocked\n", uniqueDebug)
+						s.debug("h %s ready to spawn standin %s\n", uniqueDebug, standinID)
 						done <- nil
 						s.debug("j %s sent nil on done channel\n", uniqueDebug)
 						return
 					case <-standinServer.noLongerNeeded:
-						s.mutex.Lock()
-						s.debug("k %s locked, standin %s no longer needed\n", uniqueDebug, standinID)
-						s.waitingToSpawn--
-						delete(s.standins, standinID)
-						s.mutex.Unlock()
-						s.debug("l %s unlocked\n", uniqueDebug)
+						s.debug("k %s standin %s no longer needed\n", uniqueDebug, standinID)
 						done <- errors.New("giving up waiting to spawn")
 						s.debug("m %s sent give up error on done channel\n", uniqueDebug)
 						return
@@ -731,6 +720,9 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				//    waitingToSpawn... is this going to be a problem?
 				if otherStandinServer.waitingToSpawn {
 					s.debug("r %s will send true to readyToSpawn on standin %s\n", uniqueDebug, otherStandinServer.id)
+					s.waitingToSpawn--
+					s.spawningNow = true
+					otherStandinServer.willBeUsed()
 					otherStandinServer.readyToSpawn <- true
 					s.debug("s %s sent true to other standin\n", uniqueDebug)
 					break
@@ -836,6 +828,8 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		for _, otherStandinServer := range s.standins {
 			if otherStandinServer.isExtraneous(server) {
 				s.debug("z5 %s other standin %s is extraneous, will send nolongerneeded\n", uniqueDebug, otherStandinServer.id)
+				s.waitingToSpawn--
+				delete(s.standins, otherStandinServer.id)
 				otherStandinServer.noLongerNeeded <- true
 				s.debug("z6 %s sent nolongerneeded to otherstandin\n", uniqueDebug)
 				break

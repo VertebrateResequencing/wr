@@ -443,6 +443,7 @@ func TestOpenstack(t *testing.T) {
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()
 		oss := s.impl.(*opst)
+		//oss.debugMode = true
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
@@ -545,7 +546,7 @@ func TestOpenstack(t *testing.T) {
 					// instance, the following count is sufficient to test
 					// spawning instances over the quota in the test environment
 					count := 130
-					eta := 240
+					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
 					cmd := "sleep 10 && (echo default > " + oFile + ") || true"
 					err = s.Schedule(cmd, possibleReq, count)
 					So(err, ShouldBeNil)
@@ -564,7 +565,7 @@ func TestOpenstack(t *testing.T) {
 					So(spawned, ShouldBeBetweenOrEqual, 4, count)
 
 					foundServers := novaCountServers(rName, "")
-					So(foundServers, ShouldBeBetweenOrEqual, 1, 6)
+					So(foundServers, ShouldBeBetweenOrEqual, 1, int(eta/10)) // (assuming a ~10s spawn time)
 
 					// after the last run, they are all auto-destroyed
 					<-time.After(30 * time.Second)
@@ -690,7 +691,7 @@ func TestOpenstack(t *testing.T) {
 			})
 
 			// wait a while for any remaining jobs to finish
-			So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+			So(waitToFinish(s, 60, 1000), ShouldBeTrue)
 		} else {
 			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova installed", func() {})
 		}
