@@ -42,6 +42,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	"github.com/jpillora/backoff"
 	"golang.org/x/crypto/ssh"
 	"net"
 	"os"
@@ -80,6 +81,8 @@ type openstackp struct {
 	ipNet             *net.IPNet
 	spawnTimes        ewma.MovingAverage
 	spawnTimesVolume  ewma.MovingAverage
+	spawnFailed       bool
+	errorBackoff      *backoff.Backoff
 }
 
 // requiredEnv returns envs.
@@ -155,6 +158,15 @@ func (p *openstackp) initialize() (err error) {
 	// volume creation takes much longer.
 	p.spawnTimes = ewma.NewMovingAverage()
 	p.spawnTimesVolume = ewma.NewMovingAverage()
+
+	// spawn() backs off on new requests if the previous one failed, tracked
+	// with a Backoff
+	p.errorBackoff = &backoff.Backoff{
+		Min:    1 * time.Second,
+		Max:    initialServerSpawnTimeout,
+		Factor: 3,
+		Jitter: true,
+	}
 
 	return
 }
@@ -505,6 +517,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		diskGB = imageDisk
 	}
 
+	// if we previously had a problem spawning a server, wait before attempting
+	// again
+	if p.spawnFailed {
+		time.Sleep(p.errorBackoff.Duration())
+	}
+
 	// create the server with a unique name
 	var server *servers.Server
 	createOpts := servers.CreateOpts{
@@ -597,12 +615,18 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		// since we're going to return an error that we failed to spawn, try and
 		// delete the bad server in case it is still there
+		p.spawnFailed = true
 		delerr := servers.Delete(p.computeClient, server.ID).ExtractErr()
 		if delerr != nil {
 			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
 		}
 		return
 	}
+	if p.spawnFailed {
+		p.errorBackoff.Reset()
+	}
+	p.spawnFailed = false
+
 	// *** NB. it can still take some number of seconds before I can ssh to it
 
 	serverID = server.ID
@@ -610,7 +634,6 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// get the servers IP; if we error for any reason we'll delete the server
 	// first, because without an IP it's useless
-
 	if externalIP {
 		// give it a floating ip
 		var floatingIP string
