@@ -158,7 +158,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		if err != nil {
 			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
 		}
-		provider, err := cloud.New(providerName, "wr-"+config.Deployment, filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -298,7 +298,7 @@ only then request a teardown.`,
 		}
 
 		// teardown cloud resources we created
-		provider, err := cloud.New(providerName, "wr-"+config.Deployment, filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -374,8 +374,9 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	// copy over our cloud resource details, including our ssh key
-	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".wr-"+config.Deployment)
-	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".wr-"+config.Deployment)
+	cRN := cloudResourceName("")
+	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+"."+cRN)
+	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+"."+cRN)
 	err = server.UploadFile(localResourceFile, remoteResourceFile)
 	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
@@ -438,7 +439,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 
 		// get the manager running
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
 		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()

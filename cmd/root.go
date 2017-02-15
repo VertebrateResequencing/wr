@@ -27,6 +27,7 @@ import (
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 	"os"
+	"os/user"
 	"syscall"
 	"time"
 )
@@ -91,6 +92,25 @@ func init() {
 func initConfig() {
 	config = internal.ConfigLoad(deployment, false)
 	addr = config.ManagerHost + ":" + config.ManagerPort
+}
+
+// realUsername returns the username of the current user.
+func realUsername() string {
+	self, err := user.Current()
+	if err != nil {
+		die("could not get username: %s", err)
+	}
+	return self.Username
+}
+
+// cloudResourceName returns a user and deployment specific string that can be
+// used to name cloud resources so they can be identified as having been created
+// by wr. username arg defaults to the real username of the user running wr.
+func cloudResourceName(username string) string {
+	if username == "" {
+		username = realUsername()
+	}
+	return "wr-" + config.Deployment + "-" + username
 }
 
 // info is a convenience to print a msg to STDOUT.

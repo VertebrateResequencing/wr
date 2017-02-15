@@ -40,6 +40,7 @@ import (
 // options for this cmd
 var foreground bool
 var scheduler string
+var localUsername string
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -65,9 +66,10 @@ If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
 If using the openstack scheduler, note that you must be running on an openstack
-server already. Instead you can use 'wr cloud deploy -p openstack' to create an
-openstack server on which wr manager will be started in openstack mode for
-you.`,
+server already. Be sure to set --local_username to your username outside of the
+cloud, so that resources created are only accessible to you. Instead you can use
+'wr cloud deploy -p openstack' to create an openstack server on which wr manager
+will be started in openstack mode for you.`,
 }
 
 // start sub-command starts the daemon
@@ -319,6 +321,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
+	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
@@ -356,7 +359,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
 		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:       "wr-" + config.Deployment,
+			ResourceName:       cloudResourceName(localUsername),
 			SavePath:           filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
 			ServerPorts:        []int{22, mport},
 			OSPrefix:           osPrefix,
