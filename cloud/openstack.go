@@ -79,6 +79,7 @@ type openstackp struct {
 	securityGroup     string
 	ipNet             *net.IPNet
 	spawnTimes        ewma.MovingAverage
+	spawnTimesVolume  ewma.MovingAverage
 }
 
 // requiredEnv returns envs.
@@ -149,8 +150,11 @@ func (p *openstackp) initialize() (err error) {
 	})
 
 	// to get a reasonable new server timeout we'll keep track of how long it
-	// takes to spawn them using an exponentially weighted moving average
+	// takes to spawn them using an exponentially weighted moving average. We
+	// keep track of servers spawned with and without volumes separately, since
+	// volume creation takes much longer.
 	p.spawnTimes = ewma.NewMovingAverage()
+	p.spawnTimesVolume = ewma.NewMovingAverage()
 
 	return
 }
@@ -511,6 +515,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
 		UserData:       postCreationScript,
 	}
+	var createdVolume bool
 	if diskGB > flavor.Disk {
 		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
@@ -527,6 +532,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			},
 			KeyName: resources.ResourceName,
 		}).Extract()
+		createdVolume = true
 	} else {
 		server, err = servers.Create(p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: createOpts,
@@ -542,7 +548,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
-		timeoutS := p.spawnTimes.Value() * 4
+		var timeoutS float64
+		if createdVolume {
+			timeoutS = p.spawnTimesVolume.Value() * 4
+		} else {
+			timeoutS = p.spawnTimes.Value() * 4
+		}
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
 		}
@@ -560,7 +571,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				}
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
-					p.spawnTimes.Add(time.Since(start).Seconds())
+					spawnSecs := time.Since(start).Seconds()
+					if createdVolume {
+						p.spawnTimesVolume.Add(spawnSecs)
+					} else {
+						p.spawnTimes.Add(spawnSecs)
+					}
 					waitForActive <- nil
 					return
 				}
