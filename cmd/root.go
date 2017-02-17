@@ -194,7 +194,7 @@ func stopdaemon(pid int, source string, name string) bool {
 	}
 
 	// wait a while for the daemon to gracefully close down
-	giveupseconds := 15
+	giveupseconds := 120
 	giveup := time.After(time.Duration(giveupseconds) * time.Second)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	stopped := make(chan bool, 1)
