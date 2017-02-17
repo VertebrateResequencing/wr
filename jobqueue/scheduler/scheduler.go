@@ -182,14 +182,13 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {
-		delete(s.limiter, cmd)
-		s.Unlock()
 		if newcount != count {
 			go s.Schedule(cmd, req, newcount)
 		}
-	} else {
-		s.Unlock()
+		delete(s.limiter, cmd)
 	}
+	s.Unlock()
+
 	return err
 }
 
