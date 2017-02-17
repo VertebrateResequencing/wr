@@ -60,6 +60,8 @@ type opst struct {
 	spawningNow       bool
 	waitingToSpawn    int
 	debugMode         bool
+	cmdToStandins     map[string]map[string]bool
+	standinToCmd      map[string]map[string]bool
 }
 
 // ConfigOpenStack represents the configuration options required by the
@@ -234,8 +236,7 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 	if s.waitingToSpawn {
 		if server.OS == s.os && server.HasSpaceFor(s.usedCores, s.usedRAM, s.usedDisk) > 0 {
 			s.mutex.RUnlock()
-			s.failed()
-			failed = true
+			failed = s.failed()
 		} else {
 			s.mutex.RUnlock()
 		}
@@ -247,11 +248,16 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 
 // failed is what you call if the server that this is a standin for failed to
 // start up; anything that is waiting on waitForServer() will then receive nil.
-func (s *standin) failed() {
+// Returns true if it hadn't already been failed.
+func (s *standin) failed() bool {
 	s.mutex.RLock()
 	if s.alreadyFailed {
 		s.mutex.RUnlock()
-		return
+		return false
+	}
+	if !s.waitingToSpawn {
+		s.mutex.RUnlock()
+		return false
 	}
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
@@ -262,6 +268,7 @@ func (s *standin) failed() {
 	s.mutex.Lock()
 	s.alreadyFailed = true
 	s.mutex.Unlock()
+	return true
 }
 
 // worked is what you call once the server that this is a standin for has
@@ -396,11 +403,14 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.reqCheckFunc = s.reqCheck
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
+	s.cancelRunCmdFunc = s.cancelRun
 
 	// pass through our shell config to our local embed
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
 
 	s.standins = make(map[string]*standin)
+	s.cmdToStandins = make(map[string]map[string]bool)
+	s.standinToCmd = make(map[string]map[string]bool)
 
 	return
 }
@@ -607,6 +617,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	if server == nil {
 		for _, standinServer := range s.standins {
 			if standinServer.os == osPrefix && standinServer.hasSpaceFor(req) > 0 {
+				s.recordStandin(standinServer, cmd)
 				standinServer.allocate(req)
 				s.mutex.Unlock()
 				s.debug("c %s will use standin %s, unlocked\n", uniqueDebug, standinServer.id)
@@ -655,7 +666,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		standinID := uuid.NewV4().String()
 		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix)
 		standinServer.allocate(req)
-		s.standins[standinID] = standinServer
+		s.recordStandin(standinServer, cmd)
 		s.debug("g %s made new standin %s\n", uniqueDebug, standinID)
 
 		// now spawn, but don't overload the system by trying to spawn too many
@@ -729,7 +740,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				}
 			}
 		}
-		delete(s.standins, standinID)
+		s.eraseStandin(standinID)
 
 		// though the server has been spawned, it will now take quite a long
 		// time for ssh to come and for the following block to complete, so we
@@ -829,7 +840,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			if otherStandinServer.isExtraneous(server) {
 				s.debug("z5 %s other standin %s is extraneous, will send nolongerneeded\n", uniqueDebug, otherStandinServer.id)
 				s.waitingToSpawn--
-				delete(s.standins, otherStandinServer.id)
+				s.eraseStandin(otherStandinServer.id)
 				otherStandinServer.noLongerNeeded <- true
 				s.debug("z6 %s sent nolongerneeded to otherstandin\n", uniqueDebug)
 				break
@@ -842,9 +853,88 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	return err
 }
 
-// cleanup destroys our internal queues and brings down our servers
+// cancelRun fails standins for the given cmd. Only call when you have the lock!
+func (s *opst) cancelRun(cmd string, desiredCount int) {
+	if lookup, existed := s.cmdToStandins[cmd]; existed {
+		numStandins := len(lookup)
+		cancelCount := numStandins - desiredCount
+		if cancelCount > 0 {
+			cancelled := 0
+			for standinID, _ := range lookup {
+				if standinServer, existed := s.standins[standinID]; existed {
+					if standinServer.failed() {
+						cancelled++
+						s.eraseStandin(standinServer.id)
+						standinServer.noLongerNeeded <- true
+
+						if cancelled >= cancelCount {
+							break
+						}
+					}
+				} else {
+					// (this should be impossible)
+					delete(lookup, standinID)
+				}
+			}
+		}
+	}
+}
+
+// recordStandin stores some lookups for the given standin. Only call when you
+// have the lock!
+func (s *opst) recordStandin(standinServer *standin, cmd string) {
+	s.standins[standinServer.id] = standinServer
+
+	if lookup, existed := s.cmdToStandins[cmd]; existed {
+		lookup[standinServer.id] = true
+	} else {
+		s.cmdToStandins[cmd] = make(map[string]bool)
+		s.cmdToStandins[cmd][standinServer.id] = true
+	}
+
+	if lookup, existed := s.standinToCmd[standinServer.id]; existed {
+		lookup[cmd] = true
+	} else {
+		s.standinToCmd[standinServer.id] = make(map[string]bool)
+		s.standinToCmd[standinServer.id][cmd] = true
+	}
+}
+
+// eraseStandin deletes the various lookups for the given standin. Only call
+// when you have the lock!
+func (s *opst) eraseStandin(standinID string) {
+	for cmd, _ := range s.standinToCmd[standinID] {
+		if lookup, existed := s.cmdToStandins[cmd]; existed {
+			delete(lookup, standinID)
+			if len(lookup) == 0 {
+				delete(s.cmdToStandins, cmd)
+			}
+		}
+	}
+	delete(s.standinToCmd, standinID)
+	delete(s.standins, standinID)
+}
+
+// cleanup destroys our internal queues and brings down our servers.
 func (s *opst) cleanup() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// prevent any further scheduling and queue processing, and destroy the
+	// queue
 	s.cleaned = true
+	s.queue.Destroy()
+
+	// cancel all standins
+	for _, standinServer := range s.standins {
+		s.eraseStandin(standinServer.id)
+		if standinServer.failed() {
+			standinServer.noLongerNeeded <- true
+		}
+	}
+	s.waitingToSpawn = 0
+	s.cmdToStandins = nil
+	s.standinToCmd = nil
 
 	// bring down all our servers
 	for sid, server := range s.servers {
@@ -854,9 +944,6 @@ func (s *opst) cleanup() {
 		server.Destroy()
 		delete(s.servers, sid)
 	}
-
-	// destroy our queue
-	s.queue.Destroy()
 
 	// teardown any cloud resources created
 	s.provider.TearDown()

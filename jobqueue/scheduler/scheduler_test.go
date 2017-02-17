@@ -673,21 +673,81 @@ func TestOpenstack(t *testing.T) {
 				}
 
 				// *** I have no tests for when servers fail to start...
+			})
 
-				// *** should also test dropping the count
+			Convey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
+				// with the ~instant complete jobs combined with the wait on
+				// bringing up a new server, this is supposed to be able to
+				// trigger a dropping count bug, but doesn't, but we're keeping
+				// it anyway. See jobqueue_test.go for a similar test that did
+				// manage to trigger the bug.
+				err = s.Schedule("echo 2048:1:0", &Requirements{2048, 1 * time.Minute, 1, 0, otherReqs}, 1)
+				So(err, ShouldBeNil)
+				err = s.Schedule("echo 1024:2:0", &Requirements{1024, 1 * time.Minute, 2, 0, otherReqs}, 1)
+				So(err, ShouldBeNil)
+				err = s.Schedule("echo 1024:1:20", &Requirements{1024, 1 * time.Minute, 2, 20, otherReqs}, 1)
+				So(err, ShouldBeNil)
 
-				// Convey("You can Schedule() again to increase the count", func() {
-				//  // this increase takes us just over the quota
-				//  newcount := count + 2
-				//  err = s.Schedule(cmd, possibleReq, newcount)
-				//  So(err, ShouldBeNil)
-				//  So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				// })
+				dropReq := &Requirements{1024, 1 * time.Minute, 1, 0, otherReqs}
+				err = s.Schedule("echo 1024:1:0 && sleep 1", dropReq, 1)
+				So(err, ShouldBeNil)
+				dropCmd := fmt.Sprintf("echo 1024:1:0 && mkdir -p %s && perl -e 'use File::Temp qw/tempfile/; ($fh, $fn) = tempfile(DIR => q{%s}, SUFFIX => q/.wrst/); print $fh qq/test\\n/; close($fh)'", tmpdir, tmpdir)
+				dropCount := 96
 
-				//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
-				//*** need to wait until I have file input/output implemented so I
-				// can test if things are really working
-				// })
+				stop := make(chan bool)
+				completedLocally := 0
+				prevRemaining := dropCount
+				go func() {
+					ticker := time.NewTicker(10 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							files, err := ioutil.ReadDir(tmpdir)
+							if err == nil {
+								count := 0
+								for _, file := range files {
+									if strings.HasSuffix(file.Name(), ".wrst") {
+										count++
+									}
+								}
+								completedLocally = count
+
+								remaining := dropCount - count
+								if remaining < prevRemaining {
+									s.Schedule(dropCmd, dropReq, remaining)
+									if remaining == 0 {
+										ticker.Stop()
+										return
+									}
+									prevRemaining = remaining
+								}
+							}
+							continue
+						case <-stop:
+							ticker.Stop()
+							return
+						}
+					}
+				}()
+
+				err = s.Schedule(dropCmd, dropReq, dropCount)
+				So(err, ShouldBeNil)
+				So(s.Busy(), ShouldBeTrue)
+
+				eta := 90
+				So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+				stop <- true
+				So(completedLocally, ShouldBeBetweenOrEqual, 50, 97)
+
+				foundServers := novaCountServers(rName, "")
+				So(foundServers, ShouldBeBetweenOrEqual, 0, 3)
+
+				// after the last run, they are all auto-destroyed
+				if foundServers > 0 {
+					<-time.After(30 * time.Second)
+					foundServers = novaCountServers(rName, "")
+					So(foundServers, ShouldEqual, 0)
+				}
 			})
 
 			// wait a while for any remaining jobs to finish
