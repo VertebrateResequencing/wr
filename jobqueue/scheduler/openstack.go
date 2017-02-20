@@ -273,11 +273,13 @@ func (s *standin) failed() bool {
 
 // worked is what you call once the server that this is a standin for has
 // actually started up successfully. Anything that is waiting on waitForServer()
-// will then receive the server you supply here.
+// will then receive the server you supply here. The server is allocated all
+// the resources that were allocated to this standin.
 func (s *standin) worked(server *cloud.Server) {
 	s.mutex.RLock()
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
+		server.Allocate(s.usedCores, s.usedRAM, s.usedDisk)
 		s.endWait <- server
 	} else {
 		s.mutex.RUnlock()
@@ -612,6 +614,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 		if thisServer.OS == osPrefix && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
+			server.Allocate(req.Cores, req.RAM, req.Disk)
 			s.debug("b %s using existing server %s\n", uniqueDebug, server.IP)
 			break
 		}
@@ -807,11 +810,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.debug("x %s completed new server %s\n", uniqueDebug, server.IP)
 
 		s.servers[server.ID] = server
-		standinServer.worked(server)
+		standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
 		s.debug("y %s told standin it worked\n", uniqueDebug)
 	}
 
-	server.Allocate(req.Cores, req.RAM, req.Disk)
 	s.mutex.Unlock()
 
 	s.debug("z %s unlocked, server %s will runCmd\n", uniqueDebug, server.IP)
