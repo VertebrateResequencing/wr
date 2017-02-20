@@ -277,9 +277,9 @@ func (s *standin) failed() bool {
 // the resources that were allocated to this standin.
 func (s *standin) worked(server *cloud.Server) {
 	s.mutex.RLock()
+	server.Allocate(s.usedCores, s.usedRAM, s.usedDisk)
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
-		server.Allocate(s.usedCores, s.usedRAM, s.usedDisk)
 		s.endWait <- server
 	} else {
 		s.mutex.RUnlock()
