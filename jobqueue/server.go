@@ -439,6 +439,7 @@ func (s *Server) Drain() (err error) {
 						// now that we think nothing should be running, wait
 						// for the runner clients to exit so the job scheduler
 						// will be nice and clean
+						s.scheduler.Cleanup()
 						if !s.HasRunners() {
 							ticker.Stop()
 							s.Stop()
