@@ -28,7 +28,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/satori/go.uuid"
-	"os"
+	"log"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -599,6 +599,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	uniqueDebug := uuid.NewV4().String()
 
 	s.mutex.Lock()
+	if s.cleaned {
+		s.mutex.Unlock()
+		return nil
+	}
 	s.debug("\na %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
@@ -864,6 +868,7 @@ func (s *opst) cancelRun(cmd string, desiredCount int) {
 				if standinServer, existed := s.standins[standinID]; existed {
 					if standinServer.failed() {
 						cancelled++
+						s.waitingToSpawn--
 						s.eraseStandin(standinServer.id)
 						standinServer.noLongerNeeded <- true
 
@@ -951,6 +956,6 @@ func (s *opst) cleanup() {
 
 func (s *opst) debug(msg string, a ...interface{}) {
 	if s.debugMode {
-		fmt.Fprintf(os.Stdout, "%s: %s", time.Now().Format(time.Stamp), fmt.Sprintf(msg, a...))
+		log.Printf(msg, a...)
 	}
 }
