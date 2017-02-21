@@ -871,7 +871,7 @@ func (s *opst) cancelRun(cmd string, desiredCount int) {
 		cancelCount := numStandins - desiredCount
 		if cancelCount > 0 {
 			cancelled := 0
-			for standinID, _ := range lookup {
+			for standinID := range lookup {
 				if standinServer, existed := s.standins[standinID]; existed {
 					if standinServer.failed() {
 						cancelled++
@@ -915,7 +915,7 @@ func (s *opst) recordStandin(standinServer *standin, cmd string) {
 // eraseStandin deletes the various lookups for the given standin. Only call
 // when you have the lock!
 func (s *opst) eraseStandin(standinID string) {
-	for cmd, _ := range s.standinToCmd[standinID] {
+	for cmd := range s.standinToCmd[standinID] {
 		if lookup, existed := s.cmdToStandins[cmd]; existed {
 			delete(lookup, standinID)
 			if len(lookup) == 0 {
