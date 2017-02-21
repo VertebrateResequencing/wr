@@ -701,6 +701,11 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			}()
 			err = <-done
 			if err != nil {
+				s.mutex.Lock()
+				s.reservedInstances--
+				s.reservedCores -= flavor.Cores
+				s.reservedRAM -= flavor.RAM
+				s.mutex.Unlock()
 				return err
 			}
 		} else {
