@@ -23,13 +23,11 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/shirou/gopsutil/mem"
 	"log"
 	"math"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -99,8 +97,8 @@ type job struct {
 	count int
 }
 
-// initialize finds out about the local machine. Compatible with linux-like
-// systems with /proc/meminfo only!
+// initialize finds out about the local machine. Compatible with amd64 archs
+// only!
 func (s *local) initialize(config interface{}) (err error) {
 	s.config = config.(*ConfigLocal)
 	s.maxCores = runtime.NumCPU()
@@ -122,34 +120,17 @@ func (s *local) initialize(config interface{}) (err error) {
 	return
 }
 
-// procMeminfoMBs parses /proc/meminfo (only available on linux-like systems!)
-// to find the total number of MBs of memory physically installed on the current
-// system.
+// procMeminfoMBs uses gopsutil (amd64 freebsd, linux, windows, darwin, openbds
+// only!) to find the total number of MBs of memory physically installed on the
+// current system.
 func (s *local) procMeminfoMBs() (mbs int, err error) {
-	f, err := os.Open("/proc/meminfo")
+	v, err := mem.VirtualMemory()
 	if err != nil {
 		return
 	}
-	defer f.Close()
 
-	kb := uint64(0)
-	r := bufio.NewScanner(f)
-	for r.Scan() {
-		line := r.Bytes()
-		if bytes.HasPrefix(line, mt) {
-			_, err = fmt.Sscanf(string(line[9:]), "%d", &kb)
-			if err != nil {
-				return
-			}
-			break
-		}
-	}
-	if err = r.Err(); err != nil {
-		return
-	}
-
-	// convert kB to MB
-	mbs = int(kb / 1024)
+	// convert bytes to MB
+	mbs = int((v.Total / 1024) / 1024)
 	return
 }
 

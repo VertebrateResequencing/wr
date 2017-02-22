@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -636,7 +637,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we never ticked and calculated it
 	if peakmem == 0 {
 		ru := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-		peakmem = int(ru.Maxrss / 1024)
+		if runtime.GOOS == "darwin" {
+			// Maxrss values are bytes
+			peakmem = int((ru.Maxrss / 1024) / 1024)
+		} else {
+			// Maxrss values are kb
+			peakmem = int(ru.Maxrss / 1024)
+		}
 	}
 
 	// include our own memory usage in the peakmem of the command, since the
