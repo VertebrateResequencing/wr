@@ -41,10 +41,12 @@ clean:
 
 dist:
 	# go get -u github.com/gobuild/gopack
-	gopack pack -o dist.zip
+	gopack pack --os linux --arch amd64 -o linux-dist.zip
+	gopack pack --os darwin --arch amd64 -o darwin-dist.zip
 	# go get -u github.com/aktau/github-release
 	github-release release --tag ${TAG} --pre-release
-	github-release upload --tag ${TAG} --name wr-linux-x86-64.zip --file dist.zip
-	@rm -f wr dist.zip
+	github-release upload --tag ${TAG} --name wr-linux-x86-64.zip --file linux-dist.zip
+	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
+	@rm -f wr linux-dist.zip darwin-dist.zip
 
 .PHONY: build test report lint vet inef spell install clean dist
