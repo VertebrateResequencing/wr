@@ -26,6 +26,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"github.com/VividCortex/ewma"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
@@ -40,6 +42,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	"github.com/jpillora/backoff"
 	"golang.org/x/crypto/ssh"
 	"net"
 	"os"
@@ -48,12 +51,20 @@ import (
 	"time"
 )
 
+// initialServerSpawnTimeout is how long we wait for the first server we ever
+// spawn to go from 'BUILD' state to something else; hopefully it is OK for this
+// to be very large, since if there's an actual problem bringing up a server it
+// should return an error or go to a different state, at which point we no
+// longer consider the timeout. This is only used for the initial wait time;
+// subsequently we learn how long recent builds actually take.
+const initialServerSpawnTimeout = 20 * time.Minute
+
 // openstack only allows certain chars in resource names, so we have a regexp to
-// check
+// check.
 var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 
 // openstackEnvs contains the environment variable names we need to connect to
-// OpenStack
+// OpenStack.
 var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"}
 
 // openstackp is our implementer of provideri
@@ -68,15 +79,19 @@ type openstackp struct {
 	networkUUID       string
 	securityGroup     string
 	ipNet             *net.IPNet
+	spawnTimes        ewma.MovingAverage
+	spawnTimesVolume  ewma.MovingAverage
+	spawnFailed       bool
+	errorBackoff      *backoff.Backoff
 }
 
-// requiredEnv returns envs
+// requiredEnv returns envs.
 func (p *openstackp) requiredEnv() []string {
 	return openstackEnvs[:]
 }
 
 // initialize uses our required environment variables to authenticate with
-// OpenStack and create some clients we will use in the other methods
+// OpenStack and create some clients we will use in the other methods.
 func (p *openstackp) initialize() (err error) {
 	// authenticate
 	opts, err := openstack.AuthOptionsFromEnv()
@@ -136,6 +151,22 @@ func (p *openstackp) initialize() (err error) {
 		}
 		return true, nil
 	})
+
+	// to get a reasonable new server timeout we'll keep track of how long it
+	// takes to spawn them using an exponentially weighted moving average. We
+	// keep track of servers spawned with and without volumes separately, since
+	// volume creation takes much longer.
+	p.spawnTimes = ewma.NewMovingAverage()
+	p.spawnTimesVolume = ewma.NewMovingAverage()
+
+	// spawn() backs off on new requests if the previous one failed, tracked
+	// with a Backoff
+	p.errorBackoff = &backoff.Backoff{
+		Min:    1 * time.Second,
+		Max:    initialServerSpawnTimeout,
+		Factor: 3,
+		Jitter: true,
+	}
 
 	return
 }
@@ -449,6 +480,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
 	var imageID string
+	var imageDisk int
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		imageList, err := images.ExtractImages(page)
 		if err != nil {
@@ -458,6 +490,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		for _, i := range imageList {
 			if i.Progress == 100 && strings.HasPrefix(i.Name, osPrefix) {
 				imageID = i.ID
+				imageDisk = i.MinDisk
 				return false, nil
 			}
 		}
@@ -478,6 +511,18 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		return
 	}
 
+	// if the OS image itself specifies a minimum disk size and it's higher than
+	// requested disk, increase our requested disk
+	if imageDisk > diskGB {
+		diskGB = imageDisk
+	}
+
+	// if we previously had a problem spawning a server, wait before attempting
+	// again
+	if p.spawnFailed {
+		time.Sleep(p.errorBackoff.Duration())
+	}
+
 	// create the server with a unique name
 	var server *servers.Server
 	createOpts := servers.CreateOpts{
@@ -488,6 +533,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
 		UserData:       postCreationScript,
 	}
+	var createdVolume bool
 	if diskGB > flavor.Disk {
 		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
@@ -504,6 +550,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			},
 			KeyName: resources.ResourceName,
 		}).Extract()
+		createdVolume = true
 	} else {
 		server, err = servers.Create(p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: createOpts,
@@ -519,8 +566,18 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
-		timeout := time.After(240 * time.Second)
+		var timeoutS float64
+		if createdVolume {
+			timeoutS = p.spawnTimesVolume.Value() * 4
+		} else {
+			timeoutS = p.spawnTimes.Value() * 4
+		}
+		if timeoutS <= 0 {
+			timeoutS = initialServerSpawnTimeout.Seconds()
+		}
+		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
+		start := time.Now()
 		for {
 			select {
 			case <-ticker.C:
@@ -532,6 +589,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				}
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
+					spawnSecs := time.Since(start).Seconds()
+					if createdVolume {
+						p.spawnTimesVolume.Add(spawnSecs)
+					} else {
+						p.spawnTimes.Add(spawnSecs)
+					}
 					waitForActive <- nil
 					return
 				}
@@ -552,9 +615,18 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		// since we're going to return an error that we failed to spawn, try and
 		// delete the bad server in case it is still there
-		servers.Delete(p.computeClient, server.ID)
+		p.spawnFailed = true
+		delerr := servers.Delete(p.computeClient, server.ID).ExtractErr()
+		if delerr != nil {
+			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
+		}
 		return
 	}
+	if p.spawnFailed {
+		p.errorBackoff.Reset()
+	}
+	p.spawnFailed = false
+
 	// *** NB. it can still take some number of seconds before I can ssh to it
 
 	serverID = server.ID
@@ -562,7 +634,6 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// get the servers IP; if we error for any reason we'll delete the server
 	// first, because without an IP it's useless
-
 	if externalIP {
 		// give it a floating ip
 		var floatingIP string

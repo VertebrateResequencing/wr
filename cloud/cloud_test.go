@@ -68,9 +68,9 @@ func TestOpenStack(t *testing.T) {
 				// author only tests, where I know the expected results
 				host, _ := os.Hostname()
 				if host == "vr-2-2-02" {
-					So(q.MaxCores, ShouldEqual, 96)
-					So(q.MaxInstances, ShouldEqual, 64)
-					So(q.MaxRAM, ShouldEqual, 65536)
+					So(q.MaxCores, ShouldEqual, 128)
+					So(q.MaxInstances, ShouldEqual, 128)
+					So(q.MaxRAM, ShouldEqual, 524288)
 					//*** gophercloud API doesn't tell us about volume quota :(
 					//*** not reliable to try and test for the .Used* values...
 				}

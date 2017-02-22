@@ -21,6 +21,7 @@ package cmd
 import (
 	"fmt"
 	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
 	"io/ioutil"
@@ -157,7 +158,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		if err != nil {
 			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
 		}
-		provider, err := cloud.New(providerName, "wr-"+config.Deployment, filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -297,7 +298,7 @@ only then request a teardown.`,
 		}
 
 		// teardown cloud resources we created
-		provider, err := cloud.New(providerName, "wr-"+config.Deployment, filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -331,18 +332,19 @@ func init() {
 	cloudCmd.AddCommand(cloudTearDownCmd)
 
 	// flags specific to these sub-commands
+	defaultConfig := internal.DefaultConfig()
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
-	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", "Ubuntu 16", "prefix name of the OS image your servers should use")
-	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", "ubuntu", "username needed to log in to the OS image specified by --os")
-	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", 2048, "ram (MB) needed by the OS image specified by --os")
-	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", 1, "minimum disk (GB) for servers")
-	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", "", "a regular expression to limit server flavors that can be automatically picked")
-	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", "", "path to a start-up script that will be run on each server created")
-	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", 120, "how long in seconds to keep idle spawned servers alive for")
-	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", 0, "maximum number of servers to spawn; 0 means unlimited (default 0)")
-	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", "192.168.0.1", "gateway IP for the created subnet")
-	cloudDeployCmd.Flags().StringVar(&cloudCIDR, "network_cidr", "192.168.0.0/18", "CIDR of the created subnet")
-	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", "8.8.4.4,8.8.8.8", "comma separated DNS name server IPs to use in the created subnet")
+	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", defaultConfig.CloudOS, "prefix name of the OS image your servers should use")
+	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", defaultConfig.CloudUser, "username needed to log in to the OS image specified by --os")
+	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
+	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
+	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
+	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for")
+	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
+	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", defaultConfig.CloudGateway, "gateway IP for the created subnet")
+	cloudDeployCmd.Flags().StringVar(&cloudCIDR, "network_cidr", defaultConfig.CloudCIDR, "CIDR of the created subnet")
+	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to use in the created subnet")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
@@ -372,8 +374,9 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	// copy over our cloud resource details, including our ssh key
-	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".wr-"+config.Deployment)
-	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".wr-"+config.Deployment)
+	cRN := cloudResourceName("")
+	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+"."+cRN)
+	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+"."+cRN)
 	err = server.UploadFile(localResourceFile, remoteResourceFile)
 	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
@@ -436,7 +439,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 
 		// get the manager running
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS)
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
 		_, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()

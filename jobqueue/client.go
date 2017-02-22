@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -114,38 +115,39 @@ type clientRequest struct {
 // (via Reserve() or Get*()), you should treat the properties as read-only:
 // changing them will have no effect.
 type Job struct {
-	RepGroup       string // a name associated with related Jobs to help group them together when reporting on their status etc.
-	ReqGroup       string
-	DepGroups      []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
-	Cmd            string
-	Cwd            string                  // the working directory to cd to before running Cmd
-	Requirements   *scheduler.Requirements // the resources this Cmd needs to run
-	Override       uint8
-	Priority       uint8
-	Retries        uint8         // the number of times to retry running a Cmd if it fails
-	PeakRAM        int           // the actual peak RAM is recorded here (MB)
-	Exited         bool          // true if the Cmd was run and exited
-	Exitcode       int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
-	FailReason     string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
-	Pid            int           // the pid of the running or ran process is recorded here
-	Host           string        // the host the process is running or did run on is recorded here
-	Walltime       time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
-	CPUtime        time.Duration // if the job ran, the CPU time is recorded here
-	StdErrC        []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
-	StdOutC        []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
-	EnvC           []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
-	EnvOverride    []byte        // if set (using output of CompressEnv()), they will be returned in the results of job.Env()
-	State          string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
-	Attempts       uint32        // the number of times the job had ever entered 'running' state
-	UntilBuried    uint8         // the remaining number of Release()s allowed before being buried instead
-	starttime      time.Time     // the time the cmd starts running is recorded here
-	endtime        time.Time     // the time the cmd stops running is recorded here
-	schedulerGroup string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
-	ReservedBy     uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
-	EnvKey         string        // on the server we don't store EnvC with the job, but look it up in db via this key
-	Similar        int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
-	Queue          string        // the name of the queue the Job was added to
-	Dependencies   *Dependencies // the jobs that must be complete before this job starts
+	RepGroup        string // a name associated with related Jobs to help group them together when reporting on their status etc.
+	ReqGroup        string
+	DepGroups       []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
+	Cmd             string
+	Cwd             string                  // the working directory to cd to before running Cmd
+	Requirements    *scheduler.Requirements // the resources this Cmd needs to run
+	Override        uint8
+	Priority        uint8
+	Retries         uint8         // the number of times to retry running a Cmd if it fails
+	PeakRAM         int           // the actual peak RAM is recorded here (MB)
+	Exited          bool          // true if the Cmd was run and exited
+	Exitcode        int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
+	FailReason      string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
+	Pid             int           // the pid of the running or ran process is recorded here
+	Host            string        // the host the process is running or did run on is recorded here
+	Walltime        time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
+	CPUtime         time.Duration // if the job ran, the CPU time is recorded here
+	StdErrC         []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
+	StdOutC         []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
+	EnvC            []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
+	EnvOverride     []byte        // if set (using output of CompressEnv()), they will be returned in the results of job.Env()
+	State           string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
+	Attempts        uint32        // the number of times the job had ever entered 'running' state
+	UntilBuried     uint8         // the remaining number of Release()s allowed before being buried instead
+	starttime       time.Time     // the time the cmd starts running is recorded here
+	endtime         time.Time     // the time the cmd stops running is recorded here
+	schedulerGroup  string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
+	ReservedBy      uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
+	EnvKey          string        // on the server we don't store EnvC with the job, but look it up in db via this key
+	Similar         int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
+	Queue           string        // the name of the queue the Job was added to
+	Dependencies    *Dependencies // the jobs that must be complete before this job starts
+	scheduledRunner bool          // the server uses this to track if it already scheduled a runner for this job
 }
 
 // Dependencies is a struct that holds a slice of *Dependency, for use in
@@ -511,9 +513,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 	cmd := exec.Command(shell, "-c", jc)
 
-	// we'll store up to 4kb of the head and tail of command's STDERR and STDOUT
-	cmd.Stderr = &prefixSuffixSaver{N: 4096}
-	cmd.Stdout = &prefixSuffixSaver{N: 4096}
+	// we'll filter STDERR/OUT of the cmd to keep only the first and last line
+	// of any contiguous block of \r terminated lines (to mostly eliminate
+	// progress bars), and  we'll store only up to 4kb of their head and tail
+	errReader, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create a pipe for STDERR from cmd [%s]: %s", jc, err)
+	}
+	stderr := &prefixSuffixSaver{N: 4096}
+	stderrWait := stdFilter(errReader, stderr)
+	outReader, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create a pipe for STDOUT from cmd [%s]: %s", jc, err)
+	}
+	stdout := &prefixSuffixSaver{N: 4096}
+	stdoutWait := stdFilter(outReader, stdout)
 
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
@@ -612,6 +626,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}()
 
 	// wait for the command to exit
+	<-stderrWait
+	<-stdoutWait
 	err = cmd.Wait()
 	ticker.Stop()
 	memTicker.Stop()
@@ -621,7 +637,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we never ticked and calculated it
 	if peakmem == 0 {
 		ru := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-		peakmem = int(ru.Maxrss / 1024)
+		if runtime.GOOS == "darwin" {
+			// Maxrss values are bytes
+			peakmem = int((ru.Maxrss / 1024) / 1024)
+		} else {
+			// Maxrss values are kb
+			peakmem = int(ru.Maxrss / 1024)
+		}
 	}
 
 	// include our own memory usage in the peakmem of the command, since the
@@ -696,7 +718,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// though we may have bailed or had some other problem, we always try and
 	// update our job end state
-	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(cmd.Stdout.(*prefixSuffixSaver).Bytes()), bytes.TrimSpace(cmd.Stderr.(*prefixSuffixSaver).Bytes()))
+	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed

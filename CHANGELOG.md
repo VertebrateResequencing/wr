@@ -5,6 +5,39 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.6.0] - 2017-02-22
+### Added
+- MacOS compatibility.
+- Status web page now shows requested disk.
+- All cloud options to `wr cloud deploy` and `wr manager start` are now config
+  options, so they can be set once in your ~/.wr_config.yml file for simpler
+  deployments.
+- `wr status` can now take a --limit option that lets you see details of all
+  commands, instead of a random one from each group.
+- Cloud usage is now user-specific, allowing multiple users to have their own
+  wr deployment in the same OpenStack tenant.
+- There's now a wiki (see README.md for the link) that covers some gotchas.
+
+### Fixed
+- Various cases of commands getting stuck pending.
+- Various cases of the OpenStack scheduler failing to spawn servers.
+- OpenStack scheduler creating too many servers.
+- OpenStack scheduler starting too many runners on servers.
+- `wr cloud teardown` now more reliably cleans everything up if you have many
+  servers that need to be terminated.
+- `go get` was broken by a dependency.
+
+### Changed
+- `wr manager start -m` now allows you to specify 0 additional servers get
+  spawned.
+- OpenStack servers failing to spawn now results in a back-off on further
+  requests.
+- OpenStack servers are now created with a dynamic timeout that should avoid
+  unnecessary cancellations when the system is busy.
+- Status web page now shows stdout/err as pre-formatted text with progress bars
+  filtered out.
+
+
 ## [0.5.0] - 2017-01-26
 ### Added
 - `wr cloud deploy` now has options for setting your network CIDR, gateway IP,

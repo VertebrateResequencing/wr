@@ -40,3 +40,8 @@
 .modal-body {
     overflow-x: auto;
 }
+
+.modal-std .modal-body {
+    font-family: monospace;
+    white-space: pre;
+}

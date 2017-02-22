@@ -404,21 +404,28 @@ func TestOpenstack(t *testing.T) {
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
+	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	rName := "wr-testing"
 	config := &ConfigOpenStack{
 		ResourceName:   rName,
 		OSPrefix:       osPrefix,
 		OSUser:         osUser,
 		OSRAM:          2048,
+		FlavorRegex:    flavorRegex,
 		ServerPorts:    []int{22},
 		ServerKeepTime: 15 * time.Second,
 		Shell:          "bash",
+		MaxInstances:   -1,
 	}
 	if osPrefix == "" || osUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
 			_, err := New("openstack", config)
 			So(err, ShouldNotBeNil)
 		})
+		return
+	}
+	if flavorRegex == "" {
+		SkipConvey("OpenStack scheduler tests are skipped without special OS_FLAVOR_REGEX environment variable being set", t, func() {})
 		return
 	}
 
@@ -436,6 +443,7 @@ func TestOpenstack(t *testing.T) {
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()
 		oss := s.impl.(*opst)
+		//oss.debugMode = true
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
@@ -532,13 +540,13 @@ func TestOpenstack(t *testing.T) {
 		if err == nil && oss.provider.InCloud() {
 			Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
 				oFile := filepath.Join(tmpdir, "out")
-				spawnTime := 50 // how long it typically takes a server to become usable on author's test system
 
 				Convey("It eventually runs them all", func() {
-					// on authors setup, running the test from a 1 cpu cloud
-					// instance, the following count is sufficient to test spawning
-					// instances over the quota in the test environment
-					count := 35
+					// on authors setup, running the test from a 2 cpu cloud
+					// instance, the following count is sufficient to test
+					// spawning instances over the quota in the test environment
+					count := 130
+					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
 					cmd := "sleep 10 && (echo default > " + oFile + ") || true"
 					err = s.Schedule(cmd, possibleReq, count)
 					So(err, ShouldBeNil)
@@ -546,18 +554,18 @@ func TestOpenstack(t *testing.T) {
 
 					spawnedCh := make(chan int)
 					go func() {
-						<-time.After(time.Duration(int(((count*10)+15)/3)) * time.Second)
+						<-time.After(time.Duration(int(eta/2)) * time.Second)
 						spawnedCh <- novaCountServers(rName, "")
 						return
 					}()
 
-					So(waitToFinish(s, ((count*10)+15)*2, 1000), ShouldBeTrue)
+					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 					spawned := <-spawnedCh
 					close(spawnedCh)
 					So(spawned, ShouldBeBetweenOrEqual, 4, count)
 
 					foundServers := novaCountServers(rName, "")
-					So(foundServers, ShouldBeBetweenOrEqual, 1, 6)
+					So(foundServers, ShouldBeBetweenOrEqual, 1, int(eta/10)) // (assuming a ~10s spawn time)
 
 					// after the last run, they are all auto-destroyed
 					<-time.After(30 * time.Second)
@@ -571,15 +579,17 @@ func TestOpenstack(t *testing.T) {
 					So(err, ShouldBeNil)
 				})
 
-				if osPrefix != "CentOS 7" {
+				// *** test if we have a Centos 7 image to use...
+				if osPrefix != "Centos 7" {
 					oReqs := make(map[string]string)
-					oReqs["cloud_os"] = "CentOS 7"
+					oReqs["cloud_os"] = "Centos 7"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
 					Convey("They can be run again, overriding the default os image and ram", func() {
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 						newCount := 3
+						eta := 60
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
 						err = s.Schedule(cmd, newReq, newCount)
 						So(err, ShouldBeNil)
@@ -587,13 +597,13 @@ func TestOpenstack(t *testing.T) {
 
 						spawnedCh := make(chan int, 1)
 						go func() {
-							wait := int(((newCount * (10 + spawnTime)) + 15) / 2)
+							wait := int(eta / 2)
 							<-time.After(time.Duration(wait) * time.Second)
 							spawnedCh <- novaCountServers(rName, oReqs["cloud_os"]) // *** also want to test that the spawned servers are on 4GB ram flavors
 							return
 						}()
 
-						So(waitToFinish(s, ((newCount*(10+spawnTime))+15)*2, 1000), ShouldBeTrue)
+						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 						spawned := <-spawnedCh
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
@@ -617,12 +627,12 @@ func TestOpenstack(t *testing.T) {
 						if err == nil && confirmFlavor.Cores >= numCores {
 							Convey("You can run multiple jobs at once on multi-core servers", func() {
 								cmd := "sleep 30"
-								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
 								err = s.Schedule(cmd, jobReq, numCores)
 								So(err, ShouldBeNil)
 								So(s.Busy(), ShouldBeTrue)
 
-								waitSecs := spawnTime + 20 + 30 // 20 for extra leeway, 30 for the cmd's run time
+								waitSecs := 90
 								spawnedCh := make(chan int, 1)
 								go func() {
 									maxSpawned := 0
@@ -663,25 +673,85 @@ func TestOpenstack(t *testing.T) {
 				}
 
 				// *** I have no tests for when servers fail to start...
+			})
 
-				// *** should also test dropping the count
+			Convey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
+				// with the ~instant complete jobs combined with the wait on
+				// bringing up a new server, this is supposed to be able to
+				// trigger a dropping count bug, but doesn't, but we're keeping
+				// it anyway. See jobqueue_test.go for a similar test that did
+				// manage to trigger the bug.
+				err = s.Schedule("echo 2048:1:0", &Requirements{2048, 1 * time.Minute, 1, 0, otherReqs}, 1)
+				So(err, ShouldBeNil)
+				err = s.Schedule("echo 1024:2:0", &Requirements{1024, 1 * time.Minute, 2, 0, otherReqs}, 1)
+				So(err, ShouldBeNil)
+				err = s.Schedule("echo 1024:1:20", &Requirements{1024, 1 * time.Minute, 2, 20, otherReqs}, 1)
+				So(err, ShouldBeNil)
 
-				// Convey("You can Schedule() again to increase the count", func() {
-				//  // this increase takes us just over the quota
-				//  newcount := count + 2
-				//  err = s.Schedule(cmd, possibleReq, newcount)
-				//  So(err, ShouldBeNil)
-				//  So(waitToFinish(s, 300, 1000), ShouldBeTrue)
-				// })
+				dropReq := &Requirements{1024, 1 * time.Minute, 1, 0, otherReqs}
+				err = s.Schedule("echo 1024:1:0 && sleep 1", dropReq, 1)
+				So(err, ShouldBeNil)
+				dropCmd := fmt.Sprintf("echo 1024:1:0 && mkdir -p %s && perl -e 'use File::Temp qw/tempfile/; ($fh, $fn) = tempfile(DIR => q{%s}, SUFFIX => q/.wrst/); print $fh qq/test\\n/; close($fh)'", tmpdir, tmpdir)
+				dropCount := 96
 
-				//Convey("You can Schedule() a new job and have it run while the first is still running", func() {
-				//*** need to wait until I have file input/output implemented so I
-				// can test if things are really working
-				// })
+				stop := make(chan bool)
+				completedLocally := 0
+				prevRemaining := dropCount
+				go func() {
+					ticker := time.NewTicker(10 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							files, err := ioutil.ReadDir(tmpdir)
+							if err == nil {
+								count := 0
+								for _, file := range files {
+									if strings.HasSuffix(file.Name(), ".wrst") {
+										count++
+									}
+								}
+								completedLocally = count
+
+								remaining := dropCount - count
+								if remaining < prevRemaining {
+									s.Schedule(dropCmd, dropReq, remaining)
+									if remaining == 0 {
+										ticker.Stop()
+										return
+									}
+									prevRemaining = remaining
+								}
+							}
+							continue
+						case <-stop:
+							ticker.Stop()
+							return
+						}
+					}
+				}()
+
+				err = s.Schedule(dropCmd, dropReq, dropCount)
+				So(err, ShouldBeNil)
+				So(s.Busy(), ShouldBeTrue)
+
+				eta := 90
+				So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+				stop <- true
+				So(completedLocally, ShouldBeBetweenOrEqual, 50, 97)
+
+				foundServers := novaCountServers(rName, "")
+				So(foundServers, ShouldBeBetweenOrEqual, 0, 3)
+
+				// after the last run, they are all auto-destroyed
+				if foundServers > 0 {
+					<-time.After(30 * time.Second)
+					foundServers = novaCountServers(rName, "")
+					So(foundServers, ShouldEqual, 0)
+				}
 			})
 
 			// wait a while for any remaining jobs to finish
-			So(waitToFinish(s, 300, 1000), ShouldBeTrue)
+			So(waitToFinish(s, 60, 1000), ShouldBeTrue)
 		} else {
 			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova installed", func() {})
 		}

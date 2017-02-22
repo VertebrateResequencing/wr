@@ -23,13 +23,11 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/shirou/gopsutil/mem"
 	"log"
 	"math"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -59,21 +57,29 @@ type canCounter func(req *Requirements) (canCount int)
 // (Their reason for being is the same as for canCounters.)
 type cmdRunner func(cmd string, req *Requirements) error
 
+// cancelCmdRunner are functions used by processQueue() to cancel the running
+// of cmdRunners that started but didn't really start to run the cmd. You give
+// the cmd and the number still needed and it will cancel any extras that have
+// been created but not started.
+// (Their reason for being is the same as for canCounters.)
+type cancelCmdRunner func(cmd string, desiredNumber int)
+
 // local is our implementer of scheduleri.
 type local struct {
-	config       *ConfigLocal
-	maxRAM       int
-	maxCores     int
-	ram          int
-	cores        int
-	rcount       int
-	mutex        sync.Mutex
-	queue        *queue.Queue
-	running      map[string]int
-	cleaned      bool
-	reqCheckFunc reqChecker
-	canCountFunc canCounter
-	runCmdFunc   cmdRunner
+	config           *ConfigLocal
+	maxRAM           int
+	maxCores         int
+	ram              int
+	cores            int
+	rcount           int
+	mutex            sync.Mutex
+	queue            *queue.Queue
+	running          map[string]int
+	cleaned          bool
+	reqCheckFunc     reqChecker
+	canCountFunc     canCounter
+	runCmdFunc       cmdRunner
+	cancelRunCmdFunc cancelCmdRunner
 }
 
 // ConfigLocal represents the configuration options required by the local
@@ -91,8 +97,8 @@ type job struct {
 	count int
 }
 
-// initialize finds out about the local machine. Compatible with linux-like
-// systems with /proc/meminfo only!
+// initialize finds out about the local machine. Compatible with amd64 archs
+// only!
 func (s *local) initialize(config interface{}) (err error) {
 	s.config = config.(*ConfigLocal)
 	s.maxCores = runtime.NumCPU()
@@ -109,38 +115,22 @@ func (s *local) initialize(config interface{}) (err error) {
 	s.reqCheckFunc = s.reqCheck
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
+	s.cancelRunCmdFunc = s.cancelRun
 
 	return
 }
 
-// procMeminfoMBs parses /proc/meminfo (only available on linux-like systems!)
-// to find the total number of MBs of memory physically installed on the current
-// system.
+// procMeminfoMBs uses gopsutil (amd64 freebsd, linux, windows, darwin, openbds
+// only!) to find the total number of MBs of memory physically installed on the
+// current system.
 func (s *local) procMeminfoMBs() (mbs int, err error) {
-	f, err := os.Open("/proc/meminfo")
+	v, err := mem.VirtualMemory()
 	if err != nil {
 		return
 	}
-	defer f.Close()
 
-	kb := uint64(0)
-	r := bufio.NewScanner(f)
-	for r.Scan() {
-		line := r.Bytes()
-		if bytes.HasPrefix(line, mt) {
-			_, err = fmt.Sscanf(string(line[9:]), "%d", &kb)
-			if err != nil {
-				return
-			}
-			break
-		}
-	}
-	if err = r.Err(); err != nil {
-		return
-	}
-
-	// convert kB to MB
-	mbs = int(kb / 1024)
+	// convert bytes to MB
+	mbs = int((v.Total / 1024) / 1024)
 	return
 }
 
@@ -156,6 +146,13 @@ func (s *local) maxQueueTime(req *Requirements) time.Duration {
 
 // schedule achieves the aims of Schedule().
 func (s *local) schedule(cmd string, req *Requirements, count int) error {
+	s.mutex.Lock()
+	if s.cleaned {
+		s.mutex.Unlock()
+		return nil
+	}
+	s.mutex.Unlock()
+
 	// first find out if its at all possible to ever run this cmd
 	err := s.reqCheckFunc(req)
 	if err != nil {
@@ -194,11 +191,12 @@ func (s *local) reqCheck(req *Requirements) error {
 // processQueue gets the oldest job in the queue, sees if it's possible to run
 // it, does so if it does, otherwise returns the job to the queue.
 func (s *local) processQueue() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.cleaned {
 		return nil
 	}
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	var key, cmd string
 	var req *Requirements
 	var count, canCount int
@@ -227,6 +225,11 @@ func (s *local) processQueue() error {
 		count = j.count
 
 		running := s.running[key]
+		if count < running {
+			// "running" things may not actually be running the cmd yet, so tell
+			// extraneous ones to cancel and not start running
+			s.cancelRunCmdFunc(cmd, count)
+		}
 		shouldCount := count - running
 		if shouldCount <= 0 {
 			// we're already running everything for this job, try the next most
@@ -341,9 +344,20 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 	return nil
 }
 
+// cancelRun in the local scheduler is a no-op, since our runCmd immediately
+// starts running the cmd and is never eligible for cancellation.
+func (s *local) cancelRun(cmd string, cancelCount int) {
+	return
+}
+
 // busy returns true if there's anything in our queue or we are still running
 // any cmd
 func (s *local) busy() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.cleaned {
+		return false
+	}
 	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
 		return false
 	}
@@ -352,6 +366,8 @@ func (s *local) busy() bool {
 
 // cleanup destroys our internal queue
 func (s *local) cleanup() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	s.cleaned = true
 	s.queue.Destroy()
 	return

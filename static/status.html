@@ -158,13 +158,24 @@
                                         <dt>Expected Time</dt>
                                         <dd data-bind="text: ExpectedTime.toDuration()"></dd>
                                     </dl>
+                                    <!-- ko if: RequestedDisk > 0 -->
+                                        <dl>
+                                            <dt>Requested Disk</dt>
+                                            <dd><span data-bind="text: RequestedDisk"></span> GB</dd>
+                                        </dl>
+                                    <!-- /ko -->
                                     <dl>
                                         <dt>Cores</dt>
                                         <dd data-bind="text: Cores"></dd>
                                     </dl>
                                     <!-- ko if: FailReason -->
                                         <dl>
-                                            <dt>Reason for Failure</dt>
+                                            <!-- ko if: State == 'running' -->
+                                                <dt>Previous Failure</dt>
+                                            <!-- /ko -->
+                                            <!-- ko if: State != 'running' -->
+                                                <dt>Reason for Failure</dt>
+                                            <!-- /ko -->
                                             <dd data-bind="text: FailReason"></dd>
                                         </dl>
                                     <!-- /ko -->
@@ -320,7 +331,7 @@
             <!-- stdout/err modals -->
             <div data-bind="modal: {
                 visible: stdModalVisible,
-                dialogCss: 'modal-lg',
+                dialogCss: 'modal-lg, modal-std',
                 header: { data: { label: stdModalHeader } },
                 body: { data: { content: stdOutput } }
             }"></div>

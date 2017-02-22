@@ -561,7 +561,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		// 0 running, then repeat the bjobs to find the ones to kill, kill them,
 		// then bmod back to allowing lots to run. However, use of bmod resulted
 		// in big rescheduling delays, and overall it seemed better (in terms of
-		// getting jobs run quicker) to all the race condition and allow some
+		// getting jobs run quicker) to allow the race condition and allow some
 		// cmds to start running and then get killed. Hence the bmod-related
 		// code is now commented out.
 

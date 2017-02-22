@@ -139,6 +139,10 @@ to:
 This way, you don't have to directly interact with OpenStack at all, or even
 know how it works.
 
+If you have any problems getting things to start up, check out the
+[wiki](https://github.com/VertebrateResequencing/wr/wiki) for additional
+guidance.
+
 Example .ssh/config
 -------------------
 If you're having difficulty accessing the web frontend via an ssh tunnel, the

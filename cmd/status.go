@@ -37,6 +37,7 @@ var showBuried bool
 var showStd bool
 var showEnv bool
 var quietMode bool
+var statusLimit int
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{
@@ -49,15 +50,21 @@ Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
 
-The file to provide -f is in the same format as that taken by "wr add"
-(though only the first 2 columns are considered).
+The file to provide -f is in the same format as that taken by "wr add".
 
 In -f and -l mode you must provide the cwd the commands were set to run in. You
-can do this by using the -c option, or in -f mode your file can contain the
-second column holding the cwd, in case it's different for each command. If not
-supplied at all, cwd will default to your current directory, but you won't get
-any status if you're not in the same directory you were in when you first added
-the commands, or if you added them with a different cwd.`,
+can do this by using the -c option, or in -f mode your file can specify the cwd
+in the JSON, in case it's different for each command. If not supplied at all,
+cwd will default to your current directory, but you won't get any status if
+you're not in the same directory you were in when you first added the commands,
+or if you added them with a different cwd.
+
+By default, commands with the same state, reason for failure and exitcode are
+grouped together and only a random 1 of them is displayed (and you are told how
+many were skipped). --limit changes how many commands in each of these groups
+are displayed. A limit of 0 turns off grouping and shows all your desired
+commands individually, but you could hit a timeout if retrieving the details of
+very many (tens of thousands+) commands.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		set := 0
 		if cmdFileStatus != "" {
@@ -96,10 +103,10 @@ the commands, or if you added them with a different cwd.`,
 		switch {
 		case set == 0:
 			// get incomplete jobs
-			jobs, err = jq.GetIncomplete(1, cmdState, showStd, showEnv)
+			jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
 		case cmdIDStatus != "":
 			// get all jobs with this identifier (repgroup)
-			jobs, err = jq.GetByRepGroup(cmdIDStatus, 1, cmdState, showStd, showEnv)
+			jobs, err = jq.GetByRepGroup(cmdIDStatus, statusLimit, cmdState, showStd, showEnv)
 		case cmdFileStatus != "":
 			// get jobs that have the supplied commands. We support the same
 			// format of file that "wr add" takes, but only care about the
@@ -168,7 +175,7 @@ the commands, or if you added them with a different cwd.`,
 		} else {
 			// print out status information for each job
 			for _, job := range jobs {
-				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores)
+				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case "delayed":
@@ -262,6 +269,7 @@ func init() {
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().BoolVarP(&quietMode, "quiet", "q", false, "minimal verbosity: just display status counts")
+	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "number of commands that share the same properties to display; 0 displays all")
 
 	statusCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

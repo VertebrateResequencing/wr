@@ -40,6 +40,7 @@ import (
 // options for this cmd
 var foreground bool
 var scheduler string
+var localUsername string
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -65,9 +66,10 @@ If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
 If using the openstack scheduler, note that you must be running on an openstack
-server already. Instead you can use 'wr cloud deploy -p openstack' to create an
-openstack server on which wr manager will be started in openstack mode for
-you.`,
+server already. Be sure to set --local_username to your username outside of the
+cloud, so that resources created are only accessible to you. Instead you can use
+'wr cloud deploy -p openstack' to create an openstack server on which wr manager
+will be started in openstack mode for you.`,
 }
 
 // start sub-command starts the daemon
@@ -314,19 +316,21 @@ func init() {
 	managerCmd.AddCommand(managerStatusCmd)
 
 	// flags specific to these sub-commands
+	defaultConfig := internal.DefaultConfig()
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
-	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", internal.DefaultScheduler(), "['local','lsf','openstack'] job scheduler")
-	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", "Ubuntu 16", "for cloud schedulers, prefix name of the OS image your servers should use")
-	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", "ubuntu", "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
-	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", 2048, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
-	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", 1, "for cloud schedulers, minimum disk (GB) for servers")
-	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", "", "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
-	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", "", "for cloud schedulers, path to a start-up script that will be run on each server created")
-	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", 120, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
-	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", 0, "for cloud schedulers, maximum number of servers to spawn; 0 means unlimited (default 0)")
-	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", "192.168.0.1", "for cloud schedulers, gateway IP for the created subnet")
-	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", "192.168.0.0/18", "for cloud schedulers, CIDR of the created subnet")
-	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", "8.8.4.4,8.8.8.8", "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
+	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
+	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
+	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
+	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
+	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
+	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
+	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
+	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for")
+	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
+	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", defaultConfig.CloudGateway, "for cloud schedulers, gateway IP for the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
@@ -355,7 +359,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
 		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:       "wr-" + config.Deployment,
+			ResourceName:       cloudResourceName(localUsername),
 			SavePath:           filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
 			ServerPorts:        []int{22, mport},
 			OSPrefix:           osPrefix,
