@@ -40,19 +40,19 @@ Alternatively, build it yourself:
 (make sure to set your `$GOPATH`). An example way of setting up a personal Go
 installation in your home directory would be:
 
-    wget "https://storage.googleapis.com/golang/go1.8.linux-amd64.tar.gz"
-    tar -xvzf go1.8.linux-amd64.tar.gz && rm go1.8.linux-amd64.tar.gz
-    export GOROOT=$HOME/go
-    export PATH=$PATH:$GOROOT/bin
-    mkdir work
-    export GOPATH=$HOME/work
-    export PATH=$GOPATH/bin:$PATH
+        wget "https://storage.googleapis.com/golang/go1.8.linux-amd64.tar.gz"
+        tar -xvzf go1.8.linux-amd64.tar.gz && rm go1.8.linux-amd64.tar.gz
+        export GOROOT=$HOME/go
+        export PATH=$PATH:$GOROOT/bin
+        mkdir work
+        export GOPATH=$HOME/work
+        export PATH=$GOPATH/bin:$PATH
 
 2. Download, compile, and install wr:
 
-    go get -u -d -tags netgo github.com/VertebrateResequencing/wr
-    cd $GOPATH/src/github.com/VertebrateResequencing/wr
-    make
+        go get -u -d -tags netgo github.com/VertebrateResequencing/wr
+        cd $GOPATH/src/github.com/VertebrateResequencing/wr
+        make
 
 3. The `wr` executable should now be in `$GOPATH/bin`
 
