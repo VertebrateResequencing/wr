@@ -20,6 +20,8 @@
 
 package queue
 
+// This file implements the items that are added to queues.
+
 import (
 	"sync"
 	"time"

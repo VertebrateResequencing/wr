@@ -18,7 +18,7 @@
 
 package jobqueue
 
-// This file contains the web interface code of the server
+// This file contains the web interface code of the server.
 
 import (
 	"github.com/gorilla/websocket"

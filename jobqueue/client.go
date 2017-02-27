@@ -16,23 +16,9 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-/*
-Package jobqueue provides server/client functions to interact with the queue
-structure provided by the queue package over a network.
-
-It provides a job queue and running system which guarantees:
-# Created jobs are never lost accidentally.
-# The same job will not run more than once simultaneously:
-  - Duplicate jobs are not created
-  - Each job is handled by only a single client
-# Jobs are handled in the desired order (user priority and fifo).
-# Jobs still get run despite crashing clients.
-# Completed jobs are kept forever for historical purposes.
-
-This file contains all the functions for clients to interact with the server.
-See server.go for the functions needed to implement a server executable.
-*/
 package jobqueue
+
+// This file contains the functions needed to implement a jobqueue client.
 
 import (
 	"bytes"

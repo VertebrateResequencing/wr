@@ -17,14 +17,12 @@
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 /*
-Package cloud provides functions to interact with cloud providers such as
-OpenStack and AWS (not yet implemented).
+Package cloud provides functions to interact with cloud providers, used to
+create cloud resources so that you can spawn servers, then delete those
+resources when you're done.
 
-You use it to create cloud resources so that you can spawn servers, then
-delete those resources when you're done.
-
-Please note that the methods in this package are NOT safe to be used by more
-than 1 process at a time.
+Currently implemented providers are OpenStack, with AWS planned for the future.
+The implementation of each supported provider is in its own .go file.
 
 It's a pseudo plug-in system in that it is designed so that you can easily add a
 go file that implements the methods of the provideri interface, to support a
@@ -32,6 +30,41 @@ new cloud provider. On the other hand, there is no dynamic loading of these go
 files; they are all imported (they all belong to the cloud package), and the
 correct one used at run time. To "register" a new provideri implementation you
 must add a case for it to New() and RequiredEnv() and rebuild.
+
+Please note that the methods in this package are NOT safe to be used by more
+than 1 process at a time.
+
+    import "github.com/VertebrateResequencing/wr/cloud"
+
+    // deploy
+    provider, err := cloud.New("openstack", "wr-production-username", "/home/username/.wr-production/created_cloud_resources")
+    err = provider.Deploy(&cloud.DeployConfig{
+        RequiredPorts:  []int{22},
+        GatewayIP:      "192.168.0.1",
+        CIDR:           "192.168.0.0/18",
+        DNSNameServers: [...]string{"8.8.4.4", "8.8.8.8"},
+    })
+
+    // spawn a server
+    flavor := provider.CheapestServerFlavor(1, 1024, "")
+    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 120 * time.Second, true, []byte{})
+
+    // simplistic way of making the most of the server by running as many
+    // commands as possible:
+    for _, cmd := range myCmds {
+        if server.HasSpaceFor(1, 1024, 1) > 0 {
+            server.Allocate(1, 1024, 1)
+            go func() {
+                server.RunCmd(cmd, false)
+                server.Release(1, 1024, 1)
+            }()
+        } else {
+            break
+        }
+    }
+
+    // destroy everything created
+    provider.TearDown()
 */
 package cloud
 
