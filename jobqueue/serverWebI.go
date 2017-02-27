@@ -320,7 +320,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 							stats := item.Stats()
-							if stats.State == "bury" || stats.State == "delay" || stats.State == "dependent" {
+							if stats.State == "bury" || stats.State == "delay" || stats.State == "dependent" || stats.State == "ready" {
 								job := item.Data.(*Job)
 								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
 									// we can't allow the removal of jobs that
@@ -339,7 +339,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									if err == nil {
 										s.db.deleteLiveJob(key)
 										toDelete = append(toDelete, key)
-										if stats.State == "delay" {
+										if stats.State == "delay" || stats.State == "ready" {
 											s.decrementGroupCount(job.schedulerGroup, q)
 										}
 									}

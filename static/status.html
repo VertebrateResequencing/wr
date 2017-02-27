@@ -279,14 +279,17 @@
                                         <!-- /ko -->
                                     <!-- /ko -->
                                     <!-- ko if: State == "delayed" -->
-                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemove">Remove</button>
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDelay">Remove</button>
+                                    <!-- /ko -->
+                                    <!-- ko if: State == "ready" -->
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemovePend">Remove</button>
                                     <!-- /ko -->
                                     <!-- ko if: State == "dependent" -->
                                         <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDep">Remove</button>
                                     <!-- /ko -->
                                     <!-- ko if: State == "buried" -->
                                         <div class="btn-group pull-right">
-                                            <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemove">Remove</button>
+                                            <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemoveFail">Remove</button>
                                             <button type="button" class="btn btn-primary" data-bind="click: $root.confirmRetry">Retry</button>
                                         </div>
                                     <!-- /ko -->
@@ -750,7 +753,7 @@
                     self.actionModalHeader('Retry Buried Commands');
                     self.actionModalVisible(true);
                 };
-                self.confirmRemove = function(job) {
+                self.confirmRemoveFail = function(job) {
                     self.jobToActionDetails(job, 'remove');
                     self.actionModalHeader('Remove Failed Commands');
                     self.actionModalVisible(true);
@@ -758,6 +761,16 @@
                 self.confirmRemoveDep = function(job) {
                     self.jobToActionDetails(job, 'remove');
                     self.actionModalHeader('Remove Dependent Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmRemovePend = function(job) {
+                    self.jobToActionDetails(job, 'remove');
+                    self.actionModalHeader('Remove Pending Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmRemoveDelay = function(job) {
+                    self.jobToActionDetails(job, 'remove');
+                    self.actionModalHeader('Remove Delayed Commands');
                     self.actionModalVisible(true);
                 };
             }
