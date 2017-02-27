@@ -259,7 +259,14 @@ only then request a teardown.`,
 			die("--provider is required")
 		}
 
-		// first check if the ssh forwarding is up
+		// before stopping the manager, make sure we can interact with the
+		// provider - that our credentials are correct
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		if err != nil {
+			die("failed to connect to %s: %s", providerName, err)
+		}
+
+		// now check if the ssh forwarding is up
 		fmPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
@@ -298,10 +305,6 @@ only then request a teardown.`,
 		}
 
 		// teardown cloud resources we created
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
-		if err != nil {
-			die("failed to connect to %s: %s", providerName, err)
-		}
 		err = provider.TearDown()
 		if err != nil {
 			die("failed to delete the cloud resources previously created: %s", err)
