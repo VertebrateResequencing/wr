@@ -896,8 +896,7 @@ func (c *Client) ccsToKeys(ccs [][2]string) (keys []string) {
 // the last job of each State+FailReason group it populates 'Similar' with the
 // number of other excluded jobs there were in that group. Providing 'state'
 // only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
-// stdout, stderr and environement variables for the Jobs, but only if 'limit'
-// is <= 5.
+// stdout, stderr and environement variables for the Jobs.
 func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
