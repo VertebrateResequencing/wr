@@ -168,7 +168,7 @@ when viewing status.
 that you can then refer to this job (and others with the same dep_grp) in
 another job's deps.
 
-"deps" and "cmd_deps" define the dependencies of this command. The commands that
+"deps" or "cmd_deps" define the dependencies of this command. The commands that
 these refer to must complete before this command will start. The value for
 "deps" is an array of the dep_grp of other commands. Dependencies specified in
 this way are 'live', causing this command to be automatically re-run if any
