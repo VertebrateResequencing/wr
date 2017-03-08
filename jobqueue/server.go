@@ -27,7 +27,7 @@ import (
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
-	"github.com/grafov/bcast"
+	"github.com/sb10/bcast" // my own clone of grafov/bcast to revert a change that broke status webpage updates in certain cases
 	"github.com/ugorji/go/codec"
 	"log"
 	"net/http"
