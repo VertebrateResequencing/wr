@@ -475,7 +475,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -531,7 +531,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		ImageRef:       imageID,
 		SecurityGroups: []string{p.securityGroup},
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
-		UserData:       postCreationScript,
+		UserData:       sentinelInitScript,
 	}
 	var createdVolume bool
 	if diskGB > flavor.Disk {

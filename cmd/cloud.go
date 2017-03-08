@@ -193,7 +193,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true, postCreation)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
+			if err != nil {
+				provider.TearDown()
+				die("failed to launch a server in %s: %s", providerName, err)
+			}
+			err = server.WaitUntilReady(postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -370,7 +375,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
 
-	_, err = server.RunCmd("chmod u+x "+remoteExe, false)
+	_, _, err = server.RunCmd("chmod u+x "+remoteExe, false)
 	if err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to make remote wr executable: %s", err)
@@ -397,13 +402,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		provider.TearDown()
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}
-	_, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
-	_, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	_, _, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
+	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
 
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
-		response, err := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
+		response, _, err := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
 		if err != nil && response == "started\n" {
 			alreadyStarted = true
 		}
@@ -443,7 +448,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 
 		// get the manager running
 		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
-		_, err = server.RunCmd(mCmd, false)
+		_, _, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			provider.TearDown()
 			die("failed to start wr manager on the remote server: %s", err)

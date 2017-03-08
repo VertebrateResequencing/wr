@@ -28,15 +28,16 @@ import (
 	"time"
 )
 
-const resourceName = "wr-testing"
 const crfile = "cloud.resources"
 
 func TestOpenStack(t *testing.T) {
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
+	localUser := os.Getenv("OS_LOCAL_USERNAME")
+	resourceName := "wr-testing-" + localUser
 
-	if osPrefix == "" || osUser == "" {
-		SkipConvey("Without our special OS_OS_PREFIX and OS_OS_USERNAME environment variables, we'll skip openstack tests", t, func() {})
+	if osPrefix == "" || osUser == "" || localUser == "" {
+		SkipConvey("Without our special OS_OS_PREFIX, OS_OS_USERNAME and OS_LOCAL_USERNAME environment variables, we'll skip openstack tests", t, func() {})
 	} else {
 		crdir, err := ioutil.TempDir("", "wr_testing_cr")
 		if err != nil {
@@ -104,11 +105,11 @@ func TestOpenStack(t *testing.T) {
 				So(flavor.Cores, ShouldBeGreaterThanOrEqualTo, 1)
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
-					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, true, []byte{})
+					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "no OS image with prefix [osPrefix] was found")
 
-					server, err = p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true, []byte{})
+					server, err = p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					So(server.ID, ShouldNotBeBlank)
 					So(server.AdminPass, ShouldNotBeBlank)
@@ -122,7 +123,7 @@ func TestOpenStack(t *testing.T) {
 					So(ok, ShouldBeTrue)
 
 					Convey("And you can Spawn another with an internal ip and destroy it with DestroyServer", func() {
-						server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, false, []byte{})
+						server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, false)
 						So(err, ShouldBeNil)
 						So(server2.ID, ShouldNotBeBlank)
 						So(server2.AdminPass, ShouldNotBeBlank)
@@ -149,7 +150,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Once deployed you can Spawn a server with an internal ip", func() {
-					server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, false, []byte{})
+					server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, false)
 					So(err, ShouldBeNil)
 
 					ok, err := p.CheckServer(server2.ID)
@@ -169,7 +170,9 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true, []byte("#!/bin/bash\necho bar > /tmp/post_creation_script_output"))
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					err = server.WaitUntilReady([]byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
 					ok := server.Alive()
 					So(ok, ShouldBeTrue)
@@ -196,17 +199,23 @@ func TestOpenStack(t *testing.T) {
 					So(n, ShouldEqual, 0)
 
 					Convey("You can also interact with the server over ssh, running commands and creating files and directories", func() {
+						// our post creation script should have completed before WaitUntilReady() returned
+						stdout, stderr, err := server.RunCmd("cat /tmp/post_creation_script_output", false)
+						So(err, ShouldBeNil)
+						So(stdout, ShouldEqual, "bar\n")
+						So(stderr, ShouldBeBlank)
+
 						err = server.MkDir("/tmp/foo/bar")
 						So(err, ShouldBeNil)
 
-						stdout, err := server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
+						stdout, stderr, err = server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "")
 
 						err = server.CreateFile("my content", "/tmp/foo/bar/a/b/file")
 						So(err, ShouldBeNil)
 
-						stdout, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
+						stdout, stderr, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "my content")
 
@@ -217,23 +226,27 @@ func TestOpenStack(t *testing.T) {
 						err = server.UploadFile(localFile, "/tmp/foo/bar/a/c/file")
 						So(err, ShouldBeNil)
 
-						stdout, err = server.RunCmd("cat /tmp/foo/bar/a/c/file", false)
+						stdout, stderr, err = server.RunCmd("cat /tmp/foo/bar/a/c/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "uploadable content")
-
-						<-time.After(5 * time.Second) // make sure the post creation script has had time to run?!
-
-						stdout, err = server.RunCmd("cat /tmp/post_creation_script_output", false)
-						So(err, ShouldBeNil)
-						So(stdout, ShouldEqual, "bar\n")
-
 					})
 
 					server.Destroy()
 				})
 
+				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					err = server.WaitUntilReady([]byte("#!/bin/bash\nfalse"))
+					So(err, ShouldNotBeNil)
+					ok := server.Alive()
+					So(ok, ShouldBeTrue)
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(sudo /tmp/.postCreationScript) failed: Process exited with status 1")
+					server.Destroy()
+				})
+
 				Convey("You can Spawn a server with a time to destruction", func() {
-					server3, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 2*time.Second, false, []byte{})
+					server3, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 2*time.Second, false)
 					So(err, ShouldBeNil)
 
 					ok := server3.Alive()
@@ -306,12 +319,12 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, true, []byte{})
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					ok := server.Alive()
 					So(ok, ShouldBeTrue)
 
-					stdout, err := server.RunCmd("df -h .", false)
+					stdout, _, err := server.RunCmd("df -h .", false)
 					So(err, ShouldBeNil)
 					So(stdout, ShouldContainSubstring, "30G")
 				})
