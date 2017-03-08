@@ -712,7 +712,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		if bailed {
 			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
 		}
-		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
 	if dobury {
