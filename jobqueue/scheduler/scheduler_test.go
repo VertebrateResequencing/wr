@@ -596,16 +596,27 @@ func TestOpenstack(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(s.Busy(), ShouldBeTrue)
 
-						spawnedCh := make(chan int, 1)
+						spawned := 0
 						go func() {
-							wait := int(eta / 2)
-							<-time.After(time.Duration(wait) * time.Second)
-							spawnedCh <- novaCountServers(rName, oReqs["cloud_os"]) // *** also want to test that the spawned servers are on 4GB ram flavors
-							return
+							ticker := time.NewTicker(1 * time.Second)
+							limit := time.After(time.Duration(eta-5) * time.Second)
+							for {
+								select {
+								case <-ticker.C:
+									spawned = novaCountServers(rName, oReqs["cloud_os"])
+									if spawned > 0 {
+										ticker.Stop()
+										return
+									}
+									continue
+								case <-limit:
+									ticker.Stop()
+									return
+								}
+							}
 						}()
 
 						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
-						spawned := <-spawnedCh
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
 						<-time.After(30 * time.Second)
@@ -740,12 +751,13 @@ func TestOpenstack(t *testing.T) {
 				stop <- true
 				So(completedLocally, ShouldBeBetweenOrEqual, 50, 97)
 
+				<-time.After(5 * time.Second)
 				foundServers := novaCountServers(rName, "")
 				So(foundServers, ShouldBeBetweenOrEqual, 0, 3)
 
 				// after the last run, they are all auto-destroyed
 				if foundServers > 0 {
-					<-time.After(30 * time.Second)
+					<-time.After(25 * time.Second)
 					foundServers = novaCountServers(rName, "")
 					So(foundServers, ShouldEqual, 0)
 				}
