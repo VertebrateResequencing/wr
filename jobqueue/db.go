@@ -33,6 +33,8 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
+	"time"
 )
 
 const (
@@ -85,9 +87,11 @@ func (s sobsd) Less(i, j int) bool {
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
-	bolt     *bolt.DB
-	envcache *lru.ARCCache
-	ch       codec.Handle
+	bolt                 *bolt.DB
+	envcache             *lru.ARCCache
+	ch                   codec.Handle
+	updatingAfterJobExit int
+	sync.RWMutex
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -195,7 +199,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		return
 	}
 
-	dbstruct = &db{boltdb, envcache, new(codec.BincHandle)}
+	dbstruct = &db{bolt: boltdb, envcache: envcache, ch: new(codec.BincHandle)}
 	return
 }
 
@@ -616,40 +620,62 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
 	jobkey := job.key()
 	secs := int(math.Ceil(job.endtime.Sub(job.starttime).Seconds()))
-	go db.bolt.Batch(func(tx *bolt.Tx) error {
-		bo := tx.Bucket(bucketStdO)
-		be := tx.Bucket(bucketStdE)
-		key := []byte(jobkey)
-		bo.Delete(key)
-		be.Delete(key)
+	go func() {
+		db.Lock()
+		db.updatingAfterJobExit++
+		db.Unlock()
+		db.bolt.Batch(func(tx *bolt.Tx) error {
+			bo := tx.Bucket(bucketStdO)
+			be := tx.Bucket(bucketStdE)
+			key := []byte(jobkey)
+			bo.Delete(key)
+			be.Delete(key)
 
-		var err error
-		if job.Exitcode != 0 {
-			if len(stdo) > 0 {
-				err = bo.Put(key, stdo)
+			var err error
+			if job.Exitcode != 0 {
+				if len(stdo) > 0 {
+					err = bo.Put(key, stdo)
+				}
+				if len(stde) > 0 {
+					err = be.Put(key, stde)
+				}
 			}
-			if len(stde) > 0 {
-				err = be.Put(key, stde)
+			if err != nil {
+				return err
 			}
-		}
-		if err != nil {
-			return err
-		}
 
-		b := tx.Bucket(bucketJobMBs)
-		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
-		if err != nil {
+			b := tx.Bucket(bucketJobMBs)
+			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+			if err != nil {
+				return err
+			}
+			b = tx.Bucket(bucketJobSecs)
+			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
+
 			return err
-		}
-		b = tx.Bucket(bucketJobSecs)
-		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
-		return err
-	})
+		})
+		db.Lock()
+		db.updatingAfterJobExit--
+		db.Unlock()
+	}()
 }
 
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
 // given job.
 func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
+	// first wait for any existing updateJobAfterExit() calls to complete
+	//*** this method of waiting seems really bad and should be improved, but in
+	//    practice we probably never wait
+	for {
+		db.RLock()
+		if db.updatingAfterJobExit == 0 {
+			db.RUnlock()
+			break
+		}
+		db.RUnlock()
+		<-time.After(10 * time.Millisecond)
+	}
+
 	db.bolt.View(func(tx *bolt.Tx) error {
 		bo := tx.Bucket(bucketStdO)
 		be := tx.Bucket(bucketStdE)
