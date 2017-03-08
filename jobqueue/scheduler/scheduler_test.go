@@ -404,8 +404,9 @@ func TestOpenstack(t *testing.T) {
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
+	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-	rName := "wr-testing"
+	rName := "wr-testing-" + localUser
 	config := &ConfigOpenStack{
 		ResourceName:   rName,
 		OSPrefix:       osPrefix,
@@ -417,7 +418,7 @@ func TestOpenstack(t *testing.T) {
 		Shell:          "bash",
 		MaxInstances:   -1,
 	}
-	if osPrefix == "" || osUser == "" {
+	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
 			_, err := New("openstack", config)
 			So(err, ShouldNotBeNil)
@@ -580,16 +581,16 @@ func TestOpenstack(t *testing.T) {
 				})
 
 				// *** test if we have a Centos 7 image to use...
-				if osPrefix != "Centos 7" {
+				if osPrefix != "Centos 7 (2016-09-06)" {
 					oReqs := make(map[string]string)
-					oReqs["cloud_os"] = "Centos 7"
+					oReqs["cloud_os"] = "Centos 7 (2016-09-06)"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
 					Convey("They can be run again, overriding the default os image and ram", func() {
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 						newCount := 3
-						eta := 60
+						eta := 120
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
 						err = s.Schedule(cmd, newReq, newCount)
 						So(err, ShouldBeNil)
@@ -632,7 +633,7 @@ func TestOpenstack(t *testing.T) {
 								So(err, ShouldBeNil)
 								So(s.Busy(), ShouldBeTrue)
 
-								waitSecs := 90
+								waitSecs := 150
 								spawnedCh := make(chan int, 1)
 								go func() {
 									maxSpawned := 0
@@ -734,7 +735,7 @@ func TestOpenstack(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(s.Busy(), ShouldBeTrue)
 
-				eta := 90
+				eta := 150
 				So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 				stop <- true
 				So(completedLocally, ShouldBeBetweenOrEqual, 50, 97)
