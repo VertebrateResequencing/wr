@@ -2408,78 +2408,6 @@ func TestJobqueue(t *testing.T) {
 			} // *** else under LSF we want to test that we never request more than count+count2 runners...
 		})
 
-		osPrefix := os.Getenv("OS_OS_PREFIX")
-		osUser := os.Getenv("OS_OS_USERNAME")
-		localUser := os.Getenv("OS_LOCAL_USERNAME")
-		flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-		host, _ := os.Hostname()
-		if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
-			Convey("You can connect with an OpenStack scheduler to run commands with different hardware requirements while dropping the count", func() {
-				osConfig := runningConfig
-				osConfig.SchedulerName = "openstack"
-				osConfig.SchedulerConfig = &jqs.ConfigOpenStack{
-					ResourceName:   "wr-testing-" + localUser,
-					OSPrefix:       osPrefix,
-					OSUser:         osUser,
-					OSRAM:          2048,
-					FlavorRegex:    flavorRegex,
-					ServerPorts:    []int{22},
-					ServerKeepTime: 15 * time.Second,
-					Shell:          "bash",
-					MaxInstances:   -1,
-				}
-				server.Stop()
-				server, _, err = Serve(osConfig)
-				So(err, ShouldBeNil)
-
-				clientConnectTime = 10 * time.Second
-				jq, err := Connect(addr, "test_queue", clientConnectTime)
-				So(err, ShouldBeNil)
-				defer jq.Disconnect()
-
-				var jobs []*Job
-				dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
-				jobs = append(jobs, NewJob("sleep 1", "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 2", "/tmp", "echo", &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, uint8(2), uint8(0), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 3", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 4", "/tmp", "echo", dropReq, uint8(0), uint8(255), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 5", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				count := 100
-				for i := 6; i <= count; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("echo %d", i), "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				}
-				inserts, already, err := jq.Add(jobs, envVars)
-				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, count)
-				So(already, ShouldEqual, 0)
-
-				// wait for the jobs to get run
-				done := make(chan bool, 1)
-				go func() {
-					limit := time.After(180 * time.Second)
-					ticker := time.NewTicker(500 * time.Millisecond)
-					for {
-						select {
-						case <-ticker.C:
-							if !server.HasRunners() {
-								ticker.Stop()
-								done <- true
-								return
-							}
-							continue
-						case <-limit:
-							ticker.Stop()
-							done <- false
-							return
-						}
-					}
-				}()
-				So(<-done, ShouldBeTrue)
-			})
-		} else {
-			SkipConvey("Skipping the OpenStack tests", func() {})
-		}
-
 		Reset(func() {
 			if server != nil {
 				server.Stop()
@@ -2489,6 +2417,128 @@ func TestJobqueue(t *testing.T) {
 
 	if server != nil {
 		server.Stop()
+	}
+}
+
+func TestJobqueueWithOpenStack(t *testing.T) {
+	if runnermode {
+		return
+	}
+
+	osPrefix := os.Getenv("OS_OS_PREFIX")
+	osUser := os.Getenv("OS_OS_USERNAME")
+	localUser := os.Getenv("OS_LOCAL_USERNAME")
+	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
+	host, _ := os.Hostname()
+	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
+		var server *Server
+		Convey("You can connect with an OpenStack scheduler to run commands with different hardware requirements while dropping the count", t, func() {
+			config := internal.ConfigLoad("development", true)
+			addr := "localhost:" + config.ManagerPort
+
+			ServerLogClientErrors = false
+			ServerInterruptTime = 10 * time.Millisecond
+			ServerReserveTicker = 10 * time.Millisecond
+			ClientReleaseDelay = 100 * time.Millisecond
+			clientConnectTime := 10 * time.Second
+			ServerItemTTR = 10 * time.Second
+			ClientTouchInterval = 50 * time.Millisecond
+
+			pwd, err := os.Getwd()
+			if err != nil {
+				log.Fatal(err)
+			}
+			runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(runnertmpdir)
+
+			// our runnerCmd will be running ourselves in --runnermode, so first
+			// we'll compile ourselves to the tmpdir
+			runnerCmd := filepath.Join(runnertmpdir, "runner")
+			cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
+			err = cmd.Run()
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			osConfig := ServerConfig{
+				Port:            config.ManagerPort,
+				WebPort:         config.ManagerWeb,
+				SchedulerName:   "local",
+				SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
+				DBFile:          config.ManagerDbFile,
+				DBFileBackup:    config.ManagerDbBkFile,
+				Deployment:      config.Deployment,
+				RunnerCmd:       runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			}
+			osConfig.SchedulerName = "openstack"
+			osConfig.SchedulerConfig = &jqs.ConfigOpenStack{
+				ResourceName:   "wr-testing-" + localUser,
+				OSPrefix:       osPrefix,
+				OSUser:         osUser,
+				OSRAM:          2048,
+				FlavorRegex:    flavorRegex,
+				ServerPorts:    []int{22},
+				ServerKeepTime: 15 * time.Second,
+				Shell:          "bash",
+				MaxInstances:   -1,
+			}
+			server, _, err = Serve(osConfig)
+			So(err, ShouldBeNil)
+
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			var jobs []*Job
+			dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
+			jobs = append(jobs, NewJob("sleep 1", "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 2", "/tmp", "echo", &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, uint8(2), uint8(0), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 3", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 4", "/tmp", "echo", dropReq, uint8(0), uint8(255), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 5", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			count := 100
+			for i := 6; i <= count; i++ {
+				jobs = append(jobs, NewJob(fmt.Sprintf("echo %d", i), "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			}
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			// wait for the jobs to get run
+			done := make(chan bool, 1)
+			go func() {
+				limit := time.After(180 * time.Second)
+				ticker := time.NewTicker(1 * time.Second)
+				for {
+					select {
+					case <-ticker.C:
+						if !server.HasRunners() {
+							ticker.Stop()
+							done <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						done <- false
+						return
+					}
+				}
+			}()
+			So(<-done, ShouldBeTrue)
+
+			Reset(func() {
+				if server != nil {
+					server.Stop()
+				}
+			})
+		})
+	} else {
+		SkipConvey("Skipping the OpenStack tests", t, func() {})
 	}
 }
 
