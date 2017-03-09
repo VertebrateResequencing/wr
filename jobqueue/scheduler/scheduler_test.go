@@ -569,7 +569,7 @@ func TestOpenstack(t *testing.T) {
 					So(foundServers, ShouldBeBetweenOrEqual, 1, int(eta/10)) // (assuming a ~10s spawn time)
 
 					// after the last run, they are all auto-destroyed
-					<-time.After(30 * time.Second)
+					<-time.After(20 * time.Second)
 
 					foundServers = novaCountServers(rName, "")
 					So(foundServers, ShouldEqual, 0)
@@ -619,7 +619,7 @@ func TestOpenstack(t *testing.T) {
 						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
-						<-time.After(30 * time.Second)
+						<-time.After(20 * time.Second)
 
 						foundServers := novaCountServers(rName, "")
 						So(foundServers, ShouldEqual, 0)
@@ -628,6 +628,42 @@ func TestOpenstack(t *testing.T) {
 						_, err := os.Stat(oFile)
 						So(err, ShouldNotBeNil)
 						So(os.IsNotExist(err), ShouldBeTrue)
+					})
+
+					// *** we really need to mock OpenStack instead of setting
+					// these debug package variables...
+					Convey("Everything still runs when a server fails to spawn", func() {
+						debugCounter = 0
+						debugEffect = "failFirstSpawn"
+						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+						newCount := 3
+						eta := 120
+						cmd := "sleep 10"
+						err = s.Schedule(cmd, newReq, newCount)
+						So(err, ShouldBeNil)
+						So(s.Busy(), ShouldBeTrue)
+						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+					})
+
+					Convey("Servers still self-terminate when a server is slow to spawn", func() {
+						debugCounter = 0
+						debugEffect = "slowSecondSpawn"
+						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+						newCount := 3
+						eta := 120
+						cmd := "sleep 10"
+						err = s.Schedule(cmd, newReq, newCount)
+						So(err, ShouldBeNil)
+						So(s.Busy(), ShouldBeTrue)
+						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+
+						<-time.After(20 * time.Second)
+
+						foundServers := novaCountServers(rName, "")
+						So(foundServers, ShouldEqual, 0)
+
+						debugCounter = 0
+						debugEffect = ""
 					})
 
 					numCores := 4
@@ -683,11 +719,11 @@ func TestOpenstack(t *testing.T) {
 						SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
 					}
 				}
-
-				// *** I have no tests for when servers fail to start...
 			})
 
-			Convey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
+			// *** having to skip this unnecessary test since we're going over
+			// 10mins; not sure what to do instead...
+			SkipConvey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
 				// with the ~instant complete jobs combined with the wait on
 				// bringing up a new server, this is supposed to be able to
 				// trigger a dropping count bug, but doesn't, but we're keeping

@@ -40,6 +40,10 @@ import (
 const gb = uint64(1.07374182e9) // for byte to GB conversion
 const unquotadVal = 1000000     // a "large" number for use when we don't have quota
 
+// debugCounter and debugEffect are used by tests to prove some bugs
+var debugCounter int
+var debugEffect string
+
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
 type opst struct {
@@ -251,19 +255,16 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 // Returns true if it hadn't already been failed.
 func (s *standin) failed() bool {
 	s.mutex.RLock()
-	if s.alreadyFailed {
-		s.mutex.RUnlock()
-		return false
-	}
-	if !s.waitingToSpawn {
-		s.mutex.RUnlock()
-		return false
-	}
+	alreadyFailed := s.alreadyFailed
+	waitingToSpawn := s.waitingToSpawn
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
 		s.endWait <- nil
 	} else {
 		s.mutex.RUnlock()
+	}
+	if alreadyFailed || !waitingToSpawn {
+		return false
 	}
 	s.mutex.Lock()
 	s.alreadyFailed = true
@@ -601,6 +602,16 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	uniqueDebug := uuid.NewV4().String()
 
 	s.mutex.Lock()
+
+	// *** we need a better way for our test script to prove the bugs that rely
+	// on debugEffect, that doesn't affect non-testing code. Probably have to
+	// mock OpenStack instead at some point...
+	var thisDebugCount int
+	if debugEffect != "" {
+		debugCounter++
+		thisDebugCount = debugCounter
+	}
+
 	if s.cleaned {
 		s.mutex.Unlock()
 		return nil
@@ -635,6 +646,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				}
 				s.mutex.Lock()
 				s.debug("e %s got server %s from standin %s, locked\n", uniqueDebug, server.IP, standinServer.id)
+				break
 			}
 		}
 	}
@@ -729,6 +741,9 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 
 		s.debug("o %s will spawn\n", uniqueDebug)
+		if debugEffect == "slowSecondSpawn" && thisDebugCount == 3 {
+			<-time.After(10 * time.Second)
+		}
 		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false)
 		s.debug("p %s spawned\n", uniqueDebug)
 
@@ -802,6 +817,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.reservedRAM -= flavor.RAM
 		if volumeAffected {
 			s.reservedVolume -= req.Disk
+		}
+
+		if debugEffect == "failFirstSpawn" && thisDebugCount == 1 {
+			err = errors.New("forced fail")
 		}
 
 		// handle Spawn() or upload-of-exe errors now, by destroying the server
