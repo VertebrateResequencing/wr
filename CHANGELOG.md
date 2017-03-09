@@ -5,6 +5,30 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.7.0] - 2017-03-09
+### Added
+- Status web page now lets you delete pending commands from the queue.
+- Package comments (godoc documentation) are now improved with better overviews
+  and examples.
+- `wr cloud deploy`, on failure to start the remote manager, and
+  `wr cloud teardown` now copy the remote manager's log file locally to eg.
+  ~/.wr_produciton/log.openstack
+
+### Fixed
+- `wr cloud teardown` will no longer stop the remote manager if you you can't
+  authenticate with the cloud provider.
+- `wr status --std --limit 0` now works, getting all STDOUT/ERR for all your
+  commands.
+- Changed a dependency to use a fixed older version.
+- Fixed a situation in which the OpenStack scheduler could fail to spawn
+  servers.
+- Fixed a situation in which the OpenStack scheduler could fail to terminate
+  idle servers.
+
+### Changed
+- Backwards incompatible changes to the cloud package API.
+
+
 ## [0.6.0] - 2017-02-22
 ### Added
 - MacOS compatibility.
