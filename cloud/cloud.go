@@ -773,9 +773,9 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // you. postCreationScript is the optional []byte content of a script that will
 // be run on the server (using sudo) once it is ready, and it will complete
 // before this function returns; empty slice means do nothing.
-func (server *Server) WaitUntilReady(postCreationScript ...[]byte) (err error) {
+func (s *Server) WaitUntilReady(postCreationScript ...[]byte) (err error) {
 	// wait for ssh to come up
-	_, err = server.SSHClient()
+	_, err = s.SSHClient()
 	if err != nil {
 		return
 	}
@@ -788,10 +788,10 @@ SENTINEL:
 	for {
 		select {
 		case <-ticker.C:
-			_, _, fileErr := server.RunCmd("file "+sentinelFilePath, false)
+			_, _, fileErr := s.RunCmd("file "+sentinelFilePath, false)
 			if fileErr == nil {
 				ticker.Stop()
-				server.RunCmd("sudo rm "+sentinelFilePath, false)
+				s.RunCmd("sudo rm "+sentinelFilePath, false)
 				break SENTINEL
 			}
 			continue SENTINEL
@@ -805,13 +805,13 @@ SENTINEL:
 	// run the postCreationScript
 	if len(postCreationScript[0]) > 0 {
 		pcsPath := "/tmp/.postCreationScript"
-		err = server.CreateFile(string(postCreationScript[0]), pcsPath)
+		err = s.CreateFile(string(postCreationScript[0]), pcsPath)
 		if err != nil {
 			err = fmt.Errorf("cloud server start up script failed to upload: %s", err)
 			return
 		}
 
-		_, _, err = server.RunCmd("chmod u+x "+pcsPath, false)
+		_, _, err = s.RunCmd("chmod u+x "+pcsPath, false)
 		if err != nil {
 			err = fmt.Errorf("cloud server start up script could not be made executable: %s", err)
 			return
@@ -819,7 +819,7 @@ SENTINEL:
 
 		// *** currently we have no timeout on this, probably want one...
 		var stderr string
-		_, stderr, err = server.RunCmd("sudo "+pcsPath, false)
+		_, stderr, err = s.RunCmd("sudo "+pcsPath, false)
 		if err != nil {
 			err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
 			if len(stderr) > 0 {
@@ -828,7 +828,7 @@ SENTINEL:
 			return
 		}
 
-		server.RunCmd("rm "+pcsPath, false)
+		s.RunCmd("rm "+pcsPath, false)
 	}
 
 	return
