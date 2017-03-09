@@ -229,6 +229,7 @@ func TestOpenStack(t *testing.T) {
 						stdout, stderr, err = server.RunCmd("cat /tmp/foo/bar/a/c/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "uploadable content")
+						So(stderr, ShouldBeBlank)
 					})
 
 					server.Destroy()
