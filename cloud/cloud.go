@@ -178,11 +178,12 @@ type provideri interface {
 // Provider gives you access to all of the methods you'll need to interact with
 // a cloud provider.
 type Provider struct {
-	impl      provideri
-	Name      string
-	savePath  string
-	resources *Resources
-	inCloud   bool
+	impl         provideri
+	Name         string
+	savePath     string
+	resources    *Resources
+	inCloud      bool
+	madeHeadNode bool
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
@@ -221,6 +222,7 @@ type Server struct {
 	Flavor            Flavor
 	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
+	IsHeadNode        bool
 	usedRAM           int
 	usedCores         int
 	usedDisk          int
@@ -483,6 +485,37 @@ func (s *Server) CreateFile(content string, dest string) (err error) {
 	return
 }
 
+// DownloadFile downloads a file from the server and stores it locally. The
+// directory for your local file must already exist.
+func (s *Server) DownloadFile(source string, dest string) (err error) {
+	sshClient, err := s.SSHClient()
+	if err != nil {
+		return
+	}
+
+	client, err := sftp.NewClient(sshClient)
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	// open source, create dest
+	sourceFile, err := client.Open(source)
+	if err != nil {
+		return
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dest)
+	if err != nil {
+		return
+	}
+
+	// copy the file content over
+	_, err = io.Copy(destFile, sourceFile)
+	return
+}
+
 // MkDir creates a directory (and it's parents as necessary) on the server.
 func (s *Server) MkDir(dest string) (err error) {
 	//*** it would be nice to do this with client.Mkdir, but that doesn't do
@@ -646,6 +679,10 @@ func (p *Provider) Deploy(config *DeployConfig) (err error) {
 	// save updated resources to disk
 	err = p.saveResources()
 
+	if len(p.resources.Servers) > 0 {
+		p.madeHeadNode = true
+	}
+
 	return
 }
 
@@ -757,6 +794,12 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	if err == nil && externalIP {
+		// if this is the first server created, note it is the "head node"
+		if !p.madeHeadNode {
+			server.IsHeadNode = true
+			p.madeHeadNode = true
+		}
+
 		// update resources and save to disk
 		p.resources.Servers[serverID] = server
 		err = p.saveResources()
@@ -870,6 +913,17 @@ func (p *Provider) DestroyServer(serverID string) (err error) {
 // trying to use one of these servers. Do not alter the return value!
 func (p *Provider) Servers() map[string]*Server {
 	return p.resources.Servers
+}
+
+// HeadNode returns the first server created under this deployment that had an
+// external IP. Returns nil if no such server was recorded.
+func (p *Provider) HeadNode() *Server {
+	for _, server := range p.resources.Servers {
+		if server.IsHeadNode {
+			return server
+		}
+	}
+	return nil
 }
 
 // PrivateKey returns a PEM format string of the private key that was created

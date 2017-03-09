@@ -275,8 +275,8 @@ only then request a teardown.`,
 		fmPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
-		// try and stop the remote manager; doing this results in a graceful
-		// saving of the db locally
+		// try and stop the remote manager; *** doing this is supposed to result
+		// in a graceful saving of the db locally, but doesn't yet
 		noManagerMsg := "; deploy first or use --force option"
 		noManagerForcedMsg := "; tearing down anyway!"
 		if fmRunning {
@@ -307,6 +307,14 @@ only then request a teardown.`,
 			} else {
 				die("the deploy port forwarding is not running, so can't safely teardown" + noManagerMsg)
 			}
+		}
+
+		// copy over any manager logs that got created locally (ignore errors,
+		// and overwrite any existing file) *** currently missing the final
+		// shutdown message doing things this way, but ok?...
+		headNode := provider.HeadNode()
+		if headNode != nil {
+			headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), config.ManagerLogFile+"."+providerName)
 		}
 
 		// teardown cloud resources we created
@@ -450,6 +458,11 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
 		_, _, err = server.RunCmd(mCmd, false)
 		if err != nil {
+			// copy over any manager logs that got created locally (ignore
+			// errors, and overwrite any existing file)
+			server.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), config.ManagerLogFile+"."+providerName)
+
+			// now teardown and die
 			provider.TearDown()
 			die("failed to start wr manager on the remote server: %s", err)
 		}
