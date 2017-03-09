@@ -24,6 +24,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   servers.
 - Fixed a situation in which the OpenStack scheduler could fail to terminate
   idle servers.
+- `wr cloud deploy --script xyz` now ensures the script completes before wr runs
+  anything on the new server.
 
 ### Changed
 - Backwards incompatible changes to the cloud package API.
