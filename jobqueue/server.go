@@ -27,7 +27,7 @@ import (
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
-	"github.com/grafov/bcast"
+	"github.com/sb10/bcast" // my own clone of grafov/bcast to revert a change that broke status webpage updates in certain cases
 	"github.com/ugorji/go/codec"
 	"log"
 	"net/http"
@@ -776,7 +776,7 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, s
 		}
 	}
 
-	if limit > 0 || state != "" {
+	if limit > 0 || state != "" || getStd || getEnv {
 		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
 	}
 
@@ -799,7 +799,7 @@ func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state string, getStd 
 		jobs = append(jobs, s.itemToJob(item, false, false))
 	}
 
-	if limit > 0 || state != "" {
+	if limit > 0 || state != "" || getStd || getEnv {
 		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
 	}
 
@@ -850,13 +850,14 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state string, getStd bool, ge
 		for _, jobs := range groups {
 			limited = append(limited, jobs...)
 		}
+	}
 
-		if limit <= 5 {
-			for _, job := range limited {
-				s.jobPopulateStdEnv(job, getStd, getEnv)
-			}
+	if getEnv || getStd {
+		for _, job := range limited {
+			s.jobPopulateStdEnv(job, getStd, getEnv)
 		}
 	}
+
 	return
 }
 

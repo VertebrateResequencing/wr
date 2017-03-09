@@ -40,6 +40,10 @@ import (
 const gb = uint64(1.07374182e9) // for byte to GB conversion
 const unquotadVal = 1000000     // a "large" number for use when we don't have quota
 
+// debugCounter and debugEffect are used by tests to prove some bugs
+var debugCounter int
+var debugEffect string
+
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
 type opst struct {
@@ -251,19 +255,16 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 // Returns true if it hadn't already been failed.
 func (s *standin) failed() bool {
 	s.mutex.RLock()
-	if s.alreadyFailed {
-		s.mutex.RUnlock()
-		return false
-	}
-	if !s.waitingToSpawn {
-		s.mutex.RUnlock()
-		return false
-	}
+	alreadyFailed := s.alreadyFailed
+	waitingToSpawn := s.waitingToSpawn
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
 		s.endWait <- nil
 	} else {
 		s.mutex.RUnlock()
+	}
+	if alreadyFailed || !waitingToSpawn {
+		return false
 	}
 	s.mutex.Lock()
 	s.alreadyFailed = true
@@ -601,6 +602,16 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	uniqueDebug := uuid.NewV4().String()
 
 	s.mutex.Lock()
+
+	// *** we need a better way for our test script to prove the bugs that rely
+	// on debugEffect, that doesn't affect non-testing code. Probably have to
+	// mock OpenStack instead at some point...
+	var thisDebugCount int
+	if debugEffect != "" {
+		debugCounter++
+		thisDebugCount = debugCounter
+	}
+
 	if s.cleaned {
 		s.mutex.Unlock()
 		return nil
@@ -635,6 +646,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				}
 				s.mutex.Lock()
 				s.debug("e %s got server %s from standin %s, locked\n", uniqueDebug, server.IP, standinServer.id)
+				break
 			}
 		}
 	}
@@ -729,7 +741,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 
 		s.debug("o %s will spawn\n", uniqueDebug)
-		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, osScript)
+		if debugEffect == "slowSecondSpawn" && thisDebugCount == 3 {
+			<-time.After(10 * time.Second)
+		}
+		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false)
 		s.debug("p %s spawned\n", uniqueDebug)
 
 		// if we have standins that are waiting to spawn, tell one of them to go
@@ -754,48 +769,49 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 		s.eraseStandin(standinID)
 
-		// though the server has been spawned, it will now take quite a long
-		// time for ssh to come and for the following block to complete, so we
-		// unlock again
+		// unlock again prior to waiting until the server is ready and trying to
+		// check and upload our exe, since that could take quite a long time
 		s.mutex.Unlock()
-		s.debug("t %s unlocked prior to exe check\n", uniqueDebug)
+		s.debug("t %s unlocked prior to waiting for server to become ready\n", uniqueDebug)
 		if err == nil {
-			// check that the exe of the cmd we're supposed to run exists on the
-			// new server, and if not, copy it over *** this is just a hack to
-			// get wr working, need to think of a better way of doing this...
-			exe := strings.Split(cmd, " ")[0]
-			var exePath, stdout string
-			if exePath, err = exec.LookPath(exe); err == nil {
-				if stdout, err = server.RunCmd("file "+exePath, false); stdout != "" {
-					if strings.Contains(stdout, "No such file") {
-						// *** NB this will fail if exePath is in a dir we can't
-						// create on the remote server, eg. if it is in our home
-						// dir, but the remote server has a different user, or
-						// presumably if it is somewhere requiring root
-						// permission
-						err = server.UploadFile(exePath, exePath)
-						if err == nil {
-							server.RunCmd("chmod u+x "+exePath, false)
-						} else {
-							err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
-							server.Destroy()
+			// wait until boot is finished, ssh is ready, and osScript has
+			// completed
+			err = server.WaitUntilReady(osScript)
+
+			if err == nil {
+				// check that the exe of the cmd we're supposed to run exists on the
+				// new server, and if not, copy it over *** this is just a hack to
+				// get wr working, need to think of a better way of doing this...
+				exe := strings.Split(cmd, " ")[0]
+				var exePath, stdout string
+				if exePath, err = exec.LookPath(exe); err == nil {
+					if stdout, _, err = server.RunCmd("file "+exePath, false); stdout != "" {
+						if strings.Contains(stdout, "No such file") {
+							// *** NB this will fail if exePath is in a dir we can't
+							// create on the remote server, eg. if it is in our home
+							// dir, but the remote server has a different user, or
+							// presumably if it is somewhere requiring root
+							// permission
+							err = server.UploadFile(exePath, exePath)
+							if err == nil {
+								_, _, err = server.RunCmd("chmod u+x "+exePath, false)
+							} else {
+								err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
+							}
+						} else if err != nil {
+							err = fmt.Errorf("Could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
 						}
-					} else if err != nil {
-						err = fmt.Errorf("Could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
-						server.Destroy()
+					} else {
+						err = fmt.Errorf("Could not check exe with [file %s]: %s", exePath, err)
 					}
 				} else {
-					err = fmt.Errorf("Could not check exe with [file %s]: %s", exePath, err)
-					server.Destroy()
+					err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
 				}
-			} else {
-				err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
-				server.Destroy()
 			}
 		}
 
 		s.mutex.Lock()
-		s.debug("u %s locked after exe check\n", uniqueDebug)
+		s.debug("u %s locked after waiting for server to become ready\n", uniqueDebug)
 		s.reservedInstances--
 		s.reservedCores -= flavor.Cores
 		s.reservedRAM -= flavor.RAM
@@ -803,8 +819,14 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			s.reservedVolume -= req.Disk
 		}
 
-		// handle Spawn() or upload-of-exe errors now, by noting we failed
+		if debugEffect == "failFirstSpawn" && thisDebugCount == 1 {
+			err = errors.New("forced fail")
+		}
+
+		// handle Spawn() or upload-of-exe errors now, by destroying the server
+		// and noting we failed
 		if err != nil {
+			server.Destroy()
 			s.debug("v %s will fail standin due to err %s\n", uniqueDebug, err)
 			standinServer.failed()
 			s.mutex.Unlock()
@@ -828,7 +850,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	if server.IP == "127.0.0.1" {
 		err = s.local.runCmd(cmd, req)
 	} else {
-		_, err = server.RunCmd(cmd, false)
+		_, _, err = server.RunCmd(cmd, false)
 
 		// if we got an error running the command, assume the server has gone
 		// bad and destroy it

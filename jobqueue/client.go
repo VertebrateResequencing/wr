@@ -16,23 +16,9 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-/*
-Package jobqueue provides server/client functions to interact with the queue
-structure provided by the queue package over a network.
-
-It provides a job queue and running system which guarantees:
-# Created jobs are never lost accidentally.
-# The same job will not run more than once simultaneously:
-  - Duplicate jobs are not created
-  - Each job is handled by only a single client
-# Jobs are handled in the desired order (user priority and fifo).
-# Jobs still get run despite crashing clients.
-# Completed jobs are kept forever for historical purposes.
-
-This file contains all the functions for clients to interact with the server.
-See server.go for the functions needed to implement a server executable.
-*/
 package jobqueue
+
+// This file contains the functions needed to implement a jobqueue client.
 
 import (
 	"bytes"
@@ -726,7 +712,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		if bailed {
 			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
 		}
-		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
 	if dobury {
@@ -910,8 +896,7 @@ func (c *Client) ccsToKeys(ccs [][2]string) (keys []string) {
 // the last job of each State+FailReason group it populates 'Similar' with the
 // number of other excluded jobs there were in that group. Providing 'state'
 // only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
-// stdout, stderr and environement variables for the Jobs, but only if 'limit'
-// is <= 5.
+// stdout, stderr and environement variables for the Jobs.
 func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {

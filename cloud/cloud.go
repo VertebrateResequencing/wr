@@ -17,21 +17,57 @@
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 /*
-Package cloud provides functions to interact with cloud providers such as
-OpenStack and AWS (not yet implemented).
+Package cloud provides functions to interact with cloud providers, used to
+create cloud resources so that you can spawn servers, then delete those
+resources when you're done.
 
-You use it to create cloud resources so that you can spawn servers, then
-delete those resources when you're done.
-
-Please note that the methods in this package are NOT safe to be used by more
-than 1 process at a time.
+Currently implemented providers are OpenStack, with AWS planned for the future.
+The implementation of each supported provider is in its own .go file.
 
 It's a pseudo plug-in system in that it is designed so that you can easily add a
 go file that implements the methods of the provideri interface, to support a
 new cloud provider. On the other hand, there is no dynamic loading of these go
 files; they are all imported (they all belong to the cloud package), and the
 correct one used at run time. To "register" a new provideri implementation you
-must add a case for it to New() and RequiredEnv() and rebuild.
+must add a case for it to New() and RequiredEnv() and rebuild. The spawn()
+method must create a file at the path sentinelFilePath once the system has
+finalised its boot up and is fully ready to use.
+
+Please note that the methods in this package are NOT safe to be used by more
+than 1 process at a time.
+
+    import "github.com/VertebrateResequencing/wr/cloud"
+
+    // deploy
+    provider, err := cloud.New("openstack", "wr-production-username", "/home/username/.wr-production/created_cloud_resources")
+    err = provider.Deploy(&cloud.DeployConfig{
+        RequiredPorts:  []int{22},
+        GatewayIP:      "192.168.0.1",
+        CIDR:           "192.168.0.0/18",
+        DNSNameServers: [...]string{"8.8.4.4", "8.8.8.8"},
+    })
+
+    // spawn a server
+    flavor := provider.CheapestServerFlavor(1, 1024, "")
+    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 120 * time.Second, true)
+    server.WaitUntilReady()
+
+    // simplistic way of making the most of the server by running as many
+    // commands as possible:
+    for _, cmd := range myCmds {
+        if server.HasSpaceFor(1, 1024, 1) > 0 {
+            server.Allocate(1, 1024, 1)
+            go func() {
+                server.RunCmd(cmd, false)
+                server.Release(1, 1024, 1)
+            }()
+        } else {
+            break
+        }
+    }
+
+    // destroy everything created
+    provider.TearDown()
 */
 package cloud
 
@@ -39,6 +75,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"github.com/pkg/sftp"
 	"github.com/satori/go.uuid"
 	"golang.org/x/crypto/ssh"
@@ -63,6 +100,22 @@ var (
 	ErrBadFlavor       = "no server flavor with that id exists"
 	ErrBadRegex        = "your flavor regular expression was not valid"
 )
+
+// sshTimeOut is how long we wait for ssh to work when an ssh request is made to
+// a server.
+var sshTimeOut = 5 * time.Minute
+
+// sentinelFilePath is the file that provideri implementers must create on each
+// spawn()ed server once it is fully ready to use.
+const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
+
+// sentinelInitScript can be used as user data to the cloud-init mechanism to
+// create sentinelFilePath.
+var sentinelInitScript = []byte("#!/bin/bash\ntouch " + sentinelFilePath)
+
+// sentinelTimeOut is how long we wait for sentinelFilePath to be created before
+// we give up and return an error from Spawn().
+var sentinelTimeOut = 10 * time.Minute
 
 // defaultDNSNameServers holds some public (google) dns name server addresses
 // for use when creating cloud subnets that need internet access.
@@ -108,28 +161,29 @@ type Quota struct {
 	UsedVolume    int
 }
 
-// this interface must be satisfied to add support for a particular cloud
-// provider.
+// provideri must be satisfied to add support for a particular cloud provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                                                        // return the environment variables required to function
-	initialize() error                                                                                                                                                            // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error                                                                      // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	inCloud() bool                                                                                                                                                                // achieve the aims of InCloud()
-	getQuota() (*Quota, error)                                                                                                                                                    // achieve the aims of GetQuota()
-	flavors() map[string]Flavor                                                                                                                                                   // return a map of all server flavors, with their flavor ids as keys
-	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool, postCreationScript []byte) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn()
-	checkServer(serverID string) (working bool, err error)                                                                                                                        // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                                                          // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                                                          // achieve the aims of TearDown()
+	requiredEnv() []string                                                                                                                             // return the environment variables required to function
+	initialize() error                                                                                                                                 // do any initial config set up such as authentication
+	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error                                           // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	inCloud() bool                                                                                                                                     // achieve the aims of InCloud()
+	getQuota() (*Quota, error)                                                                                                                         // achieve the aims of GetQuota()
+	flavors() map[string]Flavor                                                                                                                        // return a map of all server flavors, with their flavor ids as keys
+	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn(), creating sentinelFilePath once the new server is ready to use.
+	checkServer(serverID string) (working bool, err error)                                                                                             // achieve the aims of CheckServer()
+	destroyServer(serverID string) error                                                                                                               // achieve the aims of DestroyServer()
+	tearDown(resources *Resources) error                                                                                                               // achieve the aims of TearDown()
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
 // a cloud provider.
 type Provider struct {
-	impl      provideri
-	Name      string
-	savePath  string
-	resources *Resources
+	impl         provideri
+	Name         string
+	savePath     string
+	resources    *Resources
+	inCloud      bool
+	madeHeadNode bool
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
@@ -168,6 +222,7 @@ type Server struct {
 	Flavor            Flavor
 	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
+	IsHeadNode        bool
 	usedRAM           int
 	usedCores         int
 	usedDisk          int
@@ -290,7 +345,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 		hostAndPort := s.IP + ":22"
 		s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
 		if err != nil {
-			limit := time.After(5 * time.Minute)
+			limit := time.After(sshTimeOut)
 			ticker := time.NewTicker(1 * time.Second)
 			ticks := 0
 		DIAL:
@@ -329,9 +384,8 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 }
 
 // RunCmd runs the given command on the server, optionally in the background.
-// You get the command's STDOUT as a string response (even if there was an
-// error).
-func (s *Server) RunCmd(cmd string, background bool) (response string, err error) {
+// You get the command's STDOUT and STDERR as a strings.
+func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
 	sshClient, err := s.SSHClient()
 	if err != nil {
 		return
@@ -348,15 +402,20 @@ func (s *Server) RunCmd(cmd string, background bool) (response string, err error
 	if background {
 		cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
 	}
-	var b bytes.Buffer
-	session.Stdout = &b
-	if err = session.Run(cmd); err != nil {
-		if b.Len() > 0 {
-			response = b.String()
-		}
-		return
+	var o bytes.Buffer
+	var e bytes.Buffer
+	session.Stdout = &o
+	session.Stderr = &e
+	err = session.Run(cmd)
+	if o.Len() > 0 {
+		stdout = o.String()
 	}
-	response = b.String()
+	if e.Len() > 0 {
+		stderr = e.String()
+	}
+	if err != nil {
+		err = fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, err.Error())
+	}
 	return
 }
 
@@ -426,6 +485,37 @@ func (s *Server) CreateFile(content string, dest string) (err error) {
 	return
 }
 
+// DownloadFile downloads a file from the server and stores it locally. The
+// directory for your local file must already exist.
+func (s *Server) DownloadFile(source string, dest string) (err error) {
+	sshClient, err := s.SSHClient()
+	if err != nil {
+		return
+	}
+
+	client, err := sftp.NewClient(sshClient)
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	// open source, create dest
+	sourceFile, err := client.Open(source)
+	if err != nil {
+		return
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dest)
+	if err != nil {
+		return
+	}
+
+	// copy the file content over
+	_, err = io.Copy(destFile, sourceFile)
+	return
+}
+
 // MkDir creates a directory (and it's parents as necessary) on the server.
 func (s *Server) MkDir(dest string) (err error) {
 	//*** it would be nice to do this with client.Mkdir, but that doesn't do
@@ -433,7 +523,7 @@ func (s *Server) MkDir(dest string) (err error) {
 	// now it's easier to just call mkdir
 	dir := filepath.Dir(dest)
 	if dir != "." {
-		_, err = s.RunCmd("mkdir -p "+dir, false)
+		_, _, err = s.RunCmd("mkdir -p "+dir, false)
 		if err != nil {
 			return
 		}
@@ -445,6 +535,10 @@ func (s *Server) MkDir(dest string) (err error) {
 func (s *Server) Destroy() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	if s.destroyed {
+		return nil
+	}
 
 	// if the server has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
@@ -540,6 +634,9 @@ func New(name string, resourceName string, savePath string) (p *Provider, err er
 			err = Error{name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
 		} else {
 			err = p.impl.initialize()
+			if err == nil {
+				p.inCloud = p.impl.inCloud()
+			}
 		}
 	}
 
@@ -582,6 +679,10 @@ func (p *Provider) Deploy(config *DeployConfig) (err error) {
 	// save updated resources to disk
 	err = p.saveResources()
 
+	if len(p.resources.Servers) > 0 {
+		p.madeHeadNode = true
+	}
+
 	return
 }
 
@@ -589,7 +690,7 @@ func (p *Provider) Deploy(config *DeployConfig) (err error) {
 // where the *Server related methods will all work correctly. (That is, if this
 // returns true, you are on the same network as any server you Spawn().)
 func (p *Provider) InCloud() bool {
-	return p.impl.inCloud()
+	return p.inCloud
 }
 
 // GetQuota returns details of the maximum resources the user can request, and
@@ -662,17 +763,18 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 // will need to know the username that you can log in with on your chosen OS
 // image. If you call Spawn() while running on a cloud server, then the newly
 // spawned server will be in the same network and security group as the current
-// server. postCreationScript is the []byte contents of a script that will be
-// run on the server after it has been created, before it is used for anything
-// else; empty slice means do nothing.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool, postCreationScript []byte) (server *Server, err error) {
+// server. If you get an err, you will want to call server.Destroy() as this is
+// not done for you. NB: the server will likely not be ready to use yet, having
+// not completed its boot up; call server.WaitUntilReady() before trying to use
+// the server for anything.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
 		return
 	}
 
-	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP, postCreationScript)
+	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP)
 
 	maxDisk := f.Disk
 	if diskGB > maxDisk {
@@ -692,9 +794,84 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	if err == nil && externalIP {
+		// if this is the first server created, note it is the "head node"
+		if !p.madeHeadNode {
+			server.IsHeadNode = true
+			p.madeHeadNode = true
+		}
+
 		// update resources and save to disk
 		p.resources.Servers[serverID] = server
 		err = p.saveResources()
+	}
+
+	return
+}
+
+// WaitUntilReady waits for the server to become fully ready: the boot process
+// will have completed and ssh will work. This is not part of provider.Spawn()
+// because you may not want or be able to ssh to your server, and so that you
+// can Spawn() another server while waiting for this one to become ready. If you
+// get an err, you will want to call server.Destroy() as this is not done for
+// you. postCreationScript is the optional []byte content of a script that will
+// be run on the server (using sudo) once it is ready, and it will complete
+// before this function returns; empty slice means do nothing.
+func (s *Server) WaitUntilReady(postCreationScript ...[]byte) (err error) {
+	// wait for ssh to come up
+	_, err = s.SSHClient()
+	if err != nil {
+		return
+	}
+
+	// wait for sentinelFilePath to exist, indicating that the server is
+	// really ready to use
+	limit := time.After(sentinelTimeOut)
+	ticker := time.NewTicker(1 * time.Second)
+SENTINEL:
+	for {
+		select {
+		case <-ticker.C:
+			_, _, fileErr := s.RunCmd("file "+sentinelFilePath, false)
+			if fileErr == nil {
+				ticker.Stop()
+				s.RunCmd("sudo rm "+sentinelFilePath, false)
+				break SENTINEL
+			}
+			continue SENTINEL
+		case <-limit:
+			ticker.Stop()
+			err = errors.New("cloud server never became ready to use")
+			return
+		}
+	}
+
+	// run the postCreationScript
+	if len(postCreationScript[0]) > 0 {
+		pcsPath := "/tmp/.postCreationScript"
+		err = s.CreateFile(string(postCreationScript[0]), pcsPath)
+		if err != nil {
+			err = fmt.Errorf("cloud server start up script failed to upload: %s", err)
+			return
+		}
+
+		_, _, err = s.RunCmd("chmod u+x "+pcsPath, false)
+		if err != nil {
+			err = fmt.Errorf("cloud server start up script could not be made executable: %s", err)
+			return
+		}
+
+		// *** currently we have no timeout on this, probably want one...
+		var stderr string
+		_, stderr, err = s.RunCmd("sudo "+pcsPath, false)
+		if err != nil {
+			err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
+			if len(stderr) > 0 {
+				err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
+			}
+			return
+		}
+
+		s.RunCmd("rm "+pcsPath, false)
 	}
 
 	return
@@ -736,6 +913,17 @@ func (p *Provider) DestroyServer(serverID string) (err error) {
 // trying to use one of these servers. Do not alter the return value!
 func (p *Provider) Servers() map[string]*Server {
 	return p.resources.Servers
+}
+
+// HeadNode returns the first server created under this deployment that had an
+// external IP. Returns nil if no such server was recorded.
+func (p *Provider) HeadNode() *Server {
+	for _, server := range p.resources.Servers {
+		if server.IsHeadNode {
+			return server
+		}
+	}
+	return nil
 }
 
 // PrivateKey returns a PEM format string of the private key that was created

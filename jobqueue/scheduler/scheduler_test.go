@@ -404,8 +404,9 @@ func TestOpenstack(t *testing.T) {
 	// check if we have our special openstack-related variable
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
+	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-	rName := "wr-testing"
+	rName := "wr-testing-" + localUser
 	config := &ConfigOpenStack{
 		ResourceName:   rName,
 		OSPrefix:       osPrefix,
@@ -417,7 +418,7 @@ func TestOpenstack(t *testing.T) {
 		Shell:          "bash",
 		MaxInstances:   -1,
 	}
-	if osPrefix == "" || osUser == "" {
+	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
 			_, err := New("openstack", config)
 			So(err, ShouldNotBeNil)
@@ -568,7 +569,7 @@ func TestOpenstack(t *testing.T) {
 					So(foundServers, ShouldBeBetweenOrEqual, 1, int(eta/10)) // (assuming a ~10s spawn time)
 
 					// after the last run, they are all auto-destroyed
-					<-time.After(30 * time.Second)
+					<-time.After(20 * time.Second)
 
 					foundServers = novaCountServers(rName, "")
 					So(foundServers, ShouldEqual, 0)
@@ -580,34 +581,45 @@ func TestOpenstack(t *testing.T) {
 				})
 
 				// *** test if we have a Centos 7 image to use...
-				if osPrefix != "Centos 7" {
+				if osPrefix != "Centos 7 (2016-09-06)" {
 					oReqs := make(map[string]string)
-					oReqs["cloud_os"] = "Centos 7"
+					oReqs["cloud_os"] = "Centos 7 (2016-09-06)"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
 					Convey("They can be run again, overriding the default os image and ram", func() {
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 						newCount := 3
-						eta := 60
+						eta := 120
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
 						err = s.Schedule(cmd, newReq, newCount)
 						So(err, ShouldBeNil)
 						So(s.Busy(), ShouldBeTrue)
 
-						spawnedCh := make(chan int, 1)
+						spawned := 0
 						go func() {
-							wait := int(eta / 2)
-							<-time.After(time.Duration(wait) * time.Second)
-							spawnedCh <- novaCountServers(rName, oReqs["cloud_os"]) // *** also want to test that the spawned servers are on 4GB ram flavors
-							return
+							ticker := time.NewTicker(1 * time.Second)
+							limit := time.After(time.Duration(eta-5) * time.Second)
+							for {
+								select {
+								case <-ticker.C:
+									spawned = novaCountServers(rName, oReqs["cloud_os"])
+									if spawned > 0 {
+										ticker.Stop()
+										return
+									}
+									continue
+								case <-limit:
+									ticker.Stop()
+									return
+								}
+							}
 						}()
 
 						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
-						spawned := <-spawnedCh
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
 
-						<-time.After(30 * time.Second)
+						<-time.After(20 * time.Second)
 
 						foundServers := novaCountServers(rName, "")
 						So(foundServers, ShouldEqual, 0)
@@ -616,6 +628,42 @@ func TestOpenstack(t *testing.T) {
 						_, err := os.Stat(oFile)
 						So(err, ShouldNotBeNil)
 						So(os.IsNotExist(err), ShouldBeTrue)
+					})
+
+					// *** we really need to mock OpenStack instead of setting
+					// these debug package variables...
+					Convey("Everything still runs when a server fails to spawn", func() {
+						debugCounter = 0
+						debugEffect = "failFirstSpawn"
+						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+						newCount := 3
+						eta := 120
+						cmd := "sleep 10"
+						err = s.Schedule(cmd, newReq, newCount)
+						So(err, ShouldBeNil)
+						So(s.Busy(), ShouldBeTrue)
+						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+					})
+
+					Convey("Servers still self-terminate when a server is slow to spawn", func() {
+						debugCounter = 0
+						debugEffect = "slowSecondSpawn"
+						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+						newCount := 3
+						eta := 120
+						cmd := "sleep 10"
+						err = s.Schedule(cmd, newReq, newCount)
+						So(err, ShouldBeNil)
+						So(s.Busy(), ShouldBeTrue)
+						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+
+						<-time.After(20 * time.Second)
+
+						foundServers := novaCountServers(rName, "")
+						So(foundServers, ShouldEqual, 0)
+
+						debugCounter = 0
+						debugEffect = ""
 					})
 
 					numCores := 4
@@ -632,7 +680,7 @@ func TestOpenstack(t *testing.T) {
 								So(err, ShouldBeNil)
 								So(s.Busy(), ShouldBeTrue)
 
-								waitSecs := 90
+								waitSecs := 150
 								spawnedCh := make(chan int, 1)
 								go func() {
 									maxSpawned := 0
@@ -671,11 +719,11 @@ func TestOpenstack(t *testing.T) {
 						SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
 					}
 				}
-
-				// *** I have no tests for when servers fail to start...
 			})
 
-			Convey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
+			// *** having to skip this unnecessary test since we're going over
+			// 10mins; not sure what to do instead...
+			SkipConvey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
 				// with the ~instant complete jobs combined with the wait on
 				// bringing up a new server, this is supposed to be able to
 				// trigger a dropping count bug, but doesn't, but we're keeping
@@ -734,17 +782,18 @@ func TestOpenstack(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(s.Busy(), ShouldBeTrue)
 
-				eta := 90
+				eta := 150
 				So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 				stop <- true
 				So(completedLocally, ShouldBeBetweenOrEqual, 50, 97)
 
+				<-time.After(5 * time.Second)
 				foundServers := novaCountServers(rName, "")
 				So(foundServers, ShouldBeBetweenOrEqual, 0, 3)
 
 				// after the last run, they are all auto-destroyed
 				if foundServers > 0 {
-					<-time.After(30 * time.Second)
+					<-time.After(25 * time.Second)
 					foundServers = novaCountServers(rName, "")
 					So(foundServers, ShouldEqual, 0)
 				}

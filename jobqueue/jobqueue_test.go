@@ -193,6 +193,7 @@ func TestJobqueue(t *testing.T) {
 					syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				}()
 
+				ClientReleaseDelay = 100 * time.Second
 				j1worked := make(chan bool)
 				go func() {
 					err = jq.Execute(job, config.RunnerExecShell)
@@ -235,6 +236,8 @@ func TestJobqueue(t *testing.T) {
 				So(job2.State, ShouldEqual, "delayed")
 				So(job2.FailReason, ShouldEqual, FailReasonTime)
 				So(job2.Requirements.Time.Seconds(), ShouldEqual, 3601)
+
+				ClientReleaseDelay = 100 * time.Millisecond
 
 				// all signals handled the same way, so no need for further
 				// tests
@@ -445,7 +448,7 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("You can reserve jobs for a particular scheduler group", func() {
 					for i := 10; i < 20; i++ {
-						job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2:0")
+						job, err := jq.ReserveScheduled(20*time.Millisecond, "2048:60:2:0")
 						So(err, ShouldBeNil)
 						So(job, ShouldNotBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
@@ -979,8 +982,8 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("The stdout/err of jobs is only kept for failed jobs", func() {
 					jobs = nil
-					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_pass", []string{}))
-					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_fail", []string{}))
+					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; warn qq[warn\\n]'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(0), "should_pass", []string{}))
+					jobs = append(jobs, NewJob("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(0), "should_fail", []string{}))
 					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
@@ -1021,9 +1024,8 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.RunnerExecShell)
-					<-time.After(50 * time.Millisecond)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "delayed")
+					So(job.State, ShouldEqual, "buried")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 255)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
@@ -1037,7 +1039,7 @@ func TestJobqueue(t *testing.T) {
 					job2, err = jq2.GetByCmd("perl -e 'print qq[print\\n]; die qq[die\\n]'", "/tmp", true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "delayed")
+					So(job2.State, ShouldEqual, "buried")
 					So(job2.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
@@ -1049,7 +1051,7 @@ func TestJobqueue(t *testing.T) {
 
 				Convey("The stdout/err of jobs is limited in size", func() {
 					jobs = nil
-					jobs = append(jobs, NewJob("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(3), "should_fail", []string{}))
+					jobs = append(jobs, NewJob("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", "fake_group", standardReqs, uint8(0), uint8(0), uint8(0), "should_fail", []string{}))
 					inserts, _, err := jq.Add(jobs, envVars)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -1083,9 +1085,8 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.RunnerExecShell)
-					<-time.After(50 * time.Millisecond)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "delayed")
+					So(job.State, ShouldEqual, "buried")
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 255)
 					stdout, err := job.StdOut()
@@ -1098,7 +1099,7 @@ func TestJobqueue(t *testing.T) {
 					job2, err := jq2.GetByCmd("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "delayed")
+					So(job2.State, ShouldEqual, "buried")
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
 					So(stdout, ShouldEqual, expectedout)
@@ -1110,7 +1111,7 @@ func TestJobqueue(t *testing.T) {
 						job2, err = jq2.GetByCmd("perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'", "/tmp", false, false)
 						So(err, ShouldBeNil)
 						So(job2, ShouldNotBeNil)
-						So(job2.State, ShouldEqual, "delayed")
+						So(job2.State, ShouldEqual, "buried")
 						stdout, err = job2.StdOut()
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "")
@@ -1359,6 +1360,30 @@ func TestJobqueue(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(jNil, ShouldBeNil)
 
+						// since things can take a while, we keep our reserved
+						// jobs touched
+						touchJ2 := true
+						touchJ3 := true
+						go func() {
+							ticker := time.NewTicker(50 * time.Millisecond)
+							for {
+								select {
+								case <-ticker.C:
+									if touchJ2 {
+										jq.Touch(j2)
+									}
+									if touchJ3 {
+										jq.Touch(j3)
+									}
+									if !touchJ2 && !touchJ3 {
+										ticker.Stop()
+										return
+									}
+									continue
+								}
+							}
+						}()
+
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
@@ -1372,10 +1397,7 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "dependent")
 
-						// touch what we've reserved, since it's been a while
-						jq.Touch(j2)
-						jq.Touch(j3)
-
+						touchJ3 = false
 						err = jq.Execute(j3, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1384,13 +1406,12 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "ready")
 
-						jq.Touch(j2)
-
 						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "dependent")
 
+						touchJ2 = false
 						err = jq.Execute(j2, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1409,6 +1430,23 @@ func TestJobqueue(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(jNil, ShouldBeNil)
 
+						touchJ6 := true
+						go func() {
+							ticker := time.NewTicker(50 * time.Millisecond)
+							for {
+								select {
+								case <-ticker.C:
+									if touchJ6 {
+										jq.Touch(j6)
+									} else {
+										ticker.Stop()
+										return
+									}
+									continue
+								}
+							}
+						}()
+
 						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
@@ -1422,13 +1460,12 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "ready")
 
-						jq.Touch(j6)
-
 						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "dependent")
 
+						touchJ6 = false
 						err = jq.Execute(j6, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1550,6 +1587,30 @@ func TestJobqueue(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(jNil, ShouldBeNil)
 
+						// since things can take a while, we keep our reserved
+						// jobs touched
+						touchJ2 := true
+						touchJ3 := true
+						go func() {
+							ticker := time.NewTicker(50 * time.Millisecond)
+							for {
+								select {
+								case <-ticker.C:
+									if touchJ2 {
+										jq.Touch(j2)
+									}
+									if touchJ3 {
+										jq.Touch(j3)
+									}
+									if !touchJ2 && !touchJ3 {
+										ticker.Stop()
+										return
+									}
+									continue
+								}
+							}
+						}()
+
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
@@ -1563,10 +1624,7 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "dependent")
 
-						// touch what we've reserved, since it's been a while
-						jq.Touch(j2)
-						jq.Touch(j3)
-
+						touchJ3 = false
 						err = jq.Execute(j3, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1575,13 +1633,12 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "ready")
 
-						jq.Touch(j2)
-
 						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "dependent")
 
+						touchJ2 = false
 						err = jq.Execute(j2, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1600,6 +1657,23 @@ func TestJobqueue(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(jNil, ShouldBeNil)
 
+						touchJ6 := true
+						go func() {
+							ticker := time.NewTicker(50 * time.Millisecond)
+							for {
+								select {
+								case <-ticker.C:
+									if touchJ6 {
+										jq.Touch(j6)
+									} else {
+										ticker.Stop()
+										return
+									}
+									continue
+								}
+							}
+						}()
+
 						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
@@ -1613,13 +1687,12 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "ready")
 
-						jq.Touch(j6)
-
 						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, "dependent")
 
+						touchJ6 = false
 						err = jq.Execute(j6, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -2284,7 +2357,7 @@ func TestJobqueue(t *testing.T) {
 			done = make(chan bool, 1)
 			twoHundredCount := 0
 			go func() {
-				limit := time.After(60 * time.Second)
+				limit := time.After(120 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
@@ -2335,84 +2408,137 @@ func TestJobqueue(t *testing.T) {
 			} // *** else under LSF we want to test that we never request more than count+count2 runners...
 		})
 
-		osPrefix := os.Getenv("OS_OS_PREFIX")
-		osUser := os.Getenv("OS_OS_USERNAME")
-		flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
-		host, _ := os.Hostname()
-		if strings.HasPrefix(host, "wr-development-") && osPrefix != "" && osUser != "" && flavorRegex != "" {
-			Convey("You can connect with an OpenStack scheduler to run commands with different hardware requirements while dropping the count", func() {
-				osConfig := runningConfig
-				osConfig.SchedulerName = "openstack"
-				osConfig.SchedulerConfig = &jqs.ConfigOpenStack{
-					ResourceName:   "wr-testing",
-					OSPrefix:       osPrefix,
-					OSUser:         osUser,
-					OSRAM:          2048,
-					FlavorRegex:    flavorRegex,
-					ServerPorts:    []int{22},
-					ServerKeepTime: 15 * time.Second,
-					Shell:          "bash",
-					MaxInstances:   -1,
-				}
-				server.Stop()
-				server, _, err = Serve(osConfig)
-				So(err, ShouldBeNil)
-
-				clientConnectTime = 10 * time.Second
-				jq, err := Connect(addr, "test_queue", clientConnectTime)
-				So(err, ShouldBeNil)
-				defer jq.Disconnect()
-
-				var jobs []*Job
-				dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
-				jobs = append(jobs, NewJob("sleep 1", "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 2", "/tmp", "echo", &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, uint8(2), uint8(0), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 3", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 4", "/tmp", "echo", dropReq, uint8(0), uint8(255), uint8(3), "manually_added", []string{}))
-				jobs = append(jobs, NewJob("echo 5", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				count := 100
-				for i := 6; i <= count; i++ {
-					jobs = append(jobs, NewJob(fmt.Sprintf("echo %d", i), "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
-				}
-				inserts, already, err := jq.Add(jobs, envVars)
-				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, count)
-				So(already, ShouldEqual, 0)
-
-				// wait for the jobs to get run
-				done := make(chan bool, 1)
-				go func() {
-					limit := time.After(90 * time.Second)
-					ticker := time.NewTicker(500 * time.Millisecond)
-					for {
-						select {
-						case <-ticker.C:
-							if !server.HasRunners() {
-								ticker.Stop()
-								done <- true
-								return
-							}
-							continue
-						case <-limit:
-							ticker.Stop()
-							done <- false
-							return
-						}
-					}
-				}()
-				So(<-done, ShouldBeTrue)
-			})
-		} else {
-			SkipConvey("Skipping the OpenStack tests", func() {})
-		}
-
 		Reset(func() {
-			server.Stop()
+			if server != nil {
+				server.Stop()
+			}
 		})
 	})
 
 	if server != nil {
 		server.Stop()
+	}
+}
+
+func TestJobqueueWithOpenStack(t *testing.T) {
+	if runnermode {
+		return
+	}
+
+	osPrefix := os.Getenv("OS_OS_PREFIX")
+	osUser := os.Getenv("OS_OS_USERNAME")
+	localUser := os.Getenv("OS_LOCAL_USERNAME")
+	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
+	host, _ := os.Hostname()
+	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
+		var server *Server
+		Convey("You can connect with an OpenStack scheduler to run commands with different hardware requirements while dropping the count", t, func() {
+			config := internal.ConfigLoad("development", true)
+			addr := "localhost:" + config.ManagerPort
+
+			ServerLogClientErrors = false
+			ServerInterruptTime = 10 * time.Millisecond
+			ServerReserveTicker = 10 * time.Millisecond
+			ClientReleaseDelay = 100 * time.Millisecond
+			clientConnectTime := 10 * time.Second
+			ServerItemTTR = 10 * time.Second
+			ClientTouchInterval = 50 * time.Millisecond
+
+			pwd, err := os.Getwd()
+			if err != nil {
+				log.Fatal(err)
+			}
+			runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(runnertmpdir)
+
+			// our runnerCmd will be running ourselves in --runnermode, so first
+			// we'll compile ourselves to the tmpdir
+			runnerCmd := filepath.Join(runnertmpdir, "runner")
+			cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
+			err = cmd.Run()
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			osConfig := ServerConfig{
+				Port:            config.ManagerPort,
+				WebPort:         config.ManagerWeb,
+				SchedulerName:   "local",
+				SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
+				DBFile:          config.ManagerDbFile,
+				DBFileBackup:    config.ManagerDbBkFile,
+				Deployment:      config.Deployment,
+				RunnerCmd:       runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			}
+			osConfig.SchedulerName = "openstack"
+			osConfig.SchedulerConfig = &jqs.ConfigOpenStack{
+				ResourceName:   "wr-testing-" + localUser,
+				OSPrefix:       osPrefix,
+				OSUser:         osUser,
+				OSRAM:          2048,
+				FlavorRegex:    flavorRegex,
+				ServerPorts:    []int{22},
+				ServerKeepTime: 15 * time.Second,
+				Shell:          "bash",
+				MaxInstances:   -1,
+			}
+			server, _, err = Serve(osConfig)
+			So(err, ShouldBeNil)
+
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			var jobs []*Job
+			dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
+			jobs = append(jobs, NewJob("sleep 1", "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 2", "/tmp", "echo", &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, uint8(2), uint8(0), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 3", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 4", "/tmp", "echo", dropReq, uint8(0), uint8(255), uint8(3), "manually_added", []string{}))
+			jobs = append(jobs, NewJob("echo 5", "/tmp", "echo", &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			count := 100
+			for i := 6; i <= count; i++ {
+				jobs = append(jobs, NewJob(fmt.Sprintf("echo %d", i), "/tmp", "sleep", dropReq, uint8(0), uint8(0), uint8(3), "manually_added", []string{}))
+			}
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			// wait for the jobs to get run
+			done := make(chan bool, 1)
+			go func() {
+				limit := time.After(180 * time.Second)
+				ticker := time.NewTicker(1 * time.Second)
+				for {
+					select {
+					case <-ticker.C:
+						if !server.HasRunners() {
+							ticker.Stop()
+							done <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						done <- false
+						return
+					}
+				}
+			}()
+			So(<-done, ShouldBeTrue)
+
+			Reset(func() {
+				if server != nil {
+					server.Stop()
+				}
+			})
+		})
+	} else {
+		SkipConvey("Skipping the OpenStack tests", t, func() {})
 	}
 }
 

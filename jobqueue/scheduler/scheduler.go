@@ -17,10 +17,12 @@
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 /*
-Package scheduler lets the jobqueue server interact with the local job
-scheduler (if any) to submit jobqueue clients and have them run on a compute
-cluster (or local machine). Examples of job schedulers are things like LSF and
-SGE.
+Package scheduler lets the jobqueue server interact with the configured job
+scheduler (if any) to submit jobqueue runner clients and have them run on a
+compute cluster (or local machine).
+
+Currently implemented schedulers are local, LSF and OpenStack. The
+implementation of each supported scheduler type is in its own .go file.
 
 It's a pseudo plug-in system in that it is designed so that you can easily add a
 go file that implements the methods of the scheduleri interface, to support a
@@ -28,6 +30,12 @@ new job scheduler. On the other hand, there is no dynamic loading of these go
 files; they are all imported (they all belong to the scheduler package), and the
 correct one used at run time. To "register" a new scheduleri implementation you
 must add a case for it to New() and rebuild.
+
+    import "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+    s, err := scheduler.New("local", &scheduler.ConfigLocal{"bash"})
+    req := &scheduler.Requirements{RAM: 300, Time: 2 * time.Hour, Cores: 1}
+    err = s.Schedule("myWRRunnerClient -args", req, 24)
+    // wait, and when s.Busy() returns false, your command has been run 24 times
 */
 package scheduler
 

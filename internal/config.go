@@ -16,8 +16,9 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-// Package internal houses code for wr's general utility functions
 package internal
+
+// this file implements the config system used by the cmd package
 
 import (
 	"fmt"

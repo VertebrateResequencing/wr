@@ -1,9 +1,5 @@
 wr - workflow runner
-======
-
-This is an experimental reimplementation of
-https://github.com/VertebrateResequencing/vr-pipe/
-in the Go programming language.
+====================
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
 [![GoDoc](https://godoc.org/github.com/VertebrateResequencing/wr?status.svg)](https://godoc.org/github.com/VertebrateResequencing/wr)
@@ -11,9 +7,27 @@ develop branch:
 [![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=develop)](https://travis-ci.org/VertebrateResequencing/wr)
 [![Coverage Status](https://coveralls.io/repos/github/VertebrateResequencing/wr/badge.svg?branch=develop)](https://coveralls.io/github/VertebrateResequencing/wr?branch=develop)
 
+wr is a workflow runner. You use it to run the commands in your workflow easily,
+automatically, reliably, with repeatability, and while making optimal use of
+your available computing resources.
+
+wr is implemented as a polling-free in-memory job queue with an on-disk acid
+transactional embedded database, written in go.
+
+Its main benefits over other software workflow management systems are its very
+low latency and overhead, its high performance at scale, its real-time status
+updates with a view on all your workflows on one screen, its permanent
+searchable history of all the commands you have ever run, and its "live"
+dependencies enabling easy automation of on-going projects.
+
 ***DO NOT USE YET!***
 
-But if you want to be adventurous and provide feedback...
+wr is in early beta, with some significant features unimplemented, and the
+possibility of significant bugs. However, for simple usage, for example easily
+running your own manually-specified commands in an OpenStack environment, it is
+probably safe to use.
+
+So if you want to be adventurous and provide feedback...
 
 Download
 --------
@@ -26,8 +40,8 @@ Alternatively, build it yourself:
 (make sure to set your `$GOPATH`). An example way of setting up a personal Go
 installation in your home directory would be:
 
-        wget "https://storage.googleapis.com/golang/go1.7.1.linux-amd64.tar.gz"
-        tar -xvzf go1.7.1.linux-amd64.tar.gz && rm go1.7.1.linux-amd64.tar.gz
+        wget "https://storage.googleapis.com/golang/go1.8.linux-amd64.tar.gz"
+        tar -xvzf go1.8.linux-amd64.tar.gz && rm go1.8.linux-amd64.tar.gz
         export GOROOT=$HOME/go
         export PATH=$PATH:$GOROOT/bin
         mkdir work
@@ -42,54 +56,9 @@ installation in your home directory would be:
 
 3. The `wr` executable should now be in `$GOPATH/bin`
 
-If you don't have 'make' installed, you can instead replace step 2 above with
+If you don't have `make` installed, you can instead replace step 2 above with
 just `go get -u -tags netgo github.com/VertebrateResequencing/wr`, but note that
 `wr version` will not work.
-
-What's wrong with the original Perl version?
---------------------------------------------
-* It's difficult to install due to the large set of CPAN dependencies
-* It's very slow due to the use of Moose
-* It's very slow due to the use of DBIx::Class
-* It doesn't scale well due to the current way it uses MySQL
-
-Why Go?
--------
-* It's basically as easy to write as Perl
-* It has built-in packages equivalent to most of the critical CPAN modules
-* It has better interfaces and function signatures than Moose
-* It will be faster, both due to compilation and re-factoring database usage
-* It will be easy to install: distribute a statically-linked compiled binary
-
-Implemented so far
-------------------
-* Adding manually generated commands to the manager's queue
-* Automatically running those commands on the local machine, or via LSF
-  or OpenStack
-* Getting the status of your commands
-* Manually retrying failed commands
-* Automatic retrying of failed commands, using more memory/time reservation
-  as necessary
-* Learning of how much memory and time commands take for best resource
-  utilization
-* Draining the queue if you want to stop the system as gracefully as
-  possible, and recovering from drains, stops and crashes
-* Specifying command dependencies, and allowing for automation by these
-  dependencies being "live", automatically re-running commands if their
-  dependencies get re-run or added to.
-
-Not yet implemented
--------------------
-* While the help mentions workflows, nothing workflow-related has been
-  implemented (though you can manually build a workflow by specifying command
-  dependencies)
-* Get a complete listing of all commands with a given id
-* Database backups
-* Checkpointing for long running commands
-* Security (anyone with an account on your machine can use your
-  manager)
-* Re-run button in web interface for successfully completed commands
-* Ability to alter expected memory and time or change env-vars of commands
 
 Usage instructions
 ------------------
@@ -143,19 +112,68 @@ If you have any problems getting things to start up, check out the
 [wiki](https://github.com/VertebrateResequencing/wr/wiki) for additional
 guidance.
 
+Implemented so far
+------------------
+* Adding manually generated commands to the manager's queue
+* Automatically running those commands on the local machine, or via LSF
+  or OpenStack
+* Getting the status of your commands
+* Manually retrying failed commands
+* Automatic retrying of failed commands, using more memory/time reservation
+  as necessary
+* Learning of how much memory and time commands take for best resource
+  utilization
+* Draining the queue if you want to stop the system as gracefully as
+  possible, and recovering from drains, stops and crashes
+* Specifying command dependencies, and allowing for automation by these
+  dependencies being "live", automatically re-running commands if their
+  dependencies get re-run or added to.
+
+Not yet implemented
+-------------------
+* While the help mentions workflows, nothing workflow-related has been
+  implemented (though you can manually build a workflow by specifying command
+  dependencies)
+* Get a complete listing of all commands with a given id
+* Database backups
+* Checkpointing for long running commands
+* Security (anyone with an account on your machine can use your
+  manager)
+* Re-run button in web interface for successfully completed commands
+* Ability to alter expected memory and time or change env-vars of commands
+
+Background
+----------
+
+wr is aimed at replacing [VRPipe](https://github.com/VertebrateResequencing/vr-pipe/)
+which has the following problems:
+
+* It's difficult to install due to the large set of CPAN dependencies
+* It's very slow due to the use of Moose
+* It's very slow due to the use of DBIx::Class
+* It doesn't scale well due to the current way it uses MySQL
+
+It's written in Go because:
+
+* It's basically as easy to write as Perl
+* It has built-in packages equivalent to most of the critical CPAN modules
+* It has better interfaces and function signatures than Moose
+* It is faster, both due to compilation and re-factoring database usage
+* It is easier to install: distribute a statically-linked compiled binary
+
 Example .ssh/config
 -------------------
 If you're having difficulty accessing the web frontend via an ssh tunnel, the
 following example config file may help. (In this example, 11302 is the web
 interface port.)
 
-Host ssh.myserver.org
-LocalForward 11302 login.internal.myserver.org:11302
-DynamicForward 20002
-ProxyCommand none
-Host *.internal.myserver.org
-User myusername
-ProxyCommand nc -X 5 -x localhost:20002 %h %p
+    Host ssh.myserver.org
+    LocalForward 11302 login.internal.myserver.org:11302
+    DynamicForward 20002
+    ProxyCommand none
+    Host *.internal.myserver.org
+    User myusername
+    ProxyCommand nc -X 5 -x localhost:20002 %h %p
 
 You'll then be able to access the website at
 http://login.internal.myserver.org:11302 or perhaps http://localhost:11302

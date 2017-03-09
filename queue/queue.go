@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016, 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
 // https://github.com/diegobernardes/ttlcache
@@ -19,16 +19,18 @@
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 /*
-Package queue provides a queue structure where you can add items to the
-queue that can then then switch between 4 sub-queues.
+Package queue provides an in-memory queue structure suitable for the safe and
+low latency implementation of a real job queue.
 
-This package provides the functions for a server process to do the work of a
-jobqueue like beanstalkd. See the jobqueue package for the functions that allow
-interaction with clients on the network.
+It's like beanstalkd, but faster, with the ability to query the queue for
+desired items, reject duplicates, and wait on dependencies.
+
+Like beanstalkd, when you add items to the queue, they move between different
+sub-queues:
 
 Items start in the delay queue. After the item's delay time, they automatically
 move to the ready queue. From there you can Reserve() an item to get the highest
-priority (or for those with equal priority, the oldest one (fifo)) which
+priority (or for those with equal priority, the oldest - fifo) one which
 switches it from the ready queue to the run queue. Items can also have
 dependencies, in which case they start in the dependency queue and only move to
 the ready queue (bypassing the delay queue) once all its dependencies have been
@@ -45,6 +47,31 @@ item, or you Bury() the item (the item can't be dealt with until the user takes
 some action). When you know you have a transient problem preventing you from
 handling the item right now, you can manually Release() the item back to the
 delay queue.
+
+    import "github.com/VertebrateResequencing/wr/queue"
+    q = queue.New("myQueue")
+    q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+        for _, item := range allitemdata {
+            // cast item to the original type, then arrange to do something now
+            // you know that the item is ready to be processed
+        }
+    })
+
+    // add an item to the queue
+    ttr := 30 * time.Second)
+    item, err := q.Add("uuid", "item data", 0, 0 * time.Second, ttr)
+
+    // get it back out
+    item, err = queue.Get("uuid")
+
+    // reserve the next item
+    item, err = queue.Reserve()
+
+    // queue.Touch() every < ttr seconds if you might take longer than ttr to
+    // process the item
+
+    // say you successfully handled the item
+    item.Remove()
 */
 package queue
 
