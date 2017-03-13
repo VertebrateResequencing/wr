@@ -63,7 +63,6 @@ type opst struct {
 	standins          map[string]*standin
 	spawningNow       bool
 	waitingToSpawn    int
-	debugMode         bool
 	cmdToStandins     map[string]map[string]bool
 	standinToCmd      map[string]map[string]bool
 }
@@ -145,6 +144,9 @@ type ConfigOpenStack struct {
 	// DNSNameServers is a slice of DNS IP addresses to use for lookups on the
 	// created subnet. It defaults to Google's: []string{"8.8.4.4", "8.8.8.8"}
 	DNSNameServers []string
+
+	// Debug turns on debugging mode.
+	Debug bool
 }
 
 // standin describes a server that we're in the middle of spawning (or intend to
@@ -165,10 +167,11 @@ type standin struct {
 	waitingToSpawn bool // for isExtraneous() and opst's runCmd()
 	readyToSpawn   chan bool
 	noLongerNeeded chan bool
+	debugMode      bool
 }
 
 // newStandin returns a new standin server
-func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string) *standin {
+func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string, debug bool) *standin {
 	availableDisk := flavor.Disk
 	if disk > availableDisk {
 		availableDisk = disk
@@ -182,6 +185,7 @@ func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string) *stan
 		endWait:        make(chan *cloud.Server),
 		readyToSpawn:   make(chan bool),
 		noLongerNeeded: make(chan bool),
+		debugMode:      debug,
 	}
 }
 
@@ -192,6 +196,7 @@ func (s *standin) allocate(req *Requirements) {
 	s.usedCores += req.Cores
 	s.usedRAM += req.RAM
 	s.usedDisk += req.Disk
+	s.debug("standin %s allocated(%d, %d, %d), used now (%d, %d, %d)\n", s.id, req.Cores, req.RAM, req.Disk, s.usedCores, s.usedRAM, s.usedDisk)
 }
 
 // hasSpaceFor is like cloud.Server.HasSpaceFor()
@@ -230,6 +235,7 @@ func (s *standin) willBeUsed() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.waitingToSpawn = false
+	s.debug("standin %s willBeUsed, waitingToSpawn = false\n", s.id)
 }
 
 // isExtraneous checks if all prior allocate()ions on this standin can fit on
@@ -241,6 +247,7 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 		if server.OS == s.os && server.HasSpaceFor(s.usedCores, s.usedRAM, s.usedDisk) > 0 {
 			s.mutex.RUnlock()
 			failed = s.failed()
+			s.debug("standin %s isExtraneous, failed = %s\n", s.id, failed)
 		} else {
 			s.mutex.RUnlock()
 		}
@@ -259,16 +266,20 @@ func (s *standin) failed() bool {
 	waitingToSpawn := s.waitingToSpawn
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
+		s.debug("standin %s failed(), will send nil to endWait...\n", s.id)
 		s.endWait <- nil
+		s.debug("standin %s failed(), nil was sendt to endWait\n", s.id)
 	} else {
 		s.mutex.RUnlock()
 	}
 	if alreadyFailed || !waitingToSpawn {
+		s.debug("standin %s failed(), already failed or not waiting to spawn, returning false\n", s.id)
 		return false
 	}
 	s.mutex.Lock()
 	s.alreadyFailed = true
 	s.mutex.Unlock()
+	s.debug("standin %s failed(), returning true.\n", s.id)
 	return true
 }
 
@@ -279,11 +290,15 @@ func (s *standin) failed() bool {
 func (s *standin) worked(server *cloud.Server) {
 	s.mutex.RLock()
 	server.Allocate(s.usedCores, s.usedRAM, s.usedDisk)
+	s.debug("standin %s worked(), allocated (%d, %d, %d) to server %s\n", s.id, s.usedCores, s.usedRAM, s.usedDisk, server.ID)
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
+		s.debug("standin %s worked() was waiting, sending server %s to endWait\n", s.id, server.ID)
 		s.endWait <- server
+		s.debug("standin %s worked() was waiting, sent server %s to endWait\n", s.id, server.ID)
 	} else {
 		s.mutex.RUnlock()
+		s.debug("standin %s worked() was not waiting\n", s.id)
 	}
 }
 
@@ -293,6 +308,7 @@ func (s *standin) waitForServer() *cloud.Server {
 	// *** is this broken if called multiple times?...
 	s.mutex.Lock()
 	s.nowWaiting++
+	s.debug("standin %s waitForServer(), nowWaiting = %d\n", s.id, s.nowWaiting)
 	s.mutex.Unlock()
 	done := make(chan *cloud.Server)
 	go func() {
@@ -304,11 +320,14 @@ func (s *standin) waitForServer() *cloud.Server {
 				s.nowWaiting--
 				nowWaiting := s.nowWaiting
 				s.mutex.Unlock()
+				s.debug("standin %s waitForServer(), received on endWait, nowWaiting = %d\n", s.id, s.nowWaiting)
 
 				// multiple goroutines may have called waitForServer(), so we
 				// will repeat for the next one if so
 				if nowWaiting > 0 {
+					s.debug("standin %s waitForServer(), resending on endWait\n", s.id)
 					s.endWait <- server
+					s.debug("standin %s waitForServer(), resent on endWait\n", s.id)
 				}
 				return
 			}
@@ -327,12 +346,17 @@ func (s *opst) initialize(config interface{}) (err error) {
 		s.config.OSDisk = 1
 	}
 
+	if s.config.Debug {
+		s.debugMode = true
+	}
+
 	// create a cloud provider for openstack, that we'll use to interact with
 	// openstack
 	provider, err := cloud.New("openstack", s.config.ResourceName, s.config.SavePath)
 	if err != nil {
 		return
 	}
+	provider.Debug = s.debugMode
 	s.provider = provider
 
 	err = provider.Deploy(&cloud.DeployConfig{
@@ -616,7 +640,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.mutex.Unlock()
 		return nil
 	}
-	s.debug("\na %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
+	s.debug("a %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
 		if thisServer.Destroyed() {
@@ -626,7 +650,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		if thisServer.OS == osPrefix && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
-			s.debug("b %s using existing server %s\n", uniqueDebug, server.IP)
+			s.debug("b %s using existing server %s\n", uniqueDebug, server.ID)
 			break
 		}
 	}
@@ -645,7 +669,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 					return errors.New("giving up waiting to spawn")
 				}
 				s.mutex.Lock()
-				s.debug("e %s got server %s from standin %s, locked\n", uniqueDebug, server.IP, standinServer.id)
+				s.debug("e %s got server %s from standin %s, locked\n", uniqueDebug, server.ID, standinServer.id)
 				break
 			}
 		}
@@ -683,7 +707,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 
 		standinID := uuid.NewV4().String()
-		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix)
+		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix, s.debugMode)
 		standinServer.allocate(req)
 		s.recordStandin(standinServer, cmd)
 		s.debug("g %s made new standin %s\n", uniqueDebug, standinID)
@@ -834,7 +858,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			return err
 		}
 
-		s.debug("x %s completed new server %s\n", uniqueDebug, server.IP)
+		s.debug("x %s completed new server %s\n", uniqueDebug, server.ID)
 
 		s.servers[server.ID] = server
 		standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
@@ -843,7 +867,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 	s.mutex.Unlock()
 
-	s.debug("z %s unlocked, server %s will runCmd\n", uniqueDebug, server.IP)
+	s.debug("z %s unlocked, server %s will runCmd\n", uniqueDebug, server.ID)
 
 	// now we have a server, ssh over and run the cmd on it
 	var err error
@@ -856,17 +880,17 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		// bad and destroy it
 		if err != nil {
 			server.Destroy()
-			s.debug("z2 %s destroyed server %s since it hit err [%s]\n", uniqueDebug, server.IP, err)
+			s.debug("z2 %s destroyed server %s since it hit err [%s]\n", uniqueDebug, server.ID, err)
 			return err
 		}
 	}
-	s.debug("z3 %s server %s ran the command\n", uniqueDebug, server.IP)
+	s.debug("z3 %s server %s ran the command\n", uniqueDebug, server.ID)
 
 	// having run a command, this server is now available for another; signal a
 	// runCmd call that is waiting its turn to spawn a new server to give up
 	// waiting and potentially get scheduled on us instead
 	s.mutex.Lock()
-	s.debug("z4 %s locked to release server %s\n", uniqueDebug, server.IP)
+	s.debug("z4 %s locked to release server %s\n", uniqueDebug, server.ID)
 	server.Release(req.Cores, req.RAM, req.Disk)
 	if s.waitingToSpawn > 0 {
 		for _, otherStandinServer := range s.standins {
@@ -984,6 +1008,12 @@ func (s *opst) cleanup() {
 }
 
 func (s *opst) debug(msg string, a ...interface{}) {
+	if s.debugMode {
+		log.Printf(msg, a...)
+	}
+}
+
+func (s *standin) debug(msg string, a ...interface{}) {
 	if s.debugMode {
 		log.Printf(msg, a...)
 	}

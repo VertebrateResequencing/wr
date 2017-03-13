@@ -80,6 +80,7 @@ type local struct {
 	canCountFunc     canCounter
 	runCmdFunc       cmdRunner
 	cancelRunCmdFunc cancelCmdRunner
+	debugMode        bool
 }
 
 // ConfigLocal represents the configuration options required by the local
@@ -225,6 +226,7 @@ func (s *local) processQueue() error {
 		count = j.count
 
 		running := s.running[key]
+		s.debug("processQueue() needs %d [%s] running, currently %d\n", count, cmd, running)
 		if count < running {
 			// "running" things may not actually be running the cmd yet, so tell
 			// extraneous ones to cancel and not start running
@@ -239,6 +241,7 @@ func (s *local) processQueue() error {
 
 		// now see if there's remaining capacity to run the job
 		canCount = s.canCountFunc(req)
+		s.debug("processQueue() can run %d of these commands\n", canCount)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -258,6 +261,7 @@ func (s *local) processQueue() error {
 	}
 
 	// start running what we can
+	s.debug("processQueue() will call runCmdFunc %d times\n", canCount)
 	for i := 0; i < canCount; i++ {
 		s.ram += req.RAM
 		s.cores += req.Cores
@@ -371,4 +375,10 @@ func (s *local) cleanup() {
 	s.cleaned = true
 	s.queue.Destroy()
 	return
+}
+
+func (s *local) debug(msg string, a ...interface{}) {
+	if s.debugMode {
+		log.Printf(msg, a...)
+	}
 }

@@ -184,6 +184,7 @@ type Provider struct {
 	resources    *Resources
 	inCloud      bool
 	madeHeadNode bool
+	Debug        bool
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
@@ -232,6 +233,13 @@ type Server struct {
 	destroyed         bool
 	provider          *Provider
 	sshclient         *ssh.Client
+	debugMode         bool
+}
+
+func (s *Server) debug(msg string, a ...interface{}) {
+	if s.debugMode {
+		log.Printf(msg, a...)
+	}
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -243,9 +251,13 @@ func (s *Server) Allocate(cores, ramMB, diskGB int) {
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
+	s.debug("server %s Allocate(%d, %d, %d), used now (%d, %d, %d)\n", s.ID, cores, ramMB, diskGB, s.usedCores, s.usedRAM, s.usedDisk)
+
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
+		s.debug("server %s Allocate(), on deathrow, will cancel...\n", s.ID)
 		s.cancelDestruction <- true
+		s.debug("server %s Allocate(), on deathrow, cancelled\n", s.ID)
 	}
 }
 
@@ -256,14 +268,17 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	s.usedCores -= cores
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
+	s.debug("server %s Release(%d, %d, %d), used now (%d, %d, %d)\n", s.ID, cores, ramMB, diskGB, s.usedCores, s.usedRAM, s.usedDisk)
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
 	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
+		s.debug("server %s Release(), will initiate countdown\n", s.ID)
 		go func() {
 			s.mutex.Lock()
 			if s.onDeathrow {
 				s.mutex.Unlock()
+				s.debug("server %s Release(), already on death row\n", s.ID)
 				return
 			}
 			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
@@ -271,15 +286,23 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 			s.mutex.Unlock()
 
 			timeToDie := time.After(s.TTD)
+			s.debug("server %s Release(), will die at %s\n", s.ID, timeToDie)
 			for {
 				select {
 				case <-s.cancelDestruction:
+					s.mutex.Lock()
 					s.onDeathrow = false
+					s.mutex.Unlock()
+					s.debug("server %s Release(), destruction cancelled\n", s.ID)
 					return
 				case <-timeToDie:
 					// destroy the server
+					s.mutex.Lock()
 					s.onDeathrow = false
-					s.Destroy()
+					s.mutex.Unlock()
+					s.debug("server %s Release(), destruction going ahead...\n", s.ID)
+					err := s.Destroy()
+					s.debug("server %s Release(), destroyed, error = %s\n", s.ID, err)
 					return
 				}
 			}
@@ -537,15 +560,19 @@ func (s *Server) Destroy() error {
 	defer s.mutex.Unlock()
 
 	if s.destroyed {
+		s.debug("server %s Destroy(), already destroyed\n", s.ID)
 		return nil
 	}
 
 	// if the server has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
+		s.debug("server %s Destroy(), cancelling auto-destruction...\n", s.ID)
 		s.cancelDestruction <- true
+		s.debug("server %s Destroy(), cancelled auto-destruction\n", s.ID)
 	}
 
 	err := s.provider.DestroyServer(s.ID)
+	s.debug("server %s Destroy() called DestroyServer() and got err %s\n", s.ID, err)
 	if err != nil {
 		ok, _ := s.provider.CheckServer(s.ID)
 		if ok {
@@ -791,6 +818,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		Disk:      maxDisk,
 		TTD:       ttd,
 		provider:  p,
+		debugMode: p.Debug,
 	}
 
 	if err == nil && externalIP {
