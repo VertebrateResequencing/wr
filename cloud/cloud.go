@@ -358,12 +358,12 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 					}
 
 					// if it worked, we stop trying; if it failed again with a
-					// different error, we keep trying for at least 15 seconds
+					// different error, we keep trying for at least 45 seconds
 					// to allow for the vagueries of OS start ups (eg. CentOS
 					// brings up sshd and starts rejecting connections before
 					// the centos user gets added)
 					ticks++
-					if err == nil || ticks == 15 {
+					if err == nil || ticks == 45 {
 						ticker.Stop()
 						break DIAL
 					} else {
