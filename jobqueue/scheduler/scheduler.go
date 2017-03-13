@@ -106,7 +106,7 @@ func (req *Requirements) Stringify() string {
 		// now convert it all in to an md5sum, to avoid any problems with some
 		// key values having line returns etc. *** we might like to use
 		// byteKey() from jobqueue package instead, but that isn't exported...
-		other = fmt.Sprintf("%x", md5.Sum([]byte(other)))
+		other = fmt.Sprintf(":%x", md5.Sum([]byte(other)))
 	}
 
 	return fmt.Sprintf("%d:%.0f:%d:%d%s", req.RAM, req.Time.Minutes(), req.Cores, req.Disk, other)

@@ -68,7 +68,7 @@ func TestLocal(t *testing.T) {
 			other["foo"] = "bar"
 			other["goo"] = "lar"
 			testReq.Other = other
-			So(testReq.Stringify(), ShouldEqual, "300:120:2:0:foo=bar:goo=lar")
+			So(testReq.Stringify(), ShouldEqual, "300:120:2:0:f88250fdf9c81d47c18d63354b85f26e")
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
