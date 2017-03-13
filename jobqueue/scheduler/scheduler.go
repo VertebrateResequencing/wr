@@ -40,6 +40,7 @@ must add a case for it to New() and rebuild.
 package scheduler
 
 import (
+	"crypto/md5"
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"math/rand"
@@ -88,7 +89,8 @@ type Requirements struct {
 
 // Stringify represents the contents of the Requirements as a string, sorting
 // the keys of Other to ensure the same result is returned for the same content
-// every time.
+// every time. Note that the data in Other undergoes a 1-way transformation,
+// so you cannot recreate the Requirements from the the output of this method.
 func (req *Requirements) Stringify() string {
 	var other string
 	if len(req.Other) > 0 {
@@ -100,6 +102,11 @@ func (req *Requirements) Stringify() string {
 		for _, key := range otherKeys {
 			other += ":" + key + "=" + req.Other[key]
 		}
+
+		// now convert it all in to an md5sum, to avoid any problems with some
+		// key values having line returns etc. *** we might like to use
+		// byteKey() from jobqueue package instead, but that isn't exported...
+		other = fmt.Sprintf("%x", md5.Sum([]byte(other)))
 	}
 
 	return fmt.Sprintf("%d:%.0f:%d:%d%s", req.RAM, req.Time.Minutes(), req.Cores, req.Disk, other)
