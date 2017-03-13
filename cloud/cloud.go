@@ -287,7 +287,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 			s.mutex.Unlock()
 
 			timeToDie := time.After(s.TTD)
-			s.debug("server %s Release(), will die at %s\n", s.ID, timeToDie)
+			s.debug("server %s Release(), will die at %s\n", s.ID, time.Now().Add(s.TTD))
 			for {
 				select {
 				case <-s.cancelDestruction:
