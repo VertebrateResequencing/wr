@@ -228,10 +228,10 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 
 		// check that we can now connect to the remote manager
-		jq = connect(10 * time.Second)
+		jq = connect(40 * time.Second)
 		if jq == nil {
 			provider.TearDown()
-			die("could not talk to wr manager on server at %s after 10s", server.IP)
+			die("could not talk to wr manager on server at %s after 40s", server.IP)
 		}
 		sstats, err := jq.ServerStats()
 		if err != nil {
