@@ -867,13 +867,13 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 	s.mutex.Unlock()
 
-	s.debug("z %s unlocked, server %s will runCmd\n", uniqueDebug, server.ID)
-
 	// now we have a server, ssh over and run the cmd on it
 	var err error
 	if server.IP == "127.0.0.1" {
+		s.debug("z %s unlocked, will runCmd(%s) locally\n", uniqueDebug, cmd)
 		err = s.local.runCmd(cmd, req)
 	} else {
+		s.debug("z %s unlocked, server %s will runCmd(%s)\n", uniqueDebug, server.ID, cmd)
 		_, _, err = server.RunCmd(cmd, false)
 
 		// if we got an error running the command, assume the server has gone
