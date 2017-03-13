@@ -843,8 +843,8 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // can Spawn() another server while waiting for this one to become ready. If you
 // get an err, you will want to call server.Destroy() as this is not done for
 // you. postCreationScript is the optional []byte content of a script that will
-// be run on the server (using sudo) once it is ready, and it will complete
-// before this function returns; empty slice means do nothing.
+// be run on the server (as the user supplied to Spawn()) once it is ready, and
+// it will complete before this function returns; empty slice means do nothing.
 func (s *Server) WaitUntilReady(postCreationScript ...[]byte) (err error) {
 	// wait for ssh to come up
 	_, err = s.SSHClient()
@@ -891,7 +891,7 @@ SENTINEL:
 
 		// *** currently we have no timeout on this, probably want one...
 		var stderr string
-		_, stderr, err = s.RunCmd("sudo "+pcsPath, false)
+		_, stderr, err = s.RunCmd(pcsPath, false)
 		if err != nil {
 			err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
 			if len(stderr) > 0 {
