@@ -110,8 +110,9 @@ var sshTimeOut = 5 * time.Minute
 const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 
 // sentinelInitScript can be used as user data to the cloud-init mechanism to
-// create sentinelFilePath.
-var sentinelInitScript = []byte("#!/bin/bash\ntouch " + sentinelFilePath)
+// create sentinelFilePath. We also try to turn off requiretty in /etc/sudoers,
+// to allow postCreationScripts passed to WaitUntilReady() to be run with sudo.
+var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
 // we give up and return an error from Spawn().
