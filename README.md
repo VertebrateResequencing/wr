@@ -114,17 +114,17 @@ guidance.
 
 Implemented so far
 ------------------
-* Adding manually generated commands to the manager's queue
+* Adding manually generated commands to the manager's queue.
 * Automatically running those commands on the local machine, or via LSF
-  or OpenStack
-* Getting the status of your commands
-* Manually retrying failed commands
+  or OpenStack.
+* Getting the status of your commands.
+* Manually retrying failed commands.
 * Automatic retrying of failed commands, using more memory/time reservation
-  as necessary
+  as necessary.
 * Learning of how much memory and time commands take for best resource
-  utilization
+  utilization.
 * Draining the queue if you want to stop the system as gracefully as
-  possible, and recovering from drains, stops and crashes
+  possible, and recovering from drains, stops and crashes.
 * Specifying command dependencies, and allowing for automation by these
   dependencies being "live", automatically re-running commands if their
   dependencies get re-run or added to.
@@ -133,14 +133,14 @@ Not yet implemented
 -------------------
 * While the help mentions workflows, nothing workflow-related has been
   implemented (though you can manually build a workflow by specifying command
-  dependencies)
-* Get a complete listing of all commands with a given id
-* Database backups
-* Checkpointing for long running commands
+  dependencies).
+* Get a complete listing of all commands with a given id via the webpage.
+* Database backups.
+* Checkpointing for long running commands.
 * Security (anyone with an account on your machine can use your
-  manager)
-* Re-run button in web interface for successfully completed commands
-* Ability to alter expected memory and time or change env-vars of commands
+  manager).
+* Re-run button in web interface for successfully completed commands.
+* Ability to alter expected memory and time or change env-vars of commands.
 
 Background
 ----------
@@ -148,24 +148,24 @@ Background
 wr is aimed at replacing [VRPipe](https://github.com/VertebrateResequencing/vr-pipe/)
 which has the following problems:
 
-* It's difficult to install due to the large set of CPAN dependencies
-* It's very slow due to the use of Moose
-* It's very slow due to the use of DBIx::Class
-* It doesn't scale well due to the current way it uses MySQL
+* It's difficult to install due to the large set of CPAN dependencies.
+* It's very slow due to the use of Moose.
+* It's very slow due to the use of DBIx::Class.
+* It doesn't scale well due to the current way it uses MySQL.
 
 It's written in Go because:
 
-* It's basically as easy to write as Perl
-* It has built-in packages equivalent to most of the critical CPAN modules
-* It has better interfaces and function signatures than Moose
-* It is faster, both due to compilation and re-factoring database usage
-* It is easier to install: distribute a statically-linked compiled binary
+* It's basically as easy to write as Perl.
+* It has built-in packages equivalent to most of the critical CPAN modules.
+* It has better interfaces and function signatures than Moose.
+* It is faster, both due to compilation and re-factoring database usage.
+* It is easier to install: distribute a statically-linked compiled binary.
 
 Example .ssh/config
 -------------------
 If you're having difficulty accessing the web frontend via an ssh tunnel, the
-following example config file may help. (In this example, 11302 is the web
-interface port.)
+following example ~/.ssh/config file may help. (In this example, 11302 is the
+web interface port that wr tells you about.)
 
     Host ssh.myserver.org
     LocalForward 11302 login.internal.myserver.org:11302
