@@ -98,6 +98,7 @@ func (p *openstackp) initialize() (err error) {
 	if err != nil {
 		return
 	}
+	opts.AllowReauth = true
 	provider, err := openstack.AuthenticatedClient(opts)
 	if err != nil {
 		return
