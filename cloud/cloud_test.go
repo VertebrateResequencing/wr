@@ -242,7 +242,7 @@ func TestOpenStack(t *testing.T) {
 					So(err, ShouldNotBeNil)
 					ok := server.Alive()
 					So(ok, ShouldBeTrue)
-					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(sudo /tmp/.postCreationScript) failed: Process exited with status 1")
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
 					server.Destroy()
 				})
 
