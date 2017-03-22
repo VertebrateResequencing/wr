@@ -183,7 +183,9 @@ runnerexecshell: "bash"
 # The benefit of keeping idle servers alive is that if you subsequently add jobs
 # that can run on an idle server, that server will get used and you won't have
 # wait for a new server to be spawned. After cloudkeepalive seconds, idle
-# servers are terminated. 
+# servers are terminated.
+#
+# A value of 0 turns off the termination of idle servers (not recommended).
 cloudkeepalive: 120
 
 # cloudservers: How many additional cloud servers can be spawned?
