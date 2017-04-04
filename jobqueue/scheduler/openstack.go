@@ -877,7 +877,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		_, _, err = server.RunCmd(cmd, false)
 
 		// if we got an error running the command, assume the server has gone
-		// bad and destroy it
+		// bad and destroy it *** but only if nothing else is running on it!
 		if err != nil {
 			server.Destroy()
 			s.debug("z2 %s destroyed server %s since it hit err [%s]\n", uniqueDebug, server.ID, err)
