@@ -37,15 +37,16 @@ import (
 // caching of data).
 type S3File struct {
 	nodefs.File
-	fs     *MinFys
-	path   string
-	mutex  sync.Mutex
-	size   uint64
-	reader io.ReadCloser
+	fs         *MinFys
+	path       string
+	mutex      sync.Mutex
+	size       uint64
+	reader     io.ReadCloser
+	readOffset int64
 }
 
-// NewS3File creates a a new S3File. For all the methods not yet implemented,
-// fuse will get a not yet implemented error.
+// NewS3File creates a new S3File. For all the methods not yet implemented, fuse
+// will get a not yet implemented error.
 func NewS3File(fs *MinFys, path string, size uint64) nodefs.File {
 	return &S3File{
 		File: nodefs.NewDefaultFile(),
@@ -65,6 +66,16 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 	if uint64(offset) >= f.size {
 		// nothing to read
 		return nil, fuse.OK
+	}
+
+	if f.readOffset != offset {
+		// out of order read, start fresh *** this happens even when the user
+		// request is a serial read: we get offsets out of order
+		if f.reader != nil {
+			f.reader.Close()
+			f.reader = nil
+		}
+		f.readOffset = offset
 	}
 
 	// if opened previously, read from existing object and return
@@ -114,6 +125,7 @@ func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 			if err != nil {
 				f.reader.Close()
 				f.reader = nil
+				f.readOffset = 0
 				if err == io.EOF {
 					status = fuse.OK
 				} else {
@@ -123,6 +135,7 @@ func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 				return status
 			}
 		}
+		f.readOffset += int64(bytesRead)
 		return fuse.OK
 	}
 	return fuse.ENODATA
@@ -135,4 +148,10 @@ func (f *S3File) Release() {
 	if f.reader != nil {
 		f.reader.Close()
 	}
+}
+
+// Fsync always returns OK as opposed to "not imlemented" so that write-sync-
+// write works.
+func (f *S3File) Fsync(flags int) fuse.Status {
+	return fuse.OK
 }

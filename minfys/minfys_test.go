@@ -171,7 +171,7 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 350000)
 			})
 
-			Convey("You can't do random reads on large files", func() {
+			Convey("You can do random reads on large files", func() {
 				// sanity check that it works on a small file
 				path := mountPoint + "/numalphanum.txt"
 				r, err := os.Open(path)
@@ -193,7 +193,7 @@ func TestMinFys(t *testing.T) {
 				So(done, ShouldEqual, 10)
 				So(b, ShouldResemble, []byte("abcdefghij"))
 
-				// but it doesn't work on a big one
+				// it also works on a big one
 				path = mountPoint + "/100k.lines"
 				rbig, err := os.Open(path)
 				So(err, ShouldBeNil)
@@ -211,7 +211,7 @@ func TestMinFys(t *testing.T) {
 				done, err = io.ReadFull(rbig, b)
 				So(err, ShouldBeNil)
 				So(done, ShouldEqual, 6)
-				So(b, ShouldNotResemble, []byte("025001"))
+				So(b, ShouldResemble, []byte("025001"))
 			})
 		})
 
