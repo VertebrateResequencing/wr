@@ -25,10 +25,14 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 )
 
 const crfile = "cloud.resources"
@@ -94,18 +98,22 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 			}()
 
-			Convey("listing mount directory and subdirs works", func() {
+			Convey("Listing mount directory and subdirs works", func() {
+				s := time.Now()
 				entries, err := ioutil.ReadDir(mountPoint)
+				d := time.Since(s)
 				So(err, ShouldBeNil)
 
 				details := dirDetails(entries)
 				rootEntries := []string{"100k.lines:file:700000", "numalphanum.txt:file:47", "sub:dir"}
 				So(details, ShouldResemble, rootEntries)
 
-				// test it twice in a row to make sure caching is ok *** though
-				// don't know how to test if cache actually got used
+				// test it twice in a row to make sure caching is ok
+				s = time.Now()
 				entries, err = ioutil.ReadDir(mountPoint)
+				dc := time.Since(s)
 				So(err, ShouldBeNil)
+				So(dc.Nanoseconds(), ShouldBeLessThan, d.Nanoseconds()/4)
 
 				details = dirDetails(entries)
 				So(details, ShouldResemble, rootEntries)
@@ -124,7 +132,15 @@ func TestMinFys(t *testing.T) {
 				So(details, ShouldResemble, []string{"bar:file:4"})
 			})
 
-			Convey("you can immediately list a deep subdir", func() {
+			Convey("You can immediately list a subdir", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				So(details, ShouldResemble, []string{"deep:dir", "empty:file:0"})
+			})
+
+			Convey("You can immediately list a deep subdir", func() {
 				entries, err := ioutil.ReadDir(mountPoint + "/sub/deep")
 				So(err, ShouldBeNil)
 
@@ -137,14 +153,14 @@ func TestMinFys(t *testing.T) {
 				So(info.Size(), ShouldEqual, 4)
 			})
 
-			Convey("you can immediately stat a deep file", func() {
+			Convey("You can immediately stat a deep file", func() {
 				info, err := os.Stat(mountPoint + "/sub/deep/bar")
 				So(err, ShouldBeNil)
 				So(info.Name(), ShouldEqual, "bar")
 				So(info.Size(), ShouldEqual, 4)
 			})
 
-			Convey("you can read a whole file as well as parts of it by seeking", func() {
+			Convey("You can read a whole file as well as parts of it by seeking", func() {
 				path := mountPoint + "/100k.lines"
 				read, err := streamFile(path, 0)
 				So(err, ShouldBeNil)
@@ -155,7 +171,7 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 350000)
 			})
 
-			Convey("you can't do random reads on large files", func() {
+			Convey("You can't do random reads on large files", func() {
 				// sanity check that it works on a small file
 				path := mountPoint + "/numalphanum.txt"
 				r, err := os.Open(path)
@@ -212,7 +228,7 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 			}()
 
-			Convey("you can read a whole file as well as parts of it by seeking", func() {
+			Convey("You can read a whole file as well as parts of it by seeking", func() {
 				path := mountPoint + "/100k.lines"
 				read, err := streamFile(path, 0)
 				So(err, ShouldBeNil)
@@ -223,7 +239,7 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 350000)
 			})
 
-			Convey("you can do random reads", func() {
+			Convey("You can do random reads", func() {
 				// it works on a small file
 				path := mountPoint + "/numalphanum.txt"
 				r, err := os.Open(path)
@@ -266,6 +282,135 @@ func TestMinFys(t *testing.T) {
 				So(b, ShouldResemble, []byte("025001"))
 			})
 		})
+
+		Convey("You can mount the bucket directly", t, func() {
+			u, err := url.Parse(target)
+			parts := strings.Split(u.Path[1:], "/")
+			cfg.Target = u.Scheme + "://" + u.Host + "/" + parts[0]
+			cfg.CacheData = false
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+			}()
+
+			Convey("Listing bucket directory works", func() {
+				entries, err := ioutil.ReadDir(mountPoint)
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				So(details, ShouldContain, path.Join(parts[1:]...)+":dir")
+			})
+
+			Convey("You can't mount more than once at a time", func() {
+				err = fs.Mount()
+				So(err, ShouldNotBeNil)
+			})
+		})
+
+		if strings.HasPrefix(target, "https://cog.sanger.ac.uk") {
+			Convey("You can mount a public bucket", t, func() {
+				cfg.CacheData = false
+				cfg.Target = "https://cog.sanger.ac.uk/npg-repository"
+				fs, err := New(cfg)
+				So(err, ShouldBeNil)
+
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+				}()
+
+				Convey("Listing mount directory works", func() {
+					entries, err := ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+
+					details := dirDetails(entries)
+					So(details, ShouldContain, "cram_cache:dir")
+					So(details, ShouldContain, "references:dir")
+				})
+
+				Convey("You can immediately stat deep files", func() {
+					fasta := mountPoint + "/references/Homo_sapiens/GRCh38_full_analysis_set_plus_decoy_hla/all/fasta/Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla"
+					_, err := os.Stat(fasta + ".fa")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(fasta + ".fa.alt")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(fasta + ".fa.fai")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(fasta + ".dict")
+					So(err, ShouldBeNil)
+				})
+			})
+
+			Convey("You can mount a public bucket at a deep path", t, func() {
+				cfg.CacheData = false
+				cfg.Target = "https://cog.sanger.ac.uk/npg-repository/references/Homo_sapiens/GRCh38_full_analysis_set_plus_decoy_hla/all/fasta"
+				fs, err := New(cfg)
+				So(err, ShouldBeNil)
+
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+				}()
+
+				Convey("Listing mount directory works", func() {
+					entries, err := ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+
+					details := dirDetails(entries)
+					So(details, ShouldContain, "Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla.fa:file:3257948908")
+				})
+
+				Convey("You can immediately stat files within", func() {
+					fasta := mountPoint + "/Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla"
+					_, err := os.Stat(fasta + ".fa")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(fasta + ".fa.alt")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(fasta + ".fa.fai")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(fasta + ".dict")
+					So(err, ShouldBeNil)
+				})
+			})
+
+			Convey("You can mount a public bucket with blank credentials", t, func() {
+				cfg.CacheData = false
+				cfg.Target = "https://cog.sanger.ac.uk/npg-repository"
+				cfg.AccessKey = ""
+				cfg.SecretKey = ""
+				fs, err := New(cfg)
+				So(err, ShouldBeNil)
+
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+				}()
+
+				Convey("Listing mount directory works", func() {
+					entries, err := ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+
+					details := dirDetails(entries)
+					So(details, ShouldContain, "cram_cache:dir")
+					So(details, ShouldContain, "references:dir")
+				})
+			})
+		}
 	}
 }
 

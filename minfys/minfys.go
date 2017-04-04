@@ -171,6 +171,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -219,6 +220,8 @@ type MinFys struct {
 	dirContents map[string][]fuse.DirEntry
 	files       map[string]*fuse.Attr
 	cacheData   bool
+	mutex       sync.Mutex
+	mounted     bool
 	debugging   bool
 }
 
@@ -308,8 +311,15 @@ func (fs *MinFys) parseTarget(target string) (err error) {
 
 // Mount carries out the mounting of your configured S3 bucket to your
 // configured mount point. On return, the files in your bucket will be
-// accessible. Do NOT call Mount() more than once on the same MinFys! *** lock and prevent multi-mounting
+// accessible. Once mounted, you can't mount again until you Unmount().
 func (fs *MinFys) Mount() (err error) {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+	if fs.mounted {
+		err = fmt.Errorf("Can't mount more that once at a time\n")
+		return
+	}
+
 	uid, gid, err := userAndGroup()
 	if err != nil {
 		return
@@ -345,6 +355,8 @@ func (fs *MinFys) Mount() (err error) {
 
 	fs.server = server
 	go server.Serve()
+
+	fs.mounted = true
 	return
 }
 
@@ -377,7 +389,14 @@ func userAndGroup() (uid uint32, gid uint32, err error) {
 // this after calling Mount(), and possibly also set up a signal trap to
 // Unmount() if your process receives an os.Interrupt or syscall.SIGTERM.
 func (fs *MinFys) Unmount() (err error) {
-	err = fs.server.Unmount()
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+	if fs.mounted {
+		err = fs.server.Unmount()
+		if err == nil {
+			fs.mounted = false
+		}
+	}
 	return
 }
 

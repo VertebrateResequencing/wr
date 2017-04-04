@@ -28,7 +28,6 @@ package minfys
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
-	"github.com/minio/minio-go"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,10 +62,8 @@ func (fs *MinFys) GetPath(relPath string) string {
 	return filepath.Join(fs.basePath, relPath)
 }
 
-// GetAttr finds out about a given object. Since only the name is received, if
-// we haven't already cached this object from prior calls to this or OpenDir(),
-// we must check if it's a file or a directory, which we do with parallel calls.
-// The context is not currently used.
+// GetAttr finds out about a given object, returning information from a
+// permanent cache if possible. context is not currently used.
 func (fs *MinFys) GetAttr(name string, context *fuse.Context) (attr *fuse.Attr, status fuse.Status) {
 	if fs.dirs[name] {
 		attr = fs.dirAttr
@@ -80,106 +77,55 @@ func (fs *MinFys) GetAttr(name string, context *fuse.Context) (attr *fuse.Attr, 
 		return
 	}
 
-	// simultaneously check if it's a directory or file
-	fileAttrChan := make(chan *fuse.Attr, 1)
-	fileStatusChan := make(chan fuse.Status, 1)
-	dirAttrChan := make(chan *fuse.Attr, 1)
-	dirStatusChan := make(chan fuse.Status, 1)
-	go func() {
-		at, st := fs.PathInfo(name, false)
-		if st == fuse.OK {
-			fileAttrChan <- at
-		} else {
-			fileStatusChan <- st
-		}
-	}()
-	go func() {
-		at, st := fs.PathInfo(name, true)
-		if st == fuse.OK {
-			dirAttrChan <- at
-		} else {
-			dirStatusChan <- st
-		}
-	}()
-
-	checking := 2
-	var checkStatus [2]fuse.Status
-	for {
-		select {
-		case attr = <-fileAttrChan:
-			status = fuse.OK
-			return
-		case st := <-fileStatusChan:
-			checking--
-			checkStatus[0] = st
-		case attr = <-dirAttrChan:
-			status = fuse.OK
-			return
-		case st := <-dirStatusChan:
-			checking--
-			checkStatus[1] = st
-		}
-
-		if checking == 0 {
-			for _, st := range checkStatus {
-				if st != fuse.ENOENT {
-					status = st
-					return
-				}
-			}
-			status = fuse.ENOENT
-			return
-		}
-	}
-}
-
-// PathInfo gets you the attributes of a file or directory given a full path. If
-// you say it's a directory when its actually a file (or vice versa), you will
-// be told the object doesn't exist. It caches any positive results, including
-// the contents of the directory if dir is true and it's a directory.
-func (fs *MinFys) PathInfo(name string, dir bool) (attr *fuse.Attr, status fuse.Status) {
-	if dir {
-		_, status = fs.openDir(name)
-		if status == fuse.OK {
-			attr = fs.dirAttr
-		}
-		return
-	}
-
-	start := time.Now()
-	fullPath := fs.GetPath(name)
-	info, err := fs.client.StatObject(fs.bucket, fullPath)
-	fs.debug("made a StatObject(%s, %s) call during PathInfo which took %s and gave error %s", fs.bucket, fullPath, time.Since(start), err)
-	if err != nil {
-		if er, ok := err.(minio.ErrorResponse); ok && er.Code == "NoSuchKey" {
-			status = fuse.ENOENT
-		} else {
-			status = fuse.EIO
+	// sequentially check if name is a file or directory. Checking
+	// simultaneously doesn't really help since the remote system may queue the
+	// requests serially anyway, and it's better to try and minimise requests.
+	// We'll use a simple heuristic that if the name contains a '.', it's more
+	// likely to be a file.
+	if strings.Contains(name, ".") {
+		attr, status = fs.maybeFile(name)
+		if status != fuse.OK {
+			attr, status = fs.maybeDir(name)
 		}
 	} else {
-		status = fuse.OK
+		attr, status = fs.maybeDir(name)
+		if status != fuse.OK {
+			attr, status = fs.maybeFile(name)
+		}
 	}
-
-	if status == fuse.OK {
-		attr = fs.cacheFile(name, info)
-	}
-
 	return
 }
 
-// cacheFile converts minio.ObjectInfo into fuse Attr and caches (permanently)
-// the latter against the file's full path so we won't have to look up the file
-// in S3 again.
-func (fs *MinFys) cacheFile(name string, info minio.ObjectInfo) (attr *fuse.Attr) {
-	mTime := uint64(info.LastModified.Unix())
-	attr = &fuse.Attr{
-		Mode:  fuse.S_IFREG | fs.fileMode,
-		Size:  uint64(info.Size),
-		Mtime: mTime,
-		Atime: mTime,
-		Ctime: mTime,
+// maybeDir simply calls openDir() and returns the directory attributes if
+// 'name' was actually a directory.
+func (fs *MinFys) maybeDir(name string) (attr *fuse.Attr, status fuse.Status) {
+	_, status = fs.openDir(name)
+	if status == fuse.OK {
+		attr = fs.dirAttr
 	}
-	fs.files[name] = attr
+	return
+}
+
+// maybeFile calls openDir() on the putative file's parent directory, then
+// checks to see if that resulted in a file named 'name' being cached.
+func (fs *MinFys) maybeFile(name string) (attr *fuse.Attr, status fuse.Status) {
+	// rather than call StatObject on name to see if its a file, it's more
+	// efficient to try and open it's parent directory and see if that resulted
+	// in us caching the file as one of the dir's entries
+	parent := filepath.Dir(name)
+	if parent == "/" {
+		parent = ""
+	}
+	if _, cached := fs.dirContents[name]; !cached {
+		fs.openDir(parent)
+		attr, _ = fs.files[name]
+	}
+
+	if attr != nil {
+		status = fuse.OK
+	} else {
+		status = fuse.ENOENT
+	}
 	return
 }
 
@@ -204,15 +150,18 @@ func (fs *MinFys) OpenDir(name string, context *fuse.Context) (entries []fuse.Di
 // caching the attributes of its contents.
 func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Status) {
 	fullPath := fs.GetPath(name)
+	if fullPath != "" {
+		fullPath += "/"
+	}
 	doneCh := make(chan struct{})
 
 	start := time.Now()
 	defer func() {
-		fs.debug("ListObjectsV2(%s, %s/) call for openDir took %s", fs.bucket, fullPath, time.Since(start))
+		fs.debug("ListObjectsV2(%s, %s) call for openDir took %s", fs.bucket, fullPath, time.Since(start))
 	}()
 
-	objectCh := fs.client.ListObjectsV2(fs.bucket, fullPath+"/", false, doneCh)
-	fs.debug("made a ListObjectsV2(%s, %s/) call during openDir", fs.bucket, fullPath)
+	objectCh := fs.client.ListObjectsV2(fs.bucket, fullPath, false, doneCh)
+	fs.debug("made a ListObjectsV2(%s, %s) call during openDir", fs.bucket, fullPath)
 
 	var isDir bool
 	for object := range objectCh {
@@ -226,9 +175,10 @@ func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Sta
 		}
 
 		d := fuse.DirEntry{
-			Name: object.Key[len(fullPath)+1:],
+			Name: object.Key[len(fullPath):],
 		}
 
+		fs.mutex.Lock()
 		if strings.HasSuffix(d.Name, "/") {
 			d.Mode = uint32(fuse.S_IFDIR)
 			d.Name = d.Name[0 : len(d.Name)-1]
@@ -237,9 +187,18 @@ func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Sta
 		} else {
 			d.Mode = uint32(fuse.S_IFREG)
 			thisPath := filepath.Join(name, d.Name)
-			fs.cacheFile(thisPath, object)
+			mTime := uint64(object.LastModified.Unix())
+			attr := &fuse.Attr{
+				Mode:  fuse.S_IFREG | fs.fileMode,
+				Size:  uint64(object.Size),
+				Mtime: mTime,
+				Atime: mTime,
+				Ctime: mTime,
+			}
+			fs.files[thisPath] = attr
 			fs.debug(" - cached file %s", thisPath)
 		}
+		fs.mutex.Unlock()
 
 		entries = append(entries, d)
 		isDir = true
@@ -251,7 +210,10 @@ func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Sta
 	status = fuse.OK
 
 	if isDir {
+		fs.mutex.Lock()
+		fs.dirs[name] = true
 		fs.dirContents[name] = entries
+		fs.mutex.Unlock()
 	} else {
 		entries = nil
 		status = fuse.ENOENT
