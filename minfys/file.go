@@ -1,10 +1,7 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// Much of the critical read/write code in this file is heavily based on code in
-// https://github.com/kahing/goofys Copyright 2015-2017 Ka-Hing Cheung,
-// licensed under the Apache License, Version 2.0 (the "License"), stating:
-// "You may not use this file except in compliance with the License. You may
-// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0"
+// Some of the read/write code in this file is inspired by the work of Ka-Hing
+// Cheung in https://github.com/kahing/goofys
 //
 //  This file is part of wr.
 //
@@ -28,8 +25,12 @@ package minfys
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
+	"github.com/klauspost/readahead"
+	"github.com/minio/minio-go"
 	"io"
+	"strings"
 	"sync"
+	"time"
 )
 
 // S3File struct is minfys' implementation of pathfs.File, providing read/write
@@ -41,24 +42,27 @@ type S3File struct {
 	path       string
 	mutex      sync.Mutex
 	size       uint64
-	reader     io.ReadCloser
 	readOffset int64
+	minioObj   io.ReadCloser
+	readahead  io.ReadCloser
+	skips      map[int64][]byte
 }
 
 // NewS3File creates a new S3File. For all the methods not yet implemented, fuse
 // will get a not yet implemented error.
 func NewS3File(fs *MinFys, path string, size uint64) nodefs.File {
 	return &S3File{
-		File: nodefs.NewDefaultFile(),
-		fs:   fs,
-		path: path,
-		size: size,
+		File:  nodefs.NewDefaultFile(),
+		fs:    fs,
+		path:  path,
+		size:  size,
+		skips: make(map[int64][]byte),
 	}
 }
 
-// Read currently supports the serial reading of data from the file. You can
-// initially seek to any point though. This gets called as many times as are
-// needed to get through all the data len(buf) bytes at a time.
+// Read supports random reading of data from the file. This gets called as many
+// times as are needed to get through all the desired data len(buf) bytes at a
+// time.
 func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -68,86 +72,131 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 		return nil, fuse.OK
 	}
 
+	// handle out-of-order reads, which happen even when the user request is a
+	// serial read: we get offsets out of order
 	if f.readOffset != offset {
-		// out of order read, start fresh *** this happens even when the user
-		// request is a serial read: we get offsets out of order
-		if f.reader != nil {
-			f.reader.Close()
-			f.reader = nil
+		if f.readahead != nil {
+			// it's really expensive dealing with constant slightly out-of-order
+			// requests, so we handle the typical case of the current expected
+			// offset being skipped for the next offset, then coming back to the
+			// expected one
+			if offset > f.readOffset && (offset-f.readOffset) < int64((len(buf)*3)) {
+				// read from readahead until we get to the correct position,
+				// storing what we skipped
+				skippedPos := f.readOffset
+				skipSize := offset - f.readOffset
+				skipped := make([]byte, skipSize, skipSize)
+				status := f.fillBuffer(skipped)
+				if status != fuse.OK {
+					return nil, status
+				}
+				f.skips[skippedPos] = skipped
+			} else if skipped, existed := f.skips[offset]; existed && len(buf) == len(skipped) {
+				// service the request from the bytes we previously skipped
+				copy(buf, skipped)
+				delete(f.skips, offset)
+				return fuse.ReadResultData(buf), fuse.OK
+			} else {
+				// we'll have to start from scratch
+				f.minioObj.Close()
+				f.readahead.Close()
+				f.readahead = nil
+				f.skips = nil
+			}
 		}
 		f.readOffset = offset
 	}
 
-	// if opened previously, read from existing object and return
-	status := f.fillBuffer(buf)
-	if status != fuse.ENODATA {
-		f.fs.debug("using opened object for %s", f.path)
+	// if opened previously, read from existing readahead buffer and return
+	if f.readahead != nil {
+		status := f.fillBuffer(buf)
 		return fuse.ReadResultData(buf), status
 	}
 
 	// otherwise open remote object
-	object, err := f.fs.client.GetObject(f.fs.bucket, f.path)
-	f.fs.debug("made a GetObject call for %s", f.path)
-	if err != nil {
-		f.fs.debug("GetObject call failed: %s", err)
-		return fuse.ReadResultData([]byte{}), fuse.EIO
+	retries := 0
+	var object *minio.Object
+ATTEMPTS:
+	for {
+		var err error
+		object, err = f.fs.client.GetObject(f.fs.bucket, f.path)
+		f.fs.debug("made a GetObject call for %s", f.path)
+		if err != nil {
+			f.fs.debug("GetObject call failed: %s", err)
+			if strings.Contains(err.Error(), "timeout") {
+				retries++
+				if retries <= 10 {
+					<-time.After(10 * time.Millisecond)
+					f.fs.debug(" - retrying")
+					continue ATTEMPTS
+				}
+			}
+			return fuse.ReadResultData([]byte{}), fuse.EIO
+		}
+		break
 	}
 
 	// seek if desired
 	if offset != 0 {
-		_, err = object.Seek(offset, io.SeekStart)
-		if err != nil {
-			f.fs.debug("GetObject seek failed: %s", err)
-			return fuse.ReadResultData([]byte{}), fuse.EIO
+		retries = 0
+	SEEKATTEMPTS:
+		for {
+			_, err := object.Seek(offset, io.SeekStart)
+			if err != nil {
+				f.fs.debug("GetObject seek failed: %s", err)
+				if strings.Contains(err.Error(), "timeout") {
+					retries++
+					if retries <= 10 {
+						<-time.After(10 * time.Millisecond)
+						f.fs.debug(" - retrying")
+						continue SEEKATTEMPTS
+					}
+				}
+				f.fs.debug("GetObject seek failed and giving up")
+				return fuse.ReadResultData([]byte{}), fuse.EIO
+			}
+			break
 		}
 	}
 
-	// store the opened object and read
-	f.reader = object
-	status = f.fillBuffer(buf)
+	// send the minio reader object to a readahead buffer and store that to read
+	// from in the future (we store the minioObj just so we can close it
+	// properly)
+	f.minioObj = object
+	f.readahead = readahead.NewReader(object)
+
+	status := f.fillBuffer(buf)
 	return fuse.ReadResultData(buf), status
 }
 
-// fillBuffer does the actual reading of data from the opened minio object
-// representing the remote data, to the local buffer. Returns ENODATA if we
-// haven't opened the object yet.
+// fillBuffer reads from our readahead buffer in to the Read() buffer.
 func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
-	if f.reader != nil {
-		toRead := len(buf)
-		bytesRead := 0
-		for toRead > 0 {
-			buf := buf[bytesRead : bytesRead+int(toRead)]
-
-			nread, err := f.reader.Read(buf)
-			bytesRead += nread
-			toRead -= nread
-
-			if err != nil {
-				f.reader.Close()
-				f.reader = nil
-				f.readOffset = 0
-				if err == io.EOF {
-					status = fuse.OK
-				} else {
-					f.fs.debug("fillBuffer read failed: %s", err)
-					status = fuse.EIO
-				}
-				return status
-			}
+	bytesRead, err := io.ReadFull(f.readahead, buf)
+	if err != nil {
+		f.readahead.Close()
+		f.readahead = nil
+		f.readOffset = 0
+		if err == io.ErrUnexpectedEOF || err == io.EOF {
+			status = fuse.OK
+		} else {
+			f.fs.debug("fillBuffer read failed: %s", err)
+			status = fuse.EIO
 		}
-		f.readOffset += int64(bytesRead)
-		return fuse.OK
+		return status
 	}
-	return fuse.ENODATA
+	f.readOffset += int64(bytesRead)
+	return fuse.OK
 }
 
-// Release makes sure we close any opened minio object for the remote data.
+// Release makes sure we close our readers.
 func (f *S3File) Release() {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	if f.reader != nil {
-		f.reader.Close()
+	if f.readahead != nil {
+		f.minioObj.Close()
+		f.readahead.Close()
 	}
+	f.skips = nil
 }
 
 // Fsync always returns OK as opposed to "not imlemented" so that write-sync-

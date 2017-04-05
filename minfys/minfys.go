@@ -76,8 +76,7 @@ Both are designed to be run as daemons as opposed to being used in-process.
 minfys is implemented using minio-go for compatibility, and hanwen/go-fuse for
 speed. (In my testing, hanwen/go-fuse and jacobsa/fuse did not have noticeably
 difference performance characteristics, but go-fuse was easier to write for.)
-However, it steals much of its read/write code from goofys (which unfortunately
-has this code locked away in its internal package). It shares all of goofys'
+However, its read/write code is inspired by goofys. It shares all of goofys'
 non-POSIX behaviours:
 
   * only sequential writes supported
@@ -117,11 +116,11 @@ that s3cmd starts to fail.
 
 # Status
 
-Only serial reads have been implemented so far (when not using caching), and
-data caching to the same local disk cache directory should not be used by
-multiple processes at once.
+Only reads have been implemented so far, and data caching to the same local disk
+cache directory should not be used by multiple processes at once.
 
-Coming soon: proper local caching, random reads and serial writes (uploads).
+Coming soon: proper local caching, serial writes (uploads), and multiplexing
+of buckets on the same mount point.
 
 # Usage
 

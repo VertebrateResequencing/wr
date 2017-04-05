@@ -1,6 +1,6 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// Much of the critical read/write code in this file is heavily based on code in
+// The StatFs() code in this file is based on code in
 // https://github.com/kahing/goofys Copyright 2015-2017 Ka-Hing Cheung,
 // licensed under the Apache License, Version 2.0 (the "License"), stating:
 // "You may not use this file except in compliance with the License. You may
@@ -160,52 +160,65 @@ func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Sta
 		fs.debug("ListObjectsV2(%s, %s) call for openDir took %s", fs.bucket, fullPath, time.Since(start))
 	}()
 
-	objectCh := fs.client.ListObjectsV2(fs.bucket, fullPath, false, doneCh)
-	fs.debug("made a ListObjectsV2(%s, %s) call during openDir", fs.bucket, fullPath)
-
 	var isDir bool
-	for object := range objectCh {
-		if object.Err != nil {
-			fs.debug("openDir object in listing had error: %s", object.Err)
-			status = fuse.EIO
-			return
-		}
-		if object.Key == name {
-			continue
-		}
+	retries := 0
+ATTEMPTS:
+	for {
+		objectCh := fs.client.ListObjectsV2(fs.bucket, fullPath, false, doneCh)
+		fs.debug("made a ListObjectsV2(%s, %s) call during openDir", fs.bucket, fullPath)
 
-		d := fuse.DirEntry{
-			Name: object.Key[len(fullPath):],
-		}
-
-		fs.mutex.Lock()
-		if strings.HasSuffix(d.Name, "/") {
-			d.Mode = uint32(fuse.S_IFDIR)
-			d.Name = d.Name[0 : len(d.Name)-1]
-			fs.dirs[filepath.Join(name, d.Name)] = true
-			fs.debug(" - cached %s as a dir", filepath.Join(name, d.Name))
-		} else {
-			d.Mode = uint32(fuse.S_IFREG)
-			thisPath := filepath.Join(name, d.Name)
-			mTime := uint64(object.LastModified.Unix())
-			attr := &fuse.Attr{
-				Mode:  fuse.S_IFREG | fs.fileMode,
-				Size:  uint64(object.Size),
-				Mtime: mTime,
-				Atime: mTime,
-				Ctime: mTime,
+		for object := range objectCh {
+			if object.Err != nil {
+				fs.debug("openDir object in listing had error: %s", object.Err)
+				if strings.Contains(object.Err.Error(), "timeout") {
+					retries++
+					if retries <= 10 {
+						<-time.After(10 * time.Millisecond)
+						fs.debug(" - retrying")
+						continue ATTEMPTS
+					}
+				}
+				status = fuse.EIO
+				return
 			}
-			fs.files[thisPath] = attr
-			fs.debug(" - cached file %s", thisPath)
+			if object.Key == name {
+				continue
+			}
+
+			d := fuse.DirEntry{
+				Name: object.Key[len(fullPath):],
+			}
+
+			fs.mutex.Lock()
+			if strings.HasSuffix(d.Name, "/") {
+				d.Mode = uint32(fuse.S_IFDIR)
+				d.Name = d.Name[0 : len(d.Name)-1]
+				fs.dirs[filepath.Join(name, d.Name)] = true
+				fs.debug(" - cached %s as a dir", filepath.Join(name, d.Name))
+			} else {
+				d.Mode = uint32(fuse.S_IFREG)
+				thisPath := filepath.Join(name, d.Name)
+				mTime := uint64(object.LastModified.Unix())
+				attr := &fuse.Attr{
+					Mode:  fuse.S_IFREG | fs.fileMode,
+					Size:  uint64(object.Size),
+					Mtime: mTime,
+					Atime: mTime,
+					Ctime: mTime,
+				}
+				fs.files[thisPath] = attr
+				fs.debug(" - cached file %s", thisPath)
+			}
+			fs.mutex.Unlock()
+
+			entries = append(entries, d)
+			isDir = true
+
+			// for efficiency, instead of breaking here, we'll keep looping and
+			// cache all the dir contents; this does mean we'll never see new
+			// entries for this dir in the future
 		}
-		fs.mutex.Unlock()
-
-		entries = append(entries, d)
-		isDir = true
-
-		// for efficiency, instead of breaking here, we'll keep looping and
-		// cache all the dir contents; this does mean we'll never see new
-		// entries for this dir in the future
+		break
 	}
 	status = fuse.OK
 
