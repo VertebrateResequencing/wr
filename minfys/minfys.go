@@ -174,14 +174,18 @@ import (
 	"github.com/hanwen/go-fuse/fuse/pathfs"
 	"github.com/jpillora/backoff"
 	"github.com/minio/minio-go"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/user"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -245,6 +249,7 @@ type MinFys struct {
 	dirs          map[string]bool
 	dirContents   map[string][]fuse.DirEntry
 	files         map[string]*fuse.Attr
+	createdFiles  map[string]bool
 	cacheData     bool
 	mutex         sync.Mutex
 	mounted       bool
@@ -271,19 +276,20 @@ func New(config Config) (fs *MinFys, err error) {
 
 	// initialize ourselves
 	fs = &MinFys{
-		FileSystem:  pathfs.NewDefaultFileSystem(),
-		mountPoint:  config.MountPoint,
-		readOnly:    config.ReadOnly,
-		cacheDir:    config.CacheDir,
-		fileMode:    uint32(config.FileMode),
-		dirMode:     uint32(config.DirMode),
-		dirs:        make(map[string]bool),
-		dirContents: make(map[string][]fuse.DirEntry),
-		files:       make(map[string]*fuse.Attr),
-		cacheData:   config.CacheData,
-		debugging:   config.Debug,
-		quiet:       config.Quiet,
-		maxAttempts: config.Retries + 1,
+		FileSystem:   pathfs.NewDefaultFileSystem(),
+		mountPoint:   config.MountPoint,
+		readOnly:     config.ReadOnly,
+		cacheDir:     config.CacheDir,
+		fileMode:     uint32(config.FileMode),
+		dirMode:      uint32(config.DirMode),
+		dirs:         make(map[string]bool),
+		dirContents:  make(map[string][]fuse.DirEntry),
+		files:        make(map[string]*fuse.Attr),
+		createdFiles: make(map[string]bool),
+		cacheData:    config.CacheData,
+		debugging:    config.Debug,
+		quiet:        config.Quiet,
+		maxAttempts:  config.Retries + 1,
 	}
 	err = fs.parseTarget(config.Target)
 	if err != nil {
@@ -424,7 +430,9 @@ func userAndGroup() (uid uint32, gid uint32, err error) {
 // Unmount must be called when you're done reading from/ writing to your bucket.
 // Be sure to close any open filehandles before hand! It's a good idea to defer
 // this after calling Mount(), and possibly also set up a signal trap to
-// Unmount() if your process receives an os.Interrupt or syscall.SIGTERM.
+// Unmount() if your process receives an os.Interrupt or syscall.SIGTERM. In
+// CacheData mode, it is only at Unmount() that any files you created or altered
+// get uploaded, so this may take some time.
 func (fs *MinFys) Unmount() (err error) {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
@@ -434,7 +442,81 @@ func (fs *MinFys) Unmount() (err error) {
 			fs.mounted = false
 		}
 	}
+
+	// upload created files and delete them from the local cache
+	uerr := fs.uploadCreated()
+	if uerr != nil {
+		if err == nil {
+			err = uerr
+		} else {
+			err = fmt.Errorf("%s; %s", err.Error(), uerr.Error())
+		}
+	}
+
 	return
+}
+
+// uploadCreated uploads any files that previously got created, then deletes
+// them from the local cache. Only functions in CacheData mode.
+func (fs *MinFys) uploadCreated() error {
+	if fs.cacheData && !fs.readOnly {
+		fails := 0
+	FILES:
+		for name := range fs.createdFiles {
+			remotePath := fs.GetRemotePath(name)
+			localPath := filepath.Join(fs.cacheDir, fs.bucket, remotePath)
+
+			// get the file's content type *** don't know if this is important,
+			// or if we can just fake it
+			file, err := os.Open(localPath)
+			if err != nil {
+				fs.debug("error: uploadCreated could not open %s: %s", localPath, err)
+				fails++
+				continue FILES
+			}
+			buffer := make([]byte, 512)
+			n, err := file.Read(buffer)
+			if err != nil && err != io.EOF {
+				fs.debug("error: uploadCreated could not read from %s: %s", localPath, err)
+				fails++
+				file.Close()
+				continue FILES
+			}
+			contentType := http.DetectContentType(buffer[:n])
+			file.Close()
+
+			// upload, with automatic retries
+			attempts := 0
+			fs.clientBackoff.Reset()
+			start := time.Now()
+		ATTEMPTS:
+			for {
+				attempts++
+				_, err = fs.client.FPutObject(fs.bucket, remotePath, localPath, contentType)
+				if err != nil {
+					if attempts < fs.maxAttempts {
+						<-time.After(fs.clientBackoff.Duration())
+						continue ATTEMPTS
+					}
+					fs.debug("error: FPutObject(%s, %s, %s) call for uploadCreated failed after %d retries and %s: %s", fs.bucket, remotePath, localPath, attempts-1, time.Since(start), err)
+					fails++
+					continue FILES
+				}
+				fs.debug("info: FPutObject(%s, %s, %s) call for uploadCreated took %s", fs.bucket, remotePath, localPath, time.Since(start))
+				break
+			}
+
+			// delete local copy
+			syscall.Unlink(localPath)
+
+			delete(fs.createdFiles, name)
+		}
+
+		if fails > 0 {
+			return fmt.Errorf("failed to upload %d files\n", fails)
+		}
+	}
+	return nil
 }
 
 // Logs returns messages generated while mounted; you might call it after

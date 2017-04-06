@@ -113,11 +113,11 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 	var object *minio.Object
 	attempts := 0
 	f.fs.clientBackoff.Reset()
+	start := time.Now()
 ATTEMPTS:
 	for {
 		attempts++
 		var err error
-		start := time.Now()
 		object, err = f.fs.client.GetObject(f.fs.bucket, f.path)
 		if err != nil {
 			if attempts < f.fs.maxAttempts {
@@ -191,4 +191,28 @@ func (f *S3File) Release() {
 // write works.
 func (f *S3File) Fsync(flags int) fuse.Status {
 	return fuse.OK
+}
+
+// cachedWriteFile is used as a wrapper around a nodefs.loopbackFile, the only
+// difference being that on Write it updates the given attr's Size.
+type cachedWriteFile struct {
+	nodefs.File
+	attr *fuse.Attr
+}
+
+// NewCachedWriteFile is for use with a nodefs.loopbackFile for a locally
+// created file you want to write to while updating the Size of the given attr.
+// Used to implement MinFys.Create().
+func NewCachedWriteFile(f nodefs.File, attr *fuse.Attr) nodefs.File {
+	return &cachedWriteFile{File: f, attr: attr}
+}
+
+func (f *cachedWriteFile) InnerFile() nodefs.File {
+	return f.File
+}
+
+func (f *cachedWriteFile) Write(data []byte, off int64) (uint32, fuse.Status) {
+	n, s := f.InnerFile().Write(data, off)
+	f.attr.Size += uint64(n)
+	return n, s
 }

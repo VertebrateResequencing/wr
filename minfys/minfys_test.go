@@ -163,6 +163,96 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(read, ShouldEqual, 1073741824)
 			})
+
+			Convey("Trying to write in ReadOnly mode fails", func() {
+				path := mountPoint + "/write.test"
+				b := []byte("write test\n")
+				err := ioutil.WriteFile(path, b, 0644)
+				So(err, ShouldNotBeNil)
+				perr, ok := err.(*os.PathError)
+				So(ok, ShouldBeTrue)
+				So(perr.Error(), ShouldContainSubstring, "operation not permitted")
+			})
+
+			Convey("You can't delete files either", func() {
+				path := mountPoint + "/1G.file"
+				err = os.Remove(path)
+				So(err, ShouldNotBeNil)
+				perr, ok := err.(*os.PathError)
+				So(ok, ShouldBeTrue)
+				So(perr.Error(), ShouldContainSubstring, "operation not permitted")
+			})
+		})
+
+		Convey("You can mount with local file caching in write mode", t, func() {
+			cfg.ReadOnly = false
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				cfg.ReadOnly = true
+				So(err, ShouldBeNil)
+			}()
+
+			Convey("Trying to write in write mode works", func() {
+				path := mountPoint + "/write.test"
+				b := []byte("write test\n")
+				err := ioutil.WriteFile(path, b, 0644)
+				So(err, ShouldBeNil)
+
+				// you can immediately read it back
+				bytes, err := ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(bytes, ShouldResemble, b)
+
+				// (because it's in the the local cache)
+				cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+				_, err = os.Stat(cachePath)
+				So(err, ShouldBeNil)
+
+				// unmounting causes the local cached file to be deleted
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				_, err = os.Stat(cachePath)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+				_, err = os.Stat(path)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+
+				// remounting lets us read the file again - it actually got
+				// uploaded
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				_, err = os.Stat(cachePath)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+
+				bytes, err = ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(bytes, ShouldResemble, b)
+
+				_, err = os.Stat(cachePath)
+				So(err, ShouldBeNil)
+
+				Convey("You can delete files", func() {
+					err = os.Remove(path)
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+				})
+			})
 		})
 
 		Convey("You can mount with debugging yet quiet, and still get the logs", t, func() {
@@ -281,7 +371,7 @@ func TestMinFys(t *testing.T) {
 				So(info.Size(), ShouldEqual, 4)
 			})
 
-			SkipConvey("You can read a whole file as well as parts of it by seeking", func() {
+			Convey("You can read a whole file as well as parts of it by seeking", func() {
 				path := mountPoint + "/100k.lines"
 				read, err := streamFile(path, 0)
 				So(err, ShouldBeNil)
@@ -301,7 +391,7 @@ func TestMinFys(t *testing.T) {
 				So(string(bytes), ShouldEqual, expected)
 			})
 
-			SkipConvey("You can do random reads on large files", func() {
+			Convey("You can do random reads on large files", func() {
 				// sanity check that it works on a small file
 				path := mountPoint + "/numalphanum.txt"
 				r, err := os.Open(path)

@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -56,10 +57,20 @@ func (fs *MinFys) StatFs(name string) *fuse.StatfsOut {
 	}
 }
 
-// GetPath combines any base path initially configured in Target with the
+// GetRemotePath combines any base path initially configured in Target with the
 // current path, to get the real complete remote path.
-func (fs *MinFys) GetPath(relPath string) string {
+func (fs *MinFys) GetRemotePath(relPath string) string {
 	return filepath.Join(fs.basePath, relPath)
+}
+
+// GetLocalPath gets the path to the local cached file when configured with
+// CacheData. You must supply the complete remote path (ie. the return value of
+// GetRemotePath). Returns empty string if not in CacheData mode.
+func (fs *MinFys) GetLocalPath(remotePath string) string {
+	if fs.cacheData {
+		return filepath.Join(fs.cacheDir, fs.bucket, remotePath)
+	}
+	return ""
 }
 
 // GetAttr finds out about a given object, returning information from a
@@ -149,16 +160,16 @@ func (fs *MinFys) OpenDir(name string, context *fuse.Context) (entries []fuse.Di
 // openDir gets the contents of the given name, treating it as a directory,
 // caching the attributes of its contents.
 func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Status) {
-	fullPath := fs.GetPath(name)
+	fullPath := fs.GetRemotePath(name)
 	if fullPath != "" {
 		fullPath += "/"
 	}
 	doneCh := make(chan struct{})
 
-	start := time.Now()
 	var isDir bool
 	attempts := 0
 	fs.clientBackoff.Reset()
+	start := time.Now()
 ATTEMPTS:
 	for {
 		attempts++
@@ -241,7 +252,7 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 	if fs.cacheData {
 		file, status = fs.openCached(name, flags, context, info)
 	} else {
-		file = NewS3File(fs, fs.GetPath(name), info.Size)
+		file = NewS3File(fs, fs.GetRemotePath(name), info.Size)
 		status = fuse.OK
 	}
 
@@ -258,7 +269,7 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 // is currently no locking, so this should only be called by one process at a
 // time (for the same configured CacheDir).
 func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, info *fuse.Attr) (nodefs.File, fuse.Status) {
-	remotePath := fs.GetPath(name)
+	remotePath := fs.GetRemotePath(name)
 
 	// *** will need to do locking to avoid downloading the same file multiple
 	// times simultaneously, including by a completely separate process using
@@ -266,47 +277,178 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 
 	// check cache file doesn't already exist
 	var download bool
-	dst := filepath.Join(fs.cacheDir, remotePath)
-	dstStats, err := os.Stat(dst)
+	localPath := fs.GetLocalPath(remotePath)
+	localStats, err := os.Stat(localPath)
 	if err != nil { // don't bother checking os.IsNotExist(err); we'll download based on any error
-		os.Remove(dst)
+		os.Remove(localPath)
 		download = true
 	} else {
 		// check the file is the right size
-		if dstStats.Size() != int64(info.Size) {
-			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, dstStats.Size(), info.Size)
-			os.Remove(dst)
+		if localStats.Size() != int64(info.Size) {
+			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, localStats.Size(), info.Size)
+			os.Remove(localPath)
 			download = true
 		}
 	}
 
 	if download {
 		s := time.Now()
-		err = fs.client.FGetObject(fs.bucket, remotePath, dst)
+		err = fs.client.FGetObject(fs.bucket, remotePath, localPath)
 		if err != nil {
 			fs.debug("error: FGetObject(%s, %s) call for openCached took %s and failed: %s", fs.bucket, remotePath, time.Since(s), err)
 			return nil, fuse.EIO
 		}
-		dstStats, err := os.Stat(dst)
+		localStats, err := os.Stat(localPath)
 		if err != nil {
 			fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but the downloaded file had error: %s", fs.bucket, remotePath, time.Since(s), err)
-			os.Remove(dst)
+			os.Remove(localPath)
 			return nil, fuse.ToStatus(err)
 		} else {
-			if dstStats.Size() != int64(info.Size) {
-				os.Remove(dst)
-				fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but download sizes differ: %d downloaded vs %d remote", fs.bucket, remotePath, time.Since(s), dstStats.Size(), info.Size)
+			if localStats.Size() != int64(info.Size) {
+				os.Remove(localPath)
+				fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but download sizes differ: %d downloaded vs %d remote", fs.bucket, remotePath, time.Since(s), localStats.Size(), info.Size)
 				return nil, fuse.EIO
 			}
 		}
 		fs.debug("info: FGetObject(%s, %s) call for openCached took %s", fs.bucket, remotePath, time.Since(s))
 	}
 
-	localFile, err := os.Open(dst)
+	localFile, err := os.Open(localPath)
 	if err != nil {
-		fs.debug("error: openCached(%s) could not open %s: %s", name, dst, err)
+		fs.debug("error: openCached(%s) could not open %s: %s", name, localPath, err)
 		return nil, fuse.ToStatus(err)
 	}
 
 	return nodefs.NewLoopbackFile(localFile), fuse.OK
+}
+
+// Chmod is ignored.
+func (fs *MinFys) Chmod(name string, mode uint32, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+	return fuse.OK
+}
+
+// Chown is ignored.
+func (fs *MinFys) Chown(name string, uid uint32, gid uint32, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+	return fuse.OK
+}
+
+// Truncate isn't implemented yet.
+func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+	//return fuse.ToStatus(os.Truncate(fs.GetRemotePath(path), int64(offset)))
+	return fuse.ENOSYS
+}
+
+// Mkdir is ignored.
+func (fs *MinFys) Mkdir(name string, mode uint32, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+	return fuse.OK
+}
+
+// Unlink deletes a file from the remote S3 bucket, as well as any locally
+// cached copy. It returns OK if the file never existed.
+func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+
+	remotePath := fs.GetRemotePath(name)
+	if fs.cacheData {
+		syscall.Unlink(fs.GetLocalPath(remotePath))
+	}
+
+	attempts := 0
+	fs.clientBackoff.Reset()
+	start := time.Now()
+ATTEMPTS:
+	for {
+		attempts++
+		err := fs.client.RemoveObject(fs.bucket, remotePath)
+		if err != nil {
+			if attempts < fs.maxAttempts {
+				<-time.After(fs.clientBackoff.Duration())
+				continue ATTEMPTS
+			}
+			fs.debug("error: RemoveObject(%s, %s) call for Unlink failed after %d retries and %s: %s", fs.bucket, remotePath, attempts-1, time.Since(start), err)
+			return fuse.EIO
+		}
+		fs.debug("info: RemoveObject(%s, %s) call for Unlink took %s", fs.bucket, remotePath, time.Since(start))
+		break
+	}
+
+	delete(fs.files, name)
+	delete(fs.createdFiles, name)
+
+	return fuse.OK
+}
+
+// Rmdir is ignored.
+func (fs *MinFys) Rmdir(name string, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+	return fuse.OK
+}
+
+// Rename isn't implemented yet.
+func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) fuse.Status {
+	if fs.readOnly {
+		return fuse.EPERM
+	}
+	// err := os.Rename(fs.GetPath(oldPath), fs.GetPath(newPath))
+	// return fuse.ToStatus(err)
+	return fuse.ENOSYS
+}
+
+// Access is ignored.
+func (fs *MinFys) Access(name string, mode uint32, context *fuse.Context) fuse.Status {
+	return fuse.OK
+}
+
+// Create creates a new file. context is not currently used. Only currently
+// implemented for when configured with CacheData.
+func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
+	if fs.readOnly {
+		return nil, fuse.EPERM
+	}
+
+	remotePath := fs.GetRemotePath(name)
+	if fs.cacheData {
+		localPath := fs.GetLocalPath(remotePath)
+		dir := filepath.Dir(localPath)
+		err := os.MkdirAll(dir, os.FileMode(fs.dirMode))
+		if err != nil {
+			fs.debug("error: Create(%s) could not make cache parent directory %s: %s", name, dir, err)
+			return nil, fuse.ToStatus(err)
+		}
+
+		localFile, err := os.OpenFile(localPath, int(flags)|os.O_CREATE, os.FileMode(mode))
+		if err != nil {
+			fs.debug("error: Create(%s) could not OpenFile(%s): %s", name, localPath, err)
+		}
+
+		mTime := uint64(time.Now().Unix())
+		attr := &fuse.Attr{
+			Mode:  fuse.S_IFREG | fs.fileMode,
+			Size:  uint64(0),
+			Mtime: mTime,
+			Atime: mTime,
+			Ctime: mTime,
+		}
+		fs.files[name] = attr
+		fs.createdFiles[name] = true
+
+		return NewCachedWriteFile(nodefs.NewLoopbackFile(localFile), attr), fuse.ToStatus(err)
+	}
+	return nil, fuse.ENOSYS
 }
