@@ -25,6 +25,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"path"
@@ -352,7 +353,7 @@ func TestMinFys(t *testing.T) {
 				// fmt.Printf("\n1G file read took %s cached vs %s uncached\n", bigFileGetTime, thisGetTime)
 				So(err, ShouldBeNil)
 				So(read, ShouldEqual, 1073741824)
-				So(thisGetTime, ShouldBeLessThan, bigFileGetTime) // if it isn't, it's almost certainly a bug!
+				So(math.Ceil(thisGetTime.Seconds()), ShouldBeLessThanOrEqualTo, math.Ceil(bigFileGetTime.Seconds())) // if it isn't, it's almost certainly a bug!
 			})
 		})
 
