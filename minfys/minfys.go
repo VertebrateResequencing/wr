@@ -1,5 +1,10 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
+// The parseTarget() code in this file is based on code in
+// https://github.com/minio/minfs Copyright 2016 Minio, Inc.
+// licensed under the Apache License, Version 2.0 (the "License"), stating:
+// "You may not use this file except in compliance with the License. You may
+// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0"
 //
 //  This file is part of wr.
 //
@@ -134,8 +139,11 @@ of buckets on the same mount point.
         SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
         FileMode:   os.FileMode(0644),
         DirMode:    os.FileMode(0755),
+        Retries:    3,
         ReadOnly:   true,
         CacheData:  false,
+        Debug:      true,
+        Quiet:      true,
     }
 
     fs, err := minfys.New(cfg)
@@ -154,6 +162,8 @@ of buckets on the same mount point.
     if err != nil {
         log.Fatalf("could not unmount: %s\n", err)
     }
+
+    logs := fs.Logs()
 */
 package minfys
 
@@ -207,6 +217,11 @@ type Config struct {
 	// Errors are always logged; turning on Debug also logs informational
 	// timings on all remote requests.
 	Debug bool
+
+	// Turning on Quiet mode means that no messages get printed to the logger,
+	// though errors (and informational messages if Debug is on) are still
+	// accessible via Logs().
+	Quiet bool
 }
 
 // MinFys struct is the main filey system object.
@@ -233,6 +248,8 @@ type MinFys struct {
 	mutex         sync.Mutex
 	mounted       bool
 	debugging     bool
+	quiet         bool
+	loggedMsgs    []string
 }
 
 // New, given a configuration, returns a MinFys that you'll use to Mount() your
@@ -263,6 +280,7 @@ func New(config Config) (fs *MinFys, err error) {
 		files:       make(map[string]*fuse.Attr),
 		cacheData:   config.CacheData,
 		debugging:   config.Debug,
+		quiet:       config.Quiet,
 		maxAttempts: config.Retries + 1,
 	}
 	err = fs.parseTarget(config.Target)
@@ -417,10 +435,25 @@ func (fs *MinFys) Unmount() (err error) {
 	return
 }
 
-// debug is our simplistic way of logging debugging messages. To get these in to
-// a file, just call log.SetOutput() from the log package.
+// Logs returns messages generated while mounted; you might call it after
+// Unmount() to see how things went. By default these will only be errors that
+// occurred, but if minfys was configured with Debug on, it will also contain
+// informational and warning messages. If minfys was configured with Quiet off,
+// these same messages would have been printed to the logger as they occurred.
+func (fs *MinFys) Logs() []string {
+	return fs.loggedMsgs[:]
+}
+
+// debug is our simplistic way of logging messages. When Quiet mode is off the
+// messages get printed to STDERR; to get these in to a file, just call
+// log.SetOutput() from the log package. Regardless of Quiet mode, these
+// messages are accessible via Logs() afterwards.
 func (fs *MinFys) debug(msg string, a ...interface{}) {
 	if fs.debugging || strings.HasPrefix(msg, "error") {
-		log.Printf("minfys %s\n", fmt.Sprintf(msg, a...))
+		logMsg := fmt.Sprintf("minfys %s", fmt.Sprintf(msg, a...))
+		if !fs.quiet {
+			log.Println(logMsg)
+		}
+		fs.loggedMsgs = append(fs.loggedMsgs, logMsg)
 	}
 }

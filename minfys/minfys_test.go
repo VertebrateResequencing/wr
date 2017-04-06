@@ -84,6 +84,7 @@ func TestMinFys(t *testing.T) {
 			ReadOnly:   true,
 			CacheData:  true,
 			Debug:      false,
+			Quiet:      false,
 		}
 
 		var bigFileGetTime time.Duration
@@ -161,6 +162,47 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(read, ShouldEqual, 1073741824)
 			})
+		})
+
+		Convey("You can mount with debugging yet quiet, and still get the logs", t, func() {
+			origDebug := cfg.Debug
+			cfg.Debug = true
+			cfg.Quiet = true
+			defer func() {
+				cfg.Debug = origDebug
+				cfg.Quiet = false
+			}()
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			_, err = ioutil.ReadDir(mountPoint)
+			expectedErrorLog := ""
+			if err != nil {
+				expectedErrorLog = "error: ListObjectsV2"
+			}
+
+			err = fs.Unmount()
+			So(err, ShouldBeNil)
+
+			logs := fs.Logs()
+			So(logs, ShouldNotBeNil)
+			var foundExpectedLog bool
+			var foundErrorLog bool
+			for _, log := range logs {
+				if strings.Contains(log, "info: ListObjectsV2") {
+					foundExpectedLog = true
+				}
+				if expectedErrorLog != "" && strings.Contains(log, expectedErrorLog) {
+					foundErrorLog = true
+				}
+			}
+			So(foundExpectedLog, ShouldBeTrue)
+			if expectedErrorLog != "" {
+				So(foundErrorLog, ShouldBeTrue)
+			}
 		})
 
 		Convey("You can mount without local file caching", t, func() {
