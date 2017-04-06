@@ -232,17 +232,24 @@ ATTEMPTS:
 // doesn't exist. Neither flags nor context are currently used. If CacheData has
 // been configured, we defer to openCached(). Otherwise the real implementation
 // is in S3File.
-func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
+func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, status fuse.Status) {
 	info, exists := fs.files[name]
 	if !exists {
 		return nil, fuse.ENOENT
 	}
 
 	if fs.cacheData {
-		return fs.openCached(name, flags, context, info)
+		file, status = fs.openCached(name, flags, context, info)
+	} else {
+		file = NewS3File(fs, fs.GetPath(name), info.Size)
+		status = fuse.OK
 	}
 
-	return NewS3File(fs, fs.GetPath(name), info.Size), fuse.OK
+	if fs.readOnly {
+		file = nodefs.NewReadOnlyFile(file)
+	}
+
+	return
 }
 
 // openCached downloads the remotePath to the configure CacheDir, then all

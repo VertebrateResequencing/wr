@@ -301,7 +301,7 @@ func TestMinFys(t *testing.T) {
 				So(string(bytes), ShouldEqual, expected)
 			})
 
-			Convey("You can do random reads on large files", func() {
+			SkipConvey("You can do random reads on large files", func() {
 				// sanity check that it works on a small file
 				path := mountPoint + "/numalphanum.txt"
 				r, err := os.Open(path)

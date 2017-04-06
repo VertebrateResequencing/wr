@@ -236,6 +236,7 @@ type MinFys struct {
 	bucket        string
 	basePath      string
 	mountPoint    string
+	readOnly      bool
 	cacheDir      string
 	fileMode      uint32
 	dirMode       uint32
@@ -272,6 +273,7 @@ func New(config Config) (fs *MinFys, err error) {
 	fs = &MinFys{
 		FileSystem:  pathfs.NewDefaultFileSystem(),
 		mountPoint:  config.MountPoint,
+		readOnly:    config.ReadOnly,
 		cacheDir:    config.CacheDir,
 		fileMode:    uint32(config.FileMode),
 		dirMode:     uint32(config.DirMode),
