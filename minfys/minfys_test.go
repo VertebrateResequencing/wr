@@ -80,6 +80,7 @@ func TestMinFys(t *testing.T) {
 			SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
 			FileMode:   os.FileMode(0644),
 			DirMode:    os.FileMode(0755),
+			Retries:    10,
 			ReadOnly:   true,
 			CacheData:  true,
 			Debug:      false,
@@ -301,6 +302,7 @@ func TestMinFys(t *testing.T) {
 			})
 
 			Convey("You can read a very big file", func() {
+				ioutil.ReadDir(mountPoint) // we need to time reading the file, not stating it
 				path := mountPoint + "/1G.file"
 				start := time.Now()
 				read, err := streamFile(path, 0)

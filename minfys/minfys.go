@@ -162,6 +162,7 @@ import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"github.com/hanwen/go-fuse/fuse/pathfs"
+	"github.com/jpillora/backoff"
 	"github.com/minio/minio-go"
 	"log"
 	"net/url"
@@ -192,36 +193,46 @@ type Config struct {
 	// create this if it doesn't exist).
 	CacheDir string
 
+	// If a request to the remote S3 system fails, how many times should it be
+	// automatically retried? The default of 0 means don't retry; at least 3 is
+	// recommended.
+	Retries int
+
 	AccessKey string
 	SecretKey string
 	FileMode  os.FileMode
 	DirMode   os.FileMode
 	ReadOnly  bool
-	Debug     bool
+
+	// Errors are always logged; turning on Debug also logs informational
+	// timings on all remote requests.
+	Debug bool
 }
 
 // MinFys struct is the main filey system object.
 type MinFys struct {
 	pathfs.FileSystem
-	client      *minio.Client
-	target      string
-	secure      bool
-	host        string
-	bucket      string
-	basePath    string
-	mountPoint  string
-	cacheDir    string
-	fileMode    uint32
-	dirMode     uint32
-	dirAttr     *fuse.Attr
-	server      *fuse.Server
-	dirs        map[string]bool
-	dirContents map[string][]fuse.DirEntry
-	files       map[string]*fuse.Attr
-	cacheData   bool
-	mutex       sync.Mutex
-	mounted     bool
-	debugging   bool
+	client        *minio.Client
+	clientBackoff *backoff.Backoff
+	maxAttempts   int
+	target        string
+	secure        bool
+	host          string
+	bucket        string
+	basePath      string
+	mountPoint    string
+	cacheDir      string
+	fileMode      uint32
+	dirMode       uint32
+	dirAttr       *fuse.Attr
+	server        *fuse.Server
+	dirs          map[string]bool
+	dirContents   map[string][]fuse.DirEntry
+	files         map[string]*fuse.Attr
+	cacheData     bool
+	mutex         sync.Mutex
+	mounted       bool
+	debugging     bool
 }
 
 // New, given a configuration, returns a MinFys that you'll use to Mount() your
@@ -252,6 +263,7 @@ func New(config Config) (fs *MinFys, err error) {
 		files:       make(map[string]*fuse.Attr),
 		cacheData:   config.CacheData,
 		debugging:   config.Debug,
+		maxAttempts: config.Retries + 1,
 	}
 	err = fs.parseTarget(config.Target)
 	if err != nil {
@@ -264,6 +276,12 @@ func New(config Config) (fs *MinFys, err error) {
 		return
 	}
 	fs.client = client
+	fs.clientBackoff = &backoff.Backoff{
+		Min:    100 * time.Millisecond,
+		Max:    10 * time.Second,
+		Factor: 3,
+		Jitter: true,
+	}
 
 	// cheats for s3-like filesystems
 	mTime := uint64(time.Now().Unix())
@@ -402,7 +420,7 @@ func (fs *MinFys) Unmount() (err error) {
 // debug is our simplistic way of logging debugging messages. To get these in to
 // a file, just call log.SetOutput() from the log package.
 func (fs *MinFys) debug(msg string, a ...interface{}) {
-	if fs.debugging {
-		log.Printf("debug: %s\n", fmt.Sprintf(msg, a...))
+	if fs.debugging || strings.HasPrefix(msg, "error") {
+		log.Printf("minfys %s\n", fmt.Sprintf(msg, a...))
 	}
 }

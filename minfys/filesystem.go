@@ -156,28 +156,21 @@ func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Sta
 	doneCh := make(chan struct{})
 
 	start := time.Now()
-	defer func() {
-		fs.debug("ListObjectsV2(%s, %s) call for openDir took %s", fs.bucket, fullPath, time.Since(start))
-	}()
-
 	var isDir bool
-	retries := 0
+	attempts := 0
+	fs.clientBackoff.Reset()
 ATTEMPTS:
 	for {
+		attempts++
 		objectCh := fs.client.ListObjectsV2(fs.bucket, fullPath, false, doneCh)
-		fs.debug("made a ListObjectsV2(%s, %s) call during openDir", fs.bucket, fullPath)
 
 		for object := range objectCh {
 			if object.Err != nil {
-				fs.debug("openDir object in listing had error: %s", object.Err)
-				if strings.Contains(object.Err.Error(), "timeout") {
-					retries++
-					if retries <= 10 {
-						<-time.After(10 * time.Millisecond)
-						fs.debug(" - retrying")
-						continue ATTEMPTS
-					}
+				if attempts < fs.maxAttempts {
+					<-time.After(fs.clientBackoff.Duration())
+					continue ATTEMPTS
 				}
+				fs.debug("error: ListObjectsV2(%s, %s) call for openDir failed after %d retries and %s: %s", fs.bucket, fullPath, attempts-1, time.Since(start), object.Err)
 				status = fuse.EIO
 				return
 			}
@@ -194,7 +187,6 @@ ATTEMPTS:
 				d.Mode = uint32(fuse.S_IFDIR)
 				d.Name = d.Name[0 : len(d.Name)-1]
 				fs.dirs[filepath.Join(name, d.Name)] = true
-				fs.debug(" - cached %s as a dir", filepath.Join(name, d.Name))
 			} else {
 				d.Mode = uint32(fuse.S_IFREG)
 				thisPath := filepath.Join(name, d.Name)
@@ -207,7 +199,6 @@ ATTEMPTS:
 					Ctime: mTime,
 				}
 				fs.files[thisPath] = attr
-				fs.debug(" - cached file %s", thisPath)
 			}
 			fs.mutex.Unlock()
 
@@ -221,6 +212,7 @@ ATTEMPTS:
 		break
 	}
 	status = fuse.OK
+	fs.debug("info: ListObjectsV2(%s, %s) call for openDir took %s", fs.bucket, fullPath, time.Since(start))
 
 	if isDir {
 		fs.mutex.Lock()
@@ -241,11 +233,6 @@ ATTEMPTS:
 // been configured, we defer to openCached(). Otherwise the real implementation
 // is in S3File.
 func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
-	start := time.Now()
-	defer func() {
-		fs.debug("Open for %s took %s", name, time.Since(start))
-	}()
-
 	info, exists := fs.files[name]
 	if !exists {
 		return nil, fuse.ENOENT
@@ -280,37 +267,37 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 	} else {
 		// check the file is the right size
 		if dstStats.Size() != int64(info.Size) {
-			fs.debug("openCached sizes differ: %d vs %d", dstStats.Size(), info.Size)
+			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, dstStats.Size(), info.Size)
 			os.Remove(dst)
 			download = true
-		} else {
-			fs.debug("using cache of %s", remotePath)
 		}
 	}
 
 	if download {
 		s := time.Now()
 		err = fs.client.FGetObject(fs.bucket, remotePath, dst)
-		fs.debug("made a FGetObject(%s, %s, ...) call", fs.bucket, remotePath)
 		if err != nil {
+			fs.debug("error: FGetObject(%s, %s) call for openCached took %s and failed: %s", fs.bucket, remotePath, time.Since(s), err)
 			return nil, fuse.EIO
 		}
 		dstStats, err := os.Stat(dst)
 		if err != nil {
+			fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but the downloaded file had error: %s", fs.bucket, remotePath, time.Since(s), err)
 			os.Remove(dst)
 			return nil, fuse.ToStatus(err)
 		} else {
 			if dstStats.Size() != int64(info.Size) {
 				os.Remove(dst)
-				fs.debug("openCached download vs remote sizes differ: %d vs %d", dstStats.Size(), info.Size)
+				fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but download sizes differ: %d downloaded vs %d remote", fs.bucket, remotePath, time.Since(s), dstStats.Size(), info.Size)
 				return nil, fuse.EIO
 			}
 		}
-		fs.debug("download of %s completed fine in %s", remotePath, time.Since(s))
+		fs.debug("info: FGetObject(%s, %s) call for openCached took %s", fs.bucket, remotePath, time.Since(s))
 	}
 
 	localFile, err := os.Open(dst)
 	if err != nil {
+		fs.debug("error: openCached(%s) could not open %s: %s", name, dst, err)
 		return nil, fuse.ToStatus(err)
 	}
 
