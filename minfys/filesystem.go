@@ -265,7 +265,7 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 	return
 }
 
-// openCached downloads the remotePath to the configure CacheDir, then all
+// openCached downloads the remotePath to the configured CacheDir, then all
 // subsequent read/write operations are deferred to the *os.File for that local
 // file. Any writes are currently lost because they're not uploaded! NB: there
 // is currently no locking, so this should only be called by one process at a
