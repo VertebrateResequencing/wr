@@ -466,44 +466,11 @@ func (fs *MinFys) uploadCreated() error {
 			remotePath := fs.GetRemotePath(name)
 			localPath := filepath.Join(fs.cacheDir, fs.bucket, remotePath)
 
-			// get the file's content type *** don't know if this is important,
-			// or if we can just fake it
-			file, err := os.Open(localPath)
-			if err != nil {
-				fs.debug("error: uploadCreated could not open %s: %s", localPath, err)
+			// upload file
+			worked := fs.uploadFile(localPath, remotePath)
+			if !worked {
 				fails++
 				continue FILES
-			}
-			buffer := make([]byte, 512)
-			n, err := file.Read(buffer)
-			if err != nil && err != io.EOF {
-				fs.debug("error: uploadCreated could not read from %s: %s", localPath, err)
-				fails++
-				file.Close()
-				continue FILES
-			}
-			contentType := http.DetectContentType(buffer[:n])
-			file.Close()
-
-			// upload, with automatic retries
-			attempts := 0
-			fs.clientBackoff.Reset()
-			start := time.Now()
-		ATTEMPTS:
-			for {
-				attempts++
-				_, err = fs.client.FPutObject(fs.bucket, remotePath, localPath, contentType)
-				if err != nil {
-					if attempts < fs.maxAttempts {
-						<-time.After(fs.clientBackoff.Duration())
-						continue ATTEMPTS
-					}
-					fs.debug("error: FPutObject(%s, %s, %s) call for uploadCreated failed after %d retries and %s: %s", fs.bucket, remotePath, localPath, attempts-1, time.Since(start), err)
-					fails++
-					continue FILES
-				}
-				fs.debug("info: FPutObject(%s, %s, %s) call for uploadCreated took %s", fs.bucket, remotePath, localPath, time.Since(start))
-				break
 			}
 
 			// delete local copy
@@ -517,6 +484,48 @@ func (fs *MinFys) uploadCreated() error {
 		}
 	}
 	return nil
+}
+
+// uploadFile uploads the given local file to the given remote path, with
+// automatic retries on failure. Returns true if the upload was successful.
+func (fs *MinFys) uploadFile(localPath, remotePath string) bool {
+	// get the file's content type *** don't know if this is important, or if we
+	// can just fake it
+	file, err := os.Open(localPath)
+	if err != nil {
+		fs.debug("error: uploadFile could not open %s: %s", localPath, err)
+		return false
+	}
+	buffer := make([]byte, 512)
+	n, err := file.Read(buffer)
+	if err != nil && err != io.EOF {
+		fs.debug("error: uploadFile could not read from %s: %s", localPath, err)
+		file.Close()
+		return false
+	}
+	contentType := http.DetectContentType(buffer[:n])
+	file.Close()
+
+	// upload, with automatic retries
+	attempts := 0
+	fs.clientBackoff.Reset()
+	start := time.Now()
+ATTEMPTS:
+	for {
+		attempts++
+		_, err = fs.client.FPutObject(fs.bucket, remotePath, localPath, contentType)
+		if err != nil {
+			if attempts < fs.maxAttempts {
+				<-time.After(fs.clientBackoff.Duration())
+				continue ATTEMPTS
+			}
+			fs.debug("error: FPutObject(%s, %s, %s) call for uploadCreated failed after %d retries and %s: %s", fs.bucket, remotePath, localPath, attempts-1, time.Since(start), err)
+			return false
+		}
+		fs.debug("info: FPutObject(%s, %s, %s) call for uploadCreated took %s", fs.bucket, remotePath, localPath, time.Since(start))
+		break
+	}
+	return true
 }
 
 // Logs returns messages generated while mounted; you might call it after
