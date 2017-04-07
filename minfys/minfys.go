@@ -46,7 +46,7 @@ unchanging cache files, and a few big input files that we process using those
 cache files, and finally generate some results.
 
 In particular this means we hold on to directory and file attributes forever and
-assume they don't change (though new files will be detected).
+assume they don't change externally.
 
 When using minfys, you 1) mount, 2) do something that needs the files in your S3
 bucket(s), 3) unmount. Then repeat 1-3 for other things that need data in your
@@ -121,11 +121,13 @@ that s3cmd starts to fail.
 
 # Status
 
-Only reads have been implemented so far, and data caching to the same local disk
-cache directory should not be used by multiple processes at once.
+In cached mode, random reads and writes have been implemented. But the same
+local disk cache directory should not be used by multiple processes at once.
 
-Coming soon: proper local caching, serial writes (uploads), and multiplexing
-of buckets on the same mount point.
+In non-cached mode, only random reads have been implemented so far.
+
+Coming soon: proper local caching, serial writes in non-cached mode, and
+multiplexing of buckets on the same mount point.
 
 # Usage
 
@@ -141,7 +143,7 @@ of buckets on the same mount point.
         DirMode:    os.FileMode(0755),
         Retries:    3,
         ReadOnly:   true,
-        CacheData:  false,
+        CacheData:  true,
         Debug:      true,
         Quiet:      true,
     }
@@ -156,7 +158,7 @@ of buckets on the same mount point.
         log.Fatalf("could not mount: %s\n", err)
     }
 
-    // read from files in /tmp/minfys/bucket
+    // read from & write to files in /tmp/minfys/bucket
 
     err = fs.Unmount()
     if err != nil {

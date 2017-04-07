@@ -241,8 +241,20 @@ func TestMinFys(t *testing.T) {
 				_, err = os.Stat(cachePath)
 				So(err, ShouldBeNil)
 
-				Convey("You can delete files", func() {
-					err = os.Remove(path)
+				Convey("You can append to a cached file", func() {
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					line2 := "line2\n"
+					_, err = f.WriteString(line2)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+
+					err = fs.Unmount()
 					So(err, ShouldBeNil)
 
 					_, err = os.Stat(cachePath)
@@ -251,6 +263,361 @@ func TestMinFys(t *testing.T) {
 					_, err = os.Stat(path)
 					So(err, ShouldNotBeNil)
 					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+
+					Convey("You can truncate a cached file", func() {
+						err := os.Truncate(path, 0)
+						So(err, ShouldBeNil)
+
+						cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+						stat, err := os.Stat(cachePath)
+						So(err, ShouldBeNil)
+						So(stat.Size(), ShouldEqual, 0)
+						stat, err = os.Stat(path)
+						So(err, ShouldBeNil)
+						So(stat.Size(), ShouldEqual, 0)
+
+						err = fs.Unmount()
+						So(err, ShouldBeNil)
+
+						stat, err = os.Stat(cachePath)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+
+						err = fs.Mount()
+						So(err, ShouldBeNil)
+
+						stat, err = os.Stat(cachePath)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+						stat, err = os.Stat(path)
+						So(err, ShouldBeNil)
+						So(stat.Size(), ShouldEqual, 0)
+						bytes, err = ioutil.ReadFile(path)
+						So(err, ShouldBeNil)
+						So(string(bytes), ShouldEqual, "")
+
+						Convey("You can delete files", func() {
+							err = os.Remove(path)
+							So(err, ShouldBeNil)
+
+							_, err = os.Stat(cachePath)
+							So(err, ShouldNotBeNil)
+							So(os.IsNotExist(err), ShouldBeTrue)
+							_, err = os.Stat(path)
+							So(err, ShouldNotBeNil)
+							So(os.IsNotExist(err), ShouldBeTrue)
+						})
+					})
+
+					Convey("You can truncate a cached file using an offset", func() {
+						err := os.Truncate(path, 3)
+						So(err, ShouldBeNil)
+
+						cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+						stat, err := os.Stat(cachePath)
+						So(err, ShouldBeNil)
+						So(stat.Size(), ShouldEqual, 3)
+						stat, err = os.Stat(path)
+						So(err, ShouldBeNil)
+						So(stat.Size(), ShouldEqual, 3)
+
+						err = fs.Unmount()
+						So(err, ShouldBeNil)
+
+						stat, err = os.Stat(cachePath)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+
+						err = fs.Mount()
+						So(err, ShouldBeNil)
+
+						stat, err = os.Stat(cachePath)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+						stat, err = os.Stat(path)
+						So(err, ShouldBeNil)
+						So(stat.Size(), ShouldEqual, 3)
+						bytes, err := ioutil.ReadFile(path)
+						So(err, ShouldBeNil)
+						So(string(bytes), ShouldEqual, "wri")
+
+						err = os.Remove(path)
+						So(err, ShouldBeNil)
+					})
+
+					Convey("You can truncate a cached file and then write to it", func() {
+						err := os.Truncate(path, 0)
+						So(err, ShouldBeNil)
+
+						f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+						So(err, ShouldBeNil)
+
+						line := "trunc\n"
+						_, err = f.WriteString(line)
+						f.Close()
+						So(err, ShouldBeNil)
+
+						bytes, err := ioutil.ReadFile(path)
+						So(err, ShouldBeNil)
+						So(string(bytes), ShouldEqual, line)
+
+						err = fs.Unmount()
+						So(err, ShouldBeNil)
+
+						cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+						_, err = os.Stat(cachePath)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+						_, err = os.Stat(path)
+						So(err, ShouldNotBeNil)
+						So(os.IsNotExist(err), ShouldBeTrue)
+
+						err = fs.Mount()
+						So(err, ShouldBeNil)
+
+						bytes, err = ioutil.ReadFile(path)
+						So(err, ShouldBeNil)
+						So(string(bytes), ShouldEqual, line)
+
+						err = os.Remove(path)
+						So(err, ShouldBeNil)
+					})
+				})
+			})
+
+			Convey("In write mode, you can create a file to test with...", func() {
+				// create a file we can play with first
+				path := mountPoint + "/write.test"
+				b := []byte("write test\n")
+				err := ioutil.WriteFile(path, b, 0644)
+				So(err, ShouldBeNil)
+
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = os.Remove(path)
+					So(err, ShouldBeNil)
+				}()
+
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				Convey("You can't write to a file you open RDONLY", func() {
+					f, err := os.OpenFile(path, os.O_RDONLY, 0644)
+					So(err, ShouldBeNil)
+					_, err = f.WriteString("fails\n")
+					f.Close()
+					So(err, ShouldNotBeNil)
+				})
+
+				Convey("You can append to an uncached file", func() {
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					line2 := "line2\n"
+					_, err = f.WriteString(line2)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+
+					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					_, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+				})
+
+				Convey("You can truncate an uncached file", func() {
+					err := os.Truncate(path, 0)
+					So(err, ShouldBeNil)
+
+					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					stat, err := os.Stat(cachePath)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 0)
+					stat, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 0)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+
+					stat, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					stat, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					stat, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 0)
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, "")
+				})
+
+				Convey("You can truncate an uncached file using an offset", func() {
+					err := os.Truncate(path, 3)
+					So(err, ShouldBeNil)
+
+					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					stat, err := os.Stat(cachePath)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 3)
+					stat, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 3)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+
+					stat, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					stat, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					stat, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 3)
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, "wri")
+				})
+
+				Convey("You can truncate an uncached file using an Open call", func() {
+					f, err := os.OpenFile(path, os.O_TRUNC, 0644)
+					So(err, ShouldBeNil)
+					f.Close()
+
+					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					stat, err := os.Stat(cachePath)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 0)
+					stat, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 0)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+
+					stat, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					stat, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					stat, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(stat.Size(), ShouldEqual, 0)
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, "")
+				})
+
+				Convey("You can truncate an uncached file and immediately write to it", func() {
+					err := os.Truncate(path, 0)
+					So(err, ShouldBeNil)
+
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					line := "trunc\n"
+					_, err = f.WriteString(line)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, line)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+
+					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					_, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, line)
+				})
+
+				SkipConvey("You can truncate an uncached file using an Open call and write to it", func() {
+					f, err := os.OpenFile(path, os.O_TRUNC|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+					//*** this fails because it results in an fs.Open() call
+					// where I see the os.O_WRONLY flag but not the os.O_TRUNC
+					// flag
+
+					line := "trunc\n"
+					_, err = f.WriteString(line)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, line)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+
+					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					_, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+					So(os.IsNotExist(err), ShouldBeTrue)
+
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, line)
 				})
 			})
 		})

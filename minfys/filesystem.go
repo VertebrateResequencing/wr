@@ -28,6 +28,8 @@ package minfys
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
+	"github.com/minio/minio-go"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,9 +242,9 @@ ATTEMPTS:
 
 // Open is what is called when any request to read a file is made. The file must
 // already have been stat'ed (eg. with a GetAttr() call), or we report the file
-// doesn't exist. Neither flags nor context are currently used. If CacheData has
-// been configured, we defer to openCached(). Otherwise the real implementation
-// is in S3File.
+// doesn't exist. context is not currently used. If CacheData has been
+// configured, we defer to openCached(). Otherwise the real implementation is in
+// S3File.
 func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, status fuse.Status) {
 	info, exists := fs.files[name]
 	if !exists {
@@ -256,7 +258,7 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 		status = fuse.OK
 	}
 
-	if fs.readOnly {
+	if fs.readOnly || (int(flags)&os.O_WRONLY == 0 && int(flags)&os.O_RDWR == 0) {
 		file = nodefs.NewReadOnlyFile(file)
 	}
 
@@ -292,27 +294,48 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 	}
 
 	if download {
-		s := time.Now()
-		err = fs.client.FGetObject(fs.bucket, remotePath, localPath)
-		if err != nil {
-			fs.debug("error: FGetObject(%s, %s) call for openCached took %s and failed: %s", fs.bucket, remotePath, time.Since(s), err)
-			return nil, fuse.EIO
+		// download whole remote object, with automatic retries
+		attempts := 0
+		fs.clientBackoff.Reset()
+		start := time.Now()
+	ATTEMPTS:
+		for {
+			attempts++
+			var err error
+			err = fs.client.FGetObject(fs.bucket, remotePath, localPath)
+			if err != nil {
+				if attempts < fs.maxAttempts {
+					<-time.After(fs.clientBackoff.Duration())
+					continue ATTEMPTS
+				}
+				fs.debug("error: FGetObject(%s, %s) call for openCached failed after %d retries and %s: %s", fs.bucket, remotePath, attempts-1, time.Since(start), err)
+				return nil, fuse.EIO
+			}
+			fs.debug("info: FGetObject(%s, %s) call for openCached took %s", fs.bucket, remotePath, time.Since(start))
+			break
 		}
+
+		// check size ok
 		localStats, err := os.Stat(localPath)
 		if err != nil {
-			fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but the downloaded file had error: %s", fs.bucket, remotePath, time.Since(s), err)
+			fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", fs.bucket, remotePath, err)
 			os.Remove(localPath)
 			return nil, fuse.ToStatus(err)
 		} else {
 			if localStats.Size() != int64(info.Size) {
 				os.Remove(localPath)
-				fs.debug("error: FGetObject(%s, %s) call for openCached took %s and worked, but download sizes differ: %d downloaded vs %d remote", fs.bucket, remotePath, time.Since(s), localStats.Size(), info.Size)
+				fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", fs.bucket, remotePath, localStats.Size(), info.Size)
 				return nil, fuse.EIO
 			}
 		}
-		fs.debug("info: FGetObject(%s, %s) call for openCached took %s", fs.bucket, remotePath, time.Since(s))
 	}
 
+	// open for appending, treating it like we created the file
+	if int(flags)&os.O_APPEND != 0 {
+		return fs.Create(name, flags, fs.fileMode, context)
+	}
+
+	// open for reading
 	localFile, err := os.Open(localPath)
 	if err != nil {
 		fs.debug("error: openCached(%s) could not open %s: %s", name, localPath, err)
@@ -338,12 +361,104 @@ func (fs *MinFys) Chown(name string, uid uint32, gid uint32, context *fuse.Conte
 	return fuse.OK
 }
 
-// Truncate isn't implemented yet.
+// Truncate truncates any local cached copy of the file. Only currently
+// implemented for when configured with CacheData; the results of the Truncate
+// are only uploaded at Unmount() time. If offset is > size of file, does
+// nothing and returns OK.
 func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fuse.Status {
 	if fs.readOnly {
 		return fuse.EPERM
 	}
-	//return fuse.ToStatus(os.Truncate(fs.GetRemotePath(path), int64(offset)))
+
+	attr, existed := fs.files[name]
+	if !existed {
+		return fuse.ENOENT
+	}
+
+	if offset > attr.Size {
+		return fuse.OK
+	}
+
+	remotePath := fs.GetRemotePath(name)
+	if fs.cacheData {
+		localPath := fs.GetLocalPath(remotePath)
+
+		// *** as per openCached, we need locking of this file globally...
+
+		if _, err := os.Stat(localPath); err == nil {
+			// truncate local cached copy
+			err := os.Truncate(localPath, int64(offset))
+			if err != nil {
+				return fuse.ToStatus(err)
+			}
+		} else {
+			// create a new empty file
+			dir := filepath.Dir(localPath)
+			err := os.MkdirAll(dir, os.FileMode(fs.dirMode))
+			if err != nil {
+				fs.debug("error: Truncate(%s) could not make cache parent directory %s: %s", name, dir, err)
+				return fuse.EIO
+			}
+
+			localFile, err := os.Create(localPath)
+			if err != nil {
+				fs.debug("error: Truncate(%s) could not create %s: %s", name, localPath, err)
+				return fuse.EIO
+			}
+
+			if offset == 0 {
+				localFile.Close()
+			} else {
+				// download offset bytes of remote file
+				var object *minio.Object
+				attempts := 0
+				fs.clientBackoff.Reset()
+				start := time.Now()
+			ATTEMPTS:
+				for {
+					attempts++
+					var err error
+					object, err = fs.client.GetObject(fs.bucket, remotePath)
+					if err != nil {
+						if attempts < fs.maxAttempts {
+							<-time.After(fs.clientBackoff.Duration())
+							continue ATTEMPTS
+						}
+						fs.debug("error: GetObject(%s, %s) call for Truncate failed after %d retries and %s: %s", fs.bucket, remotePath, attempts-1, time.Since(start), err)
+						localFile.Close()
+						syscall.Unlink(localPath)
+						return fuse.EIO
+					}
+					fs.debug("info: GetObject(%s, %s) call for Truncate took %s", fs.bucket, remotePath, time.Since(start))
+					break
+				}
+
+				written, err := io.CopyN(localFile, object, int64(offset))
+				if err != nil {
+					fs.debug("error: Truncate(%s) failed to copy %d bytes from %s: %s", name, offset, remotePath, err)
+					localFile.Close()
+					syscall.Unlink(localPath)
+					return fuse.EIO
+				}
+				if written != int64(offset) {
+					fs.debug("error: Truncate(%s) failed to copy all %d bytes from %s", name, offset, remotePath)
+					localFile.Close()
+					syscall.Unlink(localPath)
+					return fuse.EIO
+				}
+
+				localFile.Close()
+				object.Close()
+			}
+		}
+
+		// update attr and claim we created this file
+		attr.Size = offset
+		attr.Mtime = uint64(time.Now().Unix())
+		fs.createdFiles[name] = true
+
+		return fuse.OK
+	}
 	return fuse.ENOSYS
 }
 
@@ -416,7 +531,8 @@ func (fs *MinFys) Access(name string, mode uint32, context *fuse.Context) fuse.S
 }
 
 // Create creates a new file. context is not currently used. Only currently
-// implemented for when configured with CacheData.
+// implemented for when configured with CacheData; the contents of the created
+// file are only uploaded at Unmount() time.
 func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
 	if fs.readOnly {
 		return nil, fuse.EPERM
@@ -437,15 +553,18 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 			fs.debug("error: Create(%s) could not OpenFile(%s): %s", name, localPath, err)
 		}
 
-		mTime := uint64(time.Now().Unix())
-		attr := &fuse.Attr{
-			Mode:  fuse.S_IFREG | fs.fileMode,
-			Size:  uint64(0),
-			Mtime: mTime,
-			Atime: mTime,
-			Ctime: mTime,
+		attr, existed := fs.files[name]
+		if !existed {
+			mTime := uint64(time.Now().Unix())
+			attr = &fuse.Attr{
+				Mode:  fuse.S_IFREG | fs.fileMode,
+				Size:  uint64(0),
+				Mtime: mTime,
+				Atime: mTime,
+				Ctime: mTime,
+			}
+			fs.files[name] = attr
 		}
-		fs.files[name] = attr
 		fs.createdFiles[name] = true
 
 		return NewCachedWriteFile(nodefs.NewLoopbackFile(localFile), attr), fuse.ToStatus(err)
