@@ -194,15 +194,16 @@ func (f *S3File) Fsync(flags int) fuse.Status {
 }
 
 // cachedWriteFile is used as a wrapper around a nodefs.loopbackFile, the only
-// difference being that on Write it updates the given attr's Size.
+// difference being that on Write it updates the given attr's Size, Mtime and
+// Atime.
 type cachedWriteFile struct {
 	nodefs.File
 	attr *fuse.Attr
 }
 
 // NewCachedWriteFile is for use with a nodefs.loopbackFile for a locally
-// created file you want to write to while updating the Size of the given attr.
-// Used to implement MinFys.Create().
+// created file you want to write to while updating the Size, Mtime and Atime of
+// the given attr. Used to implement MinFys.Create().
 func NewCachedWriteFile(f nodefs.File, attr *fuse.Attr) nodefs.File {
 	return &cachedWriteFile{File: f, attr: attr}
 }
