@@ -214,5 +214,8 @@ func (f *cachedWriteFile) InnerFile() nodefs.File {
 func (f *cachedWriteFile) Write(data []byte, off int64) (uint32, fuse.Status) {
 	n, s := f.InnerFile().Write(data, off)
 	f.attr.Size += uint64(n)
+	mTime := uint64(time.Now().Unix())
+	f.attr.Mtime = mTime
+	f.attr.Atime = mTime
 	return n, s
 }
