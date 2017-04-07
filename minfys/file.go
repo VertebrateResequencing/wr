@@ -97,7 +97,7 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 				// we'll have to start from scratch
 				f.reader.Close()
 				f.reader = nil
-				f.skips = nil
+				f.skips = make(map[int64][]byte)
 			}
 		}
 		f.readOffset = offset
@@ -184,7 +184,7 @@ func (f *S3File) Release() {
 	if f.reader != nil {
 		f.reader.Close()
 	}
-	f.skips = nil
+	f.skips = make(map[int64][]byte)
 }
 
 // Fsync always returns OK as opposed to "not imlemented" so that write-sync-
