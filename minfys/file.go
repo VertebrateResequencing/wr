@@ -127,28 +127,25 @@ ATTEMPTS:
 			f.fs.debug("error: GetObject(%s, %s) call for Read failed after %d retries and %s: %s", f.fs.bucket, f.path, attempts-1, time.Since(start), err)
 			return fuse.ReadResultData([]byte{}), fuse.EIO
 		}
-		f.fs.debug("info: GetObject(%s, %s) call for Read took %s", f.fs.bucket, f.path, time.Since(start))
-		break
-	}
 
-	// seek if desired
-	if offset != 0 {
-		attempts = 0
-		f.fs.clientBackoff.Reset()
-	SEEKATTEMPTS:
-		for {
-			attempts++
+		// seek if desired; if this fails, it will always fail until we make a
+		// new object, so we confirm the seek works as part of this attempt loop
+		if offset != 0 {
+			ss := time.Now()
 			_, err := object.Seek(offset, io.SeekStart)
 			if err != nil {
 				if attempts < f.fs.maxAttempts {
 					<-time.After(f.fs.clientBackoff.Duration())
-					continue SEEKATTEMPTS
+					continue ATTEMPTS
 				}
 				f.fs.debug("error: Seek() call on object(%s, %s) for Read failed after %d retries: %s", f.fs.bucket, f.path, attempts-1, err)
 				return fuse.ReadResultData([]byte{}), fuse.EIO
 			}
-			break
+			f.fs.debug("info: Seek() call on object(%s, %s) for Read took %s", f.fs.bucket, f.path, time.Since(ss))
 		}
+
+		f.fs.debug("info: GetObject(%s, %s) call for Read took %s", f.fs.bucket, f.path, time.Since(start))
+		break
 	}
 
 	// store the minio reader to read from later
