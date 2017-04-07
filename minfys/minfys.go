@@ -392,8 +392,7 @@ func (fs *MinFys) Mount() (err error) {
 	}
 	server, err := fuse.NewServer(conn.RawFS(), fs.mountPoint, mOpts)
 	if err != nil {
-		fmt.Printf("Mount fail: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	fs.server = server
