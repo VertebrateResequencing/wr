@@ -144,7 +144,7 @@ multiplexing of buckets on the same mount point.
         Retries:    3,
         ReadOnly:   true,
         CacheData:  true,
-        Debug:      true,
+        Verbose:    true,
         Quiet:      true,
     }
 
@@ -220,12 +220,12 @@ type Config struct {
 	DirMode   os.FileMode
 	ReadOnly  bool
 
-	// Errors are always logged; turning on Debug also logs informational
+	// Errors are always logged; turning on Verbose also logs informational
 	// timings on all remote requests.
-	Debug bool
+	Verbose bool
 
 	// Turning on Quiet mode means that no messages get printed to the logger,
-	// though errors (and informational messages if Debug is on) are still
+	// though errors (and informational messages if Verbose is on) are still
 	// accessible via Logs().
 	Quiet bool
 }
@@ -255,7 +255,7 @@ type MinFys struct {
 	cacheData     bool
 	mutex         sync.Mutex
 	mounted       bool
-	debugging     bool
+	verbose       bool
 	quiet         bool
 	loggedMsgs    []string
 }
@@ -289,7 +289,7 @@ func New(config Config) (fs *MinFys, err error) {
 		files:        make(map[string]*fuse.Attr),
 		createdFiles: make(map[string]bool),
 		cacheData:    config.CacheData,
-		debugging:    config.Debug,
+		verbose:      config.Verbose,
 		quiet:        config.Quiet,
 		maxAttempts:  config.Retries + 1,
 	}
@@ -543,7 +543,7 @@ func (fs *MinFys) Logs() []string {
 // log.SetOutput() from the log package. Regardless of Quiet mode, these
 // messages are accessible via Logs() afterwards.
 func (fs *MinFys) debug(msg string, a ...interface{}) {
-	if fs.debugging || strings.HasPrefix(msg, "error") {
+	if fs.verbose || strings.HasPrefix(msg, "error") {
 		logMsg := fmt.Sprintf("minfys %s", fmt.Sprintf(msg, a...))
 		if !fs.quiet {
 			log.Println(logMsg)

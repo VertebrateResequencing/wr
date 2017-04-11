@@ -84,7 +84,7 @@ func TestMinFys(t *testing.T) {
 			Retries:    10,
 			ReadOnly:   true,
 			CacheData:  true,
-			Debug:      false,
+			Verbose:    false,
 			Quiet:      false,
 		}
 
@@ -622,12 +622,12 @@ func TestMinFys(t *testing.T) {
 			})
 		})
 
-		Convey("You can mount with debugging yet quiet, and still get the logs", t, func() {
-			origDebug := cfg.Debug
-			cfg.Debug = true
+		Convey("You can mount with verbose yet quiet, and still get the logs", t, func() {
+			origVerbose := cfg.Verbose
+			cfg.Verbose = true
 			cfg.Quiet = true
 			defer func() {
-				cfg.Debug = origDebug
+				cfg.Verbose = origVerbose
 				cfg.Quiet = false
 			}()
 			fs, err := New(cfg)
