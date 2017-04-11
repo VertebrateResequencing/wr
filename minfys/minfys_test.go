@@ -46,6 +46,8 @@ func TestMinFys(t *testing.T) {
 	// For these tests to work, $WR_S3_TARGET must be the full URL to an
 	// immediate child directory of a bucket that you have read and write
 	// permissions for, eg: https://cog.domain.com/bucket/wr_tests
+	// You must also have a ~/.s3cfg file with a [default] section specifying
+	// the same domain and scheme via host_base and use_https.
 	//
 	// The child directory must contain the following:
 	// perl -e 'for (1..100000) { printf "%06d\n", $_; }' > 100k.lines
@@ -87,6 +89,36 @@ func TestMinFys(t *testing.T) {
 			Verbose:    false,
 			Quiet:      false,
 		}
+
+		Convey("You can configure from the environment", t, func() {
+			cfgEnv := Config{}
+			err = cfgEnv.ReadEnvironment("", "mybucket/subdir")
+			So(err, ShouldBeNil)
+			So(cfgEnv.AccessKey, ShouldEqual, cfg.AccessKey)
+			So(cfgEnv.SecretKey, ShouldEqual, cfg.SecretKey)
+			So(cfgEnv.Target, ShouldNotBeNil)
+			u, _ := url.Parse(target)
+			uNew := url.URL{
+				Scheme: u.Scheme,
+				Host:   u.Host,
+				Path:   "mybucket/subdir",
+			}
+			So(cfgEnv.Target, ShouldEqual, uNew.String())
+
+			cfgEnv2 := Config{}
+			err = cfgEnv2.ReadEnvironment("default", "mybucket/subdir")
+			So(err, ShouldBeNil)
+			So(cfgEnv2.AccessKey, ShouldEqual, cfgEnv.AccessKey)
+			So(cfgEnv2.SecretKey, ShouldEqual, cfgEnv.SecretKey)
+			So(cfgEnv2.Target, ShouldEqual, cfgEnv.Target)
+
+			cfgEnv3 := Config{}
+			err = cfgEnv3.ReadEnvironment("-fake-", "mybucket/subdir")
+			So(err, ShouldNotBeNil)
+
+			// *** how can we test chaining of ~/.s3cfg and ~/.aws/credentials
+			// without messing with those files?
+		})
 
 		var bigFileGetTime time.Duration
 		Convey("You can mount with local file caching", t, func() {

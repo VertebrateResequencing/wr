@@ -133,20 +133,34 @@ multiplexing of buckets on the same mount point.
 
     import "github.com/VertebrateResequencing/wr/minfys"
 
+    // fully manual configuration
     cfg := minfys.Config{
-        Target:     "https://cog.domain.com/bucket",
-        MountPoint: "/tmp/minfys/bucket",
+        Target:     "https://cog.domain.com/mybucket/subdir",
+        MountPoint: "/tmp/minfys/mount",
         CacheDir:   "/tmp/minfys/cache",
         AccessKey:  os.Getenv("AWS_ACCESS_KEY_ID"),
         SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
         FileMode:   os.FileMode(0644),
         DirMode:    os.FileMode(0755),
         Retries:    3,
-        ReadOnly:   true,
+        ReadOnly:   false,
         CacheData:  true,
         Verbose:    true,
         Quiet:      true,
     }
+
+    // -or- read some configuration from standard AWS S3 config files and
+    // environment variables
+    cfg := minfys.Config{
+        MountPoint: "/tmp/minfys/mount",
+        CacheDir:   "/tmp/minfys/cache",
+        Retries:    3,
+        ReadOnly:   false,
+        CacheData:  true,
+        Verbose:    true,
+        Quiet:      true,
+    }
+    cfg.ReadEnvironment("default", "mybucket/subdir")
 
     fs, err := minfys.New(cfg)
     if err != nil {
@@ -158,7 +172,7 @@ multiplexing of buckets on the same mount point.
         log.Fatalf("could not mount: %s\n", err)
     }
 
-    // read from & write to files in /tmp/minfys/bucket
+    // read from & write to files in /tmp/minfys/mount
 
     err = fs.Unmount()
     if err != nil {
@@ -171,6 +185,8 @@ package minfys
 
 import (
 	"fmt"
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/go-ini/ini"
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"github.com/hanwen/go-fuse/fuse/pathfs"
@@ -191,6 +207,8 @@ import (
 	"time"
 )
 
+const defaultDomain = "s3.amazonaws.com"
+
 // Config struct provides the configuration of a MinFys.
 type Config struct {
 	// Local directory to mount on top of (minfys will try to create this if it
@@ -199,8 +217,12 @@ type Config struct {
 
 	// The full URL of your bucket and possible sub-path, eg.
 	// https://cog.domain.com/bucket/subpath. For performance reasons, you
-	// should specify the deepest subpath that holds all your files.
+	// should specify the deepest subpath that holds all your files. This will
+	// be set for you by a call to ReadEnvironment().
 	Target string
+
+	// Region is optional if you need to use a specific region.
+	Region string
 
 	// Do you want remote files cached locally on disk?
 	CacheData bool
@@ -214,11 +236,16 @@ type Config struct {
 	// recommended.
 	Retries int
 
+	// AccessKey and SecretKey can be set for you by calling ReadEnvironment().
 	AccessKey string
 	SecretKey string
-	FileMode  os.FileMode
-	DirMode   os.FileMode
-	ReadOnly  bool
+
+	FileMode os.FileMode
+	DirMode  os.FileMode
+
+	// Mount in read-only mode, disallowing any operations that alter the
+	// contents of your bucket. Should be set true if you don't intend to write.
+	ReadOnly bool
 
 	// Errors are always logged; turning on Verbose also logs informational
 	// timings on all remote requests.
@@ -228,6 +255,92 @@ type Config struct {
 	// though errors (and informational messages if Verbose is on) are still
 	// accessible via Logs().
 	Quiet bool
+}
+
+// ReadEnvironment sets Target, AccessKey and SecretKey and possibly Region. It
+// determines these by looking primarily at the given profile section of
+// ~/.s3cfg. If profile is an empty string, it comes from $AWS_DEFAULT_PROFILE
+// or $AWS_PROFILE or defaults to "default". If ~/.s3cfg doesn't exist or isn't
+// fully specified, missing values will be taken from the file pointed to by
+// $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials if that is not set. If
+// this file also doesn't exist, ~/.awssecret is used instead. If profile
+// defaulted to "default", AccessKey and SecretKey values will preferably come
+// from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY respectively, which are
+// also used in the case that no config files can be found. If ~/.s3cfg does not
+// exist or does not specify host_base, the default domain used is
+// s3.amazonaws.com. If ~/.aws/config, it will be checked for region. The path
+// argument should at least be the bucket name, but ideally should also specify
+// the deepest subpath that holds all the files that need to be accessed.
+// Because reading from a public s3.amazonaws.com bucket requires no
+// credentials, no error is raised on failure to find any values in the
+// environment when profile is supplied as an empty string.
+func (c *Config) ReadEnvironment(profile, path string) error {
+	if path == "" {
+		return fmt.Errorf("minfys config ReadEnvironment() requires a path")
+	}
+
+	var checkEnv bool
+	if profile == "" {
+		if profile = os.Getenv("AWS_DEFAULT_PROFILE"); profile == "" {
+			if profile = os.Getenv("AWS_PROFILE"); profile == "" {
+				checkEnv = true
+				profile = "default"
+			}
+		}
+	}
+
+	s3cfg := internal.TildaToHome("~/.s3cfg")
+	awsCred := internal.TildaToHome("~/.aws/credentials")
+	awsConf := internal.TildaToHome("~/.aws/config")
+
+	aws, err := ini.LooseLoad(s3cfg, os.Getenv("AWS_SHARED_CREDENTIALS_FILE"), awsCred, awsConf)
+	if err != nil {
+		return fmt.Errorf("minfys config ReadEnvironment() loose loading of config files failed: %s", err)
+	}
+
+	var domain, key, secret, region string
+	var https bool
+	section, err := aws.GetSection(profile)
+	if err == nil {
+		https = section.Key("use_https").MustBool(false)
+		domain = section.Key("host_base").String()
+		region = section.Key("region").String()
+		key = section.Key("access_key").MustString(section.Key("aws_access_key_id").MustString(os.Getenv("AWS_ACCESS_KEY_ID")))
+		secret = section.Key("secret_key").MustString(section.Key("aws_secret_access_key").MustString(os.Getenv("AWS_SECRET_ACCESS_KEY")))
+	} else if !checkEnv {
+		return fmt.Errorf("minfys config ReadEnvironment(%s) called, but no config files defined that profile", profile)
+	}
+
+	if (checkEnv || key == "") && os.Getenv("AWS_ACCESS_KEY_ID") != "" {
+		key = os.Getenv("AWS_ACCESS_KEY_ID")
+	}
+	if (checkEnv || secret == "") && os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+		secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
+	}
+
+	if domain == "" {
+		domain = defaultDomain
+	}
+
+	scheme := "http"
+	if https {
+		scheme += "s"
+	}
+	u := &url.URL{
+		Scheme: scheme,
+		Host:   domain,
+		Path:   path,
+	}
+	c.Target = u.String()
+
+	c.AccessKey = key
+	c.SecretKey = secret
+
+	if region != "" {
+		c.Region = region
+	}
+
+	return nil
 }
 
 // MinFys struct is the main filey system object.
@@ -299,11 +412,15 @@ func New(config Config) (fs *MinFys, err error) {
 	}
 
 	// create our client for interacting with S3
-	client, err := minio.New(fs.host, config.AccessKey, config.SecretKey, fs.secure)
+
+	if config.Region != "" {
+		fs.client, err = minio.NewWithRegion(fs.host, config.AccessKey, config.SecretKey, fs.secure, config.Region)
+	} else {
+		fs.client, err = minio.New(fs.host, config.AccessKey, config.SecretKey, fs.secure)
+	}
 	if err != nil {
 		return
 	}
-	fs.client = client
 	fs.clientBackoff = &backoff.Backoff{
 		Min:    100 * time.Millisecond,
 		Max:    10 * time.Second,
