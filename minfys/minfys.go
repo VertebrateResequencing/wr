@@ -184,6 +184,7 @@ multiplexing of buckets on the same mount point.
 package minfys
 
 import (
+	"bufio"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/go-ini/ini"
@@ -259,21 +260,22 @@ type Config struct {
 
 // ReadEnvironment sets Target, AccessKey and SecretKey and possibly Region. It
 // determines these by looking primarily at the given profile section of
-// ~/.s3cfg. If profile is an empty string, it comes from $AWS_DEFAULT_PROFILE
-// or $AWS_PROFILE or defaults to "default". If ~/.s3cfg doesn't exist or isn't
-// fully specified, missing values will be taken from the file pointed to by
-// $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials if that is not set. If
-// this file also doesn't exist, ~/.awssecret is used instead. If profile
-// defaulted to "default", AccessKey and SecretKey values will preferably come
-// from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY respectively, which are
-// also used in the case that no config files can be found. If ~/.s3cfg does not
-// exist or does not specify host_base, the default domain used is
-// s3.amazonaws.com. If ~/.aws/config, it will be checked for region. The path
-// argument should at least be the bucket name, but ideally should also specify
-// the deepest subpath that holds all the files that need to be accessed.
-// Because reading from a public s3.amazonaws.com bucket requires no
-// credentials, no error is raised on failure to find any values in the
-// environment when profile is supplied as an empty string.
+// ~/.s3cfg (s3cmd's config file). If profile is an empty string, it comes from
+// $AWS_DEFAULT_PROFILE or $AWS_PROFILE or defaults to "default". If ~/.s3cfg
+// doesn't exist or isn't fully specified, missing values will be taken from the
+// file pointed to by $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials if
+// that is not set. If this file also doesn't exist, ~/.awssecret (in the format
+// used by s3fs) is used instead. If profile defaulted to "default", AccessKey
+// and SecretKey values will preferably come from $AWS_ACCESS_KEY_ID and
+// $AWS_SECRET_ACCESS_KEY respectively, which are also used in the case that no
+// config files can be found. If ~/.s3cfg does not exist or does not specify
+// host_base, the default domain used is s3.amazonaws.com. If ~/.aws/config
+// exists, it will be checked for region. The path argument should at least be
+// the bucket name, but ideally should also specify the deepest subpath that
+// holds all the files that need to be accessed. Because reading from a public
+// s3.amazonaws.com bucket requires no credentials, no error is raised on
+// failure to find any values in the environment when profile is supplied as an
+// empty string.
 func (c *Config) ReadEnvironment(profile, path string) error {
 	if path == "" {
 		return fmt.Errorf("minfys config ReadEnvironment() requires a path")
@@ -309,6 +311,27 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		secret = section.Key("secret_key").MustString(section.Key("aws_secret_access_key").MustString(os.Getenv("AWS_SECRET_ACCESS_KEY")))
 	} else if !checkEnv {
 		return fmt.Errorf("minfys config ReadEnvironment(%s) called, but no config files defined that profile", profile)
+	}
+
+	if key == "" && secret == "" {
+		// last resort, check ~/.awssecret
+		awsSec := internal.TildaToHome("~/.awssecret")
+		if file, err := os.Open(awsSec); err == nil {
+			defer file.Close()
+
+			scanner := bufio.NewScanner(file)
+			if scanner.Scan() {
+				line := scanner.Text()
+				if line != "" {
+					line = strings.TrimSuffix(line, "\n")
+					ks := strings.Split(line, ":")
+					if len(ks) == 2 {
+						key = ks[0]
+						secret = ks[1]
+					}
+				}
+			}
+		}
 	}
 
 	if (checkEnv || key == "") && os.Getenv("AWS_ACCESS_KEY_ID") != "" {
