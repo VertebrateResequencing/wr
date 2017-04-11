@@ -84,7 +84,7 @@ difference performance characteristics, but go-fuse was easier to write for.)
 However, its read/write code is inspired by goofys. It shares all of goofys'
 non-POSIX behaviours:
 
-  * only sequential writes supported
+  * only sequential writes supported in non-cached mode
   * does not store file mode/owner/group
   * does not support symlink or hardlink
   * `ctime`, `atime` is always the same as `mtime`
