@@ -21,7 +21,9 @@ package internal
 // this file has general utility functions
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -121,6 +123,7 @@ func Userid() (uid int, err error) {
 	return
 }
 
+// parseIDCmd parses the output of the unix 'id' command.
 func parseIDCmd(idopts ...string) (user string, err error) {
 	idcmd := exec.Command("id", idopts...)
 	var idout []byte
@@ -130,4 +133,15 @@ func parseIDCmd(idopts ...string) (user string, err error) {
 	}
 	user = strings.TrimSuffix(string(idout), "\n")
 	return
+}
+
+// TildaToHome converts a path beginning with ~/ to the absolute path based in
+// the current home directory (according to the environment variable $HOME).
+func TildaToHome(path string) string {
+	home := os.Getenv("HOME")
+	if home != "" && strings.HasPrefix(path, "~/") {
+		path = strings.TrimLeft(path, "~/")
+		path = filepath.Join(home, path)
+	}
+	return path
 }

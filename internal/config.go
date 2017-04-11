@@ -26,7 +26,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 const (
@@ -130,11 +129,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	config.Deployment = deployment
 
 	// convert the possible ~/ in Manager_dir to abs path to user's home
-	if home != "" && strings.HasPrefix(config.ManagerDir, "~/") {
-		mdir := strings.TrimLeft(config.ManagerDir, "~/")
-		mdir = filepath.Join(home, mdir)
-		config.ManagerDir = mdir
-	}
+	config.ManagerDir = TildaToHome(config.ManagerDir)
 	config.ManagerDir += "_" + deployment
 
 	// create the manager dir now, or else we're doomed to failure
