@@ -265,37 +265,45 @@ type Config struct {
 // doesn't exist or isn't fully specified, missing values will be taken from the
 // file pointed to by $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials if
 // that is not set. If this file also doesn't exist, ~/.awssecret (in the format
-// used by s3fs) is used instead. If profile defaulted to "default", AccessKey
-// and SecretKey values will preferably come from $AWS_ACCESS_KEY_ID and
-// $AWS_SECRET_ACCESS_KEY respectively, which are also used in the case that no
-// config files can be found. If ~/.s3cfg does not exist or does not specify
-// host_base, the default domain used is s3.amazonaws.com. If ~/.aws/config
-// exists, it will be checked for region. The path argument should at least be
-// the bucket name, but ideally should also specify the deepest subpath that
-// holds all the files that need to be accessed. Because reading from a public
-// s3.amazonaws.com bucket requires no credentials, no error is raised on
-// failure to find any values in the environment when profile is supplied as an
-// empty string.
+// used by s3fs) is used instead. AccessKey and SecretKey values will always
+// preferably come from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY
+// respectively, if those are set. If ~/.s3cfg does not exist or does not
+// specify host_base, the default domain used is s3.amazonaws.com. Region is set
+// by the $AWS_DEFAULT_REGION environment variable, or if that does not exist,
+// by checking the file pointed to by $AWS_CONFIG_FILE (~/.aws/config if unset).
+// The path argument should at least be the bucket name, but ideally should also
+// specify the deepest subpath that holds all the files that need to be
+// accessed. Because reading from a public s3.amazonaws.com bucket requires no
+// credentials, no error is raised on failure to find any values in the
+// environment when profile is supplied as an empty string.
 func (c *Config) ReadEnvironment(profile, path string) error {
 	if path == "" {
 		return fmt.Errorf("minfys config ReadEnvironment() requires a path")
 	}
 
-	var checkEnv bool
+	profileSpecified := true
 	if profile == "" {
 		if profile = os.Getenv("AWS_DEFAULT_PROFILE"); profile == "" {
 			if profile = os.Getenv("AWS_PROFILE"); profile == "" {
-				checkEnv = true
 				profile = "default"
+				profileSpecified = false
 			}
 		}
 	}
 
-	s3cfg := internal.TildaToHome("~/.s3cfg")
-	awsCred := internal.TildaToHome("~/.aws/credentials")
-	awsConf := internal.TildaToHome("~/.aws/config")
+	var awsConf string
+	if os.Getenv("AWS_CONFIG_FILE") != "" {
+		awsConf = internal.TildaToHome(os.Getenv("AWS_CONFIG_FILE"))
+	} else {
+		awsConf = internal.TildaToHome("~/.aws/config")
+	}
 
-	aws, err := ini.LooseLoad(s3cfg, os.Getenv("AWS_SHARED_CREDENTIALS_FILE"), awsCred, awsConf)
+	aws, err := ini.LooseLoad(
+		internal.TildaToHome("~/.s3cfg"),
+		internal.TildaToHome(os.Getenv("AWS_SHARED_CREDENTIALS_FILE")),
+		internal.TildaToHome("~/.aws/credentials"),
+		awsConf,
+	)
 	if err != nil {
 		return fmt.Errorf("minfys config ReadEnvironment() loose loading of config files failed: %s", err)
 	}
@@ -309,7 +317,7 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		region = section.Key("region").String()
 		key = section.Key("access_key").MustString(section.Key("aws_access_key_id").MustString(os.Getenv("AWS_ACCESS_KEY_ID")))
 		secret = section.Key("secret_key").MustString(section.Key("aws_secret_access_key").MustString(os.Getenv("AWS_SECRET_ACCESS_KEY")))
-	} else if !checkEnv {
+	} else if profileSpecified {
 		return fmt.Errorf("minfys config ReadEnvironment(%s) called, but no config files defined that profile", profile)
 	}
 
@@ -334,12 +342,14 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		}
 	}
 
-	if (checkEnv || key == "") && os.Getenv("AWS_ACCESS_KEY_ID") != "" {
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" {
 		key = os.Getenv("AWS_ACCESS_KEY_ID")
 	}
-	if (checkEnv || secret == "") && os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+	if os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
 		secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
 	}
+	c.AccessKey = key
+	c.SecretKey = secret
 
 	if domain == "" {
 		domain = defaultDomain
@@ -356,10 +366,9 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 	}
 	c.Target = u.String()
 
-	c.AccessKey = key
-	c.SecretKey = secret
-
-	if region != "" {
+	if os.Getenv("AWS_DEFAULT_REGION") != "" {
+		c.Region = os.Getenv("AWS_DEFAULT_REGION")
+	} else if region != "" {
 		c.Region = region
 	}
 
