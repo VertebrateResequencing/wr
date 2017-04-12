@@ -170,6 +170,7 @@ multiplexing of buckets on the same mount point.
     if err != nil {
         log.Fatalf("could not mount: %s\n", err)
     }
+    fs.UnmountOnDeath()
 
     // read from & write to files in /tmp/minfys/mount
 
@@ -197,6 +198,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"os/user"
 	"path"
 	"path/filepath"
@@ -372,36 +374,40 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 // MinFys struct is the main filey system object.
 type MinFys struct {
 	pathfs.FileSystem
-	client        *minio.Client
-	clientBackoff *backoff.Backoff
-	maxAttempts   int
-	target        string
-	secure        bool
-	host          string
-	bucket        string
-	basePath      string
-	mountPoint    string
-	readOnly      bool
-	cacheDir      string
-	fileMode      uint32
-	dirMode       uint32
-	dirAttr       *fuse.Attr
-	server        *fuse.Server
-	dirs          map[string]bool
-	dirContents   map[string][]fuse.DirEntry
-	files         map[string]*fuse.Attr
-	createdFiles  map[string]bool
-	cacheData     bool
-	mutex         sync.Mutex
-	mounted       bool
-	verbose       bool
-	quiet         bool
-	loggedMsgs    []string
+	client          *minio.Client
+	clientBackoff   *backoff.Backoff
+	maxAttempts     int
+	target          string
+	secure          bool
+	host            string
+	bucket          string
+	basePath        string
+	mountPoint      string
+	readOnly        bool
+	cacheDir        string
+	fileMode        uint32
+	dirMode         uint32
+	dirAttr         *fuse.Attr
+	server          *fuse.Server
+	dirs            map[string]bool
+	dirContents     map[string][]fuse.DirEntry
+	files           map[string]*fuse.Attr
+	createdFiles    map[string]bool
+	cacheData       bool
+	mutex           sync.Mutex
+	mounted         bool
+	verbose         bool
+	quiet           bool
+	loggedMsgs      []string
+	handlingSignals bool
+	deathSignals    chan os.Signal
+	ignoreSignals   chan bool
 }
 
 // New, given a configuration, returns a MinFys that you'll use to Mount() your
-// S3 bucket, then Unmount() when you're done. The other methods of MinFys can
-// be ignored in most cases.
+// S3 bucket, ensure you un-mount if killed by calling UnmountOnDeath(), then
+// Unmount() when you're done. If configured with Quiet you might check Logs()
+// afterwards. The other methods of MinFys can be ignored in most cases.
 func New(config *Config) (fs *MinFys, err error) {
 	// create mount point and cachedir if necessary
 	err = os.MkdirAll(config.MountPoint, os.FileMode(0700))
@@ -571,15 +577,57 @@ func userAndGroup() (uid uint32, gid uint32, err error) {
 	return
 }
 
+// UnmountOnDeath captures SIGINT (ctrl-c) and SIGTERM (kill) signals, then
+// calls Unmount() before calling os.Exit(1 if the unmount worked, 2 otherwise)
+// to terminate your program. Manually calling Unmount() after this cancels the
+// signal capture. This does NOT block.
+func (fs *MinFys) UnmountOnDeath() {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+	if !fs.mounted || fs.handlingSignals {
+		return
+	}
+
+	fs.deathSignals = make(chan os.Signal, 2)
+	signal.Notify(fs.deathSignals, os.Interrupt, syscall.SIGTERM)
+	fs.handlingSignals = true
+	fs.ignoreSignals = make(chan bool)
+
+	go func() {
+		select {
+		case <-fs.ignoreSignals:
+			signal.Stop(fs.deathSignals)
+			fs.mutex.Lock()
+			fs.handlingSignals = false
+			fs.mutex.Unlock()
+			return
+		case <-fs.deathSignals:
+			fs.mutex.Lock()
+			fs.handlingSignals = false
+			fs.mutex.Unlock()
+			err := fs.Unmount()
+			if err != nil {
+				fs.debug("error: failed to unmount on death: %s", err)
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
+	}()
+}
+
 // Unmount must be called when you're done reading from/ writing to your bucket.
 // Be sure to close any open filehandles before hand! It's a good idea to defer
-// this after calling Mount(), and possibly also set up a signal trap to
-// Unmount() if your process receives an os.Interrupt or syscall.SIGTERM. In
+// this after calling Mount(), and possibly also call UnmountOnDeath(). In
 // CacheData mode, it is only at Unmount() that any files you created or altered
 // get uploaded, so this may take some time.
 func (fs *MinFys) Unmount() (err error) {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
+
+	if fs.handlingSignals {
+		fs.ignoreSignals <- true
+	}
+
 	if fs.mounted {
 		err = fs.server.Unmount()
 		if err == nil {
@@ -674,7 +722,7 @@ ATTEMPTS:
 
 // Logs returns messages generated while mounted; you might call it after
 // Unmount() to see how things went. By default these will only be errors that
-// occurred, but if minfys was configured with Debug on, it will also contain
+// occurred, but if minfys was configured with Verbose on, it will also contain
 // informational and warning messages. If minfys was configured with Quiet off,
 // these same messages would have been printed to the logger as they occurred.
 func (fs *MinFys) Logs() []string {

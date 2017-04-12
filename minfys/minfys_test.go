@@ -118,6 +118,8 @@ func TestMinFys(t *testing.T) {
 			// without messing with those files?
 		})
 
+		// *** don't know how to test UnmountOnDeath()...
+
 		var bigFileGetTime time.Duration
 		Convey("You can mount with local file caching", t, func() {
 			fs, err := New(cfg)
