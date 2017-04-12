@@ -46,7 +46,8 @@ unchanging cache files, and a few big input files that we process using those
 cache files, and finally generate some results.
 
 In particular this means we hold on to directory and file attributes forever and
-assume they don't change externally.
+assume they don't change externally. Permissions are ignored and only you get
+read/write access.
 
 When using minfys, you 1) mount, 2) do something that needs the files in your S3
 bucket(s), 3) unmount. Then repeat 1-3 for other things that need data in your
@@ -140,8 +141,6 @@ multiplexing of buckets on the same mount point.
         CacheDir:   "/tmp/minfys/cache",
         AccessKey:  os.Getenv("AWS_ACCESS_KEY_ID"),
         SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
-        FileMode:   os.FileMode(0644),
-        DirMode:    os.FileMode(0755),
         Retries:    3,
         ReadOnly:   false,
         CacheData:  true,
@@ -240,9 +239,6 @@ type Config struct {
 	// AccessKey and SecretKey can be set for you by calling ReadEnvironment().
 	AccessKey string
 	SecretKey string
-
-	FileMode os.FileMode
-	DirMode  os.FileMode
 
 	// Mount in read-only mode, disallowing any operations that alter the
 	// contents of your bucket. Should be set true if you don't intend to write.
@@ -408,12 +404,12 @@ type MinFys struct {
 // be ignored in most cases.
 func New(config Config) (fs *MinFys, err error) {
 	// create mount point and cachedir if necessary
-	err = os.MkdirAll(config.MountPoint, config.DirMode)
+	err = os.MkdirAll(config.MountPoint, os.FileMode(0700))
 	if err != nil {
 		return
 	}
 	if config.CacheData {
-		err = os.MkdirAll(config.CacheDir, config.DirMode)
+		err = os.MkdirAll(config.CacheDir, os.FileMode(0700))
 		if err != nil {
 			return
 		}
@@ -425,8 +421,8 @@ func New(config Config) (fs *MinFys, err error) {
 		mountPoint:   config.MountPoint,
 		readOnly:     config.ReadOnly,
 		cacheDir:     config.CacheDir,
-		fileMode:     uint32(config.FileMode),
-		dirMode:      uint32(config.DirMode),
+		fileMode:     uint32(os.FileMode(0600)),
+		dirMode:      uint32(os.FileMode(0700)),
 		dirs:         make(map[string]bool),
 		dirContents:  make(map[string][]fuse.DirEntry),
 		files:        make(map[string]*fuse.Attr),

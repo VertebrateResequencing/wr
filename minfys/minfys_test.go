@@ -81,8 +81,6 @@ func TestMinFys(t *testing.T) {
 			CacheDir:   cacheDir,
 			AccessKey:  os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
-			FileMode:   os.FileMode(0644),
-			DirMode:    os.FileMode(0755),
 			Retries:    10,
 			ReadOnly:   true,
 			CacheData:  true,
