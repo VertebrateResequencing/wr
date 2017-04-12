@@ -135,7 +135,7 @@ multiplexing of buckets on the same mount point.
     import "github.com/VertebrateResequencing/wr/minfys"
 
     // fully manual configuration
-    cfg := minfys.Config{
+    cfg := &minfys.Config{
         Target:     "https://cog.domain.com/mybucket/subdir",
         MountPoint: "/tmp/minfys/mount",
         CacheDir:   "/tmp/minfys/cache",
@@ -150,7 +150,7 @@ multiplexing of buckets on the same mount point.
 
     // -or- read some configuration from standard AWS S3 config files and
     // environment variables
-    cfg := minfys.Config{
+    cfg := &minfys.Config{
         MountPoint: "/tmp/minfys/mount",
         CacheDir:   "/tmp/minfys/cache",
         Retries:    3,
@@ -402,7 +402,7 @@ type MinFys struct {
 // New, given a configuration, returns a MinFys that you'll use to Mount() your
 // S3 bucket, then Unmount() when you're done. The other methods of MinFys can
 // be ignored in most cases.
-func New(config Config) (fs *MinFys, err error) {
+func New(config *Config) (fs *MinFys, err error) {
 	// create mount point and cachedir if necessary
 	err = os.MkdirAll(config.MountPoint, os.FileMode(0700))
 	if err != nil {

@@ -75,7 +75,7 @@ func TestMinFys(t *testing.T) {
 		mountPoint := filepath.Join(crdir, "mount")
 		cacheDir := filepath.Join(crdir, "cacheDir")
 
-		cfg := Config{
+		cfg := &Config{
 			Target:     target,
 			MountPoint: mountPoint,
 			CacheDir:   cacheDir,
@@ -89,7 +89,7 @@ func TestMinFys(t *testing.T) {
 		}
 
 		Convey("You can configure from the environment", t, func() {
-			cfgEnv := Config{}
+			cfgEnv := &Config{}
 			err = cfgEnv.ReadEnvironment("", "mybucket/subdir")
 			So(err, ShouldBeNil)
 			So(cfgEnv.AccessKey, ShouldEqual, cfg.AccessKey)
@@ -103,14 +103,14 @@ func TestMinFys(t *testing.T) {
 			}
 			So(cfgEnv.Target, ShouldEqual, uNew.String())
 
-			cfgEnv2 := Config{}
+			cfgEnv2 := &Config{}
 			err = cfgEnv2.ReadEnvironment("default", "mybucket/subdir")
 			So(err, ShouldBeNil)
 			So(cfgEnv2.AccessKey, ShouldEqual, cfgEnv.AccessKey)
 			So(cfgEnv2.SecretKey, ShouldEqual, cfgEnv.SecretKey)
 			So(cfgEnv2.Target, ShouldEqual, cfgEnv.Target)
 
-			cfgEnv3 := Config{}
+			cfgEnv3 := &Config{}
 			err = cfgEnv3.ReadEnvironment("-fake-", "mybucket/subdir")
 			So(err, ShouldNotBeNil)
 
