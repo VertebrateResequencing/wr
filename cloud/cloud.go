@@ -351,7 +351,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 		}
 
 		// parse private key and make config
-		key, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
+		signer, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
 		if err != nil {
 			log.Printf("failure to parse the private key: %s\n", err)
 			return nil, err
@@ -359,8 +359,9 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 		sshConfig := &ssh.ClientConfig{
 			User: s.UserName,
 			Auth: []ssh.AuthMethod{
-				ssh.PublicKeys(key),
+				ssh.PublicKeys(signer),
 			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
 		}
 
 		// dial in to the server, allowing certain errors that indicate that the
