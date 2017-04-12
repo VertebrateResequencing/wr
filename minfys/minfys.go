@@ -264,14 +264,18 @@ type Config struct {
 // $AWS_DEFAULT_PROFILE or $AWS_PROFILE or defaults to "default". If ~/.s3cfg
 // doesn't exist or isn't fully specified, missing values will be taken from the
 // file pointed to by $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials if
-// that is not set. If this file also doesn't exist, ~/.awssecret (in the format
-// used by s3fs) is used instead. AccessKey and SecretKey values will always
-// preferably come from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY
-// respectively, if those are set. If ~/.s3cfg does not exist or does not
-// specify host_base, the default domain used is s3.amazonaws.com. Region is set
-// by the $AWS_DEFAULT_REGION environment variable, or if that does not exist,
-// by checking the file pointed to by $AWS_CONFIG_FILE (~/.aws/config if unset).
-// The path argument should at least be the bucket name, but ideally should also
+// that is not set (in the AWS CLI format). If this file also doesn't exist,
+// ~/.awssecret (in the format used by s3fs) is used instead. AccessKey and
+// SecretKey values will always preferably come from $AWS_ACCESS_KEY_ID and
+// $AWS_SECRET_ACCESS_KEY respectively, if those are set. If no config file
+// specified host_base, the default domain used is s3.amazonaws.com. Region is
+// set by the $AWS_DEFAULT_REGION environment variable, or if that does not
+// exist, by checking the file pointed to by $AWS_CONFIG_FILE (~/.aws/config if
+// unset). To allow the use of a single configuration file, users can create a
+// non-standard file that specifies all relevant options: use_https, host_base,
+// region, access_key (or aws_access_key_id) and secret_key (or
+// aws_secret_access_key) (saved in any of the files except ~/.awssecret). The
+// path argument should at least be the bucket name, but ideally should also
 // specify the deepest subpath that holds all the files that need to be
 // accessed. Because reading from a public s3.amazonaws.com bucket requires no
 // credentials, no error is raised on failure to find any values in the
@@ -291,18 +295,12 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		}
 	}
 
-	var awsConf string
-	if os.Getenv("AWS_CONFIG_FILE") != "" {
-		awsConf = internal.TildaToHome(os.Getenv("AWS_CONFIG_FILE"))
-	} else {
-		awsConf = internal.TildaToHome("~/.aws/config")
-	}
-
 	aws, err := ini.LooseLoad(
 		internal.TildaToHome("~/.s3cfg"),
 		internal.TildaToHome(os.Getenv("AWS_SHARED_CREDENTIALS_FILE")),
 		internal.TildaToHome("~/.aws/credentials"),
-		awsConf,
+		internal.TildaToHome(os.Getenv("AWS_CONFIG_FILE")),
+		internal.TildaToHome("~/.aws/config"),
 	)
 	if err != nil {
 		return fmt.Errorf("minfys config ReadEnvironment() loose loading of config files failed: %s", err)
