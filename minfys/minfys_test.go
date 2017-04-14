@@ -54,15 +54,16 @@ func TestMinFys(t *testing.T) {
 	// echo 1234567890abcdefghijklmnopqrstuvwxyz1234567890 > numalphanum.txt
 	// dd if=/dev/zero of=1G.file bs=1073741824 count=1
 	// mkdir -p sub/deep
-	// touch sub/empty
+	// touch sub/empty.file
 	// echo foo > sub/deep/bar
 	// export WR_BUCKET_SUB=s3://bucket/wr_tests
 	// s3cmd put 100k.lines $WR_BUCKET_SUB/100k.lines
 	// s3cmd put numalphanum.txt $WR_BUCKET_SUB/numalphanum.txt
 	// s3cmd put 1G.file $WR_BUCKET_SUB/1G.file
-	// s3cmd put sub/empty $WR_BUCKET_SUB/sub/empty
+	// s3cmd put sub/empty.file $WR_BUCKET_SUB/sub/empty.file
 	// s3cmd put sub/deep/bar $WR_BUCKET_SUB/sub/deep/bar
 	// rm -fr 100k.lines numalphanum.txt 1G.file sub
+	// [use s3fs to mkdir s3://bucket/wr_tests/emptyDir]
 
 	if target == "" || accessKey == "" || secretKey == "" {
 		SkipConvey("Without WR_S3_TARGET, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables, we'll skip minfys tests", t, func() {})
@@ -75,43 +76,49 @@ func TestMinFys(t *testing.T) {
 		mountPoint := filepath.Join(crdir, "mount")
 		cacheDir := filepath.Join(crdir, "cacheDir")
 
-		cfg := &Config{
-			Target:     target,
-			MountPoint: mountPoint,
-			CacheDir:   cacheDir,
-			AccessKey:  os.Getenv("AWS_ACCESS_KEY_ID"),
-			SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
-			Retries:    10,
-			ReadOnly:   true,
-			CacheData:  true,
-			Verbose:    false,
-			Quiet:      false,
+		targetManual := &Target{
+			Target:    target,
+			AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
+			SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			CacheData: true,
+			CacheDir:  cacheDir,
+			Write:     false,
 		}
 
-		Convey("You can configure from the environment", t, func() {
-			cfgEnv := &Config{}
-			err = cfgEnv.ReadEnvironment("", "mybucket/subdir")
+		cfg := &Config{
+			Mount:   mountPoint,
+			Retries: 3,
+			Verbose: false,
+			Quiet:   false,
+			Targets: []*Target{targetManual},
+		}
+
+		Convey("You can configure targets from the environment", t, func() {
+			targetEnv := &Target{
+				CacheDir: cacheDir,
+			}
+			err = targetEnv.ReadEnvironment("", "mybucket/subdir")
 			So(err, ShouldBeNil)
-			So(cfgEnv.AccessKey, ShouldEqual, cfg.AccessKey)
-			So(cfgEnv.SecretKey, ShouldEqual, cfg.SecretKey)
-			So(cfgEnv.Target, ShouldNotBeNil)
+			So(targetEnv.AccessKey, ShouldEqual, targetManual.AccessKey)
+			So(targetEnv.SecretKey, ShouldEqual, targetManual.SecretKey)
+			So(targetEnv.Target, ShouldNotBeNil)
 			u, _ := url.Parse(target)
 			uNew := url.URL{
 				Scheme: u.Scheme,
 				Host:   u.Host,
 				Path:   "mybucket/subdir",
 			}
-			So(cfgEnv.Target, ShouldEqual, uNew.String())
+			So(targetEnv.Target, ShouldEqual, uNew.String())
 
-			cfgEnv2 := &Config{}
-			err = cfgEnv2.ReadEnvironment("default", "mybucket/subdir")
+			targetEnv2 := &Target{}
+			err = targetEnv2.ReadEnvironment("default", "mybucket/subdir")
 			So(err, ShouldBeNil)
-			So(cfgEnv2.AccessKey, ShouldEqual, cfgEnv.AccessKey)
-			So(cfgEnv2.SecretKey, ShouldEqual, cfgEnv.SecretKey)
-			So(cfgEnv2.Target, ShouldEqual, cfgEnv.Target)
+			So(targetEnv2.AccessKey, ShouldEqual, targetEnv.AccessKey)
+			So(targetEnv2.SecretKey, ShouldEqual, targetEnv.SecretKey)
+			So(targetEnv2.Target, ShouldEqual, targetEnv.Target)
 
-			cfgEnv3 := &Config{}
-			err = cfgEnv3.ReadEnvironment("-fake-", "mybucket/subdir")
+			targetEnv3 := &Target{}
+			err = targetEnv3.ReadEnvironment("-fake-", "mybucket/subdir")
 			So(err, ShouldNotBeNil)
 
 			// *** how can we test chaining of ~/.s3cfg and ~/.aws/credentials
@@ -217,7 +224,7 @@ func TestMinFys(t *testing.T) {
 		})
 
 		Convey("You can mount with local file caching in write mode", t, func() {
-			cfg.ReadOnly = false
+			targetManual.Write = true
 			fs, err := New(cfg)
 			So(err, ShouldBeNil)
 
@@ -226,7 +233,7 @@ func TestMinFys(t *testing.T) {
 
 			defer func() {
 				err = fs.Unmount()
-				cfg.ReadOnly = true
+				targetManual.Write = false
 				So(err, ShouldBeNil)
 			}()
 
@@ -242,7 +249,7 @@ func TestMinFys(t *testing.T) {
 				So(bytes, ShouldResemble, b)
 
 				// (because it's in the the local cache)
-				cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+				cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 				_, err = os.Stat(cachePath)
 				So(err, ShouldBeNil)
 
@@ -307,7 +314,7 @@ func TestMinFys(t *testing.T) {
 						err := os.Truncate(path, 0)
 						So(err, ShouldBeNil)
 
-						cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+						cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 						stat, err := os.Stat(cachePath)
 						So(err, ShouldBeNil)
 						So(stat.Size(), ShouldEqual, 0)
@@ -352,7 +359,7 @@ func TestMinFys(t *testing.T) {
 						err := os.Truncate(path, 3)
 						So(err, ShouldBeNil)
 
-						cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+						cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 						stat, err := os.Stat(cachePath)
 						So(err, ShouldBeNil)
 						So(stat.Size(), ShouldEqual, 3)
@@ -403,7 +410,7 @@ func TestMinFys(t *testing.T) {
 						err = fs.Unmount()
 						So(err, ShouldBeNil)
 
-						cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+						cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 						_, err = os.Stat(cachePath)
 						So(err, ShouldNotBeNil)
 						So(os.IsNotExist(err), ShouldBeTrue)
@@ -466,7 +473,7 @@ func TestMinFys(t *testing.T) {
 					err = fs.Unmount()
 					So(err, ShouldBeNil)
 
-					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 					_, err = os.Stat(cachePath)
 					So(err, ShouldNotBeNil)
 					So(os.IsNotExist(err), ShouldBeTrue)
@@ -486,7 +493,7 @@ func TestMinFys(t *testing.T) {
 					err := os.Truncate(path, 0)
 					So(err, ShouldBeNil)
 
-					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 					stat, err := os.Stat(cachePath)
 					So(err, ShouldBeNil)
 					So(stat.Size(), ShouldEqual, 0)
@@ -519,7 +526,7 @@ func TestMinFys(t *testing.T) {
 					err := os.Truncate(path, 3)
 					So(err, ShouldBeNil)
 
-					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 					stat, err := os.Stat(cachePath)
 					So(err, ShouldBeNil)
 					So(stat.Size(), ShouldEqual, 3)
@@ -553,7 +560,7 @@ func TestMinFys(t *testing.T) {
 					So(err, ShouldBeNil)
 					f.Close()
 
-					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 					stat, err := os.Stat(cachePath)
 					So(err, ShouldBeNil)
 					So(stat.Size(), ShouldEqual, 0)
@@ -601,7 +608,7 @@ func TestMinFys(t *testing.T) {
 					err = fs.Unmount()
 					So(err, ShouldBeNil)
 
-					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 					_, err = os.Stat(cachePath)
 					So(err, ShouldNotBeNil)
 					So(os.IsNotExist(err), ShouldBeTrue)
@@ -636,7 +643,7 @@ func TestMinFys(t *testing.T) {
 					err = fs.Unmount()
 					So(err, ShouldBeNil)
 
-					cachePath := filepath.Join(cacheDir, fs.bucket, fs.basePath, "/write.test")
+					cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
 					_, err = os.Stat(cachePath)
 					So(err, ShouldNotBeNil)
 					So(os.IsNotExist(err), ShouldBeTrue)
@@ -696,7 +703,7 @@ func TestMinFys(t *testing.T) {
 		})
 
 		Convey("You can mount without local file caching", t, func() {
-			cfg.CacheData = false
+			targetManual.CacheData = false
 			fs, err := New(cfg)
 			So(err, ShouldBeNil)
 
@@ -715,7 +722,7 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				details := dirDetails(entries)
-				rootEntries := []string{"100k.lines:file:700000", "1G.file:file:1073741824", "numalphanum.txt:file:47", "sub:dir"}
+				rootEntries := []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "numalphanum.txt:file:47", "sub:dir"}
 				So(details, ShouldResemble, rootEntries)
 
 				// test it twice in a row to make sure caching is ok
@@ -733,13 +740,19 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				details = dirDetails(entries)
-				So(details, ShouldResemble, []string{"deep:dir", "empty:file:0"})
+				So(details, ShouldResemble, []string{"deep:dir", "empty.file:file:0"})
 
 				entries, err = ioutil.ReadDir(mountPoint + "/sub/deep")
 				So(err, ShouldBeNil)
 
 				details = dirDetails(entries)
 				So(details, ShouldResemble, []string{"bar:file:4"})
+
+				entries, err = ioutil.ReadDir(mountPoint + "/emptyDir")
+				So(err, ShouldBeNil)
+
+				details = dirDetails(entries)
+				So(len(details), ShouldEqual, 0)
 			})
 
 			Convey("You can immediately list a subdir", func() {
@@ -747,7 +760,23 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				details := dirDetails(entries)
-				So(details, ShouldResemble, []string{"deep:dir", "empty:file:0"})
+				So(details, ShouldResemble, []string{"deep:dir", "empty.file:file:0"})
+			})
+
+			Convey("You can immediately list an empty subdir", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/emptyDir")
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				So(len(details), ShouldEqual, 0)
+			})
+
+			Convey("Trying to list a non-existant subdir fails as expected", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/emptyDi")
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+				details := dirDetails(entries)
+				So(len(details), ShouldEqual, 0)
 			})
 
 			Convey("You can immediately list a deep subdir", func() {
@@ -846,10 +875,126 @@ func TestMinFys(t *testing.T) {
 			})
 		})
 
+		Convey("You can mount multiple targets on the same mount point", t, func() {
+			targetManual.CacheData = true
+			targetManual2 := &Target{
+				Target:    target + "/sub",
+				AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
+				SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+				CacheDir:  cacheDir,
+			}
+
+			cfgMultiplex := &Config{
+				Mount:   mountPoint,
+				Retries: 3,
+				Verbose: false,
+				Quiet:   false,
+				Targets: []*Target{targetManual, targetManual2},
+			}
+
+			fs, err := New(cfgMultiplex)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+			}()
+
+			Convey("Listing mount directory and subdirs works", func() {
+				s := time.Now()
+				entries, err := ioutil.ReadDir(mountPoint)
+				d := time.Since(s)
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				rootEntries := []string{"100k.lines:file:700000", "1G.file:file:1073741824", "deep:dir", "empty.file:file:0", "emptyDir:dir", "numalphanum.txt:file:47", "sub:dir"}
+				So(details, ShouldResemble, rootEntries)
+
+				// test it twice in a row to make sure caching is ok
+				s = time.Now()
+				entries, err = ioutil.ReadDir(mountPoint)
+				dc := time.Since(s)
+				So(err, ShouldBeNil)
+				So(dc.Nanoseconds(), ShouldBeLessThan, d.Nanoseconds()/4)
+
+				details = dirDetails(entries)
+				So(details, ShouldResemble, rootEntries)
+
+				// test the sub directories
+				entries, err = ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+
+				details = dirDetails(entries)
+				So(details, ShouldResemble, []string{"deep:dir", "empty.file:file:0"})
+
+				entries, err = ioutil.ReadDir(mountPoint + "/sub/deep")
+				So(err, ShouldBeNil)
+
+				details = dirDetails(entries)
+				So(details, ShouldResemble, []string{"bar:file:4"})
+
+				// and the sub dirs of the second mount
+				entries, err = ioutil.ReadDir(mountPoint + "/deep")
+				So(err, ShouldBeNil)
+
+				details = dirDetails(entries)
+				So(details, ShouldResemble, []string{"bar:file:4"})
+			})
+
+			Convey("You can immediately list a subdir", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				So(details, ShouldResemble, []string{"deep:dir", "empty.file:file:0"})
+			})
+
+			Convey("You can immediately list a subdir of the second target", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/deep")
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				So(details, ShouldResemble, []string{"bar:file:4"})
+
+				info, err := os.Stat(mountPoint + "/deep/bar")
+				So(err, ShouldBeNil)
+				So(info.Name(), ShouldEqual, "bar")
+				So(info.Size(), ShouldEqual, 4)
+			})
+
+			Convey("You can immediately list a deep subdir", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/sub/deep")
+				So(err, ShouldBeNil)
+
+				details := dirDetails(entries)
+				So(details, ShouldResemble, []string{"bar:file:4"})
+
+				info, err := os.Stat(mountPoint + "/sub/deep/bar")
+				So(err, ShouldBeNil)
+				So(info.Name(), ShouldEqual, "bar")
+				So(info.Size(), ShouldEqual, 4)
+			})
+
+			Convey("You can read files from both targets", func() {
+				path := mountPoint + "/deep/bar"
+				bytes, err := ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(string(bytes), ShouldEqual, "foo\n")
+
+				path = mountPoint + "/sub/deep/bar"
+				bytes, err = ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(string(bytes), ShouldEqual, "foo\n")
+			})
+		})
+
 		Convey("You can mount the bucket directly", t, func() {
 			u, err := url.Parse(target)
 			parts := strings.Split(u.Path[1:], "/")
-			cfg.Target = u.Scheme + "://" + u.Host + "/" + parts[0]
+			targetManual.Target = u.Scheme + "://" + u.Host + "/" + parts[0]
 			fs, err := New(cfg)
 			So(err, ShouldBeNil)
 
@@ -877,7 +1022,7 @@ func TestMinFys(t *testing.T) {
 
 		if strings.HasPrefix(target, "https://cog.sanger.ac.uk") {
 			Convey("You can mount a public bucket", t, func() {
-				cfg.Target = "https://cog.sanger.ac.uk/npg-repository"
+				targetManual.Target = "https://cog.sanger.ac.uk/npg-repository"
 				fs, err := New(cfg)
 				So(err, ShouldBeNil)
 
@@ -912,7 +1057,7 @@ func TestMinFys(t *testing.T) {
 			})
 
 			Convey("You can mount a public bucket at a deep path", t, func() {
-				cfg.Target = "https://cog.sanger.ac.uk/npg-repository/references/Homo_sapiens/GRCh38_full_analysis_set_plus_decoy_hla/all/fasta"
+				targetManual.Target = "https://cog.sanger.ac.uk/npg-repository/references/Homo_sapiens/GRCh38_full_analysis_set_plus_decoy_hla/all/fasta"
 				fs, err := New(cfg)
 				So(err, ShouldBeNil)
 
@@ -946,9 +1091,9 @@ func TestMinFys(t *testing.T) {
 			})
 
 			Convey("You can mount a public bucket with blank credentials", t, func() {
-				cfg.Target = "https://cog.sanger.ac.uk/npg-repository"
-				cfg.AccessKey = ""
-				cfg.SecretKey = ""
+				targetManual.Target = "https://cog.sanger.ac.uk/npg-repository"
+				targetManual.AccessKey = ""
+				targetManual.SecretKey = ""
 				fs, err := New(cfg)
 				So(err, ShouldBeNil)
 

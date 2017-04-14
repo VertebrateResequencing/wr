@@ -25,7 +25,6 @@ package minfys
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
-	"github.com/minio/minio-go"
 	"io"
 	"sync"
 	"time"
@@ -36,7 +35,7 @@ import (
 // caching of data).
 type S3File struct {
 	nodefs.File
-	fs         *MinFys
+	r          *remote
 	path       string
 	mutex      sync.Mutex
 	size       uint64
@@ -47,10 +46,10 @@ type S3File struct {
 
 // NewS3File creates a new S3File. For all the methods not yet implemented, fuse
 // will get a not yet implemented error.
-func NewS3File(fs *MinFys, path string, size uint64) nodefs.File {
+func NewS3File(r *remote, path string, size uint64) nodefs.File {
 	return &S3File{
 		File:  nodefs.NewDefaultFile(),
-		fs:    fs,
+		r:     r,
 		path:  path,
 		size:  size,
 		skips: make(map[int64][]byte),
@@ -110,42 +109,9 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 	}
 
 	// otherwise open remote object
-	var object *minio.Object
-	attempts := 0
-	f.fs.clientBackoff.Reset()
-	start := time.Now()
-ATTEMPTS:
-	for {
-		attempts++
-		var err error
-		object, err = f.fs.client.GetObject(f.fs.bucket, f.path)
-		if err != nil {
-			if attempts < f.fs.maxAttempts {
-				<-time.After(f.fs.clientBackoff.Duration())
-				continue ATTEMPTS
-			}
-			f.fs.debug("error: GetObject(%s, %s) call for Read failed after %d retries and %s: %s", f.fs.bucket, f.path, attempts-1, time.Since(start), err)
-			return fuse.ReadResultData([]byte{}), fuse.EIO
-		}
-
-		// seek if desired; if this fails, it will always fail until we make a
-		// new object, so we confirm the seek works as part of this attempt loop
-		if offset != 0 {
-			ss := time.Now()
-			_, err := object.Seek(offset, io.SeekStart)
-			if err != nil {
-				if attempts < f.fs.maxAttempts {
-					<-time.After(f.fs.clientBackoff.Duration())
-					continue ATTEMPTS
-				}
-				f.fs.debug("error: Seek() call on object(%s, %s) for Read failed after %d retries: %s", f.fs.bucket, f.path, attempts-1, err)
-				return fuse.ReadResultData([]byte{}), fuse.EIO
-			}
-			f.fs.debug("info: Seek() call on object(%s, %s) for Read took %s", f.fs.bucket, f.path, time.Since(ss))
-		}
-
-		f.fs.debug("info: GetObject(%s, %s) call for Read took %s", f.fs.bucket, f.path, time.Since(start))
-		break
+	object, worked := f.r.getObject(f.path, offset)
+	if !worked {
+		return fuse.ReadResultData([]byte{}), fuse.EIO
 	}
 
 	// store the minio reader to read from later
@@ -165,7 +131,7 @@ func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 		if err == io.ErrUnexpectedEOF || err == io.EOF {
 			status = fuse.OK
 		} else {
-			f.fs.debug("error: fillBuffer() ReadFull for %s failed: %s", f.path, err)
+			f.r.fs.debug("error: fillBuffer() ReadFull for %s failed: %s", f.path, err)
 			status = fuse.EIO
 		}
 		return status

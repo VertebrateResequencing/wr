@@ -1,6 +1,6 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// The parseTarget() code in this file is based on code in
+// The target parsing code in this file is based on code in
 // https://github.com/minio/minfs Copyright 2016 Minio, Inc.
 // licensed under the Apache License, Version 2.0 (the "License"), stating:
 // "You may not use this file except in compliance with the License. You may
@@ -34,6 +34,9 @@ osxfuse; for both you must ensure that 'user_allow_other' is set in
 It has good compatibility, working with AWS Signature Version 4 (Amazon S3,
 Minio, et al.) and AWS Signature Version 2 (Google Cloud Storage, Openstack
 Swift, Ceph Object Gateway, Riak CS, et al).
+
+It allows "multiplexing": you can mount multiple different buckets (or sub
+directories of the same bucket) on the same local directory.
 
 It is a "filey" system ('fys' instead of 'fs') in that it cares about
 performance first, and POSIX second. It is designed around a particular use-
@@ -127,39 +130,37 @@ local disk cache directory should not be used by multiple processes at once.
 
 In non-cached mode, only random reads have been implemented so far.
 
-Coming soon: proper local caching, serial writes in non-cached mode, and
-multiplexing of buckets on the same mount point.
+Coming soon: safer local caching, and serial writes in non-cached mode.
 
 # Usage
 
     import "github.com/VertebrateResequencing/wr/minfys"
 
-    // fully manual configuration
-    cfg := &minfys.Config{
-        Target:     "https://cog.domain.com/mybucket/subdir",
-        MountPoint: "/tmp/minfys/mount",
-        CacheDir:   "/tmp/minfys/cache",
+    // fully manual target configuration
+    target1 := &minfys.Target{
+        Target:     "https://s3.amazonaws.com/mybucket/subdir",
+        Region:     "us-east-1",
         AccessKey:  os.Getenv("AWS_ACCESS_KEY_ID"),
         SecretKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
-        Retries:    3,
-        ReadOnly:   false,
-        CacheData:  true,
-        Verbose:    true,
-        Quiet:      true,
+        CacheDir:   "/tmp/minfys/cache",
+        Write:      true,
     }
 
-    // -or- read some configuration from standard AWS S3 config files and
+    // or read some configuration from standard AWS S3 config files and
     // environment variables
+    target2 := &minfys.Target{
+        CacheData: true,
+    }
+    target2.ReadEnvironment("default", "myotherbucket/another/subdir")
+
     cfg := &minfys.Config{
-        MountPoint: "/tmp/minfys/mount",
-        CacheDir:   "/tmp/minfys/cache",
+        Mount: "/tmp/minfys/mount",
+        CacheBase: "/tmp",
         Retries:    3,
-        ReadOnly:   false,
-        CacheData:  true,
         Verbose:    true,
         Quiet:      true,
+        Targets:    []*minfys.Target{target, target2},
     }
-    cfg.ReadEnvironment("default", "mybucket/subdir")
 
     fs, err := minfys.New(cfg)
     if err != nil {
@@ -172,7 +173,9 @@ multiplexing of buckets on the same mount point.
     }
     fs.UnmountOnDeath()
 
-    // read from & write to files in /tmp/minfys/mount
+    // read from & write to files in /tmp/minfys/mount, which contains the
+    // contents of mybucket/subdir and myotherbucket/another/subdir; writes will
+    // get uploaded to mybucket/subdir when you Unmount()
 
     err = fs.Unmount()
     if err != nil {
@@ -193,15 +196,13 @@ import (
 	"github.com/hanwen/go-fuse/fuse/pathfs"
 	"github.com/jpillora/backoff"
 	"github.com/minio/minio-go"
-	"io"
+	"io/ioutil"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"os/user"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,50 +211,72 @@ import (
 )
 
 const defaultDomain = "s3.amazonaws.com"
+const dirMode = 0700
+const fileMode = 0600
 
 // Config struct provides the configuration of a MinFys.
 type Config struct {
-	// Local directory to mount on top of (minfys will try to create this if it
-	// doesn't exist).
-	MountPoint string
+	// Mount is the local directory to mount on top of (minfys will try to
+	// create this if it doesn't exist).
+	Mount string
 
+	// Retries is the number of times to automatically retry failed remote S3
+	// system requests. The default of 0 means don't retry; at least 3 is
+	// recommended.
+	Retries int
+
+	// CacheBase is the base directory that will be used to create any Target
+	// cache directories, when those Targets have CacheData true but CacheDir
+	// undefined. Defaults to the current working directory.
+	CacheBase string
+
+	// Verbose turns on logging of every remote request. Errors are always
+	// logged.
+	Verbose bool
+
+	// Quiet means that no messages get printed to the logger, though errors
+	// (and informational messages if Verbose is on) are still accessible via
+	// MinFys.Logs().
+	Quiet bool
+
+	// Targets is a slice of Target, describing what you want to mount and
+	// allowing you to multiplex more than one bucket/ sub directory on to
+	// Mount. Only 1 of these Target can be writeable.
+	Targets []*Target
+}
+
+// Target struct provides details of the remote target (S3 bucket) you wish to
+// mount, and particulars about caching and writing for this target.
+type Target struct {
 	// The full URL of your bucket and possible sub-path, eg.
 	// https://cog.domain.com/bucket/subpath. For performance reasons, you
 	// should specify the deepest subpath that holds all your files. This will
 	// be set for you by a call to ReadEnvironment().
 	Target string
 
-	// Region is optional if you need to use a specific region.
+	// Region is optional if you need to use a specific region. This can be set
+	// for you by a call to ReadEnvironment().
 	Region string
-
-	// Do you want remote files cached locally on disk?
-	CacheData bool
-
-	// If CacheData is true, where should files be stored? (minfys will try to
-	// create this if it doesn't exist).
-	CacheDir string
-
-	// If a request to the remote S3 system fails, how many times should it be
-	// automatically retried? The default of 0 means don't retry; at least 3 is
-	// recommended.
-	Retries int
 
 	// AccessKey and SecretKey can be set for you by calling ReadEnvironment().
 	AccessKey string
 	SecretKey string
 
-	// Mount in read-only mode, disallowing any operations that alter the
-	// contents of your bucket. Should be set true if you don't intend to write.
-	ReadOnly bool
+	// CacheData enables caching of remote files that you read locally on disk.
+	// Writes will also be staged.
+	CacheData bool
 
-	// Errors are always logged; turning on Verbose also logs informational
-	// timings on all remote requests.
-	Verbose bool
+	// CacheDir is the directory used to cache data if CacheData is true.
+	// (minfys will try to create this if it doesn't exist). If not supplied
+	// when CacheData is true, minfys will create a unique directory in the
+	// CacheBase directory of the containing Config. Defining this makes
+	// CacheData be treated as true.
+	CacheDir string
 
-	// Turning on Quiet mode means that no messages get printed to the logger,
-	// though errors (and informational messages if Verbose is on) are still
-	// accessible via Logs().
-	Quiet bool
+	// Write enables write operations in the mount. Only set true if you know
+	// you really need to write. Since writing currently requires caching of
+	// data, CacheData will be treated as true.
+	Write bool
 }
 
 // ReadEnvironment sets Target, AccessKey and SecretKey and possibly Region. It
@@ -278,9 +301,9 @@ type Config struct {
 // accessed. Because reading from a public s3.amazonaws.com bucket requires no
 // credentials, no error is raised on failure to find any values in the
 // environment when profile is supplied as an empty string.
-func (c *Config) ReadEnvironment(profile, path string) error {
+func (t *Target) ReadEnvironment(profile, path string) error {
 	if path == "" {
-		return fmt.Errorf("minfys config ReadEnvironment() requires a path")
+		return fmt.Errorf("minfys ReadEnvironment() requires a path")
 	}
 
 	profileSpecified := true
@@ -301,7 +324,7 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		internal.TildaToHome("~/.aws/config"),
 	)
 	if err != nil {
-		return fmt.Errorf("minfys config ReadEnvironment() loose loading of config files failed: %s", err)
+		return fmt.Errorf("minfys ReadEnvironment() loose loading of config files failed: %s", err)
 	}
 
 	var domain, key, secret, region string
@@ -314,7 +337,7 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		key = section.Key("access_key").MustString(section.Key("aws_access_key_id").MustString(os.Getenv("AWS_ACCESS_KEY_ID")))
 		secret = section.Key("secret_key").MustString(section.Key("aws_secret_access_key").MustString(os.Getenv("AWS_SECRET_ACCESS_KEY")))
 	} else if profileSpecified {
-		return fmt.Errorf("minfys config ReadEnvironment(%s) called, but no config files defined that profile", profile)
+		return fmt.Errorf("minfys ReadEnvironment(%s) called, but no config files defined that profile", profile)
 	}
 
 	if key == "" && secret == "" {
@@ -344,8 +367,8 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 	if os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
 		secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
 	}
-	c.AccessKey = key
-	c.SecretKey = secret
+	t.AccessKey = key
+	t.SecretKey = secret
 
 	if domain == "" {
 		domain = defaultDomain
@@ -360,62 +383,139 @@ func (c *Config) ReadEnvironment(profile, path string) error {
 		Host:   domain,
 		Path:   path,
 	}
-	c.Target = u.String()
+	t.Target = u.String()
 
 	if os.Getenv("AWS_DEFAULT_REGION") != "" {
-		c.Region = os.Getenv("AWS_DEFAULT_REGION")
+		t.Region = os.Getenv("AWS_DEFAULT_REGION")
 	} else if region != "" {
-		c.Region = region
+		t.Region = region
 	}
 
 	return nil
 }
 
+// createRemote uses the configured details of the Target to create a *remote,
+// used internally by MinFys.New().
+func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
+	// parse the target to get secure, host, bucket and basePath
+	if t.Target == "" {
+		return nil, fmt.Errorf("no Target defined")
+	}
+
+	u, err := url.Parse(t.Target)
+	if err != nil {
+		return
+	}
+
+	var secure bool
+	if strings.HasPrefix(t.Target, "https") {
+		secure = true
+	}
+
+	host := u.Host
+	var bucket, basePath string
+	if len(u.Path) > 1 {
+		parts := strings.Split(u.Path[1:], "/")
+		if len(parts) >= 0 {
+			bucket = parts[0]
+		}
+		if len(parts) >= 1 {
+			basePath = path.Join(parts[1:]...)
+		}
+	}
+
+	if bucket == "" {
+		return nil, fmt.Errorf("no bucket could be determined from [%s]", t.Target)
+	}
+
+	// handle CacheData option, creating cache dir if necessary
+	var cacheData bool
+	if t.CacheData || t.CacheDir != "" || t.Write {
+		cacheData = true
+	}
+
+	cacheDir := t.CacheDir
+	if cacheDir != "" {
+		err = os.MkdirAll(cacheDir, os.FileMode(dirMode))
+		if err != nil {
+			return
+		}
+	}
+
+	deleteCache := false
+	if cacheData && cacheDir == "" {
+		// decide on our own cache directory
+		cacheDir, err = ioutil.TempDir(fs.cacheBase, "minfys_cache")
+		if err != nil {
+			return
+		}
+		deleteCache = true
+	}
+
+	r = &remote{
+		host:        host,
+		bucket:      bucket,
+		basePath:    basePath,
+		cacheData:   cacheData,
+		cacheDir:    cacheDir,
+		deleteCache: deleteCache,
+		write:       t.Write,
+		fs:          fs,
+	}
+
+	// create a client for interacting with S3
+	if t.Region != "" {
+		r.client, err = minio.NewWithRegion(host, t.AccessKey, t.SecretKey, secure, t.Region)
+	} else {
+		r.client, err = minio.New(host, t.AccessKey, t.SecretKey, secure)
+	}
+	return
+}
+
 // MinFys struct is the main filey system object.
 type MinFys struct {
 	pathfs.FileSystem
-	client          *minio.Client
-	clientBackoff   *backoff.Backoff
-	maxAttempts     int
-	target          string
-	secure          bool
-	host            string
-	bucket          string
-	basePath        string
 	mountPoint      string
-	readOnly        bool
-	cacheDir        string
-	fileMode        uint32
-	dirMode         uint32
-	dirAttr         *fuse.Attr
-	server          *fuse.Server
-	dirs            map[string]bool
-	dirContents     map[string][]fuse.DirEntry
-	files           map[string]*fuse.Attr
-	createdFiles    map[string]bool
-	cacheData       bool
-	mutex           sync.Mutex
-	mounted         bool
+	maxAttempts     int
 	verbose         bool
 	quiet           bool
+	dirAttr         *fuse.Attr
+	server          *fuse.Server
+	mutex           sync.Mutex
+	dirs            map[string][]*remote
+	dirContents     map[string][]fuse.DirEntry
+	files           map[string]*fuse.Attr
+	fileToRemote    map[string]*remote
+	createdFiles    map[string]bool
+	mounted         bool
 	loggedMsgs      []string
 	handlingSignals bool
 	deathSignals    chan os.Signal
 	ignoreSignals   chan bool
+	clientBackoff   *backoff.Backoff
+	cacheBase       string
+	remotes         []*remote
+	writeRemote     *remote
 }
 
 // New, given a configuration, returns a MinFys that you'll use to Mount() your
-// S3 bucket, ensure you un-mount if killed by calling UnmountOnDeath(), then
+// S3 bucket(s), ensure you un-mount if killed by calling UnmountOnDeath(), then
 // Unmount() when you're done. If configured with Quiet you might check Logs()
 // afterwards. The other methods of MinFys can be ignored in most cases.
 func New(config *Config) (fs *MinFys, err error) {
-	// create mount point and cachedir if necessary
-	err = os.MkdirAll(config.MountPoint, os.FileMode(0700))
+	// create mount point if necessary
+	err = os.MkdirAll(config.Mount, os.FileMode(dirMode))
 	if err != nil {
 		return
 	}
-	if config.CacheData {
-		err = os.MkdirAll(config.CacheDir, os.FileMode(0700))
+
+	if len(config.Targets) == 0 {
+		return nil, fmt.Errorf("no targets provided")
+	}
+
+	cacheBase := config.CacheBase
+	if cacheBase == "" {
+		cacheBase, err = os.Getwd()
 		if err != nil {
 			return
 		}
@@ -424,35 +524,18 @@ func New(config *Config) (fs *MinFys, err error) {
 	// initialize ourselves
 	fs = &MinFys{
 		FileSystem:   pathfs.NewDefaultFileSystem(),
-		mountPoint:   config.MountPoint,
-		readOnly:     config.ReadOnly,
-		cacheDir:     config.CacheDir,
-		fileMode:     uint32(os.FileMode(0600)),
-		dirMode:      uint32(os.FileMode(0700)),
-		dirs:         make(map[string]bool),
+		mountPoint:   config.Mount,
+		dirs:         make(map[string][]*remote),
 		dirContents:  make(map[string][]fuse.DirEntry),
 		files:        make(map[string]*fuse.Attr),
+		fileToRemote: make(map[string]*remote),
 		createdFiles: make(map[string]bool),
-		cacheData:    config.CacheData,
+		maxAttempts:  config.Retries + 1,
+		cacheBase:    cacheBase,
 		verbose:      config.Verbose,
 		quiet:        config.Quiet,
-		maxAttempts:  config.Retries + 1,
-	}
-	err = fs.parseTarget(config.Target)
-	if err != nil {
-		return
 	}
 
-	// create our client for interacting with S3
-
-	if config.Region != "" {
-		fs.client, err = minio.NewWithRegion(fs.host, config.AccessKey, config.SecretKey, fs.secure, config.Region)
-	} else {
-		fs.client, err = minio.New(fs.host, config.AccessKey, config.SecretKey, fs.secure)
-	}
-	if err != nil {
-		return
-	}
 	fs.clientBackoff = &backoff.Backoff{
 		Min:    100 * time.Millisecond,
 		Max:    10 * time.Second,
@@ -460,46 +543,33 @@ func New(config *Config) (fs *MinFys, err error) {
 		Jitter: true,
 	}
 
+	// create a remote for every Target
+	for _, t := range config.Targets {
+		var r *remote
+		r, err = t.createRemote(fs)
+		if err != nil {
+			return
+		}
+
+		fs.remotes = append(fs.remotes, r)
+		if r.write {
+			if fs.writeRemote != nil {
+				return nil, fmt.Errorf("you can't have more than one writeable target")
+			}
+			fs.writeRemote = r
+		}
+	}
+
 	// cheats for s3-like filesystems
 	mTime := uint64(time.Now().Unix())
 	fs.dirAttr = &fuse.Attr{
 		Size:  uint64(4096),
-		Mode:  fuse.S_IFDIR | fs.dirMode,
+		Mode:  fuse.S_IFDIR | uint32(dirMode),
 		Mtime: mTime,
 		Atime: mTime,
 		Ctime: mTime,
 	}
 
-	fs.dirs[""] = true
-
-	return
-}
-
-// parseTarget turns eg. https://cog.domain.com/bucket/path into knowledge of
-// its secure (yes), then determines the host ('cog.domain.com'), bucket
-// ('bucket'), and any base path we're mounting ('path').
-func (fs *MinFys) parseTarget(target string) (err error) {
-	u, err := url.Parse(target)
-	if err != nil {
-		return
-	}
-
-	if strings.HasPrefix(target, "https") {
-		fs.secure = true
-	}
-
-	fs.target = u.String()
-	fs.host = u.Host
-
-	if len(u.Path) > 1 {
-		parts := strings.Split(u.Path[1:], "/")
-		if len(parts) >= 0 {
-			fs.bucket = parts[0]
-		}
-		if len(parts) >= 1 {
-			fs.basePath = path.Join(parts[1:]...)
-		}
-	}
 	return
 }
 
@@ -645,21 +715,26 @@ func (fs *MinFys) Unmount() (err error) {
 		}
 	}
 
+	// delete the whole cachedir if we created it
+	if fs.writeRemote != nil && fs.writeRemote.deleteCache {
+		os.RemoveAll(fs.writeRemote.cacheDir)
+	}
+
 	return
 }
 
 // uploadCreated uploads any files that previously got created, then deletes
 // them from the local cache. Only functions in CacheData mode.
 func (fs *MinFys) uploadCreated() error {
-	if fs.cacheData && !fs.readOnly {
+	if fs.writeRemote != nil && fs.writeRemote.cacheData {
 		fails := 0
 	FILES:
 		for name := range fs.createdFiles {
-			remotePath := fs.GetRemotePath(name)
-			localPath := filepath.Join(fs.cacheDir, fs.bucket, remotePath)
+			remotePath := fs.writeRemote.getRemotePath(name)
+			localPath := fs.writeRemote.getLocalPath(remotePath)
 
 			// upload file
-			worked := fs.uploadFile(localPath, remotePath)
+			worked := fs.writeRemote.uploadFile(localPath, remotePath)
 			if !worked {
 				fails++
 				continue FILES
@@ -676,48 +751,6 @@ func (fs *MinFys) uploadCreated() error {
 		}
 	}
 	return nil
-}
-
-// uploadFile uploads the given local file to the given remote path, with
-// automatic retries on failure. Returns true if the upload was successful.
-func (fs *MinFys) uploadFile(localPath, remotePath string) bool {
-	// get the file's content type *** don't know if this is important, or if we
-	// can just fake it
-	file, err := os.Open(localPath)
-	if err != nil {
-		fs.debug("error: uploadFile could not open %s: %s", localPath, err)
-		return false
-	}
-	buffer := make([]byte, 512)
-	n, err := file.Read(buffer)
-	if err != nil && err != io.EOF {
-		fs.debug("error: uploadFile could not read from %s: %s", localPath, err)
-		file.Close()
-		return false
-	}
-	contentType := http.DetectContentType(buffer[:n])
-	file.Close()
-
-	// upload, with automatic retries
-	attempts := 0
-	fs.clientBackoff.Reset()
-	start := time.Now()
-ATTEMPTS:
-	for {
-		attempts++
-		_, err = fs.client.FPutObject(fs.bucket, remotePath, localPath, contentType)
-		if err != nil {
-			if attempts < fs.maxAttempts {
-				<-time.After(fs.clientBackoff.Duration())
-				continue ATTEMPTS
-			}
-			fs.debug("error: FPutObject(%s, %s, %s) call for uploadCreated failed after %d retries and %s: %s", fs.bucket, remotePath, localPath, attempts-1, time.Since(start), err)
-			return false
-		}
-		fs.debug("info: FPutObject(%s, %s, %s) call for uploadCreated took %s", fs.bucket, remotePath, localPath, time.Since(start))
-		break
-	}
-	return true
 }
 
 // Logs returns messages generated while mounted; you might call it after

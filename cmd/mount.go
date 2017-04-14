@@ -55,15 +55,44 @@ NB: if you are writing to your mount point, it's very important to kill it
 cleanly using one of these methods once you're done, since uploads only occur
 when you do this!
 
-The --mount option is the JSON string for an object describing all your mount
-parameters. A JSON object can be written by starting and ending it with curly
-braces. Parameter names and their values are put in double quotes (except for
-numbers, which are left bare, and booleans where you write, unquoted, true or
-false), and the pair separated with a colon, and pairs separated from each other
-with commas. For example (all on one line):
---mount '{"Profile":"default","Path":"mybucket/subdir","Mount":"/tmp/wr_mnt",
-"Cache":true,"Write":true,"Verbose":true}'
-The paragraphs below describe all the possible parameters.
+The --mount option is the JSON string for an array of Config objects describing
+all your mount parameters.
+A JSON array begins and ends with a square bracket, and each item is separated
+with a comma.
+A JSON object can be written by starting and ending it with curly braces.
+Parameter names and their values are put in double quotes (except for numbers,
+which are left bare, booleans where you write, unquoted, true or false, and
+arrays which start and end with square brackets, which each item separated by a
+comma), and the pair separated with a colon, and pairs separated from each other
+with commas.
+For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Verbose":true,
+"Targets":[{"Profile":"default","Path":"mybucket/subdir","Cache":true,"Write":
+true}]}]'
+The paragraphs below describe all the possible Config object parameters.
+
+Mount (required) is the local directory on which to mount the remote Path. It
+can be (in) any directory you're able to write to. If the directory doesn't
+exist, wr will try to create it first.
+
+CacheBase is the parent directory to use for the CacheDir of any Targets
+configured with Cache on, but CacheDir undefined. If CacheBase is also
+undefined, the cache directories will be made in the current working directory.
+
+Retries is the number of retries wr should attempt when it encounters errors in
+trying to access your remote S3 bucket. At least 3 is recommended. It defaults
+to 10 if not provided.
+
+Verbose is a boolean, which if true, makes this command log timing messages for
+every remote operation it carries out. It always logs errors.
+
+Targets is an array of Target objects which define what you want to access at
+your Mount. It's an array to allow you to multiplex different buckets (or
+different subdirectories of the same bucket) so that it looks like all their
+data is in the same place, for easier access to files in your mount. You can
+only have one of these configured to be writeable. (If you don't want to
+multiplex but instead want multiple different mount points, you specify a single
+Target in this array, and have multiple Config objects in your top level array.)
+The remaining paragraphs describe the possible parameters for Target objects.
 
 Profile is the S3 configuration profile name to use. If not supplied, the value
 of the $AWS_DEFAULT_PROFILE or $AWS_PROFILE environment variables is used, and
@@ -100,46 +129,35 @@ Path (required) is the name of your S3 bucket, optionally followed URL-style
 is gained by specifying the deepest path under your bucket that holds all the
 files you wish to access.
 
-Mount (required) is the local directory on which to mount the remote Path. It
-can be (in) any directory you're able to write to. If the directory doesn't
-exist, wr will try to create it first.
-
 Cache is a boolean, which if true, turns on data caching of any data retrieved,
 or any data you wish to upload. Caching is currently REQUIRED if you wish to do
 any write operations.
 
 CacheDir is the local directory to store cached data. If this parameter is
 supplied, Cache is forced true and so doesn't need to be provided. If this
-parameter is not supplied but Cache is true, wr will pick an appropriate
-directory for you.
+parameter is not supplied but Cache is true, the directory will be a unique
+directory in CacheBase, which will get deleted on unmount.
 
 Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Because writing
-currently requires caching, turning this on forces Cache to be true.
-
-Retries is the number of retries wr should attempt when it encounters errors in
-trying to access your remote S3 bucket. At least 3 is recommended. It defaults
-to 10 if not provided.
-
-Verbose is a boolean, which if true, makes this command log timing messages for
-every remote operation it carries out. It always logs errors.`,
+currently requires caching, turning this on forces Cache to be true.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if mountJSON == "" {
 			die("--mount is required")
 		}
 
-		cfg := mountParseJson(mountJSON)
+		for _, cfg := range mountParseJson(mountJSON) {
+			fs, err := minfys.New(cfg)
+			if err != nil {
+				die("bad configuration: %s\n", err)
+			}
 
-		fs, err := minfys.New(cfg)
-		if err != nil {
-			die("bad configuration: %s\n", err)
+			err = fs.Mount()
+			if err != nil {
+				die("could not mount: %s\n", err)
+			}
+			fs.UnmountOnDeath()
 		}
-
-		err = fs.Mount()
-		if err != nil {
-			die("could not mount: %s\n", err)
-		}
-		fs.UnmountOnDeath()
 
 		// wait forever
 		select {}
@@ -153,59 +171,72 @@ func init() {
 	mountCmd.Flags().StringVarP(&mountJSON, "mount", "m", "", "mount parameters JSON (see --help)")
 }
 
-// mountJ is the struct we decode user's --mount JSON option in to.
-type mountJ struct {
+// mountConfObj is the struct for the objects in the user's --mount JSON array.
+type mountConfObj struct {
+	Mount     string
+	CacheBase string
+	Retries   int
+	Verbose   bool
+	Targets   []mountTargetObj
+}
+
+// mountTargetObj is the struct for the objects in mountConfObj's Targets array.
+type mountTargetObj struct {
 	Profile  string
 	Path     string
-	Mount    string
 	Cache    bool
 	CacheDir string
-	Retries  int
 	Write    bool
-	Verbose  bool
 }
 
 // mountParseJson takes a json string (as per `wr mount --help`) and generates a
-// minfys Config from it.
-func mountParseJson(jsonString string) *minfys.Config {
-	var mj mountJ
-	err := json.Unmarshal([]byte(jsonString), &mj)
+// minfys Config from it for each mount configured.
+func mountParseJson(jsonString string) (configs []*minfys.Config) {
+	var ml []mountConfObj
+	err := json.Unmarshal([]byte(jsonString), &ml)
 	if err != nil {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
 	}
 
-	if mj.Mount == "" {
-		die("had a problem with the provided mount JSON (%s): missing Mount", jsonString)
+	for _, mj := range ml {
+		if mj.Mount == "" {
+			die("had a problem with the provided mount JSON (%s): missing Mount", jsonString)
+		}
+
+		var targets []*minfys.Target
+		for _, mt := range mj.Targets {
+			target := &minfys.Target{
+				CacheData: mt.Cache,
+				CacheDir:  mt.CacheDir,
+				Write:     mt.Write,
+			}
+			err = target.ReadEnvironment(mt.Profile, mt.Path)
+			if err != nil {
+				die("had a problem reading S3 config values: %s", err)
+			}
+			targets = append(targets, target)
+		}
+
+		if len(targets) == 0 {
+			die("had a problem with the provided mount JSON (%s): no Targets", jsonString)
+		}
+
+		retries := 10
+		if mj.Retries > 0 {
+			retries = mj.Retries
+		}
+
+		cfg := &minfys.Config{
+			Mount:     mj.Mount,
+			CacheBase: mj.CacheBase,
+			Retries:   retries,
+			Verbose:   mj.Verbose,
+			Quiet:     false,
+			Targets:   targets,
+		}
+
+		configs = append(configs, cfg)
 	}
 
-	if mj.Path == "" {
-		die("had a problem with the provided mount JSON (%s): missing Path", jsonString)
-	}
-
-	cache := mj.Cache
-	if mj.CacheDir != "" || mj.Write {
-		cache = true
-	}
-
-	retries := 10
-	if mj.Retries > 0 {
-		retries = mj.Retries
-	}
-
-	cfg := &minfys.Config{
-		MountPoint: mj.Mount,
-		CacheDir:   mj.CacheDir,
-		CacheData:  cache,
-		Retries:    retries,
-		ReadOnly:   !mj.Write,
-		Verbose:    mj.Verbose,
-		Quiet:      false,
-	}
-
-	err = cfg.ReadEnvironment(mj.Profile, mj.Path)
-	if err != nil {
-		die("had a problem reading S3 config values: %s", err)
-	}
-
-	return cfg
+	return
 }

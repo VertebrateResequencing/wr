@@ -28,7 +28,7 @@ package minfys
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
-	"github.com/minio/minio-go"
+	"github.com/hanwen/go-fuse/fuse/pathfs"
 	"io"
 	"os"
 	"path/filepath"
@@ -36,6 +36,24 @@ import (
 	"syscall"
 	"time"
 )
+
+// fileDetails checks the file is known and returns its attributes and the
+// remote the file came from. If not known, returns ENOENT (which should never
+// happen).
+func (fs *MinFys) fileDetails(name string, shouldBeWritable bool) (attr *fuse.Attr, r *remote, status fuse.Status) {
+	attr, exists := fs.files[name]
+	if !exists {
+		return nil, nil, fuse.ENOENT
+	}
+	r = fs.fileToRemote[name]
+	status = fuse.OK
+
+	if shouldBeWritable && !r.write {
+		status = fuse.EPERM
+	}
+
+	return
+}
 
 // StatFS returns a constant (faked) set of details describing a very large
 // file system.
@@ -59,26 +77,17 @@ func (fs *MinFys) StatFs(name string) *fuse.StatfsOut {
 	}
 }
 
-// GetRemotePath combines any base path initially configured in Target with the
-// current path, to get the real complete remote path.
-func (fs *MinFys) GetRemotePath(relPath string) string {
-	return filepath.Join(fs.basePath, relPath)
-}
-
-// GetLocalPath gets the path to the local cached file when configured with
-// CacheData. You must supply the complete remote path (ie. the return value of
-// GetRemotePath). Returns empty string if not in CacheData mode.
-func (fs *MinFys) GetLocalPath(remotePath string) string {
-	if fs.cacheData {
-		return filepath.Join(fs.cacheDir, fs.bucket, remotePath)
-	}
-	return ""
+func (fs *MinFys) OnMount(nodeFs *pathfs.PathNodeFs) {
+	// we need to establish that the root directory is a directory; the next
+	// attempt by the user to get it's contents will actually do the remote call
+	// to get the directory entries
+	fs.dirs[""] = fs.remotes
 }
 
 // GetAttr finds out about a given object, returning information from a
 // permanent cache if possible. context is not currently used.
 func (fs *MinFys) GetAttr(name string, context *fuse.Context) (attr *fuse.Attr, status fuse.Status) {
-	if fs.dirs[name] {
+	if _, isDir := fs.dirs[name]; isDir {
 		attr = fs.dirAttr
 		status = fuse.OK
 		return
@@ -90,29 +99,57 @@ func (fs *MinFys) GetAttr(name string, context *fuse.Context) (attr *fuse.Attr, 
 		return
 	}
 
-	// sequentially check if name is a file or directory. Checking
-	// simultaneously doesn't really help since the remote system may queue the
-	// requests serially anyway, and it's better to try and minimise requests.
-	// We'll use a simple heuristic that if the name contains a '.', it's more
-	// likely to be a file.
-	if strings.Contains(name, ".") {
-		attr, status = fs.maybeFile(name)
-		if status != fuse.OK {
-			attr, status = fs.maybeDir(name)
+	// sequentially check if name is a file or directory in each of our remotes.
+	// We take the remotes in turn instead of simultaneously, because if its a
+	// file, we want to only consider the first user supplied target to have
+	// that file, even if multiple of them do.
+	// Within a remote, checking simultaneously doesn't really help since the
+	// remote system may queue the requests serially anyway, and it's better to
+	// try and minimise requests. We'll use a simple heuristic that if the name
+	// contains a '.', it's more likely to be a file.
+	isDir := false
+	for _, r := range fs.remotes {
+		if strings.Contains(name, ".") {
+			attr, status = fs.maybeFile(r, name)
+			if status != fuse.OK {
+				attr, status = fs.maybeDir(r, name)
+			} else {
+				// it's a file, stop checking remotes
+				break
+			}
+		} else {
+			attr, status = fs.maybeDir(r, name)
+			if status != fuse.OK {
+				attr, status = fs.maybeFile(r, name)
+				if status == fuse.OK {
+					// it's a file, stop checking remotes
+					break
+				}
+			}
 		}
-	} else {
-		attr, status = fs.maybeDir(name)
-		if status != fuse.OK {
-			attr, status = fs.maybeFile(name)
+
+		if status == fuse.OK {
+			// it's a directory, but we'll keep checking the other remotes in
+			// case they also have this directory, in which case we'll combine
+			// their contents
+			isDir = true
 		}
 	}
+
+	if isDir {
+		// we may have found the dir in one remote, but then not found it in the
+		// next, so we need to restore
+		attr = fs.dirAttr
+		status = fuse.OK
+	}
+
 	return
 }
 
 // maybeDir simply calls openDir() and returns the directory attributes if
 // 'name' was actually a directory.
-func (fs *MinFys) maybeDir(name string) (attr *fuse.Attr, status fuse.Status) {
-	_, status = fs.openDir(name)
+func (fs *MinFys) maybeDir(r *remote, name string) (attr *fuse.Attr, status fuse.Status) {
+	status = fs.openDir(r, name)
 	if status == fuse.OK {
 		attr = fs.dirAttr
 	}
@@ -121,7 +158,7 @@ func (fs *MinFys) maybeDir(name string) (attr *fuse.Attr, status fuse.Status) {
 
 // maybeFile calls openDir() on the putative file's parent directory, then
 // checks to see if that resulted in a file named 'name' being cached.
-func (fs *MinFys) maybeFile(name string) (attr *fuse.Attr, status fuse.Status) {
+func (fs *MinFys) maybeFile(r *remote, name string) (attr *fuse.Attr, status fuse.Status) {
 	// rather than call StatObject on name to see if its a file, it's more
 	// efficient to try and open it's parent directory and see if that resulted
 	// in us caching the file as one of the dir's entries
@@ -130,7 +167,7 @@ func (fs *MinFys) maybeFile(name string) (attr *fuse.Attr, status fuse.Status) {
 		parent = ""
 	}
 	if _, cached := fs.dirContents[name]; !cached {
-		fs.openDir(parent)
+		fs.openDir(r, parent)
 		attr, _ = fs.files[name]
 	}
 
@@ -145,8 +182,8 @@ func (fs *MinFys) maybeFile(name string) (attr *fuse.Attr, status fuse.Status) {
 // OpenDir gets the contents of the given directory for eg. `ls` purposes. It
 // also caches the attributes of all the files within. context is not currently
 // used.
-func (fs *MinFys) OpenDir(name string, context *fuse.Context) (entries []fuse.DirEntry, status fuse.Status) {
-	_, exists := fs.dirs[name]
+func (fs *MinFys) OpenDir(name string, context *fuse.Context) ([]fuse.DirEntry, fuse.Status) {
+	remotes, exists := fs.dirs[name]
 	if !exists {
 		return nil, fuse.ENOENT
 	}
@@ -156,84 +193,84 @@ func (fs *MinFys) OpenDir(name string, context *fuse.Context) (entries []fuse.Di
 		return entries, fuse.OK
 	}
 
-	return fs.openDir(name)
+	// openDir in all remotes that have this dir, then return the combined dir
+	// contents from the cache
+	for _, r := range remotes {
+		fs.openDir(r, name)
+	}
+
+	entries, cached = fs.dirContents[name]
+	if cached {
+		return entries, fuse.OK
+	}
+	return nil, fuse.ENOENT
 }
 
 // openDir gets the contents of the given name, treating it as a directory,
 // caching the attributes of its contents.
-func (fs *MinFys) openDir(name string) (entries []fuse.DirEntry, status fuse.Status) {
-	fullPath := fs.GetRemotePath(name)
-	if fullPath != "" {
-		fullPath += "/"
+func (fs *MinFys) openDir(r *remote, name string) (status fuse.Status) {
+	remotePath := r.getRemotePath(name)
+	if remotePath != "" {
+		remotePath += "/"
 	}
-	doneCh := make(chan struct{})
+
+	objects, worked := r.findObjects(remotePath)
+	if !worked {
+		return fuse.EIO
+	}
 
 	var isDir bool
-	attempts := 0
-	fs.clientBackoff.Reset()
-	start := time.Now()
-ATTEMPTS:
-	for {
-		attempts++
-		objectCh := fs.client.ListObjectsV2(fs.bucket, fullPath, false, doneCh)
-
-		for object := range objectCh {
-			if object.Err != nil {
-				if attempts < fs.maxAttempts {
-					<-time.After(fs.clientBackoff.Duration())
-					continue ATTEMPTS
-				}
-				fs.debug("error: ListObjectsV2(%s, %s) call for openDir failed after %d retries and %s: %s", fs.bucket, fullPath, attempts-1, time.Since(start), object.Err)
-				status = fuse.EIO
-				return
-			}
-			if object.Key == name {
-				continue
-			}
-
-			d := fuse.DirEntry{
-				Name: object.Key[len(fullPath):],
-			}
-
-			fs.mutex.Lock()
-			if strings.HasSuffix(d.Name, "/") {
-				d.Mode = uint32(fuse.S_IFDIR)
-				d.Name = d.Name[0 : len(d.Name)-1]
-				fs.dirs[filepath.Join(name, d.Name)] = true
-			} else {
-				d.Mode = uint32(fuse.S_IFREG)
-				thisPath := filepath.Join(name, d.Name)
-				mTime := uint64(object.LastModified.Unix())
-				attr := &fuse.Attr{
-					Mode:  fuse.S_IFREG | fs.fileMode,
-					Size:  uint64(object.Size),
-					Mtime: mTime,
-					Atime: mTime,
-					Ctime: mTime,
-				}
-				fs.files[thisPath] = attr
-			}
-			fs.mutex.Unlock()
-
-			entries = append(entries, d)
-			isDir = true
-
-			// for efficiency, instead of breaking here, we'll keep looping and
-			// cache all the dir contents; this does mean we'll never see new
-			// entries for this dir in the future
+	for _, object := range objects {
+		if object.Key == name {
+			continue
 		}
-		break
+		isDir = true
+
+		d := fuse.DirEntry{
+			Name: object.Key[len(remotePath):],
+		}
+		if d.Name == "" {
+			continue
+		}
+
+		fs.mutex.Lock()
+		if strings.HasSuffix(d.Name, "/") {
+			d.Mode = uint32(fuse.S_IFDIR)
+			d.Name = d.Name[0 : len(d.Name)-1]
+			thisPath := filepath.Join(name, d.Name)
+			fs.dirs[thisPath] = append(fs.dirs[thisPath], r)
+		} else {
+			d.Mode = uint32(fuse.S_IFREG)
+			thisPath := filepath.Join(name, d.Name)
+			mTime := uint64(object.LastModified.Unix())
+			attr := &fuse.Attr{
+				Mode:  fuse.S_IFREG | uint32(fileMode),
+				Size:  uint64(object.Size),
+				Mtime: mTime,
+				Atime: mTime,
+				Ctime: mTime,
+			}
+			fs.files[thisPath] = attr
+			fs.fileToRemote[thisPath] = r
+		}
+		fs.dirContents[name] = append(fs.dirContents[name], d)
+		fs.mutex.Unlock()
+
+		// for efficiency, instead of breaking here, we'll keep looping and
+		// cache all the dir contents; this does mean we'll never see new
+		// entries for this dir in the future
 	}
 	status = fuse.OK
-	fs.debug("info: ListObjectsV2(%s, %s) call for openDir took %s", fs.bucket, fullPath, time.Since(start))
 
 	if isDir {
 		fs.mutex.Lock()
-		fs.dirs[name] = true
-		fs.dirContents[name] = entries
+		fs.dirs[name] = append(fs.dirs[name], r)
+		if _, exists := fs.dirContents[name]; !exists {
+			// empty dir, we must create an entry in this map
+			fs.dirContents[name] = []fuse.DirEntry{}
+		}
 		fs.mutex.Unlock()
 	} else {
-		entries = nil
 		status = fuse.ENOENT
 	}
 
@@ -246,19 +283,18 @@ ATTEMPTS:
 // configured, we defer to openCached(). Otherwise the real implementation is in
 // S3File.
 func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, status fuse.Status) {
-	info, exists := fs.files[name]
-	if !exists {
-		return nil, fuse.ENOENT
+	attr, r, status := fs.fileDetails(name, false)
+	if status != fuse.OK {
+		return
 	}
 
-	if fs.cacheData {
-		file, status = fs.openCached(name, flags, context, info)
+	if r.cacheData {
+		file, status = fs.openCached(r, name, flags, context, attr)
 	} else {
-		file = NewS3File(fs, fs.GetRemotePath(name), info.Size)
-		status = fuse.OK
+		file = NewS3File(r, r.getRemotePath(name), attr.Size)
 	}
 
-	if fs.readOnly || (int(flags)&os.O_WRONLY == 0 && int(flags)&os.O_RDWR == 0) {
+	if !r.write || (int(flags)&os.O_WRONLY == 0 && int(flags)&os.O_RDWR == 0) {
 		file = nodefs.NewReadOnlyFile(file)
 	}
 
@@ -270,8 +306,8 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 // file. Any writes are currently lost because they're not uploaded! NB: there
 // is currently no locking, so this should only be called by one process at a
 // time (for the same configured CacheDir).
-func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, info *fuse.Attr) (nodefs.File, fuse.Status) {
-	remotePath := fs.GetRemotePath(name)
+func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse.Context, attr *fuse.Attr) (nodefs.File, fuse.Status) {
+	remotePath := r.getRemotePath(name)
 
 	// *** will need to do locking to avoid downloading the same file multiple
 	// times simultaneously, including by a completely separate process using
@@ -279,15 +315,15 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 
 	// check cache file doesn't already exist
 	var download bool
-	localPath := fs.GetLocalPath(remotePath)
+	localPath := r.getLocalPath(remotePath)
 	localStats, err := os.Stat(localPath)
 	if err != nil { // don't bother checking os.IsNotExist(err); we'll download based on any error
 		os.Remove(localPath)
 		download = true
 	} else {
 		// check the file is the right size
-		if localStats.Size() != int64(info.Size) {
-			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, localStats.Size(), info.Size)
+		if localStats.Size() != int64(attr.Size) {
+			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, localStats.Size(), attr.Size)
 			os.Remove(localPath)
 			download = true
 		}
@@ -295,36 +331,20 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 
 	if download {
 		// download whole remote object, with automatic retries
-		attempts := 0
-		fs.clientBackoff.Reset()
-		start := time.Now()
-	ATTEMPTS:
-		for {
-			attempts++
-			var err error
-			err = fs.client.FGetObject(fs.bucket, remotePath, localPath)
-			if err != nil {
-				if attempts < fs.maxAttempts {
-					<-time.After(fs.clientBackoff.Duration())
-					continue ATTEMPTS
-				}
-				fs.debug("error: FGetObject(%s, %s) call for openCached failed after %d retries and %s: %s", fs.bucket, remotePath, attempts-1, time.Since(start), err)
-				return nil, fuse.EIO
-			}
-			fs.debug("info: FGetObject(%s, %s) call for openCached took %s", fs.bucket, remotePath, time.Since(start))
-			break
+		if !r.downloadFile(remotePath, localPath) {
+			return nil, fuse.EIO
 		}
 
 		// check size ok
 		localStats, err := os.Stat(localPath)
 		if err != nil {
-			fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", fs.bucket, remotePath, err)
+			fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", r.bucket, remotePath, err)
 			os.Remove(localPath)
 			return nil, fuse.ToStatus(err)
 		} else {
-			if localStats.Size() != int64(info.Size) {
+			if localStats.Size() != int64(attr.Size) {
 				os.Remove(localPath)
-				fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", fs.bucket, remotePath, localStats.Size(), info.Size)
+				fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", r.bucket, remotePath, localStats.Size(), attr.Size)
 				return nil, fuse.EIO
 			}
 		}
@@ -332,7 +352,7 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 
 	// open for appending, treating it like we created the file
 	if int(flags)&os.O_APPEND != 0 {
-		return fs.Create(name, flags, fs.fileMode, context)
+		return fs.Create(name, flags, uint32(fileMode), context)
 	}
 
 	// open for reading
@@ -347,18 +367,14 @@ func (fs *MinFys) openCached(name string, flags uint32, context *fuse.Context, i
 
 // Chmod is ignored.
 func (fs *MinFys) Chmod(name string, mode uint32, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
-		return fuse.EPERM
-	}
-	return fuse.OK
+	_, _, status := fs.fileDetails(name, true)
+	return status
 }
 
 // Chown is ignored.
 func (fs *MinFys) Chown(name string, uid uint32, gid uint32, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
-		return fuse.EPERM
-	}
-	return fuse.OK
+	_, _, status := fs.fileDetails(name, true)
+	return status
 }
 
 // Truncate truncates any local cached copy of the file. Only currently
@@ -366,22 +382,18 @@ func (fs *MinFys) Chown(name string, uid uint32, gid uint32, context *fuse.Conte
 // are only uploaded at Unmount() time. If offset is > size of file, does
 // nothing and returns OK.
 func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
-		return fuse.EPERM
-	}
-
-	attr, existed := fs.files[name]
-	if !existed {
-		return fuse.ENOENT
+	attr, r, status := fs.fileDetails(name, true)
+	if status != fuse.OK {
+		return status
 	}
 
 	if offset > attr.Size {
 		return fuse.OK
 	}
 
-	remotePath := fs.GetRemotePath(name)
-	if fs.cacheData {
-		localPath := fs.GetLocalPath(remotePath)
+	remotePath := r.getRemotePath(name)
+	if r.cacheData {
+		localPath := r.getLocalPath(remotePath)
 
 		// *** as per openCached, we need locking of this file globally...
 
@@ -394,7 +406,7 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 		} else {
 			// create a new empty file
 			dir := filepath.Dir(localPath)
-			err := os.MkdirAll(dir, os.FileMode(fs.dirMode))
+			err := os.MkdirAll(dir, os.FileMode(dirMode))
 			if err != nil {
 				fs.debug("error: Truncate(%s) could not make cache parent directory %s: %s", name, dir, err)
 				return fuse.EIO
@@ -410,27 +422,9 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 				localFile.Close()
 			} else {
 				// download offset bytes of remote file
-				var object *minio.Object
-				attempts := 0
-				fs.clientBackoff.Reset()
-				start := time.Now()
-			ATTEMPTS:
-				for {
-					attempts++
-					var err error
-					object, err = fs.client.GetObject(fs.bucket, remotePath)
-					if err != nil {
-						if attempts < fs.maxAttempts {
-							<-time.After(fs.clientBackoff.Duration())
-							continue ATTEMPTS
-						}
-						fs.debug("error: GetObject(%s, %s) call for Truncate failed after %d retries and %s: %s", fs.bucket, remotePath, attempts-1, time.Since(start), err)
-						localFile.Close()
-						syscall.Unlink(localPath)
-						return fuse.EIO
-					}
-					fs.debug("info: GetObject(%s, %s) call for Truncate took %s", fs.bucket, remotePath, time.Since(start))
-					break
+				object, worked := r.getObject(remotePath, 0)
+				if !worked {
+					return fuse.EIO
 				}
 
 				written, err := io.CopyN(localFile, object, int64(offset))
@@ -462,46 +456,34 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 	return fuse.ENOSYS
 }
 
-// Mkdir is ignored.
+// Mkdir is ignored ***for now...
 func (fs *MinFys) Mkdir(name string, mode uint32, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
+	if fs.writeRemote == nil {
 		return fuse.EPERM
 	}
 	return fuse.OK
 }
 
 // Unlink deletes a file from the remote S3 bucket, as well as any locally
-// cached copy. It returns OK if the file never existed.
+// cached copy.
 func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
-		return fuse.EPERM
+	_, r, status := fs.fileDetails(name, true)
+	if status != fuse.OK {
+		return status
 	}
 
-	remotePath := fs.GetRemotePath(name)
-	if fs.cacheData {
-		syscall.Unlink(fs.GetLocalPath(remotePath))
+	remotePath := r.getRemotePath(name)
+	if r.cacheData {
+		syscall.Unlink(r.getLocalPath(remotePath))
 	}
 
-	attempts := 0
-	fs.clientBackoff.Reset()
-	start := time.Now()
-ATTEMPTS:
-	for {
-		attempts++
-		err := fs.client.RemoveObject(fs.bucket, remotePath)
-		if err != nil {
-			if attempts < fs.maxAttempts {
-				<-time.After(fs.clientBackoff.Duration())
-				continue ATTEMPTS
-			}
-			fs.debug("error: RemoveObject(%s, %s) call for Unlink failed after %d retries and %s: %s", fs.bucket, remotePath, attempts-1, time.Since(start), err)
-			return fuse.EIO
-		}
-		fs.debug("info: RemoveObject(%s, %s) call for Unlink took %s", fs.bucket, remotePath, time.Since(start))
-		break
+	worked := r.deleteFile(remotePath)
+	if !worked {
+		return fuse.EIO
 	}
 
 	delete(fs.files, name)
+	delete(fs.fileToRemote, name)
 	delete(fs.createdFiles, name)
 
 	return fuse.OK
@@ -509,7 +491,7 @@ ATTEMPTS:
 
 // Rmdir is ignored.
 func (fs *MinFys) Rmdir(name string, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
+	if fs.writeRemote == nil {
 		return fuse.EPERM
 	}
 	return fuse.OK
@@ -517,8 +499,9 @@ func (fs *MinFys) Rmdir(name string, context *fuse.Context) fuse.Status {
 
 // Rename isn't implemented yet.
 func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) fuse.Status {
-	if fs.readOnly {
-		return fuse.EPERM
+	_, _, status := fs.fileDetails(oldPath, true)
+	if status != fuse.OK {
+		return status
 	}
 	// err := os.Rename(fs.GetPath(oldPath), fs.GetPath(newPath))
 	// return fuse.ToStatus(err)
@@ -534,15 +517,16 @@ func (fs *MinFys) Access(name string, mode uint32, context *fuse.Context) fuse.S
 // implemented for when configured with CacheData; the contents of the created
 // file are only uploaded at Unmount() time.
 func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
-	if fs.readOnly {
+	r := fs.writeRemote
+	if r == nil {
 		return nil, fuse.EPERM
 	}
 
-	remotePath := fs.GetRemotePath(name)
-	if fs.cacheData {
-		localPath := fs.GetLocalPath(remotePath)
+	remotePath := r.getRemotePath(name)
+	if r.cacheData {
+		localPath := r.getLocalPath(remotePath)
 		dir := filepath.Dir(localPath)
-		err := os.MkdirAll(dir, os.FileMode(fs.dirMode))
+		err := os.MkdirAll(dir, os.FileMode(dirMode))
 		if err != nil {
 			fs.debug("error: Create(%s) could not make cache parent directory %s: %s", name, dir, err)
 			return nil, fuse.ToStatus(err)
@@ -557,13 +541,14 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 		if !existed {
 			mTime := uint64(time.Now().Unix())
 			attr = &fuse.Attr{
-				Mode:  fuse.S_IFREG | fs.fileMode,
+				Mode:  fuse.S_IFREG | uint32(fileMode),
 				Size:  uint64(0),
 				Mtime: mTime,
 				Atime: mTime,
 				Ctime: mTime,
 			}
 			fs.files[name] = attr
+			fs.fileToRemote[name] = r
 		}
 		fs.createdFiles[name] = true
 
