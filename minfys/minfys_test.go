@@ -253,6 +253,16 @@ func TestMinFys(t *testing.T) {
 				_, err = os.Stat(cachePath)
 				So(err, ShouldBeNil)
 
+				// and it's statable and listable
+				_, err = os.Stat(path)
+				So(err, ShouldBeNil)
+
+				entries, err := ioutil.ReadDir(mountPoint)
+				So(err, ShouldBeNil)
+				details := dirDetails(entries)
+				rootEntries := []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "numalphanum.txt:file:47", "sub:dir", "write.test:file:11"}
+				So(details, ShouldResemble, rootEntries)
+
 				// unmounting causes the local cached file to be deleted
 				err = fs.Unmount()
 				So(err, ShouldBeNil)
@@ -658,6 +668,90 @@ func TestMinFys(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(string(bytes), ShouldEqual, line)
 				})
+			})
+
+			Convey("You can immediately write in to a subdirectory", func() {
+				path := mountPoint + "/sub/write.test"
+				b := []byte("write test\n")
+				err := ioutil.WriteFile(path, b, 0644)
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = os.Remove(path)
+					So(err, ShouldBeNil)
+				}()
+
+				// you can immediately read it back
+				bytes, err := ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(bytes, ShouldResemble, b)
+
+				// and it's statable and listable
+				_, err = os.Stat(path)
+				So(err, ShouldBeNil)
+
+				entries, err := ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+				details := dirDetails(entries)
+				subEntries := []string{"deep:dir", "empty.file:file:0", "write.test:file:11"}
+				So(details, ShouldResemble, subEntries)
+
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				// remounting lets us read the file again - it actually got
+				// uploaded
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				bytes, err = ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(bytes, ShouldResemble, b)
+			})
+
+			Convey("You can write in to a subdirectory that has been previously listed", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+				details := dirDetails(entries)
+				subEntries := []string{"deep:dir", "empty.file:file:0"}
+				So(details, ShouldResemble, subEntries)
+
+				path := mountPoint + "/sub/write.test"
+				b := []byte("write test\n")
+				err = ioutil.WriteFile(path, b, 0644)
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = os.Remove(path)
+					So(err, ShouldBeNil)
+				}()
+
+				// you can immediately read it back
+				bytes, err := ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(bytes, ShouldResemble, b)
+
+				// and it's statable and listable
+				_, err = os.Stat(path)
+				So(err, ShouldBeNil)
+
+				entries, err = ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+				details = dirDetails(entries)
+				subEntries = []string{"deep:dir", "empty.file:file:0", "write.test:file:11"}
+				So(details, ShouldResemble, subEntries)
+
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				// remounting lets us read the file again - it actually got
+				// uploaded
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				bytes, err = ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(bytes, ShouldResemble, b)
 			})
 		})
 

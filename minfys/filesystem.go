@@ -166,7 +166,7 @@ func (fs *MinFys) maybeFile(r *remote, name string) (attr *fuse.Attr, status fus
 	if parent == "/" {
 		parent = ""
 	}
-	if _, cached := fs.dirContents[name]; !cached {
+	if _, cached := fs.dirContents[parent]; !cached {
 		fs.openDir(r, parent)
 		attr, _ = fs.files[name]
 	}
@@ -537,6 +537,7 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 			fs.debug("error: Create(%s) could not OpenFile(%s): %s", name, localPath, err)
 		}
 
+		fs.mutex.Lock()
 		attr, existed := fs.files[name]
 		if !existed {
 			mTime := uint64(time.Now().Unix())
@@ -549,8 +550,26 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 			}
 			fs.files[name] = attr
 			fs.fileToRemote[name] = r
+
+			// add to our directory entries for this file's dir
+			d := fuse.DirEntry{
+				Name: filepath.Base(name),
+				Mode: uint32(fuse.S_IFREG),
+			}
+			dir := filepath.Dir(name)
+			if dir == "." {
+				dir = ""
+			}
+			if _, exists := fs.dirContents[dir]; !exists {
+				// we must populate the contents of dir first
+				fs.mutex.Unlock()
+				fs.OpenDir(dir, &fuse.Context{})
+				fs.mutex.Lock()
+			}
+			fs.dirContents[dir] = append(fs.dirContents[dir], d)
 		}
 		fs.createdFiles[name] = true
+		fs.mutex.Unlock()
 
 		return NewCachedWriteFile(nodefs.NewLoopbackFile(localFile), attr), fuse.ToStatus(err)
 	}
