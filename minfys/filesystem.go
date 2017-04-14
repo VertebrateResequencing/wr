@@ -486,6 +486,27 @@ func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 	delete(fs.fileToRemote, name)
 	delete(fs.createdFiles, name)
 
+	// remove the directory entry as well
+	dir := filepath.Dir(name)
+	if dir == "." {
+		dir = ""
+	}
+	baseName := filepath.Base(name)
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+	if dentries, exists := fs.dirContents[dir]; exists {
+		for i, entry := range dentries {
+			if entry.Name == baseName {
+				// delete without preserving order and avoiding memory leak
+				dentries[i] = dentries[len(dentries)-1]
+				dentries[len(dentries)-1] = fuse.DirEntry{}
+				dentries = dentries[:len(dentries)-1]
+				fs.dirContents[dir] = dentries
+				break
+			}
+		}
+	}
+
 	return fuse.OK
 }
 

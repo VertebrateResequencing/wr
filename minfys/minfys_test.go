@@ -28,6 +28,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -668,6 +669,47 @@ func TestMinFys(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(string(bytes), ShouldEqual, line)
 				})
+
+				Convey("You can write to the mount point and immediately delete the file and get the correct listing", func() {
+					entries, err := ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+					details := dirDetails(entries)
+					subEntries := []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "numalphanum.txt:file:47", "sub:dir", "write.test:file:11"}
+					So(details, ShouldResemble, subEntries)
+
+					path := mountPoint + "/write.test2"
+					b := []byte("write test2\n")
+					err = ioutil.WriteFile(path, b, 0644)
+					So(err, ShouldBeNil)
+
+					// it's statable and listable
+					_, err = os.Stat(path)
+					So(err, ShouldBeNil)
+
+					entries, err = ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+					details = dirDetails(entries)
+					subEntries = []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "numalphanum.txt:file:47", "sub:dir", "write.test2:file:12", "write.test:file:11"}
+					So(details, ShouldResemble, subEntries)
+
+					// once deleted, it's no longer listed
+					err = os.Remove(path)
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+
+					entries, err = ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+					details = dirDetails(entries)
+					subEntries = []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "numalphanum.txt:file:47", "sub:dir", "write.test:file:11"}
+					So(details, ShouldResemble, subEntries)
+
+					// running unix ls reveals problems that ReadDir doesn't
+					cmd := exec.Command("ls", "-alth", mountPoint)
+					err = cmd.Run()
+					So(err, ShouldBeNil)
+				})
 			})
 
 			Convey("You can immediately write in to a subdirectory", func() {
@@ -752,6 +794,47 @@ func TestMinFys(t *testing.T) {
 				bytes, err = ioutil.ReadFile(path)
 				So(err, ShouldBeNil)
 				So(bytes, ShouldResemble, b)
+			})
+
+			Convey("You can write in to a subdirectory and immediately delete the file and get the correct listing", func() {
+				entries, err := ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+				details := dirDetails(entries)
+				subEntries := []string{"deep:dir", "empty.file:file:0"}
+				So(details, ShouldResemble, subEntries)
+
+				path := mountPoint + "/sub/write.test"
+				b := []byte("write test\n")
+				err = ioutil.WriteFile(path, b, 0644)
+				So(err, ShouldBeNil)
+
+				// it's statable and listable
+				_, err = os.Stat(path)
+				So(err, ShouldBeNil)
+
+				entries, err = ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+				details = dirDetails(entries)
+				subEntries = []string{"deep:dir", "empty.file:file:0", "write.test:file:11"}
+				So(details, ShouldResemble, subEntries)
+
+				// once deleted, it's no longer listed
+				err = os.Remove(path)
+				So(err, ShouldBeNil)
+
+				_, err = os.Stat(path)
+				So(err, ShouldNotBeNil)
+
+				entries, err = ioutil.ReadDir(mountPoint + "/sub")
+				So(err, ShouldBeNil)
+				details = dirDetails(entries)
+				subEntries = []string{"deep:dir", "empty.file:file:0"}
+				So(details, ShouldResemble, subEntries)
+
+				// running unix ls reveals problems that ReadDir doesn't
+				cmd := exec.Command("ls", "-alth", mountPoint+"/sub")
+				err = cmd.Run()
+				So(err, ShouldBeNil)
 			})
 		})
 
