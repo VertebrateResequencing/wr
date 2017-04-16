@@ -171,10 +171,13 @@ func NewCachedWriteFile(f nodefs.File, attr *fuse.Attr) nodefs.File {
 	return &cachedWriteFile{File: f, attr: attr}
 }
 
+// InnerFile() returns the loopbackFile that deals with local files on disk.
 func (f *cachedWriteFile) InnerFile() nodefs.File {
 	return f.File
 }
 
+// Write passes the real work to our InnerFile(), also updating our cached
+// attr.
 func (f *cachedWriteFile) Write(data []byte, off int64) (uint32, fuse.Status) {
 	n, s := f.InnerFile().Write(data, off)
 	f.attr.Size += uint64(n)
@@ -182,4 +185,15 @@ func (f *cachedWriteFile) Write(data []byte, off int64) (uint32, fuse.Status) {
 	f.attr.Mtime = mTime
 	f.attr.Atime = mTime
 	return n, s
+}
+
+// Utimens gets called by things like `touch -d "2006-01-02 15:04:05" filename,
+// and we need to update our cached attr as well as the local file.
+func (f *cachedWriteFile) Utimens(Atime *time.Time, Mtime *time.Time) (status fuse.Status) {
+	status = f.InnerFile().Utimens(Atime, Mtime)
+	if status == fuse.OK {
+		f.attr.Atime = uint64(Atime.Unix())
+		f.attr.Mtime = uint64(Mtime.Unix())
+	}
+	return status
 }

@@ -729,7 +729,7 @@ func (fs *MinFys) uploadCreated() error {
 	if fs.writeRemote != nil && fs.writeRemote.cacheData {
 		fails := 0
 	FILES:
-		for name := range fs.createdFiles {
+		for name := range fs.createdFiles { // *** since mdtimes in S3 are stored as the upload time, we must upload in local mttime order...
 			remotePath := fs.writeRemote.getRemotePath(name)
 			localPath := fs.writeRemote.getLocalPath(remotePath)
 

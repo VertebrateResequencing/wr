@@ -204,7 +204,7 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 1073741824)
 			})
 
-			Convey("Trying to write in ReadOnly mode fails", func() {
+			Convey("Trying to write in non Write mode fails", func() {
 				path := mountPoint + "/write.test"
 				b := []byte("write test\n")
 				err := ioutil.WriteFile(path, b, 0644)
@@ -221,6 +221,13 @@ func TestMinFys(t *testing.T) {
 				perr, ok := err.(*os.PathError)
 				So(ok, ShouldBeTrue)
 				So(perr.Error(), ShouldContainSubstring, "operation not permitted")
+			})
+
+			Convey("You can't touch files in non Write mode", func() {
+				path := mountPoint + "/1G.file"
+				cmd := exec.Command("touch", path)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
 			})
 		})
 
@@ -710,6 +717,75 @@ func TestMinFys(t *testing.T) {
 					err = cmd.Run()
 					So(err, ShouldBeNil)
 				})
+
+				Convey("You can touch an uncached file", func() {
+					info, err := os.Stat(path)
+					cmd := exec.Command("touch", "-d", "2006-01-02 15:04:05", path)
+					err = cmd.Run()
+					So(err, ShouldBeNil)
+					info2, err := os.Stat(path)
+					So(info.ModTime().Unix(), ShouldNotAlmostEqual, info2.ModTime().Unix(), 62)
+					So(info2.ModTime().String(), ShouldEqual, "2006-01-02 15:04:05 +0000 UTC")
+				})
+
+				Convey("You can immediately touch an uncached file", func() {
+					cmd := exec.Command("touch", "-d", "2006-01-02 15:04:05", path)
+					err := cmd.Run()
+					So(err, ShouldBeNil)
+
+					// (looking at the contents of a subdir revealed a bug)
+					entries, err := ioutil.ReadDir(mountPoint + "/sub")
+					So(err, ShouldBeNil)
+					details := dirDetails(entries)
+					subEntries := []string{"deep:dir", "empty.file:file:0"}
+					So(details, ShouldResemble, subEntries)
+
+					info, err := os.Stat(path)
+					So(info.ModTime().String(), ShouldEqual, "2006-01-02 15:04:05 +0000 UTC")
+				})
+
+				Convey("You can touch a cached file", func() {
+					info, err := os.Stat(path)
+					_, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+
+					cmd := exec.Command("touch", "-d", "2006-01-02 15:04:05", path)
+					err = cmd.Run()
+					So(err, ShouldBeNil)
+					info2, err := os.Stat(path)
+					So(info.ModTime().Unix(), ShouldNotAlmostEqual, info2.ModTime().Unix(), 62)
+					So(info2.ModTime().String(), ShouldEqual, "2006-01-02 15:04:05 +0000 UTC")
+
+					cmd = exec.Command("touch", "-d", "2007-01-02 15:04:05", path)
+					err = cmd.Run()
+					So(err, ShouldBeNil)
+					info3, err := os.Stat(path)
+					So(info2.ModTime().Unix(), ShouldNotAlmostEqual, info3.ModTime().Unix(), 62)
+					So(info3.ModTime().String(), ShouldEqual, "2007-01-02 15:04:05 +0000 UTC")
+				})
+
+				Convey("You can directly change the mtime on a cached file", func() {
+					info, err := os.Stat(path)
+					_, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+
+					t := time.Now().Add(5 * time.Minute)
+					err = os.Chtimes(path, t, t)
+					So(err, ShouldBeNil)
+					info2, err := os.Stat(path)
+					So(info.ModTime().Unix(), ShouldNotAlmostEqual, info2.ModTime().Unix(), 62)
+					So(info2.ModTime().Unix(), ShouldAlmostEqual, t.Unix(), 2)
+				})
+
+				Convey("But not an uncached one", func() {
+					info, err := os.Stat(path)
+					t := time.Now().Add(5 * time.Minute)
+					err = os.Chtimes(path, t, t)
+					So(err, ShouldBeNil)
+					info2, err := os.Stat(path)
+					So(info.ModTime().Unix(), ShouldAlmostEqual, info2.ModTime().Unix(), 62)
+					So(info2.ModTime().Unix(), ShouldNotAlmostEqual, t.Unix(), 2)
+				})
 			})
 
 			Convey("You can immediately write in to a subdirectory", func() {
@@ -834,6 +910,17 @@ func TestMinFys(t *testing.T) {
 				// running unix ls reveals problems that ReadDir doesn't
 				cmd := exec.Command("ls", "-alth", mountPoint+"/sub")
 				err = cmd.Run()
+				So(err, ShouldBeNil)
+			})
+
+			Convey("You can touch a non-existent file", func() {
+				path := mountPoint + "/write.test"
+				cmd := exec.Command("touch", path)
+				err = cmd.Run()
+				defer func() {
+					err = os.Remove(path)
+					So(err, ShouldBeNil)
+				}()
 				So(err, ShouldBeNil)
 			})
 		})

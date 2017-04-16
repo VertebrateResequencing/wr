@@ -163,7 +163,7 @@ func (fs *MinFys) maybeFile(r *remote, name string) (attr *fuse.Attr, status fus
 	// efficient to try and open it's parent directory and see if that resulted
 	// in us caching the file as one of the dir's entries
 	parent := filepath.Dir(name)
-	if parent == "/" {
+	if parent == "/" || parent == "." {
 		parent = ""
 	}
 	if _, cached := fs.dirContents[parent]; !cached {
@@ -283,7 +283,11 @@ func (fs *MinFys) openDir(r *remote, name string) (status fuse.Status) {
 // configured, we defer to openCached(). Otherwise the real implementation is in
 // S3File.
 func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, status fuse.Status) {
-	attr, r, status := fs.fileDetails(name, false)
+	checkWritable := false
+	if int(flags)&os.O_WRONLY != 0 || int(flags)&os.O_RDWR != 0 || int(flags)&os.O_APPEND != 0 || int(flags)&os.O_CREATE != 0 || int(flags)&os.O_TRUNC != 0 {
+		checkWritable = true
+	}
+	attr, r, status := fs.fileDetails(name, checkWritable)
 	if status != fuse.OK {
 		return
 	}
@@ -350,8 +354,9 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 		}
 	}
 
-	// open for appending, treating it like we created the file
-	if int(flags)&os.O_APPEND != 0 {
+	// if the flags suggest any kind of write-ability, treat it like we created
+	// the file
+	if int(flags)&os.O_WRONLY != 0 || int(flags)&os.O_RDWR != 0 || int(flags)&os.O_APPEND != 0 || int(flags)&os.O_CREATE != 0 || int(flags)&os.O_TRUNC != 0 {
 		return fs.Create(name, flags, uint32(fileMode), context)
 	}
 
@@ -375,6 +380,34 @@ func (fs *MinFys) Chmod(name string, mode uint32, context *fuse.Context) fuse.St
 func (fs *MinFys) Chown(name string, uid uint32, gid uint32, context *fuse.Context) fuse.Status {
 	_, _, status := fs.fileDetails(name, true)
 	return status
+}
+
+// SetXAttr is ignored.
+func (fs *MinFys) SetXAttr(name string, attr string, data []byte, flags int, context *fuse.Context) fuse.Status {
+	_, _, status := fs.fileDetails(name, true)
+	return status
+}
+
+// Utimens only functions when configured with CacheData and the file is already
+// in the cache; otherwise ignored. This only gets called by direct operations
+// like os.Chtimes() (that don't first Open()/Create() the file).
+func (fs *MinFys) Utimens(name string, Atime *time.Time, Mtime *time.Time, context *fuse.Context) (status fuse.Status) {
+	attr, r, status := fs.fileDetails(name, true)
+	if status != fuse.OK || !r.cacheData {
+		return
+	}
+
+	localPath := r.getLocalPath(r.getRemotePath(name))
+	if _, err := os.Stat(localPath); err == nil {
+		err = os.Chtimes(localPath, *Atime, *Mtime)
+		if err == nil {
+			attr.Atime = uint64(Atime.Unix())
+			attr.Mtime = uint64(Mtime.Unix())
+		}
+		status = fuse.ToStatus(err)
+	}
+
+	return
 }
 
 // Truncate truncates any local cached copy of the file. Only currently
@@ -560,18 +593,8 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 
 		fs.mutex.Lock()
 		attr, existed := fs.files[name]
+		mTime := uint64(time.Now().Unix())
 		if !existed {
-			mTime := uint64(time.Now().Unix())
-			attr = &fuse.Attr{
-				Mode:  fuse.S_IFREG | uint32(fileMode),
-				Size:  uint64(0),
-				Mtime: mTime,
-				Atime: mTime,
-				Ctime: mTime,
-			}
-			fs.files[name] = attr
-			fs.fileToRemote[name] = r
-
 			// add to our directory entries for this file's dir
 			d := fuse.DirEntry{
 				Name: filepath.Base(name),
@@ -588,6 +611,19 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 				fs.mutex.Lock()
 			}
 			fs.dirContents[dir] = append(fs.dirContents[dir], d)
+
+			attr = &fuse.Attr{
+				Mode:  fuse.S_IFREG | uint32(fileMode),
+				Size:  uint64(0),
+				Mtime: mTime,
+				Atime: mTime,
+				Ctime: mTime,
+			}
+			fs.files[name] = attr
+			fs.fileToRemote[name] = r
+		} else {
+			attr.Mtime = mTime
+			attr.Atime = mTime
 		}
 		fs.createdFiles[name] = true
 		fs.mutex.Unlock()
