@@ -277,14 +277,15 @@ type Target struct {
 	SecretKey string
 
 	// CacheData enables caching of remote files that you read locally on disk.
-	// Writes will also be staged.
+	// Writes will also be staged on local disk prior to upload.
 	CacheData bool
 
 	// CacheDir is the directory used to cache data if CacheData is true.
 	// (minfys will try to create this if it doesn't exist). If not supplied
-	// when CacheData is true, minfys will create a unique directory in the
-	// CacheBase directory of the containing Config. Defining this makes
-	// CacheData be treated as true.
+	// when CacheData is true, minfys will create a unique temporary directory
+	// in the CacheBase directory of the containing Config (these get
+	// automatically deleted on Unmount() - specified CacheDirs do not).
+	// Defining this makes CacheData be treated as true.
 	CacheDir string
 
 	// Write enables write operations in the mount. Only set true if you know
@@ -459,7 +460,7 @@ func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
 	deleteCache := false
 	if cacheData && cacheDir == "" {
 		// decide on our own cache directory
-		cacheDir, err = ioutil.TempDir(fs.cacheBase, "minfys_cache")
+		cacheDir, err = ioutil.TempDir(fs.cacheBase, ".minfys_cache")
 		if err != nil {
 			return
 		}
@@ -703,8 +704,10 @@ func (fs *MinFys) UnmountOnDeath() {
 // Be sure to close any open filehandles before hand! It's a good idea to defer
 // this after calling Mount(), and possibly also call UnmountOnDeath(). In
 // CacheData mode, it is only at Unmount() that any files you created or altered
-// get uploaded, so this may take some time.
-func (fs *MinFys) Unmount() (err error) {
+// get uploaded, so this may take some time. You can optionally supply a bool
+// which if true prevents any uploads. If a target was not configured with a
+// specific CacheDir but CacheData was true, the CacheDir will be deleted.
+func (fs *MinFys) Unmount(doNotUpload ...bool) (err error) {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 
@@ -719,19 +722,23 @@ func (fs *MinFys) Unmount() (err error) {
 		}
 	}
 
-	// upload created files and delete them from the local cache
-	uerr := fs.uploadCreated()
-	if uerr != nil {
-		if err == nil {
-			err = uerr
-		} else {
-			err = fmt.Errorf("%s; %s", err.Error(), uerr.Error())
+	if !(len(doNotUpload) > 0 && doNotUpload[0]) {
+		// upload files that got opened for writing
+		uerr := fs.uploadCreated()
+		if uerr != nil {
+			if err == nil {
+				err = uerr
+			} else {
+				err = fmt.Errorf("%s; %s", err.Error(), uerr.Error())
+			}
 		}
 	}
 
-	// delete the whole cachedir if we created it
-	if fs.writeRemote != nil && fs.writeRemote.deleteCache {
-		os.RemoveAll(fs.writeRemote.cacheDir)
+	// delete any cachedirs we created
+	for _, remote := range fs.remotes {
+		if remote.deleteCache {
+			os.RemoveAll(remote.cacheDir)
+		}
 	}
 
 	// clean out our caches; one reason to unmount is to force recognition of
@@ -745,8 +752,8 @@ func (fs *MinFys) Unmount() (err error) {
 	return
 }
 
-// uploadCreated uploads any files that previously got created, then deletes
-// them from the local cache. Only functions in CacheData mode.
+// uploadCreated uploads any files that previously got created. Only functions
+// in CacheData mode.
 func (fs *MinFys) uploadCreated() error {
 	if fs.writeRemote != nil && fs.writeRemote.cacheData {
 		fails := 0
@@ -773,9 +780,6 @@ func (fs *MinFys) uploadCreated() error {
 				fails++
 				continue
 			}
-
-			// delete local copy
-			syscall.Unlink(localPath)
 
 			delete(fs.createdFiles, name)
 		}

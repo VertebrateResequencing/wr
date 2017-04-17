@@ -82,7 +82,6 @@ func TestMinFys(t *testing.T) {
 			AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 			CacheData: true,
-			CacheDir:  cacheDir,
 			Write:     false,
 		}
 
@@ -95,9 +94,7 @@ func TestMinFys(t *testing.T) {
 		}
 
 		Convey("You can configure targets from the environment", t, func() {
-			targetEnv := &Target{
-				CacheDir: cacheDir,
-			}
+			targetEnv := &Target{}
 			err = targetEnv.ReadEnvironment("", "mybucket/subdir")
 			So(err, ShouldBeNil)
 			So(targetEnv.AccessKey, ShouldEqual, targetManual.AccessKey)
@@ -975,6 +972,89 @@ func TestMinFys(t *testing.T) {
 			})
 		})
 
+		Convey("You can mount with local file caching in an explicit location", t, func() {
+			targetManual.CacheDir = cacheDir
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				targetManual.CacheDir = ""
+				So(err, ShouldBeNil)
+			}()
+
+			path := mountPoint + "/numalphanum.txt"
+			_, err = ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+
+			cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("numalphanum.txt"))
+			_, err = os.Stat(cachePath)
+			So(err, ShouldBeNil)
+			So(cachePath, ShouldStartWith, cacheDir)
+
+			Convey("Unmounting doesn't delete the cache", func() {
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				_, err = os.Stat(cachePath)
+				So(err, ShouldBeNil)
+			})
+		})
+
+		Convey("You can mount in write mode and not upload on unmount", t, func() {
+			targetManual.Write = true
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				targetManual.Write = false
+				So(err, ShouldBeNil)
+			}()
+
+			path := mountPoint + "/write.test"
+			b := []byte("write test\n")
+			err = ioutil.WriteFile(path, b, 0644)
+			So(err, ShouldBeNil)
+
+			bytes, err := ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+			So(bytes, ShouldResemble, b)
+
+			cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.test"))
+			_, err = os.Stat(cachePath)
+			So(err, ShouldBeNil)
+
+			// unmount without uploads
+			err = fs.Unmount(true)
+			So(err, ShouldBeNil)
+
+			_, err = os.Stat(cachePath)
+			So(err, ShouldNotBeNil)
+			So(os.IsNotExist(err), ShouldBeTrue)
+			_, err = os.Stat(path)
+			So(err, ShouldNotBeNil)
+			So(os.IsNotExist(err), ShouldBeTrue)
+
+			// remounting reveals it did not get uploaded
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			_, err = os.Stat(cachePath)
+			So(err, ShouldNotBeNil)
+			So(os.IsNotExist(err), ShouldBeTrue)
+
+			_, err = os.Stat(path)
+			So(err, ShouldNotBeNil)
+			So(os.IsNotExist(err), ShouldBeTrue)
+		})
+
 		Convey("You can mount with verbose yet quiet, and still get the logs", t, func() {
 			origVerbose := cfg.Verbose
 			cfg.Verbose = true
@@ -1195,7 +1275,7 @@ func TestMinFys(t *testing.T) {
 				Target:    target + "/sub",
 				AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
 				SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
-				CacheDir:  cacheDir,
+				CacheData: true,
 			}
 
 			cfgMultiplex := &Config{
