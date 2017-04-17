@@ -923,6 +923,56 @@ func TestMinFys(t *testing.T) {
 				}()
 				So(err, ShouldBeNil)
 			})
+
+			Convey("You can write multiple files and they get uploaded in final mtime order", func() {
+				path1 := mountPoint + "/write.test1"
+				b := []byte("write test1\n")
+				err := ioutil.WriteFile(path1, b, 0644)
+				So(err, ShouldBeNil)
+
+				path2 := mountPoint + "/write.test2"
+				b = []byte("write test2\n")
+				err = ioutil.WriteFile(path2, b, 0644)
+				So(err, ShouldBeNil)
+
+				path3 := mountPoint + "/write.test3"
+				b = []byte("write test3\n")
+				err = ioutil.WriteFile(path3, b, 0644)
+				So(err, ShouldBeNil)
+
+				cmd := exec.Command("touch", "-d", "2006-01-02 15:04:05", path2)
+				err = cmd.Run()
+				So(err, ShouldBeNil)
+
+				t := time.Now().Add(5 * time.Minute)
+				err = os.Chtimes(path1, t, t)
+				So(err, ShouldBeNil)
+
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				defer func() {
+					os.Remove(path1)
+					os.Remove(path2)
+					os.Remove(path3)
+				}()
+
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				info1, err := os.Stat(path1)
+				So(err, ShouldBeNil)
+				info2, err := os.Stat(path2)
+				So(err, ShouldBeNil)
+				info3, err := os.Stat(path3)
+				So(err, ShouldBeNil)
+				So(info2.ModTime().Unix(), ShouldBeLessThanOrEqualTo, info3.ModTime().Unix())
+				So(info3.ModTime().Unix(), ShouldBeLessThanOrEqualTo, info1.ModTime().Unix())
+
+				// *** unfortunately they only get second-resolution mtimes, and
+				// they all get uploaded in the same second, so this isn't a very
+				// good test... need uploads that take more than 1 second each...
+			})
 		})
 
 		Convey("You can mount with verbose yet quiet, and still get the logs", t, func() {

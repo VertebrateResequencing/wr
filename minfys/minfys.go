@@ -36,7 +36,15 @@ Minio, et al.) and AWS Signature Version 2 (Google Cloud Storage, Openstack
 Swift, Ceph Object Gateway, Riak CS, et al).
 
 It allows "multiplexing": you can mount multiple different buckets (or sub
-directories of the same bucket) on the same local directory.
+directories of the same bucket) on the same local directory. This makes commands
+you want to run against the files in your buckets much simpler, eg. instead of
+mounting s3://publicbucket, s3://myinputbucket and s3://myoutputbucket to
+separate mount points and running:
+$ myexe -ref /mnt/publicbucket/refs/human/ref.fa -i /mnt/myinputbucket/xyz/123/
+  input.file > /mnt/myoutputbucket/xyz/123/output.file
+You could multiplex the 3 buckets (at the desired paths) on to the directory you
+will work from and just run:
+$ myexe -ref ref.fa -i input.file > output.file
 
 It is a "filey" system ('fys' instead of 'fs') in that it cares about
 performance first, and POSIX second. It is designed around a particular use-
@@ -85,14 +93,19 @@ Both are designed to be run as daemons as opposed to being used in-process.
 minfys is implemented using minio-go for compatibility, and hanwen/go-fuse for
 speed. (In my testing, hanwen/go-fuse and jacobsa/fuse did not have noticeably
 difference performance characteristics, but go-fuse was easier to write for.)
-However, its read/write code is inspired by goofys. It shares all of goofys'
-non-POSIX behaviours:
+However, its read/write code is inspired by goofys. Thanks to minimising remote
+calls to the remote S3 system, and only implementing what S3 is generally
+capable of, it shares goofys' non-POSIX behaviours (and is even a little less
+POSIX-like):
 
-  * only sequential writes supported in non-cached mode
+  * writes are only supported in cached mode
   * does not store file mode/owner/group
   * does not support symlink or hardlink
-  * `ctime`, `atime` is always the same as `mtime`
-  * cannot rename non-empty directories
+  * `atime` (and typically `ctime`) is always the same as `mtime`
+  * `mtime` of files is not stored remotely (remote file mtimes are of their
+    upload time, and minfys only guarantees that files are uploaded in the order
+    you modified them)
+  * does not upload empty directories, can't rename directories
   * `unlink` returns success even if file is not present
   * `fsync` is ignored, files are only flushed on `close`
 
@@ -203,6 +216,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -284,16 +298,16 @@ type Target struct {
 // ~/.s3cfg (s3cmd's config file). If profile is an empty string, it comes from
 // $AWS_DEFAULT_PROFILE or $AWS_PROFILE or defaults to "default". If ~/.s3cfg
 // doesn't exist or isn't fully specified, missing values will be taken from the
-// file pointed to by $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials if
-// that is not set (in the AWS CLI format). If this file also doesn't exist,
+// file pointed to by $AWS_SHARED_CREDENTIALS_FILE, or ~/.aws/credentials (in
+// the AWS CLI format) if that is not set. If this file also doesn't exist,
 // ~/.awssecret (in the format used by s3fs) is used instead. AccessKey and
 // SecretKey values will always preferably come from $AWS_ACCESS_KEY_ID and
 // $AWS_SECRET_ACCESS_KEY respectively, if those are set. If no config file
 // specified host_base, the default domain used is s3.amazonaws.com. Region is
-// set by the $AWS_DEFAULT_REGION environment variable, or if that does not
-// exist, by checking the file pointed to by $AWS_CONFIG_FILE (~/.aws/config if
-// unset). To allow the use of a single configuration file, users can create a
-// non-standard file that specifies all relevant options: use_https, host_base,
+// set by the $AWS_DEFAULT_REGION environment variable, or if that is not set,
+// by checking the file pointed to by $AWS_CONFIG_FILE (~/.aws/config if unset).
+// To allow the use of a single configuration file, users can create a non-
+// standard file that specifies all relevant options: use_https, host_base,
 // region, access_key (or aws_access_key_id) and secret_key (or
 // aws_secret_access_key) (saved in any of the files except ~/.awssecret). The
 // path argument should at least be the bucket name, but ideally should also
@@ -720,6 +734,14 @@ func (fs *MinFys) Unmount() (err error) {
 		os.RemoveAll(fs.writeRemote.cacheDir)
 	}
 
+	// clean out our caches; one reason to unmount is to force recognition of
+	// new files when we re-mount
+	fs.dirs = make(map[string][]*remote)
+	fs.dirContents = make(map[string][]fuse.DirEntry)
+	fs.files = make(map[string]*fuse.Attr)
+	fs.fileToRemote = make(map[string]*remote)
+	fs.createdFiles = make(map[string]bool)
+
 	return
 }
 
@@ -728,8 +750,20 @@ func (fs *MinFys) Unmount() (err error) {
 func (fs *MinFys) uploadCreated() error {
 	if fs.writeRemote != nil && fs.writeRemote.cacheData {
 		fails := 0
-	FILES:
-		for name := range fs.createdFiles { // *** since mdtimes in S3 are stored as the upload time, we must upload in local mttime order...
+
+		// since mtimes in S3 are stored as the upload time, we sort our created
+		// files by their mtime to at least upload them in the correct order
+		var createdFiles []string
+		for name := range fs.createdFiles {
+			createdFiles = append(createdFiles, name)
+		}
+		if len(createdFiles) > 1 {
+			sort.Slice(createdFiles, func(i, j int) bool {
+				return fs.files[createdFiles[i]].Mtime < fs.files[createdFiles[j]].Mtime
+			})
+		}
+
+		for _, name := range createdFiles {
 			remotePath := fs.writeRemote.getRemotePath(name)
 			localPath := fs.writeRemote.getLocalPath(remotePath)
 
@@ -737,7 +771,7 @@ func (fs *MinFys) uploadCreated() error {
 			worked := fs.writeRemote.uploadFile(localPath, remotePath)
 			if !worked {
 				fails++
-				continue FILES
+				continue
 			}
 
 			// delete local copy
