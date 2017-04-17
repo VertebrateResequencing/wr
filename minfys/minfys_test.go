@@ -220,9 +220,33 @@ func TestMinFys(t *testing.T) {
 				So(perr.Error(), ShouldContainSubstring, "operation not permitted")
 			})
 
+			Convey("And you can't rename files", func() {
+				path := mountPoint + "/1G.file"
+				dest := mountPoint + "/1G.moved"
+				cmd := exec.Command("mv", path, dest)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
+			})
+
 			Convey("You can't touch files in non Write mode", func() {
 				path := mountPoint + "/1G.file"
 				cmd := exec.Command("touch", path)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
+			})
+
+			Convey("You can't make, delete or rename directories in non Write mode", func() {
+				newDir := mountPoint + "/newdir_test"
+				cmd := exec.Command("mkdir", newDir)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
+
+				path := mountPoint + "/sub"
+				cmd = exec.Command("rmdir", path)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
+
+				cmd = exec.Command("mv", path, newDir)
 				err = cmd.Run()
 				So(err, ShouldNotBeNil)
 			})
@@ -443,6 +467,73 @@ func TestMinFys(t *testing.T) {
 						err = os.Remove(path)
 						So(err, ShouldBeNil)
 					})
+				})
+
+				Convey("You can rename files using mv", func() {
+					dest := mountPoint + "/write.moved"
+					cmd := exec.Command("mv", path, dest)
+					err = cmd.Run()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(dest)
+					So(err, ShouldBeNil)
+					So(bytes, ShouldResemble, b)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					defer func() {
+						err = os.Remove(dest)
+						So(err, ShouldBeNil)
+					}()
+
+					bytes, err = ioutil.ReadFile(dest)
+					So(err, ShouldBeNil)
+					So(bytes, ShouldResemble, b)
+
+					_, err = os.Stat(dest)
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+				})
+
+				Convey("You can rename files using os.Rename", func() {
+					dest := mountPoint + "/write.moved"
+					err := os.Rename(path, dest)
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(dest)
+					So(err, ShouldBeNil)
+					So(bytes, ShouldResemble, b)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					defer func() {
+						err = os.Remove(dest)
+						So(err, ShouldBeNil)
+					}()
+
+					bytes, err = ioutil.ReadFile(dest)
+					So(err, ShouldBeNil)
+					So(bytes, ShouldResemble, b)
+
+					_, err = os.Stat(dest)
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
 				})
 			})
 

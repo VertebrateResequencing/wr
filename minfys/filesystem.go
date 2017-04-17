@@ -307,9 +307,8 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 
 // openCached downloads the remotePath to the configured CacheDir, then all
 // subsequent read/write operations are deferred to the *os.File for that local
-// file. Any writes are currently lost because they're not uploaded! NB: there
-// is currently no locking, so this should only be called by one process at a
-// time (for the same configured CacheDir).
+// file. NB: there is currently no locking, so this should only be called by one
+// process at a time (for the same configured CacheDir).
 func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse.Context, attr *fuse.Attr) (nodefs.File, fuse.Status) {
 	remotePath := r.getRemotePath(name)
 
@@ -497,6 +496,63 @@ func (fs *MinFys) Mkdir(name string, mode uint32, context *fuse.Context) fuse.St
 	return fuse.OK
 }
 
+// Rmdir is ignored.
+func (fs *MinFys) Rmdir(name string, context *fuse.Context) fuse.Status {
+	if fs.writeRemote == nil {
+		return fuse.EPERM
+	}
+	return fuse.OK
+}
+
+// Rename currently only works in CacheData mode, and where oldPath is found in
+// the writeable remote. First downloads the oldPath to the cache if not already
+// cached. Immediately deletes the remote oldPath but only uploads newPath at
+// Unmount() time. NB: currently only works for files, not directories!
+func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) fuse.Status {
+	_, r, status := fs.fileDetails(oldPath, true)
+	if status != fuse.OK {
+		return status
+	}
+
+	remotePathOld := r.getRemotePath(oldPath)
+	remotePathNew := r.getRemotePath(newPath)
+	if r.cacheData {
+		localPathOld := r.getLocalPath(remotePathOld)
+		localPathNew := r.getLocalPath(remotePathNew)
+
+		// first cache oldPath if not already
+		f, status := fs.Open(oldPath, uint32(0), context)
+		if status != fuse.OK {
+			return status
+		}
+		f.Release()
+
+		// now create newPath
+		f, status = fs.Create(newPath, uint32(0), uint32(fileMode), context)
+		if status != fuse.OK {
+			return status
+		}
+		f.Release()
+
+		// now move old cached file over the new cached file
+		err := os.Rename(localPathOld, localPathNew)
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
+		fs.files[newPath] = fs.files[oldPath]
+
+		// finally unlink oldPath remotely
+		fs.Unlink(oldPath, context)
+
+		return fuse.OK
+	}
+
+	// *** if uncached, we could do something like:
+	// err := r.client.CopyObject(r.bucket, newPath, r.bucket + "/" + oldPath, minio.CopyConditions{})
+	// if err == nil { unlink oldPath remotely }
+	return fuse.ENOSYS
+}
+
 // Unlink deletes a file from the remote S3 bucket, as well as any locally
 // cached copy.
 func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
@@ -541,25 +597,6 @@ func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 	}
 
 	return fuse.OK
-}
-
-// Rmdir is ignored.
-func (fs *MinFys) Rmdir(name string, context *fuse.Context) fuse.Status {
-	if fs.writeRemote == nil {
-		return fuse.EPERM
-	}
-	return fuse.OK
-}
-
-// Rename isn't implemented yet.
-func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) fuse.Status {
-	_, _, status := fs.fileDetails(oldPath, true)
-	if status != fuse.OK {
-		return status
-	}
-	// err := os.Rename(fs.GetPath(oldPath), fs.GetPath(newPath))
-	// return fuse.ToStatus(err)
-	return fuse.ENOSYS
 }
 
 // Access is ignored.
