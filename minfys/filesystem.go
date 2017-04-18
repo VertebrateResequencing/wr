@@ -77,6 +77,7 @@ func (fs *MinFys) StatFs(name string) *fuse.StatfsOut {
 	}
 }
 
+// OnMount prepares MinFys for use once Mount() has been called.
 func (fs *MinFys) OnMount(nodeFs *pathfs.PathNodeFs) {
 	// we need to establish that the root directory is a directory; the next
 	// attempt by the user to get it's contents will actually do the remote call
