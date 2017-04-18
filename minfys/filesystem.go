@@ -389,7 +389,8 @@ func (fs *MinFys) SetXAttr(name string, attr string, data []byte, flags int, con
 
 // Utimens only functions when configured with CacheData and the file is already
 // in the cache; otherwise ignored. This only gets called by direct operations
-// like os.Chtimes() (that don't first Open()/Create() the file).
+// like os.Chtimes() (that don't first Open()/Create() the file). context is not
+// currently used.
 func (fs *MinFys) Utimens(name string, Atime *time.Time, Mtime *time.Time, context *fuse.Context) (status fuse.Status) {
 	attr, r, status := fs.fileDetails(name, true)
 	if status != fuse.OK || !r.cacheData {
@@ -412,7 +413,7 @@ func (fs *MinFys) Utimens(name string, Atime *time.Time, Mtime *time.Time, conte
 // Truncate truncates any local cached copy of the file. Only currently
 // implemented for when configured with CacheData; the results of the Truncate
 // are only uploaded at Unmount() time. If offset is > size of file, does
-// nothing and returns OK.
+// nothing and returns OK. context is not currently used.
 func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fuse.Status {
 	attr, r, status := fs.fileDetails(name, true)
 	if status != fuse.OK {
@@ -488,73 +489,170 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 	return fuse.ENOSYS
 }
 
-// Mkdir is ignored ***for now...
+// Mkdir for a directory that doesn't exist yet only works whilst mounted in
+// CacheData mode. neither mode nor context are currently used.
 func (fs *MinFys) Mkdir(name string, mode uint32, context *fuse.Context) fuse.Status {
 	if fs.writeRemote == nil {
 		return fuse.EPERM
 	}
-	return fuse.OK
+
+	if _, isDir := fs.dirs[name]; isDir {
+		return fuse.OK
+	}
+
+	// it's parent directory must already exist
+	parent := filepath.Dir(name)
+	if parent == "." {
+		parent = ""
+	}
+	if _, exists := fs.dirs[parent]; !exists {
+		return fuse.ENOENT
+	}
+
+	remotePath := fs.writeRemote.getRemotePath(name)
+	if fs.writeRemote.cacheData {
+		localPath := fs.writeRemote.getLocalPath(remotePath)
+
+		// make all the parent directories. *** we use our dirMode constant here
+		// instead of the supplied mode because of strange permission problems
+		// using the latter, and because it doesn't matter what permissions the
+		// user wants for the dir - this is for a user-only cache
+		var err error
+		if err = os.MkdirAll(filepath.Dir(localPath), os.FileMode(dirMode)); err == nil {
+			// make the desired directory
+			if err = os.Mkdir(localPath, os.FileMode(dirMode)); err == nil {
+				fs.mutex.Lock()
+				fs.dirs[name] = append(fs.dirs[name], fs.writeRemote)
+				if _, exists := fs.dirContents[name]; !exists {
+					fs.dirContents[name] = []fuse.DirEntry{}
+				}
+				fs.createdDirs[name] = true
+				fs.mutex.Unlock()
+				fs.addNewEntryToItsDir(name, fuse.S_IFDIR)
+			}
+		}
+		return fuse.ToStatus(err)
+	}
+	return fuse.ENOSYS
 }
 
-// Rmdir is ignored.
+// Rmdir only works for directories you have created whilst mounted in
+// CacheData mode. context is not currently used.
 func (fs *MinFys) Rmdir(name string, context *fuse.Context) fuse.Status {
 	if fs.writeRemote == nil {
 		return fuse.EPERM
 	}
-	return fuse.OK
-}
 
-// Rename currently only works in CacheData mode, and where oldPath is found in
-// the writeable remote. First downloads the oldPath to the cache if not already
-// cached. Immediately deletes the remote oldPath but only uploads newPath at
-// Unmount() time. NB: currently only works for files, not directories!
-func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) fuse.Status {
-	_, r, status := fs.fileDetails(oldPath, true)
-	if status != fuse.OK {
-		return status
+	if _, isDir := fs.dirs[name]; !isDir {
+		return fuse.ENOENT
+	} else if _, created := fs.createdDirs[name]; !created {
+		return fuse.ENOSYS
 	}
 
-	remotePathOld := r.getRemotePath(oldPath)
-	remotePathNew := r.getRemotePath(newPath)
-	if r.cacheData {
-		localPathOld := r.getLocalPath(remotePathOld)
-		localPathNew := r.getLocalPath(remotePathNew)
-
-		// first cache oldPath if not already
-		f, status := fs.Open(oldPath, uint32(0), context)
-		if status != fuse.OK {
-			return status
+	remotePath := fs.writeRemote.getRemotePath(name)
+	if fs.writeRemote.cacheData {
+		err := syscall.Rmdir(fs.writeRemote.getLocalPath(remotePath))
+		if err == nil {
+			fs.mutex.Lock()
+			delete(fs.dirs, name)
+			delete(fs.createdDirs, name)
+			delete(fs.dirContents, name)
+			fs.mutex.Unlock()
+			fs.rmEntryFromItsDir(name)
 		}
-		f.Release()
+		return fuse.ToStatus(err)
+	}
+	return fuse.ENOSYS
+}
 
-		// now create newPath
-		f, status = fs.Create(newPath, uint32(0), uint32(fileMode), context)
-		if status != fuse.OK {
-			return status
+// Rename only works where oldPath is found in the writeable remote. For files,
+// first remotely copies oldPath to newPath (ignoring any local changes to
+// oldPath), renames any local cached (and possibly modified) copy of oldPath to
+// newPath, and finally deletes the remote oldPath; if oldPath had been
+// modified, its changes will only be uploaded to newPath at Unmount() time. For
+// directories, is only capable of renaming directories you have created whilst
+// mounted. context is not currently used.
+func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) fuse.Status {
+	if fs.writeRemote == nil {
+		return fuse.EPERM
+	}
+
+	var isDir bool
+	if _, isDir = fs.dirs[oldPath]; !isDir {
+		if _, isFile := fs.fileToRemote[oldPath]; !isFile {
+			return fuse.ENOENT
 		}
-		f.Release()
+	} else if _, created := fs.createdDirs[oldPath]; !created {
+		return fuse.ENOSYS
+	} else {
+		// the directory's new parent dir must exist
+		parent := filepath.Dir(newPath)
+		if parent == "." {
+			parent = ""
+		}
+		if _, exists := fs.dirs[parent]; !exists {
+			return fuse.ENOENT
+		}
+	}
 
-		// now move old cached file over the new cached file
-		err := os.Rename(localPathOld, localPathNew)
-		if err != nil {
+	remotePathOld := fs.writeRemote.getRemotePath(oldPath)
+	remotePathNew := fs.writeRemote.getRemotePath(newPath)
+	if isDir {
+		if fs.writeRemote.cacheData {
+			// first create the newPaths's cached parent dir
+			localPathNew := fs.writeRemote.getLocalPath(remotePathNew)
+			var err error
+			if err = os.MkdirAll(filepath.Dir(localPathNew), os.FileMode(dirMode)); err == nil {
+				// now try and rename the cached dir
+				if err = os.Rename(fs.writeRemote.getLocalPath(remotePathOld), localPathNew); err == nil {
+					// update our knowledge of what dirs we have
+					fs.mutex.Lock()
+					fs.dirs[newPath] = fs.dirs[oldPath]
+					fs.dirContents[newPath] = fs.dirContents[oldPath]
+					fs.createdDirs[newPath] = true
+					delete(fs.dirs, oldPath)
+					delete(fs.createdDirs, oldPath)
+					delete(fs.dirContents, oldPath)
+					fs.mutex.Unlock()
+					fs.rmEntryFromItsDir(oldPath)
+					fs.addNewEntryToItsDir(newPath, fuse.S_IFDIR)
+				}
+			}
 			return fuse.ToStatus(err)
 		}
+	} else {
+		// first trigger a remote copy of oldPath to newPath
+		worked := fs.writeRemote.copyObject(remotePathOld, remotePathNew)
+		if worked != true {
+			return fuse.EIO
+		}
+
+		if fs.writeRemote.cacheData {
+			// if we've cached oldPath, move to new cached file
+			os.Rename(fs.writeRemote.getLocalPath(remotePathOld), fs.writeRemote.getLocalPath(remotePathNew))
+		}
+
+		// cache the existence of the new file
+		fs.mutex.Lock()
 		fs.files[newPath] = fs.files[oldPath]
+		fs.fileToRemote[newPath] = fs.fileToRemote[oldPath]
+		if _, created := fs.createdFiles[oldPath]; created {
+			fs.createdFiles[newPath] = true
+			delete(fs.createdFiles, oldPath)
+		}
+		fs.mutex.Unlock()
+		fs.addNewEntryToItsDir(newPath, fuse.S_IFREG)
 
 		// finally unlink oldPath remotely
 		fs.Unlink(oldPath, context)
 
 		return fuse.OK
 	}
-
-	// *** if uncached, we could do something like:
-	// err := r.client.CopyObject(r.bucket, newPath, r.bucket + "/" + oldPath, minio.CopyConditions{})
-	// if err == nil { unlink oldPath remotely }
 	return fuse.ENOSYS
 }
 
 // Unlink deletes a file from the remote S3 bucket, as well as any locally
-// cached copy.
+// cached copy. context is not currently used.
 func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 	_, r, status := fs.fileDetails(name, true)
 	if status != fuse.OK {
@@ -571,30 +669,14 @@ func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 		return fuse.EIO
 	}
 
+	fs.mutex.Lock()
 	delete(fs.files, name)
 	delete(fs.fileToRemote, name)
 	delete(fs.createdFiles, name)
+	fs.mutex.Unlock()
 
 	// remove the directory entry as well
-	dir := filepath.Dir(name)
-	if dir == "." {
-		dir = ""
-	}
-	baseName := filepath.Base(name)
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-	if dentries, exists := fs.dirContents[dir]; exists {
-		for i, entry := range dentries {
-			if entry.Name == baseName {
-				// delete without preserving order and avoiding memory leak
-				dentries[i] = dentries[len(dentries)-1]
-				dentries[len(dentries)-1] = fuse.DirEntry{}
-				dentries = dentries[:len(dentries)-1]
-				fs.dirContents[dir] = dentries
-				break
-			}
-		}
-	}
+	fs.rmEntryFromItsDir(name)
 
 	return fuse.OK
 }
@@ -633,21 +715,9 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 		mTime := uint64(time.Now().Unix())
 		if !existed {
 			// add to our directory entries for this file's dir
-			d := fuse.DirEntry{
-				Name: filepath.Base(name),
-				Mode: uint32(fuse.S_IFREG),
-			}
-			dir := filepath.Dir(name)
-			if dir == "." {
-				dir = ""
-			}
-			if _, exists := fs.dirContents[dir]; !exists {
-				// we must populate the contents of dir first
-				fs.mutex.Unlock()
-				fs.OpenDir(dir, &fuse.Context{})
-				fs.mutex.Lock()
-			}
-			fs.dirContents[dir] = append(fs.dirContents[dir], d)
+			fs.mutex.Unlock()
+			fs.addNewEntryToItsDir(name, fuse.S_IFREG)
+			fs.mutex.Lock()
 
 			attr = &fuse.Attr{
 				Mode:  fuse.S_IFREG | uint32(fileMode),
@@ -668,4 +738,49 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 		return NewCachedWriteFile(nodefs.NewLoopbackFile(localFile), attr), fuse.ToStatus(err)
 	}
 	return nil, fuse.ENOSYS
+}
+
+// addNewEntryToItsDir adds a DirEntry for the file/dir named name to that
+// object's containing directory entries. mode should be fuse.S_IFREG or
+// fuse.S_IFDIR
+func (fs *MinFys) addNewEntryToItsDir(name string, mode int) {
+	d := fuse.DirEntry{
+		Name: filepath.Base(name),
+		Mode: uint32(mode),
+	}
+	parent := filepath.Dir(name)
+	if parent == "." {
+		parent = ""
+	}
+	if _, exists := fs.dirContents[parent]; !exists {
+		// we must populate the contents of parent first
+		fs.OpenDir(parent, &fuse.Context{})
+	}
+	fs.mutex.Lock()
+	fs.dirContents[parent] = append(fs.dirContents[parent], d)
+	fs.mutex.Unlock()
+}
+
+// rmEntryFromItsDir removes a DirEntry for the file/dir named name from that
+// object's containing directory entries.
+func (fs *MinFys) rmEntryFromItsDir(name string) {
+	parent := filepath.Dir(name)
+	if parent == "." {
+		parent = ""
+	}
+	baseName := filepath.Base(name)
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+	if dentries, exists := fs.dirContents[parent]; exists {
+		for i, entry := range dentries {
+			if entry.Name == baseName {
+				// delete without preserving order and avoiding memory leak
+				dentries[i] = dentries[len(dentries)-1]
+				dentries[len(dentries)-1] = fuse.DirEntry{}
+				dentries = dentries[:len(dentries)-1]
+				fs.dirContents[parent] = dentries
+				break
+			}
+		}
+	}
 }

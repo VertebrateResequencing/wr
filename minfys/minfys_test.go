@@ -503,10 +503,22 @@ func TestMinFys(t *testing.T) {
 					So(err, ShouldNotBeNil)
 				})
 
-				Convey("You can rename files using os.Rename", func() {
+				Convey("You can rename uncached files using os.Rename", func() {
+					// unmount first to clear the cache
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
 					dest := mountPoint + "/write.moved"
 					err := os.Rename(path, dest)
 					So(err, ShouldBeNil)
+
+					_, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					cachePathDest := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.moved"))
+					_, err = os.Stat(cachePathDest)
+					So(err, ShouldNotBeNil)
 
 					bytes, err = ioutil.ReadFile(dest)
 					So(err, ShouldBeNil)
@@ -534,6 +546,132 @@ func TestMinFys(t *testing.T) {
 
 					_, err = os.Stat(path)
 					So(err, ShouldNotBeNil)
+				})
+
+				Convey("You can rename cached and altered files", func() {
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					line2 := "line2\n"
+					_, err = f.WriteString(line2)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+
+					dest := mountPoint + "/write.moved"
+					err = os.Rename(path, dest)
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(cachePath)
+					So(err, ShouldNotBeNil)
+					cachePathDest := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("write.moved"))
+					_, err = os.Stat(cachePathDest)
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(dest)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					defer func() {
+						err = os.Remove(dest)
+						So(err, ShouldBeNil)
+					}()
+
+					bytes, err = ioutil.ReadFile(dest)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+
+					_, err = os.Stat(dest)
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(path)
+					So(err, ShouldNotBeNil)
+				})
+			})
+
+			Convey("You can't rename remote directories", func() {
+				newDir := mountPoint + "/newdir_test"
+				subDir := mountPoint + "/sub"
+				cmd := exec.Command("mv", subDir, newDir)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
+			})
+
+			Convey("You can't remove remote directories", func() {
+				subDir := mountPoint + "/sub"
+				cmd := exec.Command("rmdir", subDir)
+				err = cmd.Run()
+				So(err, ShouldNotBeNil)
+			})
+
+			Convey("You can create directories and rename and remove those", func() {
+				newDir := mountPoint + "/newdir_test"
+				cmd := exec.Command("mkdir", newDir)
+				err = cmd.Run()
+				So(err, ShouldBeNil)
+
+				entries, err := ioutil.ReadDir(mountPoint)
+				So(err, ShouldBeNil)
+				details := dirDetails(entries)
+				rootEntries := []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "newdir_test:dir", "numalphanum.txt:file:47", "sub:dir"}
+				So(details, ShouldResemble, rootEntries)
+
+				movedDir := mountPoint + "/newdir_moved"
+				cmd = exec.Command("mv", newDir, movedDir)
+				err = cmd.Run()
+				So(err, ShouldBeNil)
+
+				entries, err = ioutil.ReadDir(mountPoint)
+				So(err, ShouldBeNil)
+				details = dirDetails(entries)
+				rootEntries = []string{"100k.lines:file:700000", "1G.file:file:1073741824", "emptyDir:dir", "newdir_moved:dir", "numalphanum.txt:file:47", "sub:dir"}
+				So(details, ShouldResemble, rootEntries)
+
+				cmd = exec.Command("rmdir", movedDir)
+				err = cmd.Run()
+				So(err, ShouldBeNil)
+
+				Convey("You can create nested directories and add files to them", func() {
+					nestedDir := mountPoint + "/newdir_test/a/b/c"
+					err = os.MkdirAll(nestedDir, os.FileMode(700))
+					So(err, ShouldBeNil)
+
+					path := nestedDir + "/write.nested"
+					b := []byte("nested test\n")
+					err := ioutil.WriteFile(path, b, 0644)
+					So(err, ShouldBeNil)
+
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(bytes, ShouldResemble, b)
+
+					entries, err := ioutil.ReadDir(nestedDir)
+					So(err, ShouldBeNil)
+					details := dirDetails(entries)
+					nestEntries := []string{"write.nested:file:12"}
+					So(details, ShouldResemble, nestEntries)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					bytes, err = ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(bytes, ShouldResemble, b)
+
+					os.Remove(path)
 				})
 			})
 

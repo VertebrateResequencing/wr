@@ -177,6 +177,16 @@ func (r *remote) getObject(remotePath string, offset int64) (object *minio.Objec
 	return
 }
 
+// copyObject remotely copies an object to a new remote path. Returns true if
+// there were no problems. If there were, the new remote path won't exist.
+func (r *remote) copyObject(oldPath, newPath string) bool {
+	// copy, with automatic retries
+	rf := func() error {
+		return r.client.CopyObject(r.bucket, newPath, r.bucket+"/"+oldPath, minio.CopyConditions{})
+	}
+	return r.retry(fmt.Sprintf("CopyObject(%s, %s, %s)", r.bucket, newPath, r.bucket+"/"+oldPath), rf)
+}
+
 // deleteFile deletes the given remote file. Returns true if the deletion was
 // successful.
 func (r *remote) deleteFile(remotePath string) bool {

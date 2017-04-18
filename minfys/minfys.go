@@ -502,6 +502,7 @@ type MinFys struct {
 	files           map[string]*fuse.Attr
 	fileToRemote    map[string]*remote
 	createdFiles    map[string]bool
+	createdDirs     map[string]bool
 	mounted         bool
 	loggedMsgs      []string
 	handlingSignals bool
@@ -545,6 +546,7 @@ func New(config *Config) (fs *MinFys, err error) {
 		files:        make(map[string]*fuse.Attr),
 		fileToRemote: make(map[string]*remote),
 		createdFiles: make(map[string]bool),
+		createdDirs:  make(map[string]bool),
 		maxAttempts:  config.Retries + 1,
 		cacheBase:    cacheBase,
 		verbose:      config.Verbose,
@@ -748,6 +750,7 @@ func (fs *MinFys) Unmount(doNotUpload ...bool) (err error) {
 	fs.files = make(map[string]*fuse.Attr)
 	fs.fileToRemote = make(map[string]*remote)
 	fs.createdFiles = make(map[string]bool)
+	fs.createdDirs = make(map[string]bool)
 
 	return
 }
