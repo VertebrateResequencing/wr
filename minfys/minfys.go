@@ -776,8 +776,8 @@ func (fs *MinFys) uploadCreated() error {
 			localPath := fs.writeRemote.getLocalPath(remotePath)
 
 			// upload file
-			worked := fs.writeRemote.uploadFile(localPath, remotePath)
-			if !worked {
+			status := fs.writeRemote.uploadFile(localPath, remotePath)
+			if status != fuse.OK {
 				fails++
 				continue
 			}

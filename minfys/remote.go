@@ -23,6 +23,7 @@ package minfys
 
 import (
 	"fmt"
+	"github.com/hanwen/go-fuse/fuse"
 	"github.com/minio/minio-go"
 	"io"
 	"net/http"
@@ -50,11 +51,12 @@ type remote struct {
 type retryFunc func() error
 
 // retry attempts to run the given func a number of times until it completes
-// without error. While minio internally does retries, it only does them when
-// it considers the failure to be retryable, whereas we always want to retry to
-// handle more kinds of errors. Since it logs errors, it just returns a bool:
-// true if rf ran without error.
-func (r *remote) retry(clientMethod string, rf retryFunc) bool {
+// without error. While minio internally does retries, it only does them when it
+// considers the failure to be retryable, whereas we always want to retry to
+// handle more kinds of errors. It logs errors itself. Does not bother retrying
+// when the error is known to be permanent (eg. a requested object not
+// existing).
+func (r *remote) retry(clientMethod string, rf retryFunc) fuse.Status {
 	attempts := 0
 	start := time.Now()
 ATTEMPTS:
@@ -62,17 +64,39 @@ ATTEMPTS:
 		attempts++
 		err := rf()
 		if err != nil {
+			// return immediately if key not found
+			if merr, ok := err.(minio.ErrorResponse); ok && merr.Code == "NoSuchKey" {
+				r.fs.debug("warning: %s call found the object didn't exist after %s", clientMethod, time.Since(start))
+				return fuse.ENOENT
+			}
+
+			// otherwise blindly retry for maxAttempts times
 			if attempts < r.fs.maxAttempts {
 				<-time.After(r.fs.clientBackoff.Duration())
 				continue ATTEMPTS
 			}
 			r.fs.debug("error: %s call failed after %d retries and %s: %s", clientMethod, attempts-1, time.Since(start), err)
-			return false
+			return fuse.EIO
 		}
 		r.fs.debug("info: %s call took %s", clientMethod, time.Since(start))
 		r.fs.clientBackoff.Reset()
-		return true
+		return fuse.OK
 	}
+}
+
+// statusFromErr is for when you get an error from trying to use something you
+// you get back from a remote, such an object from getObject. It returns the
+// appropriate status and logs any error.
+func (r *remote) statusFromErr(clientMethod string, err error) fuse.Status {
+	if err != nil {
+		if merr, ok := err.(minio.ErrorResponse); ok && merr.Code == "NoSuchKey" {
+			r.fs.debug("warning: %s call found the object didn't exist", clientMethod)
+			return fuse.ENOENT
+		}
+		r.fs.debug("error: %s call failed: %s", clientMethod, err)
+		return fuse.EIO
+	}
+	return fuse.OK
 }
 
 // getRemotePath combines any base path initially configured in Target with the
@@ -92,21 +116,21 @@ func (r *remote) getLocalPath(remotePath string) string {
 }
 
 // uploadFile uploads the given local file to the given remote path, with
-// automatic retries on failure. Returns true if the upload was successful.
-func (r *remote) uploadFile(localPath, remotePath string) bool {
+// automatic retries on failure.
+func (r *remote) uploadFile(localPath, remotePath string) fuse.Status {
 	// get the file's content type *** don't know if this is important, or if we
 	// can just fake it
 	file, err := os.Open(localPath)
 	if err != nil {
 		r.fs.debug("error: uploadFile could not open %s: %s", localPath, err)
-		return false
+		return fuse.EIO
 	}
 	buffer := make([]byte, 512)
 	n, err := file.Read(buffer)
 	if err != nil && err != io.EOF {
 		r.fs.debug("error: uploadFile could not read from %s: %s", localPath, err)
 		file.Close()
-		return false
+		return fuse.EIO
 	}
 	contentType := http.DetectContentType(buffer[:n])
 	file.Close()
@@ -120,8 +144,8 @@ func (r *remote) uploadFile(localPath, remotePath string) bool {
 }
 
 // downloadFile downloads the given remote file to the given local path, with
-// automatic retries on failure. Returns true if the download was successful.
-func (r *remote) downloadFile(remotePath, localPath string) bool {
+// automatic retries on failure.
+func (r *remote) downloadFile(remotePath, localPath string) fuse.Status {
 	// upload, with automatic retries
 	rf := func() error {
 		return r.client.FGetObject(r.bucket, remotePath, localPath)
@@ -133,7 +157,7 @@ func (r *remote) downloadFile(remotePath, localPath string) bool {
 // path, but without "traversing" to deeper "sub-directories". Ie. it's like a
 // directory listing. Returns the details and true if there were no problems
 // getting those details.
-func (r *remote) findObjects(remotePath string) (objects []minio.ObjectInfo, worked bool) {
+func (r *remote) findObjects(remotePath string) (objects []minio.ObjectInfo, status fuse.Status) {
 	// find objects, with automatic retries
 	rf := func() error {
 		doneCh := make(chan struct{})
@@ -148,14 +172,14 @@ func (r *remote) findObjects(remotePath string) (objects []minio.ObjectInfo, wor
 		}
 		return nil
 	}
-	worked = r.retry(fmt.Sprintf("ListObjectsV2(%s, %s)", r.bucket, remotePath), rf)
+	status = r.retry(fmt.Sprintf("ListObjectsV2(%s, %s)", r.bucket, remotePath), rf)
 	return
 }
 
 // getObject gets the object representing a remote file, ready to be read from.
 // Optionally also seek within it first (to the given number of bytes from the
-// start of the file). Returns the object and true if there were no problems.
-func (r *remote) getObject(remotePath string, offset int64) (object *minio.Object, worked bool) {
+// start of the file).
+func (r *remote) getObject(remotePath string, offset int64) (object *minio.Object, status fuse.Status) {
 	// get object and seek, with automatic retries
 	rf := func() error {
 		var err error
@@ -173,13 +197,12 @@ func (r *remote) getObject(remotePath string, offset int64) (object *minio.Objec
 
 		return nil
 	}
-	worked = r.retry(fmt.Sprintf("GetObject(%s, %s) and/or Seek()", r.bucket, remotePath), rf)
+	status = r.retry(fmt.Sprintf("GetObject(%s, %s) and/or Seek()", r.bucket, remotePath), rf)
 	return
 }
 
-// copyObject remotely copies an object to a new remote path. Returns true if
-// there were no problems. If there were, the new remote path won't exist.
-func (r *remote) copyObject(oldPath, newPath string) bool {
+// copyObject remotely copies an object to a new remote path.
+func (r *remote) copyObject(oldPath, newPath string) fuse.Status {
 	// copy, with automatic retries
 	rf := func() error {
 		return r.client.CopyObject(r.bucket, newPath, r.bucket+"/"+oldPath, minio.CopyConditions{})
@@ -187,9 +210,8 @@ func (r *remote) copyObject(oldPath, newPath string) bool {
 	return r.retry(fmt.Sprintf("CopyObject(%s, %s, %s)", r.bucket, newPath, r.bucket+"/"+oldPath), rf)
 }
 
-// deleteFile deletes the given remote file. Returns true if the deletion was
-// successful.
-func (r *remote) deleteFile(remotePath string) bool {
+// deleteFile deletes the given remote file.
+func (r *remote) deleteFile(remotePath string) fuse.Status {
 	// delete, with automatic retries
 	rf := func() error {
 		return r.client.RemoveObject(r.bucket, remotePath)

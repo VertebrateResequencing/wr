@@ -108,16 +108,20 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 		return fuse.ReadResultData(buf), status
 	}
 
-	// otherwise open remote object
-	object, worked := f.r.getObject(f.path, offset)
-	if !worked {
-		return fuse.ReadResultData([]byte{}), fuse.EIO
+	// otherwise open remote object (if it doesn't exist, we only get an error
+	// when we try to fillBuffer, but that's OK)
+	object, status := f.r.getObject(f.path, offset)
+	if status != fuse.OK {
+		return fuse.ReadResultData([]byte{}), status
 	}
 
 	// store the minio reader to read from later
 	f.reader = object
 
-	status := f.fillBuffer(buf)
+	status = f.fillBuffer(buf)
+	if status != fuse.OK {
+		return fuse.ReadResultData([]byte{}), status
+	}
 	return fuse.ReadResultData(buf), status
 }
 
@@ -131,10 +135,9 @@ func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 		if err == io.ErrUnexpectedEOF || err == io.EOF {
 			status = fuse.OK
 		} else {
-			f.r.fs.debug("error: fillBuffer() ReadFull for %s failed: %s", f.path, err)
-			status = fuse.EIO
+			status = f.r.statusFromErr("Read("+f.path+")", err)
 		}
-		return status
+		return
 	}
 	f.readOffset += int64(bytesRead)
 	return fuse.OK

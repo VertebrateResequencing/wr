@@ -215,9 +215,9 @@ func (fs *MinFys) openDir(r *remote, name string) (status fuse.Status) {
 		remotePath += "/"
 	}
 
-	objects, worked := r.findObjects(remotePath)
-	if !worked {
-		return fuse.EIO
+	objects, status := r.findObjects(remotePath)
+	if status != fuse.OK {
+		return
 	}
 
 	var isDir bool
@@ -335,8 +335,8 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 
 	if download {
 		// download whole remote object, with automatic retries
-		if !r.downloadFile(remotePath, localPath) {
-			return nil, fuse.EIO
+		if status := r.downloadFile(remotePath, localPath); status != fuse.OK {
+			return nil, status
 		}
 
 		// check size ok
@@ -456,9 +456,9 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 				localFile.Close()
 			} else {
 				// download offset bytes of remote file
-				object, worked := r.getObject(remotePath, 0)
-				if !worked {
-					return fuse.EIO
+				object, status := r.getObject(remotePath, 0)
+				if status != fuse.OK {
+					return status
 				}
 
 				written, err := io.CopyN(localFile, object, int64(offset))
@@ -623,9 +623,9 @@ func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) 
 		}
 	} else {
 		// first trigger a remote copy of oldPath to newPath
-		worked := fs.writeRemote.copyObject(remotePathOld, remotePathNew)
-		if worked != true {
-			return fuse.EIO
+		status := fs.writeRemote.copyObject(remotePathOld, remotePathNew)
+		if status != fuse.OK {
+			return status
 		}
 
 		if fs.writeRemote.cacheData {
@@ -665,9 +665,9 @@ func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 		syscall.Unlink(r.getLocalPath(remotePath))
 	}
 
-	worked := r.deleteFile(remotePath)
-	if !worked {
-		return fuse.EIO
+	status = r.deleteFile(remotePath)
+	if status != fuse.OK {
+		return status
 	}
 
 	fs.mutex.Lock()

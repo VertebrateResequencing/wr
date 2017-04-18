@@ -21,6 +21,7 @@ package minfys
 import (
 	"bufio"
 	"fmt"
+	"github.com/hanwen/go-fuse/fuse"
 	. "github.com/smartystreets/goconvey/convey"
 	"io"
 	"io/ioutil"
@@ -673,6 +674,29 @@ func TestMinFys(t *testing.T) {
 
 					os.Remove(path)
 				})
+			})
+
+			Convey("Trying to read a non-existent file fails as expected", func() {
+				name := "non-existent.file"
+				path := mountPoint + "/" + name
+				_, err = streamFile(path, 0)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+			})
+
+			Convey("Trying to read an externally deleted file fails as expected", func() {
+				name := "non-existent.file"
+				path := mountPoint + "/" + name
+				// we'll hack fs to make it think non-existent.file does exist
+				// so we can test the behaviour of a file getting deleted
+				// externally
+				ioutil.ReadDir(mountPoint)
+				fs.addNewEntryToItsDir(name, fuse.S_IFREG)
+				fs.files[name] = fs.files["1G.file"]
+				fs.fileToRemote[name] = fs.fileToRemote["1G.file"]
+				_, err = streamFile(path, 0)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
 			})
 
 			Convey("In write mode, you can create a file to test with...", func() {
@@ -1496,6 +1520,29 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 1073741824)
 				So(math.Ceil(thisGetTime.Seconds()), ShouldBeLessThanOrEqualTo, math.Ceil(bigFileGetTime.Seconds())) // if it isn't, it's almost certainly a bug!
 			})
+
+			Convey("Trying to read a non-existent file fails as expected", func() {
+				name := "non-existent.file"
+				path := mountPoint + "/" + name
+				_, err = streamFile(path, 0)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+			})
+
+			Convey("Trying to read an externally deleted file fails as expected", func() {
+				name := "non-existent.file"
+				path := mountPoint + "/" + name
+				// we'll hack fs to make it think non-existent.file does exist
+				// so we can test the behaviour of a file getting deleted
+				// externally
+				ioutil.ReadDir(mountPoint)
+				fs.addNewEntryToItsDir(name, fuse.S_IFREG)
+				fs.files[name] = fs.files["1G.file"]
+				fs.fileToRemote[name] = fs.fileToRemote["1G.file"]
+				_, err = streamFile(path, 0)
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+			})
 		})
 
 		Convey("You can mount multiple targets on the same mount point", t, func() {
@@ -1763,17 +1810,20 @@ func streamFile(src string, seek int64) (read int64, err error) {
 	if seek > 0 {
 		r.Seek(seek, io.SeekStart)
 	}
-	read = stream(r)
+	read, err = stream(r)
 	r.Close()
 	return
 }
 
-func stream(r io.Reader) (read int64) {
+func stream(r io.Reader) (read int64, err error) {
 	br := bufio.NewReader(r)
 	b := make([]byte, 1000, 1000)
 	for {
 		done, rerr := br.Read(b)
 		if rerr != nil {
+			if rerr != io.EOF {
+				err = rerr
+			}
 			break
 		}
 		read += int64(done)
