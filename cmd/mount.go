@@ -62,9 +62,8 @@ with a comma.
 A JSON object can be written by starting and ending it with curly braces.
 Parameter names and their values are put in double quotes (except for numbers,
 which are left bare, booleans where you write, unquoted, true or false, and
-arrays which start and end with square brackets, which each item separated by a
-comma), and the pair separated with a colon, and pairs separated from each other
-with commas.
+arrays as described previously), and the pair separated with a colon, and pairs
+separated from each other with commas.
 For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Verbose":true,
 "Targets":[{"Profile":"default","Path":"mybucket/subdir","Cache":true,"Write":
 true}]}]'
