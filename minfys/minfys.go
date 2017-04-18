@@ -93,10 +93,9 @@ Both are designed to be run as daemons as opposed to being used in-process.
 minfys is implemented using minio-go for compatibility, and hanwen/go-fuse for
 speed. (In my testing, hanwen/go-fuse and jacobsa/fuse did not have noticeably
 difference performance characteristics, but go-fuse was easier to write for.)
-However, its read/write code is inspired by goofys. Thanks to minimising remote
-calls to the remote S3 system, and only implementing what S3 is generally
-capable of, it shares goofys' non-POSIX behaviours (and is even a little less
-POSIX-like):
+However, some of its read code is inspired by goofys. Thanks to minimising
+remote calls to the remote S3 system, and only implementing what S3 is generally
+capable of, it shares and adds to goofys' non-POSIX behaviours:
 
   * writes are only supported in cached mode
   * does not store file mode/owner/group
@@ -104,9 +103,8 @@ POSIX-like):
   * `atime` (and typically `ctime`) is always the same as `mtime`
   * `mtime` of files is not stored remotely (remote file mtimes are of their
     upload time, and minfys only guarantees that files are uploaded in the order
-    you modified them)
-  * does not upload empty directories, can't rename directories
-  * `unlink` returns success even if file is not present
+    of their mtimes)
+  * does not upload empty directories, can't rename remote directories
   * `fsync` is ignored, files are only flushed on `close`
 
 # Performance

@@ -1,7 +1,7 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// Some of the read/write code in this file is inspired by the work of Ka-Hing
-// Cheung in https://github.com/kahing/goofys
+// Some of the read code in this file is inspired by the work of Ka-Hing Cheung
+// in https://github.com/kahing/goofys
 //
 //  This file is part of wr.
 //
