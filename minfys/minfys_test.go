@@ -1257,6 +1257,93 @@ func TestMinFys(t *testing.T) {
 			})
 		})
 
+		Convey("You can mount with local file caching in an explicit relative location", t, func() {
+			targetManual.CacheDir = ".wr_minfys_test_cache_dir"
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				targetManual.CacheDir = ""
+				So(err, ShouldBeNil)
+				os.RemoveAll(".wr_minfys_test_cache_dir")
+			}()
+
+			path := mountPoint + "/numalphanum.txt"
+			_, err = ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+
+			cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("numalphanum.txt"))
+			_, err = os.Stat(cachePath)
+			So(err, ShouldBeNil)
+			cwd, _ := os.Getwd()
+			So(cachePath, ShouldStartWith, filepath.Join(cwd, ".wr_minfys_test_cache_dir"))
+
+			Convey("Unmounting doesn't delete the cache", func() {
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				_, err = os.Stat(cachePath)
+				So(err, ShouldBeNil)
+			})
+		})
+
+		Convey("You can mount with local file caching relative to the home directory", t, func() {
+			targetManual.CacheDir = "~/.wr_minfys_test_cache_dir"
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				targetManual.CacheDir = ""
+				So(err, ShouldBeNil)
+				os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".wr_minfys_test_cache_dir"))
+			}()
+
+			path := mountPoint + "/numalphanum.txt"
+			_, err = ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+
+			cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("numalphanum.txt"))
+			_, err = os.Stat(cachePath)
+			So(err, ShouldBeNil)
+
+			So(cachePath, ShouldStartWith, filepath.Join(os.Getenv("HOME"), ".wr_minfys_test_cache_dir"))
+
+			Convey("Unmounting doesn't delete the cache", func() {
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+
+				_, err = os.Stat(cachePath)
+				So(err, ShouldBeNil)
+			})
+		})
+
+		Convey("You can mount with a relative mount point", t, func() {
+			cfg.Mount = "rel"
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				cfg.Mount = mountPoint
+				So(err, ShouldBeNil)
+			}()
+
+			path := "rel/numalphanum.txt"
+			_, err = ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+		})
+
 		Convey("You can mount in write mode and not upload on unmount", t, func() {
 			targetManual.Write = true
 			fs, err := New(cfg)

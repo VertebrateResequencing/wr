@@ -214,6 +214,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -449,6 +450,10 @@ func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
 
 	cacheDir := t.CacheDir
 	if cacheDir != "" {
+		cacheDir, err = filepath.Abs(internal.TildaToHome(cacheDir))
+		if err != nil {
+			return
+		}
 		err = os.MkdirAll(cacheDir, os.FileMode(dirMode))
 		if err != nil {
 			return
@@ -517,8 +522,13 @@ type MinFys struct {
 // Unmount() when you're done. If configured with Quiet you might check Logs()
 // afterwards. The other methods of MinFys can be ignored in most cases.
 func New(config *Config) (fs *MinFys, err error) {
+	mountPoint, err := filepath.Abs(internal.TildaToHome(config.Mount))
+	if err != nil {
+		return
+	}
+
 	// create mount point if necessary
-	err = os.MkdirAll(config.Mount, os.FileMode(dirMode))
+	err = os.MkdirAll(mountPoint, os.FileMode(dirMode))
 	if err != nil {
 		return
 	}
@@ -538,7 +548,7 @@ func New(config *Config) (fs *MinFys, err error) {
 	// initialize ourselves
 	fs = &MinFys{
 		FileSystem:   pathfs.NewDefaultFileSystem(),
-		mountPoint:   config.Mount,
+		mountPoint:   mountPoint,
 		dirs:         make(map[string][]*remote),
 		dirContents:  make(map[string][]fuse.DirEntry),
 		files:        make(map[string]*fuse.Attr),
