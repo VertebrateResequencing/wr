@@ -1267,9 +1267,9 @@ func TestMinFys(t *testing.T) {
 
 			defer func() {
 				err = fs.Unmount()
-				targetManual.CacheDir = ""
 				So(err, ShouldBeNil)
-				os.RemoveAll(".wr_minfys_test_cache_dir")
+				os.RemoveAll(targetManual.CacheDir)
+				targetManual.CacheDir = ""
 			}()
 
 			path := mountPoint + "/numalphanum.txt"
@@ -1326,7 +1326,27 @@ func TestMinFys(t *testing.T) {
 		})
 
 		Convey("You can mount with a relative mount point", t, func() {
-			cfg.Mount = "rel"
+			cfg.Mount = ".wr_minfys_test_mount_dir"
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+				os.RemoveAll(cfg.Mount)
+				cfg.Mount = mountPoint
+			}()
+
+			path := filepath.Join(cfg.Mount, "numalphanum.txt")
+			_, err = ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("You can mount with a ~/ mount point", t, func() {
+			cfg.Mount = "~/.wr_minfys_test_mount_dir"
 			fs, err := New(cfg)
 			So(err, ShouldBeNil)
 
@@ -1337,11 +1357,42 @@ func TestMinFys(t *testing.T) {
 				err = fs.Unmount()
 				cfg.Mount = mountPoint
 				So(err, ShouldBeNil)
+				os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".wr_minfys_test_mount_dir"))
 			}()
 
-			path := "rel/numalphanum.txt"
+			path := filepath.Join(os.Getenv("HOME"), ".wr_minfys_test_mount_dir", "numalphanum.txt")
 			_, err = ioutil.ReadFile(path)
 			So(err, ShouldBeNil)
+		})
+
+		Convey("You can mount with no defined mount point", t, func() {
+			cfg.Mount = ""
+			fs, err := New(cfg)
+			So(err, ShouldBeNil)
+
+			err = fs.Mount()
+			So(err, ShouldBeNil)
+
+			defer func() {
+				err = fs.Unmount()
+				cfg.Mount = mountPoint
+				So(err, ShouldBeNil)
+				os.RemoveAll("mnt")
+			}()
+
+			path := filepath.Join("mnt", "numalphanum.txt")
+			_, err = ioutil.ReadFile(path)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("You can't mount on a non-empty directory", t, func() {
+			cfg.Mount = os.Getenv("HOME")
+			_, err := New(cfg)
+			defer func() {
+				cfg.Mount = mountPoint
+			}()
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "not empty")
 		})
 
 		Convey("You can mount in write mode and not upload on unmount", t, func() {

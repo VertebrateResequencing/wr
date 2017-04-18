@@ -69,9 +69,12 @@ For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Verbose":true,
 true}]}]'
 The paragraphs below describe all the possible Config object parameters.
 
-Mount (required) is the local directory on which to mount the remote Path. It
-can be (in) any directory you're able to write to. If the directory doesn't
-exist, wr will try to create it first.
+Mount is the local directory on which to mount the remote Path. It can be (in)
+any directory you're able to write to. If the directory doesn't exist, wr will
+try to create it first. Otherwise, it must be empty. If not supplied, defaults
+to the subdirectory "mnt" in the current working directory. Note that if
+specifying multiple Config objects, they must each have a different Mount (and
+so only one of them can have Mount undefined).
 
 CacheBase is the parent directory to use for the CacheDir of any Targets
 configured with Cache on, but CacheDir undefined. If CacheBase is also
@@ -197,10 +200,12 @@ func mountParseJson(jsonString string) (configs []*minfys.Config) {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
 	}
 
+	usedMounts := make(map[string]bool)
 	for _, mj := range ml {
-		if mj.Mount == "" {
-			die("had a problem with the provided mount JSON (%s): missing Mount", jsonString)
+		if _, used := usedMounts[mj.Mount]; used {
+			die("had a problem with the provided mount JSON (%s): Mount [%s] used more than once", jsonString, mj.Mount)
 		}
+		usedMounts[mj.Mount] = true
 
 		var targets []*minfys.Target
 		for _, mt := range mj.Targets {

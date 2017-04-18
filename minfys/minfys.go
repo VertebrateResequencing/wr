@@ -230,7 +230,10 @@ const fileMode = 0600
 // Config struct provides the configuration of a MinFys.
 type Config struct {
 	// Mount is the local directory to mount on top of (minfys will try to
-	// create this if it doesn't exist).
+	// create this if it doesn't exist). If not supplied, defaults to the
+	// subdirectory "mnt" in the current working directory. Note that mounting
+	// will only succeed if the Mount directory either doesn't exist or is
+	// empty.
 	Mount string
 
 	// Retries is the number of times to automatically retry failed remote S3
@@ -522,7 +525,15 @@ type MinFys struct {
 // Unmount() when you're done. If configured with Quiet you might check Logs()
 // afterwards. The other methods of MinFys can be ignored in most cases.
 func New(config *Config) (fs *MinFys, err error) {
-	mountPoint, err := filepath.Abs(internal.TildaToHome(config.Mount))
+	if len(config.Targets) == 0 {
+		return nil, fmt.Errorf("no targets provided")
+	}
+
+	mountPoint := config.Mount
+	if mountPoint == "" {
+		mountPoint = "mnt"
+	}
+	mountPoint, err = filepath.Abs(internal.TildaToHome(mountPoint))
 	if err != nil {
 		return
 	}
@@ -533,8 +544,13 @@ func New(config *Config) (fs *MinFys, err error) {
 		return
 	}
 
-	if len(config.Targets) == 0 {
-		return nil, fmt.Errorf("no targets provided")
+	// check that it's empty
+	entries, err := ioutil.ReadDir(mountPoint)
+	if err != nil {
+		return
+	}
+	if len(entries) > 0 {
+		return nil, fmt.Errorf("Mount directory %s was not empty", mountPoint)
 	}
 
 	cacheBase := config.CacheBase
