@@ -100,84 +100,27 @@ func (fs *MinFys) GetAttr(name string, context *fuse.Context) (attr *fuse.Attr, 
 		return
 	}
 
-	// sequentially check if name is a file or directory in each of our remotes.
-	// We take the remotes in turn instead of simultaneously, because if its a
-	// file, we want to only consider the first user supplied target to have
-	// that file, even if multiple of them do.
-	// Within a remote, checking simultaneously doesn't really help since the
-	// remote system may queue the requests serially anyway, and it's better to
-	// try and minimise requests. We'll use a simple heuristic that if the name
-	// contains a '.', it's more likely to be a file.
-	isDir := false
-	for _, r := range fs.remotes {
-		if strings.Contains(name, ".") {
-			attr, status = fs.maybeFile(r, name)
-			if status != fuse.OK {
-				attr, status = fs.maybeDir(r, name)
-			} else {
-				// it's a file, stop checking remotes
-				break
-			}
-		} else {
-			attr, status = fs.maybeDir(r, name)
-			if status != fuse.OK {
-				attr, status = fs.maybeFile(r, name)
-				if status == fuse.OK {
-					// it's a file, stop checking remotes
-					break
-				}
-			}
-		}
-
-		if status == fuse.OK {
-			// it's a directory, but we'll keep checking the other remotes in
-			// case they also have this directory, in which case we'll combine
-			// their contents
-			isDir = true
-		}
-	}
-
-	if isDir {
-		// we may have found the dir in one remote, but then not found it in the
-		// next, so we need to restore
-		attr = fs.dirAttr
-		status = fuse.OK
-	}
-
-	return
-}
-
-// maybeDir simply calls openDir() and returns the directory attributes if
-// 'name' was actually a directory.
-func (fs *MinFys) maybeDir(r *remote, name string) (attr *fuse.Attr, status fuse.Status) {
-	status = fs.openDir(r, name)
-	if status == fuse.OK {
-		attr = fs.dirAttr
-	}
-	return
-}
-
-// maybeFile calls openDir() on the putative file's parent directory, then
-// checks to see if that resulted in a file named 'name' being cached.
-func (fs *MinFys) maybeFile(r *remote, name string) (attr *fuse.Attr, status fuse.Status) {
 	// rather than call StatObject on name to see if its a file, it's more
 	// efficient to try and open it's parent directory and see if that resulted
-	// in us caching the file as one of the dir's entries
+	// in us caching name as one of the parent's contents
 	parent := filepath.Dir(name)
 	if parent == "/" || parent == "." {
 		parent = ""
 	}
 	if _, cached := fs.dirContents[parent]; !cached {
-		fs.openDir(r, parent)
-		attr, _ = fs.files[name]
-	}
+		fs.OpenDir(parent, context)
+		if _, isDir := fs.dirs[name]; isDir {
+			attr = fs.dirAttr
+			status = fuse.OK
+			return
+		}
 
-	if attr != nil {
-		status = fuse.OK
-	} else {
-		status = fuse.ENOENT
+		if attr, cached = fs.files[name]; cached {
+			status = fuse.OK
+			return
+		}
 	}
-	return
+	return nil, fuse.ENOENT
 }
 
 // OpenDir gets the contents of the given directory for eg. `ls` purposes. It

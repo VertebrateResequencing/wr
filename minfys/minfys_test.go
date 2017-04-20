@@ -1898,6 +1898,51 @@ func TestMinFys(t *testing.T) {
 				})
 			})
 
+			Convey("You can multiplex different buckets", t, func() {
+				targetManual2 := &Target{
+					Target:    target + "/sub",
+					AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
+					SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+					CacheData: false,
+				}
+				targetManual.Target = "https://cog.sanger.ac.uk/npg-repository/references/Homo_sapiens/GRCh38_full_analysis_set_plus_decoy_hla/all/fasta"
+				targetManual.CacheData = true
+				cfgMultiplex := &Config{
+					Mount:   mountPoint,
+					Retries: 3,
+					Verbose: false,
+					Quiet:   false,
+					Targets: []*Target{targetManual, targetManual2},
+				}
+
+				fs, err := New(cfgMultiplex)
+				So(err, ShouldBeNil)
+
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+
+				defer func() {
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+				}()
+
+				Convey("Listing mount directory works", func() {
+					entries, err := ioutil.ReadDir(mountPoint)
+					So(err, ShouldBeNil)
+
+					details := dirDetails(entries)
+					So(details, ShouldContain, "Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla.fa:file:3257948908")
+					So(details, ShouldContain, "empty.file:file:0")
+				})
+
+				Convey("You can immediately stat files within", func() {
+					_, err := os.Stat(mountPoint + "/Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla.fa")
+					So(err, ShouldBeNil)
+					_, err = os.Stat(mountPoint + "/empty.file")
+					So(err, ShouldBeNil)
+				})
+			})
+
 			Convey("You can mount a public bucket with blank credentials", t, func() {
 				targetManual.Target = "https://cog.sanger.ac.uk/npg-repository"
 				targetManual.AccessKey = ""
