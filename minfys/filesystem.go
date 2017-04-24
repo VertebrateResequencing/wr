@@ -249,10 +249,9 @@ func (fs *MinFys) Open(name string, flags uint32, context *fuse.Context) (file n
 	return
 }
 
-// openCached downloads the remotePath to the configured CacheDir, then all
-// subsequent read/write operations are deferred to the *os.File for that local
-// file. NB: there is currently no locking, so this should only be called by one
-// process at a time (for the same configured CacheDir).
+// openCached defers all subsequent read/write operations to a CachedFile for
+// that local file. NB: there is currently no locking, so this should only be
+// called by one process at a time (for the same configured CacheDir).
 func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse.Context, attr *fuse.Attr) (nodefs.File, fuse.Status) {
 	remotePath := r.getRemotePath(name)
 
@@ -260,40 +259,60 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 	// times simultaneously, including by a completely separate process using
 	// the same cache dir
 
-	// check cache file doesn't already exist
-	var download bool
 	localPath := r.getLocalPath(remotePath)
 	localStats, err := os.Stat(localPath)
-	if err != nil { // don't bother checking os.IsNotExist(err); we'll download based on any error
+	var create bool
+	if err != nil {
 		os.Remove(localPath)
-		download = true
+		create = true
 	} else {
 		// check the file is the right size
 		if localStats.Size() != int64(attr.Size) {
 			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, localStats.Size(), attr.Size)
 			os.Remove(localPath)
-			download = true
+			create = true
 		}
 	}
 
-	if download {
-		// download whole remote object, with automatic retries
-		if status := r.downloadFile(remotePath, localPath); status != fuse.OK {
-			return nil, status
+	if create {
+		parent := filepath.Dir(localPath)
+		err = os.MkdirAll(parent, dirMode)
+		if err != nil {
+			return nil, fuse.ToStatus(err)
 		}
 
-		// check size ok
-		localStats, err := os.Stat(localPath)
-		if err != nil {
-			fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", r.bucket, remotePath, err)
-			os.Remove(localPath)
-			return nil, fuse.ToStatus(err)
-		} else {
-			if localStats.Size() != int64(attr.Size) {
-				os.Remove(localPath)
-				fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", r.bucket, remotePath, localStats.Size(), attr.Size)
-				return nil, fuse.EIO
+		if int(flags)&os.O_APPEND != 0 {
+			// download whole remote object to disk before user appends anything
+			// to it
+			if status := r.downloadFile(remotePath, localPath); status != fuse.OK {
+				return nil, status
 			}
+
+			// check size ok
+			localStats, err := os.Stat(localPath)
+			if err != nil {
+				fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", r.bucket, remotePath, err)
+				os.Remove(localPath)
+				return nil, fuse.ToStatus(err)
+			} else {
+				if localStats.Size() != int64(attr.Size) {
+					os.Remove(localPath)
+					fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", r.bucket, remotePath, localStats.Size(), attr.Size)
+					return nil, fuse.EIO
+				}
+			}
+			fs.downloaded[localPath] = true
+		} else {
+			// this is our first time opening this remote file, create a sparse
+			// file that Read() operations will cache in to
+			f, err := os.Create(localPath)
+			if err != nil {
+				return nil, fuse.ToStatus(err)
+			}
+			if err := f.Truncate(int64(attr.Size)); err != nil {
+				return nil, fuse.ToStatus(err)
+			}
+			f.Close()
 		}
 	}
 
@@ -303,14 +322,7 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 		return fs.Create(name, flags, uint32(fileMode), context)
 	}
 
-	// open for reading
-	localFile, err := os.Open(localPath)
-	if err != nil {
-		fs.debug("error: openCached(%s) could not open %s: %s", name, localPath, err)
-		return nil, fuse.ToStatus(err)
-	}
-
-	return nodefs.NewLoopbackFile(localFile), fuse.OK
+	return NewCachedFile(r, remotePath, localPath, attr, flags), fuse.OK
 }
 
 // Chmod is ignored.
@@ -574,6 +586,9 @@ func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) 
 		if fs.writeRemote.cacheData {
 			// if we've cached oldPath, move to new cached file
 			os.Rename(fs.writeRemote.getLocalPath(remotePathOld), fs.writeRemote.getLocalPath(remotePathNew))
+			fs.mutex.Lock()
+			fs.downloaded[fs.writeRemote.getLocalPath(remotePathNew)] = fs.downloaded[fs.writeRemote.getLocalPath(remotePathOld)]
+			fs.mutex.Unlock()
 		}
 
 		// cache the existence of the new file
@@ -617,6 +632,7 @@ func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 	delete(fs.files, name)
 	delete(fs.fileToRemote, name)
 	delete(fs.createdFiles, name)
+	delete(fs.downloaded, name)
 	fs.mutex.Unlock()
 
 	// remove the directory entry as well
@@ -630,9 +646,9 @@ func (fs *MinFys) Access(name string, mode uint32, context *fuse.Context) fuse.S
 	return fuse.OK
 }
 
-// Create creates a new file. context is not currently used. Only currently
-// implemented for when configured with CacheData; the contents of the created
-// file are only uploaded at Unmount() time.
+// Create creates a new file. mode and context are not currently used. Only
+// currently implemented for when configured with CacheData; the contents of the
+// created file are only uploaded at Unmount() time.
 func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
 	r := fs.writeRemote
 	if r == nil {
@@ -647,11 +663,6 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 		if err != nil {
 			fs.debug("error: Create(%s) could not make cache parent directory %s: %s", name, dir, err)
 			return nil, fuse.ToStatus(err)
-		}
-
-		localFile, err := os.OpenFile(localPath, int(flags)|os.O_CREATE, os.FileMode(mode))
-		if err != nil {
-			fs.debug("error: Create(%s) could not OpenFile(%s): %s", name, localPath, err)
 		}
 
 		fs.mutex.Lock()
@@ -679,7 +690,7 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 		fs.createdFiles[name] = true
 		fs.mutex.Unlock()
 
-		return NewCachedWriteFile(nodefs.NewLoopbackFile(localFile), attr), fuse.ToStatus(err)
+		return NewCachedFile(r, remotePath, localPath, attr, uint32(int(flags)|os.O_CREATE)), fuse.ToStatus(err)
 	}
 	return nil, fuse.ENOSYS
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"io"
+	"os"
 	"sync"
 	"time"
 )
@@ -159,44 +160,113 @@ func (f *S3File) Fsync(flags int) fuse.Status {
 	return fuse.OK
 }
 
-// cachedWriteFile is used as a wrapper around a nodefs.loopbackFile, the only
+// CachedFile is used as a wrapper around a nodefs.loopbackFile, the only
 // difference being that on Write it updates the given attr's Size, Mtime and
-// Atime.
-type cachedWriteFile struct {
+// Atime, and on Read it copies data from remote to local disk if not requested
+// before.
+type CachedFile struct {
 	nodefs.File
-	attr *fuse.Attr
+	r          *remote
+	remotePath string
+	localPath  string
+	flags      int
+	attr       *fuse.Attr
+	mutex      sync.Mutex
 }
 
-// NewCachedWriteFile is for use with a nodefs.loopbackFile for a locally
-// created file you want to write to while updating the Size, Mtime and Atime of
-// the given attr. Used to implement MinFys.Create().
-func NewCachedWriteFile(f nodefs.File, attr *fuse.Attr) nodefs.File {
-	return &cachedWriteFile{File: f, attr: attr}
+// NewCachedFile makes a CachedFile that reads from remotePath only once,
+// returning subsequent reads from and writing to localPath.
+func NewCachedFile(r *remote, remotePath, localPath string, attr *fuse.Attr, flags uint32) nodefs.File {
+	f := &CachedFile{r: r, remotePath: remotePath, localPath: localPath, flags: int(flags), attr: attr}
+	f.makeLoopback()
+	return f
+}
+
+func (f *CachedFile) makeLoopback() {
+	localFile, err := os.OpenFile(f.localPath, f.flags, os.FileMode(fileMode))
+	if err != nil {
+		f.r.fs.debug("error: could not OpenFile(%s): %s", f.localPath, err)
+	}
+	f.File = nodefs.NewLoopbackFile(localFile)
 }
 
 // InnerFile() returns the loopbackFile that deals with local files on disk.
-func (f *cachedWriteFile) InnerFile() nodefs.File {
+func (f *CachedFile) InnerFile() nodefs.File {
 	return f.File
 }
 
 // Write passes the real work to our InnerFile(), also updating our cached
 // attr.
-func (f *cachedWriteFile) Write(data []byte, off int64) (uint32, fuse.Status) {
-	n, s := f.InnerFile().Write(data, off)
+func (f *CachedFile) Write(data []byte, offset int64) (uint32, fuse.Status) {
+	n, s := f.InnerFile().Write(data, offset)
 	f.attr.Size += uint64(n)
 	mTime := uint64(time.Now().Unix())
 	f.attr.Mtime = mTime
 	f.attr.Atime = mTime
+	f.r.fs.downloaded[f.localPath] = true
 	return n, s
 }
 
 // Utimens gets called by things like `touch -d "2006-01-02 15:04:05" filename,
 // and we need to update our cached attr as well as the local file.
-func (f *cachedWriteFile) Utimens(Atime *time.Time, Mtime *time.Time) (status fuse.Status) {
+func (f *CachedFile) Utimens(Atime *time.Time, Mtime *time.Time) (status fuse.Status) {
 	status = f.InnerFile().Utimens(Atime, Mtime)
 	if status == fuse.OK {
 		f.attr.Atime = uint64(Atime.Unix())
 		f.attr.Mtime = uint64(Mtime.Unix())
 	}
 	return status
+}
+
+// Read checks to see if we've previously stored these bytes in our local
+// cached file, and if so just defers to our InnerFile(). If not, gets the data
+// from the remote object and stores it in the cache file.
+func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	if uint64(offset) >= f.attr.Size {
+		// nothing to read
+		return nil, fuse.OK
+	}
+
+	// if downloaded := f.r.fs.downloaded[f.localPath]; !downloaded {
+	// 	// download whole remote object, with automatic retries
+	// 	if status := f.r.downloadFile(f.remotePath, f.localPath); status != fuse.OK {
+	// 		return nil, status
+	// 	}
+
+	// 	// check size ok
+	// 	localStats, err := os.Stat(f.localPath)
+	// 	if err != nil {
+	// 		f.r.fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", f.r.bucket, f.remotePath, err)
+	// 		os.Remove(f.localPath)
+	// 		return nil, fuse.ToStatus(err)
+	// 	} else {
+	// 		if localStats.Size() != int64(f.attr.Size) {
+	// 			os.Remove(f.localPath)
+	// 			f.r.fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", f.r.bucket, f.remotePath, localStats.Size(), f.attr.Size)
+	// 			return nil, fuse.EIO
+	// 		}
+	// 	}
+	// 	f.r.fs.downloaded[f.localPath] = true
+	// 	f.makeLoopback()
+	// }
+
+	// we need to know if the requested range of bytes has already been stored
+	// in our cache file by a previous Read() call. We store prior Read()
+	// intervals, and there are many ways we could query to see if this new
+	// interval overlaps with any of them, eg. having an interval tree, or
+	// sorting the ranges and merging. But we expect that most of the time we
+	// will only have between 1 and 3 prior intervals if we merge every time,
+	// and we expect that we will merge the majority of the time. And in this
+	// case, it seems to be fastest and simplest to just check against all prior
+	// intervals with a nested loop. I did actually benchmark a number of
+	// possibilities, and this really is fastest!
+	// For ease of implementation, we only bother to read from our cache file if
+	// the requested interval is entirely contained within a prior interval; if
+	// it goes even a single byte into unread territory, we will fill all of buf
+	// using a remote read.
+
+	return f.InnerFile().Read(buf, offset)
 }

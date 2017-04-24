@@ -202,6 +202,36 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 1073741824)
 			})
 
+			SkipConvey("Reading a small part of a very big file doesn't download the entire file", func() {
+				path := mountPoint + "/1G.file"
+				rbig, err := os.Open(path)
+				So(err, ShouldBeNil)
+
+				rbig.Seek(350000, io.SeekStart)
+				b := make([]byte, 6, 6)
+				done, err := io.ReadFull(rbig, b)
+				So(err, ShouldBeNil)
+				So(done, ShouldEqual, 6)
+				rbig.Close()
+
+				cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("1G.file"))
+				stat, err := os.Stat(cachePath)
+				So(err, ShouldBeNil)
+				So(stat.Size(), ShouldEqual, 1073741824)
+
+				read, err := streamFile(cachePath, 0)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 6)
+				// may have to use `du cachePath` vs `du --apparent-size cachePath` instead
+
+				// rbig.Seek(175000, io.SeekStart)
+				// b = make([]byte, 6, 6)
+				// done, err = io.ReadFull(rbig, b)
+				// So(err, ShouldBeNil)
+				// So(done, ShouldEqual, 6)
+				// So(b, ShouldResemble, []byte("025001"))
+			})
+
 			Convey("Trying to write in non Write mode fails", func() {
 				path := mountPoint + "/write.test"
 				b := []byte("write test\n")
