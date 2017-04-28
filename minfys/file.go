@@ -20,12 +20,13 @@
 
 package minfys
 
-// This file implements pathfs.File methods
+// This file implements pathfs.File methods.
 
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"io"
+	"os"
 	"sync"
 	"time"
 )
@@ -35,13 +36,14 @@ import (
 // caching of data).
 type S3File struct {
 	nodefs.File
-	r          *remote
-	path       string
-	mutex      sync.Mutex
-	size       uint64
-	readOffset int64
-	reader     io.ReadCloser
-	skips      map[int64][]byte
+	r            *remote
+	path         string
+	mutex        sync.Mutex
+	size         uint64
+	readOffset   int64
+	reader       io.ReadCloser
+	skips        map[int64][]byte
+	actuallyRead int64
 }
 
 // NewS3File creates a new S3File. For all the methods not yet implemented, fuse
@@ -128,6 +130,7 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 // fillBuffer reads from our remote reader to the Read() buffer.
 func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 	bytesRead, err := io.ReadFull(f.reader, buf)
+	f.actuallyRead = int64(bytesRead)
 	if err != nil {
 		f.reader.Close()
 		f.reader = nil
@@ -159,44 +162,127 @@ func (f *S3File) Fsync(flags int) fuse.Status {
 	return fuse.OK
 }
 
-// cachedWriteFile is used as a wrapper around a nodefs.loopbackFile, the only
+// CachedFile is used as a wrapper around a nodefs.loopbackFile, the only
 // difference being that on Write it updates the given attr's Size, Mtime and
-// Atime.
-type cachedWriteFile struct {
+// Atime, and on Read it copies data from remote to local disk if not requested
+// before.
+type CachedFile struct {
 	nodefs.File
-	attr *fuse.Attr
+	r          *remote
+	remotePath string
+	localPath  string
+	flags      int
+	attr       *fuse.Attr
+	s3file     *S3File
+	mutex      sync.Mutex
 }
 
-// NewCachedWriteFile is for use with a nodefs.loopbackFile for a locally
-// created file you want to write to while updating the Size, Mtime and Atime of
-// the given attr. Used to implement MinFys.Create().
-func NewCachedWriteFile(f nodefs.File, attr *fuse.Attr) nodefs.File {
-	return &cachedWriteFile{File: f, attr: attr}
+// NewCachedFile makes a CachedFile that reads each byte from remotePath only
+// once, returning subsequent reads from and writing to localPath.
+func NewCachedFile(r *remote, remotePath, localPath string, attr *fuse.Attr, flags uint32) nodefs.File {
+	f := &CachedFile{r: r, remotePath: remotePath, localPath: localPath, flags: int(flags), attr: attr}
+	f.makeLoopback()
+	f.s3file = NewS3File(r, remotePath, attr.Size).(*S3File)
+	return f
+}
+
+func (f *CachedFile) makeLoopback() {
+	localFile, err := os.OpenFile(f.localPath, f.flags, os.FileMode(fileMode))
+	if err != nil {
+		f.r.fs.debug("error: could not OpenFile(%s): %s", f.localPath, err)
+	}
+	f.File = nodefs.NewLoopbackFile(localFile)
 }
 
 // InnerFile() returns the loopbackFile that deals with local files on disk.
-func (f *cachedWriteFile) InnerFile() nodefs.File {
+func (f *CachedFile) InnerFile() nodefs.File {
 	return f.File
 }
 
 // Write passes the real work to our InnerFile(), also updating our cached
 // attr.
-func (f *cachedWriteFile) Write(data []byte, off int64) (uint32, fuse.Status) {
-	n, s := f.InnerFile().Write(data, off)
+func (f *CachedFile) Write(data []byte, offset int64) (uint32, fuse.Status) {
+	n, s := f.InnerFile().Write(data, offset)
 	f.attr.Size += uint64(n)
 	mTime := uint64(time.Now().Unix())
 	f.attr.Mtime = mTime
 	f.attr.Atime = mTime
+	f.r.fs.mutex.Lock()
+	f.r.fs.downloaded[f.localPath] = f.r.fs.downloaded[f.localPath].Merge(NewInterval(offset, int64(len(data))))
+	f.r.fs.mutex.Unlock()
 	return n, s
 }
 
 // Utimens gets called by things like `touch -d "2006-01-02 15:04:05" filename,
 // and we need to update our cached attr as well as the local file.
-func (f *cachedWriteFile) Utimens(Atime *time.Time, Mtime *time.Time) (status fuse.Status) {
+func (f *CachedFile) Utimens(Atime *time.Time, Mtime *time.Time) (status fuse.Status) {
 	status = f.InnerFile().Utimens(Atime, Mtime)
 	if status == fuse.OK {
 		f.attr.Atime = uint64(Atime.Unix())
 		f.attr.Mtime = uint64(Mtime.Unix())
 	}
 	return status
+}
+
+// Read checks to see if we've previously stored these bytes in our local
+// cached file, and if so just defers to our InnerFile(). If not, gets the data
+// from the remote object and stores it in the cache file.
+func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	if uint64(offset) >= f.attr.Size {
+		// nothing to read
+		return nil, fuse.OK
+	}
+
+	// find which bytes we haven't previously read
+	f.r.fs.mutex.Lock()
+	ivs := f.r.fs.downloaded[f.localPath]
+	request := NewInterval(offset, int64(len(buf)))
+	if request.End >= int64(f.attr.Size-1) {
+		request.End = int64(f.attr.Size - 1)
+	}
+	ivsLen := len(ivs)
+	newIvs := ivs.Difference(request)
+	f.r.fs.mutex.Unlock()
+
+	// read remote data and store in cache file for the previously unread parts
+	for _, iv := range newIvs {
+		ivBuf := make([]byte, iv.Length(), iv.Length())
+		_, status := f.s3file.Read(ivBuf, iv.Start)
+		if status != fuse.OK {
+			return nil, status
+		}
+
+		// create data to write from, which may be different length to above
+		// if we hit end of file
+		numBytesRetreived := f.s3file.actuallyRead
+		var data []byte
+		if numBytesRetreived < iv.Length() {
+			iv = NewInterval(offset, numBytesRetreived)
+			data = ivBuf[:numBytesRetreived]
+		} else {
+			data = ivBuf
+			numBytesRetreived = iv.Length()
+		}
+
+		// write the data to our cache file
+		if ivsLen == 0 {
+			f.flags = f.flags | os.O_RDWR
+			f.makeLoopback()
+		}
+		n, s := f.InnerFile().Write(data, iv.Start)
+		if s == fuse.OK && int64(n) == numBytesRetreived {
+			f.r.fs.mutex.Lock()
+			f.r.fs.downloaded[f.localPath] = ivs.Merge(iv)
+			f.r.fs.mutex.Unlock()
+		} else {
+			f.r.fs.debug("error: write returned %d bytes and status %s", n, s)
+			return nil, s
+		}
+	}
+
+	// read the whole region from the cache file and return
+	return f.InnerFile().Read(buf, offset)
 }

@@ -202,6 +202,42 @@ func TestMinFys(t *testing.T) {
 				So(read, ShouldEqual, 1073741824)
 			})
 
+			Convey("Reading a small part of a very big file doesn't download the entire file", func() {
+				path := mountPoint + "/1G.file"
+				t := time.Now()
+				rbig, err := os.Open(path)
+				So(err, ShouldBeNil)
+
+				rbig.Seek(350000, io.SeekStart)
+				b := make([]byte, 6, 6)
+				done, err := io.ReadFull(rbig, b)
+				So(err, ShouldBeNil)
+				So(done, ShouldEqual, 6)
+				rbig.Close()
+				So(time.Since(t).Seconds(), ShouldBeLessThan, 1)
+
+				cachePath := fs.remotes[0].getLocalPath(fs.remotes[0].getRemotePath("1G.file"))
+				stat, err := os.Stat(cachePath)
+				So(err, ShouldBeNil)
+				So(stat.Size(), ShouldEqual, 1073741824)
+
+				cmd := exec.Command("du", "-B1", "--apparent-size", cachePath)
+				out, err := cmd.CombinedOutput()
+				So(err, ShouldBeNil)
+				So(string(out), ShouldStartWith, "1073741824\t")
+
+				// even though we seeked to 350000 and only tried to read 6
+				// bytes, the underlying system ends up sending a 4kb Read
+				// request around the desired point *** not sure if this
+				// size or behaviour differs on different systems, assume
+				// not for now
+
+				cmd = exec.Command("du", "-B1", cachePath)
+				out, err = cmd.CombinedOutput()
+				So(err, ShouldBeNil)
+				So(string(out), ShouldStartWith, "4096\t")
+			})
+
 			Convey("Trying to write in non Write mode fails", func() {
 				path := mountPoint + "/write.test"
 				b := []byte("write test\n")
