@@ -48,6 +48,12 @@ func TestIntervals(t *testing.T) {
 		oneEighteen := Interval{1, 18}
 		fourtyFifty := Interval{40, 50}
 
+		Convey("Length works", func() {
+			So(oneThree.Length(), ShouldEqual, 3)
+			So(twoSix.Length(), ShouldEqual, 5)
+			So(fifteenEighteen.Length(), ShouldEqual, 4)
+		})
+
 		Convey("Merging in order works", func() {
 			var ivs, newIvs Intervals
 			newIvs = ivs.Difference(oneThree)
@@ -371,6 +377,39 @@ func TestIntervals(t *testing.T) {
 			So(len(ivs), ShouldEqual, 3)
 
 			expected := Intervals{oneThree, fourtyFifty, fiveThirtyTwo}
+			So(ivs, ShouldResemble, expected)
+		})
+
+		Convey("Truncate works", func() {
+			var ivs, newIvs Intervals
+			newIvs = ivs.Difference(sevenTen)
+			So(newIvs, ShouldResemble, Intervals{sevenTen})
+			ivs = ivs.Merge(sevenTen)
+			So(len(ivs), ShouldEqual, 1)
+
+			newIvs = ivs.Difference(twentyThirty)
+			So(newIvs, ShouldResemble, Intervals{twentyThirty})
+			ivs = ivs.Merge(twentyThirty)
+			So(len(ivs), ShouldEqual, 2)
+
+			newIvs = ivs.Difference(oneThree)
+			So(newIvs, ShouldResemble, Intervals{oneThree})
+			ivs = ivs.Merge(oneThree)
+			So(len(ivs), ShouldEqual, 3)
+
+			newIvs = ivs.Difference(fourtyFifty)
+			So(newIvs, ShouldResemble, Intervals{fourtyFifty})
+			ivs = ivs.Merge(fourtyFifty)
+			So(len(ivs), ShouldEqual, 4)
+
+			newIvs = ivs.Difference(fifteenEighteen)
+			So(newIvs, ShouldResemble, Intervals{fifteenEighteen})
+			ivs = ivs.Merge(fifteenEighteen)
+			So(len(ivs), ShouldEqual, 5)
+
+			ivs = ivs.Truncate(17)
+
+			expected := Intervals{sevenTen, oneThree, Interval{15, 17}}
 			So(ivs, ShouldResemble, expected)
 		})
 	})

@@ -168,3 +168,24 @@ func (ivs Intervals) Merge(iv Interval) Intervals {
 
 	return merged
 }
+
+// Truncate removes all intervals that start after the given position, and
+// truncates any intervals that overlap with the position.
+func (ivs Intervals) Truncate(pos int64) Intervals {
+	if pos == 0 {
+		return Intervals{}
+	}
+
+	for i := 0; i < len(ivs); {
+		if ivs[i].End > pos {
+			ivs[i].End = pos
+		}
+		if ivs[i].Start > pos {
+			ivs = append(ivs[:i], ivs[i+1:]...)
+		} else {
+			i++
+		}
+	}
+
+	return ivs
+}
