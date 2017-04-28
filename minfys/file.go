@@ -174,6 +174,7 @@ type CachedFile struct {
 	flags      int
 	attr       *fuse.Attr
 	s3file     *S3File
+	openedRW   bool
 	mutex      sync.Mutex
 }
 
@@ -191,6 +192,13 @@ func (f *CachedFile) makeLoopback() {
 	if err != nil {
 		f.r.fs.debug("error: could not OpenFile(%s): %s", f.localPath, err)
 	}
+
+	if f.flags&os.O_RDWR != 0 {
+		f.openedRW = true
+	} else {
+		f.openedRW = false
+	}
+
 	f.File = nodefs.NewLoopbackFile(localFile)
 }
 
@@ -243,7 +251,6 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 	if request.End >= int64(f.attr.Size-1) {
 		request.End = int64(f.attr.Size - 1)
 	}
-	ivsLen := len(ivs)
 	newIvs := ivs.Difference(request)
 	f.r.fs.mutex.Unlock()
 
@@ -268,8 +275,8 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 		}
 
 		// write the data to our cache file
-		if ivsLen == 0 {
-			f.flags = f.flags | os.O_RDWR
+		if !f.openedRW {
+			f.flags = f.flags | os.O_RDWR //| os.O_CREATE
 			f.makeLoopback()
 		}
 		n, s := f.InnerFile().Write(data, iv.Start)
@@ -278,7 +285,7 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 			f.r.fs.downloaded[f.localPath] = ivs.Merge(iv)
 			f.r.fs.mutex.Unlock()
 		} else {
-			f.r.fs.debug("error: write returned %d bytes and status %s", n, s)
+			f.r.fs.debug("error: Read() call for %s failed to write %d bytes to cache file %s (only wrote %d): %s", f.remotePath, numBytesRetreived, f.localPath, n, s)
 			return nil, s
 		}
 	}
