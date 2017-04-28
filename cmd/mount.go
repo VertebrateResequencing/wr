@@ -65,11 +65,10 @@ which are left bare, booleans where you write, unquoted, true or false, and
 arrays as described previously), and the pair separated with a colon, and pairs
 separated from each other with commas.
 For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Verbose":true,
-"Targets":[{"Profile":"default","Path":"mybucket/subdir","Cache":true,"Write":
-true}]}]'
+"Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]'
 The paragraphs below describe all the possible Config object parameters.
 
-Mount is the local directory on which to mount the remote Path. It can be (in)
+Mount is the local directory on which to mount your Target(s). It can be (in)
 any directory you're able to write to. If the directory doesn't exist, wr will
 try to create it first. Otherwise, it must be empty. If not supplied, defaults
 to the subdirectory "mnt" in the current working directory. Note that if
@@ -132,8 +131,7 @@ is gained by specifying the deepest path under your bucket that holds all the
 files you wish to access.
 
 Cache is a boolean, which if true, turns on data caching of any data retrieved,
-or any data you wish to upload. Caching is currently REQUIRED if you wish to do
-any write operations.
+or any data you wish to upload.
 
 CacheDir is the local directory to store cached data. If this parameter is
 supplied, Cache is forced true and so doesn't need to be provided. If this
@@ -142,7 +140,8 @@ directory in CacheBase, which will get deleted on unmount.
 
 Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Because writing
-currently requires caching, turning this on forces Cache to be true.`,
+currently requires caching, turning this on forces Cache to be considered
+true.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if mountJSON == "" {
 			die("--mount is required")
