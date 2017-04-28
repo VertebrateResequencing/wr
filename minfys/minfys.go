@@ -50,9 +50,9 @@ It is a "filey" system ('fys' instead of 'fs') in that it cares about
 performance first, and POSIX second. It is designed around a particular use-
 case:
 
-Non-interactively read a small handful of files who's paths we already know,
+Non-interactively read a small handful of files who's paths you already know,
 probably a few times for small files and only once for large files, then upload
-a few large files. Ie. we want to mount S3 buckets that contain thousands of
+a few large files. Eg. we want to mount S3 buckets that contain thousands of
 unchanging cache files, and a few big input files that we process using those
 cache files, and finally generate some results.
 
@@ -66,12 +66,12 @@ S3 buckets.
 
 # Provenance
 
-There are many ways of accessing data in S3 buckets. Amazon provide s3cmd for
-direct up/download of particular files, and s3fs for fuse-mounting a bucket. But
-these are not written in Go.
+There are many ways of accessing data in S3 buckets. Common tools include s3cmd
+for direct up/download of particular files, and s3fs for fuse-mounting a bucket.
+But these are not written in Go.
 
-Amazon also provide aws-sdk-go for interacting with S3, but this does not work
-with (my) Ceph Object Gateway and possibly other implementations of S3.
+Amazon provide aws-sdk-go for interacting with S3, but this does not work with
+(my) Ceph Object Gateway and possibly other implementations of S3.
 
 minio-go is an alternative Go library that provides good compatibility with a
 wide variety of S3-like systems.
@@ -85,7 +85,7 @@ There are at least 2 projects that implement fuse-mounting of S3 buckets:
   * github.com/minio/minfs is implemented using minio-go and bazil, but in my
     hands was very slow. It is designed to be run as root, requiring file-based
     configuration.
-  * github.com/kahing/goofys is implemented using aws-dsk-go and jacobsa/fuse,
+  * github.com/kahing/goofys is implemented using aws-sdk-go and jacobsa/fuse,
     making it incompatible with (my) Ceph Object Gateway.
 
 Both are designed to be run as daemons as opposed to being used in-process.
@@ -110,18 +110,18 @@ capable of, it shares and adds to goofys' non-POSIX behaviours:
 # Performance
 
 To get a basic sense of performance, a 1GB file in a Ceph Object Gateway S3
-bucket was read, twice in a row, using the methods that worked for me (minfs had
-to be hacked, and the minio result is for using it like s3cmd with no fuse-
-mounting); units are seconds needed to read the whole file:
+bucket was read, twice in a row for tools with caching, using the methods that
+worked for me (I had to hack minfs to get it to work); units are seconds
+(average of 3 attempts) needed to read the whole file:
 
-| method         | first | second |
+| method         | fresh | cached |
 |----------------|-------|--------|
-| s3cmd          | 6.2   | 7.5    |
-| minio          | 6.3   | 6.0    |
+| s3cmd          | 6.2   | n/a    |
+| mc             | 6.3   | n/a    |
 | s3fs caching   | 12.0  | 0.8    |
-| minfs          | 40    | 40     |
+| minfs          | 40    | n/a    |
 | minfys caching | 6.5   | 0.9    |
-| minfys         | 6.3   | 5.1    |
+| minfys         | 6.3   | n/a    |
 
 Ie. minfs is very slow, and minfys is about 2x faster than s3fs, with no
 noticeable performance penalty for fuse mounting vs simply downloading the files
@@ -509,7 +509,7 @@ type MinFys struct {
 	fileToRemote    map[string]*remote
 	createdFiles    map[string]bool
 	createdDirs     map[string]bool
-	downloaded      map[string]bool
+	downloaded      map[string]Intervals
 	mounted         bool
 	loggedMsgs      []string
 	handlingSignals bool
@@ -572,7 +572,7 @@ func New(config *Config) (fs *MinFys, err error) {
 		fileToRemote: make(map[string]*remote),
 		createdFiles: make(map[string]bool),
 		createdDirs:  make(map[string]bool),
-		downloaded:   make(map[string]bool),
+		downloaded:   make(map[string]Intervals),
 		maxAttempts:  config.Retries + 1,
 		cacheBase:    cacheBase,
 		verbose:      config.Verbose,
@@ -777,7 +777,7 @@ func (fs *MinFys) Unmount(doNotUpload ...bool) (err error) {
 	fs.fileToRemote = make(map[string]*remote)
 	fs.createdFiles = make(map[string]bool)
 	fs.createdDirs = make(map[string]bool)
-	fs.downloaded = make(map[string]bool)
+	fs.downloaded = make(map[string]Intervals)
 
 	return
 }

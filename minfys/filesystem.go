@@ -23,7 +23,7 @@
 
 package minfys
 
-// This file implements pathfs.FileSystem methods
+// This file implements pathfs.FileSystem methods.
 
 import (
 	"github.com/hanwen/go-fuse/fuse"
@@ -301,7 +301,9 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 					return nil, fuse.EIO
 				}
 			}
-			fs.downloaded[localPath] = true
+			fs.mutex.Lock()
+			fs.downloaded[localPath] = Intervals{NewInterval(0, int64(attr.Size))}
+			fs.mutex.Unlock()
 		} else {
 			// this is our first time opening this remote file, create a sparse
 			// file that Read() operations will cache in to

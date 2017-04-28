@@ -20,7 +20,7 @@
 
 package minfys
 
-// This file implements pathfs.File methods
+// This file implements pathfs.File methods.
 
 import (
 	"github.com/hanwen/go-fuse/fuse"
@@ -36,13 +36,14 @@ import (
 // caching of data).
 type S3File struct {
 	nodefs.File
-	r          *remote
-	path       string
-	mutex      sync.Mutex
-	size       uint64
-	readOffset int64
-	reader     io.ReadCloser
-	skips      map[int64][]byte
+	r            *remote
+	path         string
+	mutex        sync.Mutex
+	size         uint64
+	readOffset   int64
+	reader       io.ReadCloser
+	skips        map[int64][]byte
+	actuallyRead int64
 }
 
 // NewS3File creates a new S3File. For all the methods not yet implemented, fuse
@@ -129,6 +130,7 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 // fillBuffer reads from our remote reader to the Read() buffer.
 func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 	bytesRead, err := io.ReadFull(f.reader, buf)
+	f.actuallyRead = int64(bytesRead)
 	if err != nil {
 		f.reader.Close()
 		f.reader = nil
@@ -171,14 +173,16 @@ type CachedFile struct {
 	localPath  string
 	flags      int
 	attr       *fuse.Attr
+	s3file     *S3File
 	mutex      sync.Mutex
 }
 
-// NewCachedFile makes a CachedFile that reads from remotePath only once,
-// returning subsequent reads from and writing to localPath.
+// NewCachedFile makes a CachedFile that reads each byte from remotePath only
+// once, returning subsequent reads from and writing to localPath.
 func NewCachedFile(r *remote, remotePath, localPath string, attr *fuse.Attr, flags uint32) nodefs.File {
 	f := &CachedFile{r: r, remotePath: remotePath, localPath: localPath, flags: int(flags), attr: attr}
 	f.makeLoopback()
+	f.s3file = NewS3File(r, remotePath, attr.Size).(*S3File)
 	return f
 }
 
@@ -203,7 +207,9 @@ func (f *CachedFile) Write(data []byte, offset int64) (uint32, fuse.Status) {
 	mTime := uint64(time.Now().Unix())
 	f.attr.Mtime = mTime
 	f.attr.Atime = mTime
-	f.r.fs.downloaded[f.localPath] = true
+	f.r.fs.mutex.Lock()
+	f.r.fs.downloaded[f.localPath] = f.r.fs.downloaded[f.localPath].Merge(NewInterval(offset, int64(len(data))))
+	f.r.fs.mutex.Unlock()
 	return n, s
 }
 
@@ -230,43 +236,53 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 		return nil, fuse.OK
 	}
 
-	// if downloaded := f.r.fs.downloaded[f.localPath]; !downloaded {
-	// 	// download whole remote object, with automatic retries
-	// 	if status := f.r.downloadFile(f.remotePath, f.localPath); status != fuse.OK {
-	// 		return nil, status
-	// 	}
+	// find which bytes we haven't previously read
+	f.r.fs.mutex.Lock()
+	ivs := f.r.fs.downloaded[f.localPath]
+	request := NewInterval(offset, int64(len(buf)))
+	if request.End >= int64(f.attr.Size-1) {
+		request.End = int64(f.attr.Size - 1)
+	}
+	ivsLen := len(ivs)
+	newIvs := ivs.Difference(request)
+	f.r.fs.mutex.Unlock()
 
-	// 	// check size ok
-	// 	localStats, err := os.Stat(f.localPath)
-	// 	if err != nil {
-	// 		f.r.fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", f.r.bucket, f.remotePath, err)
-	// 		os.Remove(f.localPath)
-	// 		return nil, fuse.ToStatus(err)
-	// 	} else {
-	// 		if localStats.Size() != int64(f.attr.Size) {
-	// 			os.Remove(f.localPath)
-	// 			f.r.fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", f.r.bucket, f.remotePath, localStats.Size(), f.attr.Size)
-	// 			return nil, fuse.EIO
-	// 		}
-	// 	}
-	// 	f.r.fs.downloaded[f.localPath] = true
-	// 	f.makeLoopback()
-	// }
+	// read remote data and store in cache file for the previously unread parts
+	for _, iv := range newIvs {
+		ivBuf := make([]byte, iv.Length(), iv.Length())
+		_, status := f.s3file.Read(ivBuf, iv.Start)
+		if status != fuse.OK {
+			return nil, status
+		}
 
-	// we need to know if the requested range of bytes has already been stored
-	// in our cache file by a previous Read() call. We store prior Read()
-	// intervals, and there are many ways we could query to see if this new
-	// interval overlaps with any of them, eg. having an interval tree, or
-	// sorting the ranges and merging. But we expect that most of the time we
-	// will only have between 1 and 3 prior intervals if we merge every time,
-	// and we expect that we will merge the majority of the time. And in this
-	// case, it seems to be fastest and simplest to just check against all prior
-	// intervals with a nested loop. I did actually benchmark a number of
-	// possibilities, and this really is fastest!
-	// For ease of implementation, we only bother to read from our cache file if
-	// the requested interval is entirely contained within a prior interval; if
-	// it goes even a single byte into unread territory, we will fill all of buf
-	// using a remote read.
+		// create data to write from, which may be different length to above
+		// if we hit end of file
+		numBytesRetreived := f.s3file.actuallyRead
+		var data []byte
+		if numBytesRetreived < iv.Length() {
+			iv = NewInterval(offset, numBytesRetreived)
+			data = ivBuf[:numBytesRetreived]
+		} else {
+			data = ivBuf
+			numBytesRetreived = iv.Length()
+		}
 
+		// write the data to our cache file
+		if ivsLen == 0 {
+			f.flags = f.flags | os.O_RDWR
+			f.makeLoopback()
+		}
+		n, s := f.InnerFile().Write(data, iv.Start)
+		if s == fuse.OK && int64(n) == numBytesRetreived {
+			f.r.fs.mutex.Lock()
+			f.r.fs.downloaded[f.localPath] = ivs.Merge(iv)
+			f.r.fs.mutex.Unlock()
+		} else {
+			f.r.fs.debug("error: write returned %d bytes and status %s", n, s)
+			return nil, s
+		}
+	}
+
+	// read the whole region from the cache file and return
 	return f.InnerFile().Read(buf, offset)
 }
