@@ -116,12 +116,13 @@ worked for me (I had to hack minfs to get it to work); units are seconds
 
 | method         | fresh | cached |
 |----------------|-------|--------|
-| s3cmd          | 6.2   | n/a    |
-| mc             | 6.3   | n/a    |
-| s3fs caching   | 12.0  | 0.8    |
+| s3cmd          | 5.9   | n/a    |
+| mc             | 7.9   | n/a    |
 | minfs          | 40    | n/a    |
-| minfys caching | 6.5   | 0.9    |
-| minfys         | 6.3   | n/a    |
+| s3fs           | 12.1  | n/a    |
+| s3fs caching   | 12.2  | 1.0    |
+| minfys         | 5.7   | n/a    |
+| minfys caching | 5.8   | 0.7    |
 
 Ie. minfs is very slow, and minfys is about 2x faster than s3fs, with no
 noticeable performance penalty for fuse mounting vs simply downloading the files
@@ -133,6 +134,60 @@ The same story holds true when performing the above test 100 times
 ~simultaneously; while some reads take much longer due to Ceph/network overload,
 minfys remains on average twice as fast as s3fs. The only significant change is
 that s3cmd starts to fail.
+
+For a real-world test, some data processing and analysis was done with samtools,
+a tool that can end up reading small parts of very large files.
+www.htslib.org/workflow was partially followed to map fastqs with 441 read pairs
+(extracted from an old human chr20 mapping). Mapping, sorting and calling was
+carried out, in addition to creating and viewing a cram. The different caching
+strategies used were: cup == reference-related files cached, fastq files
+uncached, working in a normal POSIX directory; cuf == as cup, but working in a
+fuse mounted writable directory; uuf == as cuf, but with no caching for the
+reference-related files. The local(mc) method involved downloading all files
+with mc first, with the cached result being the maximum possible performance:
+that of running bwa and samtools when all required files are accessed from the
+local POSIX filesystem. Units are seconds (average of 3 attempts):
+
+| method     | fresh | cached |
+|------------|-------|--------|
+| local(mc)  | 157   | 40     |
+| s3fs.cup   | 175   | 50     |
+| minfys.cup | 80    | 45     |
+| minfys.cuf | 79    | 44     |
+| minfys.uuf | 88    | n/a    |
+
+Ie. minfys is about 2x faster than just downloading all required files manually,
+and over 2x faster than using s3fs. There isn't much performance loss when the
+data is cached vs maximum possible performance. There's no noticeable penalty
+(indeed it's a little faster) for working directly in a minfys-mounted
+directory.
+
+Finally, to compare to a highly optimised tool written in C that has built-in
+support (via libcurl) for reading from S3, samtools was once again used, this
+time to read 100bp (the equivalent of a few lines) from an 8GB indexed cram
+file. The builtin(mc) method involved downloading the single required cram cache
+file from S3 first using mc, then relying on samtools' built-in S3 support by
+giving it the s3:// path to the cram file; the cached result involves samtools
+reading this cache file and the cram's index files from the local POSIX
+filesystem, but it still reads cram data itself from the remote S3 system. The
+other methods used samtools normally, giving it paths within the fuse mount(s)
+created. The different caching strategies used were: cu == reference-related
+files cached, cram-related files uncached; cc == everything cached; uu ==
+nothing cached. Units are seconds (average of 3 attempts):
+
+| method      | fresh | cached |
+|-------------|-------|--------|
+| builtin(mc) | 1.3   | 0.5    |
+| s3fs.cu     | 4.3   | 1.7    |
+| s3fs.cc     | 4.4   | 0.5    |
+| s3fs.uu     | 4.4   | 2.2    |
+| minfys.cu   | 0.3   | 0.1    |
+| minfys.cc   | 0.3   | 0.06   |
+| minfys.uu   | 0.3   | 0.1    |
+
+Ie. minfys is much faster than s3fs (more than 2x faster probably due to much
+faster and more efficient stating of files), and using it also gives a
+significant benefit over using a tools' built-in support for S3.
 
 # Status
 
