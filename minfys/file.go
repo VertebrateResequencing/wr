@@ -36,14 +36,13 @@ import (
 // caching of data).
 type S3File struct {
 	nodefs.File
-	r            *remote
-	path         string
-	mutex        sync.Mutex
-	size         uint64
-	readOffset   int64
-	reader       io.ReadCloser
-	skips        map[int64][]byte
-	actuallyRead int64
+	r          *remote
+	path       string
+	mutex      sync.Mutex
+	size       uint64
+	readOffset int64
+	reader     io.ReadCloser
+	skips      map[int64][]byte
 }
 
 // NewS3File creates a new S3File. For all the methods not yet implemented, fuse
@@ -130,7 +129,6 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 // fillBuffer reads from our remote reader to the Read() buffer.
 func (f *S3File) fillBuffer(buf []byte) (status fuse.Status) {
 	bytesRead, err := io.ReadFull(f.reader, buf)
-	f.actuallyRead = int64(bytesRead)
 	if err != nil {
 		f.reader.Close()
 		f.reader = nil
@@ -259,33 +257,24 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 		ivBuf := make([]byte, iv.Length(), iv.Length())
 		_, status := f.s3file.Read(ivBuf, iv.Start)
 		if status != fuse.OK {
+			// we warn instead of error because this is a "normal" situation
+			// when trying to read from non-existent files
+			f.r.fs.debug("warning: Read() call for %s failed: %s", f.remotePath, status)
 			return nil, status
-		}
-
-		// create data to write from, which may be different length to above
-		// if we hit end of file
-		numBytesRetreived := f.s3file.actuallyRead
-		var data []byte
-		if numBytesRetreived < iv.Length() {
-			iv = NewInterval(offset, numBytesRetreived)
-			data = ivBuf[:numBytesRetreived]
-		} else {
-			data = ivBuf
-			numBytesRetreived = iv.Length()
 		}
 
 		// write the data to our cache file
 		if !f.openedRW {
-			f.flags = f.flags | os.O_RDWR //| os.O_CREATE
+			f.flags = f.flags | os.O_RDWR
 			f.makeLoopback()
 		}
-		n, s := f.InnerFile().Write(data, iv.Start)
-		if s == fuse.OK && int64(n) == numBytesRetreived {
+		n, s := f.InnerFile().Write(ivBuf, iv.Start)
+		if s == fuse.OK && int64(n) == iv.Length() {
 			f.r.fs.mutex.Lock()
 			f.r.fs.downloaded[f.localPath] = ivs.Merge(iv)
 			f.r.fs.mutex.Unlock()
 		} else {
-			f.r.fs.debug("error: Read() call for %s failed to write %d bytes to cache file %s (only wrote %d): %s", f.remotePath, numBytesRetreived, f.localPath, n, s)
+			f.r.fs.debug("error: Read() call for %s failed to write %d bytes to cache file %s (only wrote %d): %s", f.remotePath, iv.Length(), f.localPath, n, s)
 			return nil, s
 		}
 	}

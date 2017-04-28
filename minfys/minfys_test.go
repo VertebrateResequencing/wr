@@ -148,6 +148,15 @@ func TestMinFys(t *testing.T) {
 				read, err = streamFile(path, 350000)
 				So(err, ShouldBeNil)
 				So(read, ShouldEqual, 350000)
+
+				// make sure the contents are actually correct
+				expected := ""
+				for i := 1; i <= 100000; i++ {
+					expected += fmt.Sprintf("%06d\n", i)
+				}
+				bytes, err := ioutil.ReadFile(path)
+				So(err, ShouldBeNil)
+				So(string(bytes), ShouldEqual, expected)
 			})
 
 			Convey("You can do random reads", func() {
