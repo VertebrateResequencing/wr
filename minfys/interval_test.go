@@ -102,7 +102,7 @@ func TestIntervals(t *testing.T) {
 			ivs = ivs.Merge(oneThree)
 			So(len(ivs), ShouldEqual, 3)
 
-			expected := Intervals{fifteenEighteen, eightTen, oneSix}
+			expected := Intervals{oneSix, eightTen, fifteenEighteen}
 			So(ivs, ShouldResemble, expected)
 		})
 
@@ -244,19 +244,19 @@ func TestIntervals(t *testing.T) {
 			So(len(ivs), ShouldEqual, 1)
 
 			newIvs = ivs.Difference(twoSix)
-			So(newIvs, ShouldBeNil)
+			So(newIvs, ShouldBeEmpty)
 			ivs = ivs.Merge(twoSix)
 			So(len(ivs), ShouldEqual, 1)
 
 			newIvs = ivs.Difference(oneThree)
-			So(newIvs, ShouldBeNil)
+			So(newIvs, ShouldBeEmpty)
 			ivs = ivs.Merge(oneThree)
 			So(len(ivs), ShouldEqual, 1)
 
 			oneSeven := Interval{1, 7}
 
 			newIvs = ivs.Difference(oneSix)
-			So(newIvs, ShouldBeNil)
+			So(newIvs, ShouldBeEmpty)
 			ivs = ivs.Merge(oneSix)
 			So(len(ivs), ShouldEqual, 1)
 
@@ -302,7 +302,7 @@ func TestIntervals(t *testing.T) {
 			ivs = ivs.Merge(fiveTwentyFive)
 			So(len(ivs), ShouldEqual, 3)
 
-			expected := Intervals{oneThree, fourtyFifty, Interval{5, 30}}
+			expected := Intervals{oneThree, Interval{5, 30}, fourtyFifty}
 			So(ivs, ShouldResemble, expected)
 		})
 
@@ -339,7 +339,7 @@ func TestIntervals(t *testing.T) {
 			ivs = ivs.Merge(fiveThirtyTwo)
 			So(len(ivs), ShouldEqual, 3)
 
-			expected := Intervals{oneThree, fourtyFifty, fiveThirtyTwo}
+			expected := Intervals{oneThree, fiveThirtyTwo, fourtyFifty}
 			So(ivs, ShouldResemble, expected)
 		})
 
@@ -372,11 +372,11 @@ func TestIntervals(t *testing.T) {
 
 			fiveThirtyTwo := Interval{5, 32}
 			newIvs = ivs.Difference(fiveThirtyTwo)
-			So(newIvs, ShouldResemble, Intervals{Interval{5, 6}, Interval{31, 32}, Interval{11, 14}, Interval{19, 19}})
+			So(newIvs, ShouldResemble, Intervals{Interval{5, 6}, Interval{11, 14}, Interval{19, 19}, Interval{31, 32}})
 			ivs = ivs.Merge(fiveThirtyTwo)
 			So(len(ivs), ShouldEqual, 3)
 
-			expected := Intervals{oneThree, fourtyFifty, fiveThirtyTwo}
+			expected := Intervals{oneThree, fiveThirtyTwo, fourtyFifty}
 			So(ivs, ShouldResemble, expected)
 		})
 
@@ -409,7 +409,7 @@ func TestIntervals(t *testing.T) {
 
 			ivs = ivs.Truncate(17)
 
-			expected := Intervals{sevenTen, oneThree, Interval{15, 17}}
+			expected := Intervals{oneThree, sevenTen, Interval{15, 17}}
 			So(ivs, ShouldResemble, expected)
 		})
 	})
@@ -471,6 +471,6 @@ func TestIntervals(t *testing.T) {
 		// fmt.Printf("\ntook %s\n", time.Since(t))
 		So(errors, ShouldEqual, 0)
 		So(len(ivs), ShouldEqual, 1)
-		So(time.Since(t).Seconds(), ShouldBeLessThan, 1) // 42ms on my machine
+		So(time.Since(t).Seconds(), ShouldBeLessThan, 1) // 31ms on my machine
 	})
 }

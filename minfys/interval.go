@@ -1,6 +1,6 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// The code in this file is heavily based on:
+// The code in this file was initially inspired by:
 // https://github.com/gastonsimone/go-dojo/tree/master/mergeint (unspecified
 // copyright and license).
 //
@@ -25,17 +25,20 @@ package minfys
 This file implements the interval-related code used by NewCachedFile to
 track which byte intervals have already been downloaded.
 
-Generally more efficient algorithms exist for merging or querying sets of
-intervals, eg. http://www.geeksforgeeks.org/merging-intervals/ describes the
-commonly used sort approach, as well as a reverse sort variant. You can also
-build an interval (range) tree or similar.
+Standard algorithms exist for merging or querying sets of intervals, eg.
+http://www.geeksforgeeks.org/merging-intervals/ describes the commonly used sort
+approach, as well as a reverse sort variant. You can also build an interval
+(range) tree or similar.
 
 However, for this particular use case, we expect that most of the time we
 will only have between 1 and 3 prior intervals if we merge every time, and we
 expect that we will merge the majority of the time.
 
-In this case, the simple nested loop algorithm used here is significantly faster
-than the other options (2x faster than sorting, 10x faster than a tree).
+In this case, a simple nested loop algorithm is 2x faster than blindly sorting
+everything each time, and 10x faster than using a tree. The key is to minimise
+the number of comparisons that get made; the implementation actually used here
+is based on PeterSO's idea of only partially sorting when necessary, presented
+in http://stackoverflow.com/a/43682714/675083.
 
     var ivs Intervals
     for _, data := range inputs {
@@ -76,26 +79,6 @@ func (i *Interval) OverlapsOrAdjacent(j Interval) bool {
 	return i.End+1 >= j.Start && j.End+1 >= i.Start
 }
 
-// Difference returns the portions of j that do NOT overlap with this interval.
-// If j starts before this interval, left will be defined. If j ends after this
-// interval, right will be defined. If this interval fully contains j, or if j
-// does not overlap with this interval at all, left and right will be nil (and
-// overlapped will be false in the latter case).
-func (i *Interval) Difference(j Interval) (left *Interval, right *Interval, overlapped bool) {
-	if !i.Overlaps(j) {
-		return
-	}
-
-	overlapped = true
-	if j.Start < i.Start {
-		left = &Interval{j.Start, i.Start - 1}
-	}
-	if j.End > i.End {
-		right = &Interval{i.End + 1, j.End}
-	}
-	return
-}
-
 // Merge merges the supplied interval with this interval if they overlap or are
 // adjacent. Returns true if a merge actually occurred.
 func (i *Interval) Merge(j Interval) bool {
@@ -115,75 +98,92 @@ func (i *Interval) Merge(j Interval) bool {
 // Intervals type is a slice of Interval.
 type Intervals []Interval
 
-// Difference returns any portions of iv that do not overlap with any of our
-// intervals. Assumes that all of our intervals have been Merge()d in.
-func (ivs Intervals) Difference(iv Interval) (diffs Intervals) {
-	diffs = append(diffs, iv)
-	for _, prior := range ivs {
-		for i := 0; i < len(diffs); {
-			if left, right, overlapped := prior.Difference(diffs[i]); overlapped {
-				if len(diffs) == 1 {
-					diffs = nil
-				} else {
-					diffs = append(diffs[:i], diffs[i+1:]...)
-				}
-
-				if left != nil {
-					diffs = append(diffs, *left)
-				}
-				if right != nil {
-					diffs = append(diffs, *right)
-				}
-			} else {
-				i++
-			}
-		}
-		if len(diffs) == 0 {
-			break
-		}
-	}
-
-	return
-}
-
 // Merge adds another interval to this slice of intervals, merging with any
 // prior intervals if it overlaps with or is adjacent to them. Returns the new
 // slice of intervals, which have the property of not overlapping with or being
-// adjacent to each other.
+// adjacent to each other. They are also sorted by Start if Merge() was used to
+// add all of them.
 func (ivs Intervals) Merge(iv Interval) Intervals {
-	ivs = append(ivs, iv)
+	if len(ivs) == 0 {
+		return Intervals{iv}
+	}
 
 	merged := make(Intervals, 0, len(ivs))
-	for _, iv := range ivs {
-		for i := 0; i < len(merged); {
-			if iv.Merge(merged[i]) {
-				// remove position i from merged set
-				merged = append(merged[:i], merged[i+1:]...)
-			} else {
-				i++
+	for ; len(ivs) > 0; ivs = ivs[1:] {
+		for i := 1; i < len(ivs); i++ {
+			if ivs[i].Start < ivs[0].Start {
+				ivs[i], ivs[0] = ivs[0], ivs[i]
 			}
 		}
-		merged = append(merged, iv)
+
+		if iv.Merge(ivs[0]) {
+			if len(ivs) == 1 {
+				merged = append(merged, iv)
+			}
+			continue
+		} else if iv.Start < ivs[0].Start-1 {
+			merged = append(merged, iv)
+			merged = append(merged, ivs...)
+			break
+		} else if len(ivs) == 1 {
+			merged = append(merged, ivs...)
+			merged = append(merged, iv)
+			break
+		}
+		merged = append(merged, ivs[0])
 	}
 
 	return merged
 }
 
+// Difference returns any portions of iv that do not overlap with any of our
+// intervals. Assumes that all of our intervals have been Merge()d in.
+func (ivs Intervals) Difference(iv Interval) Intervals {
+	if len(ivs) == 0 {
+		return Intervals{iv}
+	}
+
+	diffs := make(Intervals, 0, len(ivs))
+	for i, prior := range ivs {
+		if iv.Overlaps(prior) {
+			if iv.Start < prior.Start {
+				diffs = append(diffs, Interval{iv.Start, prior.Start - 1})
+			}
+			if iv.End > prior.End {
+				iv.Start = prior.End + 1
+				if len(ivs) == 1 {
+					diffs = append(diffs, iv)
+					break
+				}
+			} else {
+				break
+			}
+		} else if iv.Start < prior.Start || i == len(ivs)-1 {
+			diffs = append(diffs, iv)
+			break
+		}
+	}
+
+	return diffs
+}
+
 // Truncate removes all intervals that start after the given position, and
-// truncates any intervals that overlap with the position.
+// truncates any intervals that overlap with the position. Assumes that all of
+// our intervals have been Merge()d in.
 func (ivs Intervals) Truncate(pos int64) Intervals {
 	if pos == 0 {
 		return Intervals{}
 	}
 
-	for i := 0; i < len(ivs); {
-		if ivs[i].End > pos {
-			ivs[i].End = pos
+	for i, iv := range ivs {
+		if iv.Start > pos {
+			ivs = ivs[:i]
+			break
 		}
-		if ivs[i].Start > pos {
-			ivs = append(ivs[:i], ivs[i+1:]...)
-		} else {
-			i++
+		if iv.End > pos {
+			ivs = ivs[:i+1]
+			ivs[i].End = pos
+			break
 		}
 	}
 
