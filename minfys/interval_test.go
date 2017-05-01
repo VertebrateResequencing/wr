@@ -471,6 +471,6 @@ func TestIntervals(t *testing.T) {
 		// fmt.Printf("\ntook %s\n", time.Since(t))
 		So(errors, ShouldEqual, 0)
 		So(len(ivs), ShouldEqual, 1)
-		So(time.Since(t).Seconds(), ShouldBeLessThan, 1) // 31ms on my machine
+		So(time.Since(t).Seconds(), ShouldBeLessThan, 1) // 30ms on my machine
 	})
 }

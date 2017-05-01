@@ -1,6 +1,6 @@
 // Copyright © 2017 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
-// The code in this file was initially inspired by:
+// The code in this file was initially based on:
 // https://github.com/gastonsimone/go-dojo/tree/master/mergeint (unspecified
 // copyright and license).
 //
@@ -37,8 +37,8 @@ expect that we will merge the majority of the time.
 In this case, a simple nested loop algorithm is 2x faster than blindly sorting
 everything each time, and 10x faster than using a tree. The key is to minimise
 the number of comparisons that get made; the implementation actually used here
-is based on PeterSO's idea of only partially sorting when necessary, presented
-in http://stackoverflow.com/a/43682714/675083.
+is to simply keep things sorted as they are merged in, and then do as few
+comparisons as we can in other methods.
 
     var ivs Intervals
     for _, data := range inputs {
@@ -109,28 +109,22 @@ func (ivs Intervals) Merge(iv Interval) Intervals {
 	}
 
 	merged := make(Intervals, 0, len(ivs))
-	for ; len(ivs) > 0; ivs = ivs[1:] {
-		for i := 1; i < len(ivs); i++ {
-			if ivs[i].Start < ivs[0].Start {
-				ivs[i], ivs[0] = ivs[0], ivs[i]
-			}
-		}
-
-		if iv.Merge(ivs[0]) {
-			if len(ivs) == 1 {
+	for i, prior := range ivs {
+		if iv.Merge(prior) {
+			if i == len(ivs)-1 {
 				merged = append(merged, iv)
 			}
 			continue
-		} else if iv.Start < ivs[0].Start-1 {
+		} else if iv.Start < prior.Start-1 {
 			merged = append(merged, iv)
-			merged = append(merged, ivs...)
+			merged = append(merged, ivs[i:]...)
 			break
-		} else if len(ivs) == 1 {
-			merged = append(merged, ivs...)
+		} else if i == len(ivs)-1 {
+			merged = append(merged, ivs[i:]...)
 			merged = append(merged, iv)
 			break
 		}
-		merged = append(merged, ivs[0])
+		merged = append(merged, prior)
 	}
 
 	return merged
