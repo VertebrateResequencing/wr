@@ -380,6 +380,20 @@ func TestIntervals(t *testing.T) {
 			So(ivs, ShouldResemble, expected)
 		})
 
+		Convey("Difference works when the interval overlaps and extends past the last interval in the set", func() {
+			var ivs, newIvs Intervals
+			ivs = ivs.Merge(Interval{0, 147455})
+			So(len(ivs), ShouldEqual, 1)
+
+			ivs = ivs.Merge(Interval{348160, 356351})
+			So(len(ivs), ShouldEqual, 2)
+
+			newIvs = ivs.Difference(Interval{352256, 368639})
+			So(newIvs, ShouldResemble, Intervals{Interval{356352, 368639}})
+			ivs = ivs.Merge(Interval{352256, 368639})
+			So(len(ivs), ShouldEqual, 2)
+		})
+
 		Convey("Truncate works", func() {
 			var ivs, newIvs Intervals
 			newIvs = ivs.Difference(sevenTen)

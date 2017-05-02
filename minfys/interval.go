@@ -145,7 +145,7 @@ func (ivs Intervals) Difference(iv Interval) Intervals {
 			}
 			if iv.End > prior.End {
 				iv.Start = prior.End + 1
-				if len(ivs) == 1 {
+				if i == len(ivs)-1 {
 					diffs = append(diffs, iv)
 					break
 				}
