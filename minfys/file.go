@@ -94,9 +94,12 @@ func (f *S3File) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Status) {
 				delete(f.skips, offset)
 				return fuse.ReadResultData(buf), fuse.OK
 			} else {
-				// we'll have to start from scratch
-				f.reader.Close()
-				f.reader = nil
+				// we'll have to seek and wipe our skips
+				var status fuse.Status
+				f.reader, status = f.r.seek(f.reader, offset, f.path)
+				if status != fuse.OK {
+					return nil, status
+				}
 				f.skips = make(map[int64][]byte)
 			}
 		}
@@ -219,7 +222,7 @@ func (f *CachedFile) Write(data []byte, offset int64) (uint32, fuse.Status) {
 	return n, s
 }
 
-// Utimens gets called by things like `touch -d "2006-01-02 15:04:05" filename,
+// Utimens gets called by things like `touch -d "2006-01-02 15:04:05" filename`,
 // and we need to update our cached attr as well as the local file.
 func (f *CachedFile) Utimens(Atime *time.Time, Mtime *time.Time) (status fuse.Status) {
 	status = f.InnerFile().Utimens(Atime, Mtime)
@@ -252,6 +255,10 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 	newIvs := ivs.Difference(request)
 	f.r.fs.mutex.Unlock()
 
+	// *** have tried using a single s3file per remote, and also trying to
+	// combine sets of reads on the same file, but performance is best just
+	// letting different reads on the same file interleave
+
 	// read remote data and store in cache file for the previously unread parts
 	for _, iv := range newIvs {
 		ivBuf := make([]byte, iv.Length(), iv.Length())
@@ -271,7 +278,7 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 		n, s := f.InnerFile().Write(ivBuf, iv.Start)
 		if s == fuse.OK && int64(n) == iv.Length() {
 			f.r.fs.mutex.Lock()
-			f.r.fs.downloaded[f.localPath] = ivs.Merge(iv)
+			f.r.fs.downloaded[f.localPath] = f.r.fs.downloaded[f.localPath].Merge(iv)
 			f.r.fs.mutex.Unlock()
 		} else {
 			f.r.fs.debug("error: Read() call for %s failed to write %d bytes to cache file %s (only wrote %d): %s", f.remotePath, iv.Length(), f.localPath, n, s)

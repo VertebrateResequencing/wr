@@ -201,6 +201,20 @@ func (r *remote) getObject(remotePath string, offset int64) (object *minio.Objec
 	return
 }
 
+// seek takes the object returned by getObject and seeks it to the desired
+// offset from the start of the file. If this fails a number of repeated
+// attempts will be made which involves creating a new object, which is why
+// remotePath must be supplied, and why you get back an object. This will be the
+// same object you supplied if there were no problems.
+func (r *remote) seek(rc io.ReadCloser, offset int64, remotePath string) (*minio.Object, fuse.Status) {
+	object := rc.(*minio.Object)
+	_, err := object.Seek(offset, io.SeekStart)
+	if err != nil {
+		return r.getObject(remotePath, offset)
+	}
+	return object, fuse.OK
+}
+
 // copyObject remotely copies an object to a new remote path.
 func (r *remote) copyObject(oldPath, newPath string) fuse.Status {
 	// copy, with automatic retries
