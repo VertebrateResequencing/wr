@@ -191,12 +191,31 @@ significant benefit over using a tools' built-in support for S3.
 
 # Status
 
-In cached mode, random reads and writes have been implemented. But the same
-local disk cache directory should not be used by multiple processes at once.
+In cached mode, random reads and writes have been implemented.
 
 In non-cached mode, only random reads have been implemented so far.
 
-Coming soon: safer local caching, and serial writes in non-cached mode.
+Coming soon: serial writes in non-cached mode.
+
+# Guidance
+
+`CacheData: true` will usually give you the best performance. Not setting an
+explicit CacheDir will also give the best performance, as if you read a small
+part of a large file, only the part you read will be downloaded and cached in
+the unique CacheDir.
+
+Only turn on `Write` mode if you have to write.
+
+Use `CacheData: false` if you will read more data than can be stored on local
+disk in the CacheDir.
+
+If you know that you will definitely end up reading the same data multiple times
+(either during a mount, or from different mounts) on the same machine, and have
+sufficient local disk space, use `CacheData: true` and set an explicit CacheDir
+(with a constant absolute path, eg. starting in /tmp). Doing this results in any
+file read downloading the whole remote file to cache it, which can be wasteful
+if you only need to read a small part of a large file. (But this is the only way
+that minfys can coordinate the cache amongst independent processes.)
 
 # Usage
 
@@ -539,7 +558,8 @@ func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
 		fs:          fs,
 	}
 
-	// create a client for interacting with S3
+	// create a client for interacting with S3 (we do this here instead of
+	// as-needed inside remote because there's large overhead in creating these)
 	if t.Region != "" {
 		r.client, err = minio.NewWithRegion(host, t.AccessKey, t.SecretKey, secure, t.Region)
 	} else {

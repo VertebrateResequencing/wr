@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -245,6 +246,164 @@ func TestMinFys(t *testing.T) {
 				out, err = cmd.CombinedOutput()
 				So(err, ShouldBeNil)
 				So(string(out), ShouldStartWith, "4096\t")
+			})
+
+			Convey("You can read different parts of a file simultaneously from 1 mount", func() {
+				init := mountPoint + "/numalphanum.txt"
+				path := mountPoint + "/100k.lines"
+
+				// the first read takes longer than others, so read something
+				// to "initialise" minio
+				streamFile(init, 0)
+
+				// first get a reference for how long it takes to read the whole
+				// thing
+				t := time.Now()
+				read, err := streamFile(path, 0)
+				wt := time.Since(t)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 700000)
+
+				// sanity check that re-reading uses our cache
+				t = time.Now()
+				streamFile(path, 0)
+				st := time.Since(t)
+
+				// should have completed in well under 10% of the time
+				et := time.Duration((wt.Nanoseconds()/100)*10) * time.Nanosecond
+				So(st, ShouldBeLessThan, et)
+
+				// remount to clear the cache
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+				streamFile(init, 0)
+
+				// now read the whole file and half the file at the ~same time
+				times := make(chan time.Duration, 2)
+				errors := make(chan error, 2)
+				streamer := func(offset, size int) {
+					t := time.Now()
+					thisRead, thisErr := streamFile(path, int64(offset))
+					times <- time.Since(t)
+					if thisErr != nil {
+						errors <- thisErr
+						return
+					}
+					if thisRead != int64(size) {
+						errors <- fmt.Errorf("did not read %d bytes for offset %d (%d)", size, offset, thisRead)
+						return
+					}
+					errors <- nil
+				}
+
+				t = time.Now()
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					streamer(350000, 350000)
+				}()
+				go func() {
+					defer wg.Done()
+					streamer(0, 700000)
+				}()
+				wg.Wait()
+				ot := time.Since(t)
+
+				// both should complete in not much more time than the slowest,
+				// and that shouldn't be much slower than when reading alone
+				// *** debugging shows that caching definitely is occurring as
+				// expected, but I can't really prove it with these timings...
+				So(<-errors, ShouldBeNil)
+				So(<-errors, ShouldBeNil)
+				pt1 := <-times
+				pt2 := <-times
+				eto := time.Duration((int64(math.Max(float64(pt1.Nanoseconds()), float64(pt2.Nanoseconds())))/100)*110) * time.Nanosecond
+				// fmt.Printf("\nwt: %s, pt1: %s, pt2: %s, ot: %s, eto: %s, ets: %s\n", wt, pt1, pt2, ot, eto, ets)
+				So(ot, ShouldBeLessThan, eto) // *** this can rarely fail, just have to repeat :(
+
+				// *** unforunately the variability is too high, with both
+				// pt1 and pt2 sometimes taking more than 2x longer to read
+				// compared to wt, even though the below passes most of the time
+				// ets := time.Duration((wt.Nanoseconds()/100)*150) * time.Nanosecond
+				// So(ot, ShouldBeLessThan, ets)
+			})
+
+			Convey("You can read different files simultaneously from 1 mount", func() {
+				init := mountPoint + "/numalphanum.txt"
+				path1 := mountPoint + "/100k.lines"
+				path2 := mountPoint + "/1G.file"
+
+				streamFile(init, 0)
+
+				// first get a reference for how long it takes to read a certain
+				// sized chunk of each file
+				t := time.Now()
+				read, err := streamFile(path1, 0)
+				f1t := time.Since(t)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 700000)
+
+				t = time.Now()
+				read, err = streamFile(path2, 1073041824)
+				f2t := time.Since(t)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 700000)
+
+				// remount to clear the cache
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+				streamFile(init, 0)
+
+				// now repeat reading them at the ~same time
+				times := make(chan time.Duration, 2)
+				errors := make(chan error, 2)
+				streamer := func(path string, offset, size int) {
+					t := time.Now()
+					thisRead, thisErr := streamFile(path, int64(offset))
+					times <- time.Since(t)
+					if thisErr != nil {
+						errors <- thisErr
+						return
+					}
+					if thisRead != int64(size) {
+						errors <- fmt.Errorf("did not read %d bytes of %s at offset %d (%d)", size, path, offset, thisRead)
+						return
+					}
+					errors <- nil
+				}
+
+				t = time.Now()
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					streamer(path1, 0, 700000)
+				}()
+				go func() {
+					defer wg.Done()
+					streamer(path2, 1073041824, 700000)
+				}()
+				wg.Wait()
+				ot := time.Since(t)
+
+				// each should have completed in less than 170% of the time
+				// needed to read them sequentially, and both should have
+				// completed in less than 110% of the slowest one
+				So(<-errors, ShouldBeNil)
+				So(<-errors, ShouldBeNil)
+				pt1 := <-times
+				pt2 := <-times
+				et1 := time.Duration((f1t.Nanoseconds()/100)*170) * time.Nanosecond
+				et2 := time.Duration((f2t.Nanoseconds()/100)*170) * time.Nanosecond
+				eto := time.Duration((int64(math.Max(float64(pt1.Nanoseconds()), float64(pt2.Nanoseconds())))/100)*110) * time.Nanosecond
+				So(pt1, ShouldBeLessThan, et1)
+				So(pt2, ShouldBeLessThan, et2)
+				So(ot, ShouldBeLessThan, eto)
 			})
 
 			Convey("Trying to write in non Write mode fails", func() {
@@ -802,6 +961,102 @@ func TestMinFys(t *testing.T) {
 					So(string(bytes), ShouldEqual, string(b)+line2)
 				})
 
+				Convey("You can append to an uncached file and upload without reading the original part of the file", func() {
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					line2 := "line2\n"
+					_, err = f.WriteString(line2)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					bytes, err := ioutil.ReadFile(path)
+					So(err, ShouldBeNil)
+					So(string(bytes), ShouldEqual, string(b)+line2)
+				})
+
+				Convey("You can append to a partially read file", func() {
+					// first make the file bigger so we can avoid minimum file
+					// read size issues
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					for i := 2; i <= 10000; i++ {
+						_, err = f.WriteString(fmt.Sprintf("line%d\n", i))
+						if err != nil {
+							break
+						}
+					}
+					f.Close()
+					So(err, ShouldBeNil)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					// now do a partial read
+					r, err := os.Open(path)
+					So(err, ShouldBeNil)
+
+					r.Seek(11, io.SeekStart)
+
+					b := make([]byte, 5, 5)
+					done, err := io.ReadFull(r, b)
+					r.Close()
+					So(err, ShouldBeNil)
+					So(done, ShouldEqual, 5)
+					So(string(b), ShouldEqual, "line2")
+
+					info, err := os.Stat(path)
+					So(err, ShouldBeNil)
+					So(info.Size(), ShouldEqual, 88899)
+
+					// now append
+					f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+					So(err, ShouldBeNil)
+
+					newline := "line10001\n"
+					_, err = f.WriteString(newline)
+					f.Close()
+					So(err, ShouldBeNil)
+
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					// check it worked correctly
+					info, err = os.Stat(path)
+					So(err, ShouldBeNil)
+					So(info.Size(), ShouldEqual, 88909)
+
+					r, err = os.Open(path)
+					So(err, ShouldBeNil)
+
+					r.Seek(11, io.SeekStart)
+
+					b = make([]byte, 5, 5)
+					done, err = io.ReadFull(r, b)
+					So(err, ShouldBeNil)
+					So(done, ShouldEqual, 5)
+					So(string(b), ShouldEqual, "line2")
+
+					r.Seek(88889, io.SeekStart)
+
+					b = make([]byte, 19, 19)
+					done, err = io.ReadFull(r, b)
+					r.Close()
+					So(err, ShouldBeNil)
+					So(done, ShouldEqual, 19)
+					So(string(b), ShouldEqual, "line10000\nline10001")
+				})
+
 				Convey("You can truncate an uncached file", func() {
 					err := os.Truncate(path, 0)
 					So(err, ShouldBeNil)
@@ -1300,6 +1555,160 @@ func TestMinFys(t *testing.T) {
 				_, err = os.Stat(cachePath)
 				So(err, ShouldBeNil)
 			})
+
+			Convey("You can read different parts of a file simultaneously from 1 mount, and it's only downloaded once", func() {
+				init := mountPoint + "/numalphanum.txt"
+				path := mountPoint + "/100k.lines"
+
+				// the first read takes longer than others, so read something
+				// to "initialise" minio
+				streamFile(init, 0)
+
+				// first get a reference for how long it takes to read the whole
+				// thing
+				t := time.Now()
+				read, err := streamFile(path, 0)
+				wt := time.Since(t)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 700000)
+
+				// sanity check that re-reading uses our cache
+				t = time.Now()
+				streamFile(path, 0)
+				st := time.Since(t)
+
+				// should have completed in under 20% of the time
+				et := time.Duration((wt.Nanoseconds()/100)*20) * time.Nanosecond
+				So(st, ShouldBeLessThan, et)
+
+				// remount to clear the cache
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+				streamFile(init, 0)
+
+				// now read the whole file and half the file at the ~same time
+				times := make(chan time.Duration, 2)
+				errors := make(chan error, 2)
+				streamer := func(offset, size int) {
+					t := time.Now()
+					thisRead, thisErr := streamFile(path, int64(offset))
+					times <- time.Since(t)
+					if thisErr != nil {
+						errors <- thisErr
+						return
+					}
+					if thisRead != int64(size) {
+						errors <- fmt.Errorf("did not read %d bytes for offset %d (%d)", size, offset, thisRead)
+						return
+					}
+					errors <- nil
+				}
+
+				t = time.Now()
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					streamer(350000, 350000)
+				}()
+				go func() {
+					defer wg.Done()
+					streamer(0, 700000)
+				}()
+				wg.Wait()
+				ot := time.Since(t)
+
+				// both should complete in not much more time than the slowest,
+				// and that shouldn't be much slower than when reading alone
+				// *** debugging shows that the file is only downloaded once,
+				// but don't have a good way of proving that here
+				So(<-errors, ShouldBeNil)
+				So(<-errors, ShouldBeNil)
+				pt1 := <-times
+				pt2 := <-times
+				eto := time.Duration((int64(math.Max(float64(pt1.Nanoseconds()), float64(pt2.Nanoseconds())))/100)*110) * time.Nanosecond
+				// ets := time.Duration((wt.Nanoseconds()/100)*160) * time.Nanosecond
+				// fmt.Printf("\nwt: %s, pt1: %s, pt2: %s, ot: %s, eto: %s, ets: %s\n", wt, pt1, pt2, ot, eto, ets)
+				So(ot, ShouldBeLessThan, eto)
+				// So(ot, ShouldBeLessThan, ets)
+			})
+
+			Convey("You can read different files simultaneously from 1 mount", func() {
+				init := mountPoint + "/numalphanum.txt"
+				path1 := mountPoint + "/100k.lines"
+				path2 := mountPoint + "/1G.file"
+
+				streamFile(init, 0)
+
+				// first get a reference for how long it takes to read a certain
+				// sized chunk of each file
+				t := time.Now()
+				read, err := streamFile(path1, 0)
+				f1t := time.Since(t)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 700000)
+
+				t = time.Now()
+				read, err = streamFile(path2, 1073041824)
+				f2t := time.Since(t)
+				So(err, ShouldBeNil)
+				So(read, ShouldEqual, 700000)
+
+				// remount to clear the cache
+				err = fs.Unmount()
+				So(err, ShouldBeNil)
+				err = fs.Mount()
+				So(err, ShouldBeNil)
+				streamFile(init, 0)
+
+				// now repeat reading them at the ~same time
+				times := make(chan time.Duration, 2)
+				errors := make(chan error, 2)
+				streamer := func(path string, offset, size int) {
+					t := time.Now()
+					thisRead, thisErr := streamFile(path, int64(offset))
+					times <- time.Since(t)
+					if thisErr != nil {
+						errors <- thisErr
+						return
+					}
+					if thisRead != int64(size) {
+						errors <- fmt.Errorf("did not read %d bytes of %s at offset %d (%d)", size, path, offset, thisRead)
+						return
+					}
+					errors <- nil
+				}
+
+				t = time.Now()
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					streamer(path1, 0, 700000)
+				}()
+				go func() {
+					defer wg.Done()
+					streamer(path2, 1073041824, 700000)
+				}()
+				wg.Wait()
+				ot := time.Since(t)
+
+				// each should have completed in less than 160% of the time
+				// needed to read them sequentially, and both should have
+				// completed in less than 110% of the slowest one
+				So(<-errors, ShouldBeNil)
+				So(<-errors, ShouldBeNil)
+				pt1 := <-times
+				pt2 := <-times
+				et1 := time.Duration((f1t.Nanoseconds()/100)*160) * time.Nanosecond
+				et2 := time.Duration((f2t.Nanoseconds()/100)*160) * time.Nanosecond
+				eto := time.Duration((int64(math.Max(float64(pt1.Nanoseconds()), float64(pt2.Nanoseconds())))/100)*110) * time.Nanosecond
+				So(pt1, ShouldBeLessThan, et1)
+				So(pt2, ShouldBeLessThan, et2)
+				So(ot, ShouldBeLessThan, eto)
+			})
 		})
 
 		Convey("You can mount with local file caching in an explicit relative location", t, func() {
@@ -1701,7 +2110,7 @@ func TestMinFys(t *testing.T) {
 				// fmt.Printf("\n1G file read took %s cached vs %s uncached\n", bigFileGetTime, thisGetTime)
 				So(err, ShouldBeNil)
 				So(read, ShouldEqual, 1073741824)
-				So(math.Ceil(thisGetTime.Seconds()), ShouldBeLessThanOrEqualTo, math.Ceil(bigFileGetTime.Seconds())) // if it isn't, it's almost certainly a bug!
+				So(math.Ceil(thisGetTime.Seconds()), ShouldBeLessThanOrEqualTo, math.Ceil(bigFileGetTime.Seconds())+2) // if it isn't, it's almost certainly a bug!
 			})
 
 			Convey("Trying to read a non-existent file fails as expected", func() {
