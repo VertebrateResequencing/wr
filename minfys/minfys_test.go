@@ -33,6 +33,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -237,15 +238,17 @@ func TestMinFys(t *testing.T) {
 				So(string(out), ShouldStartWith, "1073741824\t")
 
 				// even though we seeked to 350000 and only tried to read 6
-				// bytes, the underlying system ends up sending a 4kb Read
-				// request around the desired point *** not sure if this
-				// size or behaviour differs on different systems, assume
-				// not for now
+				// bytes, the underlying system ends up sending a larger Read
+				// request around the desired point, where the size depends on
+				// the filesystem and other OS related things
 
 				cmd = exec.Command("du", "-B1", cachePath)
 				out, err = cmd.CombinedOutput()
 				So(err, ShouldBeNil)
-				So(string(out), ShouldStartWith, "4096\t")
+				parts := strings.Split(string(out), "\t")
+				i, err := strconv.Atoi(parts[0])
+				So(err, ShouldBeNil)
+				So(i, ShouldBeGreaterThan, 6)
 			})
 
 			Convey("You can read different parts of a file simultaneously from 1 mount", func() {
@@ -269,8 +272,8 @@ func TestMinFys(t *testing.T) {
 				streamFile(path, 0)
 				st := time.Since(t)
 
-				// should have completed in well under 10% of the time
-				et := time.Duration((wt.Nanoseconds()/100)*10) * time.Nanosecond
+				// should have completed in well under 20% of the time
+				et := time.Duration((wt.Nanoseconds()/100)*20) * time.Nanosecond
 				So(st, ShouldBeLessThan, et)
 
 				// remount to clear the cache
@@ -391,15 +394,15 @@ func TestMinFys(t *testing.T) {
 				wg.Wait()
 				ot := time.Since(t)
 
-				// each should have completed in less than 170% of the time
+				// each should have completed in less than 190% of the time
 				// needed to read them sequentially, and both should have
 				// completed in less than 110% of the slowest one
 				So(<-errors, ShouldBeNil)
 				So(<-errors, ShouldBeNil)
 				pt1 := <-times
 				pt2 := <-times
-				et1 := time.Duration((f1t.Nanoseconds()/100)*170) * time.Nanosecond
-				et2 := time.Duration((f2t.Nanoseconds()/100)*170) * time.Nanosecond
+				et1 := time.Duration((f1t.Nanoseconds()/100)*190) * time.Nanosecond
+				et2 := time.Duration((f2t.Nanoseconds()/100)*190) * time.Nanosecond
 				eto := time.Duration((int64(math.Max(float64(pt1.Nanoseconds()), float64(pt2.Nanoseconds())))/100)*110) * time.Nanosecond
 				So(pt1, ShouldBeLessThan, et1)
 				So(pt2, ShouldBeLessThan, et2)
@@ -1275,7 +1278,7 @@ func TestMinFys(t *testing.T) {
 					So(err, ShouldBeNil)
 					info2, err := os.Stat(path)
 					So(info.ModTime().Unix(), ShouldNotAlmostEqual, info2.ModTime().Unix(), 62)
-					So(info2.ModTime().String(), ShouldEqual, "2006-01-02 15:04:05 +0000 UTC")
+					So(info2.ModTime().String(), ShouldStartWith, "2006-01-02 15:04:05 +0000")
 				})
 
 				Convey("You can immediately touch an uncached file", func() {
@@ -1291,7 +1294,7 @@ func TestMinFys(t *testing.T) {
 					So(details, ShouldResemble, subEntries)
 
 					info, err := os.Stat(path)
-					So(info.ModTime().String(), ShouldEqual, "2006-01-02 15:04:05 +0000 UTC")
+					So(info.ModTime().String(), ShouldStartWith, "2006-01-02 15:04:05 +0000")
 				})
 
 				Convey("You can touch a cached file", func() {
@@ -1304,14 +1307,14 @@ func TestMinFys(t *testing.T) {
 					So(err, ShouldBeNil)
 					info2, err := os.Stat(path)
 					So(info.ModTime().Unix(), ShouldNotAlmostEqual, info2.ModTime().Unix(), 62)
-					So(info2.ModTime().String(), ShouldEqual, "2006-01-02 15:04:05 +0000 UTC")
+					So(info2.ModTime().String(), ShouldStartWith, "2006-01-02 15:04:05 +0000")
 
 					cmd = exec.Command("touch", "-d", "2007-01-02 15:04:05", path)
 					err = cmd.Run()
 					So(err, ShouldBeNil)
 					info3, err := os.Stat(path)
 					So(info2.ModTime().Unix(), ShouldNotAlmostEqual, info3.ModTime().Unix(), 62)
-					So(info3.ModTime().String(), ShouldEqual, "2007-01-02 15:04:05 +0000 UTC")
+					So(info3.ModTime().String(), ShouldStartWith, "2007-01-02 15:04:05 +0000")
 				})
 
 				Convey("You can directly change the mtime on a cached file", func() {
