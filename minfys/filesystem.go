@@ -394,6 +394,59 @@ func (fs *MinFys) Chown(name string, uid uint32, gid uint32, context *fuse.Conte
 	return status
 }
 
+// Symlink creates a symbolic link. Only implemented for temporary use when
+// configured with CacheData: you can create and use symlinks but they don't get
+// uploaded. context is not currently used.
+func (fs *MinFys) Symlink(source string, dest string, context *fuse.Context) (status fuse.Status) {
+	if fs.writeRemote == nil || !fs.writeRemote.cacheData {
+		return fuse.ENOSYS
+	}
+
+	localPathDest := fs.writeRemote.getLocalPath(fs.writeRemote.getRemotePath(dest))
+	fmutex, err := fs.getFileMutex(localPathDest)
+	if err != nil {
+		return fuse.EIO
+	}
+	fmutex.Lock()
+	defer fmutex.Unlock()
+
+	// symlink from mount point source to cached dest file
+	err = os.Symlink(source, localPathDest)
+	if err != nil {
+		fs.debug("error: could not symlink from %s to %s: %s", source, localPathDest, err)
+		return fuse.ToStatus(err)
+	}
+
+	// note the existence of dest without making it uploadable on unmount
+	fs.addNewEntryToItsDir(dest, fuse.S_IFLNK)
+	fs.mutex.Lock()
+	mTime := uint64(time.Now().Unix())
+	attr := &fuse.Attr{
+		Mode:  fuse.S_IFLNK | uint32(fileMode),
+		Size:  uint64(0),
+		Mtime: mTime,
+		Atime: mTime,
+		Ctime: mTime,
+	}
+	fs.files[dest] = attr
+	fs.fileToRemote[dest] = fs.writeRemote
+	fs.mutex.Unlock()
+
+	return fuse.OK
+}
+
+// Readlink returns the destination of a symbolic link that was created with
+// Symlink(). context is not currently used.
+func (fs *MinFys) Readlink(name string, context *fuse.Context) (out string, status fuse.Status) {
+	_, r, status := fs.fileDetails(name, true)
+	if status != fuse.OK {
+		return
+	}
+	out, err := os.Readlink(r.getLocalPath(r.getRemotePath(name)))
+	status = fuse.ToStatus(err)
+	return
+}
+
 // SetXAttr is ignored.
 func (fs *MinFys) SetXAttr(name string, attr string, data []byte, flags int, context *fuse.Context) fuse.Status {
 	_, _, status := fs.fileDetails(name, true)

@@ -1523,6 +1523,45 @@ func TestMinFys(t *testing.T) {
 				// they all get uploaded in the same second, so this isn't a very
 				// good test... need uploads that take more than 1 second each...
 			})
+
+			Convey("You can't create hard links", func() {
+				source := mountPoint + "/numalphanum.txt"
+				dest := mountPoint + "/link.hard"
+				err := os.Link(source, dest)
+				So(err, ShouldNotBeNil)
+			})
+
+			Convey("You can create and use symbolic links", func() {
+				source := mountPoint + "/numalphanum.txt"
+				dest := mountPoint + "/link.soft"
+				fmt.Println("\n")
+				err := os.Symlink(source, dest)
+				So(err, ShouldBeNil)
+				bytes, err := ioutil.ReadFile(dest)
+				So(err, ShouldBeNil)
+				So(string(bytes), ShouldEqual, "1234567890abcdefghijklmnopqrstuvwxyz1234567890\n")
+
+				d, err := os.Readlink(dest)
+				So(err, ShouldBeNil)
+				So(d, ShouldEqual, source)
+
+				Convey("But they're not uploaded", func() {
+					err = fs.Unmount()
+					So(err, ShouldBeNil)
+					err = fs.Mount()
+					So(err, ShouldBeNil)
+
+					_, err = os.Stat(dest)
+					So(err, ShouldNotBeNil)
+				})
+
+				Convey("You can delete them", func() {
+					err = os.Remove(dest)
+					So(err, ShouldBeNil)
+					_, err = os.Stat(dest)
+					So(err, ShouldNotBeNil)
+				})
+			})
 		})
 
 		Convey("You can mount with local file caching in an explicit location", t, func() {
