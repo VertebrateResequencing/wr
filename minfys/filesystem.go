@@ -423,7 +423,7 @@ func (fs *MinFys) Symlink(source string, dest string, context *fuse.Context) (st
 	mTime := uint64(time.Now().Unix())
 	attr := &fuse.Attr{
 		Mode:  fuse.S_IFLNK | uint32(fileMode),
-		Size:  uint64(0),
+		Size:  symlinkSize, // it doesn't matter what the actual size is (which we could get with os.Lstat(localPathDest)), this is just for presentation purposes
 		Mtime: mTime,
 		Atime: mTime,
 		Ctime: mTime,

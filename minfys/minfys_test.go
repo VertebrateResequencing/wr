@@ -1540,6 +1540,10 @@ func TestMinFys(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(string(bytes), ShouldEqual, "1234567890abcdefghijklmnopqrstuvwxyz1234567890\n")
 
+				info, err := os.Lstat(dest)
+				So(err, ShouldBeNil)
+				So(info.Size(), ShouldEqual, 7)
+
 				d, err := os.Readlink(dest)
 				So(err, ShouldBeNil)
 				So(d, ShouldEqual, source)

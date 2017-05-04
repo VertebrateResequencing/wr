@@ -302,6 +302,8 @@ import (
 const defaultDomain = "s3.amazonaws.com"
 const dirMode = 0700
 const fileMode = 0600
+const dirSize = uint64(4096)
+const symlinkSize = uint64(7)
 
 // Config struct provides the configuration of a MinFys.
 type Config struct {
@@ -683,7 +685,7 @@ func New(config *Config) (fs *MinFys, err error) {
 	// cheats for s3-like filesystems
 	mTime := uint64(time.Now().Unix())
 	fs.dirAttr = &fuse.Attr{
-		Size:  uint64(4096),
+		Size:  dirSize,
 		Mode:  fuse.S_IFDIR | uint32(dirMode),
 		Mtime: mTime,
 		Atime: mTime,
