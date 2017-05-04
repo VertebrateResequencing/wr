@@ -1534,7 +1534,6 @@ func TestMinFys(t *testing.T) {
 			Convey("You can create and use symbolic links", func() {
 				source := mountPoint + "/numalphanum.txt"
 				dest := mountPoint + "/link.soft"
-				fmt.Println("\n")
 				err := os.Symlink(source, dest)
 				So(err, ShouldBeNil)
 				bytes, err := ioutil.ReadFile(dest)
