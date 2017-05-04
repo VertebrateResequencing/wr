@@ -99,7 +99,9 @@ capable of, it shares and adds to goofys' non-POSIX behaviours:
 
   * writes are only supported in cached mode
   * does not store file mode/owner/group
-  * does not support symlink or hardlink
+  * does not support hardlinks
+  * symlinks are only supported temporarily in a cached writeable mount: they
+    can be created and used, but do not get uploaded
   * `atime` (and typically `ctime`) is always the same as `mtime`
   * `mtime` of files is not stored remotely (remote file mtimes are of their
     upload time, and minfys only guarantees that files are uploaded in the order
