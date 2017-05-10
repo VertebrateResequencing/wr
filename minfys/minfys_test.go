@@ -92,7 +92,6 @@ func TestMinFys(t *testing.T) {
 			Mount:   mountPoint,
 			Retries: 3,
 			Verbose: false,
-			Quiet:   false,
 			Targets: []*Target{targetManual},
 		}
 
@@ -1945,13 +1944,11 @@ func TestMinFys(t *testing.T) {
 			So(os.IsNotExist(err), ShouldBeTrue)
 		})
 
-		Convey("You can mount with verbose yet quiet, and still get the logs", t, func() {
+		Convey("You can mount with verbose to get more logs", t, func() {
 			origVerbose := cfg.Verbose
 			cfg.Verbose = true
-			cfg.Quiet = true
 			defer func() {
 				cfg.Verbose = origVerbose
-				cfg.Quiet = false
 			}()
 			fs, err := New(cfg)
 			So(err, ShouldBeNil)
@@ -1962,7 +1959,7 @@ func TestMinFys(t *testing.T) {
 			_, err = ioutil.ReadDir(mountPoint)
 			expectedErrorLog := ""
 			if err != nil {
-				expectedErrorLog = "error: ListObjectsV2"
+				expectedErrorLog = "ListObjectsV2"
 			}
 
 			err = fs.Unmount()
@@ -1973,7 +1970,7 @@ func TestMinFys(t *testing.T) {
 			var foundExpectedLog bool
 			var foundErrorLog bool
 			for _, log := range logs {
-				if strings.Contains(log, "info: ListObjectsV2") {
+				if strings.Contains(log, "ListObjectsV2") {
 					foundExpectedLog = true
 				}
 				if expectedErrorLog != "" && strings.Contains(log, expectedErrorLog) {
@@ -2195,7 +2192,6 @@ func TestMinFys(t *testing.T) {
 				Mount:   mountPoint,
 				Retries: 3,
 				Verbose: false,
-				Quiet:   false,
 				Targets: []*Target{targetManual, targetManual2},
 			}
 
@@ -2410,7 +2406,6 @@ func TestMinFys(t *testing.T) {
 					Mount:   mountPoint,
 					Retries: 3,
 					Verbose: false,
-					Quiet:   false,
 					Targets: []*Target{targetManual, targetManual2},
 				}
 

@@ -25,6 +25,7 @@ package minfys
 import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
+	"github.com/inconshreveable/log15"
 	"io"
 	"os"
 	"sync"
@@ -177,12 +178,13 @@ type CachedFile struct {
 	s3file     *S3File
 	openedRW   bool
 	mutex      sync.Mutex
+	log15.Logger
 }
 
 // NewCachedFile makes a CachedFile that reads each byte from remotePath only
 // once, returning subsequent reads from and writing to localPath.
-func NewCachedFile(r *remote, remotePath, localPath string, attr *fuse.Attr, flags uint32) nodefs.File {
-	f := &CachedFile{r: r, remotePath: remotePath, localPath: localPath, flags: int(flags), attr: attr}
+func NewCachedFile(r *remote, remotePath, localPath string, attr *fuse.Attr, flags uint32, logger log15.Logger) nodefs.File {
+	f := &CachedFile{r: r, remotePath: remotePath, localPath: localPath, flags: int(flags), attr: attr, Logger: logger.New("rpath", remotePath, "lpath", localPath)}
 	f.makeLoopback()
 	f.s3file = NewS3File(r, remotePath, attr.Size).(*S3File)
 	return f
@@ -191,7 +193,7 @@ func NewCachedFile(r *remote, remotePath, localPath string, attr *fuse.Attr, fla
 func (f *CachedFile) makeLoopback() {
 	localFile, err := os.OpenFile(f.localPath, f.flags, os.FileMode(fileMode))
 	if err != nil {
-		f.r.fs.debug("error: could not OpenFile(%s): %s", f.localPath, err)
+		f.Error("Could not open file", "err", err)
 	}
 
 	if f.flags&os.O_RDWR != 0 {
@@ -216,9 +218,7 @@ func (f *CachedFile) Write(data []byte, offset int64) (uint32, fuse.Status) {
 	mTime := uint64(time.Now().Unix())
 	f.attr.Mtime = mTime
 	f.attr.Atime = mTime
-	f.r.fs.mutex.Lock()
-	f.r.fs.downloaded[f.localPath] = f.r.fs.downloaded[f.localPath].Merge(NewInterval(offset, int64(len(data))))
-	f.r.fs.mutex.Unlock()
+	f.r.Cached(f.localPath, NewInterval(offset, int64(len(data))))
 	return n, s
 }
 
@@ -246,14 +246,11 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 	}
 
 	// find which bytes we haven't previously read
-	f.r.fs.mutex.Lock()
-	ivs := f.r.fs.downloaded[f.localPath]
 	request := NewInterval(offset, int64(len(buf)))
 	if request.End >= int64(f.attr.Size-1) {
 		request.End = int64(f.attr.Size - 1)
 	}
-	newIvs := ivs.Difference(request)
-	f.r.fs.mutex.Unlock()
+	newIvs := f.r.Uncached(f.localPath, request)
 
 	// *** have tried using a single s3file per remote, and also trying to
 	// combine sets of reads on the same file, but performance is best just
@@ -266,7 +263,7 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 		if status != fuse.OK {
 			// we warn instead of error because this is a "normal" situation
 			// when trying to read from non-existent files
-			f.r.fs.debug("warning: Read() call for %s failed: %s", f.remotePath, status)
+			f.Warn("Read failed", "status", status)
 			return nil, status
 		}
 
@@ -277,11 +274,9 @@ func (f *CachedFile) Read(buf []byte, offset int64) (fuse.ReadResult, fuse.Statu
 		}
 		n, s := f.InnerFile().Write(ivBuf, iv.Start)
 		if s == fuse.OK && int64(n) == iv.Length() {
-			f.r.fs.mutex.Lock()
-			f.r.fs.downloaded[f.localPath] = f.r.fs.downloaded[f.localPath].Merge(iv)
-			f.r.fs.mutex.Unlock()
+			f.r.Cached(f.localPath, iv)
 		} else {
-			f.r.fs.debug("error: Read() call for %s failed to write %d bytes to cache file %s (only wrote %d): %s", f.remotePath, iv.Length(), f.localPath, n, s)
+			f.Error("Failed to write bytes to cache file", "read", iv.Length(), "wrote", n, "status", s)
 			return nil, s
 		}
 	}

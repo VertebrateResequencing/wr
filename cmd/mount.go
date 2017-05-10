@@ -21,11 +21,14 @@ package cmd
 import (
 	"encoding/json"
 	"github.com/VertebrateResequencing/wr/minfys"
+	"github.com/inconshreveable/log15"
+	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
 )
 
 // options for this cmd
 var mountJSON string
+var mountVerbose bool
 
 // mountCmd represents the mount command
 var mountCmd = &cobra.Command{
@@ -64,8 +67,8 @@ Parameter names and their values are put in double quotes (except for numbers,
 which are left bare, booleans where you write, unquoted, true or false, and
 arrays as described previously), and the pair separated with a colon, and pairs
 separated from each other with commas.
-For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Verbose":true,
-"Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]'
+For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Targets":
+[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]'
 The paragraphs below describe all the possible Config object parameters.
 
 Mount is the local directory on which to mount your Target(s). It can be (in)
@@ -83,8 +86,11 @@ Retries is the number of retries wr should attempt when it encounters errors in
 trying to access your remote S3 bucket. At least 3 is recommended. It defaults
 to 10 if not provided.
 
-Verbose is a boolean, which if true, makes this command log timing messages for
-every remote operation it carries out. It always logs errors.
+Verbose is a boolean, which if true, would make wr store timing information on
+all remote calls as lines of all job STDERR that use the mount. Errors always
+appear there. This has no effect on what you see when using this command to test
+your mount; instead use the global -v command line argument to see the same
+things.
 
 Targets is an array of Target objects which define what you want to access at
 your Mount. It's an array to allow you to multiplex different buckets (or
@@ -147,6 +153,14 @@ true.`,
 			die("--mount is required")
 		}
 
+		// set up logging
+		logLevel := log15.LvlError
+		if mountVerbose {
+			logLevel = log15.LvlInfo
+		}
+		minfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+
+		// mount everything
 		for _, cfg := range mountParseJson(mountJSON) {
 			fs, err := minfys.New(cfg)
 			if err != nil {
@@ -170,6 +184,7 @@ func init() {
 
 	// flags specific to this sub-command
 	mountCmd.Flags().StringVarP(&mountJSON, "mount", "m", "", "mount parameters JSON (see --help)")
+	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
 
 // mountConfObj is the struct for the objects in the user's --mount JSON array.
@@ -234,7 +249,6 @@ func mountParseJson(jsonString string) (configs []*minfys.Config) {
 			CacheBase: mj.CacheBase,
 			Retries:   retries,
 			Verbose:   mj.Verbose,
-			Quiet:     false,
 			Targets:   targets,
 		}
 

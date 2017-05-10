@@ -22,8 +22,9 @@ package minfys
 // interacts with the remote S3 system.
 
 import (
-	"fmt"
 	"github.com/hanwen/go-fuse/fuse"
+	"github.com/inconshreveable/log15"
+	"github.com/jpillora/backoff"
 	"github.com/minio/minio-go"
 	"io"
 	"net/http"
@@ -37,15 +38,18 @@ import (
 // primarily so that we can do easy logging and coordination amongst multiple
 // remotes.
 type remote struct {
-	client      *minio.Client
-	host        string
-	bucket      string
-	basePath    string
-	cacheData   bool
-	cacheDir    string
-	deleteCache bool
-	write       bool
-	fs          *MinFys
+	*CacheTracker
+	client        *minio.Client
+	host          string
+	bucket        string
+	basePath      string
+	cacheData     bool
+	cacheDir      string
+	cacheIsTmp    bool
+	write         bool
+	maxAttempts   int
+	clientBackoff *backoff.Backoff
+	log15.Logger
 }
 
 type retryFunc func() error
@@ -56,7 +60,7 @@ type retryFunc func() error
 // handle more kinds of errors. It logs errors itself. Does not bother retrying
 // when the error is known to be permanent (eg. a requested object not
 // existing).
-func (r *remote) retry(clientMethod string, rf retryFunc) fuse.Status {
+func (r *remote) retry(clientMethod string, path string, rf retryFunc) fuse.Status {
 	attempts := 0
 	start := time.Now()
 ATTEMPTS:
@@ -66,20 +70,20 @@ ATTEMPTS:
 		if err != nil {
 			// return immediately if key not found
 			if merr, ok := err.(minio.ErrorResponse); ok && merr.Code == "NoSuchKey" {
-				r.fs.debug("warning: %s call found the object didn't exist after %s", clientMethod, time.Since(start))
+				r.Warn("Object doesn't exist", "call", clientMethod, "path", path, "walltime", time.Since(start))
 				return fuse.ENOENT
 			}
 
 			// otherwise blindly retry for maxAttempts times
-			if attempts < r.fs.maxAttempts {
-				<-time.After(r.fs.clientBackoff.Duration())
+			if attempts < r.maxAttempts {
+				<-time.After(r.clientBackoff.Duration())
 				continue ATTEMPTS
 			}
-			r.fs.debug("error: %s call failed after %d retries and %s: %s", clientMethod, attempts-1, time.Since(start), err)
+			r.Error("Remote call failed", "call", clientMethod, "path", path, "retries", attempts-1, "walltime", time.Since(start), "err", err)
 			return fuse.EIO
 		}
-		r.fs.debug("info: %s call took %s", clientMethod, time.Since(start))
-		r.fs.clientBackoff.Reset()
+		r.Info("Remote call succeeded", "call", clientMethod, "path", path, "walltime", time.Since(start))
+		r.clientBackoff.Reset()
 		return fuse.OK
 	}
 }
@@ -90,10 +94,10 @@ ATTEMPTS:
 func (r *remote) statusFromErr(clientMethod string, err error) fuse.Status {
 	if err != nil {
 		if merr, ok := err.(minio.ErrorResponse); ok && merr.Code == "NoSuchKey" {
-			r.fs.debug("warning: %s call found the object didn't exist", clientMethod)
+			r.Warn("Object didn't exist", "call", clientMethod)
 			return fuse.ENOENT
 		}
-		r.fs.debug("error: %s call failed: %s", clientMethod, err)
+		r.Error("Remote call failed", "call", clientMethod, "err", err)
 		return fuse.EIO
 	}
 	return fuse.OK
@@ -122,13 +126,13 @@ func (r *remote) uploadFile(localPath, remotePath string) fuse.Status {
 	// can just fake it
 	file, err := os.Open(localPath)
 	if err != nil {
-		r.fs.debug("error: uploadFile could not open %s: %s", localPath, err)
+		r.Error("Could not open local file", "method", "uploadFile", "path", localPath, "err", err)
 		return fuse.EIO
 	}
 	buffer := make([]byte, 512)
 	n, err := file.Read(buffer)
 	if err != nil && err != io.EOF {
-		r.fs.debug("error: uploadFile could not read from %s: %s", localPath, err)
+		r.Error("Could not read local file", "method", "uploadFile", "path", localPath, "err", err)
 		file.Close()
 		return fuse.EIO
 	}
@@ -140,7 +144,7 @@ func (r *remote) uploadFile(localPath, remotePath string) fuse.Status {
 		_, err := r.client.FPutObject(r.bucket, remotePath, localPath, contentType)
 		return err
 	}
-	return r.retry(fmt.Sprintf("FPutObject(%s, %s, %s)", r.bucket, remotePath, localPath), rf)
+	return r.retry("FPutObject", remotePath, rf)
 }
 
 // downloadFile downloads the given remote file to the given local path, with
@@ -150,7 +154,7 @@ func (r *remote) downloadFile(remotePath, localPath string) fuse.Status {
 	rf := func() error {
 		return r.client.FGetObject(r.bucket, remotePath, localPath)
 	}
-	return r.retry(fmt.Sprintf("FGetObject(%s, %s)", r.bucket, remotePath), rf)
+	return r.retry("FGetObject", remotePath, rf)
 }
 
 // findObjects returns details of all objects with the same prefix as the given
@@ -172,7 +176,7 @@ func (r *remote) findObjects(remotePath string) (objects []minio.ObjectInfo, sta
 		}
 		return nil
 	}
-	status = r.retry(fmt.Sprintf("ListObjectsV2(%s, %s)", r.bucket, remotePath), rf)
+	status = r.retry("ListObjectsV2", remotePath, rf)
 	return
 }
 
@@ -197,7 +201,7 @@ func (r *remote) getObject(remotePath string, offset int64) (object *minio.Objec
 
 		return nil
 	}
-	status = r.retry(fmt.Sprintf("GetObject(%s, %s) and/or Seek()", r.bucket, remotePath), rf)
+	status = r.retry("GetObject/Seek", remotePath, rf)
 	return
 }
 
@@ -221,7 +225,7 @@ func (r *remote) copyObject(oldPath, newPath string) fuse.Status {
 	rf := func() error {
 		return r.client.CopyObject(r.bucket, newPath, r.bucket+"/"+oldPath, minio.CopyConditions{})
 	}
-	return r.retry(fmt.Sprintf("CopyObject(%s, %s, %s)", r.bucket, newPath, r.bucket+"/"+oldPath), rf)
+	return r.retry("CopyObject", oldPath, rf)
 }
 
 // deleteFile deletes the given remote file.
@@ -230,5 +234,13 @@ func (r *remote) deleteFile(remotePath string) fuse.Status {
 	rf := func() error {
 		return r.client.RemoveObject(r.bucket, remotePath)
 	}
-	return r.retry(fmt.Sprintf("RemoveObject(%s, %s)", r.bucket, remotePath), rf)
+	return r.retry("RemoveObject", remotePath, rf)
+}
+
+// deleteCache physically deletes the whole cache directory and erases our
+// knowledge of what parts of what files we have cached. You'd probably call
+// this when unmounting, only if cacheIsTmp was true.
+func (r *remote) deleteCache() {
+	os.RemoveAll(r.cacheDir)
+	r.CacheWipe()
 }

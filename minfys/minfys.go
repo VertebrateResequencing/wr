@@ -245,7 +245,6 @@ that minfys can coordinate the cache amongst independent processes.)
         CacheBase: "/tmp",
         Retries:    3,
         Verbose:    true,
-        Quiet:      true,
         Targets:    []*minfys.Target{target, target2},
     }
 
@@ -281,10 +280,11 @@ import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"github.com/hanwen/go-fuse/fuse/pathfs"
+	"github.com/inconshreveable/log15"
 	"github.com/jpillora/backoff"
 	"github.com/minio/minio-go"
+	"github.com/sb10/l15h"
 	"io/ioutil"
-	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -299,11 +299,22 @@ import (
 	"time"
 )
 
-const defaultDomain = "s3.amazonaws.com"
-const dirMode = 0700
-const fileMode = 0600
-const dirSize = uint64(4096)
-const symlinkSize = uint64(7)
+const (
+	defaultDomain = "s3.amazonaws.com"
+	dirMode       = 0700
+	fileMode      = 0600
+	dirSize       = uint64(4096)
+	symlinkSize   = uint64(7)
+)
+
+var (
+	logHandlerSetter = l15h.NewChanger(log15.DiscardHandler())
+	pkgLogger        = log15.New("pkg", "minfys")
+)
+
+func init() {
+	pkgLogger.SetHandler(l15h.ChangeableHandler(logHandlerSetter))
+}
 
 // Config struct provides the configuration of a MinFys.
 type Config struct {
@@ -324,14 +335,9 @@ type Config struct {
 	// undefined. Defaults to the current working directory.
 	CacheBase string
 
-	// Verbose turns on logging of every remote request. Errors are always
-	// logged.
+	// Verbose results in every remote request getting an entry in the output of
+	// Logs(). Errors always appear there.
 	Verbose bool
-
-	// Quiet means that no messages get printed to the logger, though errors
-	// (and informational messages if Verbose is on) are still accessible via
-	// MinFys.Logs().
-	Quiet bool
 
 	// Targets is a slice of Target, describing what you want to mount and
 	// allowing you to multiplex more than one bucket/ sub directory on to
@@ -491,7 +497,7 @@ func (t *Target) ReadEnvironment(profile, path string) error {
 
 // createRemote uses the configured details of the Target to create a *remote,
 // used internally by MinFys.New().
-func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
+func (t *Target) CreateRemote(cacheBase string, maxAttempts int, logger log15.Logger) (r *remote, err error) {
 	// parse the target to get secure, host, bucket and basePath
 	if t.Target == "" {
 		return nil, fmt.Errorf("no Target defined")
@@ -544,7 +550,7 @@ func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
 	deleteCache := false
 	if cacheData && cacheDir == "" {
 		// decide on our own cache directory
-		cacheDir, err = ioutil.TempDir(fs.cacheBase, ".minfys_cache")
+		cacheDir, err = ioutil.TempDir(cacheBase, ".minfys_cache")
 		if err != nil {
 			return
 		}
@@ -552,14 +558,23 @@ func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
 	}
 
 	r = &remote{
-		host:        host,
-		bucket:      bucket,
-		basePath:    basePath,
-		cacheData:   cacheData,
-		cacheDir:    cacheDir,
-		deleteCache: deleteCache,
-		write:       t.Write,
-		fs:          fs,
+		CacheTracker: NewCacheTracker(),
+		host:         host,
+		bucket:       bucket,
+		basePath:     basePath,
+		cacheData:    cacheData,
+		cacheDir:     cacheDir,
+		cacheIsTmp:   deleteCache,
+		write:        t.Write,
+		maxAttempts:  maxAttempts,
+		Logger:       logger.New("target", t.Target),
+	}
+
+	r.clientBackoff = &backoff.Backoff{
+		Min:    100 * time.Millisecond,
+		Max:    10 * time.Second,
+		Factor: 3,
+		Jitter: true,
 	}
 
 	// create a client for interacting with S3 (we do this here instead of
@@ -576,9 +591,6 @@ func (t *Target) createRemote(fs *MinFys) (r *remote, err error) {
 type MinFys struct {
 	pathfs.FileSystem
 	mountPoint      string
-	maxAttempts     int
-	verbose         bool
-	quiet           bool
 	dirAttr         *fuse.Attr
 	server          *fuse.Server
 	mutex           sync.Mutex
@@ -588,22 +600,20 @@ type MinFys struct {
 	fileToRemote    map[string]*remote
 	createdFiles    map[string]bool
 	createdDirs     map[string]bool
-	downloaded      map[string]Intervals
 	mounted         bool
-	loggedMsgs      []string
 	handlingSignals bool
 	deathSignals    chan os.Signal
 	ignoreSignals   chan bool
-	clientBackoff   *backoff.Backoff
-	cacheBase       string
 	remotes         []*remote
 	writeRemote     *remote
+	logStore        *l15h.Store
+	log15.Logger
 }
 
 // New, given a configuration, returns a MinFys that you'll use to Mount() your
 // S3 bucket(s), ensure you un-mount if killed by calling UnmountOnDeath(), then
-// Unmount() when you're done. If configured with Quiet you might check Logs()
-// afterwards. The other methods of MinFys can be ignored in most cases.
+// Unmount() when you're done. You might check Logs() afterwards. The other
+// methods of MinFys can be ignored in most cases.
 func New(config *Config) (fs *MinFys, err error) {
 	if len(config.Targets) == 0 {
 		return nil, fmt.Errorf("no targets provided")
@@ -641,6 +651,17 @@ func New(config *Config) (fs *MinFys, err error) {
 		}
 	}
 
+	// make a logger with context for us, that will store log messages in memory
+	// but is also capable of logging anywhere the user wants via
+	// SetLogHandler()
+	logger := pkgLogger.New("mount", mountPoint)
+	store := l15h.NewStore()
+	logLevel := log15.LvlError
+	if config.Verbose {
+		logLevel = log15.LvlInfo
+	}
+	l15h.AddHandler(logger, log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(l15h.StoreHandler(store, log15.LogfmtFormat()))))
+
 	// initialize ourselves
 	fs = &MinFys{
 		FileSystem:   pathfs.NewDefaultFileSystem(),
@@ -651,24 +672,14 @@ func New(config *Config) (fs *MinFys, err error) {
 		fileToRemote: make(map[string]*remote),
 		createdFiles: make(map[string]bool),
 		createdDirs:  make(map[string]bool),
-		downloaded:   make(map[string]Intervals),
-		maxAttempts:  config.Retries + 1,
-		cacheBase:    cacheBase,
-		verbose:      config.Verbose,
-		quiet:        config.Quiet,
-	}
-
-	fs.clientBackoff = &backoff.Backoff{
-		Min:    100 * time.Millisecond,
-		Max:    10 * time.Second,
-		Factor: 3,
-		Jitter: true,
+		logStore:     store,
+		Logger:       logger,
 	}
 
 	// create a remote for every Target
 	for _, t := range config.Targets {
 		var r *remote
-		r, err = t.createRemote(fs)
+		r, err = t.CreateRemote(cacheBase, config.Retries+1, logger)
 		if err != nil {
 			return
 		}
@@ -799,7 +810,7 @@ func (fs *MinFys) UnmountOnDeath() {
 			fs.mutex.Unlock()
 			err := fs.Unmount()
 			if err != nil {
-				fs.debug("error: failed to unmount on death: %s", err)
+				fs.Error("Failed to unmount on death", "err", err)
 				os.Exit(2)
 			}
 			os.Exit(1)
@@ -843,8 +854,8 @@ func (fs *MinFys) Unmount(doNotUpload ...bool) (err error) {
 
 	// delete any cachedirs we created
 	for _, remote := range fs.remotes {
-		if remote.deleteCache {
-			os.RemoveAll(remote.cacheDir)
+		if remote.cacheIsTmp {
+			remote.deleteCache()
 		}
 	}
 
@@ -856,7 +867,6 @@ func (fs *MinFys) Unmount(doNotUpload ...bool) (err error) {
 	fs.fileToRemote = make(map[string]*remote)
 	fs.createdFiles = make(map[string]bool)
 	fs.createdDirs = make(map[string]bool)
-	fs.downloaded = make(map[string]Intervals)
 
 	return
 }
@@ -902,23 +912,91 @@ func (fs *MinFys) uploadCreated() error {
 
 // Logs returns messages generated while mounted; you might call it after
 // Unmount() to see how things went. By default these will only be errors that
-// occurred, but if minfys was configured with Verbose on, it will also contain
-// informational and warning messages. If minfys was configured with Quiet off,
-// these same messages would have been printed to the logger as they occurred.
+// occurred, but if this MinFys was configured with Verbose on, it will also
+// contain informational and warning messages. If the minfys package was
+// configured with a log Handler (see SetLogHandler()), these same messages
+// would have been logged as they occurred.
 func (fs *MinFys) Logs() []string {
-	return fs.loggedMsgs[:]
+	return fs.logStore.Logs()
 }
 
-// debug is our simplistic way of logging messages. When Quiet mode is off the
-// messages get printed to STDERR; to get these in to a file, just call
-// log.SetOutput() from the log package. Regardless of Quiet mode, these
-// messages are accessible via Logs() afterwards.
-func (fs *MinFys) debug(msg string, a ...interface{}) {
-	if fs.verbose || strings.HasPrefix(msg, "error") {
-		logMsg := fmt.Sprintf("minfys %s", fmt.Sprintf(msg, a...))
-		if !fs.quiet {
-			log.Println(logMsg)
-		}
-		fs.loggedMsgs = append(fs.loggedMsgs, logMsg)
-	}
+// SetLogHandler defines how log messages (globally for this package) are
+// logged. Logs are always retrievable as strings from individual MinFys
+// instances using MinFys.Logs(), but otherwise by default are discarded. To
+// have them logged somewhere as they are emitted, supply a
+// github.com/inconshreveable/log15 Handler, eg. log15.StderrHandler to log
+// everything to STDERR.
+func SetLogHandler(h log15.Handler) {
+	logHandlerSetter.SetHandler(h)
+}
+
+// CacheTracker struct is used to track what parts of which files have been
+// cached.
+type CacheTracker struct {
+	sync.Mutex
+	cached map[string]Intervals
+}
+
+// NewCacheTracker creates a new *CacheTracker.
+func NewCacheTracker() *CacheTracker {
+	return &CacheTracker{cached: make(map[string]Intervals)}
+}
+
+// Cached updates the tracker with what you have now cached. Once you have
+// stored bytes 0..9 in /abs/path/to/sparse.file, you would call:
+// Cached("/abs/path/to/sparse.file", NewInterval(0, 10)).
+func (c *CacheTracker) Cached(path string, iv Interval) {
+	c.Lock()
+	defer c.Unlock()
+	c.cached[path] = c.cached[path].Merge(iv)
+}
+
+// Uncached tells you what parts of a file in the given interval you haven't
+// already cached (based on your prior Cached() calls). You would want to then
+// cache the data in each of the returned intervals and call Cached() on each
+// one afterwards.
+func (c *CacheTracker) Uncached(path string, iv Interval) Intervals {
+	c.Lock()
+	defer c.Unlock()
+	return c.cached[path].Difference(iv)
+}
+
+// CacheTruncate should be used to update the tracker if you truncate a cache
+// file. The internal knowledge of what you have cached for that file will then
+// be updated to exclude anything beyond the truncation point.
+func (c *CacheTracker) CacheTruncate(path string, offset int64) {
+	c.Lock()
+	defer c.Unlock()
+	c.cached[path] = c.cached[path].Truncate(offset)
+}
+
+// CacheOverride should be used if you do something like delete a cache file and
+// then recreate it and cache some data inside it. This is the slightly more
+// efficient alternative to calling Delete(path) followed by Cached(path, iv).
+func (c *CacheTracker) CacheOverride(path string, iv Interval) {
+	c.Lock()
+	defer c.Unlock()
+	c.cached[path] = Intervals{iv}
+}
+
+// CacheRename should be used if you rename a cache file on disk.
+func (c *CacheTracker) CacheRename(oldPath, newPath string) {
+	c.Lock()
+	defer c.Unlock()
+	c.cached[newPath] = c.cached[oldPath]
+	delete(c.cached, oldPath)
+}
+
+// CacheDelete should be used if you delete a cache file.
+func (c *CacheTracker) CacheDelete(path string) {
+	c.Lock()
+	defer c.Unlock()
+	delete(c.cached, path)
+}
+
+// CacheWipe should be used if you delete all your cache files.
+func (c *CacheTracker) CacheWipe() {
+	c.Lock()
+	defer c.Unlock()
+	c.cached = make(map[string]Intervals)
 }

@@ -271,14 +271,14 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 	} else {
 		// check the file is the right size
 		if localStats.Size() != int64(attr.Size) {
-			fs.debug("warning: openCached(%s) cached sizes differ: %d local vs %d remote", name, localStats.Size(), attr.Size)
+			r.Warn("Cached size differs", "path", name, "localSize", localStats.Size(), "remoteSize", attr.Size)
 			os.Remove(localPath)
 			create = true
 		}
 	}
 
 	if create {
-		if !r.deleteCache || int(flags)&os.O_APPEND != 0 {
+		if !r.cacheIsTmp || int(flags)&os.O_APPEND != 0 {
 			// download whole remote object to disk before user appends anything
 			// to it; if we just append to the sparse file then on upload we
 			// lose the contents of the original file. We also do this if we're
@@ -293,21 +293,19 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 			// check size ok
 			localStats, err := os.Stat(localPath)
 			if err != nil {
-				fs.debug("error: FGetObject(%s, %s) call worked, but the downloaded file had error: %s", r.bucket, remotePath, err)
+				r.Error("Downloaded file could not be accessed", "path", localPath, "err", err)
 				os.Remove(localPath)
 				fmutex.Unlock()
 				return nil, fuse.ToStatus(err)
 			} else {
 				if localStats.Size() != int64(attr.Size) {
 					os.Remove(localPath)
-					fs.debug("error: FGetObject(%s, %s) call for openCached worked, but download/remote sizes differ: %d vs %d", r.bucket, remotePath, localStats.Size(), attr.Size)
+					r.Error("Downloaded size is wrong", "path", remotePath, "localSize", localStats.Size(), "remoteSize", attr.Size)
 					fmutex.Unlock()
 					return nil, fuse.EIO
 				}
 			}
-			fs.mutex.Lock()
-			fs.downloaded[localPath] = Intervals{NewInterval(0, int64(attr.Size))}
-			fs.mutex.Unlock()
+			r.CacheOverride(localPath, NewInterval(0, int64(attr.Size)))
 		} else {
 			// this is our first time opening this remote file, create a sparse
 			// file that Read() operations will cache in to
@@ -322,24 +320,22 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 			}
 			f.Close()
 		}
-	} else if r.deleteCache && int(flags)&os.O_APPEND != 0 {
+	} else if r.cacheIsTmp && int(flags)&os.O_APPEND != 0 {
 		// cache everything in the file we haven't already read by reading the
 		// file the way a client would
 		iv := Interval{0, int64(attr.Size)}
-		fs.mutex.Lock()
-		unread := fs.downloaded[localPath].Difference(iv)
-		fs.mutex.Unlock()
+		unread := r.Uncached(localPath, iv)
 		if len(unread) > 0 {
 			fmutex.Unlock()
 			path := filepath.Join(fs.mountPoint, name)
-			r, err := os.Open(path)
+			reader, err := os.Open(path)
 			if err != nil {
-				fs.debug("error: could not open %s: %s", path, err)
+				r.Error("Could not open cached file", "path", path, "err", err)
 				return nil, fuse.EIO
 			}
 			for _, uiv := range unread {
-				r.Seek(uiv.Start, io.SeekStart)
-				br := bufio.NewReader(r)
+				reader.Seek(uiv.Start, io.SeekStart)
+				br := bufio.NewReader(reader)
 				b := make([]byte, 1000, 1000)
 				var read int64
 				for read <= uiv.Length() {
@@ -353,12 +349,12 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 					read += int64(done)
 				}
 				if err != nil {
-					fs.debug("error: could not read from %s: %s", name, err)
-					r.Close()
+					r.Error("Could not read file", "path", name, "err", err)
+					reader.Close()
 					return nil, fuse.EIO
 				}
 			}
-			r.Close()
+			reader.Close()
 			fmutex.Lock()
 		}
 	}
@@ -369,17 +365,15 @@ func (fs *MinFys) openCached(r *remote, name string, flags uint32, context *fuse
 		if int(flags)&os.O_APPEND == 0 {
 			// *** is this the only situation where we don't truncate the file
 			// to 0 length?
-			fs.mutex.Lock()
-			fs.downloaded[localPath] = Intervals{}
+			r.CacheDelete(localPath)
 			attr.Size = uint64(0)
-			fs.mutex.Unlock()
 		}
 		fmutex.Unlock()
 		return fs.Create(name, flags, uint32(fileMode), context)
 	}
 
 	fmutex.Unlock()
-	return NewCachedFile(r, remotePath, localPath, attr, flags), fuse.OK
+	return NewCachedFile(r, remotePath, localPath, attr, flags, fs.Logger), fuse.OK
 }
 
 // Chmod is ignored.
@@ -413,7 +407,7 @@ func (fs *MinFys) Symlink(source string, dest string, context *fuse.Context) (st
 	// symlink from mount point source to cached dest file
 	err = os.Symlink(source, localPathDest)
 	if err != nil {
-		fs.debug("error: could not symlink from %s to %s: %s", source, localPathDest, err)
+		fs.writeRemote.Error("Could not create symlink", "source", source, "dest", localPathDest, "err", err)
 		return fuse.ToStatus(err)
 	}
 
@@ -507,22 +501,18 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 			if err != nil {
 				return fuse.ToStatus(err)
 			}
-			fs.mutex.Lock()
-			fs.downloaded[localPath] = fs.downloaded[localPath].Truncate(int64(offset))
-			fs.mutex.Unlock()
+			r.CacheTruncate(localPath, int64(offset))
 		} else {
 			// create a new empty file
 			localFile, err := os.Create(localPath)
 			if err != nil {
-				fs.debug("error: Truncate(%s) could not create %s: %s", name, localPath, err)
+				r.Error("Could not create empty file", "path", localPath, "err", err)
 				return fuse.EIO
 			}
 
 			if offset == 0 {
 				localFile.Close()
-				fs.mutex.Lock()
-				fs.downloaded[localPath] = fs.downloaded[localPath].Truncate(int64(offset))
-				fs.mutex.Unlock()
+				r.CacheTruncate(localPath, int64(offset))
 			} else {
 				// download offset bytes of remote file
 				object, status := r.getObject(remotePath, 0)
@@ -532,13 +522,13 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 
 				written, err := io.CopyN(localFile, object, int64(offset))
 				if err != nil {
-					fs.debug("error: Truncate(%s) failed to copy %d bytes from %s: %s", name, offset, remotePath, err)
+					r.Error("Could not copy bytes", "size", offset, "source", remotePath, "dest", localPath, "err", err)
 					localFile.Close()
 					syscall.Unlink(localPath)
 					return fuse.EIO
 				}
 				if written != int64(offset) {
-					fs.debug("error: Truncate(%s) failed to copy all %d bytes from %s", name, offset, remotePath)
+					r.Error("Could not copy all bytes", "size", offset, "source", remotePath, "dest", localPath, "err", err)
 					localFile.Close()
 					syscall.Unlink(localPath)
 					return fuse.EIO
@@ -547,9 +537,7 @@ func (fs *MinFys) Truncate(name string, offset uint64, context *fuse.Context) fu
 				localFile.Close()
 				object.Close()
 
-				fs.mutex.Lock()
-				fs.downloaded[localPath] = Intervals{NewInterval(0, int64(offset))}
-				fs.mutex.Unlock()
+				r.CacheOverride(localPath, NewInterval(0, int64(offset)))
 			}
 		}
 
@@ -723,9 +711,7 @@ func (fs *MinFys) Rename(oldPath string, newPath string, context *fuse.Context) 
 
 			// if we've cached oldPath, move to new cached file
 			os.Rename(localPathOld, localPathNew)
-			fs.mutex.Lock()
-			fs.downloaded[localPathNew] = fs.downloaded[localPathOld]
-			fs.mutex.Unlock()
+			fs.writeRemote.CacheRename(localPathOld, localPathNew)
 		}
 
 		// cache the existence of the new file
@@ -762,10 +748,7 @@ func (fs *MinFys) Unlink(name string, context *fuse.Context) fuse.Status {
 		// localPath doesn't actually exist, and we'd have to file unlock eg.
 		// Rename() and anything else that calls us
 		syscall.Unlink(localPath)
-
-		fs.mutex.Lock()
-		delete(fs.downloaded, localPath)
-		fs.mutex.Unlock()
+		r.CacheDelete(localPath)
 	}
 
 	status = r.deleteFile(remotePath)
@@ -835,7 +818,7 @@ func (fs *MinFys) Create(name string, flags uint32, mode uint32, context *fuse.C
 		fs.createdFiles[name] = true
 		fs.mutex.Unlock()
 
-		return NewCachedFile(r, remotePath, localPath, attr, uint32(int(flags)|os.O_CREATE)), fuse.ToStatus(err)
+		return NewCachedFile(r, remotePath, localPath, attr, uint32(int(flags)|os.O_CREATE), fs.Logger), fuse.ToStatus(err)
 	}
 	return nil, fuse.ENOSYS
 }
@@ -893,13 +876,13 @@ func (fs *MinFys) getFileMutex(localPath string) (mutex *filemutex.FileMutex, er
 	if _, serr := os.Stat(parent); serr != nil && os.IsNotExist(serr) {
 		err = os.MkdirAll(parent, dirMode)
 		if err != nil {
-			fs.debug("error: could not create parent directory for %s: %s", localPath, err)
+			fs.Error("Could not create parent directory", "path", localPath, "err", err)
 			return
 		}
 	}
 	mutex, err = filemutex.New(filepath.Join(parent, ".minfys_lock."+filepath.Base(localPath)))
 	if err != nil {
-		fs.debug("error: could not create lock for %s: %s", localPath, err)
+		fs.Error("Could not create lock file", "path", localPath, "err", err)
 	}
 	return
 }
