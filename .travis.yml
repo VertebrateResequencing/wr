@@ -5,6 +5,7 @@ go:
 before_install:
   - go get github.com/modocache/gover
   - go get github.com/mattn/goveralls
+  - go get -t -v ./...
 script:
   - go test -tags netgo -v -coverprofile=queue.coverprofile -covermode count ./queue
   - go test -tags netgo -v -coverprofile=sched.coverprofile -covermode count ./jobqueue/scheduler
