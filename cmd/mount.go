@@ -20,7 +20,7 @@ package cmd
 
 import (
 	"encoding/json"
-	"github.com/VertebrateResequencing/wr/minfys"
+	"github.com/VertebrateResequencing/muxfys"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
@@ -158,16 +158,16 @@ true.`,
 		if mountVerbose {
 			logLevel = log15.LvlInfo
 		}
-		minfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+		muxfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
 		// mount everything
-		for _, cfg := range mountParseJson(mountJSON) {
-			fs, err := minfys.New(cfg)
+		for _, crs := range mountParseJson(mountJSON) {
+			fs, err := muxfys.New(crs.Config)
 			if err != nil {
 				die("bad configuration: %s\n", err)
 			}
 
-			err = fs.Mount()
+			err = fs.Mount(crs.Remotes...)
 			if err != nil {
 				die("could not mount: %s\n", err)
 			}
@@ -205,9 +205,16 @@ type mountTargetObj struct {
 	Write    bool
 }
 
-// mountParseJson takes a json string (as per `wr mount --help`) and generates a
-// minfys Config from it for each mount configured.
-func mountParseJson(jsonString string) (configs []*minfys.Config) {
+// mountCrs is the return value for mountParseJson, holding the muxfys Config
+// value and a slice of the muxfys RemoteConfig values.
+type mountCrs struct {
+	Config  *muxfys.Config
+	Remotes []*muxfys.RemoteConfig
+}
+
+// mountParseJson takes a json string (as per `wr mount --help`) and parses it
+// to a Config and RemoteConfigs for each mount defined.
+func mountParseJson(jsonString string) (crs []mountCrs) {
 	var ml []mountConfObj
 	err := json.Unmarshal([]byte(jsonString), &ml)
 	if err != nil {
@@ -221,21 +228,28 @@ func mountParseJson(jsonString string) (configs []*minfys.Config) {
 		}
 		usedMounts[mj.Mount] = true
 
-		var targets []*minfys.Target
+		var rcs []*muxfys.RemoteConfig
 		for _, mt := range mj.Targets {
-			target := &minfys.Target{
+			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
+			if err != nil {
+				die("had a problem reading S3 config values from the environment: %s", err)
+			}
+			accessor, err := muxfys.NewS3Accessor(accessorConfig)
+			if err != nil {
+				die("had a problem creating an S3 accessor: %s", err)
+			}
+
+			rc := &muxfys.RemoteConfig{
+				Accessor:  accessor,
 				CacheData: mt.Cache,
 				CacheDir:  mt.CacheDir,
 				Write:     mt.Write,
 			}
-			err = target.ReadEnvironment(mt.Profile, mt.Path)
-			if err != nil {
-				die("had a problem reading S3 config values: %s", err)
-			}
-			targets = append(targets, target)
+
+			rcs = append(rcs, rc)
 		}
 
-		if len(targets) == 0 {
+		if len(rcs) == 0 {
 			die("had a problem with the provided mount JSON (%s): no Targets", jsonString)
 		}
 
@@ -244,15 +258,14 @@ func mountParseJson(jsonString string) (configs []*minfys.Config) {
 			retries = mj.Retries
 		}
 
-		cfg := &minfys.Config{
+		cfg := &muxfys.Config{
 			Mount:     mj.Mount,
 			CacheBase: mj.CacheBase,
 			Retries:   retries,
 			Verbose:   mj.Verbose,
-			Targets:   targets,
 		}
 
-		configs = append(configs, cfg)
+		crs = append(crs, mountCrs{cfg, rcs})
 	}
 
 	return
