@@ -1,0 +1,66 @@
+package: github.com/VertebrateResequencing/wr
+import:
+- package: code.cloudfoundry.org/bytefmt
+- package: github.com/VertebrateResequencing/muxfys
+  version: ^0.0.3
+- package: github.com/VividCortex/ewma
+  version: ^1.0.0
+- package: github.com/boltdb/bolt
+  version: ^1.3.0
+- package: github.com/dgryski/go-farm
+- package: github.com/go-mangos/mangos
+  version: ^1.2.0
+  subpackages:
+  - protocol/rep
+  - protocol/req
+  - transport/tcp
+- package: github.com/gophercloud/gophercloud
+  subpackages:
+  - openstack
+  - openstack/compute/v2/extensions/bootfromvolume
+  - openstack/compute/v2/extensions/floatingips
+  - openstack/compute/v2/extensions/keypairs
+  - openstack/compute/v2/extensions/quotasets
+  - openstack/compute/v2/extensions/secgroups
+  - openstack/compute/v2/flavors
+  - openstack/compute/v2/images
+  - openstack/compute/v2/servers
+  - openstack/networking/v2/extensions/layer3/routers
+  - openstack/networking/v2/networks
+  - openstack/networking/v2/subnets
+  - pagination
+- package: github.com/gorilla/websocket
+  version: ^1.1.0
+- package: github.com/hashicorp/golang-lru
+- package: github.com/inconshreveable/log15
+  version: ^2.11.0
+- package: github.com/jinzhu/configor
+- package: github.com/jpillora/backoff
+- package: github.com/kardianos/osext
+- package: github.com/pkg/sftp
+- package: github.com/ricochet2200/go-disk-usage
+  subpackages:
+  - du
+- package: github.com/satori/go.uuid
+  version: ^1.1.0
+- package: github.com/sb10/bcast
+  version: ^2.0.0
+- package: github.com/sb10/l15h
+- package: github.com/sevlyar/go-daemon
+  version: ^0.1.1
+- package: github.com/shirou/gopsutil
+  version: ^2.17.4
+  subpackages:
+  - mem
+- package: github.com/spf13/cobra
+- package: github.com/ugorji/go
+  subpackages:
+  - codec
+- package: golang.org/x/crypto
+  subpackages:
+  - ssh
+testImport:
+- package: github.com/smartystreets/goconvey
+  version: ^1.6.2
+  subpackages:
+  - convey
