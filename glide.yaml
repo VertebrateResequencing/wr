@@ -2,7 +2,7 @@ package: github.com/VertebrateResequencing/wr
 import:
 - package: code.cloudfoundry.org/bytefmt
 - package: github.com/VertebrateResequencing/muxfys
-  version: ^0.0.3
+  version: ^1.0.0
 - package: github.com/VividCortex/ewma
   version: ^1.0.0
 - package: github.com/boltdb/bolt
@@ -15,6 +15,7 @@ import:
   - protocol/req
   - transport/tcp
 - package: github.com/gophercloud/gophercloud
+  repo: git@github.com:sb10/gophercloud.git
   subpackages:
   - openstack
   - openstack/compute/v2/extensions/bootfromvolume
@@ -33,7 +34,7 @@ import:
   version: ^1.1.0
 - package: github.com/hashicorp/golang-lru
 - package: github.com/inconshreveable/log15
-  version: ^2.11.0
+  version: master
 - package: github.com/jinzhu/configor
 - package: github.com/jpillora/backoff
 - package: github.com/kardianos/osext
@@ -43,8 +44,6 @@ import:
   - du
 - package: github.com/satori/go.uuid
   version: ^1.1.0
-- package: github.com/sb10/bcast
-  version: ^2.0.0
 - package: github.com/sb10/l15h
 - package: github.com/sevlyar/go-daemon
   version: ^0.1.1
@@ -59,6 +58,8 @@ import:
 - package: golang.org/x/crypto
   subpackages:
   - ssh
+- package: github.com/grafov/bcast
+  version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 testImport:
 - package: github.com/smartystreets/goconvey
   version: ^1.6.2

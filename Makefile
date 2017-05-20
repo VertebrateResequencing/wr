@@ -4,13 +4,25 @@ GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
 TAG := $(shell git describe --abbrev=0 --tags)
 LDFLAGS = -ldflags "-X ${PKG}/cmd.wrVersion=${VERSION}"
+GLIDE := $(shell command -v glide 2> /dev/null)
 
 default: install
 
-build:
+deps:
+ifndef GLIDE
+	@curl -s https://glide.sh/get | sh
+endif
+	@test glide.lock -nt vendor; \
+	RETVAL=$$?; \
+	if [ $$RETVAL -eq 0 ]; then \
+		${GOPATH}/bin/glide -q install; \
+		echo installed latest dependencies; \
+	fi
+
+build: deps
 	go build -tags netgo ${LDFLAGS}
 
-install:
+install: deps
 	@rm -f ${GOPATH}/bin/wr
 	@go install -tags netgo ${LDFLAGS}
 	@echo installed to ${GOPATH}/bin/wr
@@ -38,6 +50,7 @@ spell:
 clean:
 	@rm -f ./wr
 	@rm -f ./dist.zip
+	@rm -fr ./vendor
 
 dist:
 	# go get -u github.com/gobuild/gopack
@@ -49,4 +62,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test report lint vet inef spell install clean dist
+.PHONY: deps build test report lint vet inef spell install clean dist

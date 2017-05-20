@@ -1,5 +1,5 @@
-hash: 7a6fbc1a83f92c773a7c32fa62bc0fed0f56dfb2ebf2087b73f9d26e164e161d
-updated: 2017-05-19T14:40:25.210369639+01:00
+hash: 5cfa7d3b49405b1ee95f793216106e37380340cf68f1071c86be280b547e1bca
+updated: 2017-05-20T16:44:05.763960301+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
@@ -26,7 +26,8 @@ imports:
 - name: github.com/go-stack/stack
   version: 7a2f19628aabfe68f0766b59e74d6315f8347d22
 - name: github.com/gophercloud/gophercloud
-  version: baa2eb4d1d56e7f2c29a30bbcfeb5f7fd441eb01
+  version: 6815b423bf0c148daf04b7e4c5bf9a299aafb0aa
+  repo: git@github.com:sb10/gophercloud.git
   subpackages:
   - openstack
   - openstack/compute/v2/extensions/bootfromvolume
@@ -47,6 +48,8 @@ imports:
   - pagination
 - name: github.com/gorilla/websocket
   version: 3ab3a8b8831546bd18fd182c20687ca853b2bb13
+- name: github.com/grafov/bcast
+  version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
   version: 5404bf0e372d1676fdf039b170556850e6a571df
   subpackages:
@@ -59,7 +62,9 @@ imports:
   subpackages:
   - simplelru
 - name: github.com/inconshreveable/log15
-  version: b105bd37f74e5d9dc7b6ad7806715c7a2b83fd3f
+  version: 39bacc234bf1afd0b68573e95b45871f67ba2cd4
+  subpackages:
+  - term
 - name: github.com/inconshreveable/mousetrap
   version: 76626ae9c91c4f2a10f34cad8ce83ea42c93bb75
 - name: github.com/jinzhu/configor
@@ -97,8 +102,6 @@ imports:
   - du
 - name: github.com/satori/go.uuid
   version: 879c5887cd475cd7864858769793b2ceb0d44feb
-- name: github.com/sb10/bcast
-  version: 9ea08eda04b7e789e4d5fd79af998f605145cbb1
 - name: github.com/sb10/l15h
   version: 64c488bf8e2265529e37899226b038221f12e2e9
 - name: github.com/sevlyar/go-daemon
@@ -125,7 +128,7 @@ imports:
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: 556c69001044170c677845e4f3bf1b66ac862acd
+  version: 2dd04675b7c98900604d22ac518785e63c52f505
 - name: github.com/VividCortex/ewma
   version: 2f8aa9741ab4b5b80945c750b871131b88ef5b7f
 - name: golang.org/x/crypto
@@ -139,11 +142,6 @@ imports:
   version: a2e06a18b0d52d8cb2010e04b372a1965d8e3439
   subpackages:
   - unix
-- name: gopkg.in/inconshreveable/log15.v2
-  version: b105bd37f74e5d9dc7b6ad7806715c7a2b83fd3f
-  subpackages:
-  - stack
-  - term
 - name: gopkg.in/yaml.v1
   version: 9f9df34309c04878acc86042b16630b0f696e1de
 testImports:
