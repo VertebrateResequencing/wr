@@ -15,7 +15,7 @@ import:
   - protocol/req
   - transport/tcp
 - package: github.com/gophercloud/gophercloud
-  repo: git@github.com:sb10/gophercloud.git
+  repo: https://github.com/sb10/gophercloud.git
   subpackages:
   - openstack
   - openstack/compute/v2/extensions/bootfromvolume

@@ -1,5 +1,5 @@
-hash: 5cfa7d3b49405b1ee95f793216106e37380340cf68f1071c86be280b547e1bca
-updated: 2017-05-20T16:44:05.763960301+01:00
+hash: 5a4376b4c89a57efb302854f8db29ff9363a7ed46c2d45316d856ae746ca8bf1
+updated: 2017-05-20T17:02:51.714910642+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
@@ -27,7 +27,7 @@ imports:
   version: 7a2f19628aabfe68f0766b59e74d6315f8347d22
 - name: github.com/gophercloud/gophercloud
   version: 6815b423bf0c148daf04b7e4c5bf9a299aafb0aa
-  repo: git@github.com:sb10/gophercloud.git
+  repo: https://github.com/sb10/gophercloud.git
   subpackages:
   - openstack
   - openstack/compute/v2/extensions/bootfromvolume
