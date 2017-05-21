@@ -56,9 +56,12 @@ installation in your home directory would be:
 
 3. The `wr` executable should now be in `$GOPATH/bin`
 
-If you don't have `make` installed, you can instead replace step 2 above with
-just `go get -u -tags netgo github.com/VertebrateResequencing/wr`, but note that
-`wr version` will not work.
+If you don't have `make` installed and don't mind if `wr version` will not work,
+you can instead replace `make` above with:
+
+    curl -s https://glide.sh/get | sh
+    $GOPATH/bin/glide install
+    go install -tags netgo
 
 Usage instructions
 ------------------
