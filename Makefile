@@ -8,21 +8,17 @@ GLIDE := $(shell command -v glide 2> /dev/null)
 
 default: install
 
-deps:
+vendor: glide.lock
 ifndef GLIDE
 	@curl -s https://glide.sh/get | sh
 endif
-	@test glide.lock -nt vendor; \
-	RETVAL=$$?; \
-	if [ $$RETVAL -eq 0 ]; then \
-		${GOPATH}/bin/glide -q install; \
-		echo installed latest dependencies; \
-	fi
+	@${GOPATH}/bin/glide -q install
+	@echo installed latest dependencies
 
-build: deps
+build: vendor
 	go build -tags netgo ${LDFLAGS}
 
-install: deps
+install: vendor
 	@rm -f ${GOPATH}/bin/wr
 	@go install -tags netgo ${LDFLAGS}
 	@echo installed to ${GOPATH}/bin/wr
@@ -62,4 +58,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: deps build test report lint vet inef spell install clean dist
+.PHONY: build test report lint vet inef spell install clean dist
