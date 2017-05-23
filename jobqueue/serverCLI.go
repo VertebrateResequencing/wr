@@ -290,6 +290,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.PeakRAM = cr.Job.PeakRAM
 			job.CPUtime = cr.Job.CPUtime
 			job.endtime = time.Now()
+			job.ActualCwd = cr.Job.ActualCwd
 			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC)
 		}
 	case "jarchive":
@@ -542,6 +543,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		DepGroups:    sjob.DepGroups,
 		Cmd:          sjob.Cmd,
 		Cwd:          sjob.Cwd,
+		CwdMatters:   sjob.CwdMatters,
+		ActualCwd:    sjob.ActualCwd,
 		Requirements: sjob.Requirements,
 		Priority:     sjob.Priority,
 		Retries:      sjob.Retries,

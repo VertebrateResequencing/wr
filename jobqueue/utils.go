@@ -28,11 +28,21 @@ import (
 	"fmt"
 	"github.com/dgryski/go-farm"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
+
+// AppName gets used in certain places like naming the base directory of created
+// working directories during Client.Execute().
+var AppName = "jobqueue"
+
+// mkHashedLevels is the number of directory levels we create in mkHashedDirs
+const mkHashedLevels = 4
 
 var pss = []byte("Pss:")
 
@@ -275,4 +285,64 @@ func stdFilter(std io.Reader, out io.Writer) chan bool {
 		done <- true
 	}()
 	return done
+}
+
+// envOverride deals with values you get from os.Environ, overriding one set
+// with values from another.
+func envOverride(orig []string, over []string) (env []string) {
+	override := make(map[string]string)
+	for _, envvar := range over {
+		pair := strings.Split(envvar, "=")
+		override[pair[0]] = envvar
+	}
+
+	env = orig
+	for i, envvar := range env {
+		pair := strings.Split(envvar, "=")
+		if replace, do := override[pair[0]]; do {
+			env[i] = replace
+			delete(override, pair[0])
+		}
+	}
+
+	for _, envvar := range override {
+		env = append(env, envvar)
+	}
+	return
+}
+
+// mkHashedDir uses tohash (which should be a 32 char long string from
+// byteKey()) to create a folder nested within baseDir, and in that folder
+// creates 2 folders called cwd and tmp, which it returns. Returns an error if
+// there were problems making the directories.
+func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
+	dirs := strings.SplitN(tohash, "", mkHashedLevels)
+	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
+	dirs = append([]string{baseDir, AppName + "_cwd"}, dirs...)
+	dir := filepath.Join(dirs...)
+	err = os.MkdirAll(dir, os.ModePerm)
+	if err != nil {
+		return
+	}
+
+	// if tohash is a job key then we expect that only 1 of that job is
+	// running at any one time per jobqueue, but there could be multiple users
+	// running the same cmd, or this user could be running the same command in
+	// multiple queues, so we must still create a unique dir at the leaf of our
+	// hashed dir structure, to avoid any conflict of multiple processes using
+	// the same working directory
+	dir, err = ioutil.TempDir(dir, leaf)
+	if err != nil {
+		return
+	}
+
+	cwd = filepath.Join(dir, "cwd")
+	err = os.Mkdir(cwd, os.ModePerm)
+	if err != nil {
+		return
+	}
+
+	tmpDir = filepath.Join(dir, "tmp")
+	err = os.Mkdir(tmpDir, os.ModePerm)
+	return
 }

@@ -89,59 +89,179 @@ type clientRequest struct {
 }
 
 // Job is a struct that represents a command that needs to be run and some
-// associated metadata. ReqGroup is a string that you supply to group together
-// all commands that you expect to have similar RAM and time requirements. RAM
-// and Time are added by the system based on past experience of running jobs
-// with the same ReqGroup. If you supply these yourself, your RAM and time will
-// be used if there is insufficient past experience, or if you also supply
-// Override, which can be 0 to not override, 1 to override past experience if
-// your supplied values are higher, or 2 to always override. Priority is a
-// number between 0 and 255 inclusive - higher numbered jobs will run before
-// lower numbered ones (the default is 0). If you get a Job back from the server
-// (via Reserve() or Get*()), you should treat the properties as read-only:
-// changing them will have no effect.
+// associated metadata. If you get a Job back from the server (via Reserve() or
+// Get*()), you should treat the properties as read-only: changing them will
+// have no effect.
 type Job struct {
-	RepGroup        string // a name associated with related Jobs to help group them together when reporting on their status etc.
-	ReqGroup        string
-	DepGroups       []string // the dependency groups this job belongs to that other jobs can refer to in their Dependencies
-	Cmd             string
-	Cwd             string                  // the working directory to cd to before running Cmd
-	Requirements    *scheduler.Requirements // the resources this Cmd needs to run
-	Override        uint8
-	Priority        uint8
-	Retries         uint8         // the number of times to retry running a Cmd if it fails
-	PeakRAM         int           // the actual peak RAM is recorded here (MB)
-	Exited          bool          // true if the Cmd was run and exited
-	Exitcode        int           // if the job ran and exited, its exit code is recorded here, but check Exited because when this is not set it could like like exit code 0
-	FailReason      string        // if the job failed to complete successfully, this will hold one of the FailReason* strings
-	Pid             int           // the pid of the running or ran process is recorded here
-	Host            string        // the host the process is running or did run on is recorded here
-	Walltime        time.Duration // if the job ran or is running right now, the walltime for the run is recorded here
-	CPUtime         time.Duration // if the job ran, the CPU time is recorded here
-	StdErrC         []byte        // to read, call job.StdErr() instead; if the job ran, its (truncated) STDERR will be here
-	StdOutC         []byte        // to read, call job.StdOut() instead; if the job ran, its (truncated) STDOUT will be here
-	EnvC            []byte        // to read, call job.Env() instead, to get the environment variables as a []string, where each string is like "key=value"
-	EnvOverride     []byte        // if set (using output of CompressEnv()), they will be returned in the results of job.Env()
-	State           string        // the job's state in the queue: 'delayed', 'ready', 'reserved', 'running', 'buried', 'complete' or 'dependent'
-	Attempts        uint32        // the number of times the job had ever entered 'running' state
-	UntilBuried     uint8         // the remaining number of Release()s allowed before being buried instead
-	starttime       time.Time     // the time the cmd starts running is recorded here
-	endtime         time.Time     // the time the cmd stops running is recorded here
-	schedulerGroup  string        // we add this internally to match up runners we spawn via the scheduler to the Jobs they're allowed to ReserveFiltered()
-	ReservedBy      uuid.UUID     // we note which client reserved this job, for validating if that client has permission to do other stuff to this Job; the server only ever sets this on Reserve(), so clients can't cheat by changing this on their end
-	EnvKey          string        // on the server we don't store EnvC with the job, but look it up in db via this key
-	Similar         int           // when retrieving jobs with a limit, this tells you how many jobs were excluded
-	Queue           string        // the name of the queue the Job was added to
-	Dependencies    *Dependencies // the jobs that must be complete before this job starts
-	scheduledRunner bool          // the server uses this to track if it already scheduled a runner for this job
+	// Cmd is the actual command line that will be run via the shell.
+	Cmd string
+
+	// Cwd determines the command working directory, the directory we cd to
+	// before running Cmd. When CwdMatters, Cwd is used exactly, otherwise a
+	// unique sub-directory of Cwd is used as the command working directory.
+	Cwd string
+
+	// CwdMatters should be made true when Cwd contains input files that you
+	// will refer to using relative (from Cwd) paths in Cmd, and when other Jobs
+	// have identical Cmds because you have many different directories that
+	// contain different but identically named input files. Cwd will become part
+	// of what makes the Job unique.
+	// When CwdMatters is false (default), Cmd gets run in a unique subfolder of
+	// Cwd, enabling features like tracking disk space usage and clean up of the
+	// working directory by simply deleting the whole thing.
+	CwdMatters bool
+
+	// RepGroup is a name associated with related Jobs to help group them
+	// together when reporting on their status etc.
+	RepGroup string
+
+	// ReqGroup is a string that you supply to group together all commands that
+	// you expect to have similar resource requirements.
+	ReqGroup string
+
+	// Requirements describes the resources this Cmd needs to run, such as RAM,
+	// Disk and time. These may be determined for you by the system (depending
+	// on Override) based on past experience of running jobs with the same
+	// ReqGroup.
+	Requirements *scheduler.Requirements
+
+	// Override determines if your own supplied Requirements get used, or if the
+	// systems' calculated values get used. 0 means prefer the system values. 1
+	// means prefer your values if they are higher. 2 means always use your
+	// values.
+	Override uint8
+
+	// Priority is a number between 0 and 255 inclusive - higher numbered jobs
+	// will run before lower numbered ones (the default is 0).
+	Priority uint8
+
+	// Retries is the number of times to retry running a Cmd if it fails.
+	Retries uint8
+
+	// DepGroups are the dependency groups this job belongs to that other jobs
+	// can refer to in their Dependencies.
+	DepGroups []string
+
+	// Dependencies describe the jobs that must be complete before this job
+	// starts.
+	Dependencies Dependencies
+
+	// The remaining properties are used to record information about what
+	// happened when Cmd was executed, or otherwise provide its current state.
+	// It is meaningless to set these yourself.
+
+	// the actual working directory used, which would have been created with a
+	// unique name if CwdMatters = false
+	ActualCwd string
+	// peak RAM (MB) used.
+	PeakRAM int
+	// true if the Cmd was run and exited.
+	Exited bool
+	// if the job ran and exited, its exit code is recorded here, but check
+	// Exited because when this is not set it could like like exit code 0.
+	Exitcode int
+	// if the job failed to complete successfully, this will hold one of the
+	// FailReason* strings.
+	FailReason string
+	// pid of the running or ran process.
+	Pid int
+	// host the process is running or did run on.
+	Host string
+	// if the job ran or is running right now, the walltime for the run.
+	Walltime time.Duration
+	// CPU time used.
+	CPUtime time.Duration
+	// to read, call job.StdErr() instead; if the job ran, its (truncated)
+	// STDERR will be here.
+	StdErrC []byte
+	// to read, call job.StdOut() instead; if the job ran, its (truncated)
+	// STDOUT will be here.
+	StdOutC []byte
+	// to read, call job.Env() instead, to get the environment variables as a
+	// []string, where each string is like "key=value".
+	EnvC []byte
+	// if set (using output of CompressEnv()), they will be returned in the
+	// results of job.Env().
+	EnvOverride []byte
+	// job's state in the queue: 'delayed', 'ready', 'reserved', 'running',
+	// 'buried', 'complete' or 'dependent'.
+	State string
+	// number of times the job had ever entered 'running' state.
+	Attempts uint32
+	// remaining number of Release()s allowed before being buried instead.
+	UntilBuried uint8
+	// we note which client reserved this job, for validating if that client has
+	// permission to do other stuff to this Job; the server only ever sets this
+	// on Reserve(), so clients can't cheat by changing this on their end.
+	ReservedBy uuid.UUID
+	// on the server we don't store EnvC with the job, but look it up in db via
+	// this key.
+	EnvKey string
+	// when retrieving jobs with a limit, this tells you how many jobs were
+	// excluded.
+	Similar int
+	// name of the queue the Job was added to.
+	Queue string
+
+	// time the cmd starts running.
+	starttime time.Time
+	// time the cmd stopped running.
+	endtime time.Time
+	// we add this internally to match up runners we spawn via the scheduler to
+	// the Jobs they're allowed to ReserveFiltered().
+	schedulerGroup string
+	// the server uses this to track if it already scheduled a runner for this
+	// job.
+	scheduledRunner bool
 }
 
-// Dependencies is a struct that holds a slice of *Dependency, for use in
-// Job.Dependencies. It describes the jobs that must be complete before the Job
-// you associate this with will start.
-type Dependencies struct {
-	Deps []*Dependency
+// JobEssence struct describes the essential aspects of a Job that make it
+// unique, used to describe a Job when eg. you want to search for one.
+type JobEssence struct {
+	// JobKey can be set by itself if you already know the "key" of the desired
+	// job; you can get these keys when you use GetByRepGroup() or
+	// GetIncomplete() with a limit. When this is set, other properties are
+	// ignored.
+	JobKey string
+
+	// Cmd always forms an essential part of a Job.
+	Cmd string
+
+	// Cwd should only be set if the Job was created with CwdMatters = true.
+	Cwd string
 }
+
+// Key returns the same value that key() on the matching Job would give you.
+func (j *JobEssence) Key() string {
+	if j.JobKey != "" {
+		return j.JobKey
+	}
+
+	var key string
+	if j.Cwd == "" {
+		key = j.Cmd
+	} else {
+		key = fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)
+	}
+	return byteKey([]byte(key))
+}
+
+// Stringify returns a nice printable form of a JobEssence.
+func (j *JobEssence) Stringify() string {
+	if j.JobKey != "" {
+		return j.JobKey
+	}
+	out := j.Cmd
+	if j.Cwd != "" {
+		out += " [" + j.Cwd + "]"
+	}
+	return out
+}
+
+// Dependencies is a slice of *Dependency, for use in Job.Dependencies. It
+// describes the jobs that must be complete before the Job you associate this
+// with will start.
+type Dependencies []*Dependency
 
 // incompleteJobKeys converts the constituent Dependency structs in to internal
 // job keys that uniquely identify the jobs we are dependent upon. Note that if
@@ -150,10 +270,10 @@ type Dependencies struct {
 // DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
 // are incomplete (they could have been Archive()d in the past if they are now
 // being re-run).
-func (d *Dependencies) incompleteJobKeys(db *db) []string {
+func (d Dependencies) incompleteJobKeys(db *db) []string {
 	// we initially store in a map to avoid duplicates
 	jobKeys := make(map[string]bool)
-	for _, dep := range d.Deps {
+	for _, dep := range d {
 		for _, key := range dep.incompleteJobKeys(db) {
 			jobKeys[key] = true
 		}
@@ -170,8 +290,8 @@ func (d *Dependencies) incompleteJobKeys(db *db) []string {
 }
 
 // DepGroups returns all the DepGroups of our constituent Dependency structs.
-func (d *Dependencies) DepGroups() (depGroups []string) {
-	for _, dep := range d.Deps {
+func (d Dependencies) DepGroups() (depGroups []string) {
+	for _, dep := range d {
 		if dep.DepGroup != "" {
 			depGroups = append(depGroups, dep.DepGroup)
 		}
@@ -180,31 +300,30 @@ func (d *Dependencies) DepGroups() (depGroups []string) {
 }
 
 // Stringify converts our constituent Dependency structs in to a slice of
-// strings, each of which could be a DepGroup or a Cmd+Cwd.
-func (d *Dependencies) Stringify() (strings []string) {
-	for _, dep := range d.Deps {
+// strings, each of which could be JobEssence or DepGroup based.
+func (d Dependencies) Stringify() (strings []string) {
+	for _, dep := range d {
 		if dep.DepGroup != "" {
 			strings = append(strings, dep.DepGroup)
-		} else if dep.Cmd != "" {
-			strings = append(strings, dep.Cmd+" ["+dep.Cwd+"]")
+		} else if dep.Essence != nil {
+			strings = append(strings, dep.Essence.Stringify())
 		}
 	}
 	return
 }
 
-// Dependency is a struct that describes a Job purely in terms of its Cmd and
-// Cwd, or in terms of a Job's DepGroup, for use in Dependencies. If DepGroup
-// is specified, then Cmd/Cwd is ignored.
+// Dependency is a struct that describes a Job purely in terms of a JobEssence,
+// or in terms of a Job's DepGroup, for use in Dependencies. If DepGroup is
+// specified, then Essence is ignored.
 type Dependency struct {
-	Cmd      string
-	Cwd      string
+	Essence  *JobEssence
 	DepGroup string
 }
 
 // incompleteJobKeys calculates the job keys that this dependency refers to. For
-// a Dependency made with Cmd/Cwd, you will get a single key which will be the
-// same key you'd get from *Job.key() on a Job made with the same Cmd and Cwd.
-// For a Dependency made with a DepGroup, you will get the *Job.Key()s of all
+// a Dependency made with Essence, you will get a single key which will be the
+// same key you'd get from *Job.key() on a Job made with the same essence.
+// For a Dependency made with a DepGroup, you will get the *Job.key()s of all
 // the jobs in the queue and database that have that DepGroup in their
 // DepGroups. You will only get keys for jobs that are currently in the queue.
 func (d *Dependency) incompleteJobKeys(db *db) []string {
@@ -212,61 +331,42 @@ func (d *Dependency) incompleteJobKeys(db *db) []string {
 		keys, _ := db.retrieveIncompleteJobKeysByDepGroup(d.DepGroup) // *** we're just throwing away the error here...
 		return keys
 	}
-	jobKey := byteKey([]byte(fmt.Sprintf("%s.%s", d.Cwd, d.Cmd)))
-	live, _ := db.checkIfLive(jobKey)
-	if live {
-		return []string{jobKey}
+	if d.Essence != nil {
+		jobKey := d.Essence.Key()
+		live, _ := db.checkIfLive(jobKey)
+		if live {
+			return []string{jobKey}
+		}
 	}
 	return []string{}
 }
 
-// key calculates a unique key to describe the dependency, which will be the
-// same key you'd get from *Job.key() on a Job made with the same Cmd and Cwd.
-// If the Dependency was not specified with Cmd and Cwd, then this returns an
-// empty string that you should check for before trying to use the value.
-func (d *Dependency) key() string {
-	if d.Cmd == "" {
-		return ""
-	}
-	return byteKey([]byte(fmt.Sprintf("%s.%s", d.Cwd, d.Cmd)))
-}
-
-// NewJob makes it a little easier to make a new Job, for use with Add(). The
-// last argument is optional (and may only be specified once).
-func NewJob(cmd string, cwd string, group string, reqs *scheduler.Requirements, override uint8, priority uint8, retries uint8, repgroup string, depgroups []string, deps ...*Dependencies) *Job {
+// NewJob makes it a little easier to make a new Job, for use with Add().
+// Dependencies are optional.
+func NewJob(cmd string, cwd string, cwdMatters bool, group string, reqs *scheduler.Requirements, override uint8, priority uint8, retries uint8, repgroup string, depgroups []string, deps ...*Dependency) *Job {
 	job := &Job{
 		RepGroup:     repgroup,
 		ReqGroup:     group,
 		DepGroups:    depgroups,
 		Cmd:          cmd,
 		Cwd:          cwd,
+		CwdMatters:   cwdMatters,
 		Requirements: reqs,
 		Override:     override,
 		Priority:     priority,
 		Retries:      retries,
-	}
-
-	if len(deps) == 1 {
-		job.Dependencies = deps[0]
-	} else {
-		job.Dependencies = NewDependencies()
+		Dependencies: deps,
 	}
 
 	return job
 }
 
-// NewDependencies makes it a little easier to make a new Dependencies, for use
-// in NewJob().
-func NewDependencies(deps ...*Dependency) *Dependencies {
-	return &Dependencies{Deps: deps[:]}
-}
-
-// NewCmdDependency makes it a little easier to make a new *Dependency based on
-// Cmd+Cwd, for use in NewDependencies().
-func NewCmdDependency(cmd string, cwd string) *Dependency {
+// NewEssenceDependency makes it a little easier to make a new *Dependency based
+// on Cmd+Cwd, for use in NewDependencies(). Leave cwd as an empty string if the
+// job you are describing does not have CwdMatters true.
+func NewEssenceDependency(cmd string, cwd string) *Dependency {
 	return &Dependency{
-		Cmd: cmd,
-		Cwd: cwd,
+		Essence: &JobEssence{Cmd: cmd, Cwd: cwd},
 	}
 }
 
@@ -301,6 +401,10 @@ type envStr struct {
 func Connect(addr string, queue string, timeout time.Duration) (c *Client, err error) {
 	sock, err := req.NewSocket()
 	if err != nil {
+		return
+	}
+
+	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
 		return
 	}
 
@@ -403,15 +507,20 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 }
 
 // Add adds new jobs to the job queue, but only if those jobs aren't already in
-// there. If any were already there, you will not get an error, but the returned
+// there.
+//
+// If any were already there, you will not get an error, but the returned
 // 'existed' count will be > 0. Note that no cross-queue checking is done, so
-// you need to be careful not to add the same job to different queues. Note that
-// if you add jobs to the queue that were previously added, Execute()d and were
-// successfully Archive()d, the existed count will be 0 and the jobs will be
-// treated like new ones, though when Archive()d again, the new Job will replace
-// the old one in the database. The envVars argument is a slice of ("key=value")
-// strings with the environment variables you want to be set when the job's cmd
-// actually runs. Typically you would pass in os.Environ().
+// you need to be careful not to add the same job to different queues.
+//
+// Note that if you add jobs to the queue that were previously added, Execute()d
+// and were successfully Archive()d, the existed count will be 0 and the jobs
+// will be treated like new ones, though when Archive()d again, the new Job will
+// replace the old one in the database.
+//
+// The envVars argument is a slice of ("key=value") strings with the environment
+// variables you want to be set when the job's Cmd actually runs. Typically you
+// would pass in os.Environ().
 func (c *Client) Add(jobs []*Job, envVars []string) (added int, existed int, err error) {
 	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars)})
 	if err != nil {
@@ -426,9 +535,11 @@ func (c *Client) Add(jobs []*Job, envVars []string) (added int, existed int, err
 // should Archive() it. If you can't deal with it right now you should Release()
 // it. If you think it can never be dealt with you should Bury() it. If you die
 // unexpectedly, the job will automatically be released back to the queue after
-// some time. If no job was available in the queue for as long as the timeout
-// argument, nil is returned for both job and error. If your timeout is 0, you
-// will wait indefinitely for a job.
+// some time.
+//
+// If no job was available in the queue for as long as the timeout argument, nil
+// is returned for both job and error. If your timeout is 0, you will wait
+// indefinitely for a job.
 func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 	fr := false
 	if !c.hasReserved {
@@ -444,14 +555,16 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 }
 
 // ReserveScheduled is like Reserve(), except that it will only return jobs from
-// the specified schedulerGroup. Based on the scheduler the server was
-// configured with, it will group jobs based on their resource requirements and
-// then submit runners to handle them to your system's job scheduler (such as
-// LSF), possibly in different scheduler queues. These runners are told the
-// group they are a part of, and that same group name is applied internally to
-// the Jobs as the "schedulerGroup", so that the runners can reserve only Jobs
-// that they're supposed to. Therefore, it does not make sense for you to call
-// this yourself; it is only for use by runners spawned by the server.
+// the specified schedulerGroup.
+//
+// Based on the scheduler the server was configured with, it will group jobs
+// based on their resource requirements and then submit runners to handle them
+// to your system's job scheduler (such as LSF), possibly in different scheduler
+// queues. These runners are told the group they are a part of, and that same
+// group name is applied internally to the Jobs as the "schedulerGroup", so that
+// the runners can reserve only Jobs that they're supposed to. Therefore, it
+// does not make sense for you to call this yourself; it is only for use by
+// runners spawned by the server.
 func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) (j *Job, err error) {
 	fr := false
 	if !c.hasReserved {
@@ -466,22 +579,39 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 	return
 }
 
-// Execute runs the given Job's Cmd and blocks until it exits. Internally it
-// calls Started() and Ended() and keeps track of peak RAM used. It regularly
-// calls Touch() on the Job so that the server knows we are still alive and
-// handling the Job successfully. It also intercepts SIGTERM, SIGINT, SIGQUIT,
-// SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and returning
-// Error.Err(FailReasonSignal); you should check for this and exit your
-// process). If no error is returned, the Cmd will have run OK, exited with
-// status 0, and been Archive()d from the queue while being placed in the
-// permanent store. Otherwise, it will have been Release()d or Bury()ied as
-// appropriate. The supplied shell is the shell to execute the Cmd under,
-// ideally bash (something that understand the command "set -o pipefail"). You
-// have to have been the one to Reserve() the supplied Job, or this will
-// immediately return an error. If the job was Add()ed with out any environment
-// variables, then the current environment variables will be used. NB: the peak
-// RAM tracking assumes we are running on a modern linux system with
-// /proc/*/smaps.
+// Execute runs the given Job's Cmd and blocks until it exits.
+//
+// The Cmd is run using the environment variables set when the Job was Add()ed,
+// or the current environment is used if none were set.
+//
+// The Cmd is also run within the Job's Cwd. If CwdMatters is false, a unique
+// subdirectory is created within Cwd, and that is used as the actual working
+// directory. When creating these unique subdirectories, directory hashing is
+// used to allow the safe running of 100s of thousands of Jobs all using the
+// same Cwd (that is, we will not break the directory listing of Cwd).
+// Furthermore, a sister folder will be created in the unique location for this
+// Job, the path to which will become the value of the TMPDIR environment
+// variable. Once the Cmd exits, this temp directory will be deleted and the
+// path to the actual working directory created will be in the Job's ActualCwd
+// property. The unique folder structure itself can be wholly deleted through
+// the Job behaviour "cleanup".
+//
+// Internally, Execute() calls Started() and Ended() and keeps track of peak RAM
+// used. It regularly calls Touch() on the Job so that the server knows we are
+// still alive and handling the Job successfully. It also intercepts SIGTERM,
+// SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and
+// returning Error.Err(FailReasonSignal); you should check for this and exit
+// your process.
+//
+// If no error is returned, the Cmd will have run OK, exited with status 0, and
+// been Archive()d from the queue while being placed in the permanent store.
+// Otherwise, it will have been Release()d or Bury()ied as appropriate.
+//
+// The supplied shell is the shell to execute the Cmd under, ideally bash
+// (something that understand the command "set -o pipefail"). You have to have
+// been the one to Reserve() the supplied Job, or this will immediately return
+// an error. NB: the peak RAM tracking assumes we are running on a modern linux
+// system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
@@ -517,10 +647,20 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
-	if _, err := os.Stat(job.Cwd); os.IsNotExist(err) {
+	if fi, err := os.Stat(job.Cwd); err != nil || !fi.Mode().IsDir() {
 		c.Bury(job, FailReasonCwd)
 	}
-	cmd.Dir = job.Cwd
+	var actualCwd, tmpDir string
+	if job.CwdMatters {
+		cmd.Dir = job.Cwd
+	} else {
+		// we'll create a unique location to work in
+		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.key())
+		if err != nil {
+			c.Bury(job, FailReasonCwd)
+		}
+		cmd.Dir = actualCwd
+	}
 
 	// and we'll run it with the environment variables that were present when
 	// the command was first added to the queue (or if none, current env vars,
@@ -530,6 +670,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		c.Bury(job, FailReasonEnv)
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", job.key(), err)
+	}
+	if tmpDir != "" {
+		// (this works fine even if tmpDir has a space in one of the dir names)
+		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
+		defer os.RemoveAll(tmpDir)
+
+		// *** also HOME=cwd if j.ChangeHome ?
 	}
 	cmd.Env = env
 
@@ -704,7 +851,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// though we may have bailed or had some other problem, we always try and
 	// update our job end state
-	err = c.Ended(job, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
+	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
 		// if we can't access the server, we'll have to treat this as failed
@@ -750,12 +897,17 @@ func (c *Client) Touch(job *Job) (err error) {
 
 // Ended updates a Job on the server with information that you've finished
 // running the Job's Cmd. (The Job's Walltime is handled by the server
-// internally, based on you calling this.) Peakram should be in MB.
-func (c *Client) Ended(job *Job, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
+// internally, based on you calling this.) Peakram should be in MB. The cwd you
+// supply should be the actual working directory used, which may be different to
+// the Job's Cwd property; if not, supply empty string.
+func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
 	job.Exited = true
 	job.Exitcode = exitcode
 	job.PeakRAM = peakram
 	job.CPUtime = cputime
+	if cwd != "" {
+		job.ActualCwd = cwd
+	}
 	if len(stdout) > 0 {
 		job.StdOutC = compress(stdout)
 	}
@@ -820,10 +972,9 @@ func (c *Client) Bury(job *Job, failreason string) (err error) {
 
 // Kick makes previously Bury()'d jobs runnable again (it can be Reserve()d in
 // the future). It returns a count of jobs that it actually kicked. Errors will
-// only be related to not being able to contact the server. The ccs argument is
-// the same as for GetByCmds()
-func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
-	keys := c.ccsToKeys(ccs)
+// only be related to not being able to contact the server.
+func (c *Client) Kick(jes []*JobEssence) (kicked int, err error) {
+	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jkick", Keys: keys})
 	if err != nil {
 		return
@@ -835,10 +986,9 @@ func (c *Client) Kick(ccs [][2]string) (kicked int, err error) {
 // Delete removes previously Bury()'d jobs from the queue completely. For use
 // when jobs were created incorrectly/ by accident, or they can never be fixed.
 // It returns a count of jobs that it actually removed. Errors will only be
-// related to not being able to contact the server. The ccs argument is the same
-// as for GetByCmds().
-func (c *Client) Delete(ccs [][2]string) (deleted int, err error) {
-	keys := c.ccsToKeys(ccs)
+// related to not being able to contact the server.
+func (c *Client) Delete(jes []*JobEssence) (deleted int, err error) {
+	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
 	if err != nil {
 		return
@@ -847,11 +997,12 @@ func (c *Client) Delete(ccs [][2]string) (deleted int, err error) {
 	return
 }
 
-// GetByCmd gets a Job given its Cmd and Cwd. With the boolean args set to true,
-// this is the only way to get a Job that StdOut() and StdErr() will work on,
-// and one of 2 ways that Env() will work (the other being Reserve()).
-func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *Job, err error) {
-	resp, err := c.request(&clientRequest{Method: "getbc", Keys: []string{byteKey([]byte(fmt.Sprintf("%s.%s", cwd, cmd)))}, GetStd: getstd, GetEnv: getenv})
+// GetByEssence gets a Job given a JobEssence to describe it. With the boolean
+// args set to true, this is the only way to get a Job that StdOut() and
+// StdErr() will work on, and one of 2 ways that Env() will work (the other
+// being Reserve()).
+func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (j *Job, err error) {
+	resp, err := c.request(&clientRequest{Method: "getbc", Keys: []string{je.Key()}, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return
 	}
@@ -862,13 +1013,10 @@ func (c *Client) GetByCmd(cmd string, cwd string, getstd bool, getenv bool) (j *
 	return
 }
 
-// GetByCmds gets multiple Jobs at once given their Cmds and Cwds. You supply a
-// slice of cmd/cwd string tuples like: [][2]string{[2]string{cmd1, cwd1},
-// [2]string{cmd2, cwd2}, ...}. It is also possible to supply
-// "",key if you know the "key" of the desired job; you can get these keys when
-// you use GetByRepGroup() or GetIncomplete() with a limit.
-func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
-	keys := c.ccsToKeys(ccs)
+// GetByEssences gets multiple Jobs at once given JobEssences that describe
+// them.
+func (c *Client) GetByEssences(jes []*JobEssence) (out []*Job, err error) {
+	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys})
 	if err != nil {
 		return
@@ -877,14 +1025,11 @@ func (c *Client) GetByCmds(ccs [][2]string) (out []*Job, err error) {
 	return
 }
 
-// ccsToKeys deals with the ccs arg that GetByCmds(), Kick() and Delete() take.
-func (c *Client) ccsToKeys(ccs [][2]string) (keys []string) {
-	for _, cc := range ccs {
-		if cc[0] == "" {
-			keys = append(keys, cc[1])
-		} else {
-			keys = append(keys, byteKey([]byte(fmt.Sprintf("%s.%s", cc[1], cc[0]))))
-		}
+// jesToKeys deals with the jes arg that GetByEccences(), Kick() and Delete()
+// take.
+func (c *Client) jesToKeys(jes []*JobEssence) (keys []string) {
+	for _, je := range jes {
+		keys = append(keys, je.Key())
 	}
 	return
 }
@@ -960,23 +1105,7 @@ func (j *Job) Env() (env []string, err error) {
 		}
 
 		if len(es.Environ) > 0 {
-			override := make(map[string]string)
-			for _, envvar := range es.Environ {
-				pair := strings.Split(envvar, "=")
-				override[pair[0]] = envvar
-			}
-
-			for i, envvar := range env {
-				pair := strings.Split(envvar, "=")
-				if replace, do := override[pair[0]]; do {
-					env[i] = replace
-					delete(override, pair[0])
-				}
-			}
-
-			for _, envvar := range override {
-				env = append(env, envvar)
-			}
+			env = envOverride(env, es.Environ)
 		}
 	}
 
@@ -1042,9 +1171,12 @@ func (j *Job) updateRecsAfterFailure() {
 	}
 }
 
-// key calculates a unique key to describe the job
+// key calculates a unique key to describe the job.
 func (j *Job) key() string {
-	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)))
+	if j.CwdMatters {
+		return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)))
+	}
+	return byteKey([]byte(j.Cmd))
 }
 
 // request the server do something and get back its response. We can only cope
