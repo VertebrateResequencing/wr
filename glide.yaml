@@ -4,12 +4,12 @@ import:
 - package: github.com/VertebrateResequencing/muxfys
   version: ^1.0.0
 - package: github.com/VividCortex/ewma
-  version: ^1.0.0
+  version: master
 - package: github.com/boltdb/bolt
-  version: ^1.3.0
+  version: master
 - package: github.com/dgryski/go-farm
 - package: github.com/go-mangos/mangos
-  version: ^1.2.0
+  version: master
   subpackages:
   - protocol/rep
   - protocol/req
@@ -31,7 +31,7 @@ import:
   - openstack/networking/v2/subnets
   - pagination
 - package: github.com/gorilla/websocket
-  version: ^1.1.0
+  version: master
 - package: github.com/hashicorp/golang-lru
 - package: github.com/inconshreveable/log15
   version: master
@@ -43,12 +43,12 @@ import:
   subpackages:
   - du
 - package: github.com/satori/go.uuid
-  version: ^1.1.0
+  version: master
 - package: github.com/sb10/l15h
 - package: github.com/sevlyar/go-daemon
-  version: ^0.1.1
+  version: master
 - package: github.com/shirou/gopsutil
-  version: ^2.17.4
+  version: master
   subpackages:
   - mem
 - package: github.com/spf13/cobra
@@ -62,6 +62,6 @@ import:
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 testImport:
 - package: github.com/smartystreets/goconvey
-  version: ^1.6.2
+  version: master
   subpackages:
   - convey
