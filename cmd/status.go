@@ -50,14 +50,12 @@ Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
 
-The file to provide -f is in the same format as that taken by "wr add".
+The file to provide -f is in the format cmd\tcwd.
 
-In -f and -l mode you must provide the cwd the commands were set to run in. You
-can do this by using the -c option, or in -f mode your file can specify the cwd
-in the JSON, in case it's different for each command. If not supplied at all,
-cwd will default to your current directory, but you won't get any status if
-you're not in the same directory you were in when you first added the commands,
-or if you added them with a different cwd.
+In -f and -l mode you must provide the cwd the commands were set to run in, if
+CwdMatters (and must NOT be provided otherwise). You can do this by using the -c
+option, or in -f mode your file can specify the cwd, in case it's different for
+each command.
 
 By default, commands with the same state, reason for failure and exitcode are
 grouped together and only a random 1 of them is displayed (and you are told how
@@ -78,13 +76,6 @@ very many (tens of thousands+) commands.`,
 		}
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
-		}
-		if cmdCwd == "" {
-			pwd, err := os.Getwd()
-			if err != nil {
-				die("%s", err)
-			}
-			cmdCwd = pwd
 		}
 		cmdState := ""
 		if showBuried {
@@ -108,9 +99,8 @@ very many (tens of thousands+) commands.`,
 			// get all jobs with this identifier (repgroup)
 			jobs, err = jq.GetByRepGroup(cmdIDStatus, statusLimit, cmdState, showStd, showEnv)
 		case cmdFileStatus != "":
-			// get jobs that have the supplied commands. We support the same
-			// format of file that "wr add" takes, but only care about the
-			// first 2 columns
+			// get jobs that have the supplied commands. We support a cmd\tcwd
+			// format file
 			var reader io.Reader
 			if cmdFileStatus == "-" {
 				reader = os.Stdin
@@ -122,7 +112,7 @@ very many (tens of thousands+) commands.`,
 				defer reader.(*os.File).Close()
 			}
 			scanner := bufio.NewScanner(reader)
-			var ccs [][2]string
+			var jes []*jobqueue.JobEssence
 			desired := 0
 			for scanner.Scan() {
 				cols := strings.Split(scanner.Text(), "\t")
@@ -136,10 +126,10 @@ very many (tens of thousands+) commands.`,
 				} else {
 					cwd = cols[1]
 				}
-				ccs = append(ccs, [2]string{cols[0], cwd})
+				jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd})
 				desired++
 			}
-			jobs, err = jq.GetByCmds(ccs)
+			jobs, err = jq.GetByEssences(jes)
 			if len(jobs) < desired {
 				warn("%d/%d cmds were not found", desired-len(jobs), desired)
 			}
@@ -147,7 +137,7 @@ very many (tens of thousands+) commands.`,
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job
-			job, err = jq.GetByCmd(cmdLine, cmdCwd, showStd, showEnv)
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd}, showStd, showEnv)
 			jobs = append(jobs, job)
 		}
 

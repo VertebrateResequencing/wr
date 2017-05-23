@@ -50,25 +50,25 @@ var cmdDeps string
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
-	Cmd         string                 `json:"cmd"`
-	Cwd         string                 `json:"cwd"`
-	ReqGrp      string                 `json:"req_grp"`
-	Memory      string                 `json:"memory"`
-	Time        string                 `json:"time"`
-	CPUs        *int                   `json:"cpus"`
-	Disk        *int                   `json:"disk"`
-	Override    *int                   `json:"override"`
-	Priority    *int                   `json:"priority"`
-	Retries     *int                   `json:"retries"`
-	RepGrp      string                 `json:"rep_grp"`
-	DepGrps     []string               `json:"dep_grps"`
-	Deps        []string               `json:"deps"`
-	CmdDeps     []*jobqueue.Dependency `json:"cmd_deps"`
-	Env         []string               `json:"env"`
-	CloudOS     string                 `json:"cloud_os"`
-	CloudUser   string                 `json:"cloud_user"`
-	CloudScript string                 `json:"cloud_script"`
-	CloudOSRam  *int                   `json:"cloud_os_ram"`
+	Cmd         string                `json:"cmd"`
+	Cwd         string                `json:"cwd"`
+	ReqGrp      string                `json:"req_grp"`
+	Memory      string                `json:"memory"`
+	Time        string                `json:"time"`
+	CPUs        *int                  `json:"cpus"`
+	Disk        *int                  `json:"disk"`
+	Override    *int                  `json:"override"`
+	Priority    *int                  `json:"priority"`
+	Retries     *int                  `json:"retries"`
+	RepGrp      string                `json:"rep_grp"`
+	DepGrps     []string              `json:"dep_grps"`
+	Deps        []string              `json:"deps"`
+	CmdDeps     jobqueue.Dependencies `json:"cmd_deps"`
+	Env         []string              `json:"env"`
+	CloudOS     string                `json:"cloud_os"`
+	CloudUser   string                `json:"cloud_user"`
+	CloudScript string                `json:"cloud_script"`
+	CloudOSRam  *int                  `json:"cloud_os_ram"`
 }
 
 // addCmd represents the add command
@@ -329,7 +329,7 @@ started.`,
 			var dur time.Duration
 			var envOverride []byte
 			var depGroups []string
-			var deps *jobqueue.Dependencies
+			var deps jobqueue.Dependencies
 
 			cmd = cmdOpts.Cmd
 			if cmd == "" {
@@ -433,18 +433,16 @@ started.`,
 			}
 
 			if len(cmdOpts.Deps) == 0 && len(cmdOpts.CmdDeps) == 0 {
-				deps = jobqueue.NewDependencies(defaultDeps...)
+				deps = defaultDeps
 			} else {
-				var theseDeps []*jobqueue.Dependency
 				if len(cmdOpts.CmdDeps) > 0 {
-					theseDeps = cmdOpts.CmdDeps
+					deps = cmdOpts.CmdDeps
 				}
 				if len(cmdOpts.Deps) > 0 {
 					for _, depgroup := range cmdOpts.Deps {
-						theseDeps = append(theseDeps, jobqueue.NewDepGroupDependency(depgroup))
+						deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 					}
 				}
-				deps = jobqueue.NewDependencies(theseDeps...)
 			}
 
 			if len(cmdOpts.Env) > 0 {
@@ -530,14 +528,14 @@ func init() {
 }
 
 // convert cmd,cwd or depgroups,"groups" columns in to Dependency
-func colsToDeps(cols []string) (deps []*jobqueue.Dependency) {
+func colsToDeps(cols []string) (deps jobqueue.Dependencies) {
 	for i := 0; i < len(cols); i += 2 {
 		if cols[i+1] == "groups" {
 			for _, depgroup := range strings.Split(cols[i], ",") {
 				deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 			}
 		} else {
-			deps = append(deps, jobqueue.NewCmdDependency(cols[i], cols[i+1]))
+			deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
 		}
 	}
 	return
