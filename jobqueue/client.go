@@ -108,8 +108,14 @@ type Job struct {
 	// of what makes the Job unique.
 	// When CwdMatters is false (default), Cmd gets run in a unique subfolder of
 	// Cwd, enabling features like tracking disk space usage and clean up of the
-	// working directory by simply deleting the whole thing.
+	// working directory by simply deleting the whole thing. The TMPDIR
+	// environment variable is also set to a sister folder of the unique
+	// subfolder, and this is always cleaned up after the Cmd exits.
 	CwdMatters bool
+
+	// ChangeHome sets the $HOME environment variable to the actual working
+	// directory before running Cmd, but only when CwdMatters is false.
+	ChangeHome bool
 
 	// RepGroup is a name associated with related Jobs to help group them
 	// together when reporting on their status etc.
@@ -656,7 +662,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
 		defer os.RemoveAll(tmpDir)
 
-		// *** also HOME=cwd if j.ChangeHome ?
+		if job.ChangeHome {
+			env = envOverride(env, []string{"HOME=" + actualCwd})
+		}
 	}
 	cmd.Env = env
 

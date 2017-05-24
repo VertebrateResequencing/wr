@@ -544,6 +544,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		Cmd:          sjob.Cmd,
 		Cwd:          sjob.Cwd,
 		CwdMatters:   sjob.CwdMatters,
+		ChangeHome:   sjob.ChangeHome,
 		ActualCwd:    sjob.ActualCwd,
 		Requirements: sjob.Requirements,
 		Priority:     sjob.Priority,
