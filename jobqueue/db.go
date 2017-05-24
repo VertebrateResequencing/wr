@@ -619,7 +619,7 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 // goroutine, giving us a significant speed boost.
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
 	jobkey := job.key()
-	secs := int(math.Ceil(job.endtime.Sub(job.starttime).Seconds()))
+	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
 	go func() {
 		db.Lock()
 		db.updatingAfterJobExit++

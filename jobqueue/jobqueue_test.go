@@ -340,8 +340,8 @@ func TestJobqueue(t *testing.T) {
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
 				for index, job := range jobs {
 					job.PeakRAM = index + 1
-					job.starttime = time.Now()
-					job.endtime = job.starttime.Add(time.Duration(index+1) * time.Second)
+					job.StartTime = time.Now()
+					job.EndTime = job.StartTime.Add(time.Duration(index+1) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
 				}
 				<-time.After(100 * time.Millisecond)
@@ -355,8 +355,8 @@ func TestJobqueue(t *testing.T) {
 				for i := 11; i <= 100; i++ {
 					job := &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}
 					job.PeakRAM = i * 100
-					job.starttime = time.Now()
-					job.endtime = job.starttime.Add(time.Duration(i*100) * time.Second)
+					job.StartTime = time.Now()
+					job.EndTime = job.StartTime.Add(time.Duration(i*100) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{})
 				}
 				<-time.After(500 * time.Millisecond)
@@ -664,7 +664,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				host, _ := os.Hostname()
 				So(job.Host, ShouldEqual, host)
-				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, 0*time.Millisecond)
 				So(job.Attempts, ShouldEqual, 1)
 				So(job.UntilBuried, ShouldEqual, 3)
@@ -687,8 +687,8 @@ func TestJobqueue(t *testing.T) {
 				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
-				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
-				So(job2.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job2.WallTime(), ShouldBeLessThanOrEqualTo, job.WallTime())
+				So(job2.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)
 				So(job2.ActualCwd, ShouldEqual, actualCwd)
@@ -710,7 +710,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.PeakRAM, ShouldBeGreaterThan, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				So(job.Host, ShouldEqual, host)
-				So(job.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, 0*time.Millisecond)
 				So(job.Attempts, ShouldEqual, 1)
 				So(job.UntilBuried, ShouldEqual, 2)
@@ -730,8 +730,8 @@ func TestJobqueue(t *testing.T) {
 				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
-				So(job2.Walltime, ShouldBeLessThanOrEqualTo, job.Walltime)
-				So(job2.Walltime, ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
+				So(job2.WallTime(), ShouldBeLessThanOrEqualTo, job.WallTime())
+				So(job2.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)
 

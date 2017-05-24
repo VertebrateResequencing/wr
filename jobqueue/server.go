@@ -472,8 +472,8 @@ func (s *Server) GetServerStats() *ServerStats {
 
 			// work out when this Job is going to end, and update etc if later
 			job := inter.(*Job)
-			if !job.starttime.IsZero() && job.Requirements.Time.Seconds() > 0 {
-				endTime := job.starttime.Add(job.Requirements.Time)
+			if !job.StartTime.IsZero() && job.Requirements.Time.Seconds() > 0 {
+				endTime := job.StartTime.Add(job.Requirements.Time)
 				if endTime.After(etc) {
 					etc = endTime
 				}

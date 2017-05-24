@@ -242,8 +242,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sjob.Pid = 0
 				sjob.Host = ""
 				var tnil time.Time
-				sjob.starttime = tnil
-				sjob.endtime = tnil
+				sjob.StartTime = tnil
+				sjob.EndTime = tnil
 				sjob.PeakRAM = 0
 				sjob.Exitcode = -1
 
@@ -263,9 +263,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				job.Pid = cr.Job.Pid
 				job.Host = cr.Job.Host
-				job.starttime = time.Now()
+				job.StartTime = time.Now()
 				var tend time.Time
-				job.endtime = tend
+				job.EndTime = tend
 				job.Attempts++
 			}
 		}
@@ -289,7 +289,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.Exitcode = cr.Job.Exitcode
 			job.PeakRAM = cr.Job.PeakRAM
 			job.CPUtime = cr.Job.CPUtime
-			job.endtime = time.Now()
+			job.EndTime = time.Now()
 			job.ActualCwd = cr.Job.ActualCwd
 			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC)
 		}
@@ -306,14 +306,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// Remove()ing, since you can remove from any queue)
 			if running := item.Stats().State == "run"; !running {
 				srerr = ErrBadJob
-			} else if !job.Exited || job.Exitcode != 0 || job.starttime.IsZero() || job.endtime.IsZero() {
+			} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
 				// the job must also have gone through jend
 				srerr = ErrBadRequest
 			} else {
 				key := job.key()
 				job.State = "complete"
 				job.FailReason = ""
-				job.Walltime = job.endtime.Sub(job.starttime)
 				err := s.db.archiveJob(key, job)
 				if err != nil {
 					srerr = ErrDBError
@@ -553,6 +552,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		Exited:       sjob.Exited,
 		Exitcode:     sjob.Exitcode,
 		FailReason:   sjob.FailReason,
+		StartTime:    sjob.StartTime,
+		EndTime:      sjob.EndTime,
 		Pid:          sjob.Pid,
 		Host:         sjob.Host,
 		CPUtime:      sjob.CPUtime,
@@ -565,16 +566,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		Dependencies: sjob.Dependencies,
 	}
 
-	if !sjob.starttime.IsZero() {
-		if sjob.endtime.IsZero() || state == "reserved" {
-			job.Walltime = time.Since(sjob.starttime)
-		} else {
-			job.Walltime = sjob.endtime.Sub(sjob.starttime)
-		}
-
-		if state == "reserved" {
-			job.State = "running"
-		}
+	if !sjob.StartTime.IsZero() && state == "reserved" {
+		job.State = "running"
 	}
 	s.jobPopulateStdEnv(job, getStd, getEnv)
 	return

@@ -173,8 +173,10 @@ type Job struct {
 	Pid int
 	// host the process is running or did run on.
 	Host string
-	// if the job ran or is running right now, the walltime for the run.
-	Walltime time.Duration
+	// time the cmd started running.
+	StartTime time.Time
+	// time the cmd stopped running.
+	EndTime time.Time
 	// CPU time used.
 	CPUtime time.Duration
 	// to read, call job.StdErr() instead; if the job ran, its (truncated)
@@ -209,16 +211,25 @@ type Job struct {
 	// name of the queue the Job was added to.
 	Queue string
 
-	// time the cmd starts running.
-	starttime time.Time
-	// time the cmd stopped running.
-	endtime time.Time
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
 	schedulerGroup string
 	// the server uses this to track if it already scheduled a runner for this
 	// job.
 	scheduledRunner bool
+}
+
+// WallTime returns the time the job took to run if it ran to completion, or the
+// time taken so far if it is currently running.
+func (j *Job) WallTime() (d time.Duration) {
+	if !j.StartTime.IsZero() {
+		if j.EndTime.IsZero() || j.State == "reserved" {
+			d = time.Since(j.StartTime)
+		} else {
+			d = j.EndTime.Sub(j.StartTime)
+		}
+	}
+	return
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it
@@ -865,13 +876,12 @@ func (c *Client) Execute(job *Job, shell string) error {
 }
 
 // Started updates a Job on the server with information that you've started
-// running the Job's Cmd. (The Job's Walltime is handled by the server
-// internally, based on you calling this.)
+// running the Job's Cmd.
 func (c *Client) Started(job *Job, pid int, host string) (err error) {
 	job.Pid = pid
 	job.Host = host
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
-	job.starttime = time.Now() // ditto
+	job.StartTime = time.Now() // ditto
 	_, err = c.request(&clientRequest{Method: "jstart", Job: job})
 	return
 }
@@ -884,10 +894,9 @@ func (c *Client) Touch(job *Job) (err error) {
 }
 
 // Ended updates a Job on the server with information that you've finished
-// running the Job's Cmd. (The Job's Walltime is handled by the server
-// internally, based on you calling this.) Peakram should be in MB. The cwd you
-// supply should be the actual working directory used, which may be different to
-// the Job's Cwd property; if not, supply empty string.
+// running the Job's Cmd. Peakram should be in MB. The cwd you supply should be
+// the actual working directory used, which may be different to the Job's Cwd
+// property; if not, supply empty string.
 func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
 	job.Exited = true
 	job.Exitcode = exitcode
@@ -903,7 +912,6 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 		job.StdErrC = compress(stderr)
 	}
 	_, err = c.request(&clientRequest{Method: "jend", Job: job})
-	job.Walltime = time.Since(job.starttime)
 	return
 }
 

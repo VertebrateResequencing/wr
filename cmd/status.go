@@ -189,7 +189,7 @@ very many (tens of thousands+) commands.`,
 					if job.State != "complete" {
 						prefix = "Stats of previous attempt"
 					}
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.Walltime, job.CPUtime, job.Host, job.Pid)
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.Pid)
 					if showextra && showStd && job.Exitcode != 0 {
 						stdout, err := job.StdOut()
 						if err != nil {
@@ -209,7 +209,7 @@ very many (tens of thousands+) commands.`,
 						}
 					}
 				} else if job.State == "running" {
-					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.Walltime, job.Host, job.Pid)
+					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.WallTime(), job.Host, job.Pid)
 					//*** we should be able to peek at STDOUT & STDERR, and see
 					// Peak memory during a run... but is that possible/ too
 					// expensive? Maybe we could communicate directly with the
