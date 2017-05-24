@@ -341,26 +341,6 @@ func (d *Dependency) incompleteJobKeys(db *db) []string {
 	return []string{}
 }
 
-// NewJob makes it a little easier to make a new Job, for use with Add().
-// Dependencies are optional.
-func NewJob(cmd string, cwd string, cwdMatters bool, group string, reqs *scheduler.Requirements, override uint8, priority uint8, retries uint8, repgroup string, depgroups []string, deps ...*Dependency) *Job {
-	job := &Job{
-		RepGroup:     repgroup,
-		ReqGroup:     group,
-		DepGroups:    depgroups,
-		Cmd:          cmd,
-		Cwd:          cwd,
-		CwdMatters:   cwdMatters,
-		Requirements: reqs,
-		Override:     override,
-		Priority:     priority,
-		Retries:      retries,
-		Dependencies: deps,
-	}
-
-	return job
-}
-
 // NewEssenceDependency makes it a little easier to make a new *Dependency based
 // on Cmd+Cwd, for use in NewDependencies(). Leave cwd as an empty string if the
 // job you are describing does not have CwdMatters true.
