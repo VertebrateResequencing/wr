@@ -107,6 +107,46 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	return fmt.Errorf("invalid status %d", status)
 }
 
+// String provides a nice string representation of a Behaviour for user
+// interface display purposes.
+func (b *Behaviour) String() string {
+	var when string
+	switch b.When {
+	case OnExit:
+		when = "OnExit"
+	case OnSuccess:
+		when = "OnSuccess"
+	case OnFailure:
+		when = "OnFailure"
+	case OnSuccess | OnFailure:
+		when = "OnSuccess|OnFailure"
+	default:
+		when = "!invalid!"
+	}
+
+	var do string
+	switch b.Do {
+	case CleanupAll:
+		do = "CleanupAll"
+	case Cleanup:
+		do = "Cleanup"
+	case Run:
+		if cmd, wasStr := b.Arg.(string); wasStr {
+			do = fmt.Sprintf("Run(%s)", cmd)
+		} else {
+			do = "Run(!invalid!)"
+		}
+	case CopyToManager:
+		if files, wasStrSlice := b.Arg.([]string); wasStrSlice {
+			do = fmt.Sprintf("CopyToManager(%s)", files)
+		} else {
+			do = "CopyToManager(!invalid!)"
+		}
+	}
+
+	return fmt.Sprintf("{When: %s, Do: %s}", when, do)
+}
+
 // cleanup with all == true wipes out the Job's ActualCwd as aggressively as
 // possible, along with all empty parent dirs up to Cwd. Without all, will keep
 // files designated as outputs (*** designation not yet implemented).

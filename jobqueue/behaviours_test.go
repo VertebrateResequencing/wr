@@ -38,6 +38,8 @@ func TestBehaviours(t *testing.T) {
 		b6 := &Behaviour{When: OnSuccess, Do: Run, Arg: []string{"in", "valid"}}
 		b7 := &Behaviour{When: OnSuccess, Do: CopyToManager, Arg: []string{"a.file", "b.file"}}
 		b8 := &Behaviour{When: OnSuccess, Do: CopyToManager, Arg: "a.file"}
+		b9 := &Behaviour{When: OnSuccess | OnFailure, Do: Cleanup}
+		b10 := &Behaviour{When: 10, Do: Cleanup}
 
 		cwd, err := ioutil.TempDir("", "wr_jobqueue_test_behaviour_dir_")
 		So(err, ShouldBeNil)
@@ -50,6 +52,24 @@ func TestBehaviours(t *testing.T) {
 		adir := filepath.Join(cwd, "a")
 		job1 := &Job{Cwd: cwd, ActualCwd: actualCwd}
 		job2 := &Job{Cwd: cwd}
+
+		Convey("Individual Behaviour can be nicely stringified", func() {
+			So(fmt.Sprintf("%s", b1), ShouldEqual, "{When: OnExit, Do: CleanupAll}")
+			So(fmt.Sprintf("%s", b2), ShouldEqual, "{When: OnSuccess, Do: CleanupAll}")
+			So(fmt.Sprintf("%s", b3), ShouldEqual, "{When: OnFailure, Do: CleanupAll}")
+			So(fmt.Sprintf("%s", b4), ShouldEqual, "{When: OnSuccess, Do: Run(touch ../../foo)}")
+			So(fmt.Sprintf("%s", b5), ShouldEqual, "{When: OnSuccess, Do: Run(touch foo)}")
+			So(fmt.Sprintf("%s", b6), ShouldEqual, "{When: OnSuccess, Do: Run(!invalid!)}")
+			So(fmt.Sprintf("%s", b7), ShouldEqual, "{When: OnSuccess, Do: CopyToManager([a.file b.file])}")
+			So(fmt.Sprintf("%s", b8), ShouldEqual, "{When: OnSuccess, Do: CopyToManager(!invalid!)}")
+			So(fmt.Sprintf("%s", b9), ShouldEqual, "{When: OnSuccess|OnFailure, Do: Cleanup}")
+			So(fmt.Sprintf("%s", b10), ShouldEqual, "{When: !invalid!, Do: Cleanup}")
+
+			Convey("Behaviours can be nicely stringified", func() {
+				bs := Behaviours{b1, b4}
+				So(fmt.Sprintf("%s", bs), ShouldEqual, "[{When: OnExit, Do: CleanupAll} {When: OnSuccess, Do: Run(touch ../../foo)}]")
+			})
+		})
 
 		Convey("Individual Behaviour Trigger() correctly", func() {
 			err = b7.Trigger(OnSuccess, job1)
