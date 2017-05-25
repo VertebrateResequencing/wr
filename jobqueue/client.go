@@ -152,6 +152,10 @@ type Job struct {
 	// starts.
 	Dependencies Dependencies
 
+	// Behaviours describe what should happen after Cmd is executed, depending
+	// on its success.
+	Behaviours Behaviours
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -576,7 +580,8 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 	return
 }
 
-// Execute runs the given Job's Cmd and blocks until it exits.
+// Execute runs the given Job's Cmd and blocks until it exits. Then any Job
+// Behaviours get triggered as appropriate for the exit status.
 //
 // The Cmd is run using the environment variables set when the Job was Add()ed,
 // or the current environment is used if none were set.
@@ -598,7 +603,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // still alive and handling the Job successfully. It also intercepts SIGTERM,
 // SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and
 // returning Error.Err(FailReasonSignal); you should check for this and exit
-// your process.
+// your process. Finally it calls TriggerBehaviours().
 //
 // If no error is returned, the Cmd will have run OK, exited with status 0, and
 // been Archive()d from the queue while being placed in the permanent store.
@@ -705,6 +710,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
 		cmd.Process.Kill()
+		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
@@ -853,6 +859,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
+		job.TriggerBehaviours(false)
+
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
 		if bailed {
@@ -869,7 +877,17 @@ func (c *Client) Execute(job *Job, shell string) error {
 		err = c.Archive(job)
 	}
 	if err != nil {
+		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+	}
+
+	err = job.TriggerBehaviours(myerr == nil)
+	if err != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; behaviour(s) also had problem(s): %s", myerr.Error(), err.Error())
+		} else {
+			myerr = err
+		}
 	}
 
 	return myerr
@@ -1140,6 +1158,13 @@ func (j *Job) StdErr() (stderr string, err error) {
 	}
 	stderr = string(decomp)
 	return
+}
+
+// TriggerBehaviours triggers this Job's Behaviours based on if its Cmd got
+// executed successfully or not. Should only be called as part of or after
+// Execute().
+func (j *Job) TriggerBehaviours(success bool) error {
+	return j.Behaviours.Trigger(success, j)
 }
 
 // updateRecsAfterFailure checks the FailReason and bumps RAM or Time as

@@ -1166,6 +1166,65 @@ func TestJobqueue(t *testing.T) {
 					So(stderr, ShouldEqual, "")
 				})
 
+				Convey("Job behaviours trigger correctly", func() {
+					jobs = nil
+					cwd, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
+					So(err, ShouldBeNil)
+					defer os.RemoveAll(cwd)
+					b1 := &Behaviour{When: OnSuccess, Do: CleanupAll}
+					b2 := &Behaviour{When: OnFailure, Do: Run, Arg: "touch foo"}
+					bs := Behaviours{b1, b2}
+					jobs = append(jobs, &Job{Cmd: "touch bar", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_pass", Behaviours: bs})
+					jobs = append(jobs, &Job{Cmd: "touch bar && false", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail", Behaviours: bs})
+					inserts, _, err := jq.Add(jobs, envVars)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 2)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "touch bar")
+					So(job.State, ShouldEqual, "reserved")
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, "complete")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 0)
+
+					actualCwd := job.ActualCwd
+					So(actualCwd, ShouldStartWith, filepath.Join(cwd, "jobqueue_cwd", "c", "6", "b", "118a8428d26ecd48047684929b2be"))
+					So(actualCwd, ShouldEndWith, "cwd")
+					_, err = os.Stat(filepath.Join(actualCwd, "bar"))
+					So(err, ShouldNotBeNil)
+					_, err = os.Stat(filepath.Join(actualCwd, "foo"))
+					So(err, ShouldNotBeNil)
+					entries, err := ioutil.ReadDir(cwd)
+					So(err, ShouldBeNil)
+					So(len(entries), ShouldEqual, 0)
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "touch bar && false")
+					So(job.State, ShouldEqual, "reserved")
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "buried")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
+
+					actualCwd = job.ActualCwd
+					So(actualCwd, ShouldStartWith, filepath.Join(cwd, "jobqueue_cwd", "2", "8", "d", "f5a6135881cf9a5ddf20ac0e76ab8"))
+					So(actualCwd, ShouldEndWith, "cwd")
+					_, err = os.Stat(filepath.Join(actualCwd, "bar"))
+					So(err, ShouldBeNil)
+					_, err = os.Stat(filepath.Join(actualCwd, "foo"))
+					So(err, ShouldBeNil)
+					entries, err = ioutil.ReadDir(cwd)
+					So(err, ShouldBeNil)
+					So(len(entries), ShouldEqual, 1)
+					So(entries[0].Name(), ShouldEqual, "jobqueue_cwd")
+				})
+
 				Convey("Jobs that take longer than the ttr can execute successfully, unless the clienttouchinterval is > ttr", func() {
 					jobs = nil
 					cmd := "perl -e 'for (1..3) { sleep(1) }'"

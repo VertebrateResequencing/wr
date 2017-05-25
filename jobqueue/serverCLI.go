@@ -564,6 +564,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		EnvKey:       sjob.EnvKey,
 		EnvOverride:  sjob.EnvOverride,
 		Dependencies: sjob.Dependencies,
+		Behaviours:   sjob.Behaviours,
 	}
 
 	if !sjob.StartTime.IsZero() && state == "reserved" {
