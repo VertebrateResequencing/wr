@@ -130,9 +130,6 @@ func TestBehaviours(t *testing.T) {
 				_, err = os.Stat(rootFile)
 				So(err, ShouldBeNil)
 
-				out, _ := exec.Command("sh", "-c", "ls -alth "+actualCwd).CombinedOutput()
-				fmt.Printf("\n%s\n", string(out))
-
 				err = b1.Trigger(OnExit, job1)
 				So(err, ShouldBeNil)
 				_, err = os.Stat(actualCwd)
