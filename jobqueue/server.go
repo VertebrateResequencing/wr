@@ -604,14 +604,19 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 			if s.rc != "" {
 				// clear out groups we no longer need
 				s.sgcmutex.Lock()
+				stillRunning := make(map[string]bool)
+				for _, inter := range q.GetRunningData() {
+					job := inter.(*Job)
+					stillRunning[job.schedulerGroup] = true
+				}
 				for group := range s.sgroupcounts {
-					if _, needed := groups[group]; !needed {
+					if _, needed := groups[group]; !needed && !stillRunning[group] {
 						s.sgroupcounts[group] = 0
 						go s.clearSchedulerGroup(group, q)
 					}
 				}
 				for group := range s.sgrouptrigs {
-					if _, needed := groups[group]; !needed {
+					if _, needed := groups[group]; !needed && !stillRunning[group] {
 						delete(s.sgrouptrigs, group)
 					}
 				}
