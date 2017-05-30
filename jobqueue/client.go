@@ -23,6 +23,7 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
+	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
@@ -33,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -54,6 +56,7 @@ const (
 	FailReasonAbnormal = "command failed to complete normally"
 	FailReasonSignal   = "runner received a signal to stop"
 	FailReasonResource = "resource requirements cannot be met"
+	FailReasonMount    = "mounting of remote file system(s) failed"
 )
 
 // these global variables are primarily exported for testing purposes; you
@@ -156,6 +159,21 @@ type Job struct {
 	// on its success.
 	Behaviours Behaviours
 
+	// MountConfigs describes remote file systems or object stores that you wish
+	// to be fuse mounted prior to running the Cmd. Once Cmd exits, the mounts
+	// will be unmounted. If you want multiple separate mount points accessed
+	// from different local directories, you will supply more than one
+	// MountConfig in the slice. If you want multiple remote locations
+	// multiplexed and accessible from a single local directory, you will supply
+	// a single MountConfig in the slice, configured with multiple MountTargets.
+	// Relative paths for your MountConfig.Mount options will be relative to Cwd
+	// (or ActualCwd if CwdMatters == false). If a MountConfig.Mount is not
+	// specified, it defaults to Cwd/mnt if CwdMatters, otherwise ActualCwd
+	// itself will be the mount point. If a MountConfig.CachBase is not
+	// specified, it defaults to to Cwd if CwdMatters, otherwise it will be a
+	// sister directory of ActualCwd.
+	MountConfigs []MountConfig
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -218,9 +236,14 @@ type Job struct {
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
 	schedulerGroup string
+
 	// the server uses this to track if it already scheduled a runner for this
 	// job.
 	scheduledRunner bool
+
+	// we store the MuxFys that we mount during Mount() so we can Unmount() them
+	// later; this is purely client side
+	mountedFS []*muxfys.MuxFys
 }
 
 // WallTime returns the time the job took to run if it ran to completion, or the
@@ -377,6 +400,113 @@ func NewDepGroupDependency(depgroup string) *Dependency {
 	return &Dependency{
 		DepGroup: depgroup,
 	}
+}
+
+// MountConfig struct is used for setting in a Job to specify that a remote file
+// system or object store should be fuse mounted prior to running the Job's Cmd.
+// Currently only supports S3-like object stores.
+type MountConfig struct {
+	// Mount is the local directory on which to mount your Target(s). It can be
+	// (in) any directory you're able to write to. If the directory doesn't
+	// exist, it will be created first. Otherwise, it must be empty. If not
+	// supplied, defaults to the subdirectory "mnt" in the Job's working
+	// directory if CwdMatters, otherwise the actual working directory will be
+	// used as the mount point.
+	Mount string
+
+	// CacheBase is the parent directory to use for the CacheDir of any Targets
+	// configured with Cache on, but CacheDir undefined, or specified with a
+	// relative path. If CacheBase is also undefined, the base will be the Job's
+	// Cwd if CwdMatters, otherwise it will be the parent of the Job's actual
+	// working directory.
+	CacheBase string
+
+	// Retries is the number of retries that should be attempted when
+	// encountering errors in trying to access your remote S3 bucket. At least 3
+	// is recommended. It defaults to 10 if not provided.
+	Retries int
+
+	// Verbose is a boolean, which if true, would cause timing information on
+	// all remote S3 calls to appear as lines of all job STDERR that use the
+	// mount. Errors always appear there.
+	Verbose bool
+
+	// Targets is a slice of MountTarget which define what you want to access at
+	// your Mount. It's a slice to allow you to multiplex different buckets (or
+	// different subdirectories of the same bucket) so that it looks like all
+	// their data is in the same place, for easier access to files in your
+	// mount. You can only have one of these configured to be writeable.
+	Targets []MountTarget
+}
+
+// MountTarget struct is used for setting in a MountConfig to define what you
+// want to access at your Mount.
+type MountTarget struct {
+	// Profile is the S3 configuration profile name to use. If not supplied, the
+	// value of the $AWS_DEFAULT_PROFILE or $AWS_PROFILE environment variables
+	// is used, and if those are unset it defaults to "default".
+	//
+	// We look at number of standard S3 configuration files and environment
+	// variables to determine the scheme, domain, region and authentication
+	// details to connect to S3 with. All possible sources are checked to fill
+	// in any missing values from more preferred sources.
+	//
+	// The preferred file is ~/.s3cfg, since this is the only config file type
+	// that allows the specification of a custom domain. This file is Amazon's
+	// s3cmd config file, described here: http://s3tools.org/kb/item14.htm. wr
+	// will look at the access_key, secret_key, use_https and host_base options
+	// under the section with the given Profile name. If you don't wish to use
+	// any other config files or environment variables, you can add the non-
+	// standard region option to this file if you need to specify a specific
+	// region.
+	//
+	// The next file checked is the one pointed to by the
+	// $AWS_SHARED_CREDENTIALS_FILE environment variable, or ~/.aws/credentials.
+	// This file is described here:
+	// http://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-
+	// started.html. wr will look at the aws_access_key_id and
+	// aws_secret_access_key options under the section with the given Profile
+	// name.
+	//
+	// wr also checks the file pointed to by the $AWS_CONFIG_FILE environment
+	// variable, or ~/.aws/config, described in the previous link. From here the
+	// region option is used from the section with the given Profile name. If
+	// you don't wish to use a ~/.s3cfg file but do need to specify a custom
+	// domain, you can add the non-standard host_base and use_https options to
+	// this file instead.
+	//
+	// As a last resort, ~/.awssecret is checked. This is s3fs's config file,
+	// and consists of a single line with your access key and secret key
+	// separated by a colon.
+	//
+	// If set, the environment variables $AWS_ACCESS_KEY_ID,
+	// $AWS_SECRET_ACCESS_KEY and $AWS_DEFAULT_REGION override corresponding
+	// options found in any config file.
+	Profile string
+
+	// Path (required) is the name of your S3 bucket, optionally followed URL-
+	// style (separated with forward slashes) by sub-directory names. The
+	// highest performance is gained by specifying the deepest path under your
+	// bucket that holds all the files you wish to access.
+	Path string
+
+	// Cache is a boolean, which if true, turns on data caching of any data
+	// retrieved, or any data you wish to upload.
+	Cache bool
+
+	// CacheDir is the local directory to store cached data. If this parameter
+	// is supplied, Cache is forced true and so doesn't need to be provided. If
+	// this parameter is not supplied but Cache is true, the directory will be a
+	// unique directory in the containing MountConfig's CacheBase, and will get
+	// deleted on unmount. If it's a relative path, it will be relative to the
+	// CacheBase.
+	CacheDir string
+
+	// Write is a boolean, which if true, makes the mount point writeable. If
+	// you don't intend to write to a mount, just leave this parameter out.
+	// Because writing currently requires caching, turning this on forces Cache
+	// to be considered true.
+	Write bool
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -598,12 +728,15 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // property. The unique folder structure itself can be wholly deleted through
 // the Job behaviour "cleanup".
 //
-// Internally, Execute() calls Started() and Ended() and keeps track of peak RAM
-// used. It regularly calls Touch() on the Job so that the server knows we are
-// still alive and handling the Job successfully. It also intercepts SIGTERM,
-// SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and
-// returning Error.Err(FailReasonSignal); you should check for this and exit
-// your process. Finally it calls TriggerBehaviours().
+// If any remote file system mounts have been configured for the Job, these are
+// mounted prior to running the Cmd, and unmounted afterwards.
+//
+// Internally, Execute() calls Mount(), Started() and Ended() and keeps track of
+// peak RAM used. It regularly calls Touch() on the Job so that the server knows
+// we are still alive and handling the Job successfully. It also intercepts
+// SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running
+// Cmd and returning Error.Err(FailReasonSignal); you should check for this and
+// exit your process. Finally it calls Unmount() and TriggerBehaviours().
 //
 // If no error is returned, the Cmd will have run OK, exited with status 0, and
 // been Archive()d from the queue while being placed in the permanent store.
@@ -662,6 +795,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			c.Bury(job, FailReasonCwd)
 		}
 		cmd.Dir = actualCwd
+		job.ActualCwd = actualCwd
+	}
+
+	// we'll mount any configured remote file systems
+	err = job.Mount()
+	if err != nil {
+		c.Bury(job, FailReasonMount)
+		return fmt.Errorf("failed to mount remote file systems for job [%s]: %s", job.key(), err)
 	}
 
 	// and we'll run it with the environment variables that were present when
@@ -671,6 +812,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	env, err := job.Env()
 	if err != nil {
 		c.Bury(job, FailReasonEnv)
+		job.Unmount()
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", job.key(), err)
 	}
 	if tmpDir != "" {
@@ -697,6 +839,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		// some obscure internal error about setting things up
 		c.Release(job, FailReasonStart, ClientReleaseDelay)
+		job.Unmount()
 		return fmt.Errorf("could not start command [%s]: %s", jc, err)
 	}
 
@@ -710,6 +853,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
 		cmd.Process.Kill()
+		job.Unmount()
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
 	}
@@ -859,6 +1003,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
+		job.Unmount()
 		job.TriggerBehaviours(false)
 
 		// if we can't access the server, we'll have to treat this as failed
@@ -877,10 +1022,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 		err = c.Archive(job)
 	}
 	if err != nil {
+		job.Unmount()
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
+	err = job.Unmount()
+	if err != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; unmounting also caused problem(s): %s", myerr.Error(), err.Error())
+		} else {
+			myerr = err
+		}
+	}
 	err = job.TriggerBehaviours(myerr == nil)
 	if err != nil {
 		if myerr != nil {
@@ -1165,6 +1319,123 @@ func (j *Job) StdErr() (stderr string, err error) {
 // Execute().
 func (j *Job) TriggerBehaviours(success bool) error {
 	return j.Behaviours.Trigger(success, j)
+}
+
+// Mount uses the Job's MountConfigs to mount the remote file systems at the
+// desired mount points. If a mount point is unspecified, mounts in the sub
+// folder Cwd/mnt if CwdMatters (and unspecified CacheBase becomes Cwd),
+// otherwise the actual working directory is used as the mount point (and the
+// parent of that used for unspecified CacheBase). Relative CacheDir options
+// are treated relative to the CacheBase.
+func (j *Job) Mount() error {
+	cwd := j.Cwd
+	defaultMount := filepath.Join(j.Cwd, "mnt")
+	defaultCacheBase := cwd
+	if j.ActualCwd != "" {
+		cwd = j.ActualCwd
+		defaultMount = cwd
+		defaultCacheBase = filepath.Dir(cwd)
+	}
+
+	for _, mc := range j.MountConfigs {
+		var rcs []*muxfys.RemoteConfig
+		for _, mt := range mc.Targets {
+			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
+			if err != nil {
+				j.Unmount()
+				return err
+			}
+			accessor, err := muxfys.NewS3Accessor(accessorConfig)
+			if err != nil {
+				j.Unmount()
+				return err
+			}
+
+			cacheDir := mt.CacheDir
+			if cacheDir != "" && !filepath.IsAbs(cacheDir) {
+				cacheDir = filepath.Join(defaultCacheBase, cacheDir)
+			}
+			rc := &muxfys.RemoteConfig{
+				Accessor:  accessor,
+				CacheData: mt.Cache,
+				CacheDir:  cacheDir,
+				Write:     mt.Write,
+			}
+
+			rcs = append(rcs, rc)
+		}
+
+		if len(rcs) == 0 {
+			j.Unmount()
+			return fmt.Errorf("No Targets specified")
+		}
+
+		retries := 10
+		if mc.Retries > 0 {
+			retries = mc.Retries
+		}
+
+		mount := mc.Mount
+		if mount != "" {
+			if !filepath.IsAbs(mount) {
+				mount = filepath.Join(cwd, mount)
+			}
+		} else {
+			mount = defaultMount
+		}
+		cacheBase := mc.CacheBase
+		if cacheBase != "" {
+			if !filepath.IsAbs(cacheBase) {
+				cacheBase = filepath.Join(cwd, cacheBase)
+			}
+		} else {
+			cacheBase = defaultCacheBase
+		}
+		cfg := &muxfys.Config{
+			Mount:     mount,
+			CacheBase: cacheBase,
+			Retries:   retries,
+			Verbose:   mc.Verbose,
+		}
+
+		fs, err := muxfys.New(cfg)
+		if err != nil {
+			j.Unmount()
+			return err
+		}
+
+		err = fs.Mount(rcs...)
+		if err != nil {
+			j.Unmount()
+			return err
+		}
+		fs.UnmountOnDeath()
+
+		j.mountedFS = append(j.mountedFS, fs)
+	}
+
+	return nil
+}
+
+// Unmount unmounts any remote filesystems that were previously mounted with
+// Mount(). Returns nil if Mount() had not been called or there were no
+// MountConfigs. Note that for cached writable mounts, created files will only
+// begin to upload once Unmount() is called, so this may take some time to
+// return.
+func (j *Job) Unmount() error {
+	var errors []string
+	for _, fs := range j.mountedFS {
+		err := fs.Unmount()
+		if err != nil {
+			errors = append(errors, err.Error())
+		}
+	}
+	j.mountedFS = nil
+
+	if len(errors) > 0 {
+		return fmt.Errorf("Unmount failure(s): %s", errors)
+	}
+	return nil
 }
 
 // updateRecsAfterFailure checks the FailReason and bumps RAM or Time as

@@ -2699,6 +2699,99 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	}
 }
 
+func TestJobqueueWithMounts(t *testing.T) {
+	if runnermode {
+		return
+	}
+
+	// for these tests to work, JOBQUEUE_REMOTES3_PATH must be the bucket name
+	// and path to an S3 directory set up as per TestS3RemoteIntegration in
+	// github.com/VertebrateResequencing/muxfys/s3_test.go. You must also have
+	// an ~/.s3cfg file with a default section containing your s3 configuration.
+
+	s3Path := os.Getenv("JOBQUEUE_REMOTES3_PATH")
+	_, s3cfgErr := os.Stat(filepath.Join(os.Getenv("HOME"), ".s3cfg"))
+
+	if s3Path == "" || s3cfgErr != nil {
+		SkipConvey("Without the JOBQUEUE_REMOTES3_PATH environment variable and an ~/.s3cfg file, we'll skip jobqueue S3 tests", t, func() {})
+		return
+	}
+
+	Convey("You can connect and run commands that rely on files in a remote S3 object store", t, func() {
+		config := internal.ConfigLoad("development", true)
+		addr := "localhost:" + config.ManagerPort
+
+		ServerLogClientErrors = false
+		ServerInterruptTime = 10 * time.Millisecond
+		ServerReserveTicker = 10 * time.Millisecond
+		ClientReleaseDelay = 100 * time.Millisecond
+		clientConnectTime := 10 * time.Second
+		ServerItemTTR = 10 * time.Second
+		ClientTouchInterval = 50 * time.Millisecond
+
+		pwd, err := os.Getwd()
+		if err != nil {
+			log.Fatal(err)
+		}
+		cwd, err := ioutil.TempDir(pwd, "wr_jobqueue_test_s3_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(cwd)
+
+		serverConfig := ServerConfig{
+			Port:            config.ManagerPort,
+			WebPort:         config.ManagerWeb,
+			SchedulerName:   "local",
+			SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
+			DBFile:          config.ManagerDbFile,
+			DBFileBackup:    config.ManagerDbBkFile,
+			Deployment:      config.Deployment,
+		}
+		server, _, err := Serve(serverConfig)
+		So(err, ShouldBeNil)
+
+		standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
+
+		jq, err := Connect(addr, "test_queue", clientConnectTime)
+		So(err, ShouldBeNil)
+		defer jq.Disconnect()
+
+		var jobs []*Job
+		mcs := []MountConfig{
+			{Targets: []MountTarget{
+				{Path: s3Path, Cache: true},
+				{Path: s3Path + "/sub/deep", Cache: true},
+			}, Verbose: true},
+		}
+		jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs})
+		inserts, already, err := jq.Add(jobs, envVars)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+		So(already, ShouldEqual, 0)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job, ShouldNotBeNil)
+		So(job.RepGroup, ShouldEqual, "s3")
+
+		// muxfys.SetLogHandler(log15.StderrHandler)
+		jeerr := jq.Execute(job, config.RunnerExecShell)
+		So(jeerr, ShouldBeNil)
+
+		job, err = jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt && cat bar"}, false, false)
+		So(err, ShouldBeNil)
+		So(job, ShouldNotBeNil)
+		So(job.State, ShouldEqual, "complete")
+
+		Reset(func() {
+			if server != nil {
+				server.Stop()
+			}
+		})
+	})
+}
+
 func TestJobqueueSpeed(t *testing.T) {
 	if runnermode {
 		return

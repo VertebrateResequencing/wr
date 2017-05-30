@@ -21,6 +21,7 @@ package cmd
 import (
 	"encoding/json"
 	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
@@ -161,13 +162,46 @@ true.`,
 		muxfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
 		// mount everything
-		for _, crs := range mountParseJson(mountJSON) {
-			fs, err := muxfys.New(crs.Config)
+		for _, mc := range mountParseJson(mountJSON) {
+			var rcs []*muxfys.RemoteConfig
+			for _, mt := range mc.Targets {
+				accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
+				if err != nil {
+					die("had a problem reading S3 config values from the environment: %s", err)
+				}
+				accessor, err := muxfys.NewS3Accessor(accessorConfig)
+				if err != nil {
+					die("had a problem creating an S3 accessor: %s", err)
+				}
+
+				rc := &muxfys.RemoteConfig{
+					Accessor:  accessor,
+					CacheData: mt.Cache,
+					CacheDir:  mt.CacheDir,
+					Write:     mt.Write,
+				}
+
+				rcs = append(rcs, rc)
+			}
+
+			retries := 10
+			if mc.Retries > 0 {
+				retries = mc.Retries
+			}
+
+			cfg := &muxfys.Config{
+				Mount:     mc.Mount,
+				CacheBase: mc.CacheBase,
+				Retries:   retries,
+				Verbose:   mc.Verbose,
+			}
+
+			fs, err := muxfys.New(cfg)
 			if err != nil {
 				die("bad configuration: %s\n", err)
 			}
 
-			err = fs.Mount(crs.Remotes...)
+			err = fs.Mount(rcs...)
 			if err != nil {
 				die("could not mount: %s\n", err)
 			}
@@ -187,86 +221,13 @@ func init() {
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
 
-// mountConfObj is the struct for the objects in the user's --mount JSON array.
-type mountConfObj struct {
-	Mount     string
-	CacheBase string
-	Retries   int
-	Verbose   bool
-	Targets   []mountTargetObj
-}
-
-// mountTargetObj is the struct for the objects in mountConfObj's Targets array.
-type mountTargetObj struct {
-	Profile  string
-	Path     string
-	Cache    bool
-	CacheDir string
-	Write    bool
-}
-
-// mountCrs is the return value for mountParseJson, holding the muxfys Config
-// value and a slice of the muxfys RemoteConfig values.
-type mountCrs struct {
-	Config  *muxfys.Config
-	Remotes []*muxfys.RemoteConfig
-}
-
 // mountParseJson takes a json string (as per `wr mount --help`) and parses it
-// to a Config and RemoteConfigs for each mount defined.
-func mountParseJson(jsonString string) (crs []mountCrs) {
-	var ml []mountConfObj
-	err := json.Unmarshal([]byte(jsonString), &ml)
+// to a MountConfig for each mount defined.
+func mountParseJson(jsonString string) (mcs []jobqueue.MountConfig) {
+	// parse
+	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
 	}
-
-	usedMounts := make(map[string]bool)
-	for _, mj := range ml {
-		if _, used := usedMounts[mj.Mount]; used {
-			die("had a problem with the provided mount JSON (%s): Mount [%s] used more than once", jsonString, mj.Mount)
-		}
-		usedMounts[mj.Mount] = true
-
-		var rcs []*muxfys.RemoteConfig
-		for _, mt := range mj.Targets {
-			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
-			if err != nil {
-				die("had a problem reading S3 config values from the environment: %s", err)
-			}
-			accessor, err := muxfys.NewS3Accessor(accessorConfig)
-			if err != nil {
-				die("had a problem creating an S3 accessor: %s", err)
-			}
-
-			rc := &muxfys.RemoteConfig{
-				Accessor:  accessor,
-				CacheData: mt.Cache,
-				CacheDir:  mt.CacheDir,
-				Write:     mt.Write,
-			}
-
-			rcs = append(rcs, rc)
-		}
-
-		if len(rcs) == 0 {
-			die("had a problem with the provided mount JSON (%s): no Targets", jsonString)
-		}
-
-		retries := 10
-		if mj.Retries > 0 {
-			retries = mj.Retries
-		}
-
-		cfg := &muxfys.Config{
-			Mount:     mj.Mount,
-			CacheBase: mj.CacheBase,
-			Retries:   retries,
-			Verbose:   mj.Verbose,
-		}
-
-		crs = append(crs, mountCrs{cfg, rcs})
-	}
-
 	return
 }
