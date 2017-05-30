@@ -272,6 +272,13 @@
                                             <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
                                         </dd>
                                     </dl>
+                                    
+                                    <!-- ko if: Cwd -->
+                                        <dl>
+                                            <dt>Home Changed</dt>
+                                            <dd data-bind="text: HomeChanged"></dd>
+                                        </dl>
+                                    <!-- /ko -->
                                 </div>
                                 <div class="panel-footer clearfix">
                                     <!-- ko if: Similar -->

@@ -45,6 +45,7 @@ var cmdPri int
 var cmdRet int
 var cmdFile string
 var cmdCwdMatters bool
+var cmdChangeHome bool
 var cmdRepGroup string
 var cmdDepGroups string
 var cmdDeps string
@@ -54,6 +55,7 @@ type addCmdOpts struct {
 	Cmd         string                `json:"cmd"`
 	Cwd         string                `json:"cwd"`
 	CwdMatters  bool                  `json:"cwd_matters"`
+	ChangeHome  bool                  `json:"change_home"`
 	ReqGrp      string                `json:"req_grp"`
 	Memory      string                `json:"memory"`
 	Time        string                `json:"time"`
@@ -120,6 +122,10 @@ relative paths will be easy to find since they'll be relative to your own set
 cwd path (otherwise you'd have to find out the actual cwd value in the status
 of a job). It also lets you specify relative paths to your input files in your
 cmd, assuming they are in your cwd.
+
+"change_home" only has an effect when "cwd_matters" is false. If enabled, sets
+the $HOME environment variable to the actual command working directory before
+running the cmd.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are
@@ -373,6 +379,11 @@ started.`,
 				cwdMatters = true
 			}
 
+			changeHome := cmdChangeHome
+			if cmdOpts.ChangeHome {
+				changeHome = true
+			}
+
 			if cmdOpts.RepGrp == "" {
 				if reqGroup != "" {
 					rg = reqGroup
@@ -498,6 +509,7 @@ started.`,
 				Cmd:          cmd,
 				Cwd:          cwd,
 				CwdMatters:   cwdMatters,
+				ChangeHome:   changeHome,
 				ReqGroup:     rg,
 				Requirements: &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
 				Override:     uint8(override),
@@ -539,6 +551,7 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
 	addCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
+	addCmd.Flags().BoolVar(&cmdChangeHome, "change_home", false, "when not --cwd_matters, set $HOME to the actual working directory")
 	addCmd.Flags().StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")

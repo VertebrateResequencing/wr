@@ -58,6 +58,7 @@ type jstatus struct {
 	State         string
 	Cwd           string
 	CwdBase       string
+	HomeChanged   bool
 	ExpectedRAM   int
 	ExpectedTime  float64
 	RequestedDisk int
@@ -187,6 +188,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							State:         jobs[0].State,
 							CwdBase:       jobs[0].Cwd,
 							Cwd:           cwdLeaf,
+							HomeChanged:   jobs[0].ChangeHome,
 							ExpectedRAM:   jobs[0].Requirements.RAM,
 							ExpectedTime:  jobs[0].Requirements.Time.Seconds(),
 							RequestedDisk: jobs[0].Requirements.Disk,
@@ -273,6 +275,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									State:         job.State,
 									CwdBase:       job.Cwd,
 									Cwd:           cwdLeaf,
+									HomeChanged:   job.ChangeHome,
 									ExpectedRAM:   job.Requirements.RAM,
 									ExpectedTime:  job.Requirements.Time.Seconds(),
 									RequestedDisk: job.Requirements.Disk,
