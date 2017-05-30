@@ -87,15 +87,15 @@ profiles etc.) and starts a cloud server, on which 'wr manager' is run.
 Deploy then sets up ssh forwarding in the background that lets you use the
 normal wr command line utilities such as 'wr add' and view the wr website
 locally, even though the manager is actually running remotely. Note that this
-precludes starting wr manager locally as well. Also be aware of the way that
-while 'wr add' normally associates your current environment variables and
-working directory with the cmds you want to run, with a remote deployment the
-working directory defaults to /tmp, and commands will be run with a minimal set
-of remote environment variables.
+precludes starting wr manager locally as well. Also be aware that while 'wr add'
+normally associates your current environment variables and working directory
+with the cmds you want to run, with a remote deployment the working directory
+defaults to /tmp, and commands will be run with a minimal set of remote
+environment variables.
 
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created cloud server before any commands run on them. You
-might install some software for example. Not that the script is run as the user
+might install some software for example. Note that the script is run as the user
 defined by --username; if necessary, your bash script may have to prefix its
 commands with 'sudo' if the command would only work as root user.
 
