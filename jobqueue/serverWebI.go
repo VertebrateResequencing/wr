@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -56,6 +57,7 @@ type jstatus struct {
 	Cmd           string
 	State         string
 	Cwd           string
+	CwdBase       string
 	ExpectedRAM   int
 	ExpectedTime  float64
 	RequestedDisk int
@@ -171,6 +173,11 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						stderr, _ := jobs[0].StdErr()
 						stdout, _ := jobs[0].StdOut()
 						env, _ := jobs[0].Env()
+						var cwdLeaf string
+						if jobs[0].ActualCwd != "" {
+							cwdLeaf, _ = filepath.Rel(jobs[0].Cwd, jobs[0].ActualCwd)
+							cwdLeaf = "/" + cwdLeaf
+						}
 						status := jstatus{
 							Key:           jobs[0].key(),
 							RepGroup:      jobs[0].RepGroup,
@@ -178,7 +185,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							Dependencies:  jobs[0].Dependencies.Stringify(),
 							Cmd:           jobs[0].Cmd,
 							State:         jobs[0].State,
-							Cwd:           jobs[0].Cwd,
+							CwdBase:       jobs[0].Cwd,
+							Cwd:           cwdLeaf,
 							ExpectedRAM:   jobs[0].Requirements.RAM,
 							ExpectedTime:  jobs[0].Requirements.Time.Seconds(),
 							RequestedDisk: jobs[0].Requirements.Disk,
@@ -251,6 +259,11 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								stderr, _ := job.StdErr()
 								stdout, _ := job.StdOut()
 								env, _ := job.Env()
+								var cwdLeaf string
+								if job.ActualCwd != "" {
+									cwdLeaf, _ = filepath.Rel(job.Cwd, job.ActualCwd)
+									cwdLeaf = "/" + cwdLeaf
+								}
 								status := jstatus{
 									Key:           job.key(),
 									RepGroup:      req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
@@ -258,7 +271,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									Dependencies:  job.Dependencies.Stringify(),
 									Cmd:           job.Cmd,
 									State:         job.State,
-									Cwd:           job.Cwd,
+									CwdBase:       job.Cwd,
+									Cwd:           cwdLeaf,
 									ExpectedRAM:   job.Requirements.RAM,
 									ExpectedTime:  job.Requirements.Time.Seconds(),
 									RequestedDisk: job.Requirements.Disk,

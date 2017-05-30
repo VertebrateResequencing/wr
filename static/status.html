@@ -143,7 +143,9 @@
                             <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried', 'panel-success': State == 'complete' }">
                                 <div class="panel-heading">
                                     <h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
-                                    <small><i data-bind="text: Cwd"></i></small>
+                                    <div style="overflow-x: auto">
+                                        <small><i><span data-bind="text: CwdBase"></span><span data-bind="text: Cwd" style="color: grey"></span></i></small>
+                                    </div>
                                 </div>
                                 <div class="panel-body keyvals">
                                     <dl>

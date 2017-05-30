@@ -165,7 +165,11 @@ very many (tens of thousands+) commands.`,
 		} else {
 			// print out status information for each job
 			for _, job := range jobs {
-				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, job.Cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
+				cwd := job.Cwd
+				if job.ActualCwd != "" {
+					cwd = job.ActualCwd
+				}
+				fmt.Printf("\n# %s\nCwd: %s\nId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case "delayed":

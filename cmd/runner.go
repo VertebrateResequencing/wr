@@ -61,6 +61,8 @@ complete.`,
 		timeout := time.Duration(timeoutint) * time.Second
 		rtimeout := time.Duration(reserveint) * time.Second
 
+		jobqueue.AppName = "wr"
+
 		jq, err := jobqueue.Connect(rserver, queuename, timeout)
 		if err != nil {
 			die("%s", err)

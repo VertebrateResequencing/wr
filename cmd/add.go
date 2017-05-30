@@ -44,6 +44,7 @@ var cmdOvr int
 var cmdPri int
 var cmdRet int
 var cmdFile string
+var cmdCwdMatters bool
 var cmdRepGroup string
 var cmdDepGroups string
 var cmdDeps string
@@ -52,6 +53,7 @@ var cmdDeps string
 type addCmdOpts struct {
 	Cmd         string                `json:"cmd"`
 	Cwd         string                `json:"cwd"`
+	CwdMatters  bool                  `json:"cwd_matters"`
 	ReqGrp      string                `json:"req_grp"`
 	Memory      string                `json:"memory"`
 	Time        string                `json:"time"`
@@ -83,8 +85,8 @@ specific options using a JSON object in (tab separated) column 2, or
 alternatively have only a JSON object in column 1 that also specifies the
 command as one of the name:value pairs. The possible options are:
 
-cmd cwd req_grp memory time override cpus disk priority retries rep_grp dep_grps
-deps cmd_deps cloud_os cloud_user cloud_os_ram cloud_script env
+cmd cwd cwd_matters req_grp memory time override cpus disk priority retries
+rep_grp dep_grps deps cmd_deps cloud_os cloud_user cloud_os_ram cloud_script env
 
 If any of these (except the cloud ones and env) will be the same for all your
 commands, you can instead specify them as flags (which are treated as defaults
@@ -92,16 +94,32 @@ in the case that they are unspecified in the text file, but otherwise ignored).
 The meaning of each option is detailed below.
 
 A JSON object can written by starting and ending it with curly braces. Names and
-single values are put in double quotes (except for numbers, which are left bare)
-and the pair separated with a colon, and pairs separated from each other with
-commas. Options that take array values have their double-quoted values
-separated by commas and enclosed in square brackets. For example (on one line):
-{"cmd":"myexe -f input > output","cwd":"/path/to/cwd","priority":1,"dep_grps":
+single values are put in double quotes (except for numbers, which are left bare,
+and booleans, where you write 'true' or 'false' without quotes) and the pair
+separated with a colon, and pairs separated from each other with commas. Options
+that take array values have their double-quoted values separated by commas and
+enclosed in square brackets. For example (on one line): {"cmd":"myexe -f input >
+output","cwd":"/path/to/cwd","priority":1,"dep_grps":
 ["dg2","dg3"],"deps":["dg1"]}
 
-"cwd" is the directory to cd to before running the command. If none is
-specified, the default will be your current directory right now. (If adding to a
-remote cloud-deployed manager, then cwd will instead default to /tmp.)
+"cwd" determines the directory to cd to before running the command (the 'command
+working directory'). If none is specified, the default will be your current
+directory right now. (If adding to a remote cloud-deployed manager, then cwd
+will instead default to /tmp.)
+
+"cwd_matters" by default is false, meaning that "cwd" is taken as the parent
+directory to create a unique working directory inside. This unique directory
+can be deleted after the cmd finishes running (according to cleanup behaviour),
+and enables tracking of how much disk space your cmd uses. If using mounts and
+not specifying a mount point, the mount point will be the actual working
+directory. If, on the other hand, you set cwd_matters, then "cwd" is the literal
+command working directory, you can't clean up afterwards, you don't get disk
+space tracking and undefined mounts are mounted in the "mnt" subdirectory of
+cwd. One benefit is that any output files that your command creates with
+relative paths will be easy to find since they'll be relative to your own set
+cwd path (otherwise you'd have to find out the actual cwd value in the status
+of a job). It also lets you specify relative paths to your input files in your
+cmd, assuming they are in your cwd.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are
@@ -350,6 +368,11 @@ started.`,
 				cwd = cmdOpts.Cwd
 			}
 
+			cwdMatters := cmdCwdMatters
+			if cmdOpts.CwdMatters {
+				cwdMatters = true
+			}
+
 			if cmdOpts.RepGrp == "" {
 				if reqGroup != "" {
 					rg = reqGroup
@@ -474,6 +497,7 @@ started.`,
 				RepGroup:     repg,
 				Cmd:          cmd,
 				Cwd:          cwd,
+				CwdMatters:   cwdMatters,
 				ReqGroup:     rg,
 				Requirements: &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
 				Override:     uint8(override),
@@ -513,7 +537,8 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
 	addCmd.Flags().StringVarP(&cmdRepGroup, "report_grp", "i", "manually_added", "reporting group for your commands")
 	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
-	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir")
+	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
+	addCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
 	addCmd.Flags().StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
