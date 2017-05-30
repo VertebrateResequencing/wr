@@ -75,13 +75,17 @@ The paragraphs below describe all the possible Config object parameters.
 Mount is the local directory on which to mount your Target(s). It can be (in)
 any directory you're able to write to. If the directory doesn't exist, wr will
 try to create it first. Otherwise, it must be empty. If not supplied, defaults
-to the subdirectory "mnt" in the current working directory. Note that if
-specifying multiple Config objects, they must each have a different Mount (and
-so only one of them can have Mount undefined).
+to the subdirectory "mnt" in the current working directory (under 'wr add', if
+--cwd_matters has not been set, then instead the actual working directory is
+used as the mount point). Note that if specifying multiple Config objects, they
+must each have a different Mount (and so only one of them can have Mount
+undefined).
 
 CacheBase is the parent directory to use for the CacheDir of any Targets
 configured with Cache on, but CacheDir undefined. If CacheBase is also
-undefined, the cache directories will be made in the current working directory.
+undefined, the cache directories will be made in the current working directory
+(under 'wr add', if --cwd_matters has not been set, then instead the cache
+directories will be in a sister directory of the actual working directory).
 
 Retries is the number of retries wr should attempt when it encounters errors in
 trying to access your remote S3 bucket. At least 3 is recommended. It defaults
