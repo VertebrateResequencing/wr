@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the implementation of Job behaviours.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -107,44 +108,57 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	return fmt.Errorf("invalid status %d", status)
 }
 
-// String provides a nice string representation of a Behaviour for user
-// interface display purposes.
-func (b *Behaviour) String() string {
-	var when string
-	switch b.When {
-	case OnExit:
-		when = "OnExit"
-	case OnSuccess:
-		when = "OnSuccess"
-	case OnFailure:
-		when = "OnFailure"
-	case OnSuccess | OnFailure:
-		when = "OnSuccess|OnFailure"
-	default:
-		when = "!invalid!"
-	}
-
-	var do string
+// fillBVJM converts to a bvjMapping. Supply an empty or existing one and this
+// will add to it.
+func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
+	var bvj BehaviourViaJSON
 	switch b.Do {
-	case CleanupAll:
-		do = "CleanupAll"
-	case Cleanup:
-		do = "Cleanup"
 	case Run:
+		var arg string
 		if cmd, wasStr := b.Arg.(string); wasStr {
-			do = fmt.Sprintf("Run(%s)", cmd)
+			arg = cmd
 		} else {
-			do = "Run(!invalid!)"
+			arg = "!invalid!"
 		}
+		bvj = BehaviourViaJSON{Run: arg}
 	case CopyToManager:
+		var arg []string
 		if files, wasStrSlice := b.Arg.([]string); wasStrSlice {
-			do = fmt.Sprintf("CopyToManager(%s)", files)
+			arg = files
 		} else {
-			do = "CopyToManager(!invalid!)"
+			arg = []string{"!invalid!"}
 		}
+		bvj = BehaviourViaJSON{CopyToManager: arg}
+	case Cleanup:
+		bvj = BehaviourViaJSON{Cleanup: true}
+	case CleanupAll:
+		bvj = BehaviourViaJSON{CleanupAll: true}
+	default:
+		return
 	}
 
-	return fmt.Sprintf("{When: %s, Do: %s}", when, do)
+	switch b.When {
+	case OnFailure:
+		bvjm.OnFailure = append(bvjm.OnFailure, bvj)
+	case OnSuccess:
+		bvjm.OnSuccess = append(bvjm.OnSuccess, bvj)
+	case OnFailure | OnSuccess:
+		bvjm.OnFS = append(bvjm.OnFS, bvj)
+	case OnExit:
+		bvjm.OnExit = append(bvjm.OnExit, bvj)
+	default:
+		return
+	}
+}
+
+// String provides a nice string representation of a Behaviour for user
+// interface display purposes. It is in the form of a JSON string that can be
+// converted back to a Behaviour via a BehaviourViaJSON.
+func (b *Behaviour) String() string {
+	bvjm := &bvjMapping{}
+	b.fillBVJM(bvjm)
+	jb, _ := json.Marshal(bvjm)
+	return string(jb)
 }
 
 // cleanup with all == true wipes out the Job's ActualCwd as aggressively as
@@ -269,4 +283,71 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 		return fmt.Errorf(errors[0])
 	}
 	return nil
+}
+
+// String provides a nice string representation of Behaviours for user
+// interface display purposes. It takes the form of a JSON string that can
+// be converted back to Behaviours using a BehavioursViaJSON for each key. The
+// keys are "on_failure", "on_success", "on_failure|success" and "on_exit".
+func (bs Behaviours) String() string {
+	bvjm := &bvjMapping{}
+	for _, b := range bs {
+		b.fillBVJM(bvjm)
+	}
+	b, _ := json.Marshal(bvjm)
+	return string(b)
+}
+
+// BehaviourViaJSON makes up BehavioursViaJSON. Each of these should only
+// specify one of its properties.
+type BehaviourViaJSON struct {
+	Run           string   `json:"run,omitempty"`
+	CopyToManager []string `json:"copy_to_manager,omitempty"`
+	Cleanup       bool     `json:"cleanup,omitempty"`
+	CleanupAll    bool     `json:"cleanup_all,omitempty"`
+}
+
+// Behaviour converts the friendly BehaviourViaJSON struct to real Behaviour.
+func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
+	var do BehaviourAction
+	var arg interface{}
+
+	if bj.Run != "" {
+		do = Run
+		arg = bj.Run
+	} else if len(bj.CopyToManager) > 0 {
+		do = CopyToManager
+		arg = bj.CopyToManager
+	} else if bj.Cleanup {
+		do = Cleanup
+	} else if bj.CleanupAll {
+		do = CleanupAll
+	}
+
+	return &Behaviour{
+		When: when,
+		Do:   do,
+		Arg:  arg,
+	}
+}
+
+// BehavioursViaJSON is a slice of BehaviourViaJSON. It is a convenience to
+// allow users to specify behaviours in a more natural way if they're trying to
+// describe them in a JSON string. You'd have one of these per BehaviourTrigger.
+type BehavioursViaJSON []BehaviourViaJSON
+
+// Behaviours converts a BehavioursViaJSON to real Behaviours.
+func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) (bs Behaviours) {
+	for _, bj := range bjs {
+		bs = append(bs, bj.Behaviour(when))
+	}
+	return
+}
+
+// bvjMapping struct is used by Behaviour*.String() to do its JSON conversion.
+type bvjMapping struct {
+	OnFailure BehavioursViaJSON `json:"on_failure,omitempty"`
+	OnSuccess BehavioursViaJSON `json:"on_success,omitempty"`
+	OnFS      BehavioursViaJSON `json:"on_failure|success,omitempty"`
+	OnExit    BehavioursViaJSON `json:"on_exit,omitempty"`
 }

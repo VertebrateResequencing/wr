@@ -19,6 +19,7 @@
 package jobqueue
 
 import (
+	"encoding/json"
 	"fmt"
 	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
@@ -54,20 +55,20 @@ func TestBehaviours(t *testing.T) {
 		job2 := &Job{Cwd: cwd}
 
 		Convey("Individual Behaviour can be nicely stringified", func() {
-			So(fmt.Sprintf("%s", b1), ShouldEqual, "{When: OnExit, Do: CleanupAll}")
-			So(fmt.Sprintf("%s", b2), ShouldEqual, "{When: OnSuccess, Do: CleanupAll}")
-			So(fmt.Sprintf("%s", b3), ShouldEqual, "{When: OnFailure, Do: CleanupAll}")
-			So(fmt.Sprintf("%s", b4), ShouldEqual, "{When: OnSuccess, Do: Run(touch ../../foo)}")
-			So(fmt.Sprintf("%s", b5), ShouldEqual, "{When: OnSuccess, Do: Run(touch foo)}")
-			So(fmt.Sprintf("%s", b6), ShouldEqual, "{When: OnSuccess, Do: Run(!invalid!)}")
-			So(fmt.Sprintf("%s", b7), ShouldEqual, "{When: OnSuccess, Do: CopyToManager([a.file b.file])}")
-			So(fmt.Sprintf("%s", b8), ShouldEqual, "{When: OnSuccess, Do: CopyToManager(!invalid!)}")
-			So(fmt.Sprintf("%s", b9), ShouldEqual, "{When: OnSuccess|OnFailure, Do: Cleanup}")
-			So(fmt.Sprintf("%s", b10), ShouldEqual, "{When: !invalid!, Do: Cleanup}")
+			So(fmt.Sprintf("%s", b1), ShouldEqual, `{"on_exit":[{"cleanup_all":true}]}`)
+			So(fmt.Sprintf("%s", b2), ShouldEqual, `{"on_success":[{"cleanup_all":true}]}`)
+			So(fmt.Sprintf("%s", b3), ShouldEqual, `{"on_failure":[{"cleanup_all":true}]}`)
+			So(fmt.Sprintf("%s", b4), ShouldEqual, `{"on_success":[{"run":"touch ../../foo"}]}`)
+			So(fmt.Sprintf("%s", b5), ShouldEqual, `{"on_success":[{"run":"touch foo"}]}`)
+			So(fmt.Sprintf("%s", b6), ShouldEqual, `{"on_success":[{"run":"!invalid!"}]}`)
+			So(fmt.Sprintf("%s", b7), ShouldEqual, `{"on_success":[{"copy_to_manager":["a.file","b.file"]}]}`)
+			So(fmt.Sprintf("%s", b8), ShouldEqual, `{"on_success":[{"copy_to_manager":["!invalid!"]}]}`)
+			So(fmt.Sprintf("%s", b9), ShouldEqual, `{"on_failure|success":[{"cleanup":true}]}`)
+			So(fmt.Sprintf("%s", b10), ShouldEqual, "{}")
 
 			Convey("Behaviours can be nicely stringified", func() {
 				bs := Behaviours{b1, b4}
-				So(fmt.Sprintf("%s", bs), ShouldEqual, "[{When: OnExit, Do: CleanupAll} {When: OnSuccess, Do: Run(touch ../../foo)}]")
+				So(fmt.Sprintf("%s", bs), ShouldEqual, `{"on_success":[{"run":"touch ../../foo"}],"on_exit":[{"cleanup_all":true}]}`)
 			})
 		})
 
@@ -189,6 +190,54 @@ func TestBehaviours(t *testing.T) {
 			So(err, ShouldBeNil)
 			_, err = os.Stat(adir)
 			So(err, ShouldNotBeNil)
+		})
+	})
+
+	Convey("You can go from JSON to Behaviours", t, func() {
+		jsonStr := `[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true}]`
+		var bjs BehavioursViaJSON
+		err := json.Unmarshal([]byte(jsonStr), &bjs)
+		So(err, ShouldBeNil)
+		So(len(bjs), ShouldEqual, 3)
+
+		bs := bjs.Behaviours(OnFailure)
+
+		So(bs[0].When, ShouldEqual, OnFailure)
+		So(bs[0].Do, ShouldEqual, Run)
+		So(bs[0].Arg, ShouldEqual, "tar -czf my.tar.bz '--include=*.err'")
+
+		So(bs[1].When, ShouldEqual, OnFailure)
+		So(bs[1].Do, ShouldEqual, CopyToManager)
+		So(bs[1].Arg, ShouldResemble, []string{"my.tar.bz"})
+
+		So(bs[2].When, ShouldEqual, OnFailure)
+		So(bs[2].Do, ShouldEqual, CleanupAll)
+
+		jsonStr = `[{"cleanup":true}]`
+		var bjs2 BehavioursViaJSON
+		err = json.Unmarshal([]byte(jsonStr), &bjs2)
+		So(err, ShouldBeNil)
+		So(len(bjs2), ShouldEqual, 1)
+
+		bs = append(bs, bjs2.Behaviours(OnSuccess)...)
+
+		So(bs[3].When, ShouldEqual, OnSuccess)
+		So(bs[3].Do, ShouldEqual, Cleanup)
+
+		jsonStr = `[{"run":"true"}]`
+		var bjs3 BehavioursViaJSON
+		err = json.Unmarshal([]byte(jsonStr), &bjs3)
+		So(err, ShouldBeNil)
+		So(len(bjs3), ShouldEqual, 1)
+
+		bs = append(bs, bjs3.Behaviours(OnExit)...)
+
+		So(bs[4].When, ShouldEqual, OnExit)
+		So(bs[4].Do, ShouldEqual, Run)
+		So(bs[4].Arg, ShouldEqual, "true")
+
+		Convey("You can convert back to JSON", func() {
+			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
 		})
 	})
 }
