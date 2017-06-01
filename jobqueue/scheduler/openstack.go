@@ -502,7 +502,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	if err != nil {
 		return
 	}
-	quota, err := s.provider.GetQuota()
+	quota, err := s.provider.GetQuota() // this includes resources used by currently spawning servers
 	if err != nil {
 		return
 	}
@@ -737,17 +737,12 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			}()
 			err = <-done
 			if err != nil {
-				s.mutex.Lock()
-				s.reservedInstances--
-				s.reservedCores -= flavor.Cores
-				s.reservedRAM -= flavor.RAM
-				s.mutex.Unlock()
 				return err
 			}
+			s.mutex.Lock()
 		} else {
 			s.spawningNow = true
 			standinServer.willBeUsed()
-			s.mutex.Unlock()
 			s.debug("n %s will use the standin straightaway, unlocked\n", uniqueDebug)
 		}
 
@@ -766,13 +761,41 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 		s.debug("o %s will spawn\n", uniqueDebug)
 		if debugEffect == "slowSecondSpawn" && thisDebugCount == 3 {
+			s.mutex.Unlock()
 			<-time.After(10 * time.Second)
+			s.mutex.Lock()
 		}
+
+		// just before actually spawning, drop our reserved values down or
+		// we'll end up double-counting resource usage in canCount(), since that
+		// takes in to account resources used by an in-progress spawn. It's ok
+		// to do this a little early since that just means we underestimate our
+		// resource usage and may try to spawn when we can't, instead of
+		// overestimating and not trying to spawn when we could
+		s.reservedInstances--
+		s.reservedCores -= flavor.Cores
+		s.reservedRAM -= flavor.RAM
+		if volumeAffected {
+			s.reservedVolume -= req.Disk
+		}
+
+		// unlock just after we issue the spawn request, since we don't want to
+		// block here waiting for that to complete
+		unlocked := make(chan bool)
+		go func() {
+			<-time.After(10 * time.Millisecond)
+			s.mutex.Unlock()
+			unlocked <- true
+		}()
+
+		// spawn
 		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false)
 		s.debug("p %s spawned\n", uniqueDebug)
 
-		// if we have standins that are waiting to spawn, tell one of them to go
-		// ahead
+		<-unlocked // in case the spawn call takes less than 10ms
+
+		// spawn completed; if we have standins that are waiting to spawn, tell
+		// one of them to go ahead
 		s.mutex.Lock()
 		s.debug("q %s locked\n", uniqueDebug)
 		s.spawningNow = false
@@ -836,12 +859,6 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 		s.mutex.Lock()
 		s.debug("u %s locked after waiting for server to become ready\n", uniqueDebug)
-		s.reservedInstances--
-		s.reservedCores -= flavor.Cores
-		s.reservedRAM -= flavor.RAM
-		if volumeAffected {
-			s.reservedVolume -= req.Disk
-		}
 
 		if debugEffect == "failFirstSpawn" && thisDebugCount == 1 {
 			err = errors.New("forced fail")

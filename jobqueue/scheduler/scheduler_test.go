@@ -547,10 +547,69 @@ func TestOpenstack(t *testing.T) {
 		// the servers it spawns
 		_, err = exec.LookPath("nova")
 		if err == nil && oss.provider.InCloud() {
-			Convey("Schedule() lets you schedule some jobs with no inputs/outputs", func() {
+			Convey("The canCount during and after spawning is correct", func() {
+				os := s.impl.(*opst)
+				// *** these tests are only going to work if no external process
+				// changes resource usage before we finish...
+
+				// avoid running anything on ourselves, so we actually spawn a
+				// new server
+				r := os.reqForSpawn(possibleReq)
+				for _, server := range os.servers {
+					if server.Flavor.RAM >= r.RAM {
+						r.RAM = server.Flavor.RAM + 1
+					}
+				}
+				numServers := len(os.servers)
+
+				flavor, err := os.determineFlavor(r)
+				So(err, ShouldBeNil)
+				testReq := &Requirements{flavor.RAM, 1 * time.Minute, flavor.Cores, 0, otherReqs}
+				can := os.canCount(testReq)
+
+				done := make(chan bool, 1)
+				go func() {
+					i := 0
+					for {
+						i++
+						err := os.runCmd("sleep 1", testReq)
+						if err == nil || i == 3 {
+							done <- true
+							break
+						}
+					}
+				}()
+
+				<-time.After(900 * time.Millisecond)
+
+				So(len(os.servers)+len(os.standins), ShouldEqual, numServers+1)
+				So(os.canCount(testReq), ShouldEqual, can-1)
+
+				<-done
+
+				for sid, server := range os.servers {
+					if server.Destroyed() {
+						delete(os.servers, sid)
+					}
+				}
+				So(len(os.servers), ShouldEqual, numServers+1)
+				So(os.canCount(testReq), ShouldEqual, can)
+
+				<-time.After(20 * time.Second)
+
+				for sid, server := range os.servers {
+					if server.Destroyed() {
+						delete(os.servers, sid)
+					}
+				}
+				So(len(os.servers), ShouldEqual, numServers)
+				So(os.canCount(testReq), ShouldEqual, can)
+			})
+
+			Convey("Schedule() lets you...", func() {
 				oFile := filepath.Join(tmpdir, "out")
 
-				Convey("It eventually runs them all", func() {
+				Convey("Run jobs with no inputs/outputs", func() {
 					// on authors setup, running the test from a 2 cpu cloud
 					// instance, the following count is sufficient to test
 					// spawning instances over the quota in the test environment
@@ -595,7 +654,7 @@ func TestOpenstack(t *testing.T) {
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
-					Convey("They can be run again, overriding the default os image and ram", func() {
+					Convey("Override the default os image and ram", func() {
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 						newCount := 3
 						eta := 120
@@ -640,7 +699,7 @@ func TestOpenstack(t *testing.T) {
 
 					// *** we really need to mock OpenStack instead of setting
 					// these debug package variables...
-					Convey("Everything still runs when a server fails to spawn", func() {
+					Convey("Run everything even when a server fails to spawn", func() {
 						debugCounter = 0
 						debugEffect = "failFirstSpawn"
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
@@ -653,7 +712,7 @@ func TestOpenstack(t *testing.T) {
 						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 					})
 
-					Convey("Servers still self-terminate when a server is slow to spawn", func() {
+					Convey("Run jobs and have servers still self-terminate when a server is slow to spawn", func() {
 						debugCounter = 0
 						debugEffect = "slowSecondSpawn"
 						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
@@ -681,7 +740,7 @@ func TestOpenstack(t *testing.T) {
 						jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
 						confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
 						if err == nil && confirmFlavor.Cores >= numCores {
-							Convey("You can run multiple jobs at once on multi-core servers", func() {
+							Convey("Run multiple jobs at once on multi-core servers", func() {
 								cmd := "sleep 30"
 								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
 								err = s.Schedule(cmd, jobReq, numCores)
