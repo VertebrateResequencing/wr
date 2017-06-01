@@ -2601,11 +2601,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			ServerItemTTR = 10 * time.Second
 			ClientTouchInterval = 50 * time.Millisecond
 
-			pwd, err := os.Getwd()
-			if err != nil {
-				log.Fatal(err)
-			}
-			runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
+			runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
