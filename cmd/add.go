@@ -328,7 +328,7 @@ started.`,
 			if err != nil {
 				die("bad --on_exit: %s", err)
 			}
-			defaultOnExit = bjs.Behaviours(jobqueue.OnSuccess)
+			defaultOnExit = bjs.Behaviours(jobqueue.OnExit)
 		}
 
 		// open file or set up to read from STDIN
