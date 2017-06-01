@@ -57,6 +57,7 @@ const (
 	FailReasonSignal   = "runner received a signal to stop"
 	FailReasonResource = "resource requirements cannot be met"
 	FailReasonMount    = "mounting of remote file system(s) failed"
+	FailReasonUpload   = "failed to upload files to remote file system"
 )
 
 // these global variables are primarily exported for testing purposes; you
@@ -812,7 +813,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	env, err := job.Env()
 	if err != nil {
 		c.Bury(job, FailReasonEnv)
-		job.Unmount()
+		job.Unmount(true)
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", job.key(), err)
 	}
 	if tmpDir != "" {
@@ -839,7 +840,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		// some obscure internal error about setting things up
 		c.Release(job, FailReasonStart, ClientReleaseDelay)
-		job.Unmount()
+		job.Unmount(true)
 		return fmt.Errorf("could not start command [%s]: %s", jc, err)
 	}
 
@@ -853,7 +854,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
 		cmd.Process.Kill()
-		job.Unmount()
+		job.Unmount(true)
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
 	}
@@ -1003,7 +1004,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
-		job.Unmount()
+		job.Unmount(true)
 		job.TriggerBehaviours(false)
 
 		// if we can't access the server, we'll have to treat this as failed
@@ -1014,6 +1015,27 @@ func (c *Client) Execute(job *Job, shell string) error {
 		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
+	// try and unmount now, because if we fail to upload files, we'll have to
+	// start over
+	unmountErr := job.Unmount()
+	if unmountErr != nil {
+		if strings.Contains(unmountErr.Error(), "failed to upload") {
+			if !dobury {
+				dorelease = true
+			}
+			if failreason == "" {
+				failreason = FailReasonUpload
+			}
+		}
+
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; unmounting also caused problem(s): %s", myerr.Error(), unmountErr.Error())
+		} else {
+			myerr = unmountErr
+		}
+	}
+
+	// update the database with our final state
 	if dobury {
 		err = c.Bury(job, failreason)
 	} else if dorelease {
@@ -1022,19 +1044,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 		err = c.Archive(job)
 	}
 	if err != nil {
-		job.Unmount()
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
-	err = job.Unmount()
-	if err != nil {
-		if myerr != nil {
-			myerr = fmt.Errorf("%s; unmounting also caused problem(s): %s", myerr.Error(), err.Error())
-		} else {
-			myerr = err
-		}
-	}
+	// run behaviours
 	err = job.TriggerBehaviours(myerr == nil)
 	if err != nil {
 		if myerr != nil {
@@ -1421,11 +1435,17 @@ func (j *Job) Mount() error {
 // Mount(). Returns nil if Mount() had not been called or there were no
 // MountConfigs. Note that for cached writable mounts, created files will only
 // begin to upload once Unmount() is called, so this may take some time to
-// return.
-func (j *Job) Unmount() error {
+// return. Supply true to disable uploading of files (eg. if you're unmounting
+// following an error). If uploading, error could contain the string "failed to
+// upload", which you may want to check for.
+func (j *Job) Unmount(stopUploads ...bool) error {
+	var doNotUpload bool
+	if len(stopUploads) == 1 {
+		doNotUpload = stopUploads[0]
+	}
 	var errors []string
 	for _, fs := range j.mountedFS {
-		err := fs.Unmount()
+		err := fs.Unmount(doNotUpload)
 		if err != nil {
 			errors = append(errors, err.Error())
 		}
