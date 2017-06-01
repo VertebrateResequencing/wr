@@ -279,6 +279,15 @@
                                             <dd data-bind="text: HomeChanged"></dd>
                                         </dl>
                                     <!-- /ko -->
+                                    
+                                    <!-- ko if: Behaviours && Behaviours != "{}" -->
+                                        <dl>
+                                            <dt>Behaviours</dt>
+                                            <dd>
+                                                <span class="clickable" data-bind="click: $root.showBehaviours">&lt;show&gt;</span>
+                                            </dd>
+                                        </dl>
+                                    <!-- /ko -->
                                 </div>
                                 <div class="panel-footer clearfix">
                                     <!-- ko if: Similar -->
@@ -362,6 +371,14 @@
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Dependencies' } },
                 body: { name: 'envModalBodyTemplate', data: depVars }
+            }"></div>
+            
+            <!-- behaviours modal -->
+            <div data-bind="modal: {
+                visible: behModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Behaviours' } },
+                body: { name: 'envModalBodyTemplate', data: behVars }
             }"></div>
             
             <!-- env modal -->
@@ -705,6 +722,14 @@
                 self.showDependencies = function(job) {
                     self.depVars(job.Dependencies);
                     self.depModalVisible(true);
+                }
+                
+                // act if the user clicks to view Behaviours
+                self.behModalVisible = ko.observable(false);
+                self.behVars = ko.observableArray();
+                self.showBehaviours = function(job) {
+                    self.behVars([job.Behaviours]);
+                    self.behModalVisible(true);
                 }
                 
                 // act if the user clicks to view env

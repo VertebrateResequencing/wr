@@ -173,7 +173,11 @@ very many (tens of thousands+) commands.`,
 						homeChanged = "Changed home: true\n"
 					}
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, homeChanged, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
+				var behaviours string
+				if len(job.Behaviours) > 0 {
+					behaviours = fmt.Sprintf("Behaviours: %s\n", job.Behaviours)
+				}
+				fmt.Printf("\n# %s\nCwd: %s\n%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, homeChanged, behaviours, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case "delayed":
