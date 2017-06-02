@@ -290,6 +290,9 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 // be converted back to Behaviours using a BehavioursViaJSON for each key. The
 // keys are "on_failure", "on_success", "on_failure|success" and "on_exit".
 func (bs Behaviours) String() string {
+	if len(bs) == 0 {
+		return ""
+	}
 	bvjm := &bvjMapping{}
 	for _, b := range bs {
 		b.fillBVJM(bvjm)

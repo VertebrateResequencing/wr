@@ -69,6 +69,9 @@ func TestBehaviours(t *testing.T) {
 			Convey("Behaviours can be nicely stringified", func() {
 				bs := Behaviours{b1, b4}
 				So(fmt.Sprintf("%s", bs), ShouldEqual, `{"on_success":[{"run":"touch ../../foo"}],"on_exit":[{"cleanup_all":true}]}`)
+
+				bs = Behaviours{}
+				So(fmt.Sprintf("%s", bs), ShouldBeEmpty)
 			})
 		})
 
