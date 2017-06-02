@@ -52,33 +52,35 @@ var cmdDeps string
 var cmdOnFailure string
 var cmdOnSuccess string
 var cmdOnExit string
+var cmdMounts string
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
-	Cmd         string                     `json:"cmd"`
-	Cwd         string                     `json:"cwd"`
-	CwdMatters  bool                       `json:"cwd_matters"`
-	ChangeHome  bool                       `json:"change_home"`
-	ReqGrp      string                     `json:"req_grp"`
-	Memory      string                     `json:"memory"`
-	Time        string                     `json:"time"`
-	CPUs        *int                       `json:"cpus"`
-	Disk        *int                       `json:"disk"`
-	Override    *int                       `json:"override"`
-	Priority    *int                       `json:"priority"`
-	Retries     *int                       `json:"retries"`
-	RepGrp      string                     `json:"rep_grp"`
-	DepGrps     []string                   `json:"dep_grps"`
-	Deps        []string                   `json:"deps"`
-	CmdDeps     jobqueue.Dependencies      `json:"cmd_deps"`
-	OnFailure   jobqueue.BehavioursViaJSON `json:"on_failure"`
-	OnSuccess   jobqueue.BehavioursViaJSON `json:"on_success"`
-	OnExit      jobqueue.BehavioursViaJSON `json:"on_exit"`
-	Env         []string                   `json:"env"`
-	CloudOS     string                     `json:"cloud_os"`
-	CloudUser   string                     `json:"cloud_user"`
-	CloudScript string                     `json:"cloud_script"`
-	CloudOSRam  *int                       `json:"cloud_os_ram"`
+	Cmd          string                     `json:"cmd"`
+	Cwd          string                     `json:"cwd"`
+	CwdMatters   bool                       `json:"cwd_matters"`
+	ChangeHome   bool                       `json:"change_home"`
+	MountConfigs jobqueue.MountConfigs      `json:"mounts"`
+	ReqGrp       string                     `json:"req_grp"`
+	Memory       string                     `json:"memory"`
+	Time         string                     `json:"time"`
+	CPUs         *int                       `json:"cpus"`
+	Disk         *int                       `json:"disk"`
+	Override     *int                       `json:"override"`
+	Priority     *int                       `json:"priority"`
+	Retries      *int                       `json:"retries"`
+	RepGrp       string                     `json:"rep_grp"`
+	DepGrps      []string                   `json:"dep_grps"`
+	Deps         []string                   `json:"deps"`
+	CmdDeps      jobqueue.Dependencies      `json:"cmd_deps"`
+	OnFailure    jobqueue.BehavioursViaJSON `json:"on_failure"`
+	OnSuccess    jobqueue.BehavioursViaJSON `json:"on_success"`
+	OnExit       jobqueue.BehavioursViaJSON `json:"on_exit"`
+	Env          []string                   `json:"env"`
+	CloudOS      string                     `json:"cloud_os"`
+	CloudUser    string                     `json:"cloud_user"`
+	CloudScript  string                     `json:"cloud_script"`
+	CloudOSRam   *int                       `json:"cloud_os_ram"`
 }
 
 // addCmd represents the add command
@@ -93,9 +95,9 @@ specific options using a JSON object in (tab separated) column 2, or
 alternatively have only a JSON object in column 1 that also specifies the
 command as one of the name:value pairs. The possible options are:
 
-cmd cwd cwd_matters change_home on_failure on_success on_exit req_grp memory
-time override cpus disk priority retries rep_grp dep_grps deps cmd_deps cloud_os
-cloud_user cloud_os_ram cloud_script env
+cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
+memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
+cloud_os cloud_user cloud_os_ram cloud_script env
 
 If any of these (except the cloud ones and env) will be the same for all your
 commands, you can instead specify them as flags (which are treated as defaults
@@ -155,6 +157,12 @@ your cmd exits 0.
 "on_exit" is exactly like on_failure, except that the behaviours trigger when
 your cmd exits, regardless of exit code. These behaviours will trigger after any
 behaviours defined in on_failure or on_success.
+
+"mounts" describes the remote file systems or object stores you would like to be
+fuse mounted locally before running running your command. See the help text for
+'wr mount' for an explanation of how to formulate the value. Your mounts will be
+unmounted prior to the triggering of any behaviours, so your "run" behaviours
+can't read from or write to anything in your mount point.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are
@@ -331,6 +339,11 @@ started.`,
 			defaultOnExit = bjs.Behaviours(jobqueue.OnExit)
 		}
 
+		var defaultMounts jobqueue.MountConfigs
+		if cmdMounts != "" {
+			defaultMounts = mountParseJson(cmdMounts)
+		}
+
 		// open file or set up to read from STDIN
 		var reader io.Reader
 		if cmdFile == "-" {
@@ -412,6 +425,7 @@ started.`,
 			var depGroups []string
 			var deps jobqueue.Dependencies
 			var behaviours jobqueue.Behaviours
+			var mounts jobqueue.MountConfigs
 
 			cmd = cmdOpts.Cmd
 			if cmd == "" {
@@ -557,6 +571,12 @@ started.`,
 				behaviours = append(behaviours, defaultOnExit...)
 			}
 
+			if len(cmdOpts.MountConfigs) > 0 {
+				mounts = cmdOpts.MountConfigs
+			} else if len(defaultMounts) > 0 {
+				mounts = defaultMounts
+			}
+
 			// scheduler-specific options
 			other := make(map[string]string)
 			if cmdOpts.CloudOS != "" {
@@ -593,6 +613,7 @@ started.`,
 				Dependencies: deps,
 				EnvOverride:  envOverride,
 				Behaviours:   behaviours,
+				MountConfigs: mounts,
 			})
 		}
 
@@ -639,6 +660,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
+	addCmd.Flags().StringVar(&cmdMounts, "mounts", "", "remote file systems to mount, in JSON format")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

@@ -166,6 +166,10 @@ very many (tens of thousands+) commands.`,
 			// print out status information for each job
 			for _, job := range jobs {
 				cwd := job.Cwd
+				var mounts string
+				if len(job.MountConfigs) > 0 {
+					mounts = fmt.Sprintf("Mounts: %s\n", job.MountConfigs)
+				}
 				var homeChanged string
 				if job.ActualCwd != "" {
 					cwd = job.ActualCwd
@@ -177,7 +181,7 @@ very many (tens of thousands+) commands.`,
 				if len(job.Behaviours) > 0 {
 					behaviours = fmt.Sprintf("Behaviours: %s\n", job.Behaviours)
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, homeChanged, behaviours, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, behaviours, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case "delayed":

@@ -227,7 +227,7 @@ func init() {
 
 // mountParseJson takes a json string (as per `wr mount --help`) and parses it
 // to a MountConfig for each mount defined.
-func mountParseJson(jsonString string) (mcs []jobqueue.MountConfig) {
+func mountParseJson(jsonString string) (mcs jobqueue.MountConfigs) {
 	// parse
 	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {

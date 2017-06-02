@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -162,18 +163,19 @@ type Job struct {
 
 	// MountConfigs describes remote file systems or object stores that you wish
 	// to be fuse mounted prior to running the Cmd. Once Cmd exits, the mounts
-	// will be unmounted. If you want multiple separate mount points accessed
-	// from different local directories, you will supply more than one
-	// MountConfig in the slice. If you want multiple remote locations
-	// multiplexed and accessible from a single local directory, you will supply
-	// a single MountConfig in the slice, configured with multiple MountTargets.
-	// Relative paths for your MountConfig.Mount options will be relative to Cwd
-	// (or ActualCwd if CwdMatters == false). If a MountConfig.Mount is not
-	// specified, it defaults to Cwd/mnt if CwdMatters, otherwise ActualCwd
-	// itself will be the mount point. If a MountConfig.CachBase is not
-	// specified, it defaults to to Cwd if CwdMatters, otherwise it will be a
-	// sister directory of ActualCwd.
-	MountConfigs []MountConfig
+	// will be unmounted (with uploads only occurring if it exits with code 0).
+	// If you want multiple separate mount points accessed from different local
+	// directories, you will supply more than one MountConfig in the slice. If
+	// you want multiple remote locations multiplexed and accessible from a
+	// single local directory, you will supply a single MountConfig in the
+	// slice, configured with multiple MountTargets. Relative paths for your
+	// MountConfig.Mount options will be relative to Cwd (or ActualCwd if
+	// CwdMatters == false). If a MountConfig.Mount is not specified, it
+	// defaults to Cwd/mnt if CwdMatters, otherwise ActualCwd itself will be the
+	// mount point. If a MountConfig.CachBase is not specified, it defaults to
+	// to Cwd if CwdMatters, otherwise it will be a sister directory of
+	// ActualCwd.
+	MountConfigs MountConfigs
 
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
@@ -413,24 +415,24 @@ type MountConfig struct {
 	// supplied, defaults to the subdirectory "mnt" in the Job's working
 	// directory if CwdMatters, otherwise the actual working directory will be
 	// used as the mount point.
-	Mount string
+	Mount string `json:",omitempty"`
 
 	// CacheBase is the parent directory to use for the CacheDir of any Targets
 	// configured with Cache on, but CacheDir undefined, or specified with a
 	// relative path. If CacheBase is also undefined, the base will be the Job's
 	// Cwd if CwdMatters, otherwise it will be the parent of the Job's actual
 	// working directory.
-	CacheBase string
+	CacheBase string `json:",omitempty"`
 
 	// Retries is the number of retries that should be attempted when
 	// encountering errors in trying to access your remote S3 bucket. At least 3
 	// is recommended. It defaults to 10 if not provided.
-	Retries int
+	Retries int `json:",omitempty"`
 
 	// Verbose is a boolean, which if true, would cause timing information on
 	// all remote S3 calls to appear as lines of all job STDERR that use the
 	// mount. Errors always appear there.
-	Verbose bool
+	Verbose bool `json:",omitempty"`
 
 	// Targets is a slice of MountTarget which define what you want to access at
 	// your Mount. It's a slice to allow you to multiplex different buckets (or
@@ -483,7 +485,7 @@ type MountTarget struct {
 	// If set, the environment variables $AWS_ACCESS_KEY_ID,
 	// $AWS_SECRET_ACCESS_KEY and $AWS_DEFAULT_REGION override corresponding
 	// options found in any config file.
-	Profile string
+	Profile string `json:",omitempty"`
 
 	// Path (required) is the name of your S3 bucket, optionally followed URL-
 	// style (separated with forward slashes) by sub-directory names. The
@@ -493,7 +495,7 @@ type MountTarget struct {
 
 	// Cache is a boolean, which if true, turns on data caching of any data
 	// retrieved, or any data you wish to upload.
-	Cache bool
+	Cache bool `json:",omitempty"`
 
 	// CacheDir is the local directory to store cached data. If this parameter
 	// is supplied, Cache is forced true and so doesn't need to be provided. If
@@ -501,13 +503,25 @@ type MountTarget struct {
 	// unique directory in the containing MountConfig's CacheBase, and will get
 	// deleted on unmount. If it's a relative path, it will be relative to the
 	// CacheBase.
-	CacheDir string
+	CacheDir string `json:",omitempty"`
 
 	// Write is a boolean, which if true, makes the mount point writeable. If
 	// you don't intend to write to a mount, just leave this parameter out.
 	// Because writing currently requires caching, turning this on forces Cache
 	// to be considered true.
-	Write bool
+	Write bool `json:",omitempty"`
+}
+
+// MountConfigs is a slice of MountConfig.
+type MountConfigs []MountConfig
+
+// String provides a JSON representation of the MountConfigs.
+func (mcs MountConfigs) String() string {
+	if len(mcs) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(mcs)
+	return string(b)
 }
 
 // Client represents the client side of the socket that the jobqueue server is

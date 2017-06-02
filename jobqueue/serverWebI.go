@@ -46,9 +46,9 @@ type jstatusReq struct {
 }
 
 // jstatus is the job info we send to the status webpage (only real difference
-// to Job is that the times are seconds instead of *time.Duration, and
-// dependencies become job cmd+cwd or depgroup strings... *** not really sure if
-// we really need this and should just give the webpage Jobs directly instead).
+// to Job is that some of the values are converted to easy-to-display forms ***
+// not really sure if we really need this and should just give the webpage Jobs
+// directly instead).
 type jstatus struct {
 	Key           string
 	RepGroup      string
@@ -60,6 +60,7 @@ type jstatus struct {
 	CwdBase       string
 	HomeChanged   bool
 	Behaviours    string
+	Mounts        string
 	ExpectedRAM   int
 	ExpectedTime  float64
 	RequestedDisk int
@@ -191,6 +192,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							Cwd:           cwdLeaf,
 							HomeChanged:   jobs[0].ChangeHome,
 							Behaviours:    jobs[0].Behaviours.String(),
+							Mounts:        jobs[0].MountConfigs.String(),
 							ExpectedRAM:   jobs[0].Requirements.RAM,
 							ExpectedTime:  jobs[0].Requirements.Time.Seconds(),
 							RequestedDisk: jobs[0].Requirements.Disk,
@@ -279,6 +281,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									Cwd:           cwdLeaf,
 									HomeChanged:   job.ChangeHome,
 									Behaviours:    job.Behaviours.String(),
+									Mounts:        job.MountConfigs.String(),
 									ExpectedRAM:   job.Requirements.RAM,
 									ExpectedTime:  job.Requirements.Time.Seconds(),
 									RequestedDisk: job.Requirements.Disk,

@@ -2754,7 +2754,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		defer jq.Disconnect()
 
 		var jobs []*Job
-		mcs := []MountConfig{
+		mcs := MountConfigs{
 			{Targets: []MountTarget{
 				{Path: s3Path, Cache: true},
 				{Path: s3Path + "/sub/deep", Cache: true},

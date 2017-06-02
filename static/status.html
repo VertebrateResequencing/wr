@@ -146,6 +146,11 @@
                                     <div style="overflow-x: auto">
                                         <small><i><span data-bind="text: CwdBase"></span><span data-bind="text: Cwd" style="color: grey"></span></i></small>
                                     </div>
+                                    <!-- ko if: Mounts -->
+                                        <div style="overflow-x: auto">
+                                            <small><i>mounts: <span data-bind="text: Mounts"></span></i></small>
+                                        </div>
+                                    <!-- /ko -->
                                 </div>
                                 <div class="panel-body keyvals">
                                     <dl>
@@ -280,7 +285,7 @@
                                         </dl>
                                     <!-- /ko -->
                                     
-                                    <!-- ko if: Behaviours && Behaviours != "{}" -->
+                                    <!-- ko if: Behaviours -->
                                         <dl>
                                             <dt>Behaviours</dt>
                                             <dd>
