@@ -110,7 +110,9 @@ Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
 requirements of the OS image are that it support ssh and sftp on port 22, and
 that it be a 64bit linux-like system with /proc/*/smaps, /tmp and some local
-writeable disk space in the home directory.
+writeable disk space in the home directory. For --mounts to work, fuse-utils
+must be installed, and /etc/fuse.conf should already have user_allow_other set
+or at least be present and commented out (wr will enable it).
 
 The openstack provider needs these environment variables to be set:
 OS_TENANT_ID, OS_AUTH_URL, OS_PASSWORD, OS_REGION_NAME, OS_USERNAME
