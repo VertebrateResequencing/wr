@@ -308,3 +308,22 @@ clouddisk: 1
 # When wr spawns a new server, cloudscript will be run on it when the server
 # first boots up.
 # cloudscript: ""
+
+# cloudconfigfiles: What config files should be copied to newly spawned servers?
+# This defaults to "~/.s3cfg,~/.aws/credentials,~/.aws/config". It is overridden
+# by the --config_files option to `wr cloud deploy` and the --cloud_config_files
+# option of `wr manager start`. Note, this is a comma separated string of paths.
+#
+# This option is only relevant when you are using a cloud scheduler such as
+# OpenStack.
+#
+# If you specify absolute paths, the file will be copied to the same absolute
+# path on spawned cloud servers. For files in your home directory which you want
+# to be placed in the home directory of the cloud servers, use the ~/ prefix.
+#
+# Examples of files you might need to copy over are your s3 configuration files.
+# You'll need these on your cloud servers if you plan on `wr add`ing any
+# commands with --mounts.
+#
+# If you specify files that don't exist locally, they are silently ignored.
+cloudconfigfiles: "~/.s3cfg,~/.aws/credentials,~/.aws/config"

@@ -31,7 +31,8 @@ files; they are all imported (they all belong to the cloud package), and the
 correct one used at run time. To "register" a new provideri implementation you
 must add a case for it to New() and RequiredEnv() and rebuild. The spawn()
 method must create a file at the path sentinelFilePath once the system has
-finalised its boot up and is fully ready to use.
+finalised its boot up and is fully ready to use. The system should be configured
+to allow user fuse mounts.
 
 Please note that the methods in this package are NOT safe to be used by more
 than 1 process at a time.
@@ -76,6 +77,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/pkg/sftp"
 	"github.com/satori/go.uuid"
 	"golang.org/x/crypto/ssh"
@@ -112,7 +114,9 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 // sentinelInitScript can be used as user data to the cloud-init mechanism to
 // create sentinelFilePath. We also try to turn off requiretty in /etc/sudoers,
 // to allow postCreationScripts passed to WaitUntilReady() to be run with sudo.
-var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\ntouch " + sentinelFilePath)
+// And we try to enable user_allow_other in fuse.conf to allow user mounts to
+// work.
+var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
 // we give up and return an error from Spawn().
@@ -477,6 +481,43 @@ func (s *Server) UploadFile(source string, dest string) (err error) {
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
+	return
+}
+
+// CopyOver uploads the given local files to the corresponding locations on the
+// server. files argument is a comma separated list of local file paths.
+// Absolute paths are uploaded to the same absolute path on the server. Paths
+// beginning with ~/ are uploaded from the local home directory to the server's
+// home directory. If a specified local path does not exist, it is silently
+// ignored, allowing the specification of multiple possible config files when
+// you might only have one.
+func (s *Server) CopyOver(files string) (err error) {
+	for _, path := range strings.Split(files, ",") {
+		// ignore if it doesn't exist locally
+		localPath := internal.TildaToHome(path)
+		if _, err := os.Stat(localPath); err != nil {
+			continue
+		}
+
+		remotePath := path
+		if strings.HasPrefix(remotePath, "~/") {
+			remotePath = strings.TrimLeft(path, "~/")
+			remotePath = "./" + remotePath
+		}
+
+		err = s.UploadFile(localPath, remotePath)
+		if err != nil {
+			return
+		}
+
+		// if these are config files we likely need to make them user-only read,
+		// and if they're not, I can't see how it matters if group/all can't
+		// read? This is a single user server and I'm the only one using it...
+		_, _, err = s.RunCmd("chmod 600 "+remotePath, false)
+		if err != nil {
+			return
+		}
+	}
 	return
 }
 

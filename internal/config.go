@@ -57,6 +57,7 @@ type Config struct {
 	CloudRAM         int    `default:"2048"`
 	CloudDisk        int    `default:"1"`
 	CloudScript      string `default:""`
+	CloudConfigFiles string `default:"~/.s3cfg,~/.aws/credentials,~/.aws/config"`
 }
 
 /*

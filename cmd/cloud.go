@@ -57,6 +57,7 @@ var postCreationScript string
 var cloudGatewayIP string
 var cloudCIDR string
 var cloudDNS string
+var cloudConfigFiles string
 var forceTearDown bool
 var cloudDebug bool
 
@@ -98,6 +99,11 @@ you want to run on any created cloud server before any commands run on them. You
 might install some software for example. Note that the script is run as the user
 defined by --username; if necessary, your bash script may have to prefix its
 commands with 'sudo' if the command would only work as root user.
+
+The --config_files option is important if you want to be able to queue up
+commands that rely on the --mounts option to 'wr add': you'd specify your s3
+config file(s) which contain your credentials for connecting to your s3
+bucket(s).
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
@@ -369,6 +375,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", defaultConfig.CloudGateway, "gateway IP for the created subnet")
 	cloudDeployCmd.Flags().StringVar(&cloudCIDR, "network_cidr", defaultConfig.CloudCIDR, "CIDR of the created subnet")
 	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to use in the created subnet")
+	cloudDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
@@ -453,6 +460,17 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			postCreationArg = " -p " + remoteScriptFile
 		}
 
+		var configFilesArg string
+		if cloudConfigFiles != "" {
+			err = server.CopyOver(cloudConfigFiles)
+			if err != nil && !wrMayHaveStarted {
+				provider.TearDown()
+				die("failed to upload wr cloud config files to the server at %s: %s", server.IP, err)
+			}
+
+			configFilesArg = " --cloud_config_files '" + cloudConfigFiles + "'"
+		}
+
 		var flavorArg string
 		if flavorRegex != "" {
 			flavorArg = " -l '" + flavorRegex + "'"
@@ -464,7 +482,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 
 		// get the manager running
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
+		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, maxServers-1, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
 
 		if cloudDebug {
 			mCmd += " --cloud_debug"

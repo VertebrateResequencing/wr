@@ -108,6 +108,15 @@ type ConfigOpenStack struct {
 	// Requirements.Other["cloud_script"] value.)
 	PostCreationScript []byte
 
+	// ConfigFiles is a comma separated list of paths to config files that
+	// should be copied over to all spawned servers. Absolute paths are copied
+	// over to the same absolute path on the new server. To handle a config file
+	// that should remain relative to the home directory (and where the spawned
+	// server may have a different username and thus home directory path
+	// compared to the current server), use the prefix ~/ to signify the home
+	// directory. It silently ignores files that don't exist locally.
+	ConfigFiles string
+
 	// ServerPorts are the TCP port numbers you need to be open for
 	// communication with any spawned servers. At a minimum you will need to
 	// specify []int{22}.
@@ -853,6 +862,14 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 					}
 				} else {
 					err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
+				}
+
+				if err == nil && s.config.ConfigFiles != "" {
+					// copy over config files
+					err = server.CopyOver(s.config.ConfigFiles)
+					if err != nil {
+						err = fmt.Errorf("Could not upload config files [%s]: %s", s.config.ConfigFiles, err)
+					}
 				}
 			}
 		}

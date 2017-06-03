@@ -331,6 +331,7 @@ func init() {
 	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", defaultConfig.CloudGateway, "for cloud schedulers, gateway IP for the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
 	managerStartCmd.Flags().BoolVar(&cloudDebug, "cloud_debug", false, "for cloud schedulers, include extra debugging information in the logs")
 }
 
@@ -369,6 +370,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 			OSDisk:             osDisk,
 			FlavorRegex:        flavorRegex,
 			PostCreationScript: postCreation,
+			ConfigFiles:        cloudConfigFiles,
 			ServerKeepTime:     time.Duration(serverKeepAlive) * time.Second,
 			MaxInstances:       maxServers,
 			Shell:              config.RunnerExecShell,
