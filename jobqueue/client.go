@@ -1013,21 +1013,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		myerr = nil
 	}
 
-	// though we may have bailed or had some other problem, we always try and
-	// update our job end state
-	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
-
-	if err != nil {
-		job.TriggerBehaviours(false)
-		job.Unmount(true)
-
-		// if we can't access the server, we'll have to treat this as failed
-		// and let it auto-Release
-		if bailed {
-			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
-		}
-		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
-	}
+	finalStdErr := bytes.TrimSpace(stderr.Bytes())
 
 	// run behaviours
 	berr := job.TriggerBehaviours(myerr == nil)
@@ -1041,7 +1027,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// try and unmount now, because if we fail to upload files, we'll have to
 	// start over
-	unmountErr := job.Unmount()
+	addMountLogs := dobury || dorelease
+	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
 		if strings.Contains(unmountErr.Error(), "failed to upload") {
 			if !dobury {
@@ -1057,6 +1044,29 @@ func (c *Client) Execute(job *Job, shell string) error {
 		} else {
 			myerr = unmountErr
 		}
+	}
+
+	if addMountLogs && logs != "" {
+		finalStdErr = append(finalStdErr, "\n\nMount logs:\n"...)
+		finalStdErr = append(finalStdErr, logs...)
+	}
+
+	if (dobury || dorelease) && berr != nil {
+		finalStdErr = append(finalStdErr, "\n\nBehaviour problems:\n"...)
+		finalStdErr = append(finalStdErr, berr.Error()...)
+	}
+
+	// though we may have bailed or had some other problem, we always try and
+	// update our job end state
+	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
+
+	if err != nil {
+		// if we can't access the server, we'll have to treat this as failed
+		// and let it auto-Release
+		if bailed {
+			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
+		}
+		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
 	// update the database with our final state
@@ -1454,22 +1464,31 @@ func (j *Job) Mount() error {
 // upload", which you may want to check for. On success, triggers the deletion
 // of any empty directories between the mount point(s) and Cwd if not CwdMatters
 // and the mount point was (within) ActualCwd.
-func (j *Job) Unmount(stopUploads ...bool) error {
+func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	var doNotUpload bool
 	if len(stopUploads) == 1 {
 		doNotUpload = stopUploads[0]
 	}
 	var errors []string
+	var allLogs []string
 	for _, fs := range j.mountedFS {
-		err := fs.Unmount(doNotUpload)
+		uerr := fs.Unmount(doNotUpload)
 		if err != nil {
-			errors = append(errors, err.Error())
+			errors = append(errors, uerr.Error())
+		}
+		theseLogs := fs.Logs()
+		if len(theseLogs) > 0 {
+			allLogs = append(allLogs, theseLogs...)
 		}
 	}
 	j.mountedFS = nil
+	if len(allLogs) > 0 {
+		logs = strings.TrimSpace(strings.Join(allLogs, ""))
+	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("Unmount failure(s): %s", errors)
+		err = fmt.Errorf("Unmount failure(s): %s", errors)
+		return
 	}
 
 	// delete any empty dirs
@@ -1483,7 +1502,7 @@ func (j *Job) Unmount(stopUploads ...bool) error {
 		}
 	}
 
-	return nil
+	return
 }
 
 // updateRecsAfterFailure checks the FailReason and bumps RAM or Time as

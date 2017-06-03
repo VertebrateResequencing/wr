@@ -255,7 +255,10 @@ func (b *Behaviour) run(j *Job) (err error) {
 	}
 	cmd := exec.Command("sh", "-c", bc)
 	cmd.Dir = actualCwd
-	err = cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run behaviour failed: %s\n%s", err, string(out))
+	}
 	return
 }
 
