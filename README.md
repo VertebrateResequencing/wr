@@ -20,6 +20,12 @@ updates with a view on all your workflows on one screen, its permanent
 searchable history of all the commands you have ever run, and its "live"
 dependencies enabling easy automation of on-going projects.
 
+Furthermore, wr has best-in-class support for OpenStack, providing incredibly
+easy deployment and auto-scaling without you having to know anything about
+OpenStack. And it has built-in support for mounting S3-like object stores,
+providing probably the highest performance and easiest way of running commands
+against remote files.
+
 ***DO NOT USE YET!***
 
 wr is in early beta, with some significant features unimplemented, and the
@@ -120,6 +126,7 @@ Implemented so far
 * Adding manually generated commands to the manager's queue.
 * Automatically running those commands on the local machine, or via LSF
   or OpenStack.
+* Mounting of S3-like object stores.
 * Getting the status of your commands.
 * Manually retrying failed commands.
 * Automatic retrying of failed commands, using more memory/time reservation
