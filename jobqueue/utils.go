@@ -348,12 +348,10 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 }
 
 // rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
-// stopping if it reaches baseDir (leaving that undeleted).
+// stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
+// doesn't exist.
 func rmEmptyDirs(leafDir, baseDir string) {
-	err := os.Remove(leafDir)
-	if err != nil {
-		return
-	}
+	os.Remove(leafDir)
 	current := leafDir
 	parent := filepath.Dir(current)
 	for ; parent != baseDir; parent = filepath.Dir(current) {
