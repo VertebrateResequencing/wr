@@ -59,7 +59,7 @@ NB: if you are writing to your mount point, it's very important to kill it
 cleanly using one of these methods once you're done, since uploads only occur
 when you do this!
 
-The --mount option is the JSON string for an array of Config objects describing
+The --mounts option is the JSON string for an array of Config objects describing
 all your mount parameters.
 A JSON array begins and ends with a square bracket, and each item is separated
 with a comma.
@@ -68,7 +68,7 @@ Parameter names and their values are put in double quotes (except for numbers,
 which are left bare, booleans where you write, unquoted, true or false, and
 arrays as described previously), and the pair separated with a colon, and pairs
 separated from each other with commas.
-For example (all on one line): --mount '[{"Mount":"/tmp/wr_mnt","Targets":
+For example (all on one line): --mounts '[{"Mount":"/tmp/wr_mnt","Targets":
 [{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]'
 The paragraphs below describe all the possible Config object parameters.
 
@@ -155,7 +155,7 @@ currently requires caching, turning this on forces Cache to be considered
 true.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if mountJSON == "" {
-			die("--mount is required")
+			die("--mounts is required")
 		}
 
 		// set up logging
@@ -221,7 +221,7 @@ func init() {
 	RootCmd.AddCommand(mountCmd)
 
 	// flags specific to this sub-command
-	mountCmd.Flags().StringVarP(&mountJSON, "mount", "m", "", "mount parameters JSON (see --help)")
+	mountCmd.Flags().StringVarP(&mountJSON, "mounts", "m", "", "mount parameters JSON (see --help)")
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
 
