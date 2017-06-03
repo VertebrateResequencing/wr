@@ -28,6 +28,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	// "github.com/ugorji/go/codec"
 	"github.com/shirou/gopsutil/process"
+	"io"
 	"io/ioutil"
 	"log"
 	"math"
@@ -2725,11 +2726,11 @@ func TestJobqueueWithMounts(t *testing.T) {
 		ServerItemTTR = 10 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
 
-		pwd, err := os.Getwd()
-		if err != nil {
-			log.Fatal(err)
-		}
-		cwd, err := ioutil.TempDir(pwd, "wr_jobqueue_test_s3_dir_")
+		// pwd, err := os.Getwd()
+		// if err != nil {
+		// 	log.Fatal(err)
+		// }
+		cwd, err := ioutil.TempDir("", "wr_jobqueue_test_s3_dir_")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -2760,7 +2761,9 @@ func TestJobqueueWithMounts(t *testing.T) {
 				{Path: s3Path + "/sub/deep", Cache: true},
 			}, Verbose: true},
 		}
-		jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs})
+		b := &Behaviour{When: OnExit, Do: CleanupAll}
+		bs := Behaviours{b}
+		jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs, Behaviours: bs})
 		inserts, already, err := jq.Add(jobs, envVars)
 		So(err, ShouldBeNil)
 		So(inserts, ShouldEqual, 1)
@@ -2779,6 +2782,19 @@ func TestJobqueueWithMounts(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(job, ShouldNotBeNil)
 		So(job.State, ShouldEqual, "complete")
+
+		// test that the cache dirs get deleted; this test fails if cwd is based
+		// in an nfs mount, the problem confirmed upstream in muxfys but with no
+		// solution apparent...
+		So(job.ActualCwd, ShouldNotBeEmpty)
+		_, err = os.Stat(job.ActualCwd)
+		So(err, ShouldNotBeNil)
+		So(os.IsNotExist(err), ShouldBeTrue)
+		f, err := os.Open(job.Cwd)
+		So(err, ShouldBeNil)
+		defer f.Close()
+		_, err = f.Readdirnames(100)
+		So(err, ShouldEqual, io.EOF) // ie. the whole created working dir got wiped
 
 		Reset(func() {
 			if server != nil {

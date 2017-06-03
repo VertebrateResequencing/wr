@@ -147,7 +147,7 @@ like cleanup_all except that it doesn't delete files that have been specified as
 inputs or outputs [since you can't currently specify this, the current behaviour
 is identical to cleanup_all]; and "run", which takes a string command to run
 after the main cmd runs. For example [{"run":"cp error.log
-/shared/logs/this.log"}, {"cleanup":true}] would copy a log file that your cmd
+/shared/logs/this.log"},{"cleanup":true}] would copy a log file that your cmd
 generated to describe its problems to some shared location and then delete all
 files created by your cmd.
 
@@ -159,10 +159,14 @@ your cmd exits, regardless of exit code. These behaviours will trigger after any
 behaviours defined in on_failure or on_success.
 
 "mounts" describes the remote file systems or object stores you would like to be
-fuse mounted locally before running running your command. See the help text for
-'wr mount' for an explanation of how to formulate the value. Your mounts will be
-unmounted prior to the triggering of any behaviours, so your "run" behaviours
-can't read from or write to anything in your mount point.
+fuse mounted locally before running your command. See the help text for 'wr
+mount' for an explanation of how to formulate the value. Your mounts will be
+unmounted after the triggering of any behaviours, so your "run" behaviours will
+be able to read from or write to anything in your mount point(s). The "cleanup"
+and "cleanup_all" behaviours, however, will ignore your mounted directories and
+any mount cache directories, so that nothing on your remote file systems gets
+deleted. Unmounting will get rid of them though, so you would still end up with
+a "cleaned" workspace.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are

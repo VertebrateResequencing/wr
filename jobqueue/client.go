@@ -868,8 +868,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
 		cmd.Process.Kill()
-		job.Unmount(true)
 		job.TriggerBehaviours(false)
+		job.Unmount(true)
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
 	}
 
@@ -1018,8 +1018,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), bytes.TrimSpace(stderr.Bytes()))
 
 	if err != nil {
-		job.Unmount(true)
 		job.TriggerBehaviours(false)
+		job.Unmount(true)
 
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
@@ -1027,6 +1027,16 @@ func (c *Client) Execute(job *Job, shell string) error {
 			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
 		}
 		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+	}
+
+	// run behaviours
+	berr := job.TriggerBehaviours(myerr == nil)
+	if berr != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; behaviour(s) also had problem(s): %s", myerr.Error(), berr.Error())
+		} else {
+			myerr = berr
+		}
 	}
 
 	// try and unmount now, because if we fail to upload files, we'll have to
@@ -1060,16 +1070,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
-	}
-
-	// run behaviours
-	err = job.TriggerBehaviours(myerr == nil)
-	if err != nil {
-		if myerr != nil {
-			myerr = fmt.Errorf("%s; behaviour(s) also had problem(s): %s", myerr.Error(), err.Error())
-		} else {
-			myerr = err
-		}
 	}
 
 	return myerr
@@ -1451,7 +1451,9 @@ func (j *Job) Mount() error {
 // begin to upload once Unmount() is called, so this may take some time to
 // return. Supply true to disable uploading of files (eg. if you're unmounting
 // following an error). If uploading, error could contain the string "failed to
-// upload", which you may want to check for.
+// upload", which you may want to check for. On success, triggers the deletion
+// of any empty directories between the mount point(s) and Cwd if not CwdMatters
+// and the mount point was (within) ActualCwd.
 func (j *Job) Unmount(stopUploads ...bool) error {
 	var doNotUpload bool
 	if len(stopUploads) == 1 {
@@ -1469,6 +1471,18 @@ func (j *Job) Unmount(stopUploads ...bool) error {
 	if len(errors) > 0 {
 		return fmt.Errorf("Unmount failure(s): %s", errors)
 	}
+
+	// delete any empty dirs
+	if j.ActualCwd != "" {
+		for _, mc := range j.MountConfigs {
+			if mc.Mount == "" {
+				rmEmptyDirs(j.ActualCwd, j.Cwd)
+			} else if !filepath.IsAbs(mc.Mount) {
+				rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
+			}
+		}
+	}
+
 	return nil
 }
 

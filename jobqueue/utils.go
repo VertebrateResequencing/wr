@@ -346,3 +346,82 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	err = os.Mkdir(tmpDir, os.ModePerm)
 	return
 }
+
+// rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
+// stopping if it reaches baseDir (leaving that undeleted).
+func rmEmptyDirs(leafDir, baseDir string) {
+	err := os.Remove(leafDir)
+	if err != nil {
+		return
+	}
+	current := leafDir
+	parent := filepath.Dir(current)
+	for ; parent != baseDir; parent = filepath.Dir(current) {
+		thisErr := os.Remove(parent)
+		if thisErr != nil {
+			// it's expected that we might not be able to delete parents, since
+			// some other Job may be running from the same Cwd, meaning this
+			// parent dir is not empty
+			break
+		}
+		current = parent
+	}
+}
+
+// removeAllExcept deletes the contents of a given directory (absolute path),
+// except for the given folders (relative paths).
+func removeAllExcept(path string, exceptions []string) error {
+	keepDirs := make(map[string]bool)
+	checkDirs := make(map[string]bool)
+	path = filepath.Clean(path)
+	for _, dir := range exceptions {
+		abs := filepath.Join(path, dir)
+		keepDirs[abs] = true
+		parent := filepath.Dir(abs)
+		for {
+			if parent == path {
+				break
+			}
+			checkDirs[parent] = true
+			parent = filepath.Dir(parent)
+		}
+	}
+
+	return removeWithExceptions(path, keepDirs, checkDirs)
+}
+
+// removeWithExceptions is the recursive part of removeAllExcept's
+// implementation that does the real work of deleting stuff.
+func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
+	entries, err := ioutil.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		abs := filepath.Join(path, entry.Name())
+		if !entry.IsDir() {
+			err := os.Remove(abs)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
+		if keepDirs[abs] {
+			continue
+		}
+
+		if checkDirs[abs] {
+			err = removeWithExceptions(abs, keepDirs, checkDirs)
+			if err != nil {
+				return err
+			}
+		} else {
+			err = os.RemoveAll(abs)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

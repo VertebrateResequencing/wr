@@ -23,6 +23,7 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,7 +162,7 @@ func (b *Behaviour) String() string {
 	return string(jb)
 }
 
-// cleanup with all == true wipes out the Job's ActualCwd as aggressively as
+// cleanup with all == true wipes out the Job's unique dir as aggressively as
 // possible, along with all empty parent dirs up to Cwd. Without all, will keep
 // files designated as outputs (*** designation not yet implemented).
 func (b *Behaviour) cleanup(j *Job, all bool) (err error) {
@@ -169,39 +170,72 @@ func (b *Behaviour) cleanup(j *Job, all bool) (err error) {
 		// *** not yet implemented, we just wipe everything!
 	}
 
-	actualCwd := j.ActualCwd
-	if actualCwd == "" {
-		// must be a CwdMatters job, we do nothing in this case
+	if j.ActualCwd == "" {
+		// must be a CwdMatters job, or somehow ActualCwd didn't get set; we do
+		// nothing in this case
 		return
 	}
-	actualCwd = filepath.Dir(actualCwd) // delete the parent which contains tmp
 
-	// try and delete
-	err = os.RemoveAll(actualCwd)
-	if err != nil {
-		return
-		// try and delete using the shell and sudo
-		// err = exec.Command("sh", "-c", "sudo rm -fr "+actualCwd).Run()
-		// if err != nil {
-		// 	return
-		// }
-		// actually, if we can sudo without a password, RemoveAll will delete
-		// root-owned files
+	// it's the parent of ActualCwd that is the unique dir that got created
+	// that should be deleted; it contains tmp, cwd and possibly mount cache
+	// dirs (that we don't want to delete).
+	workSpace := filepath.Dir(j.ActualCwd)
+
+	if len(j.MountConfigs) > 0 {
+		// if we have mounts, we don't want to delete the cache dirs or any
+		// mounted directories, so we'll have to go through and delete
+		// everything else manually
+		var keepDirs []string
+		var keepActualCwd bool
+		for _, mc := range j.MountConfigs {
+			if mc.Mount == "" {
+				keepActualCwd = true
+				break
+			}
+			if !filepath.IsAbs(mc.Mount) {
+				keepDirs = append(keepDirs, mc.Mount)
+			}
+		}
+
+		if !keepActualCwd {
+			if len(keepDirs) > 0 {
+				err = removeAllExcept(j.ActualCwd, keepDirs)
+				if err != nil {
+					return
+				}
+			} else {
+				err = os.RemoveAll(j.ActualCwd)
+				if err != nil {
+					return
+				}
+			}
+		}
+
+		// finally delete everything inside workSpace except for cwd and the
+		// cache dirs, incase a job.Cmd did something like `touch ../foo`
+		entries, err := ioutil.ReadDir(workSpace)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.Name() != "cwd" && !strings.HasPrefix(entry.Name(), ".muxfys") {
+				err = os.RemoveAll(filepath.Join(workSpace, entry.Name()))
+				if err != nil {
+					return err
+				}
+			}
+		}
+	} else {
+		// just try and delete everything in one go
+		err = os.RemoveAll(workSpace)
+		if err != nil {
+			return
+		}
 	}
 
 	// delete any empty parent directories up to Cwd
-	current := actualCwd
-	parent := filepath.Dir(current)
-	for ; parent != j.Cwd; parent = filepath.Dir(current) {
-		thisErr := os.Remove(parent)
-		if thisErr != nil {
-			// it's expected that we might not be able to delete parents, since
-			// some other Job may be running from the same Cwd, meaning this
-			// parent dir is not empty
-			break
-		}
-		current = parent
-	}
+	rmEmptyDirs(workSpace, j.Cwd)
+
 	return
 }
 
