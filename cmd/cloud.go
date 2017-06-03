@@ -103,7 +103,8 @@ commands with 'sudo' if the command would only work as root user.
 The --config_files option is important if you want to be able to queue up
 commands that rely on the --mounts option to 'wr add': you'd specify your s3
 config file(s) which contain your credentials for connecting to your s3
-bucket(s).
+bucket(s). To be able to do user fuse mounts, wr will also try and alter
+/etc/fuse.conf of any servers it creates to enable the user_allow_other option.
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
