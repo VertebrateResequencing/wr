@@ -265,11 +265,6 @@ func (b *Behaviour) run(j *Job) (err error) {
 // copyToManager copies the files specified in the Arg slice to the configured
 // location on the manager's machine.
 func (b *Behaviour) copyToManager(j *Job) (err error) {
-	actualCwd := j.ActualCwd
-	if actualCwd == "" {
-		actualCwd = j.Cwd
-	}
-
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
 		return fmt.Errorf("Arg %s is type %T, not []string", b.Arg, b.Arg)
