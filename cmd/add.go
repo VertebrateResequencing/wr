@@ -345,7 +345,7 @@ started.`,
 
 		var defaultMounts jobqueue.MountConfigs
 		if cmdMounts != "" {
-			defaultMounts = mountParseJson(cmdMounts)
+			defaultMounts = mountParseJSON(cmdMounts)
 		}
 
 		// open file or set up to read from STDIN

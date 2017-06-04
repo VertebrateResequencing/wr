@@ -166,7 +166,7 @@ true.`,
 		muxfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
 		// mount everything
-		for _, mc := range mountParseJson(mountJSON) {
+		for _, mc := range mountParseJSON(mountJSON) {
 			var rcs []*muxfys.RemoteConfig
 			for _, mt := range mc.Targets {
 				accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
@@ -225,9 +225,9 @@ func init() {
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
 
-// mountParseJson takes a json string (as per `wr mount --help`) and parses it
+// mountParseJSON takes a json string (as per `wr mount --help`) and parses it
 // to a MountConfig for each mount defined.
-func mountParseJson(jsonString string) (mcs jobqueue.MountConfigs) {
+func mountParseJSON(jsonString string) (mcs jobqueue.MountConfigs) {
 	// parse
 	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {
