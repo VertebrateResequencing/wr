@@ -819,9 +819,17 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we'll mount any configured remote file systems
 	err = job.Mount()
 	if err != nil {
-		buryErr := fmt.Errorf("failed to mount remote file system(s): %s", err)
-		c.Bury(job, FailReasonMount, buryErr)
-		return buryErr
+		if strings.Contains(err.Error(), "fusermount exited with code 256") {
+			// *** not sure what causes this, but perhaps trying again after a
+			// few seconds will help?
+			<-time.After(5 * time.Second)
+			err = job.Mount()
+		}
+		if err != nil {
+			buryErr := fmt.Errorf("failed to mount remote file system(s): %s", err)
+			c.Bury(job, FailReasonMount, buryErr)
+			return buryErr
+		}
 	}
 
 	// and we'll run it with the environment variables that were present when
