@@ -291,7 +291,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			job.CPUtime = cr.Job.CPUtime
 			job.EndTime = time.Now()
 			job.ActualCwd = cr.Job.ActualCwd
-			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC)
+			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, false)
 		}
 	case "jarchive":
 		// remove the job from the queue, rpl and live bucket and add to
@@ -378,6 +378,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				qerr = err.Error()
 			} else {
 				s.decrementGroupCount(job.schedulerGroup, q)
+
+				if len(cr.Job.StdErrC) > 0 {
+					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+				}
 			}
 		}
 	case "jkick":
@@ -578,7 +582,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
 // extracting them from the database.
 func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
-	if getStd && job.Exited && job.Exitcode != 0 {
+	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == "buried") {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.key())
 	}
 	if getEnv {

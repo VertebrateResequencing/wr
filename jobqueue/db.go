@@ -606,18 +606,19 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 	return
 }
 
-// updateJobAfterExit stores the Job's peak RAM usage and wall time against
-// the Job's ReqGroup, allowing recommendedReqGroup*(ReqGroup) to work. It also
-// updates the stdout/err associated with a job. we don't want to store these in
+// updateJobAfterExit stores the Job's peak RAM usage and wall time against the
+// Job's ReqGroup, allowing recommendedReqGroup*(ReqGroup) to work. It also
+// updates the stdout/err associated with a job. We don't want to store these in
 // the job, since that would waste a lot of the queue's memory; we store in db
 // instead, and only retrieve when a client needs to see these. To stop the db
-// file becoming enormous, we only store these if the cmd failed and also delete
-// these from db when the cmd completes successfully. By doing the deletion
-// upfront, we also ensure we have the latest std, which may be nil even on cmd
-// failure. Since it is not critical to the running of jobs and workflows that
-// this works 100% of the time, we ignore errors and write to bolt in a
-// goroutine, giving us a significant speed boost.
-func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
+// file becoming enormous, we only store these if the cmd failed (or if
+// forceStorage is true: used when the job got buried) and also delete these
+// from db when the cmd completes successfully. By doing the deletion upfront,
+// we also ensure we have the latest std, which may be nil even on cmd failure.
+// Since it is not critical to the running of jobs and workflows that this works
+// 100% of the time, we ignore errors and write to bolt in a goroutine, giving
+// us a significant speed boost.
+func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorage bool) {
 	jobkey := job.key()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
 	go func() {
@@ -632,7 +633,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte) {
 			be.Delete(key)
 
 			var err error
-			if job.Exitcode != 0 {
+			if job.Exitcode != 0 || forceStorage {
 				if len(stdo) > 0 {
 					err = bo.Put(key, stdo)
 				}

@@ -343,7 +343,7 @@ func TestJobqueue(t *testing.T) {
 					job.PeakRAM = index + 1
 					job.StartTime = time.Now()
 					job.EndTime = job.StartTime.Add(time.Duration(index+1) * time.Second)
-					server.db.updateJobAfterExit(job, []byte{}, []byte{})
+					server.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
 				}
 				<-time.After(100 * time.Millisecond)
 				rmem, err := server.db.recommendedReqGroupMemory("fake_group")
@@ -358,7 +358,7 @@ func TestJobqueue(t *testing.T) {
 					job.PeakRAM = i * 100
 					job.StartTime = time.Now()
 					job.EndTime = job.StartTime.Add(time.Duration(i*100) * time.Second)
-					server.db.updateJobAfterExit(job, []byte{}, []byte{})
+					server.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
 				}
 				<-time.After(500 * time.Millisecond)
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")

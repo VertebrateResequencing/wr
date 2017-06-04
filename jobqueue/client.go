@@ -799,6 +799,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// it will fail
 	if fi, err := os.Stat(job.Cwd); err != nil || !fi.Mode().IsDir() {
 		c.Bury(job, FailReasonCwd)
+		return fmt.Errorf("working directory [%s] does not exist", job.Cwd)
 	}
 	var actualCwd, tmpDir string
 	if job.CwdMatters {
@@ -807,7 +808,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 		// we'll create a unique location to work in
 		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.key())
 		if err != nil {
-			c.Bury(job, FailReasonCwd)
+			buryErr := fmt.Errorf("could not create working directory: %s", err)
+			c.Bury(job, FailReasonCwd, buryErr)
+			return buryErr
 		}
 		cmd.Dir = actualCwd
 		job.ActualCwd = actualCwd
@@ -816,8 +819,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we'll mount any configured remote file systems
 	err = job.Mount()
 	if err != nil {
-		c.Bury(job, FailReasonMount)
-		return fmt.Errorf("failed to mount remote file systems for job [%s]: %s", job.key(), err)
+		buryErr := fmt.Errorf("failed to mount remote file system(s): %s", err)
+		c.Bury(job, FailReasonMount, buryErr)
+		return buryErr
 	}
 
 	// and we'll run it with the environment variables that were present when
@@ -1166,9 +1170,13 @@ func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err 
 
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
 // something to perhaps make it runnable and kicks the job). Note that you must
-// reserve a job before you can bury it.
-func (c *Client) Bury(job *Job, failreason string) (err error) {
+// reserve a job before you can bury it. Optionally supply an error that will
+// be be displayed as the Job's stderr.
+func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) {
 	job.FailReason = failreason
+	if len(stderr) == 1 && stderr[0] != nil {
+		job.StdErrC = compress([]byte(stderr[0].Error()))
+	}
 	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
 	if err == nil {
 		job.State = "buried"

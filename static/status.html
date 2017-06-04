@@ -253,6 +253,15 @@
                                         </dl>
                                     <!-- /ko -->
                                     
+                                    <!-- ko if: ! Exited && State == "buried" && StdErr -->
+                                        <dl>
+                                            <dt>StdErr</dt>
+                                            <dd>
+                                                <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
+                                            </dd>
+                                        </dl>
+                                    <!-- /ko -->
+                                    
                                     <!-- ko if: DepGroups -->
                                         <dl>
                                             <dt>DepGroups</dt>

@@ -230,6 +230,13 @@ very many (tens of thousands+) commands.`,
 					// Peak memory during a run... but is that possible/ too
 					// expensive? Maybe we could communicate directly with the
 					// runner?...
+				} else if showextra && showStd {
+					// it's possible for jobs that got buried before they even
+					// ran to have details of the bury in their stderr
+					stderr, err := job.StdErr()
+					if err == nil && stderr != "" {
+						fmt.Printf("Details: %s\n", stderr)
+					}
 				}
 
 				if showextra && showEnv {
