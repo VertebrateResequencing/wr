@@ -90,6 +90,17 @@ Number.prototype.toDuration = function () {
     return dur;
 };
 
+// Number(1234).toDate() returns a string converting the seconds (elapsed since
+// Unix epoch) supplied to human readable format
+Number.prototype.toDate = function () {
+    d = this;
+    var date = new Date(d*1000);
+    var hour = date.getHours() < 10 ? '0' + date.getHours() : date.getHours();
+    var min = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes();
+    var sec = date.getSeconds() < 10 ? '0' + date.getSeconds() : date.getSeconds();
+    return date.getFullYear().toString().substr(-2) + "/" + (date.getMonth() + 1) + "/" + date.getDate() + " " + hour + ":" + min + ":" + sec;
+};
+
 // Convert MB in to GB or TB if appropriate
 // (based on http://stackoverflow.com/a/20732091/675083)
 Number.prototype.mbIEC = function () {

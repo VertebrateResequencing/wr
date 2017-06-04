@@ -221,6 +221,14 @@
                                             <dd data-bind="text: PeakRAM.mbIEC()"></dd>
                                         </dl>
                                         <dl>
+                                            <dt>Started</dt>
+                                            <dd data-bind="text: Started.toDate()"></dd>
+                                        </dl>
+                                        <dl>
+                                            <dt>Ended</dt>
+                                            <dd data-bind="text: Ended.toDate()"></dd>
+                                        </dl>
+                                        <dl>
                                             <dt>Walltime</dt>
                                             <dd data-bind="text: Walltime.toDuration()"></dd>
                                         </dl>
@@ -239,6 +247,10 @@
                                     <!-- /ko -->
                                     
                                     <!-- ko if: ! Exited && (State == "reserved" || State == "running") -->
+                                        <dl>
+                                            <dt>Started</dt>
+                                            <dd data-bind="text: Started.toDate()"></dd>
+                                        </dl>
                                         <dl>
                                             <dt>Walltime</dt>
                                             <dd data-bind="text: Walltime.toDuration()"></dd>
@@ -411,7 +423,7 @@
             <hr>
             
             <footer id="footer">
-                <small>&copy; 2016 Genome Research Limited.</small>
+                <small>&copy; 2016, 2017 Genome Research Limited.</small>
             </footer>
         </div>
         

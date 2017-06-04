@@ -73,6 +73,8 @@ type jstatus struct {
 	Host          string
 	Walltime      float64
 	CPUtime       float64
+	Started       int64
+	Ended         int64
 	StdErr        string
 	StdOut        string
 	Env           []string
@@ -205,6 +207,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							Host:          jobs[0].Host,
 							Walltime:      jobs[0].WallTime().Seconds(),
 							CPUtime:       jobs[0].CPUtime.Seconds(),
+							Started:       jobs[0].StartTime.Unix(),
+							Ended:         jobs[0].EndTime.Unix(),
 							StdErr:        stderr,
 							StdOut:        stdout,
 							Env:           env,
@@ -294,6 +298,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									Host:          job.Host,
 									Walltime:      job.WallTime().Seconds(),
 									CPUtime:       job.CPUtime.Seconds(),
+									Started:       jobs[0].StartTime.Unix(),
+									Ended:         jobs[0].EndTime.Unix(),
 									Attempts:      job.Attempts,
 									Similar:       job.Similar,
 									StdErr:        stderr,

@@ -29,6 +29,8 @@ import (
 	"time"
 )
 
+const shortTimeFormat = "06/1/2-15:04:05"
+
 // options for this cmd
 var cmdFileStatus string
 var cmdIDStatus string
@@ -185,15 +187,15 @@ very many (tens of thousands+) commands.`,
 
 				switch job.State {
 				case "delayed":
-					fmt.Printf("Status: %s following a temporary problem, will become ready soon\n", job.State)
+					fmt.Printf("Status: delayed following a temporary problem, will become ready soon (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case "ready":
-					fmt.Printf("Status: %s to be picked up by a `wr runner`\n", job.State)
+					fmt.Println("Status: ready to be picked up by a `wr runner`")
 				case "buried":
-					fmt.Printf("Status: %s - you need to fix the problem and then `wr kick`\n", job.State)
+					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case "reserved", "running":
-					fmt.Println("Status: running")
+					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
 				case "complete":
-					fmt.Printf("Status: %s\n", job.State)
+					fmt.Printf("Status: complete (started %s; ended %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				}
 
 				if job.FailReason != "" {
