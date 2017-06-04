@@ -22,7 +22,11 @@ import (
 	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -68,6 +72,24 @@ complete.`,
 			die("%s", err)
 		}
 		defer jq.Disconnect()
+
+		// in case any job we execute has a Cmd that calls `wr add`, we alter
+		// the environment to make that call work
+		if rserver != "" {
+			hostPort := strings.Split(rserver, ":")
+			if len(hostPort) == 2 {
+				os.Setenv("WR_MANAGERHOST", hostPort[0])
+				os.Setenv("WR_MANAGERPORT", hostPort[1])
+			}
+
+			// add our own wr exe to the path in case its not there
+			exe, err := osext.Executable()
+			if err != nil {
+				die("%s", err)
+			}
+			exePath := filepath.Dir(exe)
+			os.Setenv("PATH", os.Getenv("PATH")+":"+exePath)
+		}
 
 		// we'll stop the below loop before using up too much time
 		var endTime time.Time
