@@ -2470,7 +2470,7 @@ func TestJobqueue(t *testing.T) {
 						for _, job := range jobs {
 							files, err := ioutil.ReadDir(job.ActualCwd)
 							if err != nil {
-								log.Fatalf("job [%s] had actual cwd %s: $s\n", job.Cmd, job.ActualCwd, err)
+								log.Fatalf("job [%s] had actual cwd %s: %s\n", job.Cmd, job.ActualCwd, err)
 							}
 							for range files {
 								ran++
