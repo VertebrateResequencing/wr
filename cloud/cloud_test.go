@@ -34,10 +34,11 @@ func TestOpenStack(t *testing.T) {
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
+	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	resourceName := "wr-testing-" + localUser
 
-	if osPrefix == "" || osUser == "" || localUser == "" {
-		SkipConvey("Without our special OS_OS_PREFIX, OS_OS_USERNAME and OS_LOCAL_USERNAME environment variables, we'll skip openstack tests", t, func() {})
+	if osPrefix == "" || osUser == "" || localUser == "" || flavorRegex == "" {
+		SkipConvey("Without our special OS_OS_PREFIX, OS_OS_USERNAME, OS_LOCAL_USERNAME and OS_FLAVOR_REGEX environment variables, we'll skip openstack tests", t, func() {})
 	} else {
 		crdir, err := ioutil.TempDir("", "wr_testing_cr")
 		if err != nil {
@@ -98,7 +99,7 @@ func TestOpenStack(t *testing.T) {
 					So(p.resources.Details["router"], ShouldNotBeBlank)
 				}
 
-				flavor, err := p.CheapestServerFlavor(1, 2048, "")
+				flavor, err := p.CheapestServerFlavor(1, 2048, flavorRegex)
 				So(err, ShouldBeNil)
 				So(flavor.RAM, ShouldBeGreaterThanOrEqualTo, 2048)
 				So(flavor.Disk, ShouldBeGreaterThanOrEqualTo, 1)
@@ -294,7 +295,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can't get a server flavor when your requirements are crazy", func() {
-					_, err := p.CheapestServerFlavor(20, 9999999999, "")
+					_, err := p.CheapestServerFlavor(20, 9999999999, flavorRegex)
 					So(err, ShouldNotBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
