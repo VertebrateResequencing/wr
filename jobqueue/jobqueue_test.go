@@ -2241,74 +2241,78 @@ func TestJobqueue(t *testing.T) {
 			})
 		})
 
-		Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
-			So(err, ShouldBeNil)
-			defer jq.Disconnect()
+		if maxCPU > 2 {
+			Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
+				jq, err := Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+				defer jq.Disconnect()
 
-			req1 := &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}
-			jobs := []*Job{{Cmd: "echo 1 && sleep 4", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "rep1"}}
-			inserts, already, err := jq.Add(jobs, envVars)
-			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 1)
-			So(already, ShouldEqual, 0)
+				req1 := &jqs.Requirements{RAM: 10, Time: 4 * time.Second, Cores: 1}
+				jobs := []*Job{{Cmd: "echo 1 && sleep 4", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "a"}}
+				inserts, already, err := jq.Add(jobs, envVars)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
 
-			<-time.After(1 * time.Second)
+				<-time.After(1 * time.Second)
 
-			job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 4"}, false, false)
-			So(err, ShouldBeNil)
-			So(job, ShouldNotBeNil)
-			So(job.State, ShouldEqual, "running")
+				job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 4"}, false, false)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.State, ShouldEqual, "running")
 
-			jobs = []*Job{{Cmd: "echo 2 && sleep 3", Cwd: "/tmp", ReqGroup: "req2", Requirements: &jqs.Requirements{RAM: 20, Time: 4 * time.Second, Cores: 1}, RepGroup: "rep2"}}
-			inserts, already, err = jq.Add(jobs, envVars)
-			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 1)
-			So(already, ShouldEqual, 0)
+				jobs = []*Job{{Cmd: "echo 2 && sleep 3", Cwd: "/tmp", ReqGroup: "req2", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Hour, Cores: 1}, RepGroup: "a"}}
+				inserts, already, err = jq.Add(jobs, envVars)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
 
-			<-time.After(1 * time.Second)
+				<-time.After(1 * time.Second)
 
-			job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 3"}, false, false)
-			So(err, ShouldBeNil)
-			So(job, ShouldNotBeNil)
-			So(job.State, ShouldEqual, "running")
+				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 3"}, false, false)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.State, ShouldEqual, "running")
 
-			jobs = []*Job{{Cmd: "echo 3 && sleep 2", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "rep1"}}
-			inserts, already, err = jq.Add(jobs, envVars)
-			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 1)
-			So(already, ShouldEqual, 0)
+				jobs = []*Job{{Cmd: "echo 3 && sleep 2", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "a"}}
+				inserts, already, err = jq.Add(jobs, envVars)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
 
-			<-time.After(1 * time.Second)
+				<-time.After(1 * time.Second)
 
-			job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && sleep 2"}, false, false)
-			So(err, ShouldBeNil)
-			So(job, ShouldNotBeNil)
-			So(job.State, ShouldEqual, "running")
+				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && sleep 2"}, false, false)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				So(job.State, ShouldEqual, "running")
 
-			// let them all complete
-			done := make(chan bool, 1)
-			go func() {
-				limit := time.After(30 * time.Second)
-				ticker := time.NewTicker(500 * time.Millisecond)
-				for {
-					select {
-					case <-ticker.C:
-						if !server.HasRunners() {
+				// let them all complete
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
 							ticker.Stop()
-							done <- true
+							done <- false
 							return
 						}
-						continue
-					case <-limit:
-						ticker.Stop()
-						done <- false
-						return
 					}
-				}
-			}()
-			So(<-done, ShouldBeTrue)
-		})
+				}()
+				So(<-done, ShouldBeTrue)
+			})
+		} else {
+			SkipConvey("Skipping a test that needs at least 3 cores", func() {})
+		}
 
 		Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
 			<-time.After(10 * time.Second)
@@ -3089,7 +3093,8 @@ func runner() {
 
 	// uncomment and fill out log path to debug "exit status 1" outputs when
 	// running the test:
-	// logfile, errlog := os.OpenFile("/.../log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// logfile, errlog := os.OpenFile("/tmp/wrrunnerlog", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
 	// if errlog == nil {
 	// 	defer logfile.Close()
 	// 	log.SetOutput(logfile)
@@ -3124,8 +3129,10 @@ func runner() {
 			log.Fatalf("reserve err: %s\n", err)
 		}
 		if job == nil {
+			// log.Printf("reserve gave no job after %s\n", rtimeoutd)
 			break
 		}
+		// log.Printf("working on job %s\n", job.Cmd)
 
 		// actually run the cmd
 		err = jq.Execute(job, config.RunnerExecShell)
