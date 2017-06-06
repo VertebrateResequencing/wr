@@ -27,7 +27,6 @@ import (
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 	"os"
-	"os/user"
 	"syscall"
 	"time"
 )
@@ -96,11 +95,11 @@ func initConfig() {
 
 // realUsername returns the username of the current user.
 func realUsername() string {
-	self, err := user.Current()
+	username, err := internal.Username()
 	if err != nil {
 		die("could not get username: %s", err)
 	}
-	return self.Username
+	return username
 }
 
 // cloudResourceName returns a user and deployment specific string that can be
