@@ -23,8 +23,8 @@ dependencies enabling easy automation of on-going projects.
 Furthermore, wr has best-in-class support for OpenStack, providing incredibly
 easy deployment and auto-scaling without you having to know anything about
 OpenStack. And it has built-in support for mounting S3-like object stores,
-providing probably the highest performance and easiest way of running commands
-against remote files.
+providing an easy way of running commands against remote files whilst enjoying
+[ultra high performance](https://github.com/VertebrateResequencing/muxfys).
 
 ***DO NOT USE YET!***
 
