@@ -5,7 +5,7 @@ go:
 before_install:
   - go get github.com/modocache/gover
   - go get github.com/mattn/goveralls
-  - curl -s https://glide.sh/get | sh
+  - go get github.com/Masterminds/glide
   - $HOME/gopath/bin/glide -q install
 script:
   - go test -tags netgo -v -coverprofile=queue.coverprofile -covermode count ./queue
