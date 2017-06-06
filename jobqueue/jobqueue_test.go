@@ -273,6 +273,8 @@ func TestJobqueue(t *testing.T) {
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
+		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
+
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
@@ -377,7 +379,7 @@ func TestJobqueue(t *testing.T) {
 					} else if i == 4 {
 						jid = 7
 					}
-					job, err := jq.Reserve(50 * time.Millisecond)
+					job, err := jq.ReserveScheduled(50*time.Millisecond, "1024:240:1:0")
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 					So(job.EnvC, ShouldNotBeNil)
@@ -385,14 +387,14 @@ func TestJobqueue(t *testing.T) {
 				}
 
 				Convey("Reserving when all have been reserved returns nil", func() {
-					job, err := jq.Reserve(50 * time.Millisecond)
+					job, err := jq.ReserveScheduled(50*time.Millisecond, "1024:240:1:0")
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
 
 					Convey("Adding one while waiting on a Reserve will return the new job", func() {
 						worked := make(chan bool)
 						go func() {
-							job, err := jq.Reserve(1000 * time.Millisecond)
+							job, err := jq.ReserveScheduled(1000*time.Millisecond, "1024:300:1:0")
 							if err != nil {
 								worked <- false
 								return
@@ -417,7 +419,7 @@ func TestJobqueue(t *testing.T) {
 								case <-ticker.C:
 									ticks++
 									if ticks == 2 {
-										jobs = append(jobs, &Job{Cmd: "new", Cwd: "/fake/cwd", ReqGroup: "add_group", Requirements: &jqs.Requirements{RAM: 10, Time: 20 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+										jobs = append(jobs, &Job{Cmd: "new", Cwd: "/fake/cwd", ReqGroup: "add_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 5 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
 										defer gojq.Disconnect()
 										gojq.Add(jobs, envVars)
@@ -469,6 +471,7 @@ func TestJobqueue(t *testing.T) {
 						}
 						job, err := jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
 						So(err, ShouldBeNil)
+						So(job, ShouldNotBeNil)
 						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 					}
 					job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
@@ -478,6 +481,7 @@ func TestJobqueue(t *testing.T) {
 			})
 
 			Convey("You can add more jobs, but without any environment variables", func() {
+				server.rc = ""
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 				inserts, already, err := jq.Add([]*Job{{Cmd: "echo $wr_jobqueue_test_no_envvar && false", Cwd: "/tmp", ReqGroup: "new_group", Requirements: standardReqs, Priority: uint8(100), RepGroup: "noenvvar"}}, []string{})
 				So(err, ShouldBeNil)
@@ -528,6 +532,7 @@ func TestJobqueue(t *testing.T) {
 			})
 
 			Convey("You can add more jobs, overriding certain environment variables", func() {
+				server.rc = ""
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 				inserts, already, err := jq.Add([]*Job{{
 					Cmd:          "echo $wr_jobqueue_test_no_envvar && echo $wr_jobqueue_test_no_envvar2 && false",
@@ -2466,6 +2471,9 @@ func TestJobqueue(t *testing.T) {
 					select {
 					case <-ticker.C:
 						jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
+						if err != nil {
+							continue
+						}
 						ran := 0
 						for _, job := range jobs {
 							files, err := ioutil.ReadDir(job.ActualCwd)
@@ -2516,9 +2524,15 @@ func TestJobqueue(t *testing.T) {
 					select {
 					case <-ticker.C:
 						if twoHundredCount > 0 && !server.HasRunners() {
-							ticker.Stop()
-							done <- true
-							return
+							// check they're really all complete, since the
+							// switch to a new job array could leave us with no
+							// runners temporarily
+							jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
+							if err == nil && len(jobs) == 11000 {
+								ticker.Stop()
+								done <- true
+								return
+							}
 						} else if twoHundredCount == 0 {
 							if count, existed := server.sgroupcounts["200:30:1:0"]; existed {
 								twoHundredCount = count
@@ -2542,7 +2556,7 @@ func TestJobqueue(t *testing.T) {
 			for _, job := range jobs {
 				files, err := ioutil.ReadDir(job.ActualCwd)
 				if err != nil {
-					log.Fatal(err)
+					continue
 				}
 				for range files {
 					ran++

@@ -26,7 +26,7 @@ import (
 
 func TestItem(t *testing.T) {
 	Convey("Given an item with a non-zero delay and ttr", t, func() {
-		item := newItem("item1", "data", 255, 100*time.Millisecond, 100*time.Millisecond)
+		item := newItem("item1", "", "data", 255, 100*time.Millisecond, 100*time.Millisecond)
 		So(item.state, ShouldEqual, "delay")
 		So(item.readyAt, ShouldHappenOnOrBetween, time.Now().Add(90*time.Millisecond), time.Now().Add(100*time.Millisecond))
 

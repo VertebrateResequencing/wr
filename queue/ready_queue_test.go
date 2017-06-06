@@ -31,7 +31,7 @@ func TestReadyQueue(t *testing.T) {
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			items[key] = newItem(key, "data", 0, 0*time.Second, 0*time.Second)
+			items[key] = newItem(key, "", "data", 0, 0*time.Second, 0*time.Second)
 			queue.push(items[key])
 		}
 
@@ -95,7 +95,7 @@ func TestReadyQueue(t *testing.T) {
 			if i == 4 {
 				p = 5
 			}
-			items[key] = newItem(key, "data", uint8(p), 0*time.Second, 0*time.Second)
+			items[key] = newItem(key, "", "data", uint8(p), 0*time.Second, 0*time.Second)
 			queue.push(items[key])
 		}
 
@@ -113,6 +113,81 @@ func TestReadyQueue(t *testing.T) {
 				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", p))
 			}
 			So(queue.Len(), ShouldEqual, 0)
+		})
+	})
+
+	Convey("Once 10 items of equal priority and 2 different ReserveGroups have been pushed to the queue", t, func() {
+		queue := newSubQueue(1)
+		items := make(map[string]*Item)
+		for i := 0; i < 5; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			items[key] = newItem(key, "group1", "data", 0, 0*time.Second, 0*time.Second)
+			queue.push(items[key])
+		}
+		for i := 5; i < 10; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			items[key] = newItem(key, "group2", "data", 0, 0*time.Second, 0*time.Second)
+			queue.push(items[key])
+		}
+
+		So(queue.len(), ShouldEqual, 10)
+
+		Convey("Pop on an unspecified group does nothing", func() {
+			item := queue.pop()
+			So(item, ShouldBeNil)
+		})
+
+		Convey("Popping from a given group should remove them in fifo order", func() {
+			exampleItem := items["key_1"]
+
+			So(queue.len("group1"), ShouldEqual, 5)
+			for i := 0; i < 5; i++ {
+				item := queue.pop("group1")
+				So(item, ShouldHaveSameTypeAs, exampleItem)
+				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
+			}
+			So(queue.len("group1"), ShouldEqual, 0)
+			item := queue.pop("group1")
+			So(item, ShouldBeNil)
+
+			So(queue.len("group2"), ShouldEqual, 5)
+			for i := 0; i < 5; i++ {
+				item := queue.pop("group2")
+				So(item, ShouldHaveSameTypeAs, exampleItem)
+				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i+5))
+			}
+			So(queue.len("group2"), ShouldEqual, 0)
+
+			item = queue.pop("group2")
+			So(item, ShouldBeNil)
+		})
+
+		Convey("Removing an item works", func() {
+			removeItem := items["key_2"]
+			queue.remove(removeItem)
+			So(queue.len(), ShouldEqual, 9)
+
+			for {
+				item := queue.pop("group1")
+				if item == nil {
+					break
+				}
+				So(item.Key, ShouldNotEqual, "key_2")
+			}
+			So(queue.len("group1"), ShouldEqual, 0)
+		})
+
+		Convey("Updating an item works", func() {
+			exampleItem := items["key_0"]
+			exampleItem.ReserveGroup = "group2"
+			queue.update(exampleItem, "group1")
+			newItem := queue.pop("group2")
+			So(newItem.Key, ShouldEqual, "key_0")
+		})
+
+		Convey("Removing all items works", func() {
+			queue.empty()
+			So(queue.len(), ShouldEqual, 0)
 		})
 	})
 }

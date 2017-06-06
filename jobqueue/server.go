@@ -316,7 +316,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	if len(priorJobs) > 0 {
 		jobsByQueue := make(map[string][]*queue.ItemDef)
 		for _, job := range priorJobs {
-			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.schedulerGroup, Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
 		}
 		for qname, itemdefs := range jobsByQueue {
 			q := s.getOrCreateQueue(qname)
@@ -503,7 +503,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 		// This function will be called in a go routine and receives a slice of
 		// all the ready jobs. Based on the requirements, we add to each job a
 		// schedulerGroup, which the runners we spawn will be able to pass to
-		// ReserveFiltered so that they run the correct jobs for the machine and
+		// Reserve() so that they run the correct jobs for the machine and
 		// resource reservations the job scheduler will run them under
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 			if s.drain {
@@ -577,8 +577,13 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 
 				prevSchedGroup := job.schedulerGroup
 				job.schedulerGroup = req.Stringify()
-				if prevSchedGroup != "" && prevSchedGroup != job.schedulerGroup {
-					job.scheduledRunner = false
+				if prevSchedGroup != job.schedulerGroup {
+					if prevSchedGroup != "" {
+						job.scheduledRunner = false
+					}
+					if s.rc != "" {
+						q.SetReserveGroup(job.key(), job.schedulerGroup)
+					}
 				}
 
 				if s.rc != "" {
@@ -893,16 +898,9 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
 				// bury all jobs in this scheduler group
 				problem = false
-				rf := func(data interface{}) bool {
-					job := data.(*Job)
-					if job.schedulerGroup == group {
-						return true
-					}
-					return false
-				}
 				s.sgcmutex.Lock()
 				for {
-					item, err := q.ReserveFiltered(rf)
+					item, err := q.Reserve(group)
 					if err != nil {
 						problem = true
 						break

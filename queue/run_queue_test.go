@@ -32,7 +32,7 @@ func TestRunQueue(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			ttr := time.Duration((9 - i + 1)) * time.Second
-			items[key] = newItem(key, "data", 0, 0*time.Second, ttr)
+			items[key] = newItem(key, "", "data", 0, 0*time.Second, ttr)
 			items[key].touch()
 			queue.push(items[key])
 		}
@@ -96,7 +96,7 @@ func TestRunQueue(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				key := fmt.Sprintf("key_%d", i)
 				ttr := time.Duration((9 - i + 1)) * time.Second
-				item := newItem(key, "data", 0, 0*time.Second, ttr)
+				item := newItem(key, "", "data", 0, 0*time.Second, ttr)
 				item.touch()
 				queue.push(item)
 
@@ -109,7 +109,7 @@ func TestRunQueue(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				key := fmt.Sprintf("key_%d", i)
 				ttr := time.Duration(i+1) * time.Second
-				item := newItem(key, "data", 0, 0*time.Second, ttr)
+				item := newItem(key, "", "data", 0, 0*time.Second, ttr)
 				item.touch()
 				queue.push(item)
 

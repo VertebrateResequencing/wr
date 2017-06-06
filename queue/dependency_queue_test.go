@@ -31,7 +31,7 @@ func TestDependencyQueue(t *testing.T) {
 		items := make(map[string]*Item)
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			items[key] = newItem(key, "data", 0, 0*time.Second, 0*time.Second)
+			items[key] = newItem(key, "", "data", 0, 0*time.Second, 0*time.Second)
 			queue.push(items[key])
 		}
 
@@ -70,7 +70,7 @@ func TestDependencyQueue(t *testing.T) {
 		items := make(map[string]*Item)
 		for i := 0; i < 1; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			items[key] = newItem(key, "data", 0, 0*time.Second, 0*time.Second)
+			items[key] = newItem(key, "", "data", 0, 0*time.Second, 0*time.Second)
 			queue.push(items[key])
 		}
 

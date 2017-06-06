@@ -34,7 +34,8 @@ priority (or for those with equal priority, the oldest - fifo) one which
 switches it from the ready queue to the run queue. Items can also have
 dependencies, in which case they start in the dependency queue and only move to
 the ready queue (bypassing the delay queue) once all its dependencies have been
-Remove()d from the queue.
+Remove()d from the queue. Items can also belong to a reservation group, in which
+case you can Reserve() an item in a desired group.
 
 In the run queue the item starts a time-to-release (ttr) countdown; when that
 runs out the item is placed back on the ready queue. This is to handle a
@@ -58,14 +59,17 @@ delay queue.
     })
 
     // add an item to the queue
-    ttr := 30 * time.Second)
-    item, err := q.Add("uuid", "item data", 0, 0 * time.Second, ttr)
+    ttr := 30 * time.Second
+    item, err := q.Add("uuid", "group", "item data", 0, 0 * time.Second, ttr)
 
     // get it back out
     item, err = queue.Get("uuid")
 
     // reserve the next item
     item, err = queue.Reserve()
+
+    // or reserve the next item in a particular group
+    item, err = queue.Reserve("group")
 
     // queue.Touch() every < ttr seconds if you might take longer than ttr to
     // process the item
@@ -114,11 +118,6 @@ type readyAddedCallback func(queuename string, allitemdata []interface{})
 // leaving the queue, `to` will be 'removed'.
 type changedCallback func(from string, to string, data []interface{})
 
-// ReserveFilter is a callback for use when calling ReserveFiltered(). It will
-// receive an item's Data property and should return false if that is not
-// desired, true if it is.
-type ReserveFilter func(data interface{}) bool
-
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
@@ -156,6 +155,7 @@ type Stats struct {
 // ItemDef makes it possible to supply a slice of Add() args to AddMany().
 type ItemDef struct {
 	Key          string
+	ReserveGroup string
 	Data         interface{}
 	Priority     uint8 // highest priority is 255
 	Delay        time.Duration
@@ -207,8 +207,10 @@ func (queue *Queue) readyAdded() {
 	if queue.readyAddedCb != nil {
 		queue.mutex.RLock()
 		var data []interface{}
-		for _, item := range queue.readyQueue.items {
-			data = append(data, item.Data)
+		for _, il := range queue.readyQueue.groupedItems {
+			for _, item := range il {
+				data = append(data, item.Data)
+			}
 		}
 		queue.mutex.RUnlock()
 		go queue.readyAddedCb(queue.Name, data)
@@ -282,12 +284,14 @@ func (queue *Queue) Stats() *Stats {
 // to the ready sub-queue. The priority determines which item will be next to be
 // Reserve()d, with priority 255 (the max) items coming before lower priority
 // ones (with 0 being the lowest). Items with the same priority number are
-// Reserve()d on a fifo basis. The final argument to Add() is an optional slice
-// of item ids on which this item depends: this item will first enter the
+// Reserve()d on a fifo basis. reserveGroup can be left as an empty string, but
+// specifying it then lets you provide the same to Reserve() to get the next
+// item with the given reserveGroup. The final argument to Add() is an optional
+// slice of item ids on which this item depends: this item will first enter the
 // dependency sub-queue and only transfer to the ready sub-queue when items with
 // these ids get Remove()d from the queue. Add() returns an item, which may have
 // already existed (in which case, nothing was actually added or changed).
-func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (item *Item, err error) {
+func (queue *Queue) Add(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (item *Item, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -303,7 +307,7 @@ func (queue *Queue) Add(key string, data interface{}, priority uint8, delay time
 		return
 	}
 
-	item = newItem(key, data, priority, delay, ttr)
+	item = newItem(key, reserveGroup, data, priority, delay, ttr)
 	queue.items[key] = item
 
 	// check dependencies
@@ -390,7 +394,7 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 			continue
 		}
 
-		item := newItem(def.Key, def.Data, def.Priority, def.Delay, def.TTR)
+		item := newItem(def.Key, def.ReserveGroup, def.Data, def.Priority, def.Delay, def.TTR)
 		queue.items[def.Key] = item
 
 		if len(def.Dependencies) > 0 {
@@ -466,13 +470,14 @@ func (queue *Queue) AllItems() (items []*Item) {
 	return
 }
 
-// Update is a thread-safe way to change the data, priority, delay, ttr or
-// dependencies of an item. You must supply all of these as per Add() - just
-// supply the old values of those you are not changing (except for dependencies,
-// which remain optional). The old values can be found by getting the item with
-// Get() (giving you item.Key, item.Data and item.UnresolvedDependencies()), and
-// then calling item.Stats() to get stats.Priority, stats.Delay and stats.TTR.
-func (queue *Queue) Update(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (err error) {
+// Update is a thread-safe way to change the data, ReserveGroup, priority, delay,
+// ttr or dependencies of an item. You must supply all of these as per Add() -
+// just supply the old values of those you are not changing (except for
+// dependencies, which remain optional). The old values can be found by getting
+// the item with Get() (giving you item.Key, item.ReserveGroup, item.Data and
+// item.UnresolvedDependencies()), and then calling item.Stats() to get
+// stats.Priority, stats.Delay and stats.TTR.
+func (queue *Queue) Update(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -565,10 +570,12 @@ func (queue *Queue) Update(key string, data interface{}, priority uint8, delay t
 			item.restart()
 			queue.delayQueue.update(item)
 		}
-	} else if item.priority != priority || addedReady {
+	} else if item.priority != priority || item.ReserveGroup != reserveGroup || addedReady {
 		item.priority = priority
+		oldGroup := item.ReserveGroup
+		item.ReserveGroup = reserveGroup
 		if item.state == "ready" {
-			queue.readyQueue.update(item)
+			queue.readyQueue.update(item, oldGroup)
 		}
 	} else if item.ttr != ttr {
 		item.ttr = ttr
@@ -623,17 +630,49 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) (err error) {
 	return
 }
 
+// SetReserveGroup is a thread-safe way to change the ReserveGroup of an item.
+func (queue *Queue) SetReserveGroup(key string, newGroup string) (err error) {
+	queue.mutex.Lock()
+	if queue.closed {
+		err = Error{queue.Name, "SetReserveGroup", key, ErrQueueClosed}
+		queue.mutex.Unlock()
+		return
+	}
+
+	item, exists := queue.items[key]
+	if !exists {
+		err = Error{queue.Name, "SetReserveGroup", key, ErrNotFound}
+		queue.mutex.Unlock()
+		return
+	}
+
+	oldGroup := item.ReserveGroup
+	if oldGroup != newGroup {
+		item.ReserveGroup = newGroup
+		if item.state == "ready" {
+			queue.readyQueue.update(item, oldGroup)
+		}
+	}
+	queue.mutex.Unlock()
+	return
+}
+
 // Reserve is a thread-safe way to get the highest priority (or for those with
-// equal priority, the oldest (by time since the item was first Add()ed) item
-// in the queue, switching it from the ready sub-queue to the run sub-queue, and
-// in so doing starting its ttr countdown. You need to Remove() the item when
-// you're done with it. If you're still doing something and ttr is approaching,
-// Touch() it, otherwise it will be assumed you died and the item will be
-// released back to the ready sub-queue automatically, to be handled by someone
-// else that gets it from a Reserve() call. If you know you can't handle it
-// right now, but someone else might be able to later, you can manually call
-// Release(), which moves it to the delay sub-queue.
-func (queue *Queue) Reserve() (item *Item, err error) {
+// equal priority, the oldest (by time since the item was first Add()ed) item in
+// the queue, switching it from the ready sub-queue to the run sub-queue, and in
+// so doing starting its ttr countdown. By specifying the optional reserveGroup
+// argument, you will get the next item that was added with the given
+// ReserveGroup (conversely, if your items were added with ReserveGroups but you
+// don't supply one here, you will not get an item).
+//
+// You need to Remove() the item when you're done with it. If you're still doing
+// something and ttr is approaching, Touch() it, otherwise it will be assumed
+// you died and the item will be released back to the ready sub- queue
+// automatically, to be handled by someone else that gets it from a Reserve()
+// call. If you know you can't handle it right now, but someone else might be
+// able to later, you can manually call Release(), which moves it to the delay
+// sub-queue.
+func (queue *Queue) Reserve(reserveGroup ...string) (item *Item, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -642,68 +681,19 @@ func (queue *Queue) Reserve() (item *Item, err error) {
 		return
 	}
 
+	var group string
+	if len(reserveGroup) == 1 {
+		group = reserveGroup[0]
+	}
+
 	// pop an item from the ready queue and add it to the run queue
-	item = queue.readyQueue.pop()
+	item = queue.readyQueue.pop(group)
 	if item == nil {
 		queue.mutex.Unlock()
 		err = Error{queue.Name, "Reserve", "", ErrNothingReady}
 		return
 	}
 
-	item.touch()
-	queue.runQueue.push(item)
-	item.switchReadyRun()
-
-	queue.mutex.Unlock()
-	queue.ttrNotificationTrigger(item)
-	queue.changed("ready", "run", []*Item{item})
-
-	return
-}
-
-// ReserveFiltered is like Reserve(), except you provide a callback function
-// that will receive the next (highest priority || oldest) item's Data. If you
-// don't want that one your callback returns false, and then it will be called
-// again with the following item's Data, and so on until your say you want it by
-// returning true. That will be the item that gets moved from the ready to the
-// run queue and returned to you. If you don't want any you'll get an error as
-// if the ready queue was empty.
-func (queue *Queue) ReserveFiltered(filter ReserveFilter) (item *Item, err error) {
-	queue.mutex.Lock()
-
-	if queue.closed {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "ReserveFiltered", "", ErrQueueClosed}
-		return
-	}
-
-	// go through the ready queue in order and offer each item's Data to filter
-	// until it returns true: that's the item we'll remove from ready
-	var poppedItems []*Item
-	for {
-		thisItem := queue.readyQueue.pop()
-		if thisItem == nil {
-			break
-		}
-		poppedItems = append(poppedItems, thisItem)
-
-		ok := filter(thisItem.Data)
-		if ok {
-			item = thisItem
-			break
-		}
-	}
-	for _, thisItem := range poppedItems {
-		queue.readyQueue.push(thisItem)
-	}
-
-	if item == nil {
-		queue.mutex.Unlock()
-		err = Error{queue.Name, "ReserveFiltered", "", ErrNothingReady}
-		return
-	}
-
-	queue.readyQueue.remove(item)
 	item.touch()
 	queue.runQueue.push(item)
 	item.switchReadyRun()

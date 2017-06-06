@@ -32,7 +32,7 @@ func TestDelayQueue(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			delay := time.Duration((9 - i + 1)) * time.Second
-			items[key] = newItem(key, "data", 0, delay, 0*time.Second)
+			items[key] = newItem(key, "", "data", 0, delay, 0*time.Second)
 			queue.push(items[key])
 		}
 

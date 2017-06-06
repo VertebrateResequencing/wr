@@ -111,7 +111,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						// dependencies being in cr.Jobs
 						var itemdefs []*queue.ItemDef
 						for _, job := range jobsToQueue {
-							itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+							itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.schedulerGroup, Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
 						}
 
 						// storeNewJobs also returns jobsToUpdate, which are
@@ -120,7 +120,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						// we stored cr.Jobs
 						var updateErr error
 						for _, job := range jobsToUpdate {
-							thisErr := q.Update(job.key(), job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
+							thisErr := q.Update(job.key(), job.schedulerGroup, job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
 							if thisErr != nil {
 								updateErr = thisErr
 								break
@@ -151,7 +151,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// first just try to Reserve normally
 			var item *queue.Item
 			var err error
-			var rf queue.ReserveFilter
 			if cr.SchedulerGroup != "" {
 				// if this is the first job that the client is trying to
 				// reserve, and if we don't actually want any more clients
@@ -167,14 +166,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 
 				if !skip {
-					rf = func(data interface{}) bool {
-						job := data.(*Job)
-						if job.schedulerGroup == cr.SchedulerGroup {
-							return true
-						}
-						return false
-					}
-					item, err = q.ReserveFiltered(rf)
+					item, err = q.Reserve(cr.SchedulerGroup)
 				}
 			} else {
 				item, err = q.Reserve()
@@ -198,13 +190,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						for {
 							select {
 							case <-ticker.C:
-								var item *queue.Item
-								var err error
-								if cr.SchedulerGroup != "" {
-									item, err = q.ReserveFiltered(rf)
-								} else {
-									item, err = q.Reserve()
-								}
+								item, err := q.Reserve(cr.SchedulerGroup)
 								if err != nil {
 									if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 										continue

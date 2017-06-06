@@ -33,6 +33,7 @@ import (
 // 'removed' or 'dependent'.
 type Item struct {
 	Key           string
+	ReserveGroup  string
 	Data          interface{}
 	state         string
 	reserves      uint32
@@ -72,21 +73,22 @@ type ItemStats struct {
 	TTR       time.Duration
 }
 
-func newItem(key string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) *Item {
+func newItem(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) *Item {
 	return &Item{
-		Key:      key,
-		Data:     data,
-		state:    "delay",
-		reserves: 0,
-		timeouts: 0,
-		releases: 0,
-		buries:   0,
-		kicks:    0,
-		priority: priority,
-		delay:    delay,
-		ttr:      ttr,
-		readyAt:  time.Now().Add(delay),
-		creation: time.Now(),
+		Key:          key,
+		ReserveGroup: reserveGroup,
+		Data:         data,
+		state:        "delay",
+		reserves:     0,
+		timeouts:     0,
+		releases:     0,
+		buries:       0,
+		kicks:        0,
+		priority:     priority,
+		delay:        delay,
+		ttr:          ttr,
+		readyAt:      time.Now().Add(delay),
+		creation:     time.Now(),
 	}
 }
 

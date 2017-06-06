@@ -686,6 +686,10 @@ func (c *Client) Add(jobs []*Job, envVars []string) (added int, existed int, err
 // If no job was available in the queue for as long as the timeout argument, nil
 // is returned for both job and error. If your timeout is 0, you will wait
 // indefinitely for a job.
+//
+// NB: if your jobs have schedulerGroups (and they will if you added them to a
+// server configured with a RunnerCmd), this will most likely not return any
+// jobs; use ReserveScheduled() instead.
 func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 	fr := false
 	if !c.hasReserved {
