@@ -2528,7 +2528,7 @@ func TestJobqueue(t *testing.T) {
 							// switch to a new job array could leave us with no
 							// runners temporarily
 							jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
-							if err == nil && len(jobs) == 11000 {
+							if err == nil && len(jobs) == count+count2 {
 								ticker.Stop()
 								done <- true
 								return
