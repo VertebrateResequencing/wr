@@ -5,6 +5,46 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.8.0] - 2017-06-07
+### Added
+- New --debug option for `wr cloud deploy`.
+- New --cwd_matters option for `wr add`: the default for new jobs is that they
+  run in a unique directory, and --cwd_matters restores the old behaviour of
+  running directly in --cwd. Running in a unique directory enables automatic
+  cleanup (see behaviour system below) and sets $TMPDIR to a unique directory
+  that will always get deleted.
+- New --ChangeHome option for `wr add`: sets the $HOME environment variable to
+  the unique working directory.
+- Jobs now store (and display in status) their start and end time if they ran.
+- `wr add` gains a new behaviour system for specifying what happens after a cmd
+  exits (--on_failure, --on_success and --on_exit options).
+- S3-like object stores can now be mounted just-in-time for a cmd to run using
+  the new --mounts option to `wr add`, and these mounts can be tested with the
+  new `wr mount` command.
+- `wr add` can now be called by a command added to `wr add` when using a cloud
+  deployment.
+
+### Fixed
+- Status web page 'remove' button for buried jobs was broken.
+- OpenStack scheduler no longer stops spawning after a number of hours.
+- OpenStack scheduler no longer miscounts how many resources have been used,
+  which stopped it spawning new servers when close to your quota.
+- Adding jobs with alternating resource requirements no longer results in
+  unnecessarily pending jobs.
+- Orders of magnitude speed improvement for runners reserving new jobs to work
+  on when there are many thousands of jobs.
+
+### Changed
+- `wr cloud deploy` now waits longer for remote manager to start up.
+- `wr cloud deploy --script` option now runs as a user, but lets you prefix
+  commands with sudo.
+- Building wr now requires Go v1.8+.
+- Dependencies are now managed by glide, and include a private bug fix for
+  OpenStack.
+- Backwards incompatible changes to queue package API (ReserveFiltered() removed
+  and replaced with Reserve("group")).
+
+
 ## [0.7.0] - 2017-03-09
 ### Added
 - Status web page now lets you delete pending commands from the queue.

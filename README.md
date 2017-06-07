@@ -52,6 +52,7 @@ installation in your home directory would be:
         export PATH=$PATH:$GOROOT/bin
         mkdir work
         export GOPATH=$HOME/work
+        mkdir $GOPATH/bin
         export PATH=$GOPATH/bin:$PATH
 
 2. Download, compile, and install wr:
