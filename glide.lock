@@ -1,5 +1,5 @@
-hash: 5ecf8882de040d6b77f79e79fbd450681aa7dec4f25d3fdbb279dcf4de34e3a3
-updated: 2017-05-23T14:38:24.395992617+01:00
+hash: 69481f1aa73d757b10b36e2d379b602492a4e91e52af8f49e2cd2c4cd53b68b5
+updated: 2017-06-07T15:17:16.902359477+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
@@ -105,7 +105,7 @@ imports:
 - name: github.com/sb10/l15h
   version: 64c488bf8e2265529e37899226b038221f12e2e9
 - name: github.com/sevlyar/go-daemon
-  version: 1ae26ef5036ad04968706917222a23c535673d8c
+  version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
   version: fd7db8b441af83911972ccce955e925b3d72cdf2
   subpackages:
