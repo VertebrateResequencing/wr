@@ -46,7 +46,7 @@ import:
   version: master
 - package: github.com/sb10/l15h
 - package: github.com/sevlyar/go-daemon
-  version: master
+  version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - package: github.com/shirou/gopsutil
   version: master
   subpackages:
