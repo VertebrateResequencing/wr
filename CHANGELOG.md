@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.8.1] - 2017-06-07
+### Fixed
+- `make dist` fixed to work and compile to darwin once again.
+
 ## [0.8.0] - 2017-06-07
 ### Added
 - New --debug option for `wr cloud deploy`.
