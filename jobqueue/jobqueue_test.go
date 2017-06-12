@@ -681,7 +681,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(stderr, ShouldEqual, "")
 				actualCwd := job.ActualCwd
-				So(actualCwd, ShouldStartWith, filepath.Join("/tmp", "jobqueue_cwd", "0", "3", "d", "5016c70b1668af90b08cc2d13ab91"))
+				So(actualCwd, ShouldStartWith, filepath.Join("/tmp", "jobqueue_cwd", "7", "4", "7", "27e23009c78b126f274aa64416f30"))
 				So(actualCwd, ShouldEndWith, "cwd")
 
 				job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && true"}, false, false)
@@ -1049,7 +1049,7 @@ func TestJobqueue(t *testing.T) {
 					stdout, err = job.StdOut()
 					So(err, ShouldBeNil)
 					actualCwd := job.ActualCwd
-					So(actualCwd, ShouldStartWith, filepath.Join(tmpDir, "jobqueue_cwd", "8", "8", "b", "25fb66330a7282e70ac3f86844396"))
+					So(actualCwd, ShouldStartWith, filepath.Join(tmpDir, "jobqueue_cwd", "d", "4", "1", "7364d743329da784e74f2d69d438d"))
 					So(actualCwd, ShouldEndWith, "cwd")
 					So(stdout, ShouldEqual, actualCwd+"-"+actualCwd)
 					stderr, err = job.StdErr()
@@ -1197,7 +1197,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.Exitcode, ShouldEqual, 0)
 
 					actualCwd := job.ActualCwd
-					So(actualCwd, ShouldStartWith, filepath.Join(cwd, "jobqueue_cwd", "c", "6", "b", "118a8428d26ecd48047684929b2be"))
+					So(actualCwd, ShouldStartWith, filepath.Join(cwd, "jobqueue_cwd", "6", "0", "8", "3ab5943a1918a9774e4644acb36f6"))
 					So(actualCwd, ShouldEndWith, "cwd")
 					_, err = os.Stat(filepath.Join(actualCwd, "bar"))
 					So(err, ShouldNotBeNil)
@@ -1219,7 +1219,7 @@ func TestJobqueue(t *testing.T) {
 					So(job.FailReason, ShouldEqual, FailReasonExit)
 
 					actualCwd = job.ActualCwd
-					So(actualCwd, ShouldStartWith, filepath.Join(cwd, "jobqueue_cwd", "2", "8", "d", "f5a6135881cf9a5ddf20ac0e76ab8"))
+					So(actualCwd, ShouldStartWith, filepath.Join(cwd, "jobqueue_cwd", "4", "4", "a", "758484033bddc46a51d3ec7517f2c"))
 					So(actualCwd, ShouldEndWith, "cwd")
 					_, err = os.Stat(filepath.Join(actualCwd, "bar"))
 					So(err, ShouldBeNil)
