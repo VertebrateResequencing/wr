@@ -91,8 +91,8 @@ locally, even though the manager is actually running remotely. Note that this
 precludes starting wr manager locally as well. Also be aware that while 'wr add'
 normally associates your current environment variables and working directory
 with the cmds you want to run, with a remote deployment the working directory
-defaults to /tmp, and commands will be run with a minimal set of remote
-environment variables.
+defaults to /tmp, and commands will be run with the non-login environment
+variables of the server the command is run on.
 
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created cloud server before any commands run on them. You

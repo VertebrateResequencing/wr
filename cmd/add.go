@@ -257,7 +257,7 @@ started the manager (local, vs remote). In the local case, commands will use
 base variables as they were at the moment in time you run 'wr add', so to set a
 certain environment variable for all commands, you can just set it prior to
 calling 'wr add'. In the remote case the command will use base variables as they
-were on the machine where the manager is running at the moment the manager was
+were on the machine where the command is executed when that machine was
 started.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
