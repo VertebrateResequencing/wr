@@ -943,6 +943,10 @@ SENTINEL:
 		}
 
 		s.RunCmd("rm "+pcsPath, false)
+
+		// because the postCreationScript may have altered PATH and other things
+		// that subsequent RunCmd may rely on, clear the client
+		s.sshclient = nil
 	}
 
 	return
