@@ -37,6 +37,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -276,6 +277,9 @@ type JobEssence struct {
 
 	// Cwd should only be set if the Job was created with CwdMatters = true.
 	Cwd string
+
+	// Mounts should only be set if the Job was created with Mounts
+	MountConfigs MountConfigs
 }
 
 // Key returns the same value that key() on the matching Job would give you.
@@ -284,13 +288,10 @@ func (j *JobEssence) Key() string {
 		return j.JobKey
 	}
 
-	var key string
-	if j.Cwd == "" {
-		key = j.Cmd
-	} else {
-		key = fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)
+	if j.Cwd != "" {
+		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
-	return byteKey([]byte(key))
+	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
 }
 
 // Stringify returns a nice printable form of a JobEssence.
@@ -522,6 +523,48 @@ func (mcs MountConfigs) String() string {
 	}
 	b, _ := json.Marshal(mcs)
 	return string(b)
+}
+
+// Key returns a string representation of the most critical parts of the config
+// that would make it different from other MountConfigs in practical terms of
+// what files are accessible from where: only Mount, Target.Profile and
+// Target.Path are considered. The order of Targets (but not of MountConfig) is
+// considered as well.
+func (mcs MountConfigs) Key() string {
+	if len(mcs) == 0 {
+		return ""
+	}
+
+	// sort mcs first, since the order doesn't affect what files are available
+	// where
+	if len(mcs) > 1 {
+		sort.Slice(mcs, func(i, j int) bool {
+			return mcs[i].Mount < mcs[j].Mount
+		})
+	}
+
+	var key bytes.Buffer
+	for _, mc := range mcs {
+		mount := mc.Mount
+		if mount == "" {
+			mount = "mnt"
+		}
+		key.WriteString(mount)
+		key.WriteString(":")
+
+		for _, t := range mc.Targets {
+			profile := t.Profile
+			if profile == "" {
+				profile = "default"
+			}
+			key.WriteString(profile)
+			key.WriteString("-")
+			key.WriteString(t.Path)
+			key.WriteString(";")
+		}
+	}
+
+	return key.String()
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -1553,9 +1596,9 @@ func (j *Job) updateRecsAfterFailure() {
 // key calculates a unique key to describe the job.
 func (j *Job) key() string {
 	if j.CwdMatters {
-		return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)))
+		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
-	return byteKey([]byte(j.Cmd))
+	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
 }
 
 // request the server do something and get back its response. We can only cope

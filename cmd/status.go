@@ -52,12 +52,14 @@ Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
 
-The file to provide -f is in the format cmd\tcwd.
+The file to provide -f is in the format cmd\tcwd\tmounts, with the last 2
+columns optional.
 
 In -f and -l mode you must provide the cwd the commands were set to run in, if
-CwdMatters (and must NOT be provided otherwise). You can do this by using the -c
-option, or in -f mode your file can specify the cwd, in case it's different for
-each command.
+CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
+JSON that was used when the command was added, if any. You can do this by using
+the -c and --mounts options, or in -f mode your file can specify the cwd and
+mounts, in case it's different for each command.
 
 By default, commands with the same state, reason for failure and exitcode are
 grouped together and only a random 1 of them is displayed (and you are told how
@@ -84,6 +86,11 @@ very many (tens of thousands+) commands.`,
 			cmdState = "buried"
 		}
 		timeout := time.Duration(timeoutint) * time.Second
+
+		var defaultMounts jobqueue.MountConfigs
+		if cmdMounts != "" {
+			defaultMounts = mountParseJSON(cmdMounts)
+		}
 
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
@@ -128,7 +135,15 @@ very many (tens of thousands+) commands.`,
 				} else {
 					cwd = cols[1]
 				}
-				jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd})
+
+				var mounts jobqueue.MountConfigs
+				if colsn < 3 || cols[2] == "" {
+					mounts = defaultMounts
+				} else {
+					mounts = mountParseJSON(cols[2])
+				}
+
+				jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd, MountConfigs: mounts})
 				desired++
 			}
 			jobs, err = jq.GetByEssences(jes)
@@ -139,8 +154,10 @@ very many (tens of thousands+) commands.`,
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd}, showStd, showEnv)
-			jobs = append(jobs, job)
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
+			if job != nil {
+				jobs = append(jobs, job)
+			}
 		}
 
 		if err != nil {
@@ -280,6 +297,7 @@ func init() {
 	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
+	statusCmd.Flags().StringVar(&cmdMounts, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use")
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "except in -f mode, also show the environment variables the command(s) ran with")

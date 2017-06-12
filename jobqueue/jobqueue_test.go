@@ -2781,38 +2781,107 @@ func TestJobqueueWithMounts(t *testing.T) {
 		}
 		b := &Behaviour{When: OnExit, Do: CleanupAll}
 		bs := Behaviours{b}
-		jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs, Behaviours: bs})
-		inserts, already, err := jq.Add(jobs, envVars)
-		So(err, ShouldBeNil)
-		So(inserts, ShouldEqual, 1)
-		So(already, ShouldEqual, 0)
 
-		job, err := jq.Reserve(50 * time.Millisecond)
-		So(err, ShouldBeNil)
-		So(job, ShouldNotBeNil)
-		So(job.RepGroup, ShouldEqual, "s3")
+		Convey("Commands can read remote data and the cache gets deleted afterwards", func() {
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt && cat bar", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3", MountConfigs: mcs, Behaviours: bs})
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
 
-		// muxfys.SetLogHandler(log15.StderrHandler)
-		jeerr := jq.Execute(job, config.RunnerExecShell)
-		So(jeerr, ShouldBeNil)
+			job, err := jq.Reserve(50 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.RepGroup, ShouldEqual, "s3")
 
-		job, err = jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt && cat bar"}, false, false)
-		So(err, ShouldBeNil)
-		So(job, ShouldNotBeNil)
-		So(job.State, ShouldEqual, "complete")
+			// muxfys.SetLogHandler(log15.StderrHandler)
+			jeerr := jq.Execute(job, config.RunnerExecShell)
+			So(jeerr, ShouldBeNil)
 
-		// test that the cache dirs get deleted; this test fails if cwd is based
-		// in an nfs mount, the problem confirmed upstream in muxfys but with no
-		// solution apparent...
-		So(job.ActualCwd, ShouldNotBeEmpty)
-		_, err = os.Stat(job.ActualCwd)
-		So(err, ShouldNotBeNil)
-		So(os.IsNotExist(err), ShouldBeTrue)
-		f, err := os.Open(job.Cwd)
-		So(err, ShouldBeNil)
-		defer f.Close()
-		_, err = f.Readdirnames(100)
-		So(err, ShouldEqual, io.EOF) // ie. the whole created working dir got wiped
+			job, err = jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt && cat bar"}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldBeNil)
+
+			job, err = jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt && cat bar", MountConfigs: mcs}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.State, ShouldEqual, "complete")
+
+			// test that the cache dirs get deleted; this test fails if cwd is based
+			// in an nfs mount, the problem confirmed upstream in muxfys but with no
+			// solution apparent...
+			So(job.ActualCwd, ShouldNotBeEmpty)
+			_, err = os.Stat(job.ActualCwd)
+			So(err, ShouldNotBeNil)
+			So(os.IsNotExist(err), ShouldBeTrue)
+			f, err := os.Open(job.Cwd)
+			So(err, ShouldBeNil)
+			defer f.Close()
+			_, err = f.Readdirnames(100)
+			So(err, ShouldEqual, io.EOF) // ie. the whole created working dir got wiped
+		})
+
+		t1 := MountTarget{Path: s3Path + "/sub", Cache: true}
+		t2 := MountTarget{Path: s3Path, Cache: true}
+		Convey("You can add identical commands with different mounts", func() {
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "a", MountConfigs: mcs, Behaviours: bs})
+
+			mcs2 := MountConfigs{
+				{Targets: []MountTarget{t1}, Verbose: true},
+			}
+
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "b", MountConfigs: mcs2, Behaviours: bs})
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 2)
+			So(already, ShouldEqual, 0)
+
+			mcs3 := MountConfigs{
+				{Targets: []MountTarget{t1, t2}},
+			}
+			mcs4 := MountConfigs{
+				{Targets: []MountTarget{t2, t1}},
+			}
+
+			jobs = nil
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "c", MountConfigs: mcs3})
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "d", MountConfigs: mcs4})
+			inserts, already, err = jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 2)
+			So(already, ShouldEqual, 0)
+
+			job, err := jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt", MountConfigs: mcs3}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.RepGroup, ShouldEqual, "c")
+		})
+
+		Convey("You can't add identical commands with the same mounts", func() {
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "a", MountConfigs: mcs, Behaviours: bs})
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "b", MountConfigs: mcs})
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 1)
+
+			mcs5 := MountConfigs{
+				{Targets: []MountTarget{t1}, Verbose: true, Mount: "a"},
+				{Targets: []MountTarget{t2}, Verbose: true, Mount: "b"},
+			}
+			mcs6 := MountConfigs{
+				{Targets: []MountTarget{t2}, Verbose: true, Mount: "b"},
+				{Targets: []MountTarget{t1}, Verbose: true, Mount: "a"},
+			}
+
+			jobs = nil
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "c", MountConfigs: mcs5})
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "d", MountConfigs: mcs6})
+			inserts, already, err = jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 1)
+		})
 
 		Reset(func() {
 			if server != nil {
