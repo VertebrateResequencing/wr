@@ -253,7 +253,7 @@ func (b *Behaviour) run(j *Job) (err error) {
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
 	}
-	cmd := exec.Command("sh", "-c", bc)
+	cmd := exec.Command("bash", "-c", bc) // *** hardcoding bash here, when we could in theory have client.Execute() pass shell in?
 	cmd.Dir = actualCwd
 	out, err := cmd.CombinedOutput()
 	if err != nil {
