@@ -127,9 +127,12 @@ var sentinelTimeOut = 10 * time.Minute
 var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
 // defaultCIDR is a useful range allowing 16382 servers to be spawned, with a
-// defaultGateWayIP at the start of that range
+// defaultGateWayIP at the start of that range.
 const defaultGateWayIP = "192.168.0.1"
 const defaultCIDR = "192.168.0.0/18"
+
+// touchStampFormat is the time format expected by `touch -t`.
+const touchStampFormat = "200601021504.05"
 
 // Error records an error and the operation and provider caused it.
 type Error struct {
@@ -238,6 +241,7 @@ type Server struct {
 	destroyed         bool
 	provider          *Provider
 	sshclient         *ssh.Client
+	location          *time.Location
 	debugMode         bool
 }
 
@@ -490,12 +494,19 @@ func (s *Server) UploadFile(source string, dest string) (err error) {
 // beginning with ~/ are uploaded from the local home directory to the server's
 // home directory. If a specified local path does not exist, it is silently
 // ignored, allowing the specification of multiple possible config files when
-// you might only have one.
+// you might only have one. The mtimes of the files are retained.
 func (s *Server) CopyOver(files string) (err error) {
+	timezone, err := s.GetTimeZone()
+	if err != nil {
+		return
+	}
+
 	for _, path := range strings.Split(files, ",") {
 		// ignore if it doesn't exist locally
 		localPath := internal.TildaToHome(path)
-		if _, err := os.Stat(localPath); err != nil {
+		var info os.FileInfo
+		info, err = os.Stat(localPath)
+		if err != nil {
 			continue
 		}
 
@@ -517,7 +528,39 @@ func (s *Server) CopyOver(files string) (err error) {
 		if err != nil {
 			return
 		}
+
+		// sometimes the mtime of the file matters, so we try and set that on
+		// the remote copy
+		timestamp := info.ModTime().UTC().In(timezone).Format(touchStampFormat)
+		_, _, err = s.RunCmd(fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
+		if err != nil {
+			return
+		}
 	}
+	return
+}
+
+// GetTimeZone gets the server's time zone as a fixed time.Location in the fake
+// timezone 'SER'; you should only rely on the offset to convert times.
+func (s *Server) GetTimeZone() (location *time.Location, err error) {
+	if s.location != nil {
+		return s.location, nil
+	}
+
+	serverDate, _, err := s.RunCmd(`date +%z`, false)
+	if err != nil {
+		return
+	}
+	serverDate = strings.TrimSpace(serverDate)
+
+	t, err := time.Parse("-0700", serverDate)
+	if err != nil {
+		return
+	}
+	_, offset := t.Zone()
+
+	location = time.FixedZone("SER", offset)
+	s.location = location
 	return
 }
 
