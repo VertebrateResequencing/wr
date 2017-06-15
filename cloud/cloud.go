@@ -116,7 +116,7 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 // to allow postCreationScripts passed to WaitUntilReady() to be run with sudo.
 // And we try to enable user_allow_other in fuse.conf to allow user mounts to
 // work.
-var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\ntouch " + sentinelFilePath)
+var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
 // we give up and return an error from Spawn().
