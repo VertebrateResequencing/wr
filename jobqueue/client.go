@@ -1096,6 +1096,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 			if failreason == "" {
 				failreason = FailReasonUpload
 			}
+			if exitcode == 0 {
+				exitcode = -2
+			}
 		}
 
 		if myerr != nil {
