@@ -507,6 +507,7 @@ func (s *Server) CopyOver(files string) (err error) {
 		var info os.FileInfo
 		info, err = os.Stat(localPath)
 		if err != nil {
+			err = nil
 			continue
 		}
 
