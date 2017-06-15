@@ -941,6 +941,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	ranoutMem := false
 	ranoutTime := false
 	signalled := false
+	stopChecking := make(chan bool, 1)
 	go func() {
 		for {
 			select {
@@ -977,6 +978,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 						return
 					}
 				}
+			case <-stopChecking:
+				return
 			}
 		}
 	}()
@@ -987,6 +990,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Wait()
 	ticker.Stop()
 	memTicker.Stop()
+	stopChecking <- true
 
 	// we could get the max rss from ProcessState.SysUsage, but we'll stick with
 	// our better (?) pss-based Peakmem, unless the command exited so quickly
@@ -1085,7 +1089,26 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	// try and unmount now, because if we fail to upload files, we'll have to
-	// start over
+	// start over; because this may take some time we need to make sure to keep
+	// touching
+	ticker = time.NewTicker(ClientTouchInterval)
+	stopChecking = make(chan bool, 1)
+	go func() {
+		for {
+			select {
+			case <-sigs:
+				return
+			case <-ticker.C:
+				err := c.Touch(job)
+				if err != nil {
+					return
+				}
+			case <-stopChecking:
+				return
+			}
+		}
+	}()
+
 	addMountLogs := dobury || dorelease
 	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
@@ -1107,6 +1130,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 			myerr = unmountErr
 		}
 	}
+	ticker.Stop()
+	stopChecking <- true
 
 	if addMountLogs && logs != "" {
 		finalStdErr = append(finalStdErr, "\n\nMount logs:\n"...)
