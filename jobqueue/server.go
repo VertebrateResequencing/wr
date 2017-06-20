@@ -677,7 +677,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 
 			// if we change from running, mark that we have not scheduled a
 			// runner for the jobs
-			if from == "running" {
+			if from == "run" {
 				for _, inter := range data {
 					job := inter.(*Job)
 					job.scheduledRunner = false

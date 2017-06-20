@@ -2262,7 +2262,7 @@ func TestJobqueue(t *testing.T) {
 			Convey("After some time the jobs get automatically run without excess runners", func() {
 				// wait for the jobs to get run
 				done := make(chan bool, 1)
-				go func() {
+				waitForBury := func() {
 					limit := time.After(30 * time.Second)
 					ticker := time.NewTicker(50 * time.Millisecond)
 					for {
@@ -2284,7 +2284,8 @@ func TestJobqueue(t *testing.T) {
 							return
 						}
 					}
-				}()
+				}
+				go waitForBury()
 				So(<-done, ShouldBeTrue)
 
 				jobs = nil
@@ -2294,8 +2295,8 @@ func TestJobqueue(t *testing.T) {
 				So(inserts, ShouldEqual, 1)
 				So(already, ShouldEqual, 0)
 
-				done = make(chan bool, 1)
-				go func() {
+				done2 := make(chan bool, 1)
+				waitForNoRunners := func() {
 					limit := time.After(30 * time.Second)
 					ticker := time.NewTicker(500 * time.Millisecond)
 					for {
@@ -2303,22 +2304,27 @@ func TestJobqueue(t *testing.T) {
 						case <-ticker.C:
 							if !server.HasRunners() {
 								ticker.Stop()
-								done <- true
+								done2 <- true
 								return
 							}
 							continue
 						case <-limit:
 							ticker.Stop()
-							done <- false
+							done2 <- false
 							return
 						}
 					}
-				}()
-				So(<-done, ShouldBeTrue)
+				}
+				go waitForNoRunners()
+				So(<-done2, ShouldBeTrue)
 
-				jobs, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				jobs, err = jq.GetByRepGroup("manually_added", 0, "buried", false, false)
 				So(err, ShouldBeNil)
-				So(len(jobs), ShouldEqual, 2)
+				So(len(jobs), ShouldEqual, 1)
+				buriedKey := jobs[0].key()
+				jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 1)
 
 				// we shouldn't have executed any unnecessary runners
 				files, err := ioutil.ReadDir(runnertmpdir)
@@ -2333,6 +2339,25 @@ func TestJobqueue(t *testing.T) {
 					ranClean++
 				}
 				So(ranClean, ShouldEqual, 1)
+
+				Convey("Retrying buried jobs works multiple times in a row", func() {
+					kicked, err := jq.Kick([]*JobEssence{{JobKey: buriedKey}})
+					So(err, ShouldBeNil)
+					So(kicked, ShouldEqual, 1)
+
+					go waitForBury()
+					So(<-done, ShouldBeTrue)
+
+					kicked, err = jq.Kick([]*JobEssence{{JobKey: buriedKey}})
+					So(err, ShouldBeNil)
+					So(kicked, ShouldEqual, 1)
+
+					go waitForBury()
+					So(<-done, ShouldBeTrue)
+
+					go waitForNoRunners()
+					So(<-done2, ShouldBeTrue)
+				})
 			})
 		})
 
