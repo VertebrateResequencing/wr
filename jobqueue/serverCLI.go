@@ -336,6 +336,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if err != nil {
 					srerr = ErrInternalError
 					qerr = err.Error()
+				} else {
+					s.decrementGroupCount(job.schedulerGroup, q)
 				}
 			} else {
 				err = q.SetDelay(item.Key, cr.Timeout)

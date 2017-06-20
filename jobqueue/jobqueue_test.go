@@ -2241,6 +2241,101 @@ func TestJobqueue(t *testing.T) {
 			})
 		})
 
+		Convey("You can connect, and add a job that buries with no retries", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "echo 1 && false", Cwd: tmpdir, ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the jobs get automatically run without excess runners", func() {
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(50 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							jobs, err = jq.GetByRepGroup("manually_added", 0, "buried", false, false)
+							if err != nil {
+								continue
+							}
+							if len(jobs) == 1 {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+
+				jobs = nil
+				jobs = append(jobs, &Job{Cmd: "echo 2 && true", Cwd: tmpdir, ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+				inserts, already, err := jq.Add(jobs, envVars)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				done = make(chan bool, 1)
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+
+				jobs, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 2)
+
+				// we shouldn't have executed any unnecessary runners
+				files, err := ioutil.ReadDir(runnertmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ranClean := 0
+				for _, file := range files {
+					if !strings.HasPrefix(file.Name(), "ok") {
+						continue
+					}
+					ranClean++
+				}
+				So(ranClean, ShouldEqual, 1)
+			})
+		})
+
 		if maxCPU > 2 {
 			Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
 				jq, err := Connect(addr, "test_queue", clientConnectTime)
