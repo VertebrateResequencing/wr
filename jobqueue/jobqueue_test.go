@@ -1159,7 +1159,6 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, "reserved")
 
 					err = jq.Execute(job, config.RunnerExecShell)
-					<-time.After(3 * time.Second)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, "buried")
 					So(job.Exited, ShouldBeTrue)
@@ -1170,6 +1169,91 @@ func TestJobqueue(t *testing.T) {
 					stderr, err := job.StdErr()
 					So(err, ShouldBeNil)
 					So(stderr, ShouldEqual, "")
+
+					jobs = nil
+					progressCmd = "perl -e '$|++; print qq[a\nb\n\n]; for (99..100) { print qq[progress: $_%\r]; sleep(1); } print qq[\n\nc\n]; exit(1)'"
+					jobs = append(jobs, &Job{Cmd: progressCmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
+					inserts, _, err = jq.Add(jobs, envVars)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					expectedout = "a\nb\n\nprogress: 99%\nprogress: 100%\n\nc\n"
+					expectedout = strings.TrimSpace(expectedout)
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, progressCmd)
+					So(job.State, ShouldEqual, "reserved")
+
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "buried")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+					stdout, err = job.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldEqual, expectedout)
+					stderr, err = job.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldEqual, "")
+				})
+
+				Convey("Jobs with long lines of stderr do not cause execution to hang", func() {
+					jobs = nil
+					bigerrCmd := `perl -e 'for (1..10) { for (1..65536) { print STDERR qq[e] } print STDERR qq[\n] }' && false`
+					jobs = append(jobs, &Job{Cmd: bigerrCmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "bigerr"})
+					inserts, _, err := jq.Add(jobs, envVars)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, bigerrCmd)
+					So(job.State, ShouldEqual, "reserved")
+
+					// wait for the job to finish executing
+					done := make(chan bool, 1)
+					go func() {
+						go jq.Execute(job, config.RunnerExecShell)
+
+						limit := time.After(10 * time.Second)
+						ticker := time.NewTicker(500 * time.Millisecond)
+						for {
+							select {
+							case <-ticker.C:
+								jobs, err = jq.GetByRepGroup("bigerr", 0, "buried", false, false)
+								if err != nil {
+									continue
+								}
+								if len(jobs) == 1 {
+									ticker.Stop()
+									done <- true
+									return
+								}
+								continue
+							case <-limit:
+								ticker.Stop()
+								done <- false
+								return
+							}
+						}
+					}()
+					So(<-done, ShouldBeTrue)
+
+					job, err = jq.GetByEssence(&JobEssence{Cmd: bigerrCmd}, true, false)
+					So(err, ShouldBeNil)
+					So(job, ShouldNotBeNil)
+					So(job.State, ShouldEqual, "buried")
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+					stdout, err := job.StdOut()
+					So(err, ShouldBeNil)
+					So(stdout, ShouldBeBlank)
+					stderr, err := job.StdErr()
+					So(err, ShouldBeNil)
+					So(stderr, ShouldStartWith, "eeeeeeeeeeeeeeeeeeeeeeeeeeee")
+					So(stderr, ShouldContainSubstring, "... omitting 647178 bytes ...")
+					So(stderr, ShouldEndWith, "eeeeeeeeeeeeeeeeeeeeeeeeeeee")
 				})
 
 				Convey("Job behaviours trigger correctly", func() {
