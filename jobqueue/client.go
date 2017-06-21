@@ -1538,9 +1538,26 @@ func (j *Job) Mount() error {
 			j.Unmount()
 			return err
 		}
-		fs.UnmountOnDeath()
+
+		// (we can't use each fs.UnmountOnDeath() function because that tries
+		// to upload, but if we get killed we don't want that)
 
 		j.mountedFS = append(j.mountedFS, fs)
+	}
+
+	// unmount all on death without trying to upload
+	if len(j.mountedFS) > 0 {
+		deathSignals := make(chan os.Signal, 2)
+		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			select {
+			case <-deathSignals:
+				for _, fs := range j.mountedFS {
+					fs.Unmount(true)
+				}
+				return
+			}
+		}()
 	}
 
 	return nil

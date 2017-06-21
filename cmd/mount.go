@@ -25,6 +25,9 @@ import (
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 // options for this cmd
@@ -166,6 +169,7 @@ true.`,
 		muxfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
 		// mount everything
+		var mounted []*muxfys.MuxFys
 		for _, mc := range mountParseJSON(mountJSON) {
 			var rcs []*muxfys.RemoteConfig
 			for _, mt := range mc.Targets {
@@ -209,11 +213,27 @@ true.`,
 			if err != nil {
 				die("could not mount: %s\n", err)
 			}
-			fs.UnmountOnDeath()
+
+			mounted = append(mounted, fs)
+			// (we can't use each fs's UnmountOnDeath() function because they
+			// won't wait for each other)
 		}
 
-		// wait forever
-		select {}
+		// wait for death
+		if len(mounted) > 0 {
+			deathSignals := make(chan os.Signal, 2)
+			signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+			select {
+			case <-deathSignals:
+				for _, fs := range mounted {
+					err := fs.Unmount()
+					if err != nil {
+						fs.Error("Failed to unmount", "err", err)
+					}
+				}
+				return
+			}
+		}
 	},
 }
 
