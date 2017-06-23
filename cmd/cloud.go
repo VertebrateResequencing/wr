@@ -100,11 +100,17 @@ might install some software for example. Note that the script is run as the user
 defined by --username; if necessary, your bash script may have to prefix its
 commands with 'sudo' if the command would only work as root user.
 
-The --config_files option is important if you want to be able to queue up
-commands that rely on the --mounts option to 'wr add': you'd specify your s3
-config file(s) which contain your credentials for connecting to your s3
-bucket(s). To be able to do user fuse mounts, wr will also try and alter
-/etc/fuse.conf of any servers it creates to enable the user_allow_other option.
+The --config_files option lets you specify comma separated arbitrary text file
+paths that should be copied from your local system to any created cloud servers.
+Absolute paths will be copied to the same absolute path on the server. For files
+that should be transferred from your home directory to the cloud server's home
+directory (which could be at different absolute paths), prefix your path with
+"~/". It is harmless to specify paths that don't exist.
+This option is important if you want to be able to queue up commands that rely
+on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
+contain your credentials for connecting to your s3 bucket(s). (To be able to do
+user fuse mounts, wr will also try and alter /etc/fuse.conf of any servers it
+creates to enable the user_allow_other option.)
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
