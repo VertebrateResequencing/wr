@@ -1,5 +1,5 @@
-hash: 69481f1aa73d757b10b36e2d379b602492a4e91e52af8f49e2cd2c4cd53b68b5
-updated: 2017-06-07T15:17:16.902359477+01:00
+hash: d24970895baf6afba8742d50169a04ba9eb198b8bac51bff30a5c2843e274b18
+updated: 2017-06-29T17:00:36.325209688+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
@@ -128,7 +128,7 @@ imports:
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: 2dd04675b7c98900604d22ac518785e63c52f505
+  version: 50ed1b7bbf8df1bcb5ad7d0f15b06bcb624abef3
 - name: github.com/VividCortex/ewma
   version: c595cd886c223c6c28fc9ae2727a61b5e4693d85
 - name: golang.org/x/crypto

@@ -2,7 +2,7 @@ package: github.com/VertebrateResequencing/wr
 import:
 - package: code.cloudfoundry.org/bytefmt
 - package: github.com/VertebrateResequencing/muxfys
-  version: ^1.0.0
+  version: ^2.0.0
 - package: github.com/VividCortex/ewma
   version: master
 - package: github.com/boltdb/bolt
