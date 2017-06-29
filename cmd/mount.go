@@ -153,9 +153,8 @@ parameter is not supplied but Cache is true, the directory will be a unique
 directory in CacheBase, which will get deleted on unmount.
 
 Write is a boolean, which if true, makes the mount point writeable. If you
-don't intend to write to a mount, just leave this parameter out. Because writing
-currently requires caching, turning this on forces Cache to be considered
-true.`,
+don't intend to write to a mount, just leave this parameter out. Note that when
+not cached, only serial writes are possible.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if mountJSON == "" {
 			die("--mounts is required")
