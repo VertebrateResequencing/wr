@@ -492,9 +492,14 @@ func (s *Server) UploadFile(source string, dest string) (err error) {
 // server. files argument is a comma separated list of local file paths.
 // Absolute paths are uploaded to the same absolute path on the server. Paths
 // beginning with ~/ are uploaded from the local home directory to the server's
-// home directory. If a specified local path does not exist, it is silently
-// ignored, allowing the specification of multiple possible config files when
-// you might only have one. The mtimes of the files are retained.
+// home directory.
+//
+// If local path and desired remote path are unrelated, the paths can be
+// separated with a colon.
+//
+// If a specified local path does not exist, it is silently ignored, allowing
+// the specification of multiple possible config files when you might only have
+// one. The mtimes of the files are retained.
 func (s *Server) CopyOver(files string) (err error) {
 	timezone, err := s.GetTimeZone()
 	if err != nil {
@@ -502,8 +507,18 @@ func (s *Server) CopyOver(files string) (err error) {
 	}
 
 	for _, path := range strings.Split(files, ",") {
+		split := strings.Split(path, ":")
+		var localPath, remotePath string
+		if len(split) == 2 {
+			localPath = split[0]
+			remotePath = split[1]
+		} else {
+			localPath = path
+			remotePath = path
+		}
+
 		// ignore if it doesn't exist locally
-		localPath := internal.TildaToHome(path)
+		localPath = internal.TildaToHome(localPath)
 		var info os.FileInfo
 		info, err = os.Stat(localPath)
 		if err != nil {
@@ -511,9 +526,8 @@ func (s *Server) CopyOver(files string) (err error) {
 			continue
 		}
 
-		remotePath := path
 		if strings.HasPrefix(remotePath, "~/") {
-			remotePath = strings.TrimLeft(path, "~/")
+			remotePath = strings.TrimLeft(remotePath, "~/")
 			remotePath = "./" + remotePath
 		}
 

@@ -105,7 +105,10 @@ paths that should be copied from your local system to any created cloud servers.
 Absolute paths will be copied to the same absolute path on the server. For files
 that should be transferred from your home directory to the cloud server's home
 directory (which could be at different absolute paths), prefix your path with
-"~/". It is harmless to specify paths that don't exist.
+"~/". If the local path of a file is unrelated to the remote path, separate the
+paths with a colon to specify source and destination, eg.
+"~/projectSpecific/.s3cfg:~/.s3cfg".
+Local paths that don't exist are silently ignored.
 This option is important if you want to be able to queue up commands that rely
 on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
 contain your credentials for connecting to your s3 bucket(s).
