@@ -34,7 +34,7 @@ func TestBehaviours(t *testing.T) {
 		b1 := &Behaviour{When: OnExit, Do: CleanupAll}
 		b2 := &Behaviour{When: OnSuccess, Do: CleanupAll}
 		b3 := &Behaviour{When: OnFailure, Do: CleanupAll}
-		b4 := &Behaviour{When: OnSuccess, Do: Run, Arg: "touch ../../foo"}
+		b4 := &Behaviour{When: OnSuccess, Do: Run, Arg: "touch ../../foo && true"}
 		b5 := &Behaviour{When: OnSuccess, Do: Run, Arg: "touch foo"}
 		b6 := &Behaviour{When: OnSuccess, Do: Run, Arg: []string{"in", "valid"}}
 		b7 := &Behaviour{When: OnSuccess, Do: CopyToManager, Arg: []string{"a.file", "b.file"}}
@@ -58,7 +58,7 @@ func TestBehaviours(t *testing.T) {
 			So(fmt.Sprintf("%s", b1), ShouldEqual, `{"on_exit":[{"cleanup_all":true}]}`)
 			So(fmt.Sprintf("%s", b2), ShouldEqual, `{"on_success":[{"cleanup_all":true}]}`)
 			So(fmt.Sprintf("%s", b3), ShouldEqual, `{"on_failure":[{"cleanup_all":true}]}`)
-			So(fmt.Sprintf("%s", b4), ShouldEqual, `{"on_success":[{"run":"touch ../../foo"}]}`)
+			So(fmt.Sprintf("%s", b4), ShouldEqual, `{"on_success":[{"run":"touch ../../foo && true"}]}`)
 			So(fmt.Sprintf("%s", b5), ShouldEqual, `{"on_success":[{"run":"touch foo"}]}`)
 			So(fmt.Sprintf("%s", b6), ShouldEqual, `{"on_success":[{"run":"!invalid!"}]}`)
 			So(fmt.Sprintf("%s", b7), ShouldEqual, `{"on_success":[{"copy_to_manager":["a.file","b.file"]}]}`)
@@ -68,7 +68,7 @@ func TestBehaviours(t *testing.T) {
 
 			Convey("Behaviours can be nicely stringified", func() {
 				bs := Behaviours{b1, b4}
-				So(fmt.Sprintf("%s", bs), ShouldEqual, `{"on_success":[{"run":"touch ../../foo"}],"on_exit":[{"cleanup_all":true}]}`)
+				So(fmt.Sprintf("%s", bs), ShouldEqual, `{"on_success":[{"run":"touch ../../foo && true"}],"on_exit":[{"cleanup_all":true}]}`)
 
 				bs = Behaviours{}
 				So(fmt.Sprintf("%s", bs), ShouldBeEmpty)
