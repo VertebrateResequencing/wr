@@ -1078,18 +1078,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	finalStdErr := bytes.TrimSpace(stderr.Bytes())
 
-	// run behaviours
-	berr := job.TriggerBehaviours(myerr == nil)
-	if berr != nil {
-		if myerr != nil {
-			myerr = fmt.Errorf("%s; behaviour(s) also had problem(s): %s", myerr.Error(), berr.Error())
-		} else {
-			myerr = berr
-		}
-	}
-
-	// try and unmount now, because if we fail to upload files, we'll have to
-	// start over; because this may take some time we need to make sure to keep
+	// behaviours/ unmounting may take some time we need to make sure to keep
 	// touching
 	ticker = time.NewTicker(ClientTouchInterval)
 	stopChecking = make(chan bool, 1)
@@ -1109,6 +1098,18 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 	}()
 
+	// run behaviours
+	berr := job.TriggerBehaviours(myerr == nil)
+	if berr != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; behaviour(s) also had problem(s): %s", myerr.Error(), berr.Error())
+		} else {
+			myerr = berr
+		}
+	}
+
+	// try and unmount now, because if we fail to upload files, we'll have to
+	// start over
 	addMountLogs := dobury || dorelease
 	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
