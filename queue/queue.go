@@ -135,14 +135,14 @@ type ReadyAddedCallback func(queuename string, allitemdata []interface{})
 type ChangedCallback func(from, to SubQueue, data []interface{})
 
 // TTRCallback is used as a callback to decide which sub-queue an item should
-// move to when a an item in the run sub-queue hits its TTR. Valid return values
-// are SubQueueDelay, SubQueueReady and SubQueueBury (other values will be
-// treated as SubQueueReady).
-type TTRCallback func(item *Item) SubQueue
+// move to when a an item in the run sub-queue hits its TTR, based on that
+// item's data. Valid return values are SubQueueDelay, SubQueueReady and
+// SubQueueBury (other values will be treated as SubQueueReady).
+type TTRCallback func(data interface{}) SubQueue
 
 // defaultTTRCallback is used if the the user never calls SetTTRCallback() and
 // always moves the items to the ready sub-queue.
-var defaultTTRCallback = func(item *Item) SubQueue {
+var defaultTTRCallback = func(data interface{}) SubQueue {
 	return SubQueueReady
 }
 
@@ -270,9 +270,9 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 }
 
 // SetTTRCallback sets a callback that will be called when an item in the run
-// sub-queue hits its TTR. The callback receives an item and should return the
-// sub-queue the item should be moved to. If you don't set this, the default
-// will be to move all items to the ready sub-queue.
+// sub-queue hits its TTR. The callback receives an item's data and should
+// return the sub-queue the item should be moved to. If you don't set this, the
+// default will be to move all items to the ready sub-queue.
 func (queue *Queue) SetTTRCallback(callback TTRCallback) {
 	queue.ttrCb = callback
 }
@@ -1077,7 +1077,7 @@ func (queue *Queue) startTTRProcessing() {
 				}
 
 				// remove it from the ttr sub-queue and obey the ttr callback
-				moveTo := queue.ttrCb(item)
+				moveTo := queue.ttrCb(item.Data)
 				queue.runQueue.remove(item)
 				switch moveTo {
 				case SubQueueDelay:

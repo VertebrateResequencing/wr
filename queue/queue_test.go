@@ -385,7 +385,7 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("When they hit their ttr you can choose to delay them", func() {
-					queue.SetTTRCallback(func(item *Item) SubQueue {
+					queue.SetTTRCallback(func(data interface{}) SubQueue {
 						return SubQueueDelay
 					})
 					defer queue.SetTTRCallback(defaultTTRCallback)
@@ -409,7 +409,7 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("When they hit their ttr you can choose to bury them", func() {
-					queue.SetTTRCallback(func(item *Item) SubQueue {
+					queue.SetTTRCallback(func(data interface{}) SubQueue {
 						return SubQueueBury
 					})
 					defer queue.SetTTRCallback(defaultTTRCallback)
