@@ -85,6 +85,22 @@ import (
 	"time"
 )
 
+// SubQueue is how we name the sub queues of a Queue.
+type SubQueue string
+
+// SubQueue* constants represent all the possible sub queues. For use in
+// changedCallback(), there are also the fake sub queues representing items
+// new to the queue and items removed from the queue.
+const (
+	SubQueueNew       SubQueue = "new"
+	SubQueueDelay     SubQueue = "delay"
+	SubQueueReady     SubQueue = "ready"
+	SubQueueRun       SubQueue = "run"
+	SubQueueBury      SubQueue = "bury"
+	SubQueueDependent SubQueue = "dependent"
+	SubQueueRemoved   SubQueue = "removed"
+)
+
 // queue has some typical errors
 var (
 	ErrQueueClosed   = errors.New("queue closed")
@@ -114,9 +130,9 @@ type readyAddedCallback func(queuename string, allitemdata []interface{})
 
 // changedCallback is used as a callback to know when items change sub-queues,
 // telling you what item.Data moved from which sub-queue to which other sub-
-// queue. For new items in the queue, `from` will be 'new', and for items
-// leaving the queue, `to` will be 'removed'.
-type changedCallback func(from string, to string, data []interface{})
+// queue. For new items in the queue, `from` will be SubQueueNew, and for items
+// leaving the queue, `to` will be SubQueueRemoved.
+type changedCallback func(from, to SubQueue, data []interface{})
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
@@ -229,7 +245,7 @@ func (queue *Queue) SetChangedCallback(callback changedCallback) {
 
 // changed checks if a changedCallback has been set, and if so calls it in a go
 // routine.
-func (queue *Queue) changed(from string, to string, items []*Item) {
+func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 	if queue.changedCb != nil {
 		var data []interface{}
 		for _, item := range items {
@@ -314,7 +330,7 @@ func (queue *Queue) Add(key string, reserveGroup string, data interface{}, prior
 	if len(deps) == 1 && len(deps[0]) > 0 {
 		queue.setItemDependencies(item, deps[0])
 		queue.mutex.Unlock()
-		queue.changed("new", "dependant", []*Item{item})
+		queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
 		return
 	}
 
@@ -323,12 +339,12 @@ func (queue *Queue) Add(key string, reserveGroup string, data interface{}, prior
 		item.switchDelayReady()
 		queue.readyQueue.push(item)
 		queue.mutex.Unlock()
-		queue.changed("new", "ready", []*Item{item})
+		queue.changed(SubQueueNew, SubQueueReady, []*Item{item})
 		queue.readyAdded()
 	} else {
 		queue.delayQueue.push(item)
 		queue.mutex.Unlock()
-		queue.changed("new", "delay", []*Item{item})
+		queue.changed(SubQueueNew, SubQueueDelay, []*Item{item})
 		queue.delayNotificationTrigger(item)
 	}
 
@@ -419,14 +435,14 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 
 	queue.mutex.Unlock()
 	if len(addedReadyItems) > 0 {
-		queue.changed("new", "ready", addedReadyItems)
+		queue.changed(SubQueueNew, SubQueueReady, addedReadyItems)
 		queue.readyAdded()
 	}
 	if len(addedDelayItems) > 0 {
-		queue.changed("new", "delay", addedDelayItems)
+		queue.changed(SubQueueNew, SubQueueDelay, addedDelayItems)
 	}
 	if len(addedDepItems) > 0 {
-		queue.changed("new", "dependent", addedDepItems)
+		queue.changed(SubQueueNew, SubQueueDependent, addedDepItems)
 	}
 	return
 }
@@ -493,7 +509,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		return
 	}
 
-	var changedFrom string
+	var changedFrom SubQueue
 	var addedReady bool
 	item.Data = data
 	if len(deps) == 1 {
@@ -531,22 +547,22 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 			// if we now have unresolved dependencies and we're not in dependent
 			// state, switch to dependent queue
-			if item.state != "dependent" {
+			if item.state != ItemStateDependent {
 				pushToDep := true
 				switch item.state {
-				case "delay":
+				case ItemStateDelay:
 					queue.delayQueue.remove(item)
 					item.switchDelayDependent()
-					changedFrom = "delay"
-				case "ready":
+					changedFrom = SubQueueDelay
+				case ItemStateReady:
 					queue.readyQueue.remove(item)
 					item.switchReadyDependent()
-					changedFrom = "ready"
-				case "run":
+					changedFrom = SubQueueReady
+				case ItemStateRun:
 					queue.runQueue.remove(item)
 					item.switchRunDependent()
-					changedFrom = "run"
-				case "bury":
+					changedFrom = SubQueueRun
+				case ItemStateBury:
 					// leave buried things buried; Kick() will put it on the
 					// dependent queue if they are still unresolved by then
 					pushToDep = false
@@ -566,7 +582,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 	if item.delay != delay {
 		item.delay = delay
-		if item.state == "delay" {
+		if item.state == ItemStateDelay {
 			item.restart()
 			queue.delayQueue.update(item)
 		}
@@ -574,12 +590,12 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		item.priority = priority
 		oldGroup := item.ReserveGroup
 		item.ReserveGroup = reserveGroup
-		if item.state == "ready" {
+		if item.state == ItemStateReady {
 			queue.readyQueue.update(item, oldGroup)
 		}
 	} else if item.ttr != ttr {
 		item.ttr = ttr
-		if item.state == "run" {
+		if item.state == ItemStateRun {
 			item.touch()
 			queue.runQueue.update(item)
 		}
@@ -588,13 +604,13 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 	if addedReady {
 		queue.mutex.Unlock()
 		queue.readyAdded()
-		queue.changed("dependent", "ready", []*Item{item})
+		queue.changed(SubQueueDependent, SubQueueReady, []*Item{item})
 	} else {
 		queue.mutex.Unlock()
 	}
 
 	if changedFrom != "" {
-		queue.changed(changedFrom, "dependent", []*Item{item})
+		queue.changed(changedFrom, SubQueueDependent, []*Item{item})
 	}
 
 	return
@@ -618,7 +634,7 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) (err error) {
 
 	if item.delay != delay {
 		item.delay = delay
-		if item.state == "delay" {
+		if item.state == ItemStateDelay {
 			item.restart()
 			queue.delayQueue.update(item)
 			queue.mutex.Unlock()
@@ -649,7 +665,7 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) (err error) {
 	oldGroup := item.ReserveGroup
 	if oldGroup != newGroup {
 		item.ReserveGroup = newGroup
-		if item.state == "ready" {
+		if item.state == ItemStateReady {
 			queue.readyQueue.update(item, oldGroup)
 		}
 	}
@@ -700,7 +716,7 @@ func (queue *Queue) Reserve(reserveGroup ...string) (item *Item, err error) {
 
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
-	queue.changed("ready", "run", []*Item{item})
+	queue.changed(SubQueueReady, SubQueueRun, []*Item{item})
 
 	return
 }
@@ -724,7 +740,7 @@ func (queue *Queue) Touch(key string) (err error) {
 	}
 
 	// and it must be in the run queue
-	if ok = item.state == "run"; !ok {
+	if ok = item.state == ItemStateRun; !ok {
 		err = Error{queue.Name, "Touch", key, ErrNotRunning}
 		return
 	}
@@ -756,7 +772,7 @@ func (queue *Queue) Release(key string) (err error) {
 	}
 
 	// and it must be in the run queue
-	if ok = item.state == "run"; !ok {
+	if ok = item.state == ItemStateRun; !ok {
 		err = Error{queue.Name, "Release", key, ErrNotRunning}
 		queue.mutex.Unlock()
 		return
@@ -769,7 +785,7 @@ func (queue *Queue) Release(key string) (err error) {
 		item.switchRunReady()
 		queue.readyQueue.push(item)
 		queue.mutex.Unlock()
-		queue.changed("run", "ready", []*Item{item})
+		queue.changed(SubQueueRun, SubQueueReady, []*Item{item})
 		queue.readyAdded()
 	} else {
 		item.restart()
@@ -777,7 +793,7 @@ func (queue *Queue) Release(key string) (err error) {
 		item.switchRunDelay()
 		queue.mutex.Unlock()
 		queue.delayNotificationTrigger(item)
-		queue.changed("run", "delay", []*Item{item})
+		queue.changed(SubQueueRun, SubQueueDelay, []*Item{item})
 	}
 
 	return
@@ -804,7 +820,7 @@ func (queue *Queue) Bury(key string) (err error) {
 	}
 
 	// and it must be in the run queue
-	if ok = item.state == "run"; !ok {
+	if ok = item.state == ItemStateRun; !ok {
 		err = Error{queue.Name, "Bury", key, ErrNotRunning}
 		queue.mutex.Unlock()
 		return
@@ -815,7 +831,7 @@ func (queue *Queue) Bury(key string) (err error) {
 	queue.buryQueue.push(item)
 	item.switchRunBury()
 	queue.mutex.Unlock()
-	queue.changed("run", "bury", []*Item{item})
+	queue.changed(SubQueueRun, SubQueueBury, []*Item{item})
 
 	return
 }
@@ -840,7 +856,7 @@ func (queue *Queue) Kick(key string) (err error) {
 	}
 
 	// and it must be in the bury queue
-	if ok = item.state == "bury"; !ok {
+	if ok = item.state == ItemStateBury; !ok {
 		queue.mutex.Unlock()
 		err = Error{queue.Name, "Kick", key, ErrNotBuried}
 		return
@@ -852,12 +868,12 @@ func (queue *Queue) Kick(key string) (err error) {
 		queue.depQueue.push(item)
 		item.switchBuryDependent()
 		queue.mutex.Unlock()
-		queue.changed("bury", "dependent", []*Item{item})
+		queue.changed(SubQueueBury, SubQueueDependent, []*Item{item})
 	} else {
 		queue.readyQueue.push(item)
 		item.switchBuryReady()
 		queue.mutex.Unlock()
-		queue.changed("bury", "ready", []*Item{item})
+		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
 		queue.readyAdded()
 	}
 	return
@@ -887,7 +903,7 @@ func (queue *Queue) Remove(key string) (err error) {
 	if deps, exists := queue.dependants[key]; exists {
 		for _, dep := range deps {
 			done := dep.resolveDependency(key)
-			if done && dep.state == "dependent" {
+			if done && dep.state == ItemStateDependent {
 				queue.depQueue.remove(dep)
 
 				// put it straight on the ready queue, regardless of delay value
@@ -916,27 +932,27 @@ func (queue *Queue) Remove(key string) (err error) {
 
 	// remove from the current sub-queue
 	switch item.state {
-	case "delay":
+	case ItemStateDelay:
 		queue.delayQueue.remove(item)
-		queue.changed("delay", "removed", []*Item{item})
-	case "ready":
+		queue.changed(SubQueueDelay, SubQueueRemoved, []*Item{item})
+	case ItemStateReady:
 		queue.readyQueue.remove(item)
-		queue.changed("ready", "removed", []*Item{item})
-	case "run":
+		queue.changed(SubQueueReady, SubQueueRemoved, []*Item{item})
+	case ItemStateRun:
 		queue.runQueue.remove(item)
-		queue.changed("run", "removed", []*Item{item})
-	case "bury":
+		queue.changed(SubQueueRun, SubQueueRemoved, []*Item{item})
+	case ItemStateBury:
 		queue.buryQueue.remove(item)
-		queue.changed("bury", "removed", []*Item{item})
-	case "dependent":
+		queue.changed(SubQueueBury, SubQueueRemoved, []*Item{item})
+	case ItemStateDependent:
 		queue.depQueue.remove(item)
-		queue.changed("dependent", "removed", []*Item{item})
+		queue.changed(SubQueueDependent, SubQueueRemoved, []*Item{item})
 	}
 	item.removalCleanup()
 
 	queue.mutex.Unlock()
 	if addedReady {
-		queue.changed("dependent", "ready", addedReadyItems)
+		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
 		queue.readyAdded()
 	}
 
@@ -996,7 +1012,7 @@ func (queue *Queue) startDelayProcessing() {
 			}
 			queue.mutex.Unlock()
 			if addedReady {
-				queue.changed("delay", "ready", items)
+				queue.changed(SubQueueDelay, SubQueueReady, items)
 				queue.readyAdded()
 			}
 		case <-queue.delayNotification:
@@ -1049,7 +1065,7 @@ func (queue *Queue) startTTRProcessing() {
 			}
 			queue.mutex.Unlock()
 			if addedReady {
-				queue.changed("run", "ready", items)
+				queue.changed(SubQueueRun, SubQueueReady, items)
 				queue.readyAdded()
 			}
 		case <-queue.ttrNotification:
