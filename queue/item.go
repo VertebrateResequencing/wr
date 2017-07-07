@@ -266,21 +266,28 @@ func (item *Item) switchRunReady() {
 }
 
 // update after we've switched from the run to the delay sub-queue
-func (item *Item) switchRunDelay() {
+func (item *Item) switchRunDelay(timedOut ...bool) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-	item.releases++
+	if len(timedOut) == 1 && timedOut[0] {
+		item.timeouts++
+	} else {
+		item.releases++
+	}
 	item.state = ItemStateDelay
 }
 
 // update after we've switched from the run to the bury sub-queue
-func (item *Item) switchRunBury() {
+func (item *Item) switchRunBury(timedOut ...bool) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
+	if len(timedOut) == 1 && timedOut[0] {
+		item.timeouts++
+	}
 	item.buries++
 	item.state = ItemStateBury
 }

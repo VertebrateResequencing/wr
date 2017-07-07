@@ -85,11 +85,11 @@ import (
 	"time"
 )
 
-// SubQueue is how we name the sub queues of a Queue.
+// SubQueue is how we name the sub-queues of a Queue.
 type SubQueue string
 
-// SubQueue* constants represent all the possible sub queues. For use in
-// changedCallback(), there are also the fake sub queues representing items
+// SubQueue* constants represent all the possible sub-queues. For use in
+// changedCallback(), there are also the fake sub-queues representing items
 // new to the queue and items removed from the queue.
 const (
 	SubQueueNew       SubQueue = "new"
@@ -124,15 +124,27 @@ func (e Error) Error() string {
 	return "queue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err.Error()
 }
 
-// readyAddedCallback is used as a callback to know when new items have been
+// ReadyAddedCallback is used as a callback to know when new items have been
 // added to the ready sub-queue, getting /all/ items in the ready sub-queue.
-type readyAddedCallback func(queuename string, allitemdata []interface{})
+type ReadyAddedCallback func(queuename string, allitemdata []interface{})
 
-// changedCallback is used as a callback to know when items change sub-queues,
+// ChangedCallback is used as a callback to know when items change sub-queues,
 // telling you what item.Data moved from which sub-queue to which other sub-
 // queue. For new items in the queue, `from` will be SubQueueNew, and for items
 // leaving the queue, `to` will be SubQueueRemoved.
-type changedCallback func(from, to SubQueue, data []interface{})
+type ChangedCallback func(from, to SubQueue, data []interface{})
+
+// TTRCallback is used as a callback to decide which sub-queue an item should
+// move to when a an item in the run sub-queue hits its TTR. Valid return values
+// are SubQueueDelay, SubQueueReady and SubQueueBury (other values will be
+// treated as SubQueueReady).
+type TTRCallback func(item *Item) SubQueue
+
+// defaultTTRCallback is used if the the user never calls SetTTRCallback() and
+// always moves the items to the ready sub-queue.
+var defaultTTRCallback = func(item *Item) SubQueue {
+	return SubQueueReady
+}
 
 // Queue is a synchronized map of items that can shift to different sub-queues,
 // automatically depending on their delay or ttr expiring, or manually by
@@ -154,8 +166,9 @@ type Queue struct {
 	ttrClose          chan bool
 	ttrTime           time.Time
 	closed            bool
-	readyAddedCb      readyAddedCallback
-	changedCb         changedCallback
+	readyAddedCb      ReadyAddedCallback
+	changedCb         ChangedCallback
+	ttrCb             TTRCallback
 }
 
 // Stats holds information about the Queue's state.
@@ -196,6 +209,7 @@ func New(name string) *Queue {
 		delayNotification: make(chan bool, 1),
 		delayClose:        make(chan bool, 1),
 		delayTime:         time.Now(),
+		ttrCb:             defaultTTRCallback,
 	}
 	go queue.startDelayProcessing()
 	go queue.startTTRProcessing()
@@ -206,7 +220,7 @@ func New(name string) *Queue {
 // been added to the ready sub-queue. The callback will receive the name of the
 // queue, and a slice of the Data properties of every item currently in the
 // ready sub-queue. The callback will be initiated in a go routine.
-func (queue *Queue) SetReadyAddedCallback(callback readyAddedCallback) {
+func (queue *Queue) SetReadyAddedCallback(callback ReadyAddedCallback) {
 	queue.readyAddedCb = callback
 }
 
@@ -239,7 +253,7 @@ func (queue *Queue) readyAdded() {
 // name of the moved-to sub-queue ('removed' in the case of the item being
 // removed from the queue), and a slice of item.Data of everything that moved in
 // this way. The callback will be initiated in a go routine.
-func (queue *Queue) SetChangedCallback(callback changedCallback) {
+func (queue *Queue) SetChangedCallback(callback ChangedCallback) {
 	queue.changedCb = callback
 }
 
@@ -253,6 +267,14 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 		}
 		go queue.changedCb(from, to, data)
 	}
+}
+
+// SetTTRCallback sets a callback that will be called when an item in the run
+// sub-queue hits its TTR. The callback receives an item and should return the
+// sub-queue the item should be moved to. If you don't set this, the default
+// will be to move all items to the ready sub-queue.
+func (queue *Queue) SetTTRCallback(callback TTRCallback) {
+	queue.ttrCb = callback
 }
 
 // Destroy shuts down a queue, destroying any contents. You can't do anything
@@ -1045,27 +1067,46 @@ func (queue *Queue) startTTRProcessing() {
 		select {
 		case <-time.After(queue.ttrTime.Sub(time.Now())):
 			queue.mutex.Lock()
-			len := queue.runQueue.len()
-			addedReady := false
-			var items []*Item
-			for i := 0; i < len; i++ {
+			length := queue.runQueue.len()
+			var delayedItems, buriedItems, readyItems []*Item
+			for i := 0; i < length; i++ {
 				item := queue.runQueue.items[0]
 
 				if !item.releasable() {
 					break
 				}
 
-				// remove it from the ttr sub-queue and add it back to the
-				// ready sub-queue
+				// remove it from the ttr sub-queue and obey the ttr callback
+				moveTo := queue.ttrCb(item)
 				queue.runQueue.remove(item)
-				queue.readyQueue.push(item)
-				item.switchRunReady()
-				items = append(items, item)
-				addedReady = true
+				switch moveTo {
+				case SubQueueDelay:
+					queue.delayQueue.push(item)
+					item.switchRunDelay(true)
+					delayedItems = append(delayedItems, item)
+				case SubQueueBury:
+					queue.buryQueue.push(item)
+					item.switchRunBury(true)
+					buriedItems = append(buriedItems, item)
+				default:
+					queue.readyQueue.push(item)
+					item.switchRunReady()
+					readyItems = append(readyItems, item)
+				}
 			}
+
 			queue.mutex.Unlock()
-			if addedReady {
-				queue.changed(SubQueueRun, SubQueueReady, items)
+			if len(delayedItems) > 0 {
+				for _, item := range delayedItems {
+					queue.delayNotificationTrigger(item)
+				}
+				queue.changed(SubQueueRun, SubQueueDelay, delayedItems)
+			}
+			if len(buriedItems) > 0 {
+				queue.changed(SubQueueRun, SubQueueBury, buriedItems)
+			}
+			if len(readyItems) > 0 {
+				queue.changed(SubQueueRun, SubQueueReady, readyItems)
 				queue.readyAdded()
 			}
 		case <-queue.ttrNotification:

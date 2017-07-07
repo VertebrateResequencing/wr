@@ -384,6 +384,56 @@ func TestQueue(t *testing.T) {
 					So(stats.Delayed, ShouldEqual, 4)
 				})
 
+				Convey("When they hit their ttr you can choose to delay them", func() {
+					queue.SetTTRCallback(func(item *Item) SubQueue {
+						return SubQueueDelay
+					})
+					defer queue.SetTTRCallback(defaultTTRCallback)
+
+					<-time.After(50 * time.Millisecond)
+					So(item1.state, ShouldEqual, ItemStateRun)
+					stats = queue.Stats()
+					So(stats.Delayed, ShouldEqual, 7)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 3)
+					changedTestEnable = true
+					<-time.After(60 * time.Millisecond)
+					So(item1.state, ShouldEqual, ItemStateDelay)
+					So(item1.timeouts, ShouldEqual, 1)
+					stats = queue.Stats()
+					So(stats.Delayed, ShouldEqual, 7)
+					So(stats.Ready, ShouldEqual, 1)
+					So(stats.Running, ShouldEqual, 2)
+					So(checkChanged(changedChan, SubQueueRun, SubQueueDelay, 1), ShouldBeTrue)
+					changedTestEnable = false
+				})
+
+				Convey("When they hit their ttr you can choose to bury them", func() {
+					queue.SetTTRCallback(func(item *Item) SubQueue {
+						return SubQueueBury
+					})
+					defer queue.SetTTRCallback(defaultTTRCallback)
+
+					<-time.After(50 * time.Millisecond)
+					So(item1.state, ShouldEqual, ItemStateRun)
+					stats = queue.Stats()
+					So(stats.Buried, ShouldEqual, 0)
+					So(stats.Delayed, ShouldEqual, 7)
+					So(stats.Ready, ShouldEqual, 0)
+					So(stats.Running, ShouldEqual, 3)
+					changedTestEnable = true
+					<-time.After(60 * time.Millisecond)
+					So(item1.state, ShouldEqual, ItemStateBury)
+					So(item1.timeouts, ShouldEqual, 1)
+					stats = queue.Stats()
+					So(stats.Buried, ShouldEqual, 1)
+					So(stats.Delayed, ShouldEqual, 6)
+					So(stats.Ready, ShouldEqual, 1)
+					So(stats.Running, ShouldEqual, 2)
+					So(checkChanged(changedChan, SubQueueRun, SubQueueBury, 1), ShouldBeTrue)
+					changedTestEnable = false
+				})
+
 				Convey("Though you can prevent auto-release by touching them", func() {
 					<-time.After(50 * time.Millisecond)
 					So(item1.state, ShouldEqual, ItemStateRun)
