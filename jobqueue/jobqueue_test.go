@@ -45,6 +45,7 @@ import (
 )
 
 var runnermode bool
+var runnerfail bool
 var queuename string
 var schedgrp string
 var runnermodetmpdir string
@@ -56,6 +57,7 @@ var envVars = os.Environ()
 
 func init() {
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
+	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
 	flag.StringVar(&queuename, "queue", "", "queue for runnermode")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
@@ -183,12 +185,12 @@ func TestJobqueue(t *testing.T) {
 			job, err := jq.Reserve(50 * time.Millisecond)
 			So(err, ShouldBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
-			So(job.State, ShouldEqual, "reserved")
+			So(job.State, ShouldEqual, JobStateReserved)
 
 			job2, err := jq.Reserve(50 * time.Millisecond)
 			So(err, ShouldBeNil)
 			So(job2.Cmd, ShouldEqual, cmd2)
-			So(job2.State, ShouldEqual, "reserved")
+			So(job2.State, ShouldEqual, JobStateReserved)
 
 			Convey("Signals are handled during execution, and we can see when jobs take too long", func() {
 				go func() {
@@ -201,7 +203,7 @@ func TestJobqueue(t *testing.T) {
 				go func() {
 					err = jq.Execute(job, config.RunnerExecShell)
 					if err != nil {
-						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal && job.State == "delayed" && job.Exited && job.Exitcode == -1 && job.FailReason == FailReasonSignal {
+						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal && job.State == JobStateDelayed && job.Exited && job.Exitcode == -1 && job.FailReason == FailReasonSignal {
 							j1worked <- true
 						}
 					}
@@ -212,7 +214,7 @@ func TestJobqueue(t *testing.T) {
 				go func() {
 					err = jq.Execute(job2, config.RunnerExecShell)
 					if err != nil {
-						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == "delayed" && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
+						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == JobStateDelayed && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
 							j2worked <- true
 						}
 					}
@@ -229,14 +231,14 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.Cmd, ShouldEqual, cmd)
-				So(job.State, ShouldEqual, "delayed")
+				So(job.State, ShouldEqual, JobStateDelayed)
 				So(job.FailReason, ShouldEqual, FailReasonSignal)
 
 				job2, err = jq2.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
 				So(job2.Cmd, ShouldEqual, cmd2)
-				So(job2.State, ShouldEqual, "delayed")
+				So(job2.State, ShouldEqual, JobStateDelayed)
 				So(job2.FailReason, ShouldEqual, FailReasonTime)
 				So(job2.Requirements.Time.Seconds(), ShouldEqual, 3601)
 
@@ -313,7 +315,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.Cmd, ShouldEqual, "test cmd 3")
-				So(job.State, ShouldEqual, "ready")
+				So(job.State, ShouldEqual, JobStateReady)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: "test cmd x"}, false, false)
 				So(err, ShouldBeNil)
@@ -328,7 +330,7 @@ func TestJobqueue(t *testing.T) {
 				So(len(jobs), ShouldEqual, 10)
 				for i, job := range jobs {
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
-					So(job.State, ShouldEqual, "ready")
+					So(job.State, ShouldEqual, JobStateReady)
 				}
 
 				jobs, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -383,7 +385,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 					So(job.EnvC, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 				}
 
 				Convey("Reserving when all have been reserved returns nil", func() {
@@ -651,7 +653,7 @@ func TestJobqueue(t *testing.T) {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, "sleep 0.1 && true")
-				So(job.State, ShouldEqual, "reserved")
+				So(job.State, ShouldEqual, JobStateReserved)
 				So(job.Attempts, ShouldEqual, 0)
 				So(job.UntilBuried, ShouldEqual, 3)
 
@@ -659,11 +661,11 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
 				So(job2.Cmd, ShouldEqual, "sleep 0.1 && true")
-				So(job2.State, ShouldEqual, "reserved")
+				So(job2.State, ShouldEqual, JobStateReserved)
 
 				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
-				So(job.State, ShouldEqual, "complete")
+				So(job.State, ShouldEqual, JobStateComplete)
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 				So(job.PeakRAM, ShouldBeGreaterThan, 0)
@@ -687,7 +689,7 @@ func TestJobqueue(t *testing.T) {
 				job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && true"}, false, false)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
-				So(job2.State, ShouldEqual, "complete")
+				So(job2.State, ShouldEqual, JobStateComplete)
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 0)
 				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
@@ -703,14 +705,14 @@ func TestJobqueue(t *testing.T) {
 				job, err = jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
-				So(job.State, ShouldEqual, "reserved")
+				So(job.State, ShouldEqual, JobStateReserved)
 				So(job.Attempts, ShouldEqual, 0)
 				So(job.UntilBuried, ShouldEqual, 3)
 
 				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again")
-				So(job.State, ShouldEqual, "delayed")
+				So(job.State, ShouldEqual, JobStateDelayed)
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 1)
 				So(job.PeakRAM, ShouldBeGreaterThan, 0)
@@ -730,7 +732,7 @@ func TestJobqueue(t *testing.T) {
 				job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
-				So(job2.State, ShouldEqual, "delayed")
+				So(job2.State, ShouldEqual, JobStateDelayed)
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 1)
 				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
@@ -762,24 +764,24 @@ func TestJobqueue(t *testing.T) {
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "delayed")
+					So(job2.State, ShouldEqual, JobStateDelayed)
 
 					<-time.After(60 * time.Millisecond)
 					job, err = jq.Reserve(5 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 					So(job.Attempts, ShouldEqual, 1)
 					So(job.UntilBuried, ShouldEqual, 2)
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "reserved")
+					So(job2.State, ShouldEqual, JobStateReserved)
 
 					Convey("After 2 retries (3 attempts) it gets buried", func() {
 						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
-						So(job.State, ShouldEqual, "delayed")
+						So(job.State, ShouldEqual, JobStateDelayed)
 						So(job.Exited, ShouldBeTrue)
 						So(job.Exitcode, ShouldEqual, 1)
 						So(job.Attempts, ShouldEqual, 2)
@@ -789,13 +791,13 @@ func TestJobqueue(t *testing.T) {
 						job, err = jq.Reserve(5 * time.Millisecond)
 						So(err, ShouldBeNil)
 						So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
-						So(job.State, ShouldEqual, "reserved")
+						So(job.State, ShouldEqual, JobStateReserved)
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
 
 						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
-						So(job.State, ShouldEqual, "buried")
+						So(job.State, ShouldEqual, JobStateBuried)
 						So(job.Exited, ShouldBeTrue)
 						So(job.Exitcode, ShouldEqual, 1)
 						So(job.Attempts, ShouldEqual, 3)
@@ -810,7 +812,7 @@ func TestJobqueue(t *testing.T) {
 							job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
 							So(err, ShouldBeNil)
 							So(job2, ShouldNotBeNil)
-							So(job2.State, ShouldEqual, "buried")
+							So(job2.State, ShouldEqual, JobStateBuried)
 
 							kicked, err := jq.Kick([]*JobEssence{{Cmd: "sleep 0.1 && false"}})
 							So(err, ShouldBeNil)
@@ -820,23 +822,23 @@ func TestJobqueue(t *testing.T) {
 							So(err, ShouldBeNil)
 							So(job, ShouldNotBeNil)
 							So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
-							So(job.State, ShouldEqual, "reserved")
+							So(job.State, ShouldEqual, JobStateReserved)
 							So(job.Attempts, ShouldEqual, 3)
 							So(job.UntilBuried, ShouldEqual, 3)
 
 							job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
 							So(err, ShouldBeNil)
 							So(job2, ShouldNotBeNil)
-							So(job2.State, ShouldEqual, "reserved")
+							So(job2.State, ShouldEqual, JobStateReserved)
 							So(job2.Attempts, ShouldEqual, 3)
 							So(job2.UntilBuried, ShouldEqual, 3)
 
-							Convey("If you do nothing with a reserved job, it auto reverts back to ready", func() {
+							Convey("If you do nothing with a reserved job, it auto reverts back to delayed", func() {
 								<-time.After(210 * time.Millisecond)
 								job2, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
 								So(err, ShouldBeNil)
 								So(job2, ShouldNotBeNil)
-								So(job2.State, ShouldEqual, "ready")
+								So(job2.State, ShouldEqual, JobStateDelayed)
 								So(job2.Attempts, ShouldEqual, 3)
 								So(job2.UntilBuried, ShouldEqual, 3)
 							})
@@ -850,7 +852,7 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.GetByEssence(&JobEssence{Cmd: added.Cmd}, false, false)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "ready")
+					So(job.State, ShouldEqual, JobStateReady)
 
 					deleted, err := jq.Delete([]*JobEssence{{Cmd: added.Cmd}})
 					So(err, ShouldBeNil)
@@ -865,7 +867,7 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.Reserve(5 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, added.Cmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					deleted, err = jq.Delete([]*JobEssence{{Cmd: added.Cmd}})
 					So(err, ShouldBeNil)
@@ -873,13 +875,13 @@ func TestJobqueue(t *testing.T) {
 
 					err = jq.Bury(job, "test bury")
 					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.FailReason, ShouldEqual, "test bury")
 
 					job2, err := jq2.GetByEssence(&JobEssence{Cmd: added.Cmd}, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "buried")
+					So(job2.State, ShouldEqual, JobStateBuried)
 					So(job2.FailReason, ShouldEqual, "test bury")
 
 					deleted, err = jq.Delete([]*JobEssence{{Cmd: added.Cmd}})
@@ -906,11 +908,11 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | true")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, "complete")
+					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 0)
 					So(job.FailReason, ShouldEqual, "")
@@ -919,12 +921,12 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | false | true")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again") //*** can fail with a receive time out; why?!
-					So(job.State, ShouldEqual, "delayed")
+					So(job.State, ShouldEqual, JobStateDelayed)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
@@ -941,12 +943,12 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "awesjnalakjf --foo")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [awesjnalakjf --foo] exited with code 127 (command not found), which seems permanent, so it has been buried")
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 127)
 					So(job.FailReason, ShouldEqual, FailReasonCFound)
@@ -954,7 +956,7 @@ func TestJobqueue(t *testing.T) {
 					job2, err := jq2.GetByEssence(&JobEssence{Cmd: "awesjnalakjf --foo"}, false, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "buried")
+					So(job2.State, ShouldEqual, JobStateBuried)
 					So(job2.FailReason, ShouldEqual, FailReasonCFound)
 
 					//*** how to test the other bury cases of invalid exit code
@@ -974,14 +976,14 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, cmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(jqerr.Err, ShouldEqual, FailReasonRAM)
-					So(job.State, ShouldEqual, "delayed")
+					So(job.State, ShouldEqual, JobStateDelayed)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, -1)
 					So(job.FailReason, ShouldEqual, FailReasonRAM)
@@ -1009,11 +1011,11 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, "complete")
+					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 0)
 					stdout, err := job.StdOut()
@@ -1026,7 +1028,7 @@ func TestJobqueue(t *testing.T) {
 					job2, err := jq2.GetByEssence(&JobEssence{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'", Cwd: tmpDir}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "complete")
+					So(job2.State, ShouldEqual, JobStateComplete)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
 					So(stdout, ShouldEqual, "")
@@ -1038,11 +1040,11 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 255)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
@@ -1060,7 +1062,7 @@ func TestJobqueue(t *testing.T) {
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'"}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "buried")
+					So(job2.State, ShouldEqual, JobStateBuried)
 					So(job2.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
@@ -1103,11 +1105,11 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 255)
 					stdout, err := job.StdOut()
@@ -1120,7 +1122,7 @@ func TestJobqueue(t *testing.T) {
 					job2, err := jq2.GetByEssence(&JobEssence{Cmd: "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'"}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "buried")
+					So(job2.State, ShouldEqual, JobStateBuried)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
 					So(stdout, ShouldEqual, expectedout)
@@ -1132,7 +1134,7 @@ func TestJobqueue(t *testing.T) {
 						job2, err = jq2.GetByEssence(&JobEssence{Cmd: "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'"}, false, false)
 						So(err, ShouldBeNil)
 						So(job2, ShouldNotBeNil)
-						So(job2.State, ShouldEqual, "buried")
+						So(job2.State, ShouldEqual, JobStateBuried)
 						stdout, err = job2.StdOut()
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "")
@@ -1156,11 +1158,11 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, progressCmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
 					stdout, err := job.StdOut()
@@ -1183,11 +1185,11 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, progressCmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
 					stdout, err = job.StdOut()
@@ -1209,7 +1211,7 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, bigerrCmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					// wait for the job to finish executing
 					done := make(chan bool, 1)
@@ -1221,7 +1223,7 @@ func TestJobqueue(t *testing.T) {
 						for {
 							select {
 							case <-ticker.C:
-								jobs, err = jq.GetByRepGroup("bigerr", 0, "buried", false, false)
+								jobs, err = jq.GetByRepGroup("bigerr", 0, JobStateBuried, false, false)
 								if err != nil {
 									continue
 								}
@@ -1243,7 +1245,7 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.GetByEssence(&JobEssence{Cmd: bigerrCmd}, true, false)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
 					stdout, err := job.StdOut()
@@ -1273,10 +1275,10 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "touch bar")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, "complete")
+					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 0)
 
@@ -1294,10 +1296,10 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "touch bar && false")
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(job.State, ShouldEqual, "buried")
+					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 1)
 					So(job.FailReason, ShouldEqual, FailReasonExit)
@@ -1326,19 +1328,19 @@ func TestJobqueue(t *testing.T) {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, cmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					<-time.After(100 * time.Millisecond)
 					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, "complete")
+					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 0)
 
 					job2, err := jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, "complete")
+					So(job2.State, ShouldEqual, JobStateComplete)
 
 					// same again, but we'll alter the clienttouchinterval to be invalid
 					ClientTouchInterval = 250 * time.Millisecond
@@ -1349,7 +1351,7 @@ func TestJobqueue(t *testing.T) {
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, cmd)
-					So(job.State, ShouldEqual, "reserved")
+					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					<-time.After(100 * time.Millisecond)
@@ -1360,10 +1362,13 @@ func TestJobqueue(t *testing.T) {
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
+
 					// in this situation, the job got auto-released to ready
-					// with no indication of a problem stored on the server
-					So(job2.State, ShouldEqual, "ready")
-					So(job2.Exited, ShouldBeFalse)
+					// with an indication of what happened
+					So(job2.State, ShouldEqual, JobStateReady)
+					So(job2.Exited, ShouldBeTrue)
+					So(job2.Exitcode, ShouldEqual, -1)
+					So(job2.FailReason, ShouldEqual, FailReasonRelease)
 				})
 			})
 		})
@@ -1406,12 +1411,12 @@ func TestJobqueue(t *testing.T) {
 					}
 
 					Convey("The jobs can be retrieved by either RepGroup and will have the expected RepGroup", func() {
-						jobs, err := jq.GetByRepGroup("rp1", 0, "complete", false, false)
+						jobs, err := jq.GetByRepGroup("rp1", 0, JobStateComplete, false, false)
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 3)
 						So(jobs[0].RepGroup, ShouldEqual, "rp1")
 
-						jobs, err = jq.GetByRepGroup("rp2", 0, "complete", false, false)
+						jobs, err = jq.GetByRepGroup("rp2", 0, JobStateComplete, false, false)
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 4)
 						So(jobs[0].RepGroup, ShouldEqual, "rp2")
@@ -1440,12 +1445,12 @@ func TestJobqueue(t *testing.T) {
 					So(job, ShouldBeNil)
 
 					Convey("The jobs can be retrieved by either RepGroup and will have the expected RepGroup", func() {
-						jobs, err := jq.GetByRepGroup("rp1", 0, "complete", false, false)
+						jobs, err := jq.GetByRepGroup("rp1", 0, JobStateComplete, false, false)
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 3)
 						So(jobs[0].RepGroup, ShouldEqual, "rp1")
 
-						jobs, err = jq.GetByRepGroup("rp2", 0, "complete", false, false)
+						jobs, err = jq.GetByRepGroup("rp2", 0, JobStateComplete, false, false)
 						So(err, ShouldBeNil)
 						So(len(jobs), ShouldEqual, 4)
 						So(jobs[0].RepGroup, ShouldEqual, "rp2")
@@ -1480,7 +1485,7 @@ func TestJobqueue(t *testing.T) {
 				gottenJobs, err := jq.GetByRepGroup("dep1", 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(gottenJobs), ShouldEqual, 1)
-				So(gottenJobs[0].State, ShouldEqual, "complete")
+				So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
 				Convey("You can then add jobs dependent on the initial jobs and themselves", func() {
 					// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
@@ -1508,7 +1513,7 @@ func TestJobqueue(t *testing.T) {
 					gottenJobs, err = jq.GetByRepGroup("dep4", 0, "", false, false)
 					So(err, ShouldBeNil)
 					So(len(gottenJobs), ShouldEqual, 1)
-					So(gottenJobs[0].State, ShouldEqual, "ready")
+					So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 					Convey("They are then only reservable according to the dependency chain", func() {
 						j2, err := jq.Reserve(50 * time.Millisecond)
@@ -1551,7 +1556,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						err = jq.Execute(j4, config.RunnerExecShell)
 						So(err, ShouldBeNil)
@@ -1559,7 +1564,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						touchJ3 = false
 						err = jq.Execute(j3, config.RunnerExecShell)
@@ -1568,12 +1573,12 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						touchJ2 = false
 						err = jq.Execute(j2, config.RunnerExecShell)
@@ -1582,7 +1587,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						j5, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
@@ -1614,7 +1619,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						err = jq.Execute(j5, config.RunnerExecShell)
 						So(err, ShouldBeNil)
@@ -1622,12 +1627,12 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						touchJ6 = false
 						err = jq.Execute(j6, config.RunnerExecShell)
@@ -1636,7 +1641,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 					})
 				})
 
@@ -1673,7 +1678,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(j4.RepGroup, ShouldEqual, "dep4")
 
-					jq.Release(j4, "", 0*time.Second)
+					jq.Release(j4, "")
 
 					// *** we should implement rejection of dependency cycles
 					// and test for that
@@ -1707,7 +1712,7 @@ func TestJobqueue(t *testing.T) {
 				gottenJobs, err := jq.GetByRepGroup("dep1", 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(gottenJobs), ShouldEqual, 1)
-				So(gottenJobs[0].State, ShouldEqual, "complete")
+				So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
 				Convey("You can then add jobs dependent on the initial jobs and themselves", func() {
 					// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
@@ -1735,7 +1740,7 @@ func TestJobqueue(t *testing.T) {
 					gottenJobs, err = jq.GetByRepGroup("dep4", 0, "", false, false)
 					So(err, ShouldBeNil)
 					So(len(gottenJobs), ShouldEqual, 1)
-					So(gottenJobs[0].State, ShouldEqual, "ready")
+					So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 					Convey("They are then only reservable according to the dependency chain", func() {
 						j2, err := jq.Reserve(50 * time.Millisecond)
@@ -1778,7 +1783,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						err = jq.Execute(j4, config.RunnerExecShell)
 						So(err, ShouldBeNil)
@@ -1786,7 +1791,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						touchJ3 = false
 						err = jq.Execute(j3, config.RunnerExecShell)
@@ -1795,12 +1800,12 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep6", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						touchJ2 = false
 						err = jq.Execute(j2, config.RunnerExecShell)
@@ -1809,7 +1814,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep5", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						j5, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
@@ -1841,7 +1846,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						err = jq.Execute(j5, config.RunnerExecShell)
 						So(err, ShouldBeNil)
@@ -1849,12 +1854,12 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep8", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "dependent")
+						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 						touchJ6 = false
 						err = jq.Execute(j6, config.RunnerExecShell)
@@ -1863,7 +1868,7 @@ func TestJobqueue(t *testing.T) {
 						gottenJobs, err = jq.GetByRepGroup("dep7", 0, "", false, false)
 						So(err, ShouldBeNil)
 						So(len(gottenJobs), ShouldEqual, 1)
-						So(gottenJobs[0].State, ShouldEqual, "ready")
+						So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 						Convey("DepGroup dependencies are live, bringing back jobs if new jobs are added that match their dependencies", func() {
 							jobs = nil
@@ -1879,12 +1884,12 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 							j7, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
@@ -1900,7 +1905,7 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "ready")
+							So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 							jobs = nil
 							jobs = append(jobs, &Job{Cmd: "echo deptest9", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep9", DepGroups: []string{"final"}})
@@ -1912,7 +1917,7 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 							j9, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
@@ -1923,7 +1928,7 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "ready")
+							So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 							faf, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
@@ -1934,12 +1939,12 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "complete")
+							So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "ready")
+							So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 							inserts, already, err = jq.Add(jobs, envVars)
 							So(err, ShouldBeNil)
@@ -1949,12 +1954,12 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 							j9, err = jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
@@ -1965,7 +1970,7 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "ready")
+							So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 							faf, err = jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
@@ -1976,12 +1981,12 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "complete")
+							So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "ready")
+							So(gottenJobs[0].State, ShouldEqual, JobStateReady)
 
 							faaf, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
@@ -1992,7 +1997,7 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "complete")
+							So(gottenJobs[0].State, ShouldEqual, JobStateComplete)
 
 							jobs = nil
 							jobs = append(jobs, &Job{Cmd: "echo deptest10", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "dep10", DepGroups: []string{"final"}})
@@ -2004,12 +2009,12 @@ func TestJobqueue(t *testing.T) {
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", 0, "", false, false)
 							So(err, ShouldBeNil)
 							So(len(gottenJobs), ShouldEqual, 1)
-							So(gottenJobs[0].State, ShouldEqual, "dependent")
+							So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 						})
 					})
 				})
@@ -2047,7 +2052,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(j4.RepGroup, ShouldEqual, "dep4")
 
-					jq.Release(j4, "", 0*time.Second)
+					jq.Release(j4, "")
 
 					// *** we should implement rejection of dependency cycles
 					// and test for that
@@ -2090,7 +2095,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.Cmd, ShouldEqual, "echo 1")
 				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
-				So(job.State, ShouldEqual, "complete")
+				So(job.State, ShouldEqual, JobStateComplete)
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 
@@ -2108,7 +2113,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.Cmd, ShouldEqual, "echo 2")
 				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
-				So(job.State, ShouldEqual, "complete")
+				So(job.State, ShouldEqual, JobStateComplete)
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 			})
@@ -2172,7 +2177,7 @@ func TestJobqueue(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, "echo added")
 				err = jq.Execute(job2, config.RunnerExecShell)
 				So(err, ShouldBeNil)
-				So(job2.State, ShouldEqual, "complete")
+				So(job2.State, ShouldEqual, JobStateComplete)
 				So(job2.Exited, ShouldBeTrue)
 				So(job2.Exitcode, ShouldEqual, 0)
 			})
@@ -2352,7 +2357,7 @@ func TestJobqueue(t *testing.T) {
 					for {
 						select {
 						case <-ticker.C:
-							jobs, err = jq.GetByRepGroup("manually_added", 0, "buried", false, false)
+							jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateBuried, false, false)
 							if err != nil {
 								continue
 							}
@@ -2402,11 +2407,11 @@ func TestJobqueue(t *testing.T) {
 				go waitForNoRunners()
 				So(<-done2, ShouldBeTrue)
 
-				jobs, err = jq.GetByRepGroup("manually_added", 0, "buried", false, false)
+				jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateBuried, false, false)
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 1)
 				buriedKey := jobs[0].key()
-				jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
+				jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateComplete, false, false)
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 1)
 
@@ -2463,7 +2468,7 @@ func TestJobqueue(t *testing.T) {
 				job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && sleep 4"}, false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
-				So(job.State, ShouldEqual, "running")
+				So(job.State, ShouldEqual, JobStateRunning)
 
 				jobs = []*Job{{Cmd: "echo 2 && sleep 3", Cwd: "/tmp", ReqGroup: "req2", Requirements: &jqs.Requirements{RAM: 10, Time: 4 * time.Hour, Cores: 1}, RepGroup: "a"}}
 				inserts, already, err = jq.Add(jobs, envVars)
@@ -2476,7 +2481,7 @@ func TestJobqueue(t *testing.T) {
 				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 2 && sleep 3"}, false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
-				So(job.State, ShouldEqual, "running")
+				So(job.State, ShouldEqual, JobStateRunning)
 
 				jobs = []*Job{{Cmd: "echo 3 && sleep 2", Cwd: "/tmp", ReqGroup: "req1", Requirements: req1, RepGroup: "a"}}
 				inserts, already, err = jq.Add(jobs, envVars)
@@ -2489,7 +2494,7 @@ func TestJobqueue(t *testing.T) {
 				job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && sleep 2"}, false, false)
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
-				So(job.State, ShouldEqual, "running")
+				So(job.State, ShouldEqual, JobStateRunning)
 
 				// let them all complete
 				done := make(chan bool, 1)
@@ -2678,7 +2683,7 @@ func TestJobqueue(t *testing.T) {
 				for {
 					select {
 					case <-ticker.C:
-						jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
+						jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateComplete, false, false)
 						if err != nil {
 							continue
 						}
@@ -2735,7 +2740,7 @@ func TestJobqueue(t *testing.T) {
 							// check they're really all complete, since the
 							// switch to a new job array could leave us with no
 							// runners temporarily
-							jobs, err = jq.GetByRepGroup("manually_added", 0, "complete", false, false)
+							jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateComplete, false, false)
 							if err == nil && len(jobs) == count+count2 {
 								ticker.Stop()
 								done <- true
@@ -2786,6 +2791,98 @@ func TestJobqueue(t *testing.T) {
 				}
 				So(ranClean, ShouldBeBetweenOrEqual, (maxCPU * 2), (maxCPU*2)+1) // *** not sure why it's sometimes 1 less than expected...
 			} // *** else under LSF we want to test that we never request more than count+count2 runners...
+		})
+
+		Reset(func() {
+			if server != nil {
+				server.Stop()
+			}
+		})
+	})
+
+	// start these tests anew because these tests have the server spawn runners
+	// that fail, simulating some network issue
+	Convey("Once a new jobqueue server is up with bad runners", t, func() {
+		ServerItemTTR = 1 * time.Second
+		ServerCheckRunnerTime = 2 * time.Second
+		ClientTouchInterval = 50 * time.Millisecond
+		pwd, err := os.Getwd()
+		if err != nil {
+			log.Fatal(err)
+		}
+		runnertmpdir, err := ioutil.TempDir(pwd, "wr_jobqueue_test_runner_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(runnertmpdir)
+
+		// our runnerCmd will be running ourselves in --runnermode, so first
+		// we'll compile ourselves to the tmpdir
+		runnerCmd := filepath.Join(runnertmpdir, "runner")
+		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
+		err = cmd.Run()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		runningConfig := serverConfig
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		server, _, err := Serve(runningConfig)
+		So(err, ShouldBeNil)
+
+		Convey("You can connect, and add a job", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "true", Cwd: tmpdir, ReqGroup: "true", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the manager will have tried to spawn runners more than once", func() {
+				runnerCheck := func() (runners int) {
+					files, err := ioutil.ReadDir(runnertmpdir)
+					if err != nil {
+						log.Fatal(err)
+					}
+					ranFailed := 0
+					for _, file := range files {
+						if !strings.HasPrefix(file.Name(), "fail") {
+							continue
+						}
+						ranFailed++
+					}
+					return ranFailed
+				}
+
+				So(runnerCheck(), ShouldEqual, 0)
+
+				<-time.After(2 * time.Second)
+				So(server.HasRunners(), ShouldBeTrue)
+
+				jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateReady, false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 1)
+
+				So(runnerCheck(), ShouldEqual, 1)
+
+				<-time.After(3 * time.Second)
+
+				So(runnerCheck(), ShouldEqual, 2)
+
+				server.Drain()
+				<-time.After(4 * time.Second)
+				So(server.HasRunners(), ShouldBeFalse)
+			})
 		})
 
 		Reset(func() {
@@ -3009,7 +3106,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			job, err = jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt && cat bar", MountConfigs: mcs}, false, false)
 			So(err, ShouldBeNil)
 			So(job, ShouldNotBeNil)
-			So(job.State, ShouldEqual, "complete")
+			So(job.State, ShouldEqual, JobStateComplete)
 
 			// test that the cache dirs get deleted; this test fails if cwd is based
 			// in an nfs mount, the problem confirmed upstream in muxfys but with no
@@ -3351,7 +3448,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 	log.Printf("Reserved and Archived that batch of jobs in %s\n", e)
 
 	before = time.Now()
-	jobs, err = jq.GetByRepGroup(batchName, 1, "complete", false, false) // without a limit this takes longer than 60s, so would time out
+	jobs, err = jq.GetByRepGroup(batchName, 1, JobStateComplete, false, false) // without a limit this takes longer than 60s, so would time out
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -3361,6 +3458,15 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 */
 
 func runner() {
+	if runnerfail {
+		// simulate loss of network connectivity between a spawned runner and
+		// the manager by just exiting without reserving any job after 1s
+		<-time.After(1 * time.Second)
+		tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "fail")
+		tmpfile.Close()
+		return
+	}
+
 	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 

@@ -81,9 +81,9 @@ very many (tens of thousands+) commands.`,
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
-		cmdState := ""
+		var cmdState jobqueue.JobState
 		if showBuried {
-			cmdState = "buried"
+			cmdState = jobqueue.JobStateBuried
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
@@ -168,15 +168,15 @@ very many (tens of thousands+) commands.`,
 			var d, re, b, ru, c int
 			for _, job := range jobs {
 				switch job.State {
-				case "delayed":
+				case jobqueue.JobStateDelayed:
 					d += 1 + job.Similar
-				case "ready":
+				case jobqueue.JobStateReady:
 					re += 1 + job.Similar
-				case "buried":
+				case jobqueue.JobStateBuried:
 					b += 1 + job.Similar
-				case "reserved", "running":
+				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					ru += 1 + job.Similar
-				case "complete":
+				case jobqueue.JobStateComplete:
 					c += 1 + job.Similar
 				}
 			}
@@ -203,15 +203,15 @@ very many (tens of thousands+) commands.`,
 				fmt.Printf("\n# %s\nCwd: %s\n%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, behaviours, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
-				case "delayed":
+				case jobqueue.JobStateDelayed:
 					fmt.Printf("Status: delayed following a temporary problem, will become ready soon (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
-				case "ready":
+				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
-				case "buried":
+				case jobqueue.JobStateBuried:
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
-				case "reserved", "running":
+				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
-				case "complete":
+				case jobqueue.JobStateComplete:
 					fmt.Printf("Status: complete (started %s; ended %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				}
 
@@ -221,7 +221,7 @@ very many (tens of thousands+) commands.`,
 
 				if job.Exited {
 					prefix := "Stats"
-					if job.State != "complete" {
+					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
 					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.Pid)
@@ -243,7 +243,7 @@ very many (tens of thousands+) commands.`,
 							fmt.Printf("StdErr: [none]\n")
 						}
 					}
-				} else if job.State == "running" {
+				} else if job.State == jobqueue.JobStateRunning {
 					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.WallTime(), job.Host, job.Pid)
 					//*** we should be able to peek at STDOUT & STDERR, and see
 					// Peak memory during a run... but is that possible/ too

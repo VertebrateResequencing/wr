@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the web interface code of the server.
 
 import (
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
@@ -36,9 +37,9 @@ import (
 //           the same Status, Exitcode and FailReason.
 // retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
 type jstatusReq struct {
-	Key        string // sending Key means "give me detailed info about this single job"
-	RepGroup   string // sending RepGroup means "send me limited info about the jobs with this RepGroup"
-	State      string // A Job.State to limit RepGroup by
+	Key        string   // sending Key means "give me detailed info about this single job"
+	RepGroup   string   // sending RepGroup means "send me limited info about the jobs with this RepGroup"
+	State      JobState // A Job.State to limit RepGroup by
 	Exitcode   int
 	FailReason string
 	All        bool // If false, retry mode will act on a single random matching job, instead of all of them
@@ -55,7 +56,7 @@ type jstatus struct {
 	DepGroups     []string
 	Dependencies  []string
 	Cmd           string
-	State         string
+	State         JobState
 	Cwd           string
 	CwdBase       string
 	HomeChanged   bool
@@ -325,7 +326,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 							stats := item.Stats()
-							if stats.State == "bury" {
+							if stats.State == queue.ItemStateBury {
 								job := item.Data.(*Job)
 								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
 									err := q.Kick(key)
@@ -349,7 +350,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 							stats := item.Stats()
-							if stats.State == "bury" || stats.State == "delay" || stats.State == "dependent" || stats.State == "ready" {
+							if stats.State == queue.ItemStateBury || stats.State == queue.ItemStateDelay || stats.State == queue.ItemStateDependent || stats.State == queue.ItemStateReady {
 								job := item.Data.(*Job)
 								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
 									// we can't allow the removal of jobs that
@@ -368,7 +369,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									if err == nil {
 										s.db.deleteLiveJob(key)
 										toDelete = append(toDelete, key)
-										if stats.State == "delay" || stats.State == "ready" {
+										if stats.State == queue.ItemStateDelay || stats.State == queue.ItemStateReady {
 											s.decrementGroupCount(job.schedulerGroup, q)
 										}
 									}
@@ -413,23 +414,22 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 // webInterfaceStatusSendGroupStateCount sends the per-repgroup state counts
 // to the status webpage websocket
 func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) (err error) {
-	queueCounts := make(map[string]int)
+	stateCounts := make(map[JobState]int)
 	for _, job := range jobs {
-		var subQueue string
+		var state JobState
+
+		// for display simplicity purposes, merge reserved in to running
 		switch job.State {
-		case "delayed":
-			subQueue = "delay"
-		case "reserved", "running":
-			subQueue = "run"
-		case "buried":
-			subQueue = "bury"
+		case JobStateReserved, JobStateRunning:
+			state = JobStateRunning
 		default:
-			subQueue = job.State
+			state = job.State
 		}
-		queueCounts[subQueue]++
+
+		stateCounts[state]++
 	}
-	for to, count := range queueCounts {
-		err = conn.WriteJSON(&jstateCount{repGroup, "new", to, count})
+	for to, count := range stateCounts {
+		err = conn.WriteJSON(&jstateCount{repGroup, JobStateNew, to, count})
 		if err != nil {
 			return
 		}

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tcp"
@@ -56,11 +57,52 @@ const (
 	FailReasonRAM      = "command used too much RAM"
 	FailReasonTime     = "command used too much time"
 	FailReasonAbnormal = "command failed to complete normally"
+	FailReasonRelease  = "lost contact with runner"
 	FailReasonSignal   = "runner received a signal to stop"
 	FailReasonResource = "resource requirements cannot be met"
 	FailReasonMount    = "mounting of remote file system(s) failed"
 	FailReasonUpload   = "failed to upload files to remote file system"
 )
+
+// JobState is how we describe the possible job states.
+type JobState string
+
+// JobState* constants represent all the possible job states. The fake "new"
+// and "deleted" states are for the benefit of the web interface (jstateCount).
+// "unknown" is an error case that shouldn't happen.
+const (
+	JobStateNew       JobState = "new"
+	JobStateDelayed   JobState = "delayed"
+	JobStateReady     JobState = "ready"
+	JobStateReserved  JobState = "reserved"
+	JobStateRunning   JobState = "running"
+	JobStateBuried    JobState = "buried"
+	JobStateDependent JobState = "dependent"
+	JobStateComplete  JobState = "complete"
+	JobStateDeleted   JobState = "deleted"
+	JobStateUnknown   JobState = "unknown"
+)
+
+// subqueueToJobState converts queue.SubQueue entries to JobStates.
+var subqueueToJobState = map[queue.SubQueue]JobState{
+	queue.SubQueueNew:       JobStateNew,
+	queue.SubQueueDelay:     JobStateDelayed,
+	queue.SubQueueReady:     JobStateReady,
+	queue.SubQueueRun:       JobStateRunning,
+	queue.SubQueueBury:      JobStateBuried,
+	queue.SubQueueDependent: JobStateDependent,
+	queue.SubQueueRemoved:   JobStateComplete,
+}
+
+// itemsStateToJobState converts queue.ItemState entries to JobStates.
+var itemsStateToJobState = map[queue.ItemState]JobState{
+	queue.ItemStateDelay:     JobStateDelayed,
+	queue.ItemStateReady:     JobStateReady,
+	queue.ItemStateRun:       JobStateReserved,
+	queue.ItemStateBury:      JobStateBuried,
+	queue.ItemStateDependent: JobStateDependent,
+	queue.ItemStateRemoved:   JobStateComplete,
+}
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
@@ -90,7 +132,7 @@ type clientRequest struct {
 	GetStd         bool
 	GetEnv         bool
 	Limit          int
-	State          string
+	State          JobState
 	FirstReserve   bool
 }
 
@@ -219,7 +261,7 @@ type Job struct {
 	EnvOverride []byte
 	// job's state in the queue: 'delayed', 'ready', 'reserved', 'running',
 	// 'buried', 'complete' or 'dependent'.
-	State string
+	State JobState
 	// number of times the job had ever entered 'running' state.
 	Attempts uint32
 	// remaining number of Release()s allowed before being buried instead.
@@ -254,7 +296,7 @@ type Job struct {
 // time taken so far if it is currently running.
 func (j *Job) WallTime() (d time.Duration) {
 	if !j.StartTime.IsZero() {
-		if j.EndTime.IsZero() || j.State == "reserved" {
+		if j.EndTime.IsZero() || j.State == JobStateReserved {
 			d = time.Since(j.StartTime)
 		} else {
 			d = j.EndTime.Sub(j.StartTime)
@@ -912,7 +954,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
-		c.Release(job, FailReasonStart, ClientReleaseDelay)
+		c.Release(job, FailReasonStart)
 		job.Unmount(true)
 		return fmt.Errorf("could not start command [%s]: %s", jc, err)
 	}
@@ -1161,7 +1203,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if dobury {
 		err = c.Bury(job, failreason)
 	} else if dorelease {
-		err = c.Release(job, failreason, ClientReleaseDelay) // which buries after job.Retries fails in a row
+		err = c.Release(job, failreason) // which buries after job.Retries fails in a row
 	} else if doarchive {
 		err = c.Archive(job)
 	}
@@ -1220,7 +1262,7 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 func (c *Client) Archive(job *Job) (err error) {
 	_, err = c.request(&clientRequest{Method: "jarchive", Job: job})
 	if err == nil {
-		job.State = "complete"
+		job.State = JobStateComplete
 	}
 	return
 }
@@ -1228,15 +1270,13 @@ func (c *Client) Archive(job *Job) (err error) {
 // Release places a job back on the jobqueue, for use when you can't handle the
 // job right now (eg. there was a suspected transient error) but maybe someone
 // else can later. Note that you must reserve a job before you can release it.
-// The delay arg is the duration to wait after your call to Release() before
-// anyone else can Reserve() this job again - could help you stop immediately
-// Reserve()ing the job again yourself. You can only Release() the same job as
-// many times as its Retries value if it has been run and failed; a subsequent
-// call to Release() will instead result in a Bury(). (If the job's Cmd was not
-// run, you can Release() an unlimited number of times.)
-func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err error) {
+// You can only Release() the same job as many times as its Retries value if it
+// has been run and failed; a subsequent call to Release() will instead result
+// in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
+// number of times.)
+func (c *Client) Release(job *Job, failreason string) (err error) {
 	job.FailReason = failreason
-	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, Timeout: delay})
+	_, err = c.request(&clientRequest{Method: "jrelease", Job: job})
 	if err == nil {
 		// update our process with what the server would have done
 		if job.Exited && job.Exitcode != 0 {
@@ -1244,9 +1284,9 @@ func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err 
 			job.updateRecsAfterFailure()
 		}
 		if job.UntilBuried <= 0 {
-			job.State = "buried"
+			job.State = JobStateBuried
 		} else {
-			job.State = "delayed"
+			job.State = JobStateDelayed
 		}
 	}
 	return
@@ -1263,7 +1303,7 @@ func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) 
 	}
 	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
 	if err == nil {
-		job.State = "buried"
+		job.State = JobStateBuried
 	}
 	return
 }
@@ -1340,7 +1380,7 @@ func (c *Client) jesToKeys(jes []*JobEssence) (keys []string) {
 // number of other excluded jobs there were in that group. Providing 'state'
 // only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
 // stdout, stderr and environement variables for the Jobs.
-func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
+func (c *Client) GetByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
@@ -1352,7 +1392,7 @@ func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd 
 // GetIncomplete gets all Jobs that are currently in the jobqueue, ie. excluding
 // those that are complete and have been Archive()d. The args are as in
 // GetByRepGroup().
-func (c *Client) GetIncomplete(limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
+func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getin", Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return

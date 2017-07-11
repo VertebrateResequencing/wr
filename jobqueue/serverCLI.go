@@ -233,6 +233,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sjob.PeakRAM = 0
 				sjob.Exitcode = -1
 
+				q.SetDelay(item.Key, ClientReleaseDelay)
+
 				// make a copy of the job with some extra stuff filled in (that
 				// we don't want taking up memory here) for the client
 				job := s.itemToJob(item, false, true)
@@ -290,14 +292,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// wasn't released by another process; unlike the other methods,
 			// queue package does not check we're in the run queue when
 			// Remove()ing, since you can remove from any queue)
-			if running := item.Stats().State == "run"; !running {
+			if running := item.Stats().State == queue.ItemStateRun; !running {
 				srerr = ErrBadJob
 			} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
 				// the job must also have gone through jend
 				srerr = ErrBadRequest
 			} else {
 				key := job.key()
-				job.State = "complete"
+				job.State = JobStateComplete
 				job.FailReason = ""
 				err := s.db.archiveJob(key, job)
 				if err != nil {
@@ -327,8 +329,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		item, job, srerr = s.getij(cr, q)
 		if srerr == "" {
 			job.FailReason = cr.Job.FailReason
-			if job.Exited && job.Exitcode != 0 {
+			if !job.StartTime.IsZero() {
+				// obey jobs's Retries count by adjusting UntilBuried if a
+				// client reserved this job and started to run the job's cmd
 				job.UntilBuried--
+			}
+			if job.Exited && job.Exitcode != 0 {
 				job.updateRecsAfterFailure()
 			}
 			if job.UntilBuried <= 0 {
@@ -340,16 +346,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					s.decrementGroupCount(job.schedulerGroup, q)
 				}
 			} else {
-				err = q.SetDelay(item.Key, cr.Timeout)
+				err = q.Release(item.Key)
 				if err != nil {
 					srerr = ErrInternalError
 					qerr = err.Error()
-				} else {
-					err = q.Release(item.Key)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					}
 				}
 			}
 		}
@@ -382,7 +382,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			kicked := 0
 			for _, jobkey := range cr.Keys {
 				item, err := q.Get(jobkey)
-				if err != nil || item.Stats().State != "bury" {
+				if err != nil || item.Stats().State != queue.ItemStateBury {
 					continue
 				}
 				err = q.Kick(jobkey)
@@ -402,7 +402,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			deleted := 0
 			for _, jobkey := range cr.Keys {
 				item, err := q.Get(jobkey)
-				if err != nil || item.Stats().State != "bury" {
+				if err != nil || item.Stats().State != queue.ItemStateBury {
 					continue
 				}
 
@@ -492,7 +492,7 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 	}
 
 	item, err := q.Get(cr.Job.key())
-	if err != nil || item.Stats().State != "run" {
+	if err != nil || item.Stats().State != queue.ItemStateRun {
 		errs = ErrBadJob
 		return
 	}
@@ -511,18 +511,9 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 	sjob := item.Data.(*Job)
 	stats := item.Stats()
 
-	state := "unknown"
-	switch stats.State {
-	case "delay":
-		state = "delayed"
-	case "ready":
-		state = "ready"
-	case "run":
-		state = "reserved"
-	case "bury":
-		state = "buried"
-	case "dependent":
-		state = "dependent"
+	state := itemsStateToJobState[stats.State]
+	if state == "" {
+		state = JobStateUnknown
 	}
 
 	// we're going to fill in some properties of the Job and return
@@ -560,8 +551,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		MountConfigs: sjob.MountConfigs,
 	}
 
-	if !sjob.StartTime.IsZero() && state == "reserved" {
-		job.State = "running"
+	if !sjob.StartTime.IsZero() && state == JobStateReserved {
+		job.State = JobStateRunning
 	}
 	s.jobPopulateStdEnv(job, getStd, getEnv)
 	return
@@ -570,7 +561,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
 // extracting them from the database.
 func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
-	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == "buried") {
+	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == JobStateBuried) {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.key())
 	}
 	if getEnv {
