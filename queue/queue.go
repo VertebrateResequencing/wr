@@ -1081,6 +1081,7 @@ func (queue *Queue) startTTRProcessing() {
 				queue.runQueue.remove(item)
 				switch moveTo {
 				case SubQueueDelay:
+					item.restart()
 					queue.delayQueue.push(item)
 					item.switchRunDelay(true)
 					delayedItems = append(delayedItems, item)
