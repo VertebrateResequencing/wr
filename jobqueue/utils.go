@@ -325,9 +325,36 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
 	dirs = append([]string{baseDir, AppName + "_cwd"}, dirs...)
 	dir := filepath.Join(dirs...)
-	err = os.MkdirAll(dir, os.ModePerm)
-	if err != nil {
-		return
+	holdFile := filepath.Join(dir, ".hold")
+	defer os.Remove(holdFile)
+	tries := 0
+	for {
+		err = os.MkdirAll(dir, os.ModePerm)
+		if err != nil {
+			tries++
+			if tries <= 3 {
+				// we retry a few times in case another process is calling
+				// rmEmptyDirs on the same baseDir and so conflicting with us
+				continue
+			}
+			return
+		}
+
+		// and drop a temp file in here so rmEmptyDirs will not immediately
+		// remove these dirs
+		tries = 0
+		var f *os.File
+		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0666)
+		if err != nil {
+			tries++
+			if tries <= 3 {
+				continue
+			}
+			return
+		}
+		f.Close()
+
+		break
 	}
 
 	// if tohash is a job key then we expect that only 1 of that job is
