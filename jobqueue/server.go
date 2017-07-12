@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"fmt"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
@@ -57,6 +58,7 @@ const (
 	ErrNoServer       = "could not reach the server"
 	ErrMustReserve    = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError        = "failed to use database"
+	ErrWrongUser      = "you did not start this server: permission denied"
 	ServerModeNormal  = "started"
 	ServerModeDrain   = "draining"
 )
@@ -104,14 +106,15 @@ type serverResponse struct {
 
 // ServerInfo holds basic addressing info about the server.
 type ServerInfo struct {
-	Addr       string // ip:port
-	Host       string // hostname
-	Port       string // port
-	WebPort    string // port of the web interface
-	PID        int    // process id of server
-	Deployment string // deployment the server is running under
-	Scheduler  string // the name of the scheduler that jobs are being submitted to
-	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
+	AllowedUsers []string // usernames that are allowed to use the server
+	Addr         string   // ip:port
+	Host         string   // hostname
+	Port         string   // port
+	WebPort      string   // port of the web interface
+	PID          int      // process id of server
+	Deployment   string   // deployment the server is running under
+	Scheduler    string   // the name of the scheduler that jobs are being submitted to
+	Mode         string   // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
 }
 
 // ServerStats holds information about the jobqueue server for sending to
@@ -141,15 +144,16 @@ type jstateCount struct {
 
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
-	ServerInfo *ServerInfo
-	sock       mangos.Socket
-	ch         codec.Handle
-	db         *db
-	done       chan error
-	stop       chan bool
-	up         bool
-	drain      bool
-	blocking   bool
+	ServerInfo   *ServerInfo
+	allowedUsers map[string]bool
+	sock         mangos.Socket
+	ch           codec.Handle
+	db           *db
+	done         chan error
+	stop         chan bool
+	up           bool
+	drain        bool
+	blocking     bool
 	sync.Mutex
 	qs            map[string]*queue.Queue
 	rpl           *rgToKeys
@@ -169,6 +173,13 @@ type Server struct {
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
 // fields are required with no working default unless otherwise noted.
 type ServerConfig struct {
+	// AllowedUsers are the usernames that will be allowed access to
+	// the user interfaces that will connect to the server. (In cloud situations
+	// this isn't necessarily just the username of the account that starts the
+	// server, though that user is always allowed access, regardless of this
+	// value.)
+	AllowedUsers []string
+
 	// Port for client-server communication.
 	Port string
 
@@ -228,6 +239,23 @@ type ServerConfig struct {
 // determines the command line to execute for your runner client from the
 // configured RunnerCmd string you supplied.
 func Serve(config ServerConfig) (s *Server, msg string, err error) {
+	// for security purposes we need to know who will be allowed to access us
+	// in the future
+	owner, err := internal.Username()
+	if err != nil {
+		return
+	}
+	var allowedUsers []string
+	allowedUsersMap := make(map[string]bool)
+	for _, user := range config.AllowedUsers {
+		allowedUsersMap[user] = true
+		allowedUsers = append(allowedUsers, user)
+	}
+	if _, exists := allowedUsersMap[owner]; !exists {
+		allowedUsersMap[owner] = true
+		allowedUsers = append(allowedUsers, owner)
+	}
+
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -294,7 +322,8 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		ServerInfo:   &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		allowedUsers: allowedUsersMap,
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),

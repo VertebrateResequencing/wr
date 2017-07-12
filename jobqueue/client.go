@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
@@ -120,6 +121,7 @@ var (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
+	User           string
 	ClientID       uuid.UUID
 	Method         string
 	Queue          string
@@ -616,6 +618,7 @@ type Client struct {
 	queue       string
 	ch          codec.Handle
 	clientid    uuid.UUID
+	user        string
 	hasReserved bool
 	sync.Mutex
 }
@@ -630,6 +633,16 @@ type envStr struct {
 // not only while connecting, but for all subsequent interactions with it using
 // the returned Client.
 func Connect(addr string, queue string, timeout time.Duration) (c *Client, err error) {
+	// a server is only allowed to be accessed by a particular user, so we get
+	// our username here. NB: *** this is not real security, since someone could
+	// just recompile with the following line altered to a hardcoded username
+	// value; it is only intended to prevent accidental use of someone else's
+	// server
+	user, err := internal.Username()
+	if err != nil {
+		return
+	}
+
 	sock, err := req.NewSocket()
 	if err != nil {
 		return
@@ -656,15 +669,14 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	// since speed doesn't matter: a typical client executable will only
 	// Connect() once; on the other hand, we avoid any possible problem with
 	// running on machines with low time resolution
-	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), clientid: uuid.NewV4()}
+	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: uuid.NewV4()}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
-	ok := c.Ping(timeout)
-	if !ok {
+	err = c.Ping(timeout)
+	if err != nil {
 		sock.Close()
 		c = nil
-		err = Error{queue, "Connect", "", ErrNoServer}
 	}
 
 	return
@@ -676,13 +688,11 @@ func (c *Client) Disconnect() {
 	c.sock.Close()
 }
 
-// Ping tells you if your connection to the server is working.
-func (c *Client) Ping(timeout time.Duration) bool {
-	_, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
-	if err != nil {
-		return false
-	}
-	return true
+// Ping tells you if your connection to the server is working. If err is nil,
+// it works.
+func (c *Client) Ping(timeout time.Duration) (err error) {
+	_, err = c.request(&clientRequest{Method: "ping", Timeout: timeout})
+	return
 }
 
 // DrainServer tells the server to stop spawning new runners, stop letting
@@ -1698,6 +1708,7 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
 	cr.Queue = c.queue
+	cr.User = c.user
 	cr.ClientID = c.clientid
 	err = enc.Encode(cr)
 	if err != nil {

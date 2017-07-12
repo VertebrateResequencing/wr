@@ -2156,8 +2156,8 @@ func TestJobqueue(t *testing.T) {
 
 				<-time.After(2 * time.Second)
 
-				up := jq.Ping(10 * time.Millisecond)
-				So(up, ShouldBeFalse)
+				err = jq.Ping(10 * time.Millisecond)
+				So(err, ShouldBeNil)
 
 				wipeDevDBOnInit = false
 				server, _, err = Serve(serverConfig)
@@ -2198,8 +2198,8 @@ func TestJobqueue(t *testing.T) {
 
 				<-time.After(2 * time.Second)
 
-				up := jq.Ping(10 * time.Millisecond)
-				So(up, ShouldBeFalse)
+				err = jq.Ping(10 * time.Millisecond)
+				So(err, ShouldBeNil)
 
 				jq.Disconnect() // user must always Disconnect before connecting again!
 
