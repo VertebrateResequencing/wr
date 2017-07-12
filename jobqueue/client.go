@@ -677,6 +677,11 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	if err != nil {
 		sock.Close()
 		c = nil
+		msg := ErrNoServer
+		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
+			msg = ErrWrongUser
+		}
+		err = Error{queue, "Connect", "", msg}
 	}
 
 	return
