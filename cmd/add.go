@@ -48,7 +48,8 @@ var cmdCwdMatters bool
 var cmdChangeHome bool
 var cmdRepGroup string
 var cmdDepGroups string
-var cmdDeps string
+var cmdCmdDeps string
+var cmdGroupDeps string
 var cmdOnFailure string
 var cmdOnSuccess string
 var cmdOnExit string
@@ -239,8 +240,9 @@ these refer to must complete before this command will start. The value for
 this way are 'live', causing this command to be automatically re-run if any
 commands with any of the dep_grps it is dependent upon get added to the queue.
 The value for "cmd_deps" is an array of JSON objects with "cmd" and "cwd"
-name:value pairs. These are static dependencies; once resolved they do not get
-re-evaluated.
+name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
+string). These are static dependencies; once resolved they do not get re-
+evaluated.
 
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
@@ -306,13 +308,16 @@ started.`,
 			defaultDepGroups = strings.Split(cmdDepGroups, ",")
 		}
 
-		var defaultDeps []*jobqueue.Dependency
-		if cmdDeps != "" {
-			cols := strings.Split(cmdDeps, "\\t")
+		var defaultDeps jobqueue.Dependencies
+		if cmdCmdDeps != "" {
+			cols := strings.Split(cmdCmdDeps, ",")
 			if len(cols)%2 != 0 {
-				die("--deps must have an even number of tab-separated columns")
+				die("--cmd_deps must have an even number of comma-separated entries")
 			}
 			defaultDeps = colsToDeps(cols)
+		}
+		if cmdGroupDeps != "" {
+			defaultDeps = append(defaultDeps, groupsToDeps(cmdGroupDeps)...)
 		}
 
 		var defaultOnFailure jobqueue.Behaviours
@@ -660,7 +665,8 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
-	addCmd.Flags().StringVarP(&cmdDeps, "deps", "d", "", "dependencies of your commands, in the form \"command1\\tcwd1\\tcommand2\\tcwd2...\" or \"dep_grp1,dep_grp2...\\tgroups\"")
+	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
+	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
@@ -669,16 +675,18 @@ func init() {
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
-// convert cmd,cwd or depgroups,"groups" columns in to Dependency
+// convert cmd,cwd columns in to Dependency.
 func colsToDeps(cols []string) (deps jobqueue.Dependencies) {
 	for i := 0; i < len(cols); i += 2 {
-		if cols[i+1] == "groups" {
-			for _, depgroup := range strings.Split(cols[i], ",") {
-				deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
-			}
-		} else {
-			deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
-		}
+		deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
+	}
+	return
+}
+
+// convert group1,group2,... in to a Dependency.
+func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
+	for _, depgroup := range strings.Split(groups, ",") {
+		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
 	return
 }
