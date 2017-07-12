@@ -253,7 +253,7 @@
                                         </dl>
                                         <dl>
                                             <dt>Walltime</dt>
-                                            <dd data-bind="text: Walltime.toDuration()"></dd>
+                                            <dd data-bind="text: LiveWalltime().toDuration()"></dd>
                                         </dl>
                                         <dl>
                                             <dt>Host</dt>
@@ -444,6 +444,8 @@
                 self.detailsRepgroup = '';
                 self.detailsState = '';
                 self.detailsOA;
+                self.wallTimeUpdater;
+                self.wallTimeUpdaters = new Array();
                 self.rateLimit = 350;
                 
                 self.inflight = {
@@ -673,6 +675,25 @@
                             if (self.detailsOA && rg == self.detailsRepgroup) {
                                 // the user has clicked on a progress bar for
                                 // a particular repgroup; add to its details
+                                if (json['State'] == "running") {
+                                    // have Walltime on running jobs auto-
+                                    // increment
+                                    var walltime = json['Walltime'];
+                                    var began = new Date();
+                                    var now = ko.observable(new Date());
+                                    json['LiveWalltime'] = ko.computed(function() {
+                                        return walltime + ((now() - began) / 1000);
+                                    });
+                                    self.wallTimeUpdaters.push(now)
+                                    if (! self.wallTimeUpdater) {
+                                        self.wallTimeUpdater = window.setInterval(function() {
+                                            var arrayLength = self.wallTimeUpdaters.length;
+                                            for (var i = 0; i < arrayLength; i++) {
+                                                self.wallTimeUpdaters[i](new Date());
+                                            };
+                                        }, 1000);
+                                    }
+                                }
                                 self.detailsOA.push(json);
                             }
                         }
@@ -708,6 +729,11 @@
                 };
                 self.showGroupState = function(repGroup, state) {
                     if (self.detailsOA) {
+                        if (self.wallTimeUpdater) {
+                            self.wallTimeUpdaters = new Array();
+                            window.clearInterval(self.wallTimeUpdater);
+                            self.wallTimeUpdater = '';
+                        }
                         self.detailsOA([]);
                     }
                     
