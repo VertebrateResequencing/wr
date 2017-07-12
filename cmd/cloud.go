@@ -41,8 +41,12 @@ import (
 const cloudBinDir = "/tmp"
 
 // wrConfigFileName is the name of our main config file, which we need when we
-// create on on our created cloud server
+// create on our created cloud server
 const wrConfigFileName = ".wr_config.yml"
+
+// wrEnvFileName is the name of our environment variables file, which we need
+// when we start the manager on our created cloud server
+const wrEnvFileName = ".wr_envvars"
 
 // options for this cmd
 var providerName string
@@ -436,8 +440,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		provider.TearDown()
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}
-	_, _, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
-	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	server.RunCmd("chmod 600 "+remoteResourceFile, false)
+	server.RunCmd("chmod 600 "+remoteKeyFile, false)
 
 	// start up the manager
 	var alreadyStarted bool
@@ -448,13 +452,20 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 	}
 	if !alreadyStarted {
-		// build a command prefix that sets all the required env vars for this
-		// provider
-		envvarPrefix := ""
+		// create a file containing the required env vars for this provider, so
+		// that we can source it later
 		envvars, _ := cloud.RequiredEnv(providerName)
+		envvarExports := ""
 		for _, envvar := range envvars {
-			envvarPrefix += fmt.Sprintf("%s=\"%s\" ", envvar, os.Getenv(envvar))
+			// *** this is bash-like only; is that a problem?
+			envvarExports += fmt.Sprintf("export %s=\"%s\"\n", envvar, os.Getenv(envvar))
 		}
+		err = server.CreateFile(envvarExports, wrEnvFileName)
+		if err != nil {
+			provider.TearDown()
+			die("failed to create our environment variables file on the server at %s: %s", server.IP, err)
+		}
+		server.RunCmd("chmod 600 "+wrEnvFileName, false)
 
 		var postCreationArg string
 		if postCreationScript != "" {
@@ -499,7 +510,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// expected, and we don't get here.
 			m = -1
 		}
-		mCmd := fmt.Sprintf("%s%s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", envvarPrefix, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
 
 		if cloudDebug {
 			mCmd += " --cloud_debug"
