@@ -78,9 +78,9 @@ type jstatus struct {
 	Ended         int64
 	StdErr        string
 	StdOut        string
-	Env           []string
-	Attempts      uint32
-	Similar       int
+	// Env        []string //*** not sending Env until we have https implemented
+	Attempts uint32
+	Similar  int
 }
 
 // webInterfaceStatic is a http handler for our static documents in static.go
@@ -178,7 +178,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					if errstr == "" && len(jobs) == 1 {
 						stderr, _ := jobs[0].StdErr()
 						stdout, _ := jobs[0].StdOut()
-						env, _ := jobs[0].Env()
+						// env, _ := jobs[0].Env()
 						var cwdLeaf string
 						if jobs[0].ActualCwd != "" {
 							cwdLeaf, _ = filepath.Rel(jobs[0].Cwd, jobs[0].ActualCwd)
@@ -212,8 +212,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							Ended:         jobs[0].EndTime.Unix(),
 							StdErr:        stderr,
 							StdOut:        stdout,
-							Env:           env,
-							Attempts:      jobs[0].Attempts,
+							// Env:           env,
+							Attempts: jobs[0].Attempts,
 						}
 						writeMutex.Lock()
 						err = conn.WriteJSON(status)
@@ -269,7 +269,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							for _, job := range jobs {
 								stderr, _ := job.StdErr()
 								stdout, _ := job.StdOut()
-								env, _ := job.Env()
+								// env, _ := job.Env()
 								var cwdLeaf string
 								if job.ActualCwd != "" {
 									cwdLeaf, _ = filepath.Rel(job.Cwd, job.ActualCwd)
@@ -305,7 +305,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 									Similar:       job.Similar,
 									StdErr:        stderr,
 									StdOut:        stdout,
-									Env:           env,
+									// Env:           env,
 								}
 								err = conn.WriteJSON(status)
 								if err != nil {
