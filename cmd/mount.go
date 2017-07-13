@@ -27,10 +27,12 @@ import (
 	"github.com/spf13/cobra"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
 // options for this cmd
+var mountSimple string
 var mountJSON string
 var mountVerbose bool
 
@@ -62,8 +64,21 @@ NB: if you are writing to your mount point, it's very important to kill it
 cleanly using one of these methods once you're done, since uploads only occur
 when you do this!
 
-The --mounts option is the JSON string for an array of Config objects describing
-all your mount parameters.
+
+--mounts is a convenience option that lets you specify your mounts in the common
+case that you wish the contents of 1 or more remote directories to be accessible
+from a single local directory ('mnt' when using this command, the command
+working directory when using 'wr add'). For anything more complicated you'll
+need to use --mount_json. You can't use both --mounts and --mount_json at once.
+The format is a comma-separated list of [c|u][r|w]:bucket[/path] strings. The
+first character as 'c' means to turn on caching, while 'u' means uncached. The
+second character as 'r' means read-only, while 'w' means writeable (only one of
+them can have w). After the colon you specify the remote bucket name and ideally
+the path to the deepest subdirectory that contains the data you with to access.
+
+
+--mount_json is the JSON string for an array of Config objects describing all
+your mount parameters.
 A JSON array begins and ends with a square bracket, and each item is separated
 with a comma.
 A JSON object can be written by starting and ending it with curly braces.
@@ -156,10 +171,6 @@ Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Note that when
 not cached, only serial writes are possible.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if mountJSON == "" {
-			die("--mounts is required")
-		}
-
 		// set up logging
 		logLevel := log15.LvlError
 		if mountVerbose {
@@ -169,7 +180,7 @@ not cached, only serial writes are possible.`,
 
 		// mount everything
 		var mounted []*muxfys.MuxFys
-		for _, mc := range mountParseJSON(mountJSON) {
+		for _, mc := range mountParse(mountJSON, mountSimple) {
 			var rcs []*muxfys.RemoteConfig
 			for _, mt := range mc.Targets {
 				accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
@@ -240,17 +251,73 @@ func init() {
 	RootCmd.AddCommand(mountCmd)
 
 	// flags specific to this sub-command
-	mountCmd.Flags().StringVarP(&mountJSON, "mounts", "m", "", "mount parameters JSON (see --help)")
+	mountCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mount parameters JSON (see --help)")
+	mountCmd.Flags().StringVarP(&mountSimple, "mounts", "m", "", "comma-separated list of [c|u][r|w]:bucket[/path] (see --help)")
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
+}
+
+// mountParse takes possible json string or simple string (as per `wr mount -h`)
+// and parses exactly 1 of them to a MountConfig for each mount defined.
+func mountParse(jsonString, simpleString string) (mcs jobqueue.MountConfigs) {
+	if jsonString == "" && simpleString == "" {
+		die("--mounts or --mount_json is required")
+	}
+	if jsonString != "" && simpleString != "" {
+		die("--mounts and --mount_json are mutually exclusive")
+	}
+
+	if jsonString != "" {
+		return mountParseJSON(jsonString)
+	}
+	return mountParseSimple(simpleString)
 }
 
 // mountParseJSON takes a json string (as per `wr mount --help`) and parses it
 // to a MountConfig for each mount defined.
 func mountParseJSON(jsonString string) (mcs jobqueue.MountConfigs) {
-	// parse
 	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
 	}
+	return
+}
+
+// mountParseSimple takes a comma-separated list of [c|u][r|w]:bucket[/path] and
+// parses it to a MountConfig in a MountConfigs (to match the output type of
+// mountParseJSON).
+func mountParseSimple(simpleString string) (mcs jobqueue.MountConfigs) {
+	var targets []jobqueue.MountTarget
+	for _, simple := range strings.Split(simpleString, ",") {
+		parts := strings.Split(simple, ":")
+		if len(parts) != 2 || len(parts[0]) != 2 {
+			die("'%s' was not in the right format", simple)
+		}
+
+		var cache, write bool
+		switch parts[0][0] {
+		case 'c':
+			cache = true
+		case 'u':
+			cache = false
+		default:
+			die("'%s' did not start with c or u", simple)
+		}
+		switch parts[0][1] {
+		case 'w':
+			write = true
+		case 'r':
+			write = false
+		default:
+			die("'%s' did not specify w or r", simple)
+		}
+
+		targets = append(targets, jobqueue.MountTarget{
+			Path:  parts[1],
+			Cache: cache,
+			Write: write,
+		})
+	}
+
+	mcs = append(mcs, jobqueue.MountConfig{Targets: targets})
 	return
 }
