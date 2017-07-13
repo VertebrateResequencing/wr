@@ -54,6 +54,7 @@ var cmdOnFailure string
 var cmdOnSuccess string
 var cmdOnExit string
 var cmdMounts string
+var cmdEnv string
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
@@ -79,9 +80,9 @@ type addCmdOpts struct {
 	OnExit       jobqueue.BehavioursViaJSON `json:"on_exit"`
 	Env          []string                   `json:"env"`
 	CloudOS      string                     `json:"cloud_os"`
-	CloudUser    string                     `json:"cloud_user"`
+	CloudUser    string                     `json:"cloud_username"`
 	CloudScript  string                     `json:"cloud_script"`
-	CloudOSRam   *int                       `json:"cloud_os_ram"`
+	CloudOSRam   *int                       `json:"cloud_ram"`
 }
 
 // addCmd represents the add command
@@ -98,12 +99,12 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_user cloud_os_ram cloud_script env
+cloud_os cloud_username cloud_ram cloud_script env
 
-If any of these (except the cloud ones and env) will be the same for all your
-commands, you can instead specify them as flags (which are treated as defaults
-in the case that they are unspecified in the text file, but otherwise ignored).
-The meaning of each option is detailed below.
+If any of these will be the same for all your commands, you can instead specify
+them as flags (which are treated as defaults in the case that they are
+unspecified in the text file, but otherwise ignored). The meaning of each option
+is detailed below.
 
 A JSON object can written by starting and ending it with curly braces. Names and
 single values are put in double quotes (except for numbers, which are left bare,
@@ -248,19 +249,19 @@ The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
 will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
-"CentOS 7", "cloud_user" to "centos", "cloud_os_ram" to 4096, and "cloud_script"
-to "~/my_centos_post_creation_script.sh", then this command will run on a cloud
-node running CentOS (with at least 4GB ram).
+"CentOS 7", "cloud_username" to "centos", "cloud_ram" to 4096, and
+"cloud_script" to "~/my_centos_post_creation_script.sh", then this command will
+run on a cloud node running CentOS (with at least 4GB ram).
 
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
 that are overwritten depend on if you run 'wr add' on the same machine as you
 started the manager (local, vs remote). In the local case, commands will use
 base variables as they were at the moment in time you run 'wr add', so to set a
-certain environment variable for all commands, you can just set it prior to
-calling 'wr add'. In the remote case the command will use base variables as they
-were on the machine where the command is executed when that machine was
-started.`,
+certain environment variable for all commands, you could instead just set it
+prior to calling 'wr add'. In the remote case the command will use base
+variables as they were on the machine where the command is executed when that
+machine was started.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
@@ -353,6 +354,20 @@ started.`,
 			defaultMounts = mountParse(mountJSON, mountSimple)
 		}
 
+		var defaultScript string
+		if postCreationScript != "" {
+			data, err := ioutil.ReadFile(postCreationScript)
+			if err != nil {
+				die("--cloud_script could not be read: %s", err)
+			}
+			defaultScript = string(data)
+		}
+
+		var defaultOSRAM string
+		if osRAM > 0 {
+			defaultOSRAM = strconv.Itoa(osRAM)
+		}
+
 		// open file or set up to read from STDIN
 		var reader io.Reader
 		if cmdFile == "-" {
@@ -389,6 +404,11 @@ started.`,
 			remoteWarning = 1
 		}
 		jq.Disconnect()
+
+		var defaultExtraEnv []byte
+		if cmdEnv != "" {
+			defaultExtraEnv = jq.CompressEnv(strings.Split(cmdEnv, ","))
+		}
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
@@ -562,6 +582,8 @@ started.`,
 
 			if len(cmdOpts.Env) > 0 {
 				envOverride = jq.CompressEnv(cmdOpts.Env)
+			} else if len(defaultExtraEnv) > 0 {
+				envOverride = defaultExtraEnv
 			}
 
 			if len(cmdOpts.OnFailure) > 0 {
@@ -590,9 +612,13 @@ started.`,
 			other := make(map[string]string)
 			if cmdOpts.CloudOS != "" {
 				other["cloud_os"] = cmdOpts.CloudOS
+			} else if osPrefix != "" {
+				other["cloud_os"] = osPrefix
 			}
 			if cmdOpts.CloudUser != "" {
 				other["cloud_user"] = cmdOpts.CloudUser
+			} else if osUsername != "" {
+				other["cloud_user"] = osUsername
 			}
 			if cmdOpts.CloudScript != "" {
 				var postCreation []byte
@@ -601,10 +627,14 @@ started.`,
 					die("line %d's cloud_script value (%s) could not be read: %s", lineNum, cmdOpts.CloudScript, err)
 				}
 				other["cloud_script"] = string(postCreation)
+			} else if defaultScript != "" {
+				other["cloud_script"] = defaultScript
 			}
 			if cmdOpts.CloudOSRam != nil {
-				osRAM := *cmdOpts.CloudOSRam
-				other["cloud_os_ram"] = strconv.Itoa(osRAM)
+				ram := *cmdOpts.CloudOSRam
+				other["cloud_os_ram"] = strconv.Itoa(ram)
+			} else if defaultOSRAM != "" {
+				other["cloud_os_ram"] = defaultOSRAM
 			}
 
 			jobs = append(jobs, &jobqueue.Job{
@@ -672,6 +702,11 @@ func init() {
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
 	addCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format")
 	addCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]")
+	addCmd.Flags().StringVar(&osPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
+	addCmd.Flags().StringVar(&osUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
+	addCmd.Flags().IntVar(&osRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	addCmd.Flags().StringVar(&postCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
