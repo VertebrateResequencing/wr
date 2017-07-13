@@ -91,6 +91,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							job.EnvKey = envkey
 							job.UntilBuried = job.Retries + 1
 							job.Queue = cr.Queue
+
+							// in cloud deployments we may bring up a server running an
+							// operating system with a different username, which we must
+							// allow access to ourselves
+							if user, set := job.Requirements.Other["cloud_user"]; set {
+								if _, allowed := s.allowedUsers[user]; !allowed {
+									s.allowedUsers[user] = true
+									s.ServerInfo.AllowedUsers = append(s.ServerInfo.AllowedUsers, user)
+								}
+							}
 						}
 
 						// keep an on-disk record of these new jobs; we sacrifice a
