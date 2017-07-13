@@ -22,6 +22,7 @@ package scheduler
 // on servers spawned on demand.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -166,6 +167,7 @@ type standin struct {
 	flavor         cloud.Flavor
 	disk           int
 	os             string
+	script         []byte
 	usedRAM        int
 	usedCores      int
 	usedDisk       int
@@ -180,7 +182,7 @@ type standin struct {
 }
 
 // newStandin returns a new standin server
-func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string, debug bool) *standin {
+func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string, script []byte, debug bool) *standin {
 	availableDisk := flavor.Disk
 	if disk > availableDisk {
 		availableDisk = disk
@@ -190,6 +192,7 @@ func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string, debug
 		flavor:         flavor,
 		disk:           availableDisk,
 		os:             osPrefix,
+		script:         script,
 		waitingToSpawn: true,
 		endWait:        make(chan *cloud.Server),
 		readyToSpawn:   make(chan bool),
@@ -425,8 +428,9 @@ func (s *opst) initialize(config interface{}) (err error) {
 	usage := du.NewDiskUsage(".")
 	diskSize := int(usage.Size() / gb)
 	s.servers["localhost"] = &cloud.Server{
-		IP: "127.0.0.1",
-		OS: s.config.OSPrefix,
+		IP:     "127.0.0.1",
+		OS:     s.config.OSPrefix,
+		Script: s.config.PostCreationScript,
 		Flavor: cloud.Flavor{
 			RAM:   maxRAM,
 			Cores: runtime.NumCPU(),
@@ -632,6 +636,13 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		osPrefix = s.config.OSPrefix
 	}
 
+	var osScript []byte
+	if val, defined := req.Other["cloud_script"]; defined {
+		osScript = []byte(val)
+	} else {
+		osScript = s.config.PostCreationScript
+	}
+
 	uniqueDebug := uuid.NewV4().String()
 
 	s.mutex.Lock()
@@ -656,7 +667,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			delete(s.servers, sid)
 			continue
 		}
-		if thisServer.OS == osPrefix && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if thisServer.OS == osPrefix && bytes.Equal(thisServer.Script, osScript) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
 			s.debug("b %s using existing server %s\n", uniqueDebug, server.ID)
@@ -667,7 +678,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	// else see if there will be space on a soon-to-be-spawned server
 	if server == nil {
 		for _, standinServer := range s.standins {
-			if standinServer.os == osPrefix && standinServer.hasSpaceFor(req) > 0 {
+			if standinServer.os == osPrefix && bytes.Equal(standinServer.script, osScript) && standinServer.hasSpaceFor(req) > 0 {
 				s.recordStandin(standinServer, cmd)
 				standinServer.allocate(req)
 				s.mutex.Unlock()
@@ -716,7 +727,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 
 		standinID := uuid.NewV4().String()
-		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix, s.debugMode)
+		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix, osScript, s.debugMode)
 		standinServer.allocate(req)
 		s.recordStandin(standinServer, cmd)
 		s.debug("g %s made new standin %s\n", uniqueDebug, standinID)
@@ -756,16 +767,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}
 
 		var osUser string
-		var osScript []byte
 		if val, defined := req.Other["cloud_user"]; defined {
 			osUser = val
 		} else {
 			osUser = s.config.OSUser
-		}
-		if val, defined := req.Other["cloud_script"]; defined {
-			osScript = []byte(val)
-		} else {
-			osScript = s.config.PostCreationScript
 		}
 
 		s.debug("o %s will spawn\n", uniqueDebug)

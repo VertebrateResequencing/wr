@@ -227,6 +227,7 @@ type Server struct {
 	IP                string // ip address that you could SSH to
 	OS                string // the name of the Operating System image
 	UserName          string // the username needed to log in to the server
+	Script            []byte // the content of a start-up script run on the server
 	AdminPass         string
 	Flavor            Flavor
 	Disk              int           // GB of available disk space
@@ -1002,6 +1003,8 @@ SENTINEL:
 		}
 
 		s.RunCmd("rm "+pcsPath, false)
+
+		s.Script = postCreationScript[0]
 
 		// because the postCreationScript may have altered PATH and other things
 		// that subsequent RunCmd may rely on, clear the client
