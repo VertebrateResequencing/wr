@@ -496,7 +496,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	// the biggest object is first and the smallest last. Insert each object one
 	// by one in to the first bin that has room for it.”
 	for sid, server := range s.servers {
-		if server.Destroyed() {
+		if server.ID != "" && !server.Alive() {
 			delete(s.servers, sid)
 			continue
 		}
@@ -652,7 +652,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	s.debug("a %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
-		if thisServer.Destroyed() {
+		if thisServer.ID != "" && !thisServer.Alive() {
 			delete(s.servers, sid)
 			continue
 		}
@@ -673,7 +673,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				s.mutex.Unlock()
 				s.debug("c %s will use standin %s, unlocked\n", uniqueDebug, standinServer.id)
 				server = standinServer.waitForServer()
-				if server == nil || server.Destroyed() {
+				if server == nil || (server.ID != "" && !server.Alive()) {
 					s.debug("d %s giving up waiting on standin %s\n", uniqueDebug, standinServer.id)
 					return errors.New("giving up waiting to spawn")
 				}
