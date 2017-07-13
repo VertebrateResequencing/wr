@@ -694,7 +694,8 @@ func (s *Server) Destroyed() bool {
 	return s.destroyed
 }
 
-// Alive tells you if a server is usable.
+// Alive tells you if a server is usable. It first does the same check as
+// Destroyed() before calling out to the provider.
 func (s *Server) Alive() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
