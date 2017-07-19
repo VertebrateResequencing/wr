@@ -489,7 +489,18 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 				die("failed to upload wr cloud config files to the server at %s: %s", server.IP, err)
 			}
 
-			configFilesArg = " --cloud_config_files '" + cloudConfigFiles + "'"
+			// strip any local file locations
+			var remoteConfigFiles []string
+			for _, cf := range strings.Split(cloudConfigFiles, ",") {
+				parts := strings.Split(cf, ":")
+				if len(parts) == 2 {
+					remoteConfigFiles = append(remoteConfigFiles, parts[1])
+				} else {
+					remoteConfigFiles = append(remoteConfigFiles, cf)
+				}
+			}
+
+			configFilesArg = " --cloud_config_files '" + strings.Join(remoteConfigFiles, ",") + "'"
 		}
 
 		var flavorArg string
