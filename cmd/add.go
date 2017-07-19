@@ -55,6 +55,7 @@ var cmdOnSuccess string
 var cmdOnExit string
 var cmdMounts string
 var cmdEnv string
+var cmdReRun bool
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
@@ -664,7 +665,7 @@ machine was started.`,
 		defer jq.Disconnect()
 
 		// add the jobs to the queue
-		inserts, dups, err := jq.Add(jobs, envVars)
+		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
 		if err != nil {
 			die("%s", err)
 		}
@@ -707,6 +708,7 @@ func init() {
 	addCmd.Flags().IntVar(&osRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
 	addCmd.Flags().StringVar(&postCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
+	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

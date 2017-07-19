@@ -127,6 +127,7 @@ type clientRequest struct {
 	Queue          string
 	Jobs           []*Job
 	Job            *Job
+	IgnoreComplete bool
 	Keys           []string
 	Timeout        time.Duration
 	SchedulerGroup string
@@ -762,13 +763,14 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 // Note that if you add jobs to the queue that were previously added, Execute()d
 // and were successfully Archive()d, the existed count will be 0 and the jobs
 // will be treated like new ones, though when Archive()d again, the new Job will
-// replace the old one in the database.
+// replace the old one in the database. To have such jobs skipped as "existed"
+// instead, supply ignoreComplete as true.
 //
 // The envVars argument is a slice of ("key=value") strings with the environment
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
-func (c *Client) Add(jobs []*Job, envVars []string) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars)})
+func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added int, existed int, err error) {
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars), IgnoreComplete: ignoreComplete})
 	if err != nil {
 		return
 	}

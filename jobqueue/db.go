@@ -209,15 +209,19 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 // dups, we allow the same job to be looked up by multiple RepGroups. Likewise,
 // we store a lookup for the Job.DepGroups and .Dependencies.DepGroups().
 //
+// If ignoreAdded is true, jobs that have already completed will be ignored
+// along with those that have been added and the returned alreadyAdded value
+// will increase.
+//
 // While storing it also checks if any previously stored jobs depend on a dep
 // group that an input job is a member of. If not, jobsToQueue return value will
-// be identical to the input job slice. Otherwise, if the affected job was
-// Archive()d (and not currently being re-run), then it will be appended to (a
-// copy of) the input job slice and returned in jobsToQueue. If the affected job
-// was in the live bucket (currently queued), it will be returned in the
-// jobsToUpdate slice: you should use queue methods to update the job in the
-// queue.
-func (db *db) storeNewJobs(jobs []*Job) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
+// be identical to the input job slice (minus any jobs ignored due to being
+// complete). Otherwise, if the affected job was Archive()d (and not currently
+// being re-run), then it will be appended to (a copy of) the input job slice
+// and returned in jobsToQueue. If the affected job was in the live bucket
+// (currently queued), it will be returned in the jobsToUpdate slice: you should
+// use queue methods to update the job in the queue.
+func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
 	var encodedJobs sobsd
@@ -226,8 +230,23 @@ func (db *db) storeNewJobs(jobs []*Job) (jobsToQueue []*Job, jobsToUpdate []*Job
 	var rdgLookups sobsd
 	depGroups := make(map[string]bool)
 	newJobKeys := make(map[string]bool)
+	var keptJobs []*Job
 	for _, job := range jobs {
 		keyStr := job.key()
+
+		if ignoreAdded {
+			var added bool
+			added, err = db.checkIfAdded(keyStr)
+			if err != nil {
+				return
+			}
+			if added {
+				alreadyAdded++
+				continue
+			}
+			keptJobs = append(keptJobs, job)
+		}
+
 		newJobKeys[keyStr] = true
 		key := []byte(keyStr)
 
@@ -254,6 +273,10 @@ func (db *db) storeNewJobs(jobs []*Job) (jobsToQueue []*Job, jobsToUpdate []*Job
 	}
 
 	if len(encodedJobs) > 0 {
+		if !ignoreAdded {
+			keptJobs = jobs
+		}
+
 		// first determine if any of these new jobs are the parent of previously
 		// stored jobs
 		if len(depGroups) > 0 {
@@ -275,10 +298,10 @@ func (db *db) storeNewJobs(jobs []*Job) (jobsToQueue []*Job, jobsToUpdate []*Job
 			if len(jobsToQueue) > 0 {
 				jobsToQueue = append(jobsToQueue, jobs...)
 			} else {
-				jobsToQueue = jobs
+				jobsToQueue = keptJobs
 			}
 		} else {
-			jobsToQueue = jobs
+			jobsToQueue = keptJobs
 		}
 
 		// now go ahead and store the lookups and jobs
@@ -355,6 +378,20 @@ func (db *db) checkIfLive(key string) (isLive bool, err error) {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		if newJobBucket.Get([]byte(key)) != nil {
 			isLive = true
+		}
+		return nil
+	})
+	return
+}
+
+// checkIfAdded tells you if a job with the given key is currently in the
+// complete bucket or the live bucket.
+func (db *db) checkIfAdded(key string) (isInDB bool, err error) {
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		if newJobBucket.Get([]byte(key)) != nil || completeJobBucket.Get([]byte(key)) != nil {
+			isInDB = true
 		}
 		return nil
 	})

@@ -115,7 +115,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						// won't Remove the job that created the new jobs from the
 						// queue and when we recover, at worst the creating job will
 						// be run again - no jobs get lost.)
-						jobsToQueue, jobsToUpdate, err := s.db.storeNewJobs(cr.Jobs)
+						jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(cr.Jobs, cr.IgnoreComplete)
 						if err != nil {
 							srerr = ErrDBError
 							qerr = err.Error()
@@ -156,7 +156,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 									srerr = ErrInternalError
 									qerr = err.Error()
 								}
-								sr = &serverResponse{Added: added, Existed: dups}
+								sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
 							}
 						}
 					}
