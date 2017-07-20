@@ -116,7 +116,7 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 // to allow postCreationScripts passed to WaitUntilReady() to be run with sudo.
 // And we try to enable user_allow_other in fuse.conf to allow user mounts to
 // work.
-var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\ntouch " + sentinelFilePath)
+var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
 // we give up and return an error from Spawn().
@@ -127,9 +127,12 @@ var sentinelTimeOut = 10 * time.Minute
 var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
 // defaultCIDR is a useful range allowing 16382 servers to be spawned, with a
-// defaultGateWayIP at the start of that range
+// defaultGateWayIP at the start of that range.
 const defaultGateWayIP = "192.168.0.1"
 const defaultCIDR = "192.168.0.0/18"
+
+// touchStampFormat is the time format expected by `touch -t`.
+const touchStampFormat = "200601021504.05"
 
 // Error records an error and the operation and provider caused it.
 type Error struct {
@@ -224,6 +227,7 @@ type Server struct {
 	IP                string // ip address that you could SSH to
 	OS                string // the name of the Operating System image
 	UserName          string // the username needed to log in to the server
+	Script            []byte // the content of a start-up script run on the server
 	AdminPass         string
 	Flavor            Flavor
 	Disk              int           // GB of available disk space
@@ -238,6 +242,7 @@ type Server struct {
 	destroyed         bool
 	provider          *Provider
 	sshclient         *ssh.Client
+	location          *time.Location
 	debugMode         bool
 }
 
@@ -488,20 +493,42 @@ func (s *Server) UploadFile(source string, dest string) (err error) {
 // server. files argument is a comma separated list of local file paths.
 // Absolute paths are uploaded to the same absolute path on the server. Paths
 // beginning with ~/ are uploaded from the local home directory to the server's
-// home directory. If a specified local path does not exist, it is silently
-// ignored, allowing the specification of multiple possible config files when
-// you might only have one.
+// home directory.
+//
+// If local path and desired remote path are unrelated, the paths can be
+// separated with a colon.
+//
+// If a specified local path does not exist, it is silently ignored, allowing
+// the specification of multiple possible config files when you might only have
+// one. The mtimes of the files are retained.
 func (s *Server) CopyOver(files string) (err error) {
+	timezone, err := s.GetTimeZone()
+	if err != nil {
+		return
+	}
+
 	for _, path := range strings.Split(files, ",") {
+		split := strings.Split(path, ":")
+		var localPath, remotePath string
+		if len(split) == 2 {
+			localPath = split[0]
+			remotePath = split[1]
+		} else {
+			localPath = path
+			remotePath = path
+		}
+
 		// ignore if it doesn't exist locally
-		localPath := internal.TildaToHome(path)
-		if _, err := os.Stat(localPath); err != nil {
+		localPath = internal.TildaToHome(localPath)
+		var info os.FileInfo
+		info, err = os.Stat(localPath)
+		if err != nil {
+			err = nil
 			continue
 		}
 
-		remotePath := path
 		if strings.HasPrefix(remotePath, "~/") {
-			remotePath = strings.TrimLeft(path, "~/")
+			remotePath = strings.TrimLeft(remotePath, "~/")
 			remotePath = "./" + remotePath
 		}
 
@@ -517,7 +544,39 @@ func (s *Server) CopyOver(files string) (err error) {
 		if err != nil {
 			return
 		}
+
+		// sometimes the mtime of the file matters, so we try and set that on
+		// the remote copy
+		timestamp := info.ModTime().UTC().In(timezone).Format(touchStampFormat)
+		_, _, err = s.RunCmd(fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
+		if err != nil {
+			return
+		}
 	}
+	return
+}
+
+// GetTimeZone gets the server's time zone as a fixed time.Location in the fake
+// timezone 'SER'; you should only rely on the offset to convert times.
+func (s *Server) GetTimeZone() (location *time.Location, err error) {
+	if s.location != nil {
+		return s.location, nil
+	}
+
+	serverDate, _, err := s.RunCmd(`date +%z`, false)
+	if err != nil {
+		return
+	}
+	serverDate = strings.TrimSpace(serverDate)
+
+	t, err := time.Parse("-0700", serverDate)
+	if err != nil {
+		return
+	}
+	_, offset := t.Zone()
+
+	location = time.FixedZone("SER", offset)
+	s.location = location
 	return
 }
 
@@ -636,7 +695,8 @@ func (s *Server) Destroyed() bool {
 	return s.destroyed
 }
 
-// Alive tells you if a server is usable.
+// Alive tells you if a server is usable. It first does the same check as
+// Destroyed() before calling out to the provider.
 func (s *Server) Alive() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -943,6 +1003,12 @@ SENTINEL:
 		}
 
 		s.RunCmd("rm "+pcsPath, false)
+
+		s.Script = postCreationScript[0]
+
+		// because the postCreationScript may have altered PATH and other things
+		// that subsequent RunCmd may rely on, clear the client
+		s.sshclient = nil
 	}
 
 	return

@@ -121,7 +121,7 @@ complete.`,
 
 			// see if we have enough time left to run this
 			if time.Now().Add(job.Requirements.Time).After(endTime) {
-				jq.Release(job, job.FailReason, 0*time.Second)
+				jq.Release(job, job.FailReason)
 				exitReason = "we're about to hit our maximum time limit"
 				break
 			}

@@ -27,15 +27,26 @@ import (
 	"time"
 )
 
+// ItemState is how we describe the possible item states.
+type ItemState string
+
+// ItemState* constants represent all the possible item states.
+const (
+	ItemStateDelay     ItemState = "delay"
+	ItemStateReady     ItemState = "ready"
+	ItemStateRun       ItemState = "run"
+	ItemStateBury      ItemState = "bury"
+	ItemStateDependent ItemState = "dependent"
+	ItemStateRemoved   ItemState = "removed"
+)
+
 // Item holds the information about each item in our queue, and has thread-safe
-// functions to update properties as we switch between sub-queues. The 'state'
-// property can have one of the values 'delay', 'ready', 'run', 'bury',
-// 'removed' or 'dependent'.
+// functions to update properties as we switch between sub-queues.
 type Item struct {
 	Key           string
 	ReserveGroup  string
 	Data          interface{}
-	state         string
+	state         ItemState
 	reserves      uint32
 	timeouts      uint32
 	releases      uint32
@@ -53,14 +64,13 @@ type Item struct {
 	queueIndexes  [5]int
 }
 
-// ItemStats holds information about the Item's state. The 'state' property can
-// have one of the values 'delay', 'ready', 'run', 'bury', 'removed' or
-// 'dependent'. Remaining is the time remaining in the current sub-queue. This
-// will be a duration of zero for all but the delay and run states. In the delay
-// state it tells you how long before it can be reserved, and in the run state
-// it tells you how long before it will be released automatically.
+// ItemStats holds information about the Item's state. Remaining is the time
+// remaining in the current sub-queue. This will be a duration of zero for all
+// but the delay and run states. In the delay state it tells you how long before
+// it can be reserved, and in the run state it tells you how long before it will
+// be released automatically.
 type ItemStats struct {
-	State     string
+	State     ItemState
 	Reserves  uint32
 	Timeouts  uint32
 	Releases  uint32
@@ -78,7 +88,7 @@ func newItem(key string, reserveGroup string, data interface{}, priority uint8, 
 		Key:          key,
 		ReserveGroup: reserveGroup,
 		Data:         data,
-		state:        "delay",
+		state:        ItemStateDelay,
 		reserves:     0,
 		timeouts:     0,
 		releases:     0,
@@ -98,9 +108,9 @@ func (item *Item) Stats() *ItemStats {
 	defer item.mutex.RUnlock()
 	age := time.Since(item.creation)
 	var remaining time.Duration
-	if item.state == "delay" {
+	if item.state == ItemStateDelay {
 		remaining = item.readyAt.Sub(time.Now())
-	} else if item.state == "run" {
+	} else if item.state == ItemStateRun {
 		remaining = item.releaseAt.Sub(time.Now())
 	} else {
 		remaining = time.Duration(0) * time.Second
@@ -163,7 +173,7 @@ func (item *Item) resolveDependency(key string) bool {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	delete(item.remainingDeps, key)
-	if item.state == "dependent" {
+	if item.state == ItemStateDependent {
 		return len(item.remainingDeps) == 0
 	}
 	return false
@@ -208,7 +218,7 @@ func (item *Item) switchDelayReady() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[0] = -1
 	item.readyAt = time.Time{}
-	item.state = "ready"
+	item.state = ItemStateReady
 }
 
 // update after we've switched from the delay to the dependent sub-queue
@@ -217,7 +227,7 @@ func (item *Item) switchDelayDependent() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[0] = -1
 	item.readyAt = time.Time{}
-	item.state = "dependent"
+	item.state = ItemStateDependent
 }
 
 // update after we've switched from the dependent to the ready sub-queue
@@ -225,7 +235,7 @@ func (item *Item) switchDependentReady() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[4] = -1
-	item.state = "ready"
+	item.state = ItemStateReady
 }
 
 // update after we've switched from the ready to the run sub-queue
@@ -234,7 +244,7 @@ func (item *Item) switchReadyRun() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[1] = -1
 	item.reserves++
-	item.state = "run"
+	item.state = ItemStateRun
 }
 
 // update after we've switched from the ready to the dependent sub-queue
@@ -242,7 +252,7 @@ func (item *Item) switchReadyDependent() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[1] = -1
-	item.state = "dependent"
+	item.state = ItemStateDependent
 }
 
 // update after we've switched from the run to the ready sub-queue
@@ -252,27 +262,34 @@ func (item *Item) switchRunReady() {
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 	item.timeouts++
-	item.state = "ready"
+	item.state = ItemStateReady
 }
 
 // update after we've switched from the run to the delay sub-queue
-func (item *Item) switchRunDelay() {
+func (item *Item) switchRunDelay(timedOut ...bool) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
-	item.releases++
-	item.state = "delay"
+	if len(timedOut) == 1 && timedOut[0] {
+		item.timeouts++
+	} else {
+		item.releases++
+	}
+	item.state = ItemStateDelay
 }
 
 // update after we've switched from the run to the bury sub-queue
-func (item *Item) switchRunBury() {
+func (item *Item) switchRunBury(timedOut ...bool) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
+	if len(timedOut) == 1 && timedOut[0] {
+		item.timeouts++
+	}
 	item.buries++
-	item.state = "bury"
+	item.state = ItemStateBury
 }
 
 // update after we've switched from the run to the dependent sub-queue
@@ -282,7 +299,7 @@ func (item *Item) switchRunDependent() {
 	item.queueIndexes[2] = -1
 	item.releaseAt = time.Time{}
 	item.releases++
-	item.state = "dependent"
+	item.state = ItemStateDependent
 }
 
 // update after we've switched from the bury to the ready sub-queue
@@ -291,7 +308,7 @@ func (item *Item) switchBuryReady() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[3] = -1
 	item.kicks++
-	item.state = "ready"
+	item.state = ItemStateReady
 }
 
 // update after we've switched from the bury to the dependent sub-queue
@@ -300,7 +317,7 @@ func (item *Item) switchBuryDependent() {
 	defer item.mutex.Unlock()
 	item.queueIndexes[3] = -1
 	item.kicks++
-	item.state = "dependent"
+	item.state = ItemStateDependent
 }
 
 // once removed from its queue, we clear out various properties just in case
@@ -314,5 +331,5 @@ func (item *Item) removalCleanup() {
 	item.readyAt = time.Time{}
 	item.queueIndexes[3] = -1
 	item.queueIndexes[4] = -1
-	item.state = "removed"
+	item.state = ItemStateRemoved
 }

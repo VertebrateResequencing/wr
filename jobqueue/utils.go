@@ -266,21 +266,26 @@ func minInt(a, b int) int {
 // must finish reading from the input before continuing, it returns a channel
 // that you should wait to receive something from.
 func stdFilter(std io.Reader, out io.Writer) chan bool {
-	scanner := bufio.NewScanner(std)
+	reader := bufio.NewReader(std)
 	done := make(chan bool)
 	go func() {
-		for scanner.Scan() {
-			p := scanner.Bytes()
+		for {
+			p, err := reader.ReadBytes('\n')
+
 			lines := bytes.Split(p, cr)
 			out.Write(lines[0])
-			if len(lines) > 1 {
+			if len(lines) > 2 {
 				out.Write(lf)
-				if len(lines) > 2 {
+				if len(lines) > 3 {
 					out.Write(ellipses)
 				}
-				out.Write(lines[len(lines)-1])
+				out.Write(lines[len(lines)-2])
+				out.Write(lf)
 			}
-			out.Write(lf)
+
+			if err != nil {
+				break
+			}
 		}
 		done <- true
 	}()
@@ -320,9 +325,36 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
 	dirs = append([]string{baseDir, AppName + "_cwd"}, dirs...)
 	dir := filepath.Join(dirs...)
-	err = os.MkdirAll(dir, os.ModePerm)
-	if err != nil {
-		return
+	holdFile := filepath.Join(dir, ".hold")
+	defer os.Remove(holdFile)
+	tries := 0
+	for {
+		err = os.MkdirAll(dir, os.ModePerm)
+		if err != nil {
+			tries++
+			if tries <= 3 {
+				// we retry a few times in case another process is calling
+				// rmEmptyDirs on the same baseDir and so conflicting with us
+				continue
+			}
+			return
+		}
+
+		// and drop a temp file in here so rmEmptyDirs will not immediately
+		// remove these dirs
+		tries = 0
+		var f *os.File
+		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0666)
+		if err != nil {
+			tries++
+			if tries <= 3 {
+				continue
+			}
+			return
+		}
+		f.Close()
+
+		break
 	}
 
 	// if tohash is a job key then we expect that only 1 of that job is

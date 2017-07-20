@@ -25,7 +25,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tcp"
@@ -37,6 +39,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,11 +58,52 @@ const (
 	FailReasonRAM      = "command used too much RAM"
 	FailReasonTime     = "command used too much time"
 	FailReasonAbnormal = "command failed to complete normally"
+	FailReasonRelease  = "lost contact with runner"
 	FailReasonSignal   = "runner received a signal to stop"
 	FailReasonResource = "resource requirements cannot be met"
 	FailReasonMount    = "mounting of remote file system(s) failed"
 	FailReasonUpload   = "failed to upload files to remote file system"
 )
+
+// JobState is how we describe the possible job states.
+type JobState string
+
+// JobState* constants represent all the possible job states. The fake "new"
+// and "deleted" states are for the benefit of the web interface (jstateCount).
+// "unknown" is an error case that shouldn't happen.
+const (
+	JobStateNew       JobState = "new"
+	JobStateDelayed   JobState = "delayed"
+	JobStateReady     JobState = "ready"
+	JobStateReserved  JobState = "reserved"
+	JobStateRunning   JobState = "running"
+	JobStateBuried    JobState = "buried"
+	JobStateDependent JobState = "dependent"
+	JobStateComplete  JobState = "complete"
+	JobStateDeleted   JobState = "deleted"
+	JobStateUnknown   JobState = "unknown"
+)
+
+// subqueueToJobState converts queue.SubQueue entries to JobStates.
+var subqueueToJobState = map[queue.SubQueue]JobState{
+	queue.SubQueueNew:       JobStateNew,
+	queue.SubQueueDelay:     JobStateDelayed,
+	queue.SubQueueReady:     JobStateReady,
+	queue.SubQueueRun:       JobStateRunning,
+	queue.SubQueueBury:      JobStateBuried,
+	queue.SubQueueDependent: JobStateDependent,
+	queue.SubQueueRemoved:   JobStateComplete,
+}
+
+// itemsStateToJobState converts queue.ItemState entries to JobStates.
+var itemsStateToJobState = map[queue.ItemState]JobState{
+	queue.ItemStateDelay:     JobStateDelayed,
+	queue.ItemStateReady:     JobStateReady,
+	queue.ItemStateRun:       JobStateReserved,
+	queue.ItemStateBury:      JobStateBuried,
+	queue.ItemStateDependent: JobStateDependent,
+	queue.ItemStateRemoved:   JobStateComplete,
+}
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
@@ -77,11 +121,13 @@ var (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
+	User           string
 	ClientID       uuid.UUID
 	Method         string
 	Queue          string
 	Jobs           []*Job
 	Job            *Job
+	IgnoreComplete bool
 	Keys           []string
 	Timeout        time.Duration
 	SchedulerGroup string
@@ -89,7 +135,7 @@ type clientRequest struct {
 	GetStd         bool
 	GetEnv         bool
 	Limit          int
-	State          string
+	State          JobState
 	FirstReserve   bool
 }
 
@@ -218,7 +264,7 @@ type Job struct {
 	EnvOverride []byte
 	// job's state in the queue: 'delayed', 'ready', 'reserved', 'running',
 	// 'buried', 'complete' or 'dependent'.
-	State string
+	State JobState
 	// number of times the job had ever entered 'running' state.
 	Attempts uint32
 	// remaining number of Release()s allowed before being buried instead.
@@ -253,7 +299,7 @@ type Job struct {
 // time taken so far if it is currently running.
 func (j *Job) WallTime() (d time.Duration) {
 	if !j.StartTime.IsZero() {
-		if j.EndTime.IsZero() || j.State == "reserved" {
+		if j.EndTime.IsZero() || j.State == JobStateReserved {
 			d = time.Since(j.StartTime)
 		} else {
 			d = j.EndTime.Sub(j.StartTime)
@@ -276,6 +322,9 @@ type JobEssence struct {
 
 	// Cwd should only be set if the Job was created with CwdMatters = true.
 	Cwd string
+
+	// Mounts should only be set if the Job was created with Mounts
+	MountConfigs MountConfigs
 }
 
 // Key returns the same value that key() on the matching Job would give you.
@@ -284,13 +333,10 @@ func (j *JobEssence) Key() string {
 		return j.JobKey
 	}
 
-	var key string
-	if j.Cwd == "" {
-		key = j.Cmd
-	} else {
-		key = fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)
+	if j.Cwd != "" {
+		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
-	return byteKey([]byte(key))
+	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
 }
 
 // Stringify returns a nice printable form of a JobEssence.
@@ -524,6 +570,48 @@ func (mcs MountConfigs) String() string {
 	return string(b)
 }
 
+// Key returns a string representation of the most critical parts of the config
+// that would make it different from other MountConfigs in practical terms of
+// what files are accessible from where: only Mount, Target.Profile and
+// Target.Path are considered. The order of Targets (but not of MountConfig) is
+// considered as well.
+func (mcs MountConfigs) Key() string {
+	if len(mcs) == 0 {
+		return ""
+	}
+
+	// sort mcs first, since the order doesn't affect what files are available
+	// where
+	if len(mcs) > 1 {
+		sort.Slice(mcs, func(i, j int) bool {
+			return mcs[i].Mount < mcs[j].Mount
+		})
+	}
+
+	var key bytes.Buffer
+	for _, mc := range mcs {
+		mount := mc.Mount
+		if mount == "" {
+			mount = "mnt"
+		}
+		key.WriteString(mount)
+		key.WriteString(":")
+
+		for _, t := range mc.Targets {
+			profile := t.Profile
+			if profile == "" {
+				profile = "default"
+			}
+			key.WriteString(profile)
+			key.WriteString("-")
+			key.WriteString(t.Path)
+			key.WriteString(";")
+		}
+	}
+
+	return key.String()
+}
+
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue.
 type Client struct {
@@ -531,6 +619,7 @@ type Client struct {
 	queue       string
 	ch          codec.Handle
 	clientid    uuid.UUID
+	user        string
 	hasReserved bool
 	sync.Mutex
 }
@@ -545,6 +634,16 @@ type envStr struct {
 // not only while connecting, but for all subsequent interactions with it using
 // the returned Client.
 func Connect(addr string, queue string, timeout time.Duration) (c *Client, err error) {
+	// a server is only allowed to be accessed by a particular user, so we get
+	// our username here. NB: *** this is not real security, since someone could
+	// just recompile with the following line altered to a hardcoded username
+	// value; it is only intended to prevent accidental use of someone else's
+	// server
+	user, err := internal.Username()
+	if err != nil {
+		return
+	}
+
 	sock, err := req.NewSocket()
 	if err != nil {
 		return
@@ -571,15 +670,19 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	// since speed doesn't matter: a typical client executable will only
 	// Connect() once; on the other hand, we avoid any possible problem with
 	// running on machines with low time resolution
-	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), clientid: uuid.NewV4()}
+	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: uuid.NewV4()}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
-	ok := c.Ping(timeout)
-	if !ok {
+	err = c.Ping(timeout)
+	if err != nil {
 		sock.Close()
 		c = nil
-		err = Error{queue, "Connect", "", ErrNoServer}
+		msg := ErrNoServer
+		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
+			msg = ErrWrongUser
+		}
+		err = Error{queue, "Connect", "", msg}
 	}
 
 	return
@@ -591,13 +694,11 @@ func (c *Client) Disconnect() {
 	c.sock.Close()
 }
 
-// Ping tells you if your connection to the server is working.
-func (c *Client) Ping(timeout time.Duration) bool {
-	_, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
-	if err != nil {
-		return false
-	}
-	return true
+// Ping tells you if your connection to the server is working. If err is nil,
+// it works.
+func (c *Client) Ping(timeout time.Duration) (err error) {
+	_, err = c.request(&clientRequest{Method: "ping", Timeout: timeout})
+	return
 }
 
 // DrainServer tells the server to stop spawning new runners, stop letting
@@ -662,13 +763,14 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 // Note that if you add jobs to the queue that were previously added, Execute()d
 // and were successfully Archive()d, the existed count will be 0 and the jobs
 // will be treated like new ones, though when Archive()d again, the new Job will
-// replace the old one in the database.
+// replace the old one in the database. To have such jobs skipped as "existed"
+// instead, supply ignoreComplete as true.
 //
 // The envVars argument is a slice of ("key=value") strings with the environment
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
-func (c *Client) Add(jobs []*Job, envVars []string) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars)})
+func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added int, existed int, err error) {
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars), IgnoreComplete: ignoreComplete})
 	if err != nil {
 		return
 	}
@@ -869,7 +971,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
-		c.Release(job, FailReasonStart, ClientReleaseDelay)
+		c.Release(job, FailReasonStart)
 		job.Unmount(true)
 		return fmt.Errorf("could not start command [%s]: %s", jc, err)
 	}
@@ -898,6 +1000,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	ranoutMem := false
 	ranoutTime := false
 	signalled := false
+	stopChecking := make(chan bool, 1)
 	go func() {
 		for {
 			select {
@@ -934,6 +1037,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 						return
 					}
 				}
+			case <-stopChecking:
+				return
 			}
 		}
 	}()
@@ -944,6 +1049,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Wait()
 	ticker.Stop()
 	memTicker.Stop()
+	stopChecking <- true
 
 	// we could get the max rss from ProcessState.SysUsage, but we'll stick with
 	// our better (?) pss-based Peakmem, unless the command exited so quickly
@@ -1031,6 +1137,26 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	finalStdErr := bytes.TrimSpace(stderr.Bytes())
 
+	// behaviours/ unmounting may take some time we need to make sure to keep
+	// touching
+	ticker = time.NewTicker(ClientTouchInterval)
+	stopChecking = make(chan bool, 1)
+	go func() {
+		for {
+			select {
+			case <-sigs:
+				return
+			case <-ticker.C:
+				err := c.Touch(job)
+				if err != nil {
+					return
+				}
+			case <-stopChecking:
+				return
+			}
+		}
+	}()
+
 	// run behaviours
 	berr := job.TriggerBehaviours(myerr == nil)
 	if berr != nil {
@@ -1053,6 +1179,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 			if failreason == "" {
 				failreason = FailReasonUpload
 			}
+			if exitcode == 0 {
+				exitcode = -2
+			}
 		}
 
 		if myerr != nil {
@@ -1061,6 +1190,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 			myerr = unmountErr
 		}
 	}
+	ticker.Stop()
+	stopChecking <- true
 
 	if addMountLogs && logs != "" {
 		finalStdErr = append(finalStdErr, "\n\nMount logs:\n"...)
@@ -1089,7 +1220,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if dobury {
 		err = c.Bury(job, failreason)
 	} else if dorelease {
-		err = c.Release(job, failreason, ClientReleaseDelay) // which buries after job.Retries fails in a row
+		err = c.Release(job, failreason) // which buries after job.Retries fails in a row
 	} else if doarchive {
 		err = c.Archive(job)
 	}
@@ -1148,7 +1279,7 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 func (c *Client) Archive(job *Job) (err error) {
 	_, err = c.request(&clientRequest{Method: "jarchive", Job: job})
 	if err == nil {
-		job.State = "complete"
+		job.State = JobStateComplete
 	}
 	return
 }
@@ -1156,15 +1287,13 @@ func (c *Client) Archive(job *Job) (err error) {
 // Release places a job back on the jobqueue, for use when you can't handle the
 // job right now (eg. there was a suspected transient error) but maybe someone
 // else can later. Note that you must reserve a job before you can release it.
-// The delay arg is the duration to wait after your call to Release() before
-// anyone else can Reserve() this job again - could help you stop immediately
-// Reserve()ing the job again yourself. You can only Release() the same job as
-// many times as its Retries value if it has been run and failed; a subsequent
-// call to Release() will instead result in a Bury(). (If the job's Cmd was not
-// run, you can Release() an unlimited number of times.)
-func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err error) {
+// You can only Release() the same job as many times as its Retries value if it
+// has been run and failed; a subsequent call to Release() will instead result
+// in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
+// number of times.)
+func (c *Client) Release(job *Job, failreason string) (err error) {
 	job.FailReason = failreason
-	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, Timeout: delay})
+	_, err = c.request(&clientRequest{Method: "jrelease", Job: job})
 	if err == nil {
 		// update our process with what the server would have done
 		if job.Exited && job.Exitcode != 0 {
@@ -1172,9 +1301,9 @@ func (c *Client) Release(job *Job, failreason string, delay time.Duration) (err 
 			job.updateRecsAfterFailure()
 		}
 		if job.UntilBuried <= 0 {
-			job.State = "buried"
+			job.State = JobStateBuried
 		} else {
-			job.State = "delayed"
+			job.State = JobStateDelayed
 		}
 	}
 	return
@@ -1191,7 +1320,7 @@ func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) 
 	}
 	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
 	if err == nil {
-		job.State = "buried"
+		job.State = JobStateBuried
 	}
 	return
 }
@@ -1268,7 +1397,7 @@ func (c *Client) jesToKeys(jes []*JobEssence) (keys []string) {
 // number of other excluded jobs there were in that group. Providing 'state'
 // only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
 // stdout, stderr and environement variables for the Jobs.
-func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
+func (c *Client) GetByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
@@ -1280,7 +1409,7 @@ func (c *Client) GetByRepGroup(repgroup string, limit int, state string, getStd 
 // GetIncomplete gets all Jobs that are currently in the jobqueue, ie. excluding
 // those that are complete and have been Archive()d. The args are as in
 // GetByRepGroup().
-func (c *Client) GetIncomplete(limit int, state string, getStd bool, getEnv bool) (jobs []*Job, err error) {
+func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, err error) {
 	resp, err := c.request(&clientRequest{Method: "getin", Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return
@@ -1467,9 +1596,26 @@ func (j *Job) Mount() error {
 			j.Unmount()
 			return err
 		}
-		fs.UnmountOnDeath()
+
+		// (we can't use each fs.UnmountOnDeath() function because that tries
+		// to upload, but if we get killed we don't want that)
 
 		j.mountedFS = append(j.mountedFS, fs)
+	}
+
+	// unmount all on death without trying to upload
+	if len(j.mountedFS) > 0 {
+		deathSignals := make(chan os.Signal, 2)
+		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			select {
+			case <-deathSignals:
+				for _, fs := range j.mountedFS {
+					fs.Unmount(true)
+				}
+				return
+			}
+		}()
 	}
 
 	return nil
@@ -1553,9 +1699,9 @@ func (j *Job) updateRecsAfterFailure() {
 // key calculates a unique key to describe the job.
 func (j *Job) key() string {
 	if j.CwdMatters {
-		return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cwd, j.Cmd)))
+		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
-	return byteKey([]byte(j.Cmd))
+	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
 }
 
 // request the server do something and get back its response. We can only cope
@@ -1569,6 +1715,7 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
 	cr.Queue = c.queue
+	cr.User = c.user
 	cr.ClientID = c.clientid
 	err = enc.Encode(cr)
 	if err != nil {

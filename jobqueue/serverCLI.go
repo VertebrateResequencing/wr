@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the command line interface code of the server.
 
 import (
+	"fmt"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/satori/go.uuid"
@@ -45,303 +46,324 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	var srerr string
 	var qerr string
 
-	switch cr.Method {
-	case "ping":
-		// do nothing - not returning an error to client means ping success
-	case "sstats":
-		sr = &serverResponse{SStats: s.GetServerStats()}
-	case "drain":
-		err := s.Drain()
-		if err != nil {
-			srerr = ErrInternalError
-			qerr = err.Error()
-		} else {
+	// check that the client making the request has the expected username; NB:
+	// *** this is not real security, since the client could just lie about its
+	// username! Right now this is intended to stop accidental use of someone
+	// else's jobqueue server
+	if cr.User == "" || !s.allowedUsers[cr.User] {
+		srerr = ErrWrongUser
+		qerr = fmt.Sprintf("User %s denied access (only %s allowed)", cr.User, s.ServerInfo.AllowedUsers)
+	} else {
+		switch cr.Method {
+		case "ping":
+			// do nothing - not returning an error to client means ping success
+		case "sstats":
 			sr = &serverResponse{SStats: s.GetServerStats()}
-		}
-	case "shutdown":
-		err := s.Stop()
-		if err != nil {
-			srerr = ErrInternalError
-			qerr = err.Error()
-		}
-	case "add":
-		// add jobs to the queue, and along side keep the environment variables
-		// they're supposed to execute under.
-		if cr.Env == nil || cr.Jobs == nil {
-			srerr = ErrBadRequest
-		} else {
-			// Store Env
-			envkey, err := s.db.storeEnv(cr.Env)
+		case "drain":
+			err := s.Drain()
 			if err != nil {
-				srerr = ErrDBError
+				srerr = ErrInternalError
 				qerr = err.Error()
 			} else {
-				if srerr == "" {
-					// create itemdefs for the jobs
-					for _, job := range cr.Jobs {
-						job.EnvKey = envkey
-						job.UntilBuried = job.Retries + 1
-						job.Queue = cr.Queue
-					}
-
-					// keep an on-disk record of these new jobs; we sacrifice a
-					// lot of speed by waiting on this database write to persist
-					// to disk. The alternative would be to return success to
-					// the client as soon as the jobs were in the in-memory
-					// queue, then lazily persist to disk in a goroutine, but we
-					// must guarantee that jobs are never lost or a workflow
-					// could hopelessly break if the server node goes down
-					// between returning success and the write to disk
-					// succeeding. (If we don't return success to the client, it
-					// won't Remove the job that created the new jobs from the
-					// queue and when we recover, at worst the creating job will
-					// be run again - no jobs get lost.)
-					jobsToQueue, jobsToUpdate, err := s.db.storeNewJobs(cr.Jobs)
-					if err != nil {
-						srerr = ErrDBError
-						qerr = err.Error()
-					} else {
-						// now that jobs are in the db we can get dependencies
-						// fully, so now we can build our itemdefs *** we really
-						// need to test for cycles, because if the user creates
-						// one, we won't let them delete the bad jobs!
-						// storeNewJobs() returns jobsToQueue, which is all of
-						// cr.Jobs plus any previously Archive()d jobs that were
-						// resurrected because of one of their DepGroup
-						// dependencies being in cr.Jobs
-						var itemdefs []*queue.ItemDef
-						for _, job := range jobsToQueue {
-							itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.schedulerGroup, Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
-						}
-
-						// storeNewJobs also returns jobsToUpdate, which are
-						// those jobs currently in the queue that need their
-						// dependencies updated because they just changed when
-						// we stored cr.Jobs
-						var updateErr error
-						for _, job := range jobsToUpdate {
-							thisErr := q.Update(job.key(), job.schedulerGroup, job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
-							if thisErr != nil {
-								updateErr = thisErr
-								break
-							}
-						}
-
-						if updateErr != nil {
-							srerr = ErrInternalError
-							qerr = updateErr.Error()
-						} else {
-							// add the jobs to the in-memory job queue
-							added, dups, err := s.enqueueItems(q, itemdefs)
-							if err != nil {
-								srerr = ErrInternalError
-								qerr = err.Error()
-							}
-							sr = &serverResponse{Added: added, Existed: dups}
-						}
-					}
-				}
+				sr = &serverResponse{SStats: s.GetServerStats()}
 			}
-		}
-	case "reserve":
-		// return the next ready job
-		if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
-			srerr = ErrBadRequest
-		} else if !s.drain {
-			// first just try to Reserve normally
-			var item *queue.Item
-			var err error
-			if cr.SchedulerGroup != "" {
-				// if this is the first job that the client is trying to
-				// reserve, and if we don't actually want any more clients
-				// working on this schedulerGroup, we'll just act as if nothing
-				// was ready. Likewise if in drain mode.
-				skip := false
-				if cr.FirstReserve && s.rc != "" {
-					s.sgcmutex.Lock()
-					if count, existed := s.sgroupcounts[cr.SchedulerGroup]; !existed || count == 0 {
-						skip = true
-					}
-					s.sgcmutex.Unlock()
-				}
-
-				if !skip {
-					item, err = q.Reserve(cr.SchedulerGroup)
-				}
-			} else {
-				item, err = q.Reserve()
-			}
-
-			if err != nil {
-				if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-					// there's nothing in the ready sub queue right now, so every
-					// second try and Reserve() from the queue until either we get
-					// an item, or we exceed the client's timeout
-					var stop <-chan time.Time
-					if cr.Timeout.Nanoseconds() > 0 {
-						stop = time.After(cr.Timeout)
-					} else {
-						stop = make(chan time.Time)
-					}
-
-					itemerrch := make(chan *itemErr, 1)
-					ticker := time.NewTicker(ServerReserveTicker)
-					go func() {
-						for {
-							select {
-							case <-ticker.C:
-								item, err := q.Reserve(cr.SchedulerGroup)
-								if err != nil {
-									if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-										continue
-									}
-									ticker.Stop()
-									if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
-										itemerrch <- &itemErr{err: ErrQueueClosed}
-									} else {
-										itemerrch <- &itemErr{err: ErrInternalError}
-									}
-									return
-								}
-								ticker.Stop()
-								itemerrch <- &itemErr{item: item}
-								return
-							case <-stop:
-								ticker.Stop()
-								// if we time out, we'll return nil job and nil err
-								itemerrch <- &itemErr{}
-								return
-							}
-						}
-					}()
-					itemerr := <-itemerrch
-					close(itemerrch)
-					item = itemerr.item
-					srerr = itemerr.err
-				}
-			}
-			if srerr == "" && item != nil {
-				// clean up any past state to have a fresh job ready to run
-				sjob := item.Data.(*Job)
-				sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
-				sjob.Exited = false
-				sjob.Pid = 0
-				sjob.Host = ""
-				var tnil time.Time
-				sjob.StartTime = tnil
-				sjob.EndTime = tnil
-				sjob.PeakRAM = 0
-				sjob.Exitcode = -1
-
-				// make a copy of the job with some extra stuff filled in (that
-				// we don't want taking up memory here) for the client
-				job := s.itemToJob(item, false, true)
-				sr = &serverResponse{Job: job}
-			}
-		} // else we'll return nothing, as if there were no jobs in the queue
-	case "jstart":
-		// update the job's cmd-started-related properties
-		var job *Job
-		_, job, srerr = s.getij(cr, q)
-		if srerr == "" {
-			if cr.Job.Pid <= 0 || cr.Job.Host == "" {
-				srerr = ErrBadRequest
-			} else {
-				job.Pid = cr.Job.Pid
-				job.Host = cr.Job.Host
-				job.StartTime = time.Now()
-				var tend time.Time
-				job.EndTime = tend
-				job.Attempts++
-			}
-		}
-	case "jtouch":
-		// update the job's ttr
-		var item *queue.Item
-		item, _, srerr = s.getij(cr, q)
-		if srerr == "" {
-			err = q.Touch(item.Key)
+		case "shutdown":
+			err := s.Stop()
 			if err != nil {
 				srerr = ErrInternalError
 				qerr = err.Error()
 			}
-		}
-	case "jend":
-		// update the job's cmd-ended-related properties
-		var job *Job
-		_, job, srerr = s.getij(cr, q)
-		if srerr == "" {
-			job.Exited = true
-			job.Exitcode = cr.Job.Exitcode
-			job.PeakRAM = cr.Job.PeakRAM
-			job.CPUtime = cr.Job.CPUtime
-			job.EndTime = time.Now()
-			job.ActualCwd = cr.Job.ActualCwd
-			s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, false)
-		}
-	case "jarchive":
-		// remove the job from the queue, rpl and live bucket and add to
-		// complete bucket
-		var item *queue.Item
-		var job *Job
-		item, job, srerr = s.getij(cr, q)
-		if srerr == "" {
-			// first check the item is still in the run queue (eg. the job
-			// wasn't released by another process; unlike the other methods,
-			// queue package does not check we're in the run queue when
-			// Remove()ing, since you can remove from any queue)
-			if running := item.Stats().State == "run"; !running {
-				srerr = ErrBadJob
-			} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
-				// the job must also have gone through jend
+		case "add":
+			// add jobs to the queue, and along side keep the environment variables
+			// they're supposed to execute under.
+			if cr.Env == nil || cr.Jobs == nil {
 				srerr = ErrBadRequest
 			} else {
-				key := job.key()
-				job.State = "complete"
-				job.FailReason = ""
-				err := s.db.archiveJob(key, job)
+				// Store Env
+				envkey, err := s.db.storeEnv(cr.Env)
 				if err != nil {
 					srerr = ErrDBError
 					qerr = err.Error()
 				} else {
-					err = q.Remove(key)
+					if srerr == "" {
+						// create itemdefs for the jobs
+						for _, job := range cr.Jobs {
+							job.EnvKey = envkey
+							job.UntilBuried = job.Retries + 1
+							job.Queue = cr.Queue
+
+							// in cloud deployments we may bring up a server running an
+							// operating system with a different username, which we must
+							// allow access to ourselves
+							if user, set := job.Requirements.Other["cloud_user"]; set {
+								if _, allowed := s.allowedUsers[user]; !allowed {
+									s.allowedUsers[user] = true
+									s.ServerInfo.AllowedUsers = append(s.ServerInfo.AllowedUsers, user)
+								}
+							}
+						}
+
+						// keep an on-disk record of these new jobs; we sacrifice a
+						// lot of speed by waiting on this database write to persist
+						// to disk. The alternative would be to return success to
+						// the client as soon as the jobs were in the in-memory
+						// queue, then lazily persist to disk in a goroutine, but we
+						// must guarantee that jobs are never lost or a workflow
+						// could hopelessly break if the server node goes down
+						// between returning success and the write to disk
+						// succeeding. (If we don't return success to the client, it
+						// won't Remove the job that created the new jobs from the
+						// queue and when we recover, at worst the creating job will
+						// be run again - no jobs get lost.)
+						jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(cr.Jobs, cr.IgnoreComplete)
+						if err != nil {
+							srerr = ErrDBError
+							qerr = err.Error()
+						} else {
+							// now that jobs are in the db we can get dependencies
+							// fully, so now we can build our itemdefs *** we really
+							// need to test for cycles, because if the user creates
+							// one, we won't let them delete the bad jobs!
+							// storeNewJobs() returns jobsToQueue, which is all of
+							// cr.Jobs plus any previously Archive()d jobs that were
+							// resurrected because of one of their DepGroup
+							// dependencies being in cr.Jobs
+							var itemdefs []*queue.ItemDef
+							for _, job := range jobsToQueue {
+								itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.schedulerGroup, Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+							}
+
+							// storeNewJobs also returns jobsToUpdate, which are
+							// those jobs currently in the queue that need their
+							// dependencies updated because they just changed when
+							// we stored cr.Jobs
+							var updateErr error
+							for _, job := range jobsToUpdate {
+								thisErr := q.Update(job.key(), job.schedulerGroup, job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
+								if thisErr != nil {
+									updateErr = thisErr
+									break
+								}
+							}
+
+							if updateErr != nil {
+								srerr = ErrInternalError
+								qerr = updateErr.Error()
+							} else {
+								// add the jobs to the in-memory job queue
+								added, dups, err := s.enqueueItems(q, itemdefs)
+								if err != nil {
+									srerr = ErrInternalError
+									qerr = err.Error()
+								}
+								sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+							}
+						}
+					}
+				}
+			}
+		case "reserve":
+			// return the next ready job
+			if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
+				srerr = ErrBadRequest
+			} else if !s.drain {
+				// first just try to Reserve normally
+				var item *queue.Item
+				var err error
+				if cr.SchedulerGroup != "" {
+					// if this is the first job that the client is trying to
+					// reserve, and if we don't actually want any more clients
+					// working on this schedulerGroup, we'll just act as if nothing
+					// was ready. Likewise if in drain mode.
+					skip := false
+					if cr.FirstReserve && s.rc != "" {
+						s.sgcmutex.Lock()
+						if count, existed := s.sgroupcounts[cr.SchedulerGroup]; !existed || count == 0 {
+							skip = true
+						}
+						s.sgcmutex.Unlock()
+					}
+
+					if !skip {
+						item, err = q.Reserve(cr.SchedulerGroup)
+					}
+				} else {
+					item, err = q.Reserve()
+				}
+
+				if err != nil {
+					if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
+						// there's nothing in the ready sub queue right now, so every
+						// second try and Reserve() from the queue until either we get
+						// an item, or we exceed the client's timeout
+						var stop <-chan time.Time
+						if cr.Timeout.Nanoseconds() > 0 {
+							stop = time.After(cr.Timeout)
+						} else {
+							stop = make(chan time.Time)
+						}
+
+						itemerrch := make(chan *itemErr, 1)
+						ticker := time.NewTicker(ServerReserveTicker)
+						go func() {
+							for {
+								select {
+								case <-ticker.C:
+									item, err := q.Reserve(cr.SchedulerGroup)
+									if err != nil {
+										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
+											continue
+										}
+										ticker.Stop()
+										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
+											itemerrch <- &itemErr{err: ErrQueueClosed}
+										} else {
+											itemerrch <- &itemErr{err: ErrInternalError}
+										}
+										return
+									}
+									ticker.Stop()
+									itemerrch <- &itemErr{item: item}
+									return
+								case <-stop:
+									ticker.Stop()
+									// if we time out, we'll return nil job and nil err
+									itemerrch <- &itemErr{}
+									return
+								}
+							}
+						}()
+						itemerr := <-itemerrch
+						close(itemerrch)
+						item = itemerr.item
+						srerr = itemerr.err
+					}
+				}
+				if srerr == "" && item != nil {
+					// clean up any past state to have a fresh job ready to run
+					sjob := item.Data.(*Job)
+					sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
+					sjob.Exited = false
+					sjob.Pid = 0
+					sjob.Host = ""
+					var tnil time.Time
+					sjob.StartTime = tnil
+					sjob.EndTime = tnil
+					sjob.PeakRAM = 0
+					sjob.Exitcode = -1
+
+					q.SetDelay(item.Key, ClientReleaseDelay)
+
+					// make a copy of the job with some extra stuff filled in (that
+					// we don't want taking up memory here) for the client
+					job := s.itemToJob(item, false, true)
+					sr = &serverResponse{Job: job}
+				}
+			} // else we'll return nothing, as if there were no jobs in the queue
+		case "jstart":
+			// update the job's cmd-started-related properties
+			var job *Job
+			_, job, srerr = s.getij(cr, q)
+			if srerr == "" {
+				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
+					srerr = ErrBadRequest
+				} else {
+					job.Pid = cr.Job.Pid
+					job.Host = cr.Job.Host
+					job.StartTime = time.Now()
+					var tend time.Time
+					job.EndTime = tend
+					job.Attempts++
+				}
+			}
+		case "jtouch":
+			// update the job's ttr
+			var item *queue.Item
+			item, _, srerr = s.getij(cr, q)
+			if srerr == "" {
+				err = q.Touch(item.Key)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				}
+			}
+		case "jend":
+			// update the job's cmd-ended-related properties
+			var job *Job
+			_, job, srerr = s.getij(cr, q)
+			if srerr == "" {
+				job.Exited = true
+				job.Exitcode = cr.Job.Exitcode
+				job.PeakRAM = cr.Job.PeakRAM
+				job.CPUtime = cr.Job.CPUtime
+				job.EndTime = time.Now()
+				job.ActualCwd = cr.Job.ActualCwd
+				s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, false)
+			}
+		case "jarchive":
+			// remove the job from the queue, rpl and live bucket and add to
+			// complete bucket
+			var item *queue.Item
+			var job *Job
+			item, job, srerr = s.getij(cr, q)
+			if srerr == "" {
+				// first check the item is still in the run queue (eg. the job
+				// wasn't released by another process; unlike the other methods,
+				// queue package does not check we're in the run queue when
+				// Remove()ing, since you can remove from any queue)
+				if running := item.Stats().State == queue.ItemStateRun; !running {
+					srerr = ErrBadJob
+				} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
+					// the job must also have gone through jend
+					srerr = ErrBadRequest
+				} else {
+					key := job.key()
+					job.State = JobStateComplete
+					job.FailReason = ""
+					err := s.db.archiveJob(key, job)
+					if err != nil {
+						srerr = ErrDBError
+						qerr = err.Error()
+					} else {
+						err = q.Remove(key)
+						if err != nil {
+							srerr = ErrInternalError
+							qerr = err.Error()
+						} else {
+							s.rpl.Lock()
+							if m, exists := s.rpl.lookup[job.RepGroup]; exists {
+								delete(m, key)
+							}
+							s.rpl.Unlock()
+							s.decrementGroupCount(job.schedulerGroup, q)
+						}
+					}
+				}
+			}
+		case "jrelease":
+			// move the job from the run queue to the delay queue, unless it has
+			// failed too many times, in which case bury
+			var item *queue.Item
+			var job *Job
+			item, job, srerr = s.getij(cr, q)
+			if srerr == "" {
+				job.FailReason = cr.Job.FailReason
+				if !job.StartTime.IsZero() {
+					// obey jobs's Retries count by adjusting UntilBuried if a
+					// client reserved this job and started to run the job's cmd
+					job.UntilBuried--
+				}
+				if job.Exited && job.Exitcode != 0 {
+					job.updateRecsAfterFailure()
+				}
+				if job.UntilBuried <= 0 {
+					err = q.Bury(item.Key)
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
 					} else {
-						s.rpl.Lock()
-						if m, exists := s.rpl.lookup[job.RepGroup]; exists {
-							delete(m, key)
-						}
-						s.rpl.Unlock()
 						s.decrementGroupCount(job.schedulerGroup, q)
 					}
-				}
-			}
-		}
-	case "jrelease":
-		// move the job from the run queue to the delay queue, unless it has
-		// failed too many times, in which case bury
-		var item *queue.Item
-		var job *Job
-		item, job, srerr = s.getij(cr, q)
-		if srerr == "" {
-			job.FailReason = cr.Job.FailReason
-			if job.Exited && job.Exitcode != 0 {
-				job.UntilBuried--
-				job.updateRecsAfterFailure()
-			}
-			if job.UntilBuried <= 0 {
-				err = q.Bury(item.Key)
-				if err != nil {
-					srerr = ErrInternalError
-					qerr = err.Error()
-				}
-			} else {
-				err = q.SetDelay(item.Key, cr.Timeout)
-				if err != nil {
-					srerr = ErrInternalError
-					qerr = err.Error()
 				} else {
 					err = q.Release(item.Key)
 					if err != nil {
@@ -350,106 +372,106 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 				}
 			}
-		}
-	case "jbury":
-		// move the job from the run queue to the bury queue
-		var item *queue.Item
-		var job *Job
-		item, job, srerr = s.getij(cr, q)
-		if srerr == "" {
-			job.FailReason = cr.Job.FailReason
-			err = q.Bury(item.Key)
-			if err != nil {
-				srerr = ErrInternalError
-				qerr = err.Error()
+		case "jbury":
+			// move the job from the run queue to the bury queue
+			var item *queue.Item
+			var job *Job
+			item, job, srerr = s.getij(cr, q)
+			if srerr == "" {
+				job.FailReason = cr.Job.FailReason
+				err = q.Bury(item.Key)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				} else {
+					s.decrementGroupCount(job.schedulerGroup, q)
+
+					if len(cr.Job.StdErrC) > 0 {
+						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+					}
+				}
+			}
+		case "jkick":
+			// move the jobs from the bury queue to the ready queue; unlike the
+			// other j* methods, client doesn't have to be the Reserve() owner of
+			// these jobs, and we don't want the "in run queue" test
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
 			} else {
-				s.decrementGroupCount(job.schedulerGroup, q)
+				kicked := 0
+				for _, jobkey := range cr.Keys {
+					item, err := q.Get(jobkey)
+					if err != nil || item.Stats().State != queue.ItemStateBury {
+						continue
+					}
+					err = q.Kick(jobkey)
+					if err == nil {
+						job := item.Data.(*Job)
+						job.UntilBuried = job.Retries + 1
+						kicked++
+					}
+				}
+				sr = &serverResponse{Existed: kicked}
+			}
+		case "jdel":
+			// remove the jobs from the bury queue and the live bucket
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
+			} else {
+				deleted := 0
+				for _, jobkey := range cr.Keys {
+					item, err := q.Get(jobkey)
+					if err != nil || item.Stats().State != queue.ItemStateBury {
+						continue
+					}
 
-				if len(cr.Job.StdErrC) > 0 {
-					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+					// we can't allow the removal of jobs that have dependencies, as
+					// *queue would regard that as satisfying the dependency and
+					// downstream jobs would start
+					hasDeps, err := q.HasDependents(jobkey)
+					if err != nil || hasDeps {
+						continue
+					}
+
+					err = q.Remove(jobkey)
+					if err == nil {
+						deleted++
+						s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
+					}
+				}
+				sr = &serverResponse{Existed: deleted}
+			}
+		case "getbc":
+			// get jobs by their keys (which come from their Cmds & Cwds)
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
+			} else {
+				var jobs []*Job
+				jobs, srerr, qerr = s.getJobsByKeys(q, cr.Keys, cr.GetStd, cr.GetEnv)
+				if len(jobs) > 0 {
+					sr = &serverResponse{Jobs: jobs}
 				}
 			}
-		}
-	case "jkick":
-		// move the jobs from the bury queue to the ready queue; unlike the
-		// other j* methods, client doesn't have to be the Reserve() owner of
-		// these jobs, and we don't want the "in run queue" test
-		if cr.Keys == nil {
-			srerr = ErrBadRequest
-		} else {
-			kicked := 0
-			for _, jobkey := range cr.Keys {
-				item, err := q.Get(jobkey)
-				if err != nil || item.Stats().State != "bury" {
-					continue
-				}
-				err = q.Kick(jobkey)
-				if err == nil {
-					job := item.Data.(*Job)
-					job.UntilBuried = job.Retries + 1
-					kicked++
+		case "getbr":
+			// get jobs by their RepGroup
+			if cr.Job == nil || cr.Job.RepGroup == "" {
+				srerr = ErrBadRequest
+			} else {
+				var jobs []*Job
+				jobs, srerr, qerr = s.getJobsByRepGroup(q, cr.Job.RepGroup, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
+				if len(jobs) > 0 {
+					sr = &serverResponse{Jobs: jobs}
 				}
 			}
-			sr = &serverResponse{Existed: kicked}
-		}
-	case "jdel":
-		// remove the jobs from the bury queue and the live bucket
-		if cr.Keys == nil {
-			srerr = ErrBadRequest
-		} else {
-			deleted := 0
-			for _, jobkey := range cr.Keys {
-				item, err := q.Get(jobkey)
-				if err != nil || item.Stats().State != "bury" {
-					continue
-				}
-
-				// we can't allow the removal of jobs that have dependencies, as
-				// *queue would regard that as satisfying the dependency and
-				// downstream jobs would start
-				hasDeps, err := q.HasDependents(jobkey)
-				if err != nil || hasDeps {
-					continue
-				}
-
-				err = q.Remove(jobkey)
-				if err == nil {
-					deleted++
-					s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
-				}
-			}
-			sr = &serverResponse{Existed: deleted}
-		}
-	case "getbc":
-		// get jobs by their keys (which come from their Cmds & Cwds)
-		if cr.Keys == nil {
-			srerr = ErrBadRequest
-		} else {
-			var jobs []*Job
-			jobs, srerr, qerr = s.getJobsByKeys(q, cr.Keys, cr.GetStd, cr.GetEnv)
+		case "getin":
+			// get all jobs in the jobqueue
+			jobs := s.getJobsCurrent(q, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
+		default:
+			srerr = ErrUnknownCommand
 		}
-	case "getbr":
-		// get jobs by their RepGroup
-		if cr.Job == nil || cr.Job.RepGroup == "" {
-			srerr = ErrBadRequest
-		} else {
-			var jobs []*Job
-			jobs, srerr, qerr = s.getJobsByRepGroup(q, cr.Job.RepGroup, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
-			if len(jobs) > 0 {
-				sr = &serverResponse{Jobs: jobs}
-			}
-		}
-	case "getin":
-		// get all jobs in the jobqueue
-		jobs := s.getJobsCurrent(q, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
-		if len(jobs) > 0 {
-			sr = &serverResponse{Jobs: jobs}
-		}
-	default:
-		srerr = ErrUnknownCommand
 	}
 
 	// on error, just send the error back to client and return a more detailed
@@ -490,7 +512,7 @@ func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job
 	}
 
 	item, err := q.Get(cr.Job.key())
-	if err != nil || item.Stats().State != "run" {
+	if err != nil || item.Stats().State != queue.ItemStateRun {
 		errs = ErrBadJob
 		return
 	}
@@ -509,18 +531,9 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 	sjob := item.Data.(*Job)
 	stats := item.Stats()
 
-	state := "unknown"
-	switch stats.State {
-	case "delay":
-		state = "delayed"
-	case "ready":
-		state = "ready"
-	case "run":
-		state = "reserved"
-	case "bury":
-		state = "buried"
-	case "dependent":
-		state = "dependent"
+	state := itemsStateToJobState[stats.State]
+	if state == "" {
+		state = JobStateUnknown
 	}
 
 	// we're going to fill in some properties of the Job and return
@@ -558,8 +571,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		MountConfigs: sjob.MountConfigs,
 	}
 
-	if !sjob.StartTime.IsZero() && state == "reserved" {
-		job.State = "running"
+	if !sjob.StartTime.IsZero() && state == JobStateReserved {
+		job.State = JobStateRunning
 	}
 	s.jobPopulateStdEnv(job, getStd, getEnv)
 	return
@@ -568,7 +581,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
 // extracting them from the database.
 func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
-	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == "buried") {
+	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == JobStateBuried) {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.key())
 	}
 	if getEnv {

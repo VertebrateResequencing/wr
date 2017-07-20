@@ -48,11 +48,14 @@ var cmdCwdMatters bool
 var cmdChangeHome bool
 var cmdRepGroup string
 var cmdDepGroups string
-var cmdDeps string
+var cmdCmdDeps string
+var cmdGroupDeps string
 var cmdOnFailure string
 var cmdOnSuccess string
 var cmdOnExit string
 var cmdMounts string
+var cmdEnv string
+var cmdReRun bool
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
@@ -78,9 +81,9 @@ type addCmdOpts struct {
 	OnExit       jobqueue.BehavioursViaJSON `json:"on_exit"`
 	Env          []string                   `json:"env"`
 	CloudOS      string                     `json:"cloud_os"`
-	CloudUser    string                     `json:"cloud_user"`
+	CloudUser    string                     `json:"cloud_username"`
 	CloudScript  string                     `json:"cloud_script"`
-	CloudOSRam   *int                       `json:"cloud_os_ram"`
+	CloudOSRam   *int                       `json:"cloud_ram"`
 }
 
 // addCmd represents the add command
@@ -97,12 +100,12 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_user cloud_os_ram cloud_script env
+cloud_os cloud_username cloud_ram cloud_script env
 
-If any of these (except the cloud ones and env) will be the same for all your
-commands, you can instead specify them as flags (which are treated as defaults
-in the case that they are unspecified in the text file, but otherwise ignored).
-The meaning of each option is detailed below.
+If any of these will be the same for all your commands, you can instead specify
+them as flags (which are treated as defaults in the case that they are
+unspecified in the text file, but otherwise ignored). The meaning of each option
+is detailed below.
 
 A JSON object can written by starting and ending it with curly braces. Names and
 single values are put in double quotes (except for numbers, which are left bare,
@@ -158,15 +161,15 @@ your cmd exits 0.
 your cmd exits, regardless of exit code. These behaviours will trigger after any
 behaviours defined in on_failure or on_success.
 
-"mounts" describes the remote file systems or object stores you would like to be
-fuse mounted locally before running your command. See the help text for 'wr
-mount' for an explanation of how to formulate the value. Your mounts will be
-unmounted after the triggering of any behaviours, so your "run" behaviours will
-be able to read from or write to anything in your mount point(s). The "cleanup"
-and "cleanup_all" behaviours, however, will ignore your mounted directories and
-any mount cache directories, so that nothing on your remote file systems gets
-deleted. Unmounting will get rid of them though, so you would still end up with
-a "cleaned" workspace.
+"mounts" (or the --mount_json option) describes the remote file systems or
+object stores you would like to be fuse mounted locally before running your
+command. See the help text for 'wr mount' for an explanation of how to formulate
+the value. Your mounts will be unmounted after the triggering of any behaviours,
+so your "run" behaviours will be able to read from or write to anything in your
+mount point(s). The "cleanup" and "cleanup_all" behaviours, however, will ignore
+your mounted directories and any mount cache directories, so that nothing on
+your remote file systems gets deleted. Unmounting will get rid of them though,
+so you would still end up with a "cleaned" workspace.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are
@@ -239,26 +242,27 @@ these refer to must complete before this command will start. The value for
 this way are 'live', causing this command to be automatically re-run if any
 commands with any of the dep_grps it is dependent upon get added to the queue.
 The value for "cmd_deps" is an array of JSON objects with "cmd" and "cwd"
-name:value pairs. These are static dependencies; once resolved they do not get
-re-evaluated.
+name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
+string). These are static dependencies; once resolved they do not get re-
+evaluated.
 
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
 will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
-"CentOS 7", "cloud_user" to "centos", "cloud_os_ram" to 4096, and "cloud_script"
-to "~/my_centos_post_creation_script.sh", then this command will run on a cloud
-node running CentOS (with at least 4GB ram).
+"CentOS 7", "cloud_username" to "centos", "cloud_ram" to 4096, and
+"cloud_script" to "~/my_centos_post_creation_script.sh", then this command will
+run on a cloud node running CentOS (with at least 4GB ram).
 
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
 that are overwritten depend on if you run 'wr add' on the same machine as you
 started the manager (local, vs remote). In the local case, commands will use
 base variables as they were at the moment in time you run 'wr add', so to set a
-certain environment variable for all commands, you can just set it prior to
-calling 'wr add'. In the remote case the command will use base variables as they
-were on the machine where the manager is running at the moment the manager was
-started.`,
+certain environment variable for all commands, you could instead just set it
+prior to calling 'wr add'. In the remote case the command will use base
+variables as they were on the machine where the command is executed when that
+machine was started.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
@@ -306,13 +310,16 @@ started.`,
 			defaultDepGroups = strings.Split(cmdDepGroups, ",")
 		}
 
-		var defaultDeps []*jobqueue.Dependency
-		if cmdDeps != "" {
-			cols := strings.Split(cmdDeps, "\\t")
+		var defaultDeps jobqueue.Dependencies
+		if cmdCmdDeps != "" {
+			cols := strings.Split(cmdCmdDeps, ",")
 			if len(cols)%2 != 0 {
-				die("--deps must have an even number of tab-separated columns")
+				die("--cmd_deps must have an even number of comma-separated entries")
 			}
 			defaultDeps = colsToDeps(cols)
+		}
+		if cmdGroupDeps != "" {
+			defaultDeps = append(defaultDeps, groupsToDeps(cmdGroupDeps)...)
 		}
 
 		var defaultOnFailure jobqueue.Behaviours
@@ -344,8 +351,22 @@ started.`,
 		}
 
 		var defaultMounts jobqueue.MountConfigs
-		if cmdMounts != "" {
-			defaultMounts = mountParseJSON(cmdMounts)
+		if mountJSON != "" || mountSimple != "" {
+			defaultMounts = mountParse(mountJSON, mountSimple)
+		}
+
+		var defaultScript string
+		if postCreationScript != "" {
+			data, err := ioutil.ReadFile(postCreationScript)
+			if err != nil {
+				die("--cloud_script could not be read: %s", err)
+			}
+			defaultScript = string(data)
+		}
+
+		var defaultOSRAM string
+		if osRAM > 0 {
+			defaultOSRAM = strconv.Itoa(osRAM)
 		}
 
 		// open file or set up to read from STDIN
@@ -384,6 +405,11 @@ started.`,
 			remoteWarning = 1
 		}
 		jq.Disconnect()
+
+		var defaultExtraEnv []byte
+		if cmdEnv != "" {
+			defaultExtraEnv = jq.CompressEnv(strings.Split(cmdEnv, ","))
+		}
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
@@ -557,6 +583,8 @@ started.`,
 
 			if len(cmdOpts.Env) > 0 {
 				envOverride = jq.CompressEnv(cmdOpts.Env)
+			} else if len(defaultExtraEnv) > 0 {
+				envOverride = defaultExtraEnv
 			}
 
 			if len(cmdOpts.OnFailure) > 0 {
@@ -585,9 +613,13 @@ started.`,
 			other := make(map[string]string)
 			if cmdOpts.CloudOS != "" {
 				other["cloud_os"] = cmdOpts.CloudOS
+			} else if osPrefix != "" {
+				other["cloud_os"] = osPrefix
 			}
 			if cmdOpts.CloudUser != "" {
 				other["cloud_user"] = cmdOpts.CloudUser
+			} else if osUsername != "" {
+				other["cloud_user"] = osUsername
 			}
 			if cmdOpts.CloudScript != "" {
 				var postCreation []byte
@@ -596,10 +628,14 @@ started.`,
 					die("line %d's cloud_script value (%s) could not be read: %s", lineNum, cmdOpts.CloudScript, err)
 				}
 				other["cloud_script"] = string(postCreation)
+			} else if defaultScript != "" {
+				other["cloud_script"] = defaultScript
 			}
 			if cmdOpts.CloudOSRam != nil {
-				osRAM := *cmdOpts.CloudOSRam
-				other["cloud_os_ram"] = strconv.Itoa(osRAM)
+				ram := *cmdOpts.CloudOSRam
+				other["cloud_os_ram"] = strconv.Itoa(ram)
+			} else if defaultOSRAM != "" {
+				other["cloud_os_ram"] = defaultOSRAM
 			}
 
 			jobs = append(jobs, &jobqueue.Job{
@@ -629,7 +665,7 @@ started.`,
 		defer jq.Disconnect()
 
 		// add the jobs to the queue
-		inserts, dups, err := jq.Add(jobs, envVars)
+		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
 		if err != nil {
 			die("%s", err)
 		}
@@ -660,25 +696,35 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
-	addCmd.Flags().StringVarP(&cmdDeps, "deps", "d", "", "dependencies of your commands, in the form \"command1\\tcwd1\\tcommand2\\tcwd2...\" or \"dep_grp1,dep_grp2...\\tgroups\"")
+	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
+	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
-	addCmd.Flags().StringVar(&cmdMounts, "mounts", "", "remote file systems to mount, in JSON format")
+	addCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format")
+	addCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]")
+	addCmd.Flags().StringVar(&osPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
+	addCmd.Flags().StringVar(&osUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
+	addCmd.Flags().IntVar(&osRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	addCmd.Flags().StringVar(&postCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
+	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
-// convert cmd,cwd or depgroups,"groups" columns in to Dependency
+// convert cmd,cwd columns in to Dependency.
 func colsToDeps(cols []string) (deps jobqueue.Dependencies) {
 	for i := 0; i < len(cols); i += 2 {
-		if cols[i+1] == "groups" {
-			for _, depgroup := range strings.Split(cols[i], ",") {
-				deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
-			}
-		} else {
-			deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
-		}
+		deps = append(deps, jobqueue.NewEssenceDependency(cols[i], cols[i+1]))
+	}
+	return
+}
+
+// convert group1,group2,... in to a Dependency.
+func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
+	for _, depgroup := range strings.Split(groups, ",") {
+		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
 	return
 }

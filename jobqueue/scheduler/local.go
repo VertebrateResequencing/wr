@@ -80,6 +80,8 @@ type local struct {
 	canCountFunc     canCounter
 	runCmdFunc       cmdRunner
 	cancelRunCmdFunc cancelCmdRunner
+	autoProcessing   bool
+	stopAuto         chan bool
 	debugMode        bool
 }
 
@@ -177,6 +179,8 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 	s.mutex.Unlock()
 
+	s.startAutoProcessing()
+
 	// try and run the oldest job in the queue
 	return s.processQueue()
 }
@@ -190,7 +194,7 @@ func (s *local) reqCheck(req *Requirements) error {
 }
 
 // processQueue gets the oldest job in the queue, sees if it's possible to run
-// it, does so if it does, otherwise returns the job to the queue.
+// it, does so if it is, otherwise returns the job to the queue.
 func (s *local) processQueue() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -276,10 +280,14 @@ func (s *local) processQueue() error {
 			if s.running[key] <= 0 {
 				delete(s.running, key)
 			}
+			var stopAuto bool
 			if err == nil {
 				j.count--
 				if j.count <= 0 {
 					s.queue.Remove(key)
+					if s.queue.Stats().Items == 0 {
+						stopAuto = true
+					}
 				}
 			} else if err.Error() != "giving up waiting to spawn" {
 				// *** we shouldn't really log from a library call, but have no
@@ -287,6 +295,9 @@ func (s *local) processQueue() error {
 				log.Printf("jobqueue scheduler runCmd error: %s\n", err)
 			}
 			s.mutex.Unlock()
+			if stopAuto {
+				s.stopAutoProcessing()
+			}
 			s.processQueue()
 		}()
 	}
@@ -354,6 +365,51 @@ func (s *local) cancelRun(cmd string, cancelCount int) {
 	return
 }
 
+// startAutoProcessing begins periodic running of processQueue(). Normally
+// processQueue is only called when cmds are added or complete. Calling it
+// periodically as well means we are responsive to external events freeing up
+// resources.
+func (s *local) startAutoProcessing() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if s.cleaned || s.autoProcessing {
+		return
+	}
+
+	s.stopAuto = make(chan bool)
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		for {
+			select {
+			case <-ticker.C:
+				s.processQueue()
+				continue
+			case <-s.stopAuto:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	s.autoProcessing = true
+}
+
+// stopAutoProcessing turns off the periodic processQueue() calls initiated by
+// startAutoProcessing().
+func (s *local) stopAutoProcessing() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if s.cleaned || !s.autoProcessing {
+		return
+	}
+
+	s.stopAuto <- true
+
+	s.autoProcessing = false
+}
+
 // busy returns true if there's anything in our queue or we are still running
 // any cmd
 func (s *local) busy() bool {
@@ -370,6 +426,7 @@ func (s *local) busy() bool {
 
 // cleanup destroys our internal queue
 func (s *local) cleanup() {
+	s.stopAutoProcessing()
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.cleaned = true

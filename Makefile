@@ -10,6 +10,7 @@ default: install
 
 vendor: glide.lock
 ifndef GLIDE
+	@mkdir -p ${GOPATH}/bin
 	@curl -s https://glide.sh/get | sh
 endif
 	@${GOPATH}/bin/glide -q install

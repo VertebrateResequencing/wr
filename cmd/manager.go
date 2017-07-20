@@ -384,6 +384,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 
 	// start the jobqueue server
 	server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
+		AllowedUsers:    []string{localUsername},
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,

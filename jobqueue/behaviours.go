@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the implementation of Job behaviours.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -158,8 +159,15 @@ func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 func (b *Behaviour) String() string {
 	bvjm := &bvjMapping{}
 	b.fillBVJM(bvjm)
-	jb, _ := json.Marshal(bvjm)
-	return string(jb)
+
+	// because of automatic HTML escaping, we can't just use json.Marshal(bvjm)
+
+	buffer := &bytes.Buffer{}
+	encoder := json.NewEncoder(buffer)
+	encoder.SetEscapeHTML(false)
+	encoder.Encode(bvjm)
+
+	return strings.TrimSpace(buffer.String())
 }
 
 // cleanup with all == true wipes out the Job's unique dir as aggressively as
@@ -253,7 +261,7 @@ func (b *Behaviour) run(j *Job) (err error) {
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
 	}
-	cmd := exec.Command("sh", "-c", bc)
+	cmd := exec.Command("bash", "-c", bc) // *** hardcoding bash here, when we could in theory have client.Execute() pass shell in?
 	cmd.Dir = actualCwd
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -329,8 +337,13 @@ func (bs Behaviours) String() string {
 	for _, b := range bs {
 		b.fillBVJM(bvjm)
 	}
-	b, _ := json.Marshal(bvjm)
-	return string(b)
+
+	buffer := &bytes.Buffer{}
+	encoder := json.NewEncoder(buffer)
+	encoder.SetEscapeHTML(false)
+	encoder.Encode(bvjm)
+
+	return strings.TrimSpace(buffer.String())
 }
 
 // BehaviourViaJSON makes up BehavioursViaJSON. Each of these should only

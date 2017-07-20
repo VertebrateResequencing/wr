@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"fmt"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
@@ -57,6 +58,7 @@ const (
 	ErrNoServer       = "could not reach the server"
 	ErrMustReserve    = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError        = "failed to use database"
+	ErrWrongUser      = "you did not start this server: permission denied"
 	ServerModeNormal  = "started"
 	ServerModeDrain   = "draining"
 )
@@ -68,6 +70,7 @@ var (
 	ServerInterruptTime   = 1 * time.Second
 	ServerItemTTR         = 60 * time.Second
 	ServerReserveTicker   = 1 * time.Second
+	ServerCheckRunnerTime = 1 * time.Minute
 	ServerLogClientErrors = true
 )
 
@@ -103,14 +106,15 @@ type serverResponse struct {
 
 // ServerInfo holds basic addressing info about the server.
 type ServerInfo struct {
-	Addr       string // ip:port
-	Host       string // hostname
-	Port       string // port
-	WebPort    string // port of the web interface
-	PID        int    // process id of server
-	Deployment string // deployment the server is running under
-	Scheduler  string // the name of the scheduler that jobs are being submitted to
-	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
+	AllowedUsers []string // usernames that are allowed to use the server
+	Addr         string   // ip:port
+	Host         string   // hostname
+	Port         string   // port
+	WebPort      string   // port of the web interface
+	PID          int      // process id of server
+	Deployment   string   // deployment the server is running under
+	Scheduler    string   // the name of the scheduler that jobs are being submitted to
+	Mode         string   // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
 }
 
 // ServerStats holds information about the jobqueue server for sending to
@@ -133,38 +137,49 @@ type rgToKeys struct {
 // representing the jobs moving from one state to another.
 type jstateCount struct {
 	RepGroup  string // "+all+" is the special group representing all live jobs across all RepGroups
-	FromState string // one of 'new', 'delay', 'ready', 'run' or 'bury'
-	ToState   string // one of 'delay', 'dependent', 'ready', 'run', 'bury' or 'complete'
-	Count     int    // num in FromState drop by this much, num in ToState rise by this much
+	FromState JobState
+	ToState   JobState
+	Count     int // num in FromState drop by this much, num in ToState rise by this much
 }
 
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
-	ServerInfo *ServerInfo
-	sock       mangos.Socket
-	ch         codec.Handle
-	db         *db
-	done       chan error
-	stop       chan bool
-	up         bool
-	drain      bool
-	blocking   bool
+	ServerInfo   *ServerInfo
+	allowedUsers map[string]bool
+	sock         mangos.Socket
+	ch           codec.Handle
+	db           *db
+	done         chan error
+	stop         chan bool
+	up           bool
+	drain        bool
+	blocking     bool
 	sync.Mutex
-	qs           map[string]*queue.Queue
-	rpl          *rgToKeys
-	scheduler    *scheduler.Scheduler
-	sgroupcounts map[string]int
-	sgrouptrigs  map[string]int
-	sgtr         map[string]*scheduler.Requirements
-	sgcmutex     sync.Mutex
-	racmutex     sync.Mutex
-	rc           string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
-	statusCaster *bcast.Group
+	qs            map[string]*queue.Queue
+	rpl           *rgToKeys
+	scheduler     *scheduler.Scheduler
+	sgroupcounts  map[string]int
+	sgrouptrigs   map[string]int
+	sgtr          map[string]*scheduler.Requirements
+	sgcmutex      sync.Mutex
+	racmutex      sync.Mutex
+	rc            string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	statusCaster  *bcast.Group
+	racCheckTimer *time.Timer
+	racChecking   bool
+	racCheckReady int
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
 // fields are required with no working default unless otherwise noted.
 type ServerConfig struct {
+	// AllowedUsers are the usernames that will be allowed access to
+	// the user interfaces that will connect to the server. (In cloud situations
+	// this isn't necessarily just the username of the account that starts the
+	// server, though that user is always allowed access, regardless of this
+	// value.)
+	AllowedUsers []string
+
 	// Port for client-server communication.
 	Port string
 
@@ -224,6 +239,23 @@ type ServerConfig struct {
 // determines the command line to execute for your runner client from the
 // configured RunnerCmd string you supplied.
 func Serve(config ServerConfig) (s *Server, msg string, err error) {
+	// for security purposes we need to know who will be allowed to access us
+	// in the future
+	owner, err := internal.Username()
+	if err != nil {
+		return
+	}
+	var allowedUsers []string
+	allowedUsersMap := make(map[string]bool)
+	for _, user := range config.AllowedUsers {
+		allowedUsersMap[user] = true
+		allowedUsers = append(allowedUsers, user)
+	}
+	if _, exists := allowedUsersMap[owner]; !exists {
+		allowedUsersMap[owner] = true
+		allowedUsers = append(allowedUsers, owner)
+	}
+
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return
@@ -290,7 +322,8 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		ServerInfo:   &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		allowedUsers: allowedUsersMap,
 		sock:         sock,
 		ch:           new(codec.BincHandle),
 		qs:           make(map[string]*queue.Queue),
@@ -506,13 +539,13 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 		// Reserve() so that they run the correct jobs for the machine and
 		// resource reservations the job scheduler will run them under
 		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
-			if s.drain {
-				return
-			}
-
 			// we must only ever run this 1 at a time
 			s.racmutex.Lock()
 			defer s.racmutex.Unlock()
+
+			if s.drain || !s.up {
+				return
+			}
 
 			// calculate, set and count jobs by schedulerGroup
 			groups := make(map[string]int)
@@ -656,46 +689,101 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					s.sgcmutex.Unlock()
 					go s.scheduleRunners(q, group)
 				}
+
+				// in the event that the runners we spawn can't reach us
+				// temporarily and just die, we need to make sure this callback
+				// gets triggered again even if no new jobs get added
+				s.racCheckReady = len(allitemdata)
+				if s.racChecking {
+					if !s.racCheckTimer.Stop() {
+						<-s.racCheckTimer.C
+					}
+					s.racCheckTimer.Reset(ServerCheckRunnerTime)
+				} else {
+					s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
+
+					go func() {
+						select {
+						case <-s.racCheckTimer.C:
+							s.racmutex.Lock()
+							s.racChecking = false
+							stats := q.Stats()
+							s.racmutex.Unlock()
+
+							if stats.Ready >= s.racCheckReady {
+								q.TriggerReadyAddedCallback()
+							}
+
+							return
+						}
+					}()
+
+					s.racChecking = true
+				}
 			}
 		})
 
 		// we set a callback for things changing in the queue, which lets us
 		// update the status webpage with the minimal work and data transfer
-		q.SetChangedCallback(func(from string, to string, data []interface{}) {
-			if to == "removed" {
+		q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
+			var from, to JobState
+			if toQ == queue.SubQueueRemoved {
 				// things are removed from the queue if deleted or completed;
 				// disambiguate
-				to = "deleted"
+				to = JobStateDeleted
 				for _, inter := range data {
 					job := inter.(*Job)
-					if job.State == "complete" {
-						to = "complete"
+					if job.State == JobStateComplete {
+						to = JobStateComplete
 						break
 					}
 				}
+			} else {
+				to = subqueueToJobState[toQ]
 			}
+			from = subqueueToJobState[fromQ]
 
-			// if we change from running, mark that we have not scheduled a
-			// runner for the jobs
-			if from == "running" {
-				for _, inter := range data {
-					job := inter.(*Job)
-					job.scheduledRunner = false
-				}
-			}
-
-			// overall count
-			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data)})
-
-			// counts per RepGroup
+			// calculate counts per RepGroup
 			groups := make(map[string]int)
 			for _, inter := range data {
 				job := inter.(*Job)
+
+				// if we change from running, mark that we have not scheduled a
+				// runner for the job
+				if from == JobStateRunning {
+					job.scheduledRunner = false
+				}
+
 				groups[job.RepGroup]++
 			}
+
+			// send out the counts
+			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data)})
 			for group, count := range groups {
 				s.statusCaster.Send(&jstateCount{group, from, to, count})
 			}
+		})
+
+		// we set a callback for running items that hit their ttr because the
+		// runner died or because of networking issues: we treat it like a
+		// normal release, which means it becomes delayed unless it is out of
+		// retries, in which case it gets buried
+		q.SetTTRCallback(func(data interface{}) queue.SubQueue {
+			job := data.(*Job)
+
+			if !job.StartTime.IsZero() && !job.Exited {
+				job.UntilBuried--
+				job.Exited = true
+				job.Exitcode = -1
+				job.FailReason = FailReasonRelease
+				job.EndTime = time.Now()
+
+				if job.UntilBuried <= 0 {
+					return queue.SubQueueBury
+				}
+			}
+
+			return queue.SubQueueDelay
 		})
 	}
 	s.Unlock()
@@ -757,7 +845,7 @@ func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEn
 }
 
 // getJobsByRepGroup gets jobs in the given group (current and complete)
-func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, state string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	// look in the in-memory queue for matching jobs
 	s.rpl.RLock()
 	for key := range s.rpl.lookup[repgroup] {
@@ -770,7 +858,7 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, s
 	s.rpl.RUnlock()
 
 	// look in the permanent store for matching jobs
-	if state == "" || state == "complete" {
+	if state == "" || state == JobStateComplete {
 		var complete []*Job
 		complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
 		if len(complete) > 0 {
@@ -804,7 +892,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 }
 
 // getJobsCurrent gets all current (incomplete) jobs
-func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state string, getStd bool, getEnv bool) (jobs []*Job) {
+func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job) {
 	for _, item := range q.AllItems() {
 		jobs = append(jobs, s.itemToJob(item, false, false))
 	}
@@ -819,17 +907,17 @@ func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state string, getStd 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
-func (s *Server) limitJobs(jobs []*Job, limit int, state string, getStd bool, getEnv bool) (limited []*Job) {
+func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, getEnv bool) (limited []*Job) {
 	groups := make(map[string][]*Job)
 	for _, job := range jobs {
 		jState := job.State
-		if jState == "running" {
-			jState = "reserved"
+		if jState == JobStateRunning {
+			jState = JobStateReserved
 		}
 
 		if state != "" {
-			if state == "running" {
-				state = "reserved"
+			if state == JobStateRunning {
+				state = JobStateReserved
 			}
 			if jState != state {
 				continue

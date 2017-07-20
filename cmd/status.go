@@ -52,12 +52,14 @@ Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
 
-The file to provide -f is in the format cmd\tcwd.
+The file to provide -f is in the format cmd\tcwd\tmounts, with the last 2
+columns optional.
 
 In -f and -l mode you must provide the cwd the commands were set to run in, if
-CwdMatters (and must NOT be provided otherwise). You can do this by using the -c
-option, or in -f mode your file can specify the cwd, in case it's different for
-each command.
+CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
+JSON that was used when the command was added, if any. You can do this by using
+the -c and --mounts options, or in -f mode your file can specify the cwd and
+mounts, in case it's different for each command.
 
 By default, commands with the same state, reason for failure and exitcode are
 grouped together and only a random 1 of them is displayed (and you are told how
@@ -79,11 +81,16 @@ very many (tens of thousands+) commands.`,
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
-		cmdState := ""
+		var cmdState jobqueue.JobState
 		if showBuried {
-			cmdState = "buried"
+			cmdState = jobqueue.JobStateBuried
 		}
 		timeout := time.Duration(timeoutint) * time.Second
+
+		var defaultMounts jobqueue.MountConfigs
+		if cmdMounts != "" {
+			defaultMounts = mountParseJSON(cmdMounts)
+		}
 
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
@@ -128,7 +135,15 @@ very many (tens of thousands+) commands.`,
 				} else {
 					cwd = cols[1]
 				}
-				jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd})
+
+				var mounts jobqueue.MountConfigs
+				if colsn < 3 || cols[2] == "" {
+					mounts = defaultMounts
+				} else {
+					mounts = mountParseJSON(cols[2])
+				}
+
+				jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd, MountConfigs: mounts})
 				desired++
 			}
 			jobs, err = jq.GetByEssences(jes)
@@ -139,8 +154,10 @@ very many (tens of thousands+) commands.`,
 		default:
 			// get job that has the supplied command
 			var job *jobqueue.Job
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd}, showStd, showEnv)
-			jobs = append(jobs, job)
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
+			if job != nil {
+				jobs = append(jobs, job)
+			}
 		}
 
 		if err != nil {
@@ -151,15 +168,15 @@ very many (tens of thousands+) commands.`,
 			var d, re, b, ru, c int
 			for _, job := range jobs {
 				switch job.State {
-				case "delayed":
+				case jobqueue.JobStateDelayed:
 					d += 1 + job.Similar
-				case "ready":
+				case jobqueue.JobStateReady:
 					re += 1 + job.Similar
-				case "buried":
+				case jobqueue.JobStateBuried:
 					b += 1 + job.Similar
-				case "reserved", "running":
+				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					ru += 1 + job.Similar
-				case "complete":
+				case jobqueue.JobStateComplete:
 					c += 1 + job.Similar
 				}
 			}
@@ -186,15 +203,15 @@ very many (tens of thousands+) commands.`,
 				fmt.Printf("\n# %s\nCwd: %s\n%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, behaviours, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
-				case "delayed":
+				case jobqueue.JobStateDelayed:
 					fmt.Printf("Status: delayed following a temporary problem, will become ready soon (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
-				case "ready":
+				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
-				case "buried":
+				case jobqueue.JobStateBuried:
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
-				case "reserved", "running":
+				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
-				case "complete":
+				case jobqueue.JobStateComplete:
 					fmt.Printf("Status: complete (started %s; ended %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				}
 
@@ -204,7 +221,7 @@ very many (tens of thousands+) commands.`,
 
 				if job.Exited {
 					prefix := "Stats"
-					if job.State != "complete" {
+					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
 					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.Pid)
@@ -226,7 +243,7 @@ very many (tens of thousands+) commands.`,
 							fmt.Printf("StdErr: [none]\n")
 						}
 					}
-				} else if job.State == "running" {
+				} else if job.State == jobqueue.JobStateRunning {
 					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.WallTime(), job.Host, job.Pid)
 					//*** we should be able to peek at STDOUT & STDERR, and see
 					// Peak memory during a run... but is that possible/ too
@@ -280,6 +297,7 @@ func init() {
 	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
+	statusCmd.Flags().StringVar(&cmdMounts, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use")
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "except in -f mode, also show the environment variables the command(s) ran with")

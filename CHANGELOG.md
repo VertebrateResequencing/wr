@@ -5,6 +5,74 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.9.0] - 2017-07-19
+### Added
+- Jobs can now have mounts that are writeable and uncached.
+- Web interface shows a "live" walltime for running jobs.
+
+### Fixed
+- Cloud post creation scripts that alter PATH now work as expected.
+- Run behaviours with pipes now work as expected.
+- `wr cloud deploy` with a default -m of 0 now gets passed through to the remote
+  manager correctly.
+- In cloud deployments, /etc/fuse.conf is made world readable so mounting can
+  work.
+- Jobs with lots of data to upload to a mount no longer time out and fail.
+- Jobs with long-running behaviours no longer time out and fail.
+- Immediately buried jobs are now recognised as not needing resources.
+- Retried buried jobs no longer pend forever.
+- Jobs with multiple mounts now correctly un-mount them all if killed.
+- Long lines of STDOUT/ERR no longer hang job execution.
+- Web interface now correctly displays job behaviour JSON.
+- Jobs that fail due to loss of connectivity between runner and manager (eg.
+  network issues, or a dead or manually terminated OpenStack instance) now obey
+  the --retries option and don't retry indefinitely.
+- Job unique cwd creation no longer fails if many other quick jobs are cleaning
+  up after themselves in the same disk location.
+- Web interface now displays correct start and end times of jobs in a list.
+- OpenStack scheduler now copes with the user manually terminating wr-created
+  instances, avoiding an edge case where a job could pend forever.
+- For a cloud deployment, a job's --cloud_script option is now always obeyed.
+- If glide is not installed and the user has a brand new Go installation, the
+  makefile now ensures $GOPATH/bin exists.
+
+### Changed
+- Jobs with --mounts are now uniqued appropriately based on the mount options.
+- When a cached writeable mount is used and the upload fails, jobs now get an
+  exit code of -2.
+- `wr cloud deploy --config_files` option now keeps the mtime of copied over
+  files.
+- `wr cloud deploy --config_files` option can now take a from:to form if the
+  local config file is in a completely different place to where it should go on
+  the cloud instance.
+- OpenStack cloud scheduler now periodically checks for freed resources, in case
+  you have have pending jobs because you have reached your quota and then
+  terminate a non-wr instance.
+- `wr add --deps` now just takes a comma separated list of dependency group
+  names (ie. without the "\tgroups" suffix), and cmd-based dependencies are
+  defined with new `--cmd_deps` option.
+- As a stop-gap for security, the web interface no longer displays the
+  environment variables used by a job.
+- As a stop-gap for security, the command line clients only allow the owner of a
+  manager to access it.
+- OpenStack environment variables no longer get printed to screen on failure
+  to start a manager in the cloud.
+- `wr [add|mount] --mounts` now takes a simpler format; the old JSON format can
+  be supplied to new `--mount_json` option.
+- `wr add` now takes command-line options for the cloud_* and env options that
+  could previously be provided in JSON only. cloud_user renamed to
+  cloud_username and cloud_os_ram renamed to cloud_ram, for consistency with
+  other wr commands.
+- `wr add` now has a `--rerun` option to rerun added jobs if they had previously
+  been added and completed. This is how it used to behave before this change.
+  Now the default behaviour is to ignore added jobs that have already
+  completed, making it easier to work with ongoing projects where you come up
+  with commands for all your data whenever new data might have arrived, without
+  having to worry about which old data you already ran the commands for.
+- Backwards incompatible change to jobqueue.Client API: Add() now takes an
+  ignoreComplete argument.
+
+
 ## [0.8.1] - 2017-06-07
 ### Fixed
 - `make dist` fixed to work and compile to darwin once again.
@@ -27,6 +95,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   new `wr mount` command.
 - `wr add` can now be called by a command added to `wr add` when using a cloud
   deployment.
+
 
 ### Fixed
 - Status web page 'remove' button for buried jobs was broken.
