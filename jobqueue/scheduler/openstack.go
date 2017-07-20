@@ -147,7 +147,7 @@ type ConfigOpenStack struct {
 	// range ends at 192.168.63.254.
 	CIDR string
 
-	// GatewayIP is the gateway ip adress for the subnet that will be created
+	// GatewayIP is the gateway ip address for the subnet that will be created
 	// with the given CIDR. It defaults to 192.168.0.1.
 	GatewayIP string
 
