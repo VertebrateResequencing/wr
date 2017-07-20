@@ -115,6 +115,14 @@ func (q *subQueue) len(reserveGroup ...string) int {
 	return len(itemList)
 }
 
+// firstItem is useful in testing to get the first item in the queue in a
+// thread-safe way.
+func (q *subQueue) firstItem() *Item {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+	return q.items[0]
+}
+
 // update ensures that if an item's "priority" characteristic(s) change, that
 // its order in the queue is corrected. Optional oldGroup is the previous
 // ReserveGroup that this item had, supplied if the group changed.

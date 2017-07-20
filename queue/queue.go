@@ -274,6 +274,8 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 // return the sub-queue the item should be moved to. If you don't set this, the
 // default will be to move all items to the ready sub-queue.
 func (queue *Queue) SetTTRCallback(callback TTRCallback) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
 	queue.ttrCb = callback
 }
 
@@ -1003,7 +1005,7 @@ func (queue *Queue) startDelayProcessing() {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
 		if queue.delayQueue.len() > 0 {
-			sleepTime = queue.delayQueue.items[0].readyAt.Sub(time.Now())
+			sleepTime = queue.delayQueue.firstItem().ReadyAt().Sub(time.Now())
 		} else {
 			sleepTime = time.Duration(1 * time.Hour)
 		}
@@ -1018,7 +1020,7 @@ func (queue *Queue) startDelayProcessing() {
 			addedReady := false
 			var items []*Item
 			for i := 0; i < len; i++ {
-				item := queue.delayQueue.items[0]
+				item := queue.delayQueue.firstItem()
 
 				if !item.isready() {
 					break
@@ -1046,6 +1048,8 @@ func (queue *Queue) startDelayProcessing() {
 }
 
 func (queue *Queue) delayNotificationTrigger(item *Item) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
 	if queue.delayTime.After(time.Now().Add(item.delay)) {
 		queue.delayNotification <- true
 	}
@@ -1056,7 +1060,7 @@ func (queue *Queue) startTTRProcessing() {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
 		if queue.runQueue.len() > 0 {
-			sleepTime = queue.runQueue.items[0].releaseAt.Sub(time.Now())
+			sleepTime = queue.runQueue.firstItem().ReleaseAt().Sub(time.Now())
 		} else {
 			sleepTime = time.Duration(1 * time.Hour)
 		}
@@ -1070,7 +1074,7 @@ func (queue *Queue) startTTRProcessing() {
 			length := queue.runQueue.len()
 			var delayedItems, buriedItems, readyItems []*Item
 			for i := 0; i < length; i++ {
-				item := queue.runQueue.items[0]
+				item := queue.runQueue.firstItem()
 
 				if !item.releasable() {
 					break

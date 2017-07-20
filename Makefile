@@ -27,6 +27,9 @@ install: vendor
 test:
 	@go test -p 1 -tags netgo ${PKG_LIST}
 
+race:
+	@go test -p 1 -tags netgo -race ./queue
+
 report: lint vet inef spell
 
 lint:
@@ -59,4 +62,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test report lint vet inef spell install clean dist
+.PHONY: build test race report lint vet inef spell install clean dist

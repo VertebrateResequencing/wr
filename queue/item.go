@@ -102,7 +102,7 @@ func newItem(key string, reserveGroup string, data interface{}, priority uint8, 
 	}
 }
 
-// Stats returns some information about the item
+// Stats returns some information about the item.
 func (item *Item) Stats() *ItemStats {
 	item.mutex.RLock()
 	defer item.mutex.RUnlock()
@@ -128,6 +128,30 @@ func (item *Item) Stats() *ItemStats {
 		Delay:     item.delay,
 		TTR:       item.ttr,
 	}
+}
+
+// State is a thread-safe way of getting just the state of an item, when you
+// don't need all of the other information from Stats().
+func (item *Item) State() ItemState {
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
+	return item.state
+}
+
+// ReleaseAt is a thread-safe way of getting just the releaseAt of an item, when
+// you don't need all of the other information from Stats().
+func (item *Item) ReleaseAt() time.Time {
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
+	return item.releaseAt
+}
+
+// ReadyAt is a thread-safe way of getting just the readyAt of an item, when you
+// don't need all of the other information from Stats().
+func (item *Item) ReadyAt() time.Time {
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
+	return item.readyAt
 }
 
 // Dependencies returns the keys of the other items we are dependent upon. Note,

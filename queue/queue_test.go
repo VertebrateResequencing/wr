@@ -23,6 +23,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"math/rand"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,9 +38,12 @@ func TestQueue(t *testing.T) {
 	Convey("Once 10 items of differing delay and ttr have been added to the queue", t, func() {
 		queue := New("myqueue")
 
+		var callBackLock sync.Mutex
 		readyAddedTestEnable := false
 		readyAddedChan := make(chan int, 1)
 		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			callBackLock.Lock()
+			defer callBackLock.Unlock()
 			if readyAddedTestEnable {
 				readyAddedChan <- len(allitemdata)
 			}
@@ -48,6 +52,8 @@ func TestQueue(t *testing.T) {
 		changedTestEnable := false
 		changedChan := make(chan *changedStruct, 1)
 		queue.SetChangedCallback(func(from, to SubQueue, data []interface{}) {
+			callBackLock.Lock()
+			defer callBackLock.Unlock()
 			if changedTestEnable {
 				changedChan <- &changedStruct{from, to, len(data)}
 			}
@@ -114,21 +120,26 @@ func TestQueue(t *testing.T) {
 			stats = queue.Stats()
 			So(stats.Delayed, ShouldEqual, 8)
 			So(stats.Ready, ShouldEqual, 2)
+			callBackLock.Lock()
 			readyAddedTestEnable = true
 			changedTestEnable = true
+			callBackLock.Unlock()
 			<-time.After(110 * time.Millisecond)
 			stats = queue.Stats()
 			So(stats.Delayed, ShouldEqual, 7)
 			So(stats.Ready, ShouldEqual, 3)
 			So(<-readyAddedChan, ShouldEqual, 3)
 			So(checkChanged(changedChan, SubQueueDelay, SubQueueReady, 1), ShouldBeTrue)
-			readyAddedTestEnable = false
+			callBackLock.Lock()
 			changedTestEnable = false
 
 			readyAddedTestEnable = true
+			callBackLock.Unlock()
 			queue.TriggerReadyAddedCallback()
 			So(<-readyAddedChan, ShouldEqual, 3)
+			callBackLock.Lock()
 			readyAddedTestEnable = false
+			callBackLock.Unlock()
 
 			Convey("Once ready you should be able to reserve them in the expected order", func() {
 				item1, err := queue.Reserve()
@@ -140,13 +151,17 @@ func TestQueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(item2, ShouldNotBeNil)
 				So(item2.Key, ShouldEqual, "key_1")
+				callBackLock.Lock()
 				changedTestEnable = true
+				callBackLock.Unlock()
 				item3, err := queue.Reserve()
 				So(err, ShouldBeNil)
 				So(item3, ShouldNotBeNil)
 				So(item3.Key, ShouldEqual, "key_2")
 				So(checkChanged(changedChan, SubQueueReady, SubQueueRun, 1), ShouldBeTrue)
+				callBackLock.Lock()
 				changedTestEnable = false
+				callBackLock.Unlock()
 				item4, err := queue.Reserve()
 				So(err, ShouldNotBeNil)
 				So(item4, ShouldBeNil)
@@ -166,15 +181,19 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("Once reserved you can release them", func() {
-					So(item1.state, ShouldEqual, ItemStateRun)
+					So(item1.State(), ShouldEqual, ItemStateRun)
 					So(item1.releases, ShouldEqual, 0)
+					callBackLock.Lock()
 					changedTestEnable = true
+					callBackLock.Unlock()
 					err := queue.Release(item1.Key)
 					So(err, ShouldBeNil)
-					So(item1.state, ShouldEqual, ItemStateDelay)
+					So(item1.State(), ShouldEqual, ItemStateDelay)
 					So(item1.releases, ShouldEqual, 1)
 					So(checkChanged(changedChan, SubQueueRun, SubQueueDelay, 1), ShouldBeTrue)
+					callBackLock.Lock()
 					changedTestEnable = false
+					callBackLock.Unlock()
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
@@ -190,15 +209,19 @@ func TestQueue(t *testing.T) {
 
 					Convey("Once released, items become ready after their delay", func() {
 						<-time.After(50 * time.Millisecond)
-						So(item1.state, ShouldEqual, ItemStateDelay)
+						So(item1.State(), ShouldEqual, ItemStateDelay)
+						callBackLock.Lock()
 						changedTestEnable = true
+						callBackLock.Unlock()
 						<-time.After(60 * time.Millisecond)
-						So(item1.state, ShouldEqual, ItemStateReady)
+						So(item1.State(), ShouldEqual, ItemStateReady)
 						stats = queue.Stats()
 						So(stats.Delayed, ShouldEqual, 6)
 						So(stats.Ready, ShouldEqual, 2)
 						So(checkChanged(changedChan, SubQueueDelay, SubQueueReady, 1), ShouldBeTrue)
+						callBackLock.Lock()
 						changedTestEnable = false
+						callBackLock.Unlock()
 
 						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
 							item1, err := queue.Reserve()
@@ -210,13 +233,13 @@ func TestQueue(t *testing.T) {
 							So(err, ShouldBeNil)
 							err = queue.Release(item1.Key)
 							So(err, ShouldBeNil)
-							So(item1.state, ShouldEqual, ItemStateDelay)
+							So(item1.State(), ShouldEqual, ItemStateDelay)
 							So(item1.releases, ShouldEqual, 2)
 
 							<-time.After(10 * time.Millisecond)
-							So(item1.state, ShouldEqual, ItemStateDelay)
+							So(item1.State(), ShouldEqual, ItemStateDelay)
 							<-time.After(20 * time.Millisecond)
-							So(item1.state, ShouldEqual, ItemStateReady)
+							So(item1.State(), ShouldEqual, ItemStateReady)
 						})
 
 						Convey("Once reserved and released, the delay can be altered", func() {
@@ -226,28 +249,32 @@ func TestQueue(t *testing.T) {
 							So(item1.Key, ShouldEqual, "key_0")
 							err = queue.Release(item1.Key)
 							So(err, ShouldBeNil)
-							So(item1.state, ShouldEqual, ItemStateDelay)
+							So(item1.State(), ShouldEqual, ItemStateDelay)
 							So(item1.releases, ShouldEqual, 2)
 
 							err = queue.SetDelay(item1.Key, 30*time.Millisecond)
 							So(err, ShouldBeNil)
 
 							<-time.After(20 * time.Millisecond)
-							So(item1.state, ShouldEqual, ItemStateDelay)
+							So(item1.State(), ShouldEqual, ItemStateDelay)
 							<-time.After(20 * time.Millisecond)
-							So(item1.state, ShouldEqual, ItemStateReady)
+							So(item1.State(), ShouldEqual, ItemStateReady)
 						})
 					})
 				})
 
 				Convey("Or remove them", func() {
-					So(item2.state, ShouldEqual, ItemStateRun)
+					So(item2.State(), ShouldEqual, ItemStateRun)
+					callBackLock.Lock()
 					changedTestEnable = true
+					callBackLock.Unlock()
 					err := queue.Remove(item2.Key)
 					So(err, ShouldBeNil)
-					So(item2.state, ShouldEqual, ItemStateRemoved)
+					So(item2.State(), ShouldEqual, ItemStateRemoved)
 					So(checkChanged(changedChan, SubQueueRun, SubQueueRemoved, 1), ShouldBeTrue)
+					callBackLock.Lock()
 					changedTestEnable = false
+					callBackLock.Unlock()
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 9)
@@ -290,15 +317,19 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("Or bury them", func() {
-					So(item3.state, ShouldEqual, ItemStateRun)
+					So(item3.State(), ShouldEqual, ItemStateRun)
 					So(item3.buries, ShouldEqual, 0)
+					callBackLock.Lock()
 					changedTestEnable = true
+					callBackLock.Unlock()
 					err := queue.Bury(item3.Key)
 					So(err, ShouldBeNil)
-					So(item3.state, ShouldEqual, ItemStateBury)
+					So(item3.State(), ShouldEqual, ItemStateBury)
 					So(item3.buries, ShouldEqual, 1)
 					So(checkChanged(changedChan, SubQueueRun, SubQueueBury, 1), ShouldBeTrue)
+					callBackLock.Lock()
 					changedTestEnable = false
+					callBackLock.Unlock()
 
 					stats = queue.Stats()
 					So(stats.Items, ShouldEqual, 10)
@@ -309,13 +340,17 @@ func TestQueue(t *testing.T) {
 
 					Convey("Once buried you can kick them", func() {
 						So(item3.kicks, ShouldEqual, 0)
+						callBackLock.Lock()
 						changedTestEnable = true
+						callBackLock.Unlock()
 						err := queue.Kick(item3.Key)
 						So(err, ShouldBeNil)
-						So(item3.state, ShouldEqual, ItemStateReady)
+						So(item3.State(), ShouldEqual, ItemStateReady)
 						So(item3.kicks, ShouldEqual, 1)
 						So(checkChanged(changedChan, SubQueueBury, SubQueueReady, 1), ShouldBeTrue)
+						callBackLock.Lock()
 						changedTestEnable = false
+						callBackLock.Unlock()
 
 						stats = queue.Stats()
 						So(stats.Items, ShouldEqual, 10)
@@ -326,11 +361,15 @@ func TestQueue(t *testing.T) {
 					})
 
 					Convey("You can also remove them whilst buried", func() {
+						callBackLock.Lock()
 						changedTestEnable = true
+						callBackLock.Unlock()
 						err := queue.Remove("key_2")
 						So(err, ShouldBeNil)
 						So(checkChanged(changedChan, SubQueueBury, SubQueueRemoved, 1), ShouldBeTrue)
+						callBackLock.Lock()
 						changedTestEnable = false
+						callBackLock.Unlock()
 
 						stats := queue.Stats()
 						So(stats.Items, ShouldEqual, 9)
@@ -353,28 +392,32 @@ func TestQueue(t *testing.T) {
 					qerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(qerr.Err, ShouldEqual, ErrNotBuried)
-					So(item3.state, ShouldEqual, ItemStateRun)
+					So(item3.State(), ShouldEqual, ItemStateRun)
 				})
 
 				Convey("If you do nothing they get auto-released to the ready queue", func() {
 					<-time.After(50 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateRun)
+					So(item1.State(), ShouldEqual, ItemStateRun)
+					callBackLock.Lock()
 					changedTestEnable = true
+					callBackLock.Unlock()
 					<-time.After(60 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateReady)
-					So(item1.timeouts, ShouldEqual, 1)
+					So(item1.State(), ShouldEqual, ItemStateReady)
+					So(item1.Stats().Timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 2)
 					So(stats.Running, ShouldEqual, 2)
 					So(checkChanged(changedChan, SubQueueRun, SubQueueReady, 1), ShouldBeTrue)
+					callBackLock.Lock()
 					changedTestEnable = false
+					callBackLock.Unlock()
 					<-time.After(110 * time.Millisecond)
-					So(item2.state, ShouldEqual, ItemStateReady)
+					So(item2.State(), ShouldEqual, ItemStateReady)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 4)
 					So(stats.Running, ShouldEqual, 1)
 					<-time.After(110 * time.Millisecond)
-					So(item3.state, ShouldEqual, ItemStateReady)
+					So(item3.State(), ShouldEqual, ItemStateReady)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 6)
 					So(stats.Running, ShouldEqual, 0)
@@ -391,21 +434,25 @@ func TestQueue(t *testing.T) {
 					defer queue.SetTTRCallback(defaultTTRCallback)
 
 					<-time.After(50 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateRun)
+					So(item1.State(), ShouldEqual, ItemStateRun)
 					stats = queue.Stats()
 					So(stats.Delayed, ShouldEqual, 7)
 					So(stats.Ready, ShouldEqual, 0)
 					So(stats.Running, ShouldEqual, 3)
+					callBackLock.Lock()
 					changedTestEnable = true
+					callBackLock.Unlock()
 					<-time.After(60 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateDelay)
-					So(item1.timeouts, ShouldEqual, 1)
+					So(item1.State(), ShouldEqual, ItemStateDelay)
+					So(item1.Stats().Timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					So(stats.Delayed, ShouldEqual, 7)
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 2)
 					So(checkChanged(changedChan, SubQueueRun, SubQueueDelay, 1), ShouldBeTrue)
+					callBackLock.Lock()
 					changedTestEnable = false
+					callBackLock.Unlock()
 				})
 
 				Convey("When they hit their ttr you can choose to bury them", func() {
@@ -415,45 +462,49 @@ func TestQueue(t *testing.T) {
 					defer queue.SetTTRCallback(defaultTTRCallback)
 
 					<-time.After(50 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateRun)
+					So(item1.State(), ShouldEqual, ItemStateRun)
 					stats = queue.Stats()
 					So(stats.Buried, ShouldEqual, 0)
 					So(stats.Delayed, ShouldEqual, 7)
 					So(stats.Ready, ShouldEqual, 0)
 					So(stats.Running, ShouldEqual, 3)
+					callBackLock.Lock()
 					changedTestEnable = true
+					callBackLock.Unlock()
 					<-time.After(60 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateBury)
-					So(item1.timeouts, ShouldEqual, 1)
+					So(item1.State(), ShouldEqual, ItemStateBury)
+					So(item1.Stats().Timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					So(stats.Buried, ShouldEqual, 1)
 					So(stats.Delayed, ShouldEqual, 6)
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 2)
 					So(checkChanged(changedChan, SubQueueRun, SubQueueBury, 1), ShouldBeTrue)
+					callBackLock.Lock()
 					changedTestEnable = false
+					callBackLock.Unlock()
 				})
 
 				Convey("Though you can prevent auto-release by touching them", func() {
 					<-time.After(50 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateRun)
+					So(item1.State(), ShouldEqual, ItemStateRun)
 					err := queue.Touch(item1.Key)
 					So(err, ShouldBeNil)
 					<-time.After(60 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateRun)
-					So(item1.timeouts, ShouldEqual, 0)
+					So(item1.State(), ShouldEqual, ItemStateRun)
+					So(item1.Stats().Timeouts, ShouldEqual, 0)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 1)
 					So(stats.Running, ShouldEqual, 3)
 					<-time.After(45 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateReady)
-					So(item1.timeouts, ShouldEqual, 1)
+					So(item1.State(), ShouldEqual, ItemStateReady)
+					So(item1.Stats().Timeouts, ShouldEqual, 1)
 					stats = queue.Stats()
 					// if the total elapsed time since the items were added to the queue goes over 500ms, we can get an extra 'Ready' item
 					So(stats.Ready, ShouldBeBetweenOrEqual, 2, 3)
 					So(stats.Running, ShouldEqual, 2)
 					<-time.After(60 * time.Millisecond)
-					So(item2.state, ShouldEqual, ItemStateReady)
+					So(item2.State(), ShouldEqual, ItemStateReady)
 					stats = queue.Stats()
 					So(stats.Ready, ShouldEqual, 4)
 					So(stats.Running, ShouldEqual, 1)
@@ -472,24 +523,24 @@ func TestQueue(t *testing.T) {
 					<-time.After(1 * time.Millisecond)
 					item1, _ := queue.Reserve()
 					So(item1.Key, ShouldEqual, "item1")
-					So(item1.state, ShouldEqual, ItemStateRun)
+					So(item1.State(), ShouldEqual, ItemStateRun)
 					item2, _ := queue.Reserve()
 					So(item2.Key, ShouldEqual, "item2")
-					So(item2.state, ShouldEqual, ItemStateRun)
+					So(item2.State(), ShouldEqual, ItemStateRun)
 
 					<-time.After(25 * time.Millisecond)
 
-					So(queue.runQueue.items[0].Key, ShouldEqual, "item1")
+					So(queue.runQueue.firstItem().Key, ShouldEqual, "item1")
 					queue.Touch(item1.Key)
-					So(queue.runQueue.items[0].Key, ShouldEqual, "item2")
+					So(queue.runQueue.firstItem().Key, ShouldEqual, "item2")
 
 					<-time.After(30 * time.Millisecond)
 
-					So(item1.state, ShouldEqual, ItemStateRun)
-					So(item2.state, ShouldEqual, ItemStateReady)
+					So(item1.State(), ShouldEqual, ItemStateRun)
+					So(item2.State(), ShouldEqual, ItemStateReady)
 
 					<-time.After(25 * time.Millisecond)
-					So(item1.state, ShouldEqual, ItemStateReady)
+					So(item1.State(), ShouldEqual, ItemStateReady)
 				})
 
 				Convey("Finally, you can destroy the queue, which doesn't let you do much else after", func() {
@@ -644,7 +695,7 @@ func TestQueue(t *testing.T) {
 			<-time.After(49 * time.Millisecond)
 			queue.Remove("item1")
 			<-time.After(6 * time.Millisecond)
-			So(item.state, ShouldEqual, ItemStateRemoved)
+			So(item.State(), ShouldEqual, ItemStateRemoved)
 
 			stats := queue.Stats()
 			So(stats.Items, ShouldEqual, 0)
@@ -662,11 +713,13 @@ func TestQueue(t *testing.T) {
 
 		Convey("The queue won't fall over if we manage to change the item's readyAt without updating the queue", func() {
 			<-time.After(45 * time.Millisecond)
+			item.mutex.Lock()
 			item.readyAt = time.Now().Add(25 * time.Millisecond)
+			item.mutex.Unlock()
 			<-time.After(10 * time.Millisecond)
-			So(item.state, ShouldEqual, ItemStateDelay)
+			So(item.State(), ShouldEqual, ItemStateDelay)
 			<-time.After(25 * time.Millisecond)
-			So(item.state, ShouldEqual, ItemStateReady)
+			So(item.State(), ShouldEqual, ItemStateReady)
 		})
 
 		Convey("The delay can be updated even in the delay queue", func() {
@@ -674,9 +727,9 @@ func TestQueue(t *testing.T) {
 			err := queue.Update("item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
 			So(err, ShouldBeNil)
 			<-time.After(30 * time.Millisecond)
-			So(item.state, ShouldEqual, ItemStateDelay)
+			So(item.State(), ShouldEqual, ItemStateDelay)
 			<-time.After(50 * time.Millisecond)
-			So(item.state, ShouldEqual, ItemStateReady)
+			So(item.State(), ShouldEqual, ItemStateReady)
 
 			Convey("When ready the priority can be updated", func() {
 				err := queue.Update("item1", "", "data", 1, 75*time.Millisecond, 50*time.Millisecond)
@@ -701,8 +754,12 @@ func TestQueue(t *testing.T) {
 
 				gotItem, err = queue.Reserve("newGroup")
 				So(err, ShouldBeNil)
-				So(gotItem, ShouldNotBeNil)
-				So(gotItem.Key, ShouldEqual, "item1")
+				// So(gotItem, ShouldNotBeNil) *** this causes a data race since goconvey must be trying to access members of gotItem
+				if gotItem == nil {
+					So(false, ShouldBeTrue)
+				} else {
+					So(gotItem.Key, ShouldEqual, "item1")
+				}
 			})
 		})
 
@@ -714,7 +771,7 @@ func TestQueue(t *testing.T) {
 				<-time.After(49 * time.Millisecond)
 				queue.Remove("item1")
 				<-time.After(6 * time.Millisecond)
-				So(item.state, ShouldEqual, ItemStateRemoved)
+				So(item.State(), ShouldEqual, ItemStateRemoved)
 
 				stats := queue.Stats()
 				So(stats.Items, ShouldEqual, 0)
@@ -723,18 +780,20 @@ func TestQueue(t *testing.T) {
 			})
 
 			Convey("The queue won't fall over if we manage to change the item's releaseAt without updating the queue", func() {
-				So(item.state, ShouldEqual, ItemStateRun)
+				So(item.State(), ShouldEqual, ItemStateRun)
 				<-time.After(49 * time.Millisecond)
 				// the state should still be run at this point, but due to
 				// timing vagueries it might not be; be more forgiving to
 				// following tests by testing against current state instead of
 				// explicit 'run'
 				currentState := item.state
+				item.mutex.Lock()
 				item.releaseAt = time.Now().Add(25 * time.Millisecond)
+				item.mutex.Unlock()
 				<-time.After(6 * time.Millisecond)
-				So(item.state, ShouldEqual, currentState)
+				So(item.State(), ShouldEqual, currentState)
 				<-time.After(25 * time.Millisecond)
-				So(item.state, ShouldEqual, ItemStateReady)
+				So(item.State(), ShouldEqual, ItemStateReady)
 			})
 
 			Convey("When running the ttr can be updated", func() {
@@ -742,9 +801,9 @@ func TestQueue(t *testing.T) {
 				err := queue.Update("item1", "", "data", 0, 50*time.Millisecond, 75*time.Millisecond)
 				So(err, ShouldBeNil)
 				<-time.After(30 * time.Millisecond)
-				So(item.state, ShouldEqual, ItemStateRun)
+				So(item.State(), ShouldEqual, ItemStateRun)
 				<-time.After(50 * time.Millisecond)
-				So(item.state, ShouldEqual, ItemStateReady)
+				So(item.State(), ShouldEqual, ItemStateReady)
 			})
 		})
 	})
