@@ -250,6 +250,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		newJobKeys[keyStr] = true
 		key := []byte(keyStr)
 
+		job.RLock()
 		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(job.RepGroup, key), nil})
 
 		for _, depGroup := range job.DepGroups {
@@ -262,6 +263,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		for _, depGroup := range job.Dependencies.DepGroups() {
 			rdgLookups = append(rdgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
 		}
+		job.RUnlock()
 
 		var encoded []byte
 		enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -657,7 +659,12 @@ func (db *db) retrieveEnv(envkey string) (envc []byte) {
 // us a significant speed boost.
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorage bool) {
 	jobkey := job.key()
+	job.RLock()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
+	jrg := job.ReqGroup
+	jpm := job.PeakRAM
+	jec := job.Exitcode
+	job.RUnlock()
 	go func() {
 		db.Lock()
 		db.updatingAfterJobExit++
@@ -670,7 +677,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 			be.Delete(key)
 
 			var err error
-			if job.Exitcode != 0 || forceStorage {
+			if jec != 0 || forceStorage {
 				if len(stdo) > 0 {
 					err = bo.Put(key, stdo)
 				}
@@ -683,12 +690,12 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 			}
 
 			b := tx.Bucket(bucketJobMBs)
-			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpm)), []byte(strconv.Itoa(jpm)))
 			if err != nil {
 				return err
 			}
 			b = tx.Bucket(bucketJobSecs)
-			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
+			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
 
 			return err
 		})

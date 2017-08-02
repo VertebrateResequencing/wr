@@ -34,11 +34,11 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	// "sync"
-	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -201,7 +201,7 @@ func TestJobqueue(t *testing.T) {
 				ClientReleaseDelay = 100 * time.Second
 				j1worked := make(chan bool)
 				go func() {
-					err = jq.Execute(job, config.RunnerExecShell)
+					err := jq.Execute(job, config.RunnerExecShell)
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal && job.State == JobStateDelayed && job.Exited && job.Exitcode == -1 && job.FailReason == FailReasonSignal {
 							j1worked <- true
@@ -212,7 +212,7 @@ func TestJobqueue(t *testing.T) {
 
 				j2worked := make(chan bool)
 				go func() {
-					err = jq.Execute(job2, config.RunnerExecShell)
+					err := jq.Execute(job2, config.RunnerExecShell)
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == JobStateDelayed && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
 							j2worked <- true
@@ -483,7 +483,9 @@ func TestJobqueue(t *testing.T) {
 			})
 
 			Convey("You can add more jobs, but without any environment variables", func() {
+				server.racmutex.Lock()
 				server.rc = ""
+				server.racmutex.Unlock()
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 				inserts, already, err := jq.Add([]*Job{{Cmd: "echo $wr_jobqueue_test_no_envvar && false", Cwd: "/tmp", ReqGroup: "new_group", Requirements: standardReqs, Priority: uint8(100), RepGroup: "noenvvar"}}, []string{}, true)
 				So(err, ShouldBeNil)
@@ -534,7 +536,9 @@ func TestJobqueue(t *testing.T) {
 			})
 
 			Convey("You can add more jobs, overriding certain environment variables", func() {
+				server.racmutex.Lock()
 				server.rc = ""
+				server.racmutex.Unlock()
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
 				inserts, already, err := jq.Add([]*Job{{
 					Cmd:          "echo $wr_jobqueue_test_no_envvar && echo $wr_jobqueue_test_no_envvar2 && false",
@@ -1540,11 +1544,13 @@ func TestJobqueue(t *testing.T) {
 						// jobs touched
 						touchJ2 := true
 						touchJ3 := true
+						var touchLock sync.Mutex
 						go func() {
 							ticker := time.NewTicker(50 * time.Millisecond)
 							for {
 								select {
 								case <-ticker.C:
+									touchLock.Lock()
 									if touchJ2 {
 										jq.Touch(j2)
 									}
@@ -1553,8 +1559,10 @@ func TestJobqueue(t *testing.T) {
 									}
 									if !touchJ2 && !touchJ3 {
 										ticker.Stop()
+										touchLock.Unlock()
 										return
 									}
+									touchLock.Unlock()
 									continue
 								}
 							}
@@ -1573,7 +1581,9 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
+						touchLock.Lock()
 						touchJ3 = false
+						touchLock.Unlock()
 						err = jq.Execute(j3, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1587,7 +1597,9 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
+						touchLock.Lock()
 						touchJ2 = false
+						touchLock.Unlock()
 						err = jq.Execute(j2, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1612,12 +1624,15 @@ func TestJobqueue(t *testing.T) {
 							for {
 								select {
 								case <-ticker.C:
+									touchLock.Lock()
 									if touchJ6 {
 										jq.Touch(j6)
 									} else {
 										ticker.Stop()
+										touchLock.Unlock()
 										return
 									}
+									touchLock.Unlock()
 									continue
 								}
 							}
@@ -1641,7 +1656,9 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
+						touchLock.Lock()
 						touchJ6 = false
+						touchLock.Unlock()
 						err = jq.Execute(j6, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1767,11 +1784,13 @@ func TestJobqueue(t *testing.T) {
 						// jobs touched
 						touchJ2 := true
 						touchJ3 := true
+						var touchLock sync.Mutex
 						go func() {
 							ticker := time.NewTicker(50 * time.Millisecond)
 							for {
 								select {
 								case <-ticker.C:
+									touchLock.Lock()
 									if touchJ2 {
 										jq.Touch(j2)
 									}
@@ -1780,8 +1799,10 @@ func TestJobqueue(t *testing.T) {
 									}
 									if !touchJ2 && !touchJ3 {
 										ticker.Stop()
+										touchLock.Unlock()
 										return
 									}
+									touchLock.Unlock()
 									continue
 								}
 							}
@@ -1800,7 +1821,9 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
+						touchLock.Lock()
 						touchJ3 = false
+						touchLock.Unlock()
 						err = jq.Execute(j3, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1814,7 +1837,9 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
+						touchLock.Lock()
 						touchJ2 = false
+						touchLock.Unlock()
 						err = jq.Execute(j2, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -1839,12 +1864,15 @@ func TestJobqueue(t *testing.T) {
 							for {
 								select {
 								case <-ticker.C:
+									touchLock.Lock()
 									if touchJ6 {
 										jq.Touch(j6)
 									} else {
 										ticker.Stop()
+										touchLock.Unlock()
 										return
 									}
+									touchLock.Unlock()
 									continue
 								}
 							}
@@ -1868,7 +1896,9 @@ func TestJobqueue(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
+						touchLock.Lock()
 						touchJ6 = false
+						touchLock.Unlock()
 						err = jq.Execute(j6, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
@@ -2661,7 +2691,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 			}
 
-			clientConnectTime = 10 * time.Second
+			clientConnectTime = 20 * time.Second // it takes a long time with -race to add 10000 jobs...
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
@@ -2685,7 +2715,7 @@ func TestJobqueue(t *testing.T) {
 			done := make(chan bool, 1)
 			fourHundredCount := 0
 			go func() {
-				limit := time.After(30 * time.Second)
+				limit := time.After(45 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
@@ -2709,9 +2739,11 @@ func TestJobqueue(t *testing.T) {
 							done <- true
 							return
 						} else if fourHundredCount == 0 {
+							server.sgcmutex.Lock()
 							if count, existed := server.sgroupcounts["400:0:1:0"]; existed {
 								fourHundredCount = count
 							}
+							server.sgcmutex.Unlock()
 						}
 						continue
 					case <-limit:
@@ -2754,9 +2786,11 @@ func TestJobqueue(t *testing.T) {
 								return
 							}
 						} else if twoHundredCount == 0 {
+							server.sgcmutex.Lock()
 							if count, existed := server.sgroupcounts["200:30:1:0"]; existed {
 								twoHundredCount = count
 							}
+							server.sgcmutex.Unlock()
 						}
 						continue
 					case <-limit:
@@ -2810,6 +2844,7 @@ func TestJobqueue(t *testing.T) {
 	// start these tests anew because these tests have the server spawn runners
 	// that fail, simulating some network issue
 	Convey("Once a new jobqueue server is up with bad runners", t, func() {
+		<-time.After(1 * time.Second)
 		ServerItemTTR = 1 * time.Second
 		ServerCheckRunnerTime = 2 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond

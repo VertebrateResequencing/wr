@@ -162,7 +162,7 @@ type Server struct {
 	sgrouptrigs   map[string]int
 	sgtr          map[string]*scheduler.Requirements
 	sgcmutex      sync.Mutex
-	racmutex      sync.Mutex
+	racmutex      sync.RWMutex
 	rc            string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
 	statusCaster  *bcast.Group
 	racCheckTimer *time.Timer
@@ -349,7 +349,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	if len(priorJobs) > 0 {
 		jobsByQueue := make(map[string][]*queue.ItemDef)
 		for _, job := range priorJobs {
-			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.schedulerGroup, Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
 		}
 		for qname, itemdefs := range jobsByQueue {
 			q := s.getOrCreateQueue(qname)
@@ -427,16 +427,22 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 // will return with an error indicating why it stopped blocking, which will
 // be due to receiving a signal or because you called Stop()
 func (s *Server) Block() (err error) {
+	s.racmutex.Lock()
 	s.blocking = true
+	s.racmutex.Unlock()
 	err = <-s.done
 	s.db.close() //*** do one last backup?
+	s.racmutex.Lock()
 	s.up = false
 	s.blocking = false
+	s.racmutex.Unlock()
 	return
 }
 
 // Stop will cause a graceful shut down of the server.
 func (s *Server) Stop() (err error) {
+	s.racmutex.Lock()
+	defer s.racmutex.Unlock()
 	if s.up {
 		s.stop <- true // results in shutdown()
 		if !s.blocking {
@@ -451,6 +457,8 @@ func (s *Server) Stop() (err error) {
 // Drain will stop the server spawning new runners and stop Reserve*() from
 // returning any more Jobs. Once all current runners exit, we Stop().
 func (s *Server) Drain() (err error) {
+	s.racmutex.Lock()
+	defer s.racmutex.Unlock()
 	if s.up {
 		if !s.drain {
 			s.drain = true
@@ -505,12 +513,14 @@ func (s *Server) GetServerStats() *ServerStats {
 
 			// work out when this Job is going to end, and update etc if later
 			job := inter.(*Job)
+			job.RLock()
 			if !job.StartTime.IsZero() && job.Requirements.Time.Seconds() > 0 {
 				endTime := job.StartTime.Add(job.Requirements.Time)
 				if endTime.After(etc) {
 					etc = endTime
 				}
 			}
+			job.RUnlock()
 		}
 	}
 
@@ -608,32 +618,33 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					req = job.Requirements
 				}
 
-				prevSchedGroup := job.schedulerGroup
-				job.schedulerGroup = req.Stringify()
-				if prevSchedGroup != job.schedulerGroup {
+				prevSchedGroup := job.getSchedulerGroup()
+				schedulerGroup := req.Stringify()
+				if prevSchedGroup != schedulerGroup {
+					job.setSchedulerGroup(schedulerGroup)
 					if prevSchedGroup != "" {
-						job.scheduledRunner = false
+						job.setScheduledRunner(false)
 					}
 					if s.rc != "" {
-						q.SetReserveGroup(job.key(), job.schedulerGroup)
+						q.SetReserveGroup(job.key(), schedulerGroup)
 					}
 				}
 
 				if s.rc != "" {
-					if job.scheduledRunner {
-						groupsScheduledCounts[job.schedulerGroup]++
+					if job.getScheduledRunner() {
+						groupsScheduledCounts[schedulerGroup]++
 					} else {
-						job.scheduledRunner = true
+						job.setScheduledRunner(true)
 					}
-					groups[job.schedulerGroup]++
+					groups[schedulerGroup]++
 
 					if noRec {
-						noRecGroups[job.schedulerGroup] = true
+						noRecGroups[schedulerGroup] = true
 					}
 
 					s.sgcmutex.Lock()
-					if _, set := s.sgtr[job.schedulerGroup]; !set {
-						s.sgtr[job.schedulerGroup] = req
+					if _, set := s.sgtr[schedulerGroup]; !set {
+						s.sgtr[schedulerGroup] = req
 					}
 					s.sgcmutex.Unlock()
 				}
@@ -645,7 +656,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				stillRunning := make(map[string]bool)
 				for _, inter := range q.GetRunningData() {
 					job := inter.(*Job)
-					stillRunning[job.schedulerGroup] = true
+					stillRunning[job.getSchedulerGroup()] = true
 				}
 				for group := range s.sgroupcounts {
 					if _, needed := groups[group]; !needed && !stillRunning[group] {
@@ -733,7 +744,10 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				to = JobStateDeleted
 				for _, inter := range data {
 					job := inter.(*Job)
-					if job.State == JobStateComplete {
+					job.RLock()
+					jState := job.State
+					job.RUnlock()
+					if jState == JobStateComplete {
 						to = JobStateComplete
 						break
 					}
@@ -751,7 +765,7 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				// if we change from running, mark that we have not scheduled a
 				// runner for the job
 				if from == JobStateRunning {
-					job.scheduledRunner = false
+					job.setScheduledRunner(false)
 				}
 
 				groups[job.RepGroup]++
@@ -771,6 +785,8 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 		q.SetTTRCallback(func(data interface{}) queue.SubQueue {
 			job := data.(*Job)
 
+			job.Lock()
+			defer job.Unlock()
 			if !job.StartTime.IsZero() && !job.Exited {
 				job.UntilBuried--
 				job.Exited = true
@@ -877,7 +893,6 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, s
 	if limit > 0 || state != "" || getStd || getEnv {
 		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
 	}
-
 	return
 }
 
@@ -910,7 +925,11 @@ func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state JobState, getSt
 func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, getEnv bool) (limited []*Job) {
 	groups := make(map[string][]*Job)
 	for _, job := range jobs {
+		job.RLock()
 		jState := job.State
+		jExitCode := job.Exitcode
+		jFailReason := job.FailReason
+		job.RUnlock()
 		if jState == JobStateRunning {
 			jState = JobStateReserved
 		}
@@ -927,7 +946,7 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 		if limit == 0 {
 			limited = append(limited, job)
 		} else {
-			group := fmt.Sprintf("%s.%d.%s", jState, job.Exitcode, job.FailReason)
+			group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
 			jobs, existed := groups[group]
 			if existed {
 				lenj := len(jobs)
@@ -980,7 +999,10 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		s.racmutex.RLock()
+		rc := s.rc
+		s.racmutex.RUnlock()
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -997,7 +1019,9 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 						break
 					}
 					job := item.Data.(*Job)
+					job.Lock()
 					job.FailReason = FailReasonResource
+					job.Unlock()
 					q.Bury(item.Key)
 					s.sgroupcounts[group]--
 				}
@@ -1084,6 +1108,8 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 // shutdown stops listening to client connections, close all queues and
 // persists them to disk.
 func (s *Server) shutdown() {
+	s.Lock()
+	defer s.Unlock()
 	s.sock.Close()
 	s.db.close()
 	s.scheduler.Cleanup()

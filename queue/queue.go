@@ -1123,7 +1123,11 @@ func (queue *Queue) startTTRProcessing() {
 }
 
 func (queue *Queue) ttrNotificationTrigger(item *Item) {
+	queue.mutex.RLock()
 	if queue.ttrTime.After(time.Now().Add(item.ttr)) {
+		queue.mutex.RUnlock()
 		queue.ttrNotification <- true
+	} else {
+		queue.mutex.RUnlock()
 	}
 }
