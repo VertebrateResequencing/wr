@@ -3075,17 +3075,17 @@ func TestJobqueueWithMounts(t *testing.T) {
 		return
 	}
 
+	ServerLogClientErrors = false
+	ServerInterruptTime = 10 * time.Millisecond
+	ServerReserveTicker = 10 * time.Millisecond
+	ClientReleaseDelay = 100 * time.Millisecond
+	clientConnectTime := 10 * time.Second
+	ServerItemTTR = 10 * time.Second
+	ClientTouchInterval = 50 * time.Millisecond
+
 	Convey("You can connect and run commands that rely on files in a remote S3 object store", t, func() {
 		config := internal.ConfigLoad("development", true)
 		addr := "localhost:" + config.ManagerPort
-
-		ServerLogClientErrors = false
-		ServerInterruptTime = 10 * time.Millisecond
-		ServerReserveTicker = 10 * time.Millisecond
-		ClientReleaseDelay = 100 * time.Millisecond
-		clientConnectTime := 10 * time.Second
-		ServerItemTTR = 10 * time.Second
-		ClientTouchInterval = 50 * time.Millisecond
 
 		// pwd, err := os.Getwd()
 		// if err != nil {
