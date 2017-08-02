@@ -1,10 +1,8 @@
 hash: d24970895baf6afba8742d50169a04ba9eb198b8bac51bff30a5c2843e274b18
-updated: 2017-07-19T09:28:46.752541505+01:00
+updated: 2017-08-01T09:58:57.639039012+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
-- name: github.com/alexflint/go-filemutex
-  version: cc9a3f596698b443ddec2e5f027e45b66cc900f8
 - name: github.com/boltdb/bolt
   version: 2f1ce7a837dcb8da3ec595b1dac9d0632f0f99e8
 - name: github.com/BurntSushi/toml
@@ -102,6 +100,8 @@ imports:
   - du
 - name: github.com/satori/go.uuid
   version: 5bf94b69c6b68ee1b541973bb8e1144db23a194b
+- name: github.com/sb10/go-filemutex
+  version: 55ed66a0516fb98d4b30f7290745581ee65e0f5a
 - name: github.com/sb10/l15h
   version: 64c488bf8e2265529e37899226b038221f12e2e9
 - name: github.com/sevlyar/go-daemon
@@ -128,7 +128,7 @@ imports:
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: dad1fb685c84684924f215ec86169f766c34ba7d
+  version: aea884abbfcee4f2fc89402efac29ebb361acbe5
 - name: github.com/VividCortex/ewma
   version: 4cc8cc5a2a44f01d31b303a7280e20e00a6eafdb
 - name: golang.org/x/crypto
