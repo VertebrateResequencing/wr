@@ -28,8 +28,13 @@ test:
 	@go test -p 1 -tags netgo ${PKG_LIST}
 
 race:
-	@go test -p 1 -tags netgo -race ./queue
-
+	@go test -p 1 -tags netgo -race -v ./queue
+	@go test -p 1 -tags netgo -race -v ./jobqueue
+	# @go test -p 1 -tags netgo -race -v ./jobqueue/scheduler -run TestLocal *** currently fails under -race, but has no race condition
+	@go test -p 1 -tags netgo -race -v ./jobqueue/scheduler -run TestLSF
+	@go test -p 1 -tags netgo -race -v ./jobqueue/scheduler -run TestOpenstack
+	@go test -p 1 -tags netgo -race -v ./cloud
+	
 report: lint vet inef spell
 
 lint:

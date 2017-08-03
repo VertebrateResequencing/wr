@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -118,16 +119,16 @@ func TestLocal(t *testing.T) {
 			Convey("It eventually runs them all", func() {
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU) // from the speed test + half of the newly scheduled tests
 				So(numfiles, ShouldEqual, maxCPU+maxCPU)
 
 				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, maxCPU+count)
+				numfiles = testDirForFiles(tmpdir, maxCPU+count) // from the speed test + all the newly scheduled tests have at least started
 				So(numfiles, ShouldEqual, maxCPU+count)
 				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
 				if numfiles < maxCPU+count {
-					So(s.Busy(), ShouldBeTrue)
+					So(s.Busy(), ShouldBeTrue) // but they might not all have finished quite yet
 				}
 
 				<-time.After(200*time.Millisecond + overhead) // an extra 150ms for leeway
@@ -438,7 +439,6 @@ func TestOpenstack(t *testing.T) {
 		}
 		defer os.RemoveAll(tmpdir)
 		config.SavePath = filepath.Join(tmpdir, "os_resources")
-
 		s, err := New("openstack", config)
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
@@ -664,17 +664,21 @@ func TestOpenstack(t *testing.T) {
 						So(s.Busy(), ShouldBeTrue)
 
 						spawned := 0
+						var ssync sync.Mutex
 						go func() {
 							ticker := time.NewTicker(1 * time.Second)
 							limit := time.After(time.Duration(eta-5) * time.Second)
 							for {
 								select {
 								case <-ticker.C:
+									ssync.Lock()
 									spawned = novaCountServers(rName, oReqs["cloud_os"])
 									if spawned > 0 {
 										ticker.Stop()
+										ssync.Unlock()
 										return
 									}
+									ssync.Unlock()
 									continue
 								case <-limit:
 									ticker.Stop()
@@ -684,7 +688,9 @@ func TestOpenstack(t *testing.T) {
 						}()
 
 						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+						ssync.Lock()
 						So(spawned, ShouldBeBetweenOrEqual, 1, newCount)
+						ssync.Unlock()
 
 						<-time.After(20 * time.Second)
 
