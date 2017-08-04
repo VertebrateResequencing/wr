@@ -150,25 +150,27 @@ var defaultTTRCallback = func(data interface{}) SubQueue {
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
 type Queue struct {
-	Name              string
-	mutex             sync.RWMutex
-	items             map[string]*Item
-	dependants        map[string]map[string]*Item
-	delayQueue        *subQueue
-	readyQueue        *subQueue
-	runQueue          *subQueue
-	buryQueue         *buryQueue
-	depQueue          *depQueue
-	delayNotification chan bool
-	delayClose        chan bool
-	delayTime         time.Time
-	ttrNotification   chan bool
-	ttrClose          chan bool
-	ttrTime           time.Time
-	closed            bool
-	readyAddedCb      ReadyAddedCallback
-	changedCb         ChangedCallback
-	ttrCb             TTRCallback
+	Name                   string
+	mutex                  sync.RWMutex
+	items                  map[string]*Item
+	dependants             map[string]map[string]*Item
+	delayQueue             *subQueue
+	readyQueue             *subQueue
+	runQueue               *subQueue
+	buryQueue              *buryQueue
+	depQueue               *depQueue
+	delayNotification      chan bool
+	startedDelayProcessing chan bool
+	delayClose             chan bool
+	delayTime              time.Time
+	ttrNotification        chan bool
+	startedTTRProcessing   chan bool
+	ttrClose               chan bool
+	ttrTime                time.Time
+	closed                 bool
+	readyAddedCb           ReadyAddedCallback
+	changedCb              ChangedCallback
+	ttrCb                  TTRCallback
 }
 
 // Stats holds information about the Queue's state.
@@ -195,24 +197,28 @@ type ItemDef struct {
 // New is a helper to create instance of the Queue struct.
 func New(name string) *Queue {
 	queue := &Queue{
-		Name:              name,
-		items:             make(map[string]*Item),
-		dependants:        make(map[string]map[string]*Item),
-		delayQueue:        newSubQueue(0),
-		readyQueue:        newSubQueue(1),
-		runQueue:          newSubQueue(2),
-		buryQueue:         newBuryQueue(),
-		depQueue:          newDependencyQueue(),
-		ttrNotification:   make(chan bool, 1),
-		ttrClose:          make(chan bool, 1),
-		ttrTime:           time.Now(),
-		delayNotification: make(chan bool, 1),
-		delayClose:        make(chan bool, 1),
-		delayTime:         time.Now(),
-		ttrCb:             defaultTTRCallback,
+		Name:                   name,
+		items:                  make(map[string]*Item),
+		dependants:             make(map[string]map[string]*Item),
+		delayQueue:             newSubQueue(0),
+		readyQueue:             newSubQueue(1),
+		runQueue:               newSubQueue(2),
+		buryQueue:              newBuryQueue(),
+		depQueue:               newDependencyQueue(),
+		ttrNotification:        make(chan bool, 1),
+		startedTTRProcessing:   make(chan bool),
+		ttrClose:               make(chan bool, 1),
+		ttrTime:                time.Now(),
+		delayNotification:      make(chan bool, 1),
+		startedDelayProcessing: make(chan bool),
+		delayClose:             make(chan bool, 1),
+		delayTime:              time.Now(),
+		ttrCb:                  defaultTTRCallback,
 	}
 	go queue.startDelayProcessing()
+	<-queue.startedDelayProcessing
 	go queue.startTTRProcessing()
+	<-queue.startedTTRProcessing
 	return queue
 }
 
@@ -1001,9 +1007,10 @@ func (queue *Queue) HasDependents(key string) (has bool, err error) {
 }
 
 func (queue *Queue) startDelayProcessing() {
+	sendStarted := true
 	for {
-		var sleepTime time.Duration
 		queue.mutex.Lock()
+		var sleepTime time.Duration
 		if queue.delayQueue.len() > 0 {
 			sleepTime = queue.delayQueue.firstItem().ReadyAt().Sub(time.Now())
 		} else {
@@ -1012,6 +1019,9 @@ func (queue *Queue) startDelayProcessing() {
 
 		queue.delayTime = time.Now().Add(sleepTime)
 		queue.mutex.Unlock()
+		if sendStarted {
+			queue.startedDelayProcessing <- true
+		}
 
 		select {
 		case <-time.After(queue.delayTime.Sub(time.Now())):
@@ -1039,7 +1049,9 @@ func (queue *Queue) startDelayProcessing() {
 				queue.changed(SubQueueDelay, SubQueueReady, items)
 				queue.readyAdded()
 			}
+			sendStarted = false
 		case <-queue.delayNotification:
+			sendStarted = true
 			continue
 		case <-queue.delayClose:
 			return
@@ -1048,14 +1060,18 @@ func (queue *Queue) startDelayProcessing() {
 }
 
 func (queue *Queue) delayNotificationTrigger(item *Item) {
-	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
+	queue.mutex.RLock()
 	if queue.delayTime.After(time.Now().Add(item.delay)) {
+		queue.mutex.RUnlock()
 		queue.delayNotification <- true
+		<-queue.startedDelayProcessing
+	} else {
+		queue.mutex.RUnlock()
 	}
 }
 
 func (queue *Queue) startTTRProcessing() {
+	sendStarted := true
 	for {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
@@ -1067,6 +1083,9 @@ func (queue *Queue) startTTRProcessing() {
 
 		queue.ttrTime = time.Now().Add(sleepTime)
 		queue.mutex.Unlock()
+		if sendStarted {
+			queue.startedTTRProcessing <- true
+		}
 
 		select {
 		case <-time.After(queue.ttrTime.Sub(time.Now())):
@@ -1114,7 +1133,9 @@ func (queue *Queue) startTTRProcessing() {
 				queue.changed(SubQueueRun, SubQueueReady, readyItems)
 				queue.readyAdded()
 			}
+			sendStarted = false
 		case <-queue.ttrNotification:
+			sendStarted = true
 			continue
 		case <-queue.ttrClose:
 			return
@@ -1127,6 +1148,7 @@ func (queue *Queue) ttrNotificationTrigger(item *Item) {
 	if queue.ttrTime.After(time.Now().Add(item.ttr)) {
 		queue.mutex.RUnlock()
 		queue.ttrNotification <- true
+		<-queue.startedTTRProcessing
 	} else {
 		queue.mutex.RUnlock()
 	}

@@ -195,6 +195,12 @@ func (q *subQueue) Swap(i, j int) {
 		itemList = q.items
 	}
 	itemList[i], itemList[j] = itemList[j], itemList[i]
+	itemList[i].mutex.Lock()
+	defer itemList[i].mutex.Unlock()
+	if i != j {
+		itemList[j].mutex.Lock()
+		defer itemList[j].mutex.Unlock()
+	}
 	itemList[i].queueIndexes[q.sqIndex] = i
 	itemList[j].queueIndexes[q.sqIndex] = j
 }
@@ -210,7 +216,9 @@ func (q *subQueue) Push(x interface{}) {
 	} else {
 		itemList = q.items
 	}
+	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = len(itemList)
+	item.mutex.Unlock()
 	itemList = append(itemList, item)
 	if q.sqIndex == 1 {
 		q.groupedItems[q.reserveGroup] = itemList
@@ -231,7 +239,9 @@ func (q *subQueue) Pop() interface{} {
 	}
 	lasti := len(itemList) - 1
 	item := itemList[lasti]
+	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = -1
+	item.mutex.Unlock()
 	itemList = itemList[:lasti]
 	if q.sqIndex == 1 {
 		q.groupedItems[q.reserveGroup] = itemList
