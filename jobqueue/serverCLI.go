@@ -53,6 +53,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	if cr.User == "" || !s.allowedUsers[cr.User] {
 		srerr = ErrWrongUser
 		qerr = fmt.Sprintf("User %s denied access (only %s allowed)", cr.User, s.ServerInfo.AllowedUsers)
+	} else if q == nil {
+		// the server just got shutdown, we shouldn't really end up here?... Can
+		// we even respond??
+		srerr = ErrClosedStop
+		qerr = "The server has been stopped"
 	} else {
 		switch cr.Method {
 		case "ping":
@@ -92,6 +97,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							job.EnvKey = envkey
 							job.UntilBuried = job.Retries + 1
 							job.Queue = cr.Queue
+							if s.rc != "" {
+								job.schedulerGroup = job.Requirements.Stringify()
+							}
 							job.Unlock()
 
 							// in cloud deployments we may bring up a server running an

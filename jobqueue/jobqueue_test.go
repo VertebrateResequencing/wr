@@ -65,6 +65,7 @@ func init() {
 	flag.IntVar(&rtimeout, "rtimeout", 1, "reserve timeout for runnermode")
 	flag.IntVar(&maxmins, "maxmins", 0, "maximum mins allowed for  runnermode")
 	flag.StringVar(&runnermodetmpdir, "tmpdir", "", "tmp dir for runnermode")
+	ServerLogClientErrors = false
 }
 
 func TestJobqueue(t *testing.T) {
@@ -93,7 +94,6 @@ func TestJobqueue(t *testing.T) {
 	}
 	addr := "localhost:" + config.ManagerPort
 
-	ServerLogClientErrors = false
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
@@ -150,7 +150,7 @@ func TestJobqueue(t *testing.T) {
 			go func() {
 				<-time.After(10 * time.Second)
 				log.Println("test daemon stopping after 10s")
-				server.Stop()
+				server.Stop(true)
 			}()
 
 			log.Println("test daemon up, will block")
@@ -262,7 +262,6 @@ func TestJobqueue(t *testing.T) {
 	var server *Server
 	var err error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
-		<-time.After(2 * time.Second) // try and ensure no server is still using port
 		_, err = Connect(addr, "test_queue", clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
@@ -271,7 +270,6 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		<-time.After(2 * time.Second) // try and ensure no server is still using port
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
@@ -610,14 +608,13 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Reset(func() {
-			server.Stop()
+			server.Stop(true)
 		})
 	})
 
 	if server != nil {
-		server.Stop()
+		server.Stop(true)
 	}
-	<-time.After(2 * time.Second) // try and ensure no server is still using port
 
 	// start these tests anew because I don't want to mess with the timings in
 	// the above tests
@@ -2098,12 +2095,12 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Reset(func() {
-			server.Stop()
+			server.Stop(true)
 		})
 	})
 
 	if server != nil {
-		server.Stop()
+		server.Stop(true)
 	}
 
 	// start these tests anew because I need to disable dev-mode wiping of the
@@ -2136,7 +2133,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 
-				server.Stop()
+				server.Stop(true)
 				wipeDevDBOnInit = false
 				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
@@ -2254,12 +2251,12 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Reset(func() {
-			server.Stop()
+			server.Stop(true)
 		})
 	})
 
 	if server != nil {
-		server.Stop()
+		server.Stop(true)
 	}
 
 	// start these tests anew because these tests have the server spawn runners
@@ -2561,7 +2558,6 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
-			<-time.After(10 * time.Second)
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
@@ -2686,7 +2682,7 @@ func TestJobqueue(t *testing.T) {
 				lsfConfig := runningConfig
 				lsfConfig.SchedulerName = "lsf"
 				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing"}
-				server.Stop()
+				server.Stop(true)
 				server, _, err = Serve(lsfConfig)
 				So(err, ShouldBeNil)
 			}
@@ -2836,15 +2832,18 @@ func TestJobqueue(t *testing.T) {
 
 		Reset(func() {
 			if server != nil {
-				server.Stop()
+				server.Stop(true)
 			}
 		})
 	})
 
+	if server != nil {
+		server.Stop(true)
+	}
+
 	// start these tests anew because these tests have the server spawn runners
 	// that fail, simulating some network issue
 	Convey("Once a new jobqueue server is up with bad runners", t, func() {
-		<-time.After(1 * time.Second)
 		ServerItemTTR = 1 * time.Second
 		ServerCheckRunnerTime = 2 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
@@ -2908,8 +2907,28 @@ func TestJobqueue(t *testing.T) {
 
 				So(runnerCheck(), ShouldEqual, 0)
 
-				<-time.After(2 * time.Second)
-				So(server.HasRunners(), ShouldBeTrue)
+				hadRunner := make(chan bool, 1)
+				go func() {
+					limit := time.After(3 * time.Second)
+					ticker := time.NewTicker(100 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if server.HasRunners() {
+								ticker.Stop()
+								hadRunner <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							hadRunner <- false
+							return
+						}
+					}
+				}()
+				So(<-hadRunner, ShouldBeTrue)
+				<-time.After(1 * time.Second)
 
 				jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateReady, false, false)
 				So(err, ShouldBeNil)
@@ -2929,13 +2948,13 @@ func TestJobqueue(t *testing.T) {
 
 		Reset(func() {
 			if server != nil {
-				server.Stop()
+				server.Stop(true)
 			}
 		})
 	})
 
 	if server != nil {
-		server.Stop()
+		server.Stop(true)
 	}
 }
 
@@ -2948,20 +2967,20 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	osUser := os.Getenv("OS_OS_USERNAME")
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
+
+	ServerInterruptTime = 10 * time.Millisecond
+	ServerReserveTicker = 10 * time.Millisecond
+	ClientReleaseDelay = 100 * time.Millisecond
+	clientConnectTime := 10 * time.Second
+	ServerItemTTR = 10 * time.Second
+	ClientTouchInterval = 50 * time.Millisecond
+
 	host, _ := os.Hostname()
 	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
 		var server *Server
 		Convey("You can connect with an OpenStack scheduler to run commands with different hardware requirements while dropping the count", t, func() {
 			config := internal.ConfigLoad("development", true)
 			addr := "localhost:" + config.ManagerPort
-
-			ServerLogClientErrors = false
-			ServerInterruptTime = 10 * time.Millisecond
-			ServerReserveTicker = 10 * time.Millisecond
-			ClientReleaseDelay = 100 * time.Millisecond
-			clientConnectTime := 10 * time.Second
-			ServerItemTTR = 10 * time.Second
-			ClientTouchInterval = 50 * time.Millisecond
 
 			runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
 			if err != nil {
@@ -3048,7 +3067,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 			Reset(func() {
 				if server != nil {
-					server.Stop()
+					server.Stop(true)
 				}
 			})
 		})
@@ -3075,7 +3094,6 @@ func TestJobqueueWithMounts(t *testing.T) {
 		return
 	}
 
-	ServerLogClientErrors = false
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
@@ -3228,7 +3246,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 		Reset(func() {
 			if server != nil {
-				server.Stop()
+				server.Stop(true)
 			}
 		})
 	})
@@ -3347,7 +3365,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		// per = int64(e.Nanoseconds() / int64(n))
 		// log.Printf("Added %d items to queue in %s == %d per\n", n, e, per)
 
-		server.Stop()
+		server.Stop(true)
 	}
 
 	/* test speed of bolt db when there are lots of jobs already stored

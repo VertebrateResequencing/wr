@@ -31,6 +31,7 @@ import (
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/ugorji/go/codec"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -439,17 +440,45 @@ func (s *Server) Block() (err error) {
 	return
 }
 
-// Stop will cause a graceful shut down of the server.
-func (s *Server) Stop() (err error) {
+// Stop will cause a graceful shut down of the server. Supplying an optional
+// bool of true will cause Stop() to wait until all runners have exited and
+// the server is truly down before returning. It also confirms that the port
+// the server was listening on has really been released.
+func (s *Server) Stop(wait ...bool) (err error) {
 	s.racmutex.Lock()
-	defer s.racmutex.Unlock()
 	if s.up {
 		s.stop <- true // results in shutdown()
 		if !s.blocking {
+			s.up = false
+			s.racmutex.Unlock()
 			err = <-s.done
 			s.db.close()
-			s.up = false
+		} else {
+			s.racmutex.Unlock()
 		}
+
+		if len(wait) == 1 && wait[0] {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			for {
+				select {
+				case <-ticker.C:
+					if !s.HasRunners() {
+						ticker.Stop()
+
+						for {
+							conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
+							if conn != nil {
+								conn.Close()
+								continue
+							}
+							return
+						}
+					}
+				}
+			}
+		}
+	} else {
+		s.racmutex.Unlock()
 	}
 	return
 }
@@ -470,22 +499,23 @@ func (s *Server) Drain() (err error) {
 					select {
 					case <-ticker.C:
 						// check our queues for things running, which is cheap
+						s.racmutex.Lock()
 						for _, q := range s.qs {
 							stats := q.Stats()
 							if stats.Running > 0 {
+								s.racmutex.Unlock()
 								continue TICKS
 							}
 						}
+						s.racmutex.Unlock()
+						ticker.Stop()
 
-						// now that we think nothing should be running, wait
-						// for the runner clients to exit so the job scheduler
-						// will be nice and clean
+						// now that we think nothing should be running, get
+						// Stop() to wait for the runner clients to exit so the
+						// job scheduler will be nice and clean
 						s.scheduler.Cleanup()
-						if !s.HasRunners() {
-							ticker.Stop()
-							s.Stop()
-							return
-						}
+						s.Stop(true)
+						return
 					}
 				}
 			}()
@@ -536,7 +566,12 @@ func (s *Server) HasRunners() bool {
 // getOrCreateQueue returns a queue with the given name, creating one if we
 // hadn't already done so.
 func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
-	s.Lock()
+	s.racmutex.Lock()
+	defer s.racmutex.Unlock()
+	if !s.up {
+		return nil
+	}
+
 	q, existed := s.qs[qname]
 	if !existed {
 		q = queue.New(qname)
@@ -802,7 +837,6 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 			return queue.SubQueueDelay
 		})
 	}
-	s.Unlock()
 
 	return q
 }
@@ -979,7 +1013,10 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 }
 
 func (s *Server) scheduleRunners(q *queue.Queue, group string) {
-	if s.rc == "" {
+	s.racmutex.RLock()
+	rc := s.rc
+	s.racmutex.RUnlock()
+	if rc == "" {
 		return
 	}
 
@@ -999,9 +1036,6 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		s.racmutex.RLock()
-		rc := s.rc
-		s.racmutex.RUnlock()
 		err := s.scheduler.Schedule(fmt.Sprintf(rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
@@ -1109,10 +1143,10 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 // persists them to disk.
 func (s *Server) shutdown() {
 	s.Lock()
-	defer s.Unlock()
 	s.sock.Close()
 	s.db.close()
 	s.scheduler.Cleanup()
+	s.Unlock()
 
 	//*** we want to persist production queues to disk
 	//*** want to do db backup; in cloud mode we want to copy backup to local
@@ -1120,6 +1154,8 @@ func (s *Server) shutdown() {
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this
+	s.racmutex.Lock()
+	defer s.racmutex.Unlock()
 	for _, q := range s.qs {
 		q.Destroy()
 	}
