@@ -56,6 +56,10 @@ var cmdOnExit string
 var cmdMounts string
 var cmdEnv string
 var cmdReRun bool
+var cmdOsPrefix string
+var cmdOsUsername string
+var cmdPostCreationScript string
+var cmdOsRAM int
 
 // addCmdOpts is the struct we decode user's JSON options in to
 type addCmdOpts struct {
@@ -356,8 +360,8 @@ machine was started.`,
 		}
 
 		var defaultScript string
-		if postCreationScript != "" {
-			data, err := ioutil.ReadFile(postCreationScript)
+		if cmdPostCreationScript != "" {
+			data, err := ioutil.ReadFile(cmdPostCreationScript)
 			if err != nil {
 				die("--cloud_script could not be read: %s", err)
 			}
@@ -365,8 +369,8 @@ machine was started.`,
 		}
 
 		var defaultOSRAM string
-		if osRAM > 0 {
-			defaultOSRAM = strconv.Itoa(osRAM)
+		if cmdOsRAM > 0 {
+			defaultOSRAM = strconv.Itoa(cmdOsRAM)
 		}
 
 		// open file or set up to read from STDIN
@@ -613,13 +617,13 @@ machine was started.`,
 			other := make(map[string]string)
 			if cmdOpts.CloudOS != "" {
 				other["cloud_os"] = cmdOpts.CloudOS
-			} else if osPrefix != "" {
-				other["cloud_os"] = osPrefix
+			} else if cmdOsPrefix != "" {
+				other["cloud_os"] = cmdOsPrefix
 			}
 			if cmdOpts.CloudUser != "" {
 				other["cloud_user"] = cmdOpts.CloudUser
-			} else if osUsername != "" {
-				other["cloud_user"] = osUsername
+			} else if cmdOsUsername != "" {
+				other["cloud_user"] = cmdOsUsername
 			}
 			if cmdOpts.CloudScript != "" {
 				var postCreation []byte
@@ -703,10 +707,10 @@ func init() {
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
 	addCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format")
 	addCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]")
-	addCmd.Flags().StringVar(&osPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
-	addCmd.Flags().StringVar(&osUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
-	addCmd.Flags().IntVar(&osRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
-	addCmd.Flags().StringVar(&postCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	addCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
+	addCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
+	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 
