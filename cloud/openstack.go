@@ -77,6 +77,7 @@ type openstackp struct {
 	ownName           string
 	networkName       string
 	networkUUID       string
+	hasDefaultGroup   bool
 	securityGroup     string
 	ipNet             *net.IPNet
 	spawnTimes        ewma.MovingAverage
@@ -228,9 +229,10 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 		return
 	}
 
-	// get/create security group
+	// get/create security group, and see if there's a default group
 	pager := secgroups.List(p.computeClient)
 	var group *secgroups.SecurityGroup
+	defaultGroupExists := false
 	foundGroup := false
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		groupList, err := secgroups.ExtractSecurityGroups(page)
@@ -242,7 +244,15 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			if g.Name == resources.ResourceName {
 				group = &g
 				foundGroup = true
-				return false, nil
+				if defaultGroupExists {
+					return false, nil
+				}
+			}
+			if g.Name == "default" {
+				defaultGroupExists = true
+				if foundGroup {
+					return false, nil
+				}
 			}
 		}
 
@@ -287,6 +297,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	}
 	resources.Details["secgroup"] = group.ID
 	p.securityGroup = resources.ResourceName
+	p.hasDefaultGroup = defaultGroupExists
 
 	// get/create network
 	var network *networks.Network
@@ -524,13 +535,20 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		time.Sleep(p.errorBackoff.Duration())
 	}
 
+	// we'll use the security group we created, and the "default" one if it
+	// exists
+	secGroups := []string{p.securityGroup}
+	if p.hasDefaultGroup {
+		secGroups = append(secGroups, "default")
+	}
+
 	// create the server with a unique name
 	var server *servers.Server
 	createOpts := servers.CreateOpts{
 		Name:           uniqueResourceName(resources.ResourceName),
 		FlavorRef:      flavorID,
 		ImageRef:       imageID,
-		SecurityGroups: []string{p.securityGroup},
+		SecurityGroups: secGroups,
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
 		UserData:       sentinelInitScript,
 	}
