@@ -430,8 +430,8 @@ func TestOpenstack(t *testing.T) {
 		SkipConvey("OpenStack scheduler tests are skipped without special OS_FLAVOR_REGEX environment variable being set", t, func() {})
 		return
 	}
-
 	host, _ := os.Hostname()
+
 	Convey("You can get a new openstack scheduler", t, func() {
 		tmpdir, err := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
 		if err != nil {
@@ -608,6 +608,7 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("Schedule() lets you...", func() {
 				oFile := filepath.Join(tmpdir, "out")
+				oReqs := make(map[string]string)
 
 				Convey("Run jobs with no inputs/outputs", func() {
 					// on authors setup, running the test from a 2 cpu cloud
@@ -647,9 +648,44 @@ func TestOpenstack(t *testing.T) {
 					So(err, ShouldBeNil)
 				})
 
+				// *** we really need to mock OpenStack instead of setting
+				// these debug package variables...
+				Convey("Run everything even when a server fails to spawn", func() {
+					debugCounter = 0
+					debugEffect = "failFirstSpawn"
+					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+					newCount := 3
+					eta := 120
+					cmd := "sleep 10"
+					err = s.Schedule(cmd, newReq, newCount)
+					So(err, ShouldBeNil)
+					So(s.Busy(), ShouldBeTrue)
+					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+				})
+
+				Convey("Run jobs and have servers still self-terminate when a server is slow to spawn", func() {
+					debugCounter = 0
+					debugEffect = "slowSecondSpawn"
+					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+					newCount := 3
+					eta := 120
+					cmd := "sleep 10"
+					err = s.Schedule(cmd, newReq, newCount)
+					So(err, ShouldBeNil)
+					So(s.Busy(), ShouldBeTrue)
+					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+
+					<-time.After(20 * time.Second)
+
+					foundServers := novaCountServers(rName, "")
+					So(foundServers, ShouldEqual, 0)
+
+					debugCounter = 0
+					debugEffect = ""
+				})
+
 				// *** test if we have a Centos 7 image to use...
 				if osPrefix != "Centos 7 (2016-09-06)" {
-					oReqs := make(map[string]string)
 					oReqs["cloud_os"] = "Centos 7 (2016-09-06)"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
@@ -702,173 +738,59 @@ func TestOpenstack(t *testing.T) {
 						So(err, ShouldNotBeNil)
 						So(os.IsNotExist(err), ShouldBeTrue)
 					})
+				}
 
-					// *** we really need to mock OpenStack instead of setting
-					// these debug package variables...
-					Convey("Run everything even when a server fails to spawn", func() {
-						debugCounter = 0
-						debugEffect = "failFirstSpawn"
-						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
-						newCount := 3
-						eta := 120
-						cmd := "sleep 10"
-						err = s.Schedule(cmd, newReq, newCount)
-						So(err, ShouldBeNil)
-						So(s.Busy(), ShouldBeTrue)
-						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
-					})
+				numCores := 4
+				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 6 * numCores, oReqs})
+				if err == nil && multiCoreFlavor.Cores >= numCores {
+					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
+					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+					confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
+					if err == nil && confirmFlavor.Cores >= numCores {
+						Convey("Run multiple jobs at once on multi-core servers", func() {
+							cmd := "sleep 30"
+							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
+							err = s.Schedule(cmd, jobReq, numCores)
+							So(err, ShouldBeNil)
+							So(s.Busy(), ShouldBeTrue)
 
-					Convey("Run jobs and have servers still self-terminate when a server is slow to spawn", func() {
-						debugCounter = 0
-						debugEffect = "slowSecondSpawn"
-						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
-						newCount := 3
-						eta := 120
-						cmd := "sleep 10"
-						err = s.Schedule(cmd, newReq, newCount)
-						So(err, ShouldBeNil)
-						So(s.Busy(), ShouldBeTrue)
-						So(waitToFinish(s, eta, 1000), ShouldBeTrue)
-
-						<-time.After(20 * time.Second)
-
-						foundServers := novaCountServers(rName, "")
-						So(foundServers, ShouldEqual, 0)
-
-						debugCounter = 0
-						debugEffect = ""
-					})
-
-					numCores := 4
-					multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 6 * numCores, oReqs})
-					if err == nil && multiCoreFlavor.Cores >= numCores {
-						oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
-						jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
-						confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
-						if err == nil && confirmFlavor.Cores >= numCores {
-							Convey("Run multiple jobs at once on multi-core servers", func() {
-								cmd := "sleep 30"
-								jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
-								err = s.Schedule(cmd, jobReq, numCores)
-								So(err, ShouldBeNil)
-								So(s.Busy(), ShouldBeTrue)
-
-								waitSecs := 150
-								spawnedCh := make(chan int, 1)
-								go func() {
-									maxSpawned := 0
-									ticker := time.NewTicker(1 * time.Second)
-									limit := time.After(time.Duration(waitSecs-5) * time.Second)
-									for {
-										select {
-										case <-ticker.C:
-											spawned := novaCountServers(rName, oReqs["cloud_os"])
-											if spawned > maxSpawned {
-												maxSpawned = spawned
-											}
-											continue
-										case <-limit:
-											ticker.Stop()
-											spawnedCh <- maxSpawned
-											return
+							waitSecs := 150
+							spawnedCh := make(chan int, 1)
+							go func() {
+								maxSpawned := 0
+								ticker := time.NewTicker(1 * time.Second)
+								limit := time.After(time.Duration(waitSecs-5) * time.Second)
+								for {
+									select {
+									case <-ticker.C:
+										spawned := novaCountServers(rName, oReqs["cloud_os"])
+										if spawned > maxSpawned {
+											maxSpawned = spawned
 										}
+										continue
+									case <-limit:
+										ticker.Stop()
+										spawnedCh <- maxSpawned
+										return
 									}
-								}()
+								}
+							}()
 
-								// wait for enough time to have spawned a server
-								// and run both commands in parallel, but not
-								// sequentially *** but how long does it take to
-								// spawn?! (50s in authors test area, but this
-								// will vary...) we need better confirmation of
-								// parallel run...
-								So(waitToFinish(s, waitSecs, 1000), ShouldBeTrue)
-								spawned := <-spawnedCh
-								So(spawned, ShouldEqual, 1)
-							})
-						} else {
-							SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
-						}
+							// wait for enough time to have spawned a server
+							// and run both commands in parallel, but not
+							// sequentially *** but how long does it take to
+							// spawn?! (50s in authors test area, but this
+							// will vary...) we need better confirmation of
+							// parallel run...
+							So(waitToFinish(s, waitSecs, 1000), ShouldBeTrue)
+							spawned := <-spawnedCh
+							So(spawned, ShouldEqual, 1)
+						})
 					} else {
 						SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
 					}
-				}
-			})
-
-			// *** having to skip this unnecessary test since we're going over
-			// 10mins; not sure what to do instead...
-			SkipConvey("Schedule() can run commands with different hardware requirements while dropping the count", func() {
-				// with the ~instant complete jobs combined with the wait on
-				// bringing up a new server, this is supposed to be able to
-				// trigger a dropping count bug, but doesn't, but we're keeping
-				// it anyway. See jobqueue_test.go for a similar test that did
-				// manage to trigger the bug.
-				err = s.Schedule("echo 2048:1:0", &Requirements{2048, 1 * time.Minute, 1, 0, otherReqs}, 1)
-				So(err, ShouldBeNil)
-				err = s.Schedule("echo 1024:2:0", &Requirements{1024, 1 * time.Minute, 2, 0, otherReqs}, 1)
-				So(err, ShouldBeNil)
-				err = s.Schedule("echo 1024:1:20", &Requirements{1024, 1 * time.Minute, 2, 20, otherReqs}, 1)
-				So(err, ShouldBeNil)
-
-				dropReq := &Requirements{1024, 1 * time.Minute, 1, 0, otherReqs}
-				err = s.Schedule("echo 1024:1:0 && sleep 1", dropReq, 1)
-				So(err, ShouldBeNil)
-				dropCmd := fmt.Sprintf("echo 1024:1:0 && mkdir -p %s && perl -e 'use File::Temp qw/tempfile/; ($fh, $fn) = tempfile(DIR => q{%s}, SUFFIX => q/.wrst/); print $fh qq/test\\n/; close($fh)'", tmpdir, tmpdir)
-				dropCount := 96
-
-				stop := make(chan bool)
-				completedLocally := 0
-				prevRemaining := dropCount
-				go func() {
-					ticker := time.NewTicker(10 * time.Millisecond)
-					for {
-						select {
-						case <-ticker.C:
-							files, err := ioutil.ReadDir(tmpdir)
-							if err == nil {
-								count := 0
-								for _, file := range files {
-									if strings.HasSuffix(file.Name(), ".wrst") {
-										count++
-									}
-								}
-								completedLocally = count
-
-								remaining := dropCount - count
-								if remaining < prevRemaining {
-									s.Schedule(dropCmd, dropReq, remaining)
-									if remaining == 0 {
-										ticker.Stop()
-										return
-									}
-									prevRemaining = remaining
-								}
-							}
-							continue
-						case <-stop:
-							ticker.Stop()
-							return
-						}
-					}
-				}()
-
-				err = s.Schedule(dropCmd, dropReq, dropCount)
-				So(err, ShouldBeNil)
-				So(s.Busy(), ShouldBeTrue)
-
-				eta := 150
-				So(waitToFinish(s, eta, 1000), ShouldBeTrue)
-				stop <- true
-				So(completedLocally, ShouldBeBetweenOrEqual, 50, 97)
-
-				<-time.After(5 * time.Second)
-				foundServers := novaCountServers(rName, "")
-				So(foundServers, ShouldBeBetweenOrEqual, 0, 3)
-
-				// after the last run, they are all auto-destroyed
-				if foundServers > 0 {
-					<-time.After(25 * time.Second)
-					foundServers = novaCountServers(rName, "")
-					So(foundServers, ShouldEqual, 0)
+				} else {
+					SkipConvey("Skipping multi-core server tests due to lack of suitable multi-core server flavors", func() {})
 				}
 			})
 
