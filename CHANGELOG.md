@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.9.1] - 2017-08-15
+### Fixed
+- Data races, for general reliability and stability improvements.
+- `wr add` now defaults the cloud options to blank so they don't override
+  non-default `wr cloud deploy` settings.
+- Various read and write issues with the built-in S3 mounting.
+
+### Changed
+- `wr cloud deploy` now creates servers that are also in the default security
+  group, increasing the chances that it work on all OpenStack systems and with
+  servers that have network storage.
+
+
 ## [0.9.0] - 2017-07-19
 ### Added
 - Jobs can now have mounts that are writeable and uncached.
