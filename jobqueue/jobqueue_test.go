@@ -2766,7 +2766,7 @@ func TestJobqueue(t *testing.T) {
 			done = make(chan bool, 1)
 			twoHundredCount := 0
 			go func() {
-				limit := time.After(120 * time.Second)
+				limit := time.After(180 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
@@ -3520,8 +3520,8 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 func runner() {
 	if runnerfail {
 		// simulate loss of network connectivity between a spawned runner and
-		// the manager by just exiting without reserving any job after 1s
-		<-time.After(1 * time.Second)
+		// the manager by just exiting without reserving any job
+		<-time.After(250 * time.Millisecond)
 		tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "fail")
 		tmpfile.Close()
 		return
