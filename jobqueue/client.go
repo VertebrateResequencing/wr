@@ -623,6 +623,7 @@ type Client struct {
 	clientid    uuid.UUID
 	user        string
 	hasReserved bool
+	teMutex     sync.Mutex // to protect Touch() from other methods during Execute()
 	sync.Mutex
 }
 
@@ -1260,6 +1261,8 @@ func (c *Client) Started(job *Job, pid int, host string) (err error) {
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
 // you must have reserved the job before you can touch it.
 func (c *Client) Touch(job *Job) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	_, err = c.request(&clientRequest{Method: "jtouch", Job: job})
 	return
 }
@@ -1269,6 +1272,8 @@ func (c *Client) Touch(job *Job) (err error) {
 // the actual working directory used, which may be different to the Job's Cwd
 // property; if not, supply empty string.
 func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	job.Exited = true
 	job.Exitcode = exitcode
 	job.PeakRAM = peakram
@@ -1291,6 +1296,8 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
 func (c *Client) Archive(job *Job) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	_, err = c.request(&clientRequest{Method: "jarchive", Job: job})
 	if err == nil {
 		job.State = JobStateComplete
@@ -1306,6 +1313,8 @@ func (c *Client) Archive(job *Job) (err error) {
 // in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
 // number of times.)
 func (c *Client) Release(job *Job, failreason string) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	job.FailReason = failreason
 	_, err = c.request(&clientRequest{Method: "jrelease", Job: job})
 	if err == nil {
@@ -1328,6 +1337,8 @@ func (c *Client) Release(job *Job, failreason string) (err error) {
 // reserve a job before you can bury it. Optionally supply an error that will
 // be be displayed as the Job's stderr.
 func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	job.FailReason = failreason
 	if len(stderr) == 1 && stderr[0] != nil {
 		job.StdErrC = compress([]byte(stderr[0].Error()))
