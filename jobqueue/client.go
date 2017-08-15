@@ -293,6 +293,8 @@ type Job struct {
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
 	// later; this is purely client side
 	mountedFS []*muxfys.MuxFys
+
+	sync.RWMutex
 }
 
 // WallTime returns the time the job took to run if it ran to completion, or the
@@ -621,6 +623,7 @@ type Client struct {
 	clientid    uuid.UUID
 	user        string
 	hasReserved bool
+	teMutex     sync.Mutex // to protect Touch() from other methods during Execute()
 	sync.Mutex
 }
 
@@ -1000,43 +1003,53 @@ func (c *Client) Execute(job *Job, shell string) error {
 	ranoutMem := false
 	ranoutTime := false
 	signalled := false
+	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
 		for {
 			select {
 			case <-sigs:
 				cmd.Process.Kill()
+				stateMutex.Lock()
 				signalled = true
+				stateMutex.Unlock()
 				return
 			case <-ticker.C:
+				stateMutex.Lock()
 				if !ranoutTime && time.Now().After(endT) {
 					ranoutTime = true
 					// we allow things to go over time, but then if we end up
 					// getting signalled later, we now know it may be because we
 					// used too much time
 				}
+				stateMutex.Unlock()
 
 				err := c.Touch(job)
 				if err != nil {
 					// this could fail for a number of reasons and it's important
 					// we bail out on failure to Touch()
-					bailed = true
 					cmd.Process.Kill()
+					stateMutex.Lock()
+					bailed = true
+					stateMutex.Unlock()
 					return
 				}
 			case <-memTicker.C:
 				mem, err := currentMemory(job.Pid)
+				stateMutex.Lock()
 				if err == nil && mem > peakmem {
 					peakmem = mem
 
 					if peakmem > job.Requirements.RAM {
 						// we don't allow things to use too much memory, or we
 						// could screw up the machine we're running on
-						ranoutMem = true
 						cmd.Process.Kill()
+						ranoutMem = true
+						stateMutex.Unlock()
 						return
 					}
 				}
+				stateMutex.Unlock()
 			case <-stopChecking:
 				return
 			}
@@ -1050,6 +1063,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	ticker.Stop()
 	memTicker.Stop()
 	stopChecking <- true
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
 
 	// we could get the max rss from ProcessState.SysUsage, but we'll stick with
 	// our better (?) pss-based Peakmem, unless the command exited so quickly
@@ -1139,19 +1154,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// behaviours/ unmounting may take some time we need to make sure to keep
 	// touching
-	ticker = time.NewTicker(ClientTouchInterval)
-	stopChecking = make(chan bool, 1)
+	ticker2 := time.NewTicker(ClientTouchInterval)
+	stopChecking2 := make(chan bool, 1)
 	go func() {
 		for {
 			select {
 			case <-sigs:
 				return
-			case <-ticker.C:
+			case <-ticker2.C:
 				err := c.Touch(job)
 				if err != nil {
 					return
 				}
-			case <-stopChecking:
+			case <-stopChecking2:
 				return
 			}
 		}
@@ -1190,8 +1205,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 			myerr = unmountErr
 		}
 	}
-	ticker.Stop()
-	stopChecking <- true
+	ticker2.Stop()
+	stopChecking2 <- true
 
 	if addMountLogs && logs != "" {
 		finalStdErr = append(finalStdErr, "\n\nMount logs:\n"...)
@@ -1246,6 +1261,8 @@ func (c *Client) Started(job *Job, pid int, host string) (err error) {
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
 // you must have reserved the job before you can touch it.
 func (c *Client) Touch(job *Job) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	_, err = c.request(&clientRequest{Method: "jtouch", Job: job})
 	return
 }
@@ -1255,6 +1272,8 @@ func (c *Client) Touch(job *Job) (err error) {
 // the actual working directory used, which may be different to the Job's Cwd
 // property; if not, supply empty string.
 func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	job.Exited = true
 	job.Exitcode = exitcode
 	job.PeakRAM = peakram
@@ -1277,6 +1296,8 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
 func (c *Client) Archive(job *Job) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	_, err = c.request(&clientRequest{Method: "jarchive", Job: job})
 	if err == nil {
 		job.State = JobStateComplete
@@ -1292,6 +1313,8 @@ func (c *Client) Archive(job *Job) (err error) {
 // in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
 // number of times.)
 func (c *Client) Release(job *Job, failreason string) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	job.FailReason = failreason
 	_, err = c.request(&clientRequest{Method: "jrelease", Job: job})
 	if err == nil {
@@ -1314,6 +1337,8 @@ func (c *Client) Release(job *Job, failreason string) (err error) {
 // reserve a job before you can bury it. Optionally supply an error that will
 // be be displayed as the Job's stderr.
 func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
 	job.FailReason = failreason
 	if len(stderr) == 1 && stderr[0] != nil {
 		job.StdErrC = compress([]byte(stderr[0].Error()))
@@ -1702,6 +1727,38 @@ func (j *Job) key() string {
 		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
 	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
+}
+
+// getScheduledRunner provides a thread-safe way of getting the scheduledRunner
+// property of a Job.
+func (j *Job) getScheduledRunner() bool {
+	j.RLock()
+	defer j.RUnlock()
+	return j.scheduledRunner
+}
+
+// setScheduledRunner provides a thread-safe way of setting the scheduledRunner
+// property of a Job.
+func (j *Job) setScheduledRunner(newval bool) {
+	j.Lock()
+	defer j.Unlock()
+	j.scheduledRunner = newval
+}
+
+// getSchedulerGroup provides a thread-safe way of getting the schedulerGroup
+// property of a Job.
+func (j *Job) getSchedulerGroup() string {
+	j.RLock()
+	defer j.RUnlock()
+	return j.schedulerGroup
+}
+
+// setSchedulerGroup provides a thread-safe way of setting the schedulerGroup
+// property of a Job.
+func (j *Job) setSchedulerGroup(newval string) {
+	j.Lock()
+	defer j.Unlock()
+	j.schedulerGroup = newval
 }
 
 // request the server do something and get back its response. We can only cope

@@ -51,8 +51,8 @@ Server
         SchedulerName:   "local",
         SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
         RunnerCmd:       selfExe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
-        DBFile:          "/home/username/.wr_produciton/boltdb",
-        DBFileBackup:    "/home/username/.wr_produciton/boltdb.backup",
+        DBFile:          "/home/username/.wr_production/boltdb",
+        DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
         Deployment:      "production",
         CIDR:            "",
     })

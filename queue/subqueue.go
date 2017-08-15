@@ -115,6 +115,14 @@ func (q *subQueue) len(reserveGroup ...string) int {
 	return len(itemList)
 }
 
+// firstItem is useful in testing to get the first item in the queue in a
+// thread-safe way.
+func (q *subQueue) firstItem() *Item {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+	return q.items[0]
+}
+
 // update ensures that if an item's "priority" characteristic(s) change, that
 // its order in the queue is corrected. Optional oldGroup is the previous
 // ReserveGroup that this item had, supplied if the group changed.
@@ -187,6 +195,12 @@ func (q *subQueue) Swap(i, j int) {
 		itemList = q.items
 	}
 	itemList[i], itemList[j] = itemList[j], itemList[i]
+	itemList[i].mutex.Lock()
+	defer itemList[i].mutex.Unlock()
+	if i != j {
+		itemList[j].mutex.Lock()
+		defer itemList[j].mutex.Unlock()
+	}
 	itemList[i].queueIndexes[q.sqIndex] = i
 	itemList[j].queueIndexes[q.sqIndex] = j
 }
@@ -202,7 +216,9 @@ func (q *subQueue) Push(x interface{}) {
 	} else {
 		itemList = q.items
 	}
+	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = len(itemList)
+	item.mutex.Unlock()
 	itemList = append(itemList, item)
 	if q.sqIndex == 1 {
 		q.groupedItems[q.reserveGroup] = itemList
@@ -223,7 +239,9 @@ func (q *subQueue) Pop() interface{} {
 	}
 	lasti := len(itemList) - 1
 	item := itemList[lasti]
+	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = -1
+	item.mutex.Unlock()
 	itemList = itemList[:lasti]
 	if q.sqIndex == 1 {
 		q.groupedItems[q.reserveGroup] = itemList

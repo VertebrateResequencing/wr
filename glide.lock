@@ -1,10 +1,8 @@
 hash: d24970895baf6afba8742d50169a04ba9eb198b8bac51bff30a5c2843e274b18
-updated: 2017-07-19T09:28:46.752541505+01:00
+updated: 2017-08-11T15:48:01.566871539+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
-- name: github.com/alexflint/go-filemutex
-  version: cc9a3f596698b443ddec2e5f027e45b66cc900f8
 - name: github.com/boltdb/bolt
   version: 2f1ce7a837dcb8da3ec595b1dac9d0632f0f99e8
 - name: github.com/BurntSushi/toml
@@ -24,7 +22,7 @@ imports:
   subpackages:
   - oleutil
 - name: github.com/go-stack/stack
-  version: 54be5f394ed2c3e19dac9134a40a95ba5a017f7b
+  version: 817915b46b97fd7bb80e8ab6b69f01a53ac3eebf
 - name: github.com/gophercloud/gophercloud
   version: 6815b423bf0c148daf04b7e4c5bf9a299aafb0aa
   repo: https://github.com/sb10/gophercloud.git
@@ -51,7 +49,7 @@ imports:
 - name: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
-  version: ae405425e7b7380972c2e486a82ea1b3e81b0861
+  version: 204b45dba899dfa147235c255908236d5fde2d32
   subpackages:
   - fuse
   - fuse/nodefs
@@ -76,13 +74,13 @@ imports:
 - name: github.com/kr/fs
   version: 2788f0dbd16903de03cb8186e5c7d97b69ad387b
 - name: github.com/mattn/go-colorable
-  version: 3fa8c76f9daed4067e4a806fb7e4dc86455c6d6a
+  version: 6df6d4d004b64986bbb0d1b25945f42b44787e90
 - name: github.com/mattn/go-isatty
   version: fc9e8d8ef48496124e79ae0df75490096eccf6fe
 - name: github.com/minio/go-homedir
   version: 21304a94172ae3a09dee2cd86a12fb6f842138c7
 - name: github.com/minio/minio-go
-  version: 75c1ccd3b1bb6a1c1a25864c1f8775bfabe161ec
+  version: 6871a5431f3bbcc282281554067f1afc06436187
   subpackages:
   - pkg/credentials
   - pkg/encrypt
@@ -95,19 +93,21 @@ imports:
 - name: github.com/pkg/errors
   version: c605e284fe17294bda444b34710735b29d1a9d90
 - name: github.com/pkg/sftp
-  version: 314a5ccb89b21e053d7d96c3a706eacaf2b18231
+  version: 1a91f318a0be84de50afcf22d3b3d78bfe32025c
 - name: github.com/ricochet2200/go-disk-usage
   version: f0d1b743428fc09792f93233d9412f89f88fa2ab
   subpackages:
   - du
 - name: github.com/satori/go.uuid
   version: 5bf94b69c6b68ee1b541973bb8e1144db23a194b
+- name: github.com/sb10/go-filemutex
+  version: 55ed66a0516fb98d4b30f7290745581ee65e0f5a
 - name: github.com/sb10/l15h
   version: 64c488bf8e2265529e37899226b038221f12e2e9
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: 66b0ca31217d7fb335b47a354718d3e68a08ad64
+  version: 3aa2ffab12a1852644f6d33cd782f877272bf305
   subpackages:
   - cpu
   - host
@@ -118,7 +118,7 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: 715f41bd7a70b5111f898b71ab484da52ee6266d
+  version: b26b538f693051ac6518e65672de3144ce3fbedc
 - name: github.com/spf13/pflag
   version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
 - name: github.com/StackExchange/wmi
@@ -128,18 +128,18 @@ imports:
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: dad1fb685c84684924f215ec86169f766c34ba7d
+  version: 3cf15ac6ed153b2c8b8e2a843b0839154566576a
 - name: github.com/VividCortex/ewma
-  version: 4cc8cc5a2a44f01d31b303a7280e20e00a6eafdb
+  version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: 7f7c0c2d75ebb4e32a21396ce36e87b6dadc91c9
+  version: b176d7def5d71bdd214203491f89843ed217f420
   subpackages:
   - curve25519
   - ed25519
   - ed25519/internal/edwards25519
   - ssh
 - name: golang.org/x/sys
-  version: cd2c276457edda6df7fb04895d3fd6a6add42926
+  version: e42485b6e20ae7d2304ec72e535b103ed350cc02
   subpackages:
   - unix
   - windows
@@ -153,7 +153,7 @@ testImports:
 - name: github.com/jtolds/gls
   version: 77f18212c9c7edc9bd6a33d383a7b545ce62f064
 - name: github.com/smartystreets/assertions
-  version: 4ea54c1f28ad3ae597e76607dea3871fa177e263
+  version: 1540c14c9f1bd1abeba90f29762a4c6e50582303
   subpackages:
   - internal/go-render/render
   - internal/oglematchers
@@ -163,3 +163,5 @@ testImports:
   - convey
   - convey/gotest
   - convey/reporting
+- name: github.com/smartystreets/logging
+  version: ac3a674540761aa0b4382094ba4795f917e85c7f
