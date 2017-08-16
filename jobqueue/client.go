@@ -33,6 +33,7 @@ import (
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
+	"io/ioutil"
 	"math"
 	"os"
 	"os/exec"
@@ -753,6 +754,17 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 		return
 	}
 	s = resp.SStats
+	return
+}
+
+// BackupDB backs up the server's database to the given path. Note that
+// automatic backups occur to the configured location without calling this.
+func (c *Client) BackupDB(path string) (err error) {
+	resp, err := c.request(&clientRequest{Method: "backup"})
+	if err != nil {
+		return
+	}
+	err = ioutil.WriteFile(path, resp.DB, dbFilePermission)
 	return
 }
 

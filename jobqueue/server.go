@@ -30,6 +30,7 @@ import (
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/ugorji/go/codec"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -103,6 +104,7 @@ type serverResponse struct {
 	Job     *Job
 	Jobs    []*Job
 	SStats  *ServerStats
+	DB      []byte
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -432,7 +434,6 @@ func (s *Server) Block() (err error) {
 	s.blocking = true
 	s.racmutex.Unlock()
 	err = <-s.done
-	s.db.close() //*** do one last backup?
 	s.racmutex.Lock()
 	s.up = false
 	s.blocking = false
@@ -452,7 +453,6 @@ func (s *Server) Stop(wait ...bool) (err error) {
 			s.up = false
 			s.racmutex.Unlock()
 			err = <-s.done
-			s.db.close()
 		} else {
 			s.racmutex.Unlock()
 		}
@@ -555,6 +555,13 @@ func (s *Server) GetServerStats() *ServerStats {
 	}
 
 	return &ServerStats{ServerInfo: s.ServerInfo, Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
+}
+
+// BackupDB lets you do a manual live backup of the server's database to a given
+// writer. Note that automatic backups occur to the configured location
+// without calling this.
+func (s *Server) BackupDB(w io.Writer) error {
+	return s.db.backup(w)
 }
 
 // HasRunners tells you if there are currently runner clients in the job

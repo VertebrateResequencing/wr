@@ -2105,23 +2105,151 @@ func TestJobqueue(t *testing.T) {
 
 	// start these tests anew because I need to disable dev-mode wiping of the
 	// db to test some behaviours
-	Convey("Once a new jobqueue server is up", t, func() {
+	Convey("Once a new jobqueue server is up it creates a db file", t, func() {
 		ServerItemTTR = 2 * time.Second
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
+		_, err = os.Stat(config.ManagerDbFile)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(config.ManagerDbBkFile)
+		So(err, ShouldNotBeNil)
 
-		Convey("You can connect, and add 2 jobs", func() {
+		Convey("You can connect, and add 2 jobs, which creates a db backup", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
+			// do this in 2 separate Add() calls to better test how backups
+			// work
+			server.db.slowBackups = true
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 2)
+			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			inserts, already, err = jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 1)
+
+			bkbkPath := config.ManagerDbBkFile + ".bk"
+			<-time.After(300 * time.Millisecond)
+			_, err = os.Stat(bkbkPath)
+			So(err, ShouldBeNil)
+
+			<-time.After(150 * time.Millisecond)
+
+			info, err := os.Stat(config.ManagerDbFile)
+			So(err, ShouldBeNil)
+			So(info.Size(), ShouldEqual, 65536) // don't know if this will be consistent across platforms and versions...
+			info2, err := os.Stat(config.ManagerDbBkFile)
+			So(err, ShouldBeNil)
+			So(info2.Size(), ShouldEqual, 32768) // *** don't know why it's so much smaller...
+			_, err = os.Stat(bkbkPath)
+			So(err, ShouldNotBeNil)
+
+			Convey("You can create manual backups that work correctly", func() {
+				manualBackup := config.ManagerDbBkFile + ".manual"
+				err = jq.BackupDB(manualBackup)
+				So(err, ShouldBeNil)
+				info3, err := os.Stat(manualBackup)
+				So(err, ShouldBeNil)
+				So(info3.Size(), ShouldEqual, 32768)
+
+				server.Stop(true)
+				server, _, err = Serve(serverConfig)
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err := jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 0)
+
+				server.Stop(true)
+				os.Rename(manualBackup, config.ManagerDbFile)
+				wipeDevDBOnInit = false
+				defer func() {
+					wipeDevDBOnInit = true
+				}()
+				server, _, err = Serve(serverConfig)
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 2)
+			})
+
+			Convey("You can stop the server, delete or corrupt the database, and it will be restored from backup", func() {
+				jobsByRepGroup, err := jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 2)
+
+				server.Stop(true)
+				wipeDevDBOnInit = false
+				defer func() {
+					wipeDevDBOnInit = true
+				}()
+				server, _, err = Serve(serverConfig)
+				So(err, ShouldBeNil)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 2)
+
+				server.Stop(true)
+				os.Remove(config.ManagerDbFile)
+				_, err = os.Stat(config.ManagerDbFile)
+				So(err, ShouldNotBeNil)
+				_, err = os.Stat(config.ManagerDbBkFile)
+				So(err, ShouldBeNil)
+
+				server, _, err = Serve(serverConfig)
+				So(err, ShouldBeNil)
+
+				info, err = os.Stat(config.ManagerDbFile)
+				So(err, ShouldBeNil)
+				So(info.Size(), ShouldEqual, 32768)
+				info2, err = os.Stat(config.ManagerDbBkFile)
+				So(err, ShouldBeNil)
+				So(info2.Size(), ShouldEqual, 32768)
+
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 2)
+
+				server.Stop(true)
+				f, err := os.OpenFile(config.ManagerDbFile, os.O_TRUNC|os.O_RDWR, dbFilePermission)
+				f.WriteString("corrupt!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+				f.Sync()
+				f.Close()
+
+				server, _, err = Serve(serverConfig)
+				So(err, ShouldBeNil)
+
+				info, err = os.Stat(config.ManagerDbFile)
+				So(err, ShouldBeNil)
+				So(info.Size(), ShouldEqual, 32768)
+				info2, err = os.Stat(config.ManagerDbBkFile)
+				So(err, ShouldBeNil)
+				So(info2.Size(), ShouldEqual, 32768)
+
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 2)
+			})
 
 			Convey("You can reserve & execute just 1 of the jobs, stop the server, restart it, and then reserve & execute the other", func() {
 				job, err := jq.Reserve(50 * time.Millisecond)
@@ -2151,6 +2279,28 @@ func TestJobqueue(t *testing.T) {
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 			})
+		})
+
+		Convey("You can connect, add a job, then immediately shutdown, and the db backup still completes", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			server.db.slowBackups = true
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+			server.Stop(true)
+
+			info, err := os.Stat(config.ManagerDbFile)
+			So(err, ShouldBeNil)
+			So(info.Size(), ShouldEqual, 32768)
+			info2, err := os.Stat(config.ManagerDbBkFile)
+			So(err, ShouldBeNil)
+			So(info2.Size(), ShouldEqual, 28672)
 		})
 
 		Convey("You can connect and add a non-instant job", func() {

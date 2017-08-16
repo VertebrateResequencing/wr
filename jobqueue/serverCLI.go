@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the command line interface code of the server.
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
@@ -64,6 +65,17 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// do nothing - not returning an error to client means ping success
 		case "sstats":
 			sr = &serverResponse{SStats: s.GetServerStats()}
+		case "backup":
+			// make an io.Writer that writes to a byte slice, so we can return
+			// the db as that
+			var b bytes.Buffer
+			err := s.BackupDB(&b)
+			if err != nil {
+				srerr = ErrInternalError
+				qerr = err.Error()
+			} else {
+				sr = &serverResponse{DB: b.Bytes()}
+			}
 		case "drain":
 			err := s.Drain()
 			if err != nil {
