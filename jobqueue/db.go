@@ -987,26 +987,28 @@ func (db *db) backgroundBackup() {
 	db.backingUp = true
 	slowBackups := db.slowBackups
 	go func() {
-		// first move any existing backup file to one side
-		backupBackupPath := db.backupPath + ".bk"
-		os.Rename(db.backupPath, backupBackupPath)
-
 		if slowBackups {
 			// just for testing purposes
-			<-time.After(200 * time.Millisecond)
+			<-time.After(100 * time.Millisecond)
 		}
 
-		// now create the new backup file
+		// create the new backup file with temp name
+		tmpBackupPath := db.backupPath + ".tmp"
 		err := db.bolt.View(func(tx *bolt.Tx) error {
-			return tx.CopyFile(db.backupPath, dbFilePermission)
+			return tx.CopyFile(tmpBackupPath, dbFilePermission)
 		})
 		// *** currently not logging the error message anywhere...
+
+		if slowBackups {
+			<-time.After(100 * time.Millisecond)
+		}
+
 		if err != nil {
-			// if it failed, move any old backup back in place
-			os.Rename(backupBackupPath, db.backupPath)
+			// if it failed, delete any partial file that got made
+			os.Remove(tmpBackupPath)
 		} else {
-			// backup succeeded, delete any old backup
-			os.Remove(backupBackupPath)
+			// backup succeeded, move it over any old backup
+			os.Rename(tmpBackupPath, db.backupPath)
 		}
 
 		db.Lock()

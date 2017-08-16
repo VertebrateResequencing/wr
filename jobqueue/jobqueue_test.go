@@ -2134,12 +2134,12 @@ func TestJobqueue(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
 
-			bkbkPath := config.ManagerDbBkFile + ".bk"
-			<-time.After(300 * time.Millisecond)
-			_, err = os.Stat(bkbkPath)
+			tmpPath := config.ManagerDbBkFile + ".tmp"
+			<-time.After(150 * time.Millisecond)
+			_, err = os.Stat(tmpPath)
 			So(err, ShouldBeNil)
 
-			<-time.After(150 * time.Millisecond)
+			<-time.After(300 * time.Millisecond)
 
 			info, err := os.Stat(config.ManagerDbFile)
 			So(err, ShouldBeNil)
@@ -2147,7 +2147,7 @@ func TestJobqueue(t *testing.T) {
 			info2, err := os.Stat(config.ManagerDbBkFile)
 			So(err, ShouldBeNil)
 			So(info2.Size(), ShouldEqual, 32768) // *** don't know why it's so much smaller...
-			_, err = os.Stat(bkbkPath)
+			_, err = os.Stat(tmpPath)
 			So(err, ShouldNotBeNil)
 
 			Convey("You can create manual backups that work correctly", func() {
