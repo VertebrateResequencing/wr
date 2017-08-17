@@ -107,10 +107,13 @@ managerlogfile: "log"
 # managerdbfile: Where should wr manager store its database file?
 # This defaults to a file named "db" in managerdir.
 #
-# You can set this to an absolute path to ignore managerdir. Note that you may
-# need quite a lot of disk space for this, especially after you've run millions
-# of jobs, since a permanent record of everything you've done is held in this
-# file.
+# You can set this to an absolute path to ignore managerdir.  If doing this, be
+# certain to set a different value in your production and development config
+# files.
+#
+# Note that you may need quite a lot of disk space for this, especially after
+# you've run millions of jobs, since a permanent record of everything you've
+# done is held in this file.
 #
 # WARNING: the database file will eventually contain your environment variables,
 # so you should secure this file and not make it public if you have passwords
@@ -123,6 +126,17 @@ managerdbfile: "db"
 # You can set this to an absolute path to ignore managerdir (and ideally you
 # should set this to a path on a different disk or better yet a different
 # machine).
+#
+# Database backups are not carried out in development, so this is ignored in
+# development config files.
+#
+# For cloud deployments it is recommended to back up to S3. Specify an S3
+# location like: s3://mybucket/subpath/my_wr_db.backup
+# If your credentials are specified in a non-default profile you can instead say
+# something like: s3://profile_name@mybucket/subpath/my_wr_db.backup
+# Credential specification is as per `wr mount -h` (basically, have an ~/.s3cfg
+# file). Ensure that only you have read permission for the S3 location you
+# specify.
 #
 # Note that you may need quite a lot of disk space for this, as when a
 # new backup starts it is written to a temp file in the directory you specify

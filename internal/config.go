@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -151,8 +152,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	if !filepath.IsAbs(config.ManagerDbFile) {
 		config.ManagerDbFile = filepath.Join(config.ManagerDir, config.ManagerDbFile)
 	}
-	if !filepath.IsAbs(config.ManagerDbBkFile) {
-		//*** we need to support this being on a different machine, possibly on an S3-style object store
+	if !strings.HasPrefix(config.ManagerDbBkFile, "s3://") && !filepath.IsAbs(config.ManagerDbBkFile) {
 		config.ManagerDbBkFile = filepath.Join(config.ManagerDir, config.ManagerDbBkFile)
 	}
 

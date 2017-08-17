@@ -26,14 +26,17 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
+	"github.com/VertebrateResequencing/muxfys"
 	"github.com/boltdb/bolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/ugorji/go/codec"
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -56,6 +59,7 @@ var (
 	bucketJobMBs       = []byte("jobMBs")
 	bucketJobSecs      = []byte("jobSecs")
 	wipeDevDBOnInit    = true
+	forceBackups       = false
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -93,7 +97,9 @@ type db struct {
 	envcache             *lru.ARCCache
 	ch                   codec.Handle
 	updatingAfterJobExit int
+	backupsEnabled       bool
 	backupPath           string
+	backupMount          *muxfys.MuxFys
 	backingUp            bool
 	backupQueued         bool
 	backupFinal          bool
@@ -105,22 +111,79 @@ type db struct {
 
 // initDB opens/creates our database and sets things up for use. If dbFile
 // doesn't exist or seems corrupted, we copy it from backup if that exists,
-// otherwise we start fresh. In development we delete any existing db and force
-// a fresh start.
+// otherwise we start fresh.
+//
+// dbBkFile can be an S3 url specified like: s3://[profile@]bucket/path/file
+// which will cause that s3 path to be mounted in the same directory as dbFile
+// and backups will be written there.
+//
+// In development we delete any existing db and force a fresh start. Backups
+// are also not carried out, so dbBkFile is ignored.
 func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, msg string, err error) {
+	var backupsEnabled bool
+	bkPath := dbBkFile
+	var fs *muxfys.MuxFys
+	if deployment == "production" || forceBackups {
+		backupsEnabled = true
+		if strings.HasPrefix(dbBkFile, "s3://") {
+			if deployment == "development" {
+				dbBkFile += "." + deployment
+			}
+			path := strings.TrimPrefix(dbBkFile, "s3://")
+			pp := strings.Split(path, "@")
+			profile := "default"
+			if len(pp) == 2 {
+				profile = pp[0]
+				path = pp[1]
+			}
+			base := filepath.Base(path)
+			path = filepath.Dir(path)
+
+			mnt := filepath.Join(filepath.Dir(dbFile), ".db_bk_mount", path)
+			bkPath = filepath.Join(mnt, base)
+
+			var accessorConfig *muxfys.S3Config
+			accessorConfig, err = muxfys.S3ConfigFromEnvironment(profile, path)
+			if err != nil {
+				return
+			}
+			var accessor *muxfys.S3Accessor
+			accessor, err = muxfys.NewS3Accessor(accessorConfig)
+			if err != nil {
+				return
+			}
+			remoteConfig := &muxfys.RemoteConfig{
+				Accessor: accessor,
+				Write:    true,
+			}
+			cfg := &muxfys.Config{
+				Mount:   mnt,
+				Retries: 10,
+			}
+			fs, err = muxfys.New(cfg)
+			if err != nil {
+				return
+			}
+			err = fs.Mount(remoteConfig)
+			if err != nil {
+				return
+			}
+			fs.UnmountOnDeath()
+		}
+	}
+
 	if wipeDevDBOnInit && deployment == "development" {
 		os.Remove(dbFile)
-		os.Remove(dbBkFile)
+		os.Remove(bkPath)
 	}
 
 	var boltdb *bolt.DB
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
-		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) { //*** need to handle bk being on another machine, possibly an S3-style object store
+		if _, err = os.Stat(bkPath); os.IsNotExist(err) {
 			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 			msg = "created new empty db file " + dbFile
 		} else {
-			// copy bk to main *** need to handle bk being in an object store
-			err = copyFile(dbBkFile, dbFile)
+			err = copyFile(bkPath, dbFile)
 			if err != nil {
 				return
 			}
@@ -130,9 +193,9 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 	} else {
 		boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 		if err != nil {
-			// try the backup *** again, need to handle bk being elsewhere
+			// try the backup
 			if _, errbk := os.Stat(dbBkFile); errbk == nil {
-				boltdb, errbk = bolt.Open(dbBkFile, dbFilePermission, nil)
+				boltdb, errbk = bolt.Open(bkPath, dbFilePermission, nil)
 				if errbk == nil {
 					origerr := err
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -140,7 +203,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 					if err != nil {
 						return
 					}
-					err = copyFile(dbBkFile, dbFile)
+					err = copyFile(bkPath, dbFile)
 					if err != nil {
 						return
 					}
@@ -212,8 +275,12 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		bolt:               boltdb,
 		envcache:           envcache,
 		ch:                 new(codec.BincHandle),
-		backupPath:         dbBkFile,
+		backupsEnabled:     backupsEnabled,
+		backupPath:         bkPath,
 		backupNotification: make(chan bool),
+	}
+	if fs != nil {
+		dbstruct.backupMount = fs
 	}
 	return
 }
@@ -966,6 +1033,9 @@ func (db *db) close() {
 		}
 
 		db.bolt.Close()
+		if db.backupMount != nil {
+			db.backupMount.Unmount()
+		}
 	}
 }
 
@@ -976,7 +1046,7 @@ func (db *db) close() {
 func (db *db) backgroundBackup() {
 	db.Lock()
 	defer db.Unlock()
-	if db.closed {
+	if db.closed || !db.backupsEnabled {
 		return
 	}
 	if db.backingUp {

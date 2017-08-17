@@ -21,6 +21,7 @@ package jobqueue
 import (
 	"flag"
 	"fmt"
+	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	// "github.com/boltdb/bolt"
@@ -83,13 +84,14 @@ func TestJobqueue(t *testing.T) {
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
+	managerDBBkFile := config.ManagerDbFile + "_bk" // not config.ManagerDbBkFile in case it is an s3 url
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   "local",
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
-		DBFileBackup:    config.ManagerDbBkFile,
+		DBFileBackup:    managerDBBkFile,
 		Deployment:      config.Deployment,
 	}
 	addr := "localhost:" + config.ManagerPort
@@ -2107,11 +2109,15 @@ func TestJobqueue(t *testing.T) {
 	// db to test some behaviours
 	Convey("Once a new jobqueue server is up it creates a db file", t, func() {
 		ServerItemTTR = 2 * time.Second
+		forceBackups = true
+		defer func() {
+			forceBackups = false
+		}()
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 		_, err = os.Stat(config.ManagerDbFile)
 		So(err, ShouldBeNil)
-		_, err = os.Stat(config.ManagerDbBkFile)
+		_, err = os.Stat(managerDBBkFile)
 		So(err, ShouldNotBeNil)
 
 		Convey("You can connect, and add 2 jobs, which creates a db backup", func() {
@@ -2134,7 +2140,7 @@ func TestJobqueue(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
 
-			tmpPath := config.ManagerDbBkFile + ".tmp"
+			tmpPath := managerDBBkFile + ".tmp"
 			<-time.After(150 * time.Millisecond)
 			_, err = os.Stat(tmpPath)
 			So(err, ShouldBeNil)
@@ -2144,14 +2150,14 @@ func TestJobqueue(t *testing.T) {
 			info, err := os.Stat(config.ManagerDbFile)
 			So(err, ShouldBeNil)
 			So(info.Size(), ShouldEqual, 65536) // don't know if this will be consistent across platforms and versions...
-			info2, err := os.Stat(config.ManagerDbBkFile)
+			info2, err := os.Stat(managerDBBkFile)
 			So(err, ShouldBeNil)
 			So(info2.Size(), ShouldEqual, 32768) // *** don't know why it's so much smaller...
 			_, err = os.Stat(tmpPath)
 			So(err, ShouldNotBeNil)
 
 			Convey("You can create manual backups that work correctly", func() {
-				manualBackup := config.ManagerDbBkFile + ".manual"
+				manualBackup := managerDBBkFile + ".manual"
 				err = jq.BackupDB(manualBackup)
 				So(err, ShouldBeNil)
 				info3, err := os.Stat(manualBackup)
@@ -2207,7 +2213,7 @@ func TestJobqueue(t *testing.T) {
 				os.Remove(config.ManagerDbFile)
 				_, err = os.Stat(config.ManagerDbFile)
 				So(err, ShouldNotBeNil)
-				_, err = os.Stat(config.ManagerDbBkFile)
+				_, err = os.Stat(managerDBBkFile)
 				So(err, ShouldBeNil)
 
 				server, _, err = Serve(serverConfig)
@@ -2216,7 +2222,7 @@ func TestJobqueue(t *testing.T) {
 				info, err = os.Stat(config.ManagerDbFile)
 				So(err, ShouldBeNil)
 				So(info.Size(), ShouldEqual, 32768)
-				info2, err = os.Stat(config.ManagerDbBkFile)
+				info2, err = os.Stat(managerDBBkFile)
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 32768)
 
@@ -2239,7 +2245,7 @@ func TestJobqueue(t *testing.T) {
 				info, err = os.Stat(config.ManagerDbFile)
 				So(err, ShouldBeNil)
 				So(info.Size(), ShouldEqual, 32768)
-				info2, err = os.Stat(config.ManagerDbBkFile)
+				info2, err = os.Stat(managerDBBkFile)
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 32768)
 
@@ -2298,7 +2304,7 @@ func TestJobqueue(t *testing.T) {
 			info, err := os.Stat(config.ManagerDbFile)
 			So(err, ShouldBeNil)
 			So(info.Size(), ShouldEqual, 32768)
-			info2, err := os.Stat(config.ManagerDbBkFile)
+			info2, err := os.Stat(managerDBBkFile)
 			So(err, ShouldBeNil)
 			So(info2.Size(), ShouldEqual, 28672)
 		})
@@ -3251,10 +3257,140 @@ func TestJobqueueWithMounts(t *testing.T) {
 	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
-	Convey("You can connect and run commands that rely on files in a remote S3 object store", t, func() {
-		config := internal.ConfigLoad("development", true)
-		addr := "localhost:" + config.ManagerPort
+	config := internal.ConfigLoad("development", true)
+	addr := "localhost:" + config.ManagerPort
+	serverConfig := ServerConfig{
+		Port:            config.ManagerPort,
+		WebPort:         config.ManagerWeb,
+		SchedulerName:   "local",
+		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbBkFile,
+		Deployment:      config.Deployment,
+	}
 
+	Convey("You can bring up a server configured with an S3 db backup", t, func() {
+		s3ServerConfig := serverConfig
+		s3ServerConfig.DBFileBackup = fmt.Sprintf("s3://default@%s/db.bk", s3Path)
+		localBkPath := filepath.Join(filepath.Dir(config.ManagerDbFile), ".db_bk_mount", s3Path, "db.bk.development")
+		os.Remove(config.ManagerDbFile)
+		forceBackups = true
+		defer func() {
+			forceBackups = false
+		}()
+		server, _, err := Serve(s3ServerConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			// stop the server
+			server.Stop(true)
+
+			// and delete the db.bk file in s3, which means we need to mount the
+			// thing ourselves
+			accessorConfig, err := muxfys.S3ConfigFromEnvironment("default", s3Path)
+			if err != nil {
+				return
+			}
+			accessor, err := muxfys.NewS3Accessor(accessorConfig)
+			if err != nil {
+				return
+			}
+			remoteConfig := &muxfys.RemoteConfig{
+				Accessor: accessor,
+				Write:    true,
+			}
+			cfg := &muxfys.Config{
+				Mount:   filepath.Dir(localBkPath),
+				Retries: 10,
+			}
+			fs, err := muxfys.New(cfg)
+			if err != nil {
+				return
+			}
+			err = fs.Mount(remoteConfig)
+			if err != nil {
+				return
+			}
+			fs.UnmountOnDeath()
+			os.Remove(localBkPath)
+			fs.Unmount()
+		}()
+
+		_, err = os.Stat(config.ManagerDbFile)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(localBkPath)
+		So(err, ShouldNotBeNil)
+
+		Convey("You can connect and add a job, which creates a db backup", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			<-time.After(2 * time.Second)
+
+			info, err := os.Stat(config.ManagerDbFile)
+			So(err, ShouldBeNil)
+			So(info.Size(), ShouldEqual, 32768)
+			info2, err := os.Stat(localBkPath)
+			So(err, ShouldBeNil)
+			So(info2.Size(), ShouldEqual, 28672)
+
+			Convey("You can stop the server, delete the database, and it will be restored from S3 backup", func() {
+				jobsByRepGroup, err := jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 1)
+
+				server.Stop(true)
+				wipeDevDBOnInit = false
+				defer func() {
+					wipeDevDBOnInit = true
+				}()
+				server, _, err = Serve(s3ServerConfig)
+				So(err, ShouldBeNil)
+				defer server.Stop(true)
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 1)
+
+				server.Stop(true)
+				os.Remove(config.ManagerDbFile)
+				_, err = os.Stat(config.ManagerDbFile)
+				So(err, ShouldNotBeNil)
+				_, err = os.Stat(localBkPath)
+				So(err, ShouldNotBeNil)
+
+				server, _, err = Serve(s3ServerConfig)
+				So(err, ShouldBeNil)
+				defer server.Stop(true)
+
+				info, err = os.Stat(config.ManagerDbFile)
+				So(err, ShouldBeNil)
+				So(info.Size(), ShouldEqual, 28672)
+				info2, err = os.Stat(localBkPath)
+				So(err, ShouldBeNil)
+				So(info2.Size(), ShouldEqual, 28672)
+
+				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				So(err, ShouldBeNil)
+
+				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobsByRepGroup), ShouldEqual, 1)
+			})
+		})
+	})
+
+	Convey("You can connect and run commands that rely on files in a remote S3 object store", t, func() {
 		// pwd, err := os.Getwd()
 		// if err != nil {
 		// 	log.Fatal(err)
@@ -3265,15 +3401,6 @@ func TestJobqueueWithMounts(t *testing.T) {
 		}
 		defer os.RemoveAll(cwd)
 
-		serverConfig := ServerConfig{
-			Port:            config.ManagerPort,
-			WebPort:         config.ManagerWeb,
-			SchedulerName:   "local",
-			SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
-			DBFile:          config.ManagerDbFile,
-			DBFileBackup:    config.ManagerDbBkFile,
-			Deployment:      config.Deployment,
-		}
 		server, _, err := Serve(serverConfig)
 		So(err, ShouldBeNil)
 
