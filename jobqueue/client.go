@@ -764,7 +764,13 @@ func (c *Client) BackupDB(path string) (err error) {
 	if err != nil {
 		return
 	}
-	err = ioutil.WriteFile(path, resp.DB, dbFilePermission)
+	tmpPath := path + ".tmp"
+	err = ioutil.WriteFile(tmpPath, resp.DB, dbFilePermission)
+	if err == nil {
+		err = os.Rename(tmpPath, path)
+	} else {
+		os.Remove(tmpPath)
+	}
 	return
 }
 
