@@ -84,6 +84,8 @@ the config options available. The main things you need to know are:
   something, copy the example config file to ~/.wr_config.yml and make
   changes to that. Alternatively, as the example config file explains, add
   environment variables to your shell login script and then source it.
+  If you'll be using OpenStack, it is strongly recommended to configure
+  database backups to go to S3.
 * The wr executable must be available at that same absolute path on all
   compute nodes in your cluster, so you either need to place it on a shared
   disk, or install it in the same place on all machines (eg. have it as part of
@@ -146,7 +148,6 @@ Not yet implemented
   implemented (though you can manually build a workflow by specifying command
   dependencies).
 * Get a complete listing of all commands with a given id via the webpage.
-* Database backups.
 * Checkpointing for long running commands.
 * Security (anyone with an account on your machine can use your
   manager).
