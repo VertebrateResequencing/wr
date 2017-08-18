@@ -3177,6 +3177,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			}
 			server, _, err = Serve(osConfig)
 			So(err, ShouldBeNil)
+			defer server.Stop(true)
 
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
