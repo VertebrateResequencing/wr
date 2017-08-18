@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/boltdb/bolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/ugorji/go/codec"
@@ -123,13 +124,13 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 	var backupsEnabled bool
 	bkPath := dbBkFile
 	var fs *muxfys.MuxFys
-	if deployment == "production" || forceBackups {
+	if deployment == internal.Production || forceBackups {
 		backupsEnabled = true
-		if strings.HasPrefix(dbBkFile, "s3://") {
-			if deployment == "development" {
+		if internal.InS3(dbBkFile) {
+			if deployment == internal.Development {
 				dbBkFile += "." + deployment
 			}
-			path := strings.TrimPrefix(dbBkFile, "s3://")
+			path := strings.TrimPrefix(dbBkFile, internal.S3Prefix)
 			pp := strings.Split(path, "@")
 			profile := "default"
 			if len(pp) == 2 {
@@ -172,7 +173,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		}
 	}
 
-	if wipeDevDBOnInit && deployment == "development" {
+	if wipeDevDBOnInit && deployment == internal.Development {
 		os.Remove(dbFile)
 		os.Remove(bkPath)
 	}
