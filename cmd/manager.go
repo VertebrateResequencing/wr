@@ -242,7 +242,12 @@ running until the drain completes (or the manager is stopped) and the manager is
 then started again.
 
 It is safe to repeat this command to get an update on how long before the drain
-completes.`,
+completes.
+
+NB: if using 'wr cloud deploy --deployment production', do not use drain without
+also configuring an S3 location for your database backup, as otherwise any
+changes to the database between calling drain and the manager finally shutting
+down will be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first try and connect
 		jq := connect(5 * time.Second)
