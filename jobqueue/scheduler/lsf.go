@@ -408,9 +408,9 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 
 	megabytes := req.RAM
 	m := float32(megabytes) * s.memLimitMultiplier
-	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d]'", megabytes, megabytes))
+	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
 	if req.Cores > 1 {
-		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores), "-R", "'span[hosts=1]'")
+		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores))
 	}
 	if len(req.Other) > 0 {
 		// *** not yet implemented; would check this map for lsf-related keys
