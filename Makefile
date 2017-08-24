@@ -36,6 +36,7 @@ race:
 	@go test -p 1 -tags netgo -race -v ./jobqueue/scheduler -run TestLSF
 	@go test -p 1 -tags netgo -race -v -timeout 20m ./jobqueue/scheduler -run TestOpenstack
 	@go test -p 1 -tags netgo -race -v -timeout 15m ./cloud
+	@go test -p 1 -tags netgo -race -v ./rp
 
 report: lint vet inef spell
 

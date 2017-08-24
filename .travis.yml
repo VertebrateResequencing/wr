@@ -12,5 +12,6 @@ script:
   - go test -tags netgo -v -coverprofile=sched.coverprofile -covermode count ./jobqueue/scheduler
   - WR_MANAGERPORT="11301" go test -tags netgo -v -coverprofile=jq.coverprofile -covermode count ./jobqueue
   - go test -tags netgo -v -coverprofile=cloud.coverprofile -covermode count ./cloud
+  - go test -tags netgo -v -coverprofile=rp.coverprofile -covermode count ./rp
   - $HOME/gopath/bin/gover
   - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
