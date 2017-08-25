@@ -100,12 +100,7 @@ func (p *Protector) SetAvailabilityCallback(callback AvailabilityCallback) {
 // You immediately get back a Receipt, which you should supply to
 // WaitUntilGranted(), then to Touch() periodically until you're no longer using
 // the resource, then finally to Release().
-//
-// An optional autoRelease value can be supplied, which effectively means
-// Release() will be called for you after that amount of time has passed. (You'd
-// still need to Touch() periodically if this value was less than the
-// releaseTimeout value given to New().)
-func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (Receipt, error) {
+func (p *Protector) Request(numTokens int) (Receipt, error) {
 	if numTokens > p.maxTokens {
 		return Receipt(""), Error{p.Name, "Request", Receipt(""), ErrOverMaximumTokens}
 	}
@@ -118,12 +113,6 @@ func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (Receip
 		releaseCh: make(chan bool, 1),
 		touchCh:   make(chan bool, 1),
 		numTokens: numTokens,
-	}
-	if len(autoRelease) == 1 {
-		r.autoRelease = autoRelease[0]
-	} else {
-		// default to a year
-		r.autoRelease = 8760 * time.Hour
 	}
 
 	// queue the request and return its id as a receipt for future use by the
@@ -224,13 +213,27 @@ func (p *Protector) Touch(receipt Receipt) {
 
 // Release will release the tokens of a granted Request(), for use by any other
 // requests. You should always call this when you're done using a resource
-// (unless your request had an autoRelease specified).
+// (unless you use ReleaseAfter() instead).
 func (p *Protector) Release(receipt Receipt) {
 	p.mu.RLock()
 	r, found := p.requests[receipt]
 	p.mu.RUnlock()
 	if found {
 		r.release()
+	}
+}
+
+// ReleaseAfter is a convenience function that calls Release() after the given
+// delay, but returns immediately.
+func (p *Protector) ReleaseAfter(receipt Receipt, delay time.Duration) {
+	p.mu.RLock()
+	_, found := p.requests[receipt]
+	p.mu.RUnlock()
+	if found {
+		go func() {
+			<-time.After(delay)
+			p.Release(receipt)
+		}()
 	}
 }
 
@@ -284,7 +287,6 @@ func (p *Protector) process() {
 	// a goroutine. (not sure if having 1 goroutine per active request will be
 	// an issue...)
 	go func() {
-		auto := time.After(r.autoRelease)
 		for {
 			limit := time.After(p.releaseTimeout)
 			select {
@@ -292,9 +294,6 @@ func (p *Protector) process() {
 				// released on request
 			case <-limit:
 				// released after releaseTimeout
-				r.finish()
-			case <-auto:
-				// release after the requested auto release time
 				r.finish()
 			case <-r.touchCh:
 				// Touch() was called, loop to reset the timeout

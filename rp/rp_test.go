@@ -56,7 +56,7 @@ func TestRP(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(r, ShouldNotBeNil)
 
-			rp.WaitUntilGranted(r)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
 			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(releaseTimeout), begin.Add(releaseTimeout).Add(halfDelay))
 			rp.Release(r)
 
@@ -128,7 +128,7 @@ func TestRP(t *testing.T) {
 			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
 
-			rp.WaitUntilGranted(r)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
 			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
 
 			r2, err := rp.Request(1)
@@ -142,13 +142,13 @@ func TestRP(t *testing.T) {
 					rp.Release(r)
 				}()
 
-				rp.WaitUntilGranted(r2)
+				So(rp.WaitUntilGranted(r2), ShouldBeTrue)
 				So(time.Now(), ShouldHappenOnOrBetween, begin.Add(oneFiftyPercentDelay), begin.Add(doubleDelay))
 				rp.Release(r2)
 			})
 
 			Convey("Or until it times out", func() {
-				rp.WaitUntilGranted(r2)
+				So(rp.WaitUntilGranted(r2), ShouldBeTrue)
 				So(time.Now(), ShouldHappenOnOrBetween, begin.Add(releaseTimeout), begin.Add(releaseTimeout).Add(halfDelay))
 				rp.Release(r2)
 			})
@@ -159,42 +159,44 @@ func TestRP(t *testing.T) {
 					rp.Touch(r)
 				}()
 
-				rp.WaitUntilGranted(r2)
+				So(rp.WaitUntilGranted(r2), ShouldBeTrue)
 				So(time.Now(), ShouldHappenOnOrBetween, begin.Add(releaseTimeout).Add(oneFiftyPercentDelay), begin.Add(releaseTimeout).Add(doubleDelay))
 				rp.Release(r2)
 			})
 		})
 
-		Convey("You can request with an auto release", func() {
-			r, err := rp.Request(maxSimultaneous, oneFiftyPercentDelay)
+		Convey("You can release after a delay", func() {
+			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
 
-			rp.WaitUntilGranted(r)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
 			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
+			rp.ReleaseAfter(r, oneFiftyPercentDelay)
 
 			r2, err := rp.Request(1)
 			So(err, ShouldBeNil)
 			So(r2, ShouldNotBeNil)
 			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
 
-			rp.WaitUntilGranted(r2)
+			So(rp.WaitUntilGranted(r2), ShouldBeTrue)
 			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(oneFiftyPercentDelay), begin.Add(oneFiftyPercentDelay).Add(halfDelay))
 			rp.Release(r2)
 
 			Convey("Once released, the Request methods do nothing", func() {
 				rp.Release(r2)
 				rp.Touch(r2)
-				rp.WaitUntilGranted(r2)
+				So(rp.WaitUntilGranted(r2), ShouldBeFalse)
 				So(time.Now(), ShouldHappenOnOrBetween, begin.Add(oneFiftyPercentDelay), begin.Add(oneFiftyPercentDelay).Add(halfDelay))
 			})
 		})
 
 		Convey("Period use of Granted() is an alternative to WaitUntilGranted()", func() {
-			r, err := rp.Request(maxSimultaneous, oneFiftyPercentDelay)
+			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
 
-			rp.WaitUntilGranted(r)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
 			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
+			rp.ReleaseAfter(r, oneFiftyPercentDelay)
 
 			r2, err := rp.Request(1)
 			So(err, ShouldBeNil)
@@ -280,7 +282,7 @@ func TestRP(t *testing.T) {
 			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
 
-			rp.WaitUntilGranted(r)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
 			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*tooBusyFor)*time.Millisecond), begin.Add(time.Duration(delayInt*tooBusyFor)*time.Millisecond).Add(halfDelay))
 		})
 	})
