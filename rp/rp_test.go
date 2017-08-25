@@ -90,6 +90,22 @@ func TestRP(t *testing.T) {
 			rp.Release(r)
 		})
 
+		Convey("WaitUntilGranted can time out and cancel the request", func() {
+			r, err := rp.Request(maxSimultaneous)
+			So(err, ShouldBeNil)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
+
+			r2, err := rp.Request(1)
+			So(err, ShouldBeNil)
+			So(rp.WaitUntilGranted(r2, oneFiftyPercentDelay), ShouldBeFalse)
+			So(time.Now(), ShouldHappenOnOrBetween, begin.Add(oneFiftyPercentDelay), begin.Add(doubleDelay))
+
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
+			rp.Release(r)
+			So(rp.WaitUntilGranted(r), ShouldBeFalse)
+			So(rp.WaitUntilGranted(r2), ShouldBeFalse)
+		})
+
 		Convey("You can request the maximum tokens in a single request", func() {
 			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
@@ -173,6 +189,29 @@ func TestRP(t *testing.T) {
 
 			for i := 0; i < maxSimultaneous*3; i++ {
 				So(<-grantedCh, ShouldHappenOnOrBetween, begin.Add(time.Duration(delayInt*i)*time.Millisecond), begin.Add(time.Duration(delayInt*i)*time.Millisecond).Add(halfDelay))
+			}
+		})
+
+		Convey("Releasing Request()s immediately with no delay time lets you request continuously with no delay", func() {
+			rp := New("irods", 0*time.Second, maxSimultaneous, releaseTimeout)
+			So(rp, ShouldNotBeNil)
+
+			grantedCh := make(chan time.Time, maxSimultaneous)
+			for i := 1; i <= maxSimultaneous*3; i++ {
+				r, err := rp.Request(1)
+				So(err, ShouldBeNil)
+
+				go func(r Receipt) {
+					rp.WaitUntilGranted(r)
+					grantedCh <- time.Now()
+					rp.Release(r)
+				}(r)
+			}
+
+			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
+
+			for i := 0; i < maxSimultaneous*3; i++ {
+				So(<-grantedCh, ShouldHappenBefore, begin.Add(halfDelay))
 			}
 		})
 

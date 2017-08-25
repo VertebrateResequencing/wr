@@ -35,25 +35,47 @@ type request struct {
 	owner       string
 	numTokens   int
 	grantedCh   chan bool
+	cancelCh    chan bool
 	releaseCh   chan bool
 	touchCh     chan bool
 	autoRelease time.Duration
+	waiting     bool
 	active      bool
 	done        bool
-	mu          sync.Mutex
+	mu          sync.RWMutex
 }
 
 // waitUntilGranted blocks until the Protector that created us sends on our
-// grantedCh. Returns false if already granted or finished().
+// grantedCh. Returns false if finished(), or if cancelled by the Protector
+// sending on our cancelCh, or if another caller is waiting on this method.
+// Returns true if granted while calling this method, if if it had been
+// previously granted and the grant is still valid.
 func (r *request) waitUntilGranted() bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.active || r.done {
+	if r.done || r.waiting {
+		r.mu.Unlock()
+		return false
+	} else if r.active {
+		r.mu.Unlock()
+		return true
+	}
+	r.waiting = true
+	r.mu.Unlock()
+	select {
+	case <-r.grantedCh:
+		r.mu.Lock()
+		r.active = true
+		r.waiting = false
+		r.mu.Unlock()
+		return true
+	case <-r.cancelCh:
+		r.mu.Lock()
+		r.done = true
+		r.waiting = false
+		r.mu.Unlock()
 		return false
 	}
-	r.active = true
-	<-r.grantedCh
-	return true
+	return false
 }
 
 // touch sends on our touchCh, which will be read by the Protector that granted
@@ -81,7 +103,15 @@ func (r *request) release() {
 
 // finished stops the other methods from doing anything.
 func (r *request) finished() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	r.done = true
+}
+
+// granted tells you if the request has been granted via a successful call to
+// waitUntilGranted() and is not yet finished().
+func (r *request) granted() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.active && !r.done
 }

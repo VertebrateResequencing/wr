@@ -113,6 +113,7 @@ func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (Receip
 	r := &request{
 		id:        Receipt(uuid.NewV4().String()),
 		grantedCh: make(chan bool, 1),
+		cancelCh:  make(chan bool, 1),
 		releaseCh: make(chan bool, 1),
 		touchCh:   make(chan bool, 1),
 		numTokens: numTokens,
@@ -146,11 +147,34 @@ func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (Receip
 // has passed since you made the Request(), the request will already have been
 // released, and this function will return false: do not use the resources in
 // that case! (You will also get false if you supply an invalid Receipt.)
-func (p *Protector) WaitUntilGranted(receipt Receipt) bool {
+//
+// You can optionally supply a timeout. If it ends up taking longer that this
+// duration the request will be cancelled, the receipt will no longer be useful,
+// and this function will return false.
+func (p *Protector) WaitUntilGranted(receipt Receipt, timeout ...time.Duration) bool {
 	p.mu.RLock()
 	r, found := p.requests[receipt]
 	p.mu.RUnlock()
 	if found {
+		if len(timeout) == 1 && timeout[0] > 0 {
+			go func() {
+				<-time.After(timeout[0])
+				p.mu.Lock()
+				if !r.granted() {
+					// remote the request from the pending slice, from the map,
+					// and cancel the request
+					for i, req := range p.pending {
+						if req.id == receipt {
+							p.pending = append(p.pending[:i], p.pending[i+1:]...)
+							break
+						}
+					}
+					delete(p.requests, receipt)
+					r.cancelCh <- true
+				}
+				p.mu.Unlock()
+			}()
+		}
 		return r.waitUntilGranted()
 	}
 	return false
@@ -265,13 +289,19 @@ func (p *Protector) reprocess() {
 		return
 	}
 	p.reprocessing = true
-	since := time.Since(p.lastProcess)
 
-	if since < p.delayBetween {
-		remaining := p.delayBetween - since
+	if p.lastProcess.IsZero() {
 		p.mu.Unlock()
-		<-time.After(remaining)
+		<-time.After(p.delayBetween)
 		p.mu.Lock()
+	} else {
+		since := time.Since(p.lastProcess)
+		if since < p.delayBetween {
+			remaining := p.delayBetween - since
+			p.mu.Unlock()
+			<-time.After(remaining)
+			p.mu.Lock()
+		}
 	}
 
 	p.reprocessing = false
