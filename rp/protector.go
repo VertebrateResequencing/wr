@@ -202,11 +202,22 @@ func (p *Protector) Granted(receipt Receipt) (granted, keepChecking bool) {
 // Touch for a request (identified by the given receipt) prevents it timing out
 // and releasing the granted tokens. You should call this periodically after
 // WaitUntilGranted() for the same receipt.
-func (p *Protector) Touch(receipt Receipt) {
+//
+// Rather than have a goroutine for each of your requests that you use to
+// periodically touch, you could instead have a single goroutine that touches
+// all your granted and active requests. Hence this method can take more than
+// one receipt.
+func (p *Protector) Touch(receipts ...Receipt) {
+	var rs []*request
 	p.mu.RLock()
-	r, found := p.requests[receipt]
+	for _, receipt := range receipts {
+		if r, found := p.requests[receipt]; found {
+			rs = append(rs, r)
+		}
+	}
 	p.mu.RUnlock()
-	if found {
+
+	for _, r := range rs {
 		r.touch()
 	}
 }

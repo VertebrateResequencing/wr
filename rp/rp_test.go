@@ -165,6 +165,47 @@ func TestRP(t *testing.T) {
 			})
 		})
 
+		Convey("You can Touch multiple requests at once to delay all their timeouts", func() {
+			r, err := rp.Request(1)
+			So(err, ShouldBeNil)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
+
+			r2, err := rp.Request(1)
+			So(err, ShouldBeNil)
+			So(rp.WaitUntilGranted(r2), ShouldBeTrue)
+
+			go func() {
+				<-time.After(oneFiftyPercentDelay)
+				rp.Touch(r, r2)
+			}()
+
+			granted, keepChecking := rp.Granted(r)
+			So(granted, ShouldBeTrue)
+			So(keepChecking, ShouldBeFalse)
+			granted, keepChecking = rp.Granted(r2)
+			So(granted, ShouldBeTrue)
+			So(keepChecking, ShouldBeFalse)
+
+			<-time.After(releaseTimeout)
+
+			granted, keepChecking = rp.Granted(r)
+			So(granted, ShouldBeTrue)
+			So(keepChecking, ShouldBeFalse)
+			granted, keepChecking = rp.Granted(r2)
+			So(granted, ShouldBeTrue)
+			So(keepChecking, ShouldBeFalse)
+
+			<-time.After(oneFiftyPercentDelay)
+			<-time.After(halfDelay)
+
+			granted, keepChecking = rp.Granted(r)
+			So(granted, ShouldBeFalse)
+			So(keepChecking, ShouldBeFalse)
+			granted, keepChecking = rp.Granted(r2)
+			So(granted, ShouldBeFalse)
+			So(keepChecking, ShouldBeFalse)
+		})
+
 		Convey("You can release after a delay", func() {
 			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
