@@ -20,10 +20,11 @@
 Package rp ("resource protector") provides functions that help control access to
 some limited resource.
 
-You first create a Protector, and then make Request()s for tokens. Then you
-WaitUntilGranted() to know when a request succeeded and you "have" the tokens.
-You can now use whatever the actual resource is. Once you're done with it you
-Release() the request so that some other request can "use" those tokens.
+You first create a Protector, and then make Request()s for tokens. Requests give
+you Receipts that you use to WaitUntilGranted() to know when a request succeeded
+and you "have" the tokens. You can now use whatever the actual resource is. Once
+you're done with it you Release() the request so that some other request can
+"use" those tokens.
 
 The Protector offers these guarantees:
 
@@ -38,5 +39,16 @@ The Protector offers these guarantees:
 
     import "github.com/VertebrateResequencing/wr/rp"
 
+    p := rp.New("irods", 2 * time.Second, 20, 5 * time.Minute)
+
+    // now every time you want use the protected resource, make a request:
+    receipt, err := p.Request(1)
+    p.WaitUntilGranted(receipt)
+
+    // now use the irods resource; if using it will take longer than 5mins,
+    // arrange to call p.Touch(receipt) every, say, 2.5mins until you're done
+
+    // once you've finished using the resource:
+    p.Release(receipt)
 */
 package rp
