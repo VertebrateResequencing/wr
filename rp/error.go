@@ -27,6 +27,7 @@ import (
 // rp has some typical errors
 const (
 	ErrOverMaximumTokens = "more tokens requested than can ever be supplied"
+	ErrShutDown          = "the protector has been shut down"
 )
 
 // Error records an error and the operation, request and protector that caused it.

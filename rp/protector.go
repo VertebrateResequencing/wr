@@ -40,6 +40,7 @@ type Protector struct {
 	lastProcess    time.Time
 	reprocessing   bool
 	availabilityCb AvailabilityCallback
+	disabled       bool
 	mu             sync.RWMutex
 }
 
@@ -129,6 +130,11 @@ func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (Receip
 	// user
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.disabled {
+		return Receipt(""), Error{p.Name, "Request", Receipt(""), ErrShutDown}
+	}
+
 	p.pending = append(p.pending, r)
 	p.requests[r.id] = r
 	if p.lastProcess.IsZero() && len(p.pending) == 1 {
@@ -226,6 +232,20 @@ func (p *Protector) Release(receipt Receipt) {
 	if found {
 		r.release()
 	}
+}
+
+// Shutdown will make subsequent Request(), WaitUntilGranted() and Granted()
+// calls fail. Any currently granted requests will be released. Any ungranted
+// requests will be forgotten about.
+func (p *Protector) Shutdown() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.disabled = true
+	for _, r := range p.requests {
+		r.release()
+	}
+	p.requests = make(map[Receipt]*request)
+	p.usedTokens = 0
 }
 
 // process takes the oldest queued Request(), and if it can be fulfilled, tells

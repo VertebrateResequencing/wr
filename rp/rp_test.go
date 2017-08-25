@@ -90,6 +90,24 @@ func TestRP(t *testing.T) {
 			rp.Release(r)
 		})
 
+		Convey("You can't do anything with a Shutdown() Protector", func() {
+			r, err := rp.Request(1)
+			So(err, ShouldBeNil)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
+			r2, err := rp.Request(1)
+			So(err, ShouldBeNil)
+
+			rp.Shutdown()
+
+			So(rp.WaitUntilGranted(r2), ShouldBeFalse)
+			r3, err := rp.Request(1)
+			So(string(r3), ShouldBeBlank)
+			So(err, ShouldNotBeNil)
+			rperr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(rperr.Err, ShouldEqual, ErrShutDown)
+		})
+
 		Convey("WaitUntilGranted can time out and cancel the request", func() {
 			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
