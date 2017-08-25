@@ -44,7 +44,7 @@ func TestRP(t *testing.T) {
 				r, err := rp.Request(1)
 				So(err, ShouldBeNil)
 
-				go func(r *Request) {
+				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
 					grantedCh <- time.Now()
 				}(r)
@@ -67,7 +67,7 @@ func TestRP(t *testing.T) {
 
 		Convey("You can't Request more tokens than max", func() {
 			r, err := rp.Request(maxSimultaneous + 1)
-			So(r, ShouldBeNil)
+			So(string(r), ShouldBeBlank)
 			So(err, ShouldNotBeNil)
 			rperr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
@@ -145,7 +145,7 @@ func TestRP(t *testing.T) {
 				r, err := rp.Request(1)
 				So(err, ShouldBeNil)
 
-				go func(r *Request) {
+				go func(r Receipt) {
 					rp.WaitUntilGranted(r)
 					grantedCh <- time.Now()
 					<-time.After(halfDelay)

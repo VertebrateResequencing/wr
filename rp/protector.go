@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// Protector struct is used to Protect a particular resource by issuing tokens
+// Protector struct is used to Protect a particular resource by granting tokens
 // tokens when the resource has capacity.
 type Protector struct {
 	Name           string // Name of the resource being protected.
@@ -35,17 +35,18 @@ type Protector struct {
 	usedTokens     int
 	delayBetween   time.Duration
 	releaseTimeout time.Duration
-	pending        []*Request
+	requests       map[Receipt]*request
+	pending        []*request
 	lastProcess    time.Time
 	reprocessing   bool
 	availabilityCb AvailabilityCallback
-	mu             sync.Mutex
+	mu             sync.RWMutex
 }
 
 // New creates a new Protector. The name is for your benefit, describing the
 // resource you're protecting.
 //
-// delayBetween defines the minimum delay between the issuance of the tokens for
+// delayBetween defines the minimum delay between the granting of the tokens for
 // each Request(). This would be used to avoid spamming your resource with too
 // high a frequency of accesses.
 //
@@ -63,6 +64,7 @@ func New(name string, delayBetween time.Duration, maxSimultaneous int, releaseTi
 		maxTokens:      maxSimultaneous,
 		delayBetween:   delayBetween,
 		releaseTimeout: releaseTimeout,
+		requests:       make(map[Receipt]*request),
 	}
 }
 
@@ -94,7 +96,7 @@ func (p *Protector) SetAvailabilityCallback(callback AvailabilityCallback) {
 // Request lets you request that a desired number of tokens be granted to you
 // for use.
 //
-// You immediately get back a Request object, which you should supply to
+// You immediately get back a Receipt, which you should supply to
 // WaitUntilGranted(), then to Touch() periodically until you're no longer using
 // the resource, then finally to Release().
 //
@@ -102,14 +104,14 @@ func (p *Protector) SetAvailabilityCallback(callback AvailabilityCallback) {
 // Release() will be called for you after that amount of time has passed. (You'd
 // still need to Touch() periodically if this value was less than the
 // releaseTimeout value given to New().)
-func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (*Request, error) {
+func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (Receipt, error) {
 	if numTokens > p.maxTokens {
-		return nil, Error{p.Name, "Request", "", ErrOverMaximumTokens}
+		return Receipt(""), Error{p.Name, "Request", Receipt(""), ErrOverMaximumTokens}
 	}
 
-	// create a Request object
-	r := &Request{
-		id:        uuid.NewV4().String(),
+	// create a request object
+	r := &request{
+		id:        Receipt(uuid.NewV4().String()),
 		grantedCh: make(chan bool, 1),
 		releaseCh: make(chan bool, 1),
 		touchCh:   make(chan bool, 1),
@@ -122,40 +124,64 @@ func (p *Protector) Request(numTokens int, autoRelease ...time.Duration) (*Reque
 		r.autoRelease = 8760 * time.Hour
 	}
 
-	// queue the Request and return it
+	// queue the request and return its id as a receipt for future use by the
+	// user
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pending = append(p.pending, r)
+	p.requests[r.id] = r
 	if p.lastProcess.IsZero() && len(p.pending) == 1 {
 		go p.process()
 	} else {
 		go p.reprocess()
 	}
-	return r, nil
+	return r.id, nil
 }
 
-// WaitUntilGranted will block until the given Request has been granted its
-// tokens, whereupon you can start using the protected resource.
-func (p *Protector) WaitUntilGranted(r *Request) {
-	r.waitUntilGranted()
+// WaitUntilGranted will block until the request corresponding to the given
+// Receipt has been granted its tokens, whereupon you can start using the
+// protected resource.
+//
+// If you call this after more time than the releaseTimeout supplied to New()
+// has passed since you made the Request(), the request will already have been
+// released, and this function will return false: do not use the resources in
+// that case! (You will also get false if you supply an invalid Receipt.)
+func (p *Protector) WaitUntilGranted(receipt Receipt) bool {
+	p.mu.RLock()
+	r, found := p.requests[receipt]
+	p.mu.RUnlock()
+	if found {
+		return r.waitUntilGranted()
+	}
+	return false
 }
 
-// Touch on a given Request prevents it timing out and auto-releasing the
-// granted tokens. You should call this periodically after WaitUntilGranted() on
-// the same request.
-func (p *Protector) Touch(r *Request) {
-	r.touch()
+// Touch for a request (identified by the given receipt) prevents it timing out
+// and releasing the granted tokens. You should call this periodically after
+// WaitUntilGranted() for the same receipt.
+func (p *Protector) Touch(receipt Receipt) {
+	p.mu.RLock()
+	r, found := p.requests[receipt]
+	p.mu.RUnlock()
+	if found {
+		r.touch()
+	}
 }
 
-// Release will release the tokens of a granted Request, for use by any other
+// Release will release the tokens of a granted Request(), for use by any other
 // requests. You should always call this when you're done using a resource
 // (unless your request had an autoRelease specified).
-func (p *Protector) Release(r *Request) {
-	r.release()
+func (p *Protector) Release(receipt Receipt) {
+	p.mu.RLock()
+	r, found := p.requests[receipt]
+	p.mu.RUnlock()
+	if found {
+		r.release()
+	}
 }
 
 // process takes the oldest queued Request(), and if it can be fulfilled, tells
-// the Request that it has been granted the tokens it wanted. Calls reprocess()
+// the request that it has been granted the tokens it wanted. Calls reprocess()
 // which in turn calls process() again in the future, as necessary.
 func (p *Protector) process() {
 	p.mu.Lock()
@@ -210,6 +236,7 @@ func (p *Protector) process() {
 			// return the used tokens to the pool for future use
 			p.mu.Lock()
 			p.usedTokens -= r.numTokens
+			delete(p.requests, r.id)
 			if len(p.pending) > 0 {
 				// now that we've released tokens, call process() again, making
 				// sure we obey delayBetween

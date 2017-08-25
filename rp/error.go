@@ -31,10 +31,10 @@ const (
 
 // Error records an error and the operation, request and protector that caused it.
 type Error struct {
-	Protector string // the protector's Name
-	Op        string // name of the method
-	Request   string // the request's id
-	Err       string // one of our Err constants
+	Protector string  // the protector's Name
+	Op        string  // name of the method
+	Request   Receipt // the request's id
+	Err       string  // one of our Err constants
 }
 
 func (e Error) Error() string {

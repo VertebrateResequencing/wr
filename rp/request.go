@@ -18,17 +18,21 @@
 
 package rp
 
-// This file contains the implementation of the Request struct.
+// This file contains the implementation of request and Receipt.
 
 import (
 	"sync"
 	"time"
 )
 
-// Request struct describes a request for tokens tied to a particular resource
+// Receipt is the unique id of a request
+type Receipt string
+
+// request struct describes a request for tokens tied to a particular resource
 // protector.
-type Request struct {
-	id          string
+type request struct {
+	id          Receipt
+	owner       string
 	numTokens   int
 	grantedCh   chan bool
 	releaseCh   chan bool
@@ -40,20 +44,21 @@ type Request struct {
 }
 
 // waitUntilGranted blocks until the Protector that created us sends on our
-// grantedCh.
-func (r *Request) waitUntilGranted() {
+// grantedCh. Returns false if already granted or finished().
+func (r *request) waitUntilGranted() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.active || r.done {
-		return
+		return false
 	}
 	r.active = true
 	<-r.grantedCh
+	return true
 }
 
 // touch sends on our touchCh, which will be read by the Protector that granted
 // our tokens to stop it timing out and auto-releasing.
-func (r *Request) touch() {
+func (r *request) touch() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.active || r.done {
@@ -64,7 +69,7 @@ func (r *Request) touch() {
 
 // release sends on our releaseCh, which will be read by the Protector that
 // granted our tokens. Finally does the equivalent of finished().
-func (r *Request) release() {
+func (r *request) release() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.active || r.done {
@@ -75,7 +80,7 @@ func (r *Request) release() {
 }
 
 // finished stops the other methods from doing anything.
-func (r *Request) finished() {
+func (r *request) finished() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.done = true
