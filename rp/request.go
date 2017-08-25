@@ -90,7 +90,7 @@ func (r *request) touch() {
 }
 
 // release sends on our releaseCh, which will be read by the Protector that
-// granted our tokens. Finally does the equivalent of finished().
+// granted our tokens. Finally does the equivalent of finish().
 func (r *request) release() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -101,8 +101,9 @@ func (r *request) release() {
 	r.releaseCh <- true
 }
 
-// finished stops the other methods from doing anything.
-func (r *request) finished() {
+// finish stops new calls to waitUntilGranted(), touch() and release() from
+// doing anything (but does not cancel an ongoing waitUntilGranted()).
+func (r *request) finish() {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	r.done = true
@@ -114,4 +115,11 @@ func (r *request) granted() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.active && !r.done
+}
+
+// finished tells you if the request has been cancelled or released.
+func (r *request) finished() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.done
 }

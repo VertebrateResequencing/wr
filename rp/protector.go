@@ -248,10 +248,10 @@ func (p *Protector) process() {
 				// released on request
 			case <-limit:
 				// released after releaseTimeout
-				r.finished()
+				r.finish()
 			case <-auto:
 				// release after the requested auto release time
-				r.finished()
+				r.finish()
 			case <-r.touchCh:
 				// Touch() was called, loop to reset the timeout
 				continue
