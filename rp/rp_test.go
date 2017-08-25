@@ -171,6 +171,38 @@ func TestRP(t *testing.T) {
 			})
 		})
 
+		Convey("Period use of Granted() is an alternative to WaitUntilGranted()", func() {
+			r, err := rp.Request(maxSimultaneous, oneFiftyPercentDelay)
+			So(err, ShouldBeNil)
+
+			rp.WaitUntilGranted(r)
+			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
+
+			r2, err := rp.Request(1)
+			So(err, ShouldBeNil)
+			So(r2, ShouldNotBeNil)
+			So(time.Now(), ShouldHappenBefore, begin.Add(halfDelay))
+
+			granted, keepChecking := rp.Granted(r2)
+			So(granted, ShouldBeFalse)
+			So(keepChecking, ShouldBeTrue)
+
+			<-time.After(halfDelay)
+			granted, keepChecking = rp.Granted(r2)
+			So(granted, ShouldBeFalse)
+			So(keepChecking, ShouldBeTrue)
+
+			<-time.After(oneFiftyPercentDelay)
+			granted, keepChecking = rp.Granted(r2)
+			So(granted, ShouldBeTrue)
+			So(keepChecking, ShouldBeFalse)
+
+			rp.Release(r2)
+			granted, keepChecking = rp.Granted(r2)
+			So(granted, ShouldBeFalse)
+			So(keepChecking, ShouldBeFalse)
+		})
+
 		Convey("Releasing Request()s in less than delay time lets you request continuously", func() {
 			grantedCh := make(chan time.Time, maxSimultaneous)
 			for i := 1; i <= maxSimultaneous*3; i++ {

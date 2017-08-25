@@ -63,10 +63,6 @@ func (r *request) waitUntilGranted() bool {
 	r.mu.Unlock()
 	select {
 	case <-r.grantedCh:
-		r.mu.Lock()
-		r.active = true
-		r.waiting = false
-		r.mu.Unlock()
 		return true
 	case <-r.cancelCh:
 		r.mu.Lock()
@@ -101,11 +97,22 @@ func (r *request) release() {
 	r.releaseCh <- true
 }
 
+// grant is called to signify a request was granted.
+func (r *request) grant() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active = true
+	if r.waiting {
+		r.waiting = false
+		r.grantedCh <- true
+	}
+}
+
 // finish stops new calls to waitUntilGranted(), touch() and release() from
 // doing anything (but does not cancel an ongoing waitUntilGranted()).
 func (r *request) finish() {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.done = true
 }
 

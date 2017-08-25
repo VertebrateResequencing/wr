@@ -180,6 +180,30 @@ func (p *Protector) WaitUntilGranted(receipt Receipt, timeout ...time.Duration) 
 	return false
 }
 
+// Granted is an alternative to WaitUntilGranted(). Instead of blocking until
+// the request corresponding to the given receipt is granted, you can call
+// Granted() periodically until the first bool return value is true.
+//
+// Note that if you call Granted after more time than the releaseTimeout
+// supplied to New() has passed since you made the Request(), the request will
+// already have been released, and this function will return false. There is now
+// no point in checking Granted() any more since it will never become true,
+// hence the second bool will be false in this case. (You will also get double
+// false if you supply an invalid Receipt.)
+func (p *Protector) Granted(receipt Receipt) (granted, keepChecking bool) {
+	p.mu.RLock()
+	r, found := p.requests[receipt]
+	p.mu.RUnlock()
+	if found {
+		granted = r.granted()
+		if !granted {
+			keepChecking = !r.finished()
+		}
+		return
+	}
+	return
+}
+
 // Touch for a request (identified by the given receipt) prevents it timing out
 // and releasing the granted tokens. You should call this periodically after
 // WaitUntilGranted() for the same receipt.
@@ -234,7 +258,7 @@ func (p *Protector) process() {
 	p.pending = p.pending[1:]
 	p.usedTokens += r.numTokens
 	p.lastProcess = time.Now()
-	r.grantedCh <- true
+	r.grant()
 
 	// manage the deliberate or automatic release of these resource "tokens" in
 	// a goroutine. (not sure if having 1 goroutine per active request will be
