@@ -74,6 +74,22 @@ func TestRP(t *testing.T) {
 			So(rperr.Err, ShouldEqual, ErrOverMaximumTokens)
 		})
 
+		Convey("You can't do anything with an invalid receipt", func() {
+			r, err := rp.Request(1)
+			So(err, ShouldBeNil)
+
+			badR := Receipt("invalid")
+			So(rp.WaitUntilGranted(badR), ShouldBeFalse)
+			So(rp.WaitUntilGranted(r), ShouldBeTrue)
+
+			// Touch() and Release() don't return anything; the most we can do
+			// is confirm we don't crash
+			rp.Touch(badR)
+			rp.Release(badR)
+			rp.Touch(r)
+			rp.Release(r)
+		})
+
 		Convey("You can request the maximum tokens in a single request", func() {
 			r, err := rp.Request(maxSimultaneous)
 			So(err, ShouldBeNil)
