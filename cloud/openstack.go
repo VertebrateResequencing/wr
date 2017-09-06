@@ -421,10 +421,18 @@ func (p *openstackp) inCloud() bool {
 
 					// get the first security group *** again, not sure how to
 					// pick the "best" if more than one
+					foundNonDefault := false
 					for _, smap := range server.SecurityGroups {
 						if value, found := smap["name"]; found && value.(string) != "" {
-							p.securityGroup = value.(string)
-							break
+							if value.(string) == "default" {
+								p.hasDefaultGroup = true
+							} else if !foundNonDefault {
+								p.securityGroup = value.(string)
+								foundNonDefault = true
+							}
+							if p.hasDefaultGroup && foundNonDefault {
+								break
+							}
 						}
 					}
 
