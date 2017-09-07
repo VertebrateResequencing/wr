@@ -413,6 +413,9 @@ func (s *opst) initialize(config interface{}) (err error) {
 	}
 	if s.config.MaxInstances > -1 && s.config.MaxInstances < s.quotaMaxInstances {
 		s.quotaMaxInstances = s.config.MaxInstances
+		if provider.InCloud() {
+			s.quotaMaxInstances++
+		}
 	}
 
 	// initialize our job queue and other trackers
