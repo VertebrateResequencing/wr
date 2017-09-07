@@ -286,8 +286,8 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 		// ICMP may help networking work as expected
 		_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
 			ParentGroupID: group.ID,
-			FromPort:      0,
-			ToPort:        0, // *** results in a port of '0', which is not the same as "ALL ICMP" which then says "Any" in the web interface
+			FromPort:      -1,
+			ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
 			IPProtocol:    "ICMP",
 			CIDR:          "0.0.0.0/0",
 		}).Extract()
