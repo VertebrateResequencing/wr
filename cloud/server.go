@@ -610,8 +610,8 @@ func (s *Server) Destroyed() bool {
 
 // Alive tells you if a server is usable. It first does the same check as
 // Destroyed() before calling out to the provider. Supplying an optional boolean
-// will double check the server to make sure it can be ssh'd to; if it can't be
-// it will be destroyed.
+// will double check the server to make sure it can be ssh'd to. If the server
+// is not alive but seems to exist, it will be destroyed.
 func (s *Server) Alive(checkSSH ...bool) bool {
 	s.mutex.Lock()
 	if s.destroyed {
@@ -621,6 +621,7 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 	ok, _ := s.provider.CheckServer(s.ID)
 	if !ok {
 		s.mutex.Unlock()
+		go s.Destroy()
 		return false
 	}
 	s.mutex.Unlock()
