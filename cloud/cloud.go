@@ -411,16 +411,17 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	server = &Server{
-		ID:        serverID,
-		IP:        serverIP,
-		OS:        os,
-		AdminPass: adminPass,
-		UserName:  osUser,
-		Flavor:    f,
-		Disk:      maxDisk,
-		TTD:       ttd,
-		provider:  p,
-		debugMode: p.Debug,
+		ID:           serverID,
+		IP:           serverIP,
+		OS:           os,
+		AdminPass:    adminPass,
+		UserName:     osUser,
+		Flavor:       f,
+		Disk:         maxDisk,
+		TTD:          ttd,
+		provider:     p,
+		cancelRunCmd: make(map[int]chan bool),
+		debugMode:    p.Debug,
 	}
 
 	if err == nil && externalIP {

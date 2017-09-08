@@ -503,8 +503,9 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	// the biggest object is first and the smallest last. Insert each object one
 	// by one in to the first bin that has room for it.”
 	for sid, server := range s.servers {
-		if server.ID != "" && !server.Alive() {
+		if server.ID != "" && !server.Alive(true) {
 			delete(s.servers, sid)
+			s.debug("existing server %s died\n", sid)
 			continue
 		}
 		space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
@@ -666,8 +667,9 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	s.debug("a %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
-		if thisServer.ID != "" && !thisServer.Alive() {
+		if thisServer.ID != "" && !thisServer.Alive(true) {
 			delete(s.servers, sid)
+			s.debug("b2 %s existing server %s died\n", uniqueDebug, server.ID)
 			continue
 		}
 		if thisServer.OS == osPrefix && bytes.Equal(thisServer.Script, osScript) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
@@ -687,7 +689,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				s.mutex.Unlock()
 				s.debug("c %s will use standin %s, unlocked\n", uniqueDebug, standinServer.id)
 				server = standinServer.waitForServer()
-				if server == nil || (server.ID != "" && !server.Alive()) {
+				if server == nil || (server.ID != "" && !server.Alive(true)) {
 					s.debug("d %s giving up waiting on standin %s\n", uniqueDebug, standinServer.id)
 					return errors.New("giving up waiting to spawn")
 				}
