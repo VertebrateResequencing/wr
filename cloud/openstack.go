@@ -74,6 +74,7 @@ type openstackp struct {
 	poolName          string
 	externalNetworkID string
 	fmap              map[string]Flavor
+	lastFlavorCache   time.Time
 	ownName           string
 	networkName       string
 	networkUUID       string
@@ -135,24 +136,7 @@ func (p *openstackp) initialize() (err error) {
 
 	// get the details of all the possible server flavors
 	p.fmap = make(map[string]Flavor)
-	pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		flavorList, err := flavors.ExtractFlavors(page)
-		if err != nil {
-			return false, err
-		}
-
-		for _, f := range flavorList {
-			p.fmap[f.ID] = Flavor{
-				ID:    f.ID,
-				Name:  f.Name,
-				Cores: f.VCPUs,
-				RAM:   f.RAM,
-				Disk:  f.Disk,
-			}
-		}
-		return true, nil
-	})
+	p.cacheFlavors()
 
 	// to get a reasonable new server timeout we'll keep track of how long it
 	// takes to spawn them using an exponentially weighted moving average. We
@@ -171,6 +155,35 @@ func (p *openstackp) initialize() (err error) {
 	}
 
 	return
+}
+
+// cacheFlavors retrieves the current list of flavors from OpenStack at most
+// once every 5mins, and caches them in p. Old no-longer existent flavors are
+// kept forever, so we can still see what resources old instances are using.
+func (p *openstackp) cacheFlavors() error {
+	if len(p.fmap) == 0 || time.Since(p.lastFlavorCache) > 5*time.Minute {
+		pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
+		err := pager.EachPage(func(page pagination.Page) (bool, error) {
+			flavorList, err := flavors.ExtractFlavors(page)
+			if err != nil {
+				return false, err
+			}
+
+			for _, f := range flavorList {
+				p.fmap[f.ID] = Flavor{
+					ID:    f.ID,
+					Name:  f.Name,
+					Cores: f.VCPUs,
+					RAM:   f.RAM,
+					Disk:  f.Disk,
+				}
+			}
+			return true, nil
+		})
+		p.lastFlavorCache = time.Now()
+		return err
+	}
+	return nil
 }
 
 // deploy achieves the aims of Deploy().
@@ -452,6 +465,7 @@ func (p *openstackp) inCloud() bool {
 
 // flavors returns all our flavors.
 func (p *openstackp) flavors() map[string]Flavor {
+	p.cacheFlavors()
 	return p.fmap
 }
 
@@ -471,6 +485,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 
 	// query all servers to figure out what we've used of our quota
 	// (*** gophercloud currently doesn't implement getting this properly)
+	p.cacheFlavors()
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
