@@ -1468,7 +1468,26 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 // queue, returns current environment variables instead. In both cases, alters
 // the return value to apply any overrides stored in job.EnvOverride.
 func (j *Job) Env() (env []string, err error) {
+	overrideEs := &envStr{}
+	if len(j.EnvOverride) > 0 {
+		decompressed, derr := decompress(j.EnvOverride)
+		if derr != nil {
+			err = derr
+			return
+		}
+		ch := new(codec.BincHandle)
+		dec := codec.NewDecoderBytes([]byte(decompressed), ch)
+		err = dec.Decode(overrideEs)
+		if err != nil {
+			return
+		}
+	}
+
 	if len(j.EnvC) == 0 {
+		env = os.Environ()
+		if len(overrideEs.Environ) > 0 {
+			env = envOverride(env, overrideEs.Environ)
+		}
 		return
 	}
 
@@ -1489,22 +1508,8 @@ func (j *Job) Env() (env []string, err error) {
 		env = os.Environ()
 	}
 
-	if len(j.EnvOverride) > 0 {
-		decompressed, err = decompress(j.EnvOverride)
-		if err != nil {
-			return
-		}
-		ch = new(codec.BincHandle)
-		dec = codec.NewDecoderBytes([]byte(decompressed), ch)
-		es = &envStr{}
-		err = dec.Decode(es)
-		if err != nil {
-			return
-		}
-
-		if len(es.Environ) > 0 {
-			env = envOverride(env, es.Environ)
-		}
+	if len(overrideEs.Environ) > 0 {
+		env = envOverride(env, overrideEs.Environ)
 	}
 
 	return
