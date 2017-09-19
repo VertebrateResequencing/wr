@@ -167,6 +167,7 @@ type Server struct {
 	sgcmutex      sync.Mutex
 	racmutex      sync.RWMutex
 	rc            string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	httpServer    *http.Server
 	statusCaster  *bcast.Group
 	racCheckTimer *time.Timer
 	racChecking   bool
@@ -419,7 +420,12 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", webInterfaceStatic)
 		mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
-		go http.ListenAndServe("0.0.0.0:"+config.WebPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+		cmdsQ := s.getOrCreateQueue("cmds")
+		mux.HandleFunc(restJobsEndpoint, restJobs(s, cmdsQ))
+		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
+		go srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+		s.httpServer = srv
+
 		go s.statusCaster.Broadcasting(0)
 	}()
 
@@ -456,6 +462,8 @@ func (s *Server) Stop(wait ...bool) (err error) {
 		} else {
 			s.racmutex.Unlock()
 		}
+
+		s.httpServer.Shutdown(nil)
 
 		if len(wait) == 1 && wait[0] {
 			ticker := time.NewTicker(100 * time.Millisecond)
@@ -865,6 +873,82 @@ func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added 
 		s.rpl.lookup[rp][itemdef.Key] = true
 	}
 	s.rpl.Unlock()
+
+	return
+}
+
+// createJobs creates new jobs, adding them to the database and the in-memory
+// queue. It returns 2 errors; the first is one of our Err constant strings,
+// the second is the actual error with more details.
+func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
+	// create itemdefs for the jobs
+	for _, job := range inputJobs {
+		job.Lock()
+		job.EnvKey = envkey
+		job.UntilBuried = job.Retries + 1
+		job.Queue = q.Name
+		if s.rc != "" {
+			job.schedulerGroup = job.Requirements.Stringify()
+		}
+		job.Unlock()
+
+		// in cloud deployments we may bring up a server running an operating
+		// system with a different username, which we must allow access to
+		// ourselves
+		if user, set := job.Requirements.Other["cloud_user"]; set {
+			if _, allowed := s.allowedUsers[user]; !allowed {
+				s.allowedUsers[user] = true
+				s.ServerInfo.AllowedUsers = append(s.ServerInfo.AllowedUsers, user)
+			}
+		}
+	}
+
+	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
+	// waiting on this database write to persist to disk. The alternative would
+	// be to return success to the client as soon as the jobs were in the in-
+	// memory queue, then lazily persist to disk in a goroutine, but we must
+	// guarantee that jobs are never lost or a workflow could hopelessly break
+	// if the server node goes down between returning success and the write to
+	// disk succeeding. (If we don't return success to the client, it won't
+	// Remove the job that created the new jobs from the queue and when we
+	// recover, at worst the creating job will be run again - no jobs get lost.)
+	jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(inputJobs, ignoreComplete)
+	if err != nil {
+		srerr = ErrDBError
+		qerr = err
+	} else {
+		// now that jobs are in the db we can get dependencies fully, so now we
+		// can build our itemdefs *** we really need to test for cycles, because
+		// if the user creates one, we won't let them delete the bad jobs!
+		// storeNewJobs() returns jobsToQueue, which is all of cr.Jobs plus any
+		// previously Archive()d jobs that were resurrected because of one of
+		// their DepGroup dependencies being in cr.Jobs
+		var itemdefs []*queue.ItemDef
+		for _, job := range jobsToQueue {
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+		}
+
+		// storeNewJobs also returns jobsToUpdate, which are those jobs
+		// currently in the queue that need their dependencies updated because
+		// they just changed when we stored cr.Jobs
+		for _, job := range jobsToUpdate {
+			thisErr := q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
+			if thisErr != nil {
+				qerr = thisErr
+				break
+			}
+		}
+
+		if qerr != nil {
+			srerr = ErrInternalError
+		} else {
+			// add the jobs to the in-memory job queue
+			added, dups, qerr = s.enqueueItems(q, itemdefs)
+			if qerr != nil {
+				srerr = ErrInternalError
+			}
+		}
+	}
 
 	return
 }

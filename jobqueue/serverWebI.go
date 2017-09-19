@@ -49,19 +49,22 @@ type jstatusReq struct {
 // jstatus is the job info we send to the status webpage (only real difference
 // to Job is that some of the values are converted to easy-to-display forms).
 type jstatus struct {
-	Key           string
-	RepGroup      string
-	DepGroups     []string
-	Dependencies  []string
-	Cmd           string
-	State         JobState
-	Cwd           string
-	CwdBase       string
-	HomeChanged   bool
-	Behaviours    string
-	Mounts        string
-	ExpectedRAM   int
-	ExpectedTime  float64
+	Key          string
+	RepGroup     string
+	DepGroups    []string
+	Dependencies []string
+	Cmd          string
+	State        JobState
+	Cwd          string
+	CwdBase      string
+	HomeChanged  bool
+	Behaviours   string
+	Mounts       string
+	// ExpectedRAM is in Megabytes.
+	ExpectedRAM int
+	// ExpectedTime is in seconds.
+	ExpectedTime float64
+	// RequestedDisk is in Gigabytes.
 	RequestedDisk int
 	Cores         int
 	PeakRAM       int
