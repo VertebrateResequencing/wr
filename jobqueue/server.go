@@ -413,6 +413,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}()
 
 	// set up the web interface
+	ready := make(chan bool)
 	go func() {
 		// log panics and die
 		defer s.logPanic("jobqueue web server", true)
@@ -427,7 +428,12 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		s.httpServer = srv
 
 		go s.statusCaster.Broadcasting(0)
+
+		// wait a while for ListenAndServe() to start listening
+		<-time.After(10 * time.Millisecond)
+		ready <- true
 	}()
+	<-ready
 
 	return
 }
@@ -475,6 +481,11 @@ func (s *Server) Stop(wait ...bool) (err error) {
 
 						for {
 							conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
+							if conn != nil {
+								conn.Close()
+								continue
+							}
+							conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
 							if conn != nil {
 								conn.Close()
 								continue
