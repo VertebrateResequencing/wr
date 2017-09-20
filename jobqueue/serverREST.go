@@ -471,9 +471,9 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 		for _, id := range strings.Split(ids, ",") {
 			if len(id) == 32 {
 				// id might be a Job.key()
-				item, qerr := q.Get(id)
-				if qerr == nil && item != nil {
-					jobs = append(jobs, s.itemToJob(item, getStd, getEnv))
+				theseJobs, _, qerr := s.getJobsByKeys(q, []string{id}, getStd, getEnv)
+				if qerr == "" && len(theseJobs) > 0 {
+					jobs = append(jobs, theseJobs...)
 					continue
 				}
 			}
