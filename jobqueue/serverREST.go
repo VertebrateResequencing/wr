@@ -31,6 +31,7 @@ import (
 	"github.com/ugorji/go/codec"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,31 +43,34 @@ const restJobsEndpoint = "/rest/v1/jobs/"
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
 // queue, convenient if they are supplying JSON.
 type JobViaJSON struct {
-	Cmd          string            `json:"cmd"`
-	Cwd          string            `json:"cwd"`
-	CwdMatters   bool              `json:"cwd_matters"`
-	ChangeHome   bool              `json:"change_home"`
-	MountConfigs MountConfigs      `json:"mounts"`
-	ReqGrp       string            `json:"req_grp"`
-	Memory       string            `json:"memory"`
-	Time         string            `json:"time"`
-	CPUs         *int              `json:"cpus"`
-	Disk         *int              `json:"disk"`
-	Override     *int              `json:"override"`
-	Priority     *int              `json:"priority"`
-	Retries      *int              `json:"retries"`
-	RepGrp       string            `json:"rep_grp"`
-	DepGrps      []string          `json:"dep_grps"`
-	Deps         []string          `json:"deps"`
-	CmdDeps      Dependencies      `json:"cmd_deps"`
-	OnFailure    BehavioursViaJSON `json:"on_failure"`
-	OnSuccess    BehavioursViaJSON `json:"on_success"`
-	OnExit       BehavioursViaJSON `json:"on_exit"`
-	Env          []string          `json:"env"`
-	CloudOS      string            `json:"cloud_os"`
-	CloudUser    string            `json:"cloud_username"`
-	CloudScript  string            `json:"cloud_script"`
-	CloudOSRam   *int              `json:"cloud_ram"`
+	Cmd          string       `json:"cmd"`
+	Cwd          string       `json:"cwd"`
+	CwdMatters   bool         `json:"cwd_matters"`
+	ChangeHome   bool         `json:"change_home"`
+	MountConfigs MountConfigs `json:"mounts"`
+	ReqGrp       string       `json:"req_grp"`
+	// Memory is a number and unit suffix, eg. 1G for 1 Gigabyte.
+	Memory string `json:"memory"`
+	// Time is a duration with a unit suffix, eg. 1h for 1 hour.
+	Time string `json:"time"`
+	CPUs *int   `json:"cpus"`
+	// Disk is the number of Gigabytes the cmd will use.
+	Disk        *int              `json:"disk"`
+	Override    *int              `json:"override"`
+	Priority    *int              `json:"priority"`
+	Retries     *int              `json:"retries"`
+	RepGrp      string            `json:"rep_grp"`
+	DepGrps     []string          `json:"dep_grps"`
+	Deps        []string          `json:"deps"`
+	CmdDeps     Dependencies      `json:"cmd_deps"`
+	OnFailure   BehavioursViaJSON `json:"on_failure"`
+	OnSuccess   BehavioursViaJSON `json:"on_success"`
+	OnExit      BehavioursViaJSON `json:"on_exit"`
+	Env         []string          `json:"env"`
+	CloudOS     string            `json:"cloud_os"`
+	CloudUser   string            `json:"cloud_username"`
+	CloudScript string            `json:"cloud_script"`
+	CloudOSRam  *int              `json:"cloud_ram"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -77,7 +81,7 @@ type JobDefaults struct {
 	Cwd        string
 	CwdMatters bool
 	ChangeHome bool
-	ReqGroup   string
+	ReqGrp     string
 	// CPUs is the number of CPU cores each cmd will use. Defaults to 1.
 	CPUs int
 	// Memory is the number of Megabytes each cmd will use. Defaults to 1000.
@@ -203,8 +207,8 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 	}
 
 	if jvj.ReqGrp == "" {
-		if jd.ReqGroup != "" {
-			rg = jd.ReqGroup
+		if jd.ReqGrp != "" {
+			rg = jd.ReqGrp
 		} else {
 			parts := strings.Split(cmd, " ")
 			rg = filepath.Base(parts[0])
@@ -462,6 +466,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 	}
 
 	if len(r.URL.Path) > len(restJobsEndpoint) {
+		// get the requested jobs
 		ids := r.URL.Path[len(restJobsEndpoint):]
 		for _, id := range strings.Split(ids, ",") {
 			if len(id) == 32 {
@@ -492,12 +497,110 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 	return
 }
 
-// restJobsAdd creates and adds jobs to the queue and returns them on success.
-// The request must have some POSTed JSON that is a []*JobViaJSON. It optionally
-// takes parameters corresponding to the properties of a JobDefaults.
-func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, status int, err error) {
-	jd := &JobDefaults{}
+// type JobViaJSON struct {
+//     MountConfigs MountConfigs      `json:"mounts"`
+// }
 
+// restJobsAdd creates and adds jobs to the queue and returns them on success.
+// The request must have some POSTed JSON that is a []*JobViaJSON.
+//
+// It optionally takes parameters to use as defaults for the job properties,
+// which correspond to the json properties of a JobViaJSON (except for cmd and
+// cmd_deps). For dep_grps, deps and env, which normally take []string, provide
+// a comma-separated list. mounts, on_failure, on_success and on_exit values
+// should be supplied as url query escaped JSON strings.
+func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, status int, err error) {
+	// handle possible ?query parameters
+	jd := &JobDefaults{
+		Cwd:         r.Form.Get("cwd"),
+		RepGrp:      r.Form.Get("rep_grp"),
+		ReqGrp:      r.Form.Get("req_grp"),
+		CPUs:        urlStringToInt(r.Form.Get("cpus")),
+		Disk:        urlStringToInt(r.Form.Get("disk")),
+		Override:    urlStringToInt(r.Form.Get("override")),
+		Priority:    urlStringToInt(r.Form.Get("priority")),
+		Retries:     urlStringToInt(r.Form.Get("retries")),
+		DepGroups:   urlStringToSlice(r.Form.Get("dep_grps")),
+		Env:         r.Form.Get("env"),
+		CloudOS:     r.Form.Get("cloud_os"),
+		CloudUser:   r.Form.Get("cloud_username"),
+		CloudScript: r.Form.Get("cloud_script"),
+		CloudOSRam:  urlStringToInt(r.Form.Get("cloud_ram")),
+	}
+	if r.Form.Get("cwd_matters") == "true" {
+		jd.CwdMatters = true
+	}
+	if r.Form.Get("change_home") == "true" {
+		jd.ChangeHome = true
+	}
+	if r.Form.Get("memory") != "" {
+		mb, berr := bytefmt.ToMegabytes(r.Form.Get("memory"))
+		if berr != nil {
+			status = http.StatusBadRequest
+			err = berr
+			return
+		}
+		jd.Memory = int(mb)
+	}
+	if r.Form.Get("time") != "" {
+		jd.Time, err = time.ParseDuration(r.Form.Get("time"))
+		if err != nil {
+			status = http.StatusBadRequest
+			return
+		}
+	}
+	defaultDeps := urlStringToSlice(r.Form.Get("deps"))
+	if len(defaultDeps) > 0 {
+		for _, depgroup := range defaultDeps {
+			jd.Deps = append(jd.Deps, NewDepGroupDependency(depgroup))
+		}
+	}
+	if r.Form.Get("on_failure") != "" {
+		var bvj BehavioursViaJSON
+		err = urlStringToStruct(r.Form.Get("on_failure"), &bvj)
+		if err != nil {
+			status = http.StatusBadRequest
+			return
+		}
+		if bvj != nil {
+			jd.OnFailure = bvj.Behaviours(OnFailure)
+		}
+	}
+	if r.Form.Get("on_success") != "" {
+		var bvj BehavioursViaJSON
+		err = urlStringToStruct(r.Form.Get("on_success"), &bvj)
+		if err != nil {
+			status = http.StatusBadRequest
+			return
+		}
+		if bvj != nil {
+			jd.OnSuccess = bvj.Behaviours(OnSuccess)
+		}
+	}
+	if r.Form.Get("on_exit") != "" {
+		var bvj BehavioursViaJSON
+		err = urlStringToStruct(r.Form.Get("on_exit"), &bvj)
+		if err != nil {
+			status = http.StatusBadRequest
+			return
+		}
+		if bvj != nil {
+			jd.OnExit = bvj.Behaviours(OnExit)
+		}
+	}
+	if r.Form.Get("mounts") != "" {
+		var mcs MountConfigs
+		err = urlStringToStruct(r.Form.Get("mounts"), &mcs)
+		if err != nil {
+			status = http.StatusBadRequest
+			return
+		}
+		if mcs != nil {
+			jd.MountConfigs = mcs
+		}
+	}
+
+	// decode the posted JSON
 	var jvjs []*JobViaJSON
 	err = json.NewDecoder(r.Body).Decode(&jvjs)
 	if err != nil {
@@ -545,6 +648,46 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 		}
 	}
 
+	return
+}
+
+// urlStringToInt takes a possible string from a url parameter value and
+// converts it to an int. If the value is "", or if the value isn't a number,
+// returns 0.
+func urlStringToInt(value string) int {
+	if value == "" {
+		return 0
+	}
+	num, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return num
+}
+
+// urlStringToSlice takes a possible comma-delimited string from a url parameter
+// value and converts it to []string. If the value is "", returns an empty
+// slice.
+func urlStringToSlice(value string) (slice []string) {
+	if value == "" {
+		return
+	}
+	slice = strings.Split(value, ",")
+	return
+}
+
+// urlStringToStruct takes a possible query escaped JSON string from a url
+// parameter value and unmarshals it in to the pointed to struct. If the value
+// is "", does nothing.
+func urlStringToStruct(value string, v interface{}) (err error) {
+	if value == "" {
+		return
+	}
+	jsonString, err := url.QueryUnescape(value)
+	if err != nil {
+		return
+	}
+	err = json.Unmarshal([]byte(jsonString), v)
 	return
 }
 

@@ -21,11 +21,13 @@ package jobqueue
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -45,8 +47,8 @@ func TestREST(t *testing.T) {
 		Deployment:      config.Deployment,
 	}
 	addr := "localhost:" + config.ManagerPort
-	url := "http://localhost:" + config.ManagerWeb
-	jobsEndPoint := url + "/rest/v1/jobs"
+	baseUrl := "http://localhost:" + config.ManagerWeb
+	jobsEndPoint := baseUrl + "/rest/v1/jobs"
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -190,8 +192,8 @@ func TestREST(t *testing.T) {
 				So(job.UntilBuried, ShouldEqual, 1)
 				env, err := job.Env()
 				So(err, ShouldBeNil)
-				So(env[len(env)-2], ShouldEqual, "foo=bar")
-				So(env[len(env)-1], ShouldEqual, "test=case")
+				So(env, ShouldContain, "foo=bar")
+				So(env, ShouldContain, "test=case")
 
 				err = jq.Execute(job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
@@ -262,7 +264,7 @@ func TestREST(t *testing.T) {
 		})
 
 		Convey("You must supply certain properties when adding jobs", func() {
-			inputJobs := []*JobViaJSON{{RepGrp: "sleep_works"}}
+			inputJobs := []*JobViaJSON{{RepGrp: "foo"}}
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
 			response, err := http.Post(jobsEndPoint+"/", "application/json", bytes.NewBuffer(jsonValue))
@@ -271,6 +273,36 @@ func TestREST(t *testing.T) {
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 			So(string(responseData), ShouldEqual, "There was a problem interpreting your job: cmd was not specified\n")
+		})
+
+		Convey("You can POST with optional parameters to set new job defaults", func() {
+			inputJobs := []*JobViaJSON{{Cmd: "echo defaults"}}
+			jsonValue, err := json.Marshal(inputJobs)
+			So(err, ShouldBeNil)
+			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
+			mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
+			mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
+			response, err := http.Post(jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m"+bs+mounts, "application/json", bytes.NewBuffer(jsonValue))
+			So(err, ShouldBeNil)
+			responseData, err := ioutil.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+			var jstati []jstatus
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldBeNil)
+			So(len(jstati), ShouldEqual, 1)
+
+			So(jstati[0].Key, ShouldEqual, "b17c665295e0a3fcf2e07c6d7ad6ddd4")
+			So(jstati[0].State, ShouldEqual, "ready")
+			So(jstati[0].CwdBase, ShouldEqual, "/tmp/foo")
+			So(jstati[0].RepGroup, ShouldEqual, "defaultedRepGrp")
+			So(jstati[0].Cores, ShouldEqual, 2)
+			So(jstati[0].DepGroups, ShouldResemble, []string{"a", "b", "c"})
+			So(jstati[0].Dependencies, ShouldResemble, []string{"x", "y"})
+			So(jstati[0].HomeChanged, ShouldBeTrue)
+			So(jstati[0].ExpectedRAM, ShouldEqual, 3072)
+			So(jstati[0].ExpectedTime, ShouldEqual, 240)
+			So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
+			So(jstati[0].Mounts, ShouldEqual, mountJSON)
 		})
 
 		Reset(func() {
