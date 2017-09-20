@@ -158,8 +158,8 @@ func TestJobqueue(t *testing.T) {
 			log.Println("test daemon up, will block")
 
 			// wait until we are killed
-			server.Block()
-			log.Println("test daemon exiting")
+			err = server.Block()
+			log.Printf("test daemon exiting due to %s\n", err)
 			os.Exit(0)
 		}
 		// parent; wait a while for our child to bring up the server
@@ -257,6 +257,8 @@ func TestJobqueue(t *testing.T) {
 			syscall.Kill(child.Pid, syscall.SIGTERM)
 		})
 	})
+
+	<-time.After(5 * time.Second) // wait for the "fork" to really not be listening on the ports any more
 
 	ServerItemTTR = 1 * time.Second
 	ClientTouchInterval = 500 * time.Millisecond

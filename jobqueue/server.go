@@ -446,6 +446,7 @@ func (s *Server) Block() (err error) {
 	s.blocking = true
 	s.racmutex.Unlock()
 	err = <-s.done
+	log.Println("Block() after done")
 	s.racmutex.Lock()
 	s.up = false
 	s.blocking = false
@@ -455,8 +456,7 @@ func (s *Server) Block() (err error) {
 
 // Stop will cause a graceful shut down of the server. Supplying an optional
 // bool of true will cause Stop() to wait until all runners have exited and
-// the server is truly down before returning. It also confirms that the port
-// the server was listening on has really been released.
+// the server is truly down before returning.
 func (s *Server) Stop(wait ...bool) (err error) {
 	s.racmutex.Lock()
 	if s.up {
@@ -469,8 +469,6 @@ func (s *Server) Stop(wait ...bool) (err error) {
 			s.racmutex.Unlock()
 		}
 
-		s.httpServer.Shutdown(nil)
-
 		if len(wait) == 1 && wait[0] {
 			ticker := time.NewTicker(100 * time.Millisecond)
 			for {
@@ -478,20 +476,7 @@ func (s *Server) Stop(wait ...bool) (err error) {
 				case <-ticker.C:
 					if !s.HasRunners() {
 						ticker.Stop()
-
-						for {
-							conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
-							if conn != nil {
-								conn.Close()
-								continue
-							}
-							conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
-							if conn != nil {
-								conn.Close()
-								continue
-							}
-							return
-						}
+						return
 					}
 				}
 			}
@@ -1248,11 +1233,25 @@ func (s *Server) shutdown() {
 	s.sock.Close()
 	s.db.close()
 	s.scheduler.Cleanup()
-	s.Unlock()
+	s.httpServer.Shutdown(nil)
 
-	//*** we want to persist production queues to disk
-	//*** want to do db backup; in cloud mode we want to copy backup to local
-	// deploy client that spawned us, and also to s3
+	// wait until the ports are really no longer being listened to (which isn't
+	// the same as them being available to be reconnected to, but this is the
+	// best we can do?)
+	for {
+		conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
+		if conn != nil {
+			conn.Close()
+			continue
+		}
+		conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
+		if conn != nil {
+			conn.Close()
+			continue
+		}
+		break
+	}
+	s.Unlock()
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this
