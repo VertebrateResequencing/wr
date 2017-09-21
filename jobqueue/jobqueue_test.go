@@ -2133,6 +2133,13 @@ func TestJobqueue(t *testing.T) {
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
+			wait := make(chan bool)
+			go func() {
+				<-time.After(150 * time.Millisecond)
+				wait <- true
+				<-time.After(300 * time.Millisecond)
+				wait <- true
+			}()
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -2143,11 +2150,11 @@ func TestJobqueue(t *testing.T) {
 			So(already, ShouldEqual, 1)
 
 			tmpPath := managerDBBkFile + ".tmp"
-			<-time.After(150 * time.Millisecond)
+			<-wait
 			_, err = os.Stat(tmpPath)
 			So(err, ShouldBeNil)
 
-			<-time.After(300 * time.Millisecond)
+			<-wait
 
 			info, err := os.Stat(config.ManagerDbFile)
 			So(err, ShouldBeNil)
@@ -2360,6 +2367,7 @@ func TestJobqueue(t *testing.T) {
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
 				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 
