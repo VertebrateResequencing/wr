@@ -446,7 +446,6 @@ func (s *Server) Block() (err error) {
 	s.blocking = true
 	s.racmutex.Unlock()
 	err = <-s.done
-	log.Println("Block() after done")
 	s.racmutex.Lock()
 	s.up = false
 	s.blocking = false
