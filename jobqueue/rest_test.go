@@ -28,29 +28,25 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"os"
 	"testing"
 	"time"
 )
 
 func TestREST(t *testing.T) {
+	if runnermode {
+		return
+	}
+
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true)
-	// *** for some bizarre reason, if I use the same db file path as other
-	// tests, then TestJobqueue() fails, even if that function is called in
-	// isolation!
-	dbFile := config.ManagerDbFile + "_rest"
-	dbFileBk := dbFile + "_bk"
-	defer os.Remove(dbFile)
-	defer os.Remove(dbFileBk)
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   "local",
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
-		DBFile:          dbFile,
-		DBFileBackup:    dbFileBk,
+		DBFile:          config.ManagerDbFile,
+		DBFileBackup:    config.ManagerDbFile + "_bk",
 		Deployment:      config.Deployment,
 	}
 	addr := "localhost:" + config.ManagerPort
