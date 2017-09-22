@@ -511,7 +511,7 @@ func TestOpenstack(t *testing.T) {
 				flavor, err = oss.determineFlavor(&Requirements{263000, 1 * time.Minute, 1, 1, otherReqs})
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2006")
-				So(flavor.RAM, ShouldEqual, 501760)
+				So(flavor.RAM, ShouldEqual, 496640)
 				So(flavor.Disk, ShouldEqual, 128)
 				So(flavor.Cores, ShouldEqual, 56)
 
