@@ -19,298 +19,321 @@
 package jobqueue
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
+	// "bytes"
+	// "encoding/json"
+	// "fmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	. "github.com/smartystreets/goconvey/convey"
-	"io/ioutil"
-	"net/http"
-	"net/url"
+	// . "github.com/smartystreets/goconvey/convey"
+	// "io/ioutil"
+	// "net/http"
+	// "net/url"
 	"testing"
-	"time"
+	// "time"
 )
 
 func TestREST(t *testing.T) {
-	// load our config to know where our development manager port is supposed to
-	// be; we'll use that to test jobqueue
+	// *** for some bizarre reason, setting the following variable to true
+	// breaks the TestJobqueue() test in jobqueue_test.go, even when that test
+	// is run in isolation!
+	breakTestJobqueue := false
 	config := internal.ConfigLoad("development", true)
-	managerDBBkFile := config.ManagerDbFile + "_bk" // not config.ManagerDbBkFile in case it is an s3 url
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   "local",
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
-		DBFileBackup:    managerDBBkFile,
+		DBFileBackup:    config.ManagerDbFile + "_bk",
 		Deployment:      config.Deployment,
 	}
-	addr := "localhost:" + config.ManagerPort
-	baseUrl := "http://localhost:" + config.ManagerWeb
-	jobsEndPoint := baseUrl + "/rest/v1/jobs"
-
-	ServerInterruptTime = 10 * time.Millisecond
-	ServerReserveTicker = 10 * time.Millisecond
-	ClientReleaseDelay = 100 * time.Millisecond
-	ServerItemTTR = 200 * time.Millisecond
-	ClientTouchInterval = 50 * time.Millisecond
-	clientConnectTime := 1500 * time.Millisecond
-
-	var server *Server
-	var err error
-	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err = Serve(serverConfig)
-		So(err, ShouldBeNil)
-
-		Convey("Initial GET queries return nothing", func() {
-			response, err := http.Get(jobsEndPoint)
-			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
-			So(err, ShouldBeNil)
-
-			var jstati []jstatus
-			err = json.Unmarshal(responseData, &jstati)
-			So(err, ShouldBeNil)
-			So(len(jstati), ShouldEqual, 0)
-		})
-
-		Convey("You can POST to add jobs to the queue", func() {
-			var inputJobs []*JobViaJSON
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1"})
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
-			pri := 2
-			cpus := 2
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 3 && false", CwdMatters: true, RepGrp: "rp1", Memory: "50M", CPUs: &cpus, Time: "2m", Priority: &pri, Env: []string{"foo=bar", "test=case"}})
-			jsonValue, err := json.Marshal(inputJobs)
-			So(err, ShouldBeNil)
-
-			response, err := http.Post(jobsEndPoint+"/", "application/json", bytes.NewBuffer(jsonValue))
-			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
-			So(err, ShouldBeNil)
-			var jstati []jstatus
-			err = json.Unmarshal(responseData, &jstati)
-			So(err, ShouldBeNil)
-			So(len(jstati), ShouldEqual, 3)
-
-			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-			So(jstati[0].State, ShouldEqual, "ready")
-			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
-			So(jstati[0].RepGroup, ShouldEqual, "rp1")
-			So(jstati[0].ExpectedRAM, ShouldEqual, 1000)
-			So(jstati[0].ExpectedTime, ShouldEqual, 3600)
-			So(jstati[0].Cores, ShouldEqual, 1)
-			So(jstati[1].Key, ShouldEqual, "f5c0d6240167a6e0b803e23f74e3a085")
-			So(jstati[1].RepGroup, ShouldEqual, "rp2")
-			So(jstati[1].CwdBase, ShouldEqual, "/tmp/foo")
-			So(jstati[2].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-			So(jstati[2].State, ShouldEqual, "ready")
-			So(jstati[2].CwdBase, ShouldEqual, "/tmp")
-			So(jstati[2].RepGroup, ShouldEqual, "rp1")
-			So(jstati[2].ExpectedRAM, ShouldEqual, 50)
-			So(jstati[2].ExpectedTime, ShouldEqual, 120)
-			So(jstati[2].Cores, ShouldEqual, 2)
-
-			Convey("You can GET the current status of all jobs", func() {
-				response, err := http.Get(jobsEndPoint)
-				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
-				So(err, ShouldBeNil)
-
-				var jstati []jstatus
-				err = json.Unmarshal(responseData, &jstati)
-				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 3)
-			})
-
-			Convey("You can GET the status of particular jobs using their ids", func() {
-				response, err := http.Get(jobsEndPoint + "/de6d167c58701e55f5b9f9e1e91d7807")
-				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
-				So(err, ShouldBeNil)
-
-				var jstati []jstatus
-				err = json.Unmarshal(responseData, &jstati)
-				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 1)
-				So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-
-				response, err = http.Get(jobsEndPoint + "/de6d167c58701e55f5b9f9e1e91d7807,db1e7d99becace3306c1c2470331c78e")
-				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
-				So(err, ShouldBeNil)
-
-				var jstati2 []jstatus
-				err = json.Unmarshal(responseData, &jstati2)
-				So(err, ShouldBeNil)
-				So(len(jstati2), ShouldEqual, 2)
-				So(jstati2[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-				So(jstati2[1].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-			})
-
-			Convey("You can GET the status of jobs by RepGroup", func() {
-				response, err := http.Get(jobsEndPoint + "/rp1")
-				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
-				So(err, ShouldBeNil)
-
-				var jstati []jstatus
-				err = json.Unmarshal(responseData, &jstati)
-				So(err, ShouldBeNil)
-				So(len(jstati), ShouldEqual, 2)
-				keys := make(map[string]bool)
-				for _, j := range jstati {
-					keys[j.Key] = true
-				}
-				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
-
-				Convey("And you can modify the results by changing limit", func() {
-					response, err := http.Get(jobsEndPoint + "/rp1?limit=1")
-					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati []jstatus
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 1)
-					So(jstati[0].Similar, ShouldEqual, 1)
-				})
-			})
-
-			Convey("Once one of the jobs has changed state", func() {
-				jq, err := Connect(addr, "cmds", clientConnectTime)
-				So(err, ShouldBeNil)
-				defer jq.Disconnect()
-
-				job, err := jq.Reserve(50 * time.Millisecond)
-				So(err, ShouldBeNil)
-				So(job.Cmd, ShouldEqual, "echo 3 && false")
-				So(job.State, ShouldEqual, JobStateReserved)
-				So(job.Attempts, ShouldEqual, 0)
-				So(job.UntilBuried, ShouldEqual, 1)
-				env, err := job.Env()
-				So(err, ShouldBeNil)
-				So(env, ShouldContain, "foo=bar")
-				So(env, ShouldContain, "test=case")
-
-				err = jq.Execute(job, config.RunnerExecShell)
-				So(err, ShouldNotBeNil)
-				So(job.State, ShouldEqual, JobStateBuried)
-				So(job.Exited, ShouldBeTrue)
-				So(job.Exitcode, ShouldEqual, 1)
-
-				Convey("You can GET all jobs by state, and get their stdout/err", func() {
-					response, err := http.Get(jobsEndPoint + "/?state=ready")
-					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati []jstatus
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 2)
-					keys := make(map[string]bool)
-					for _, j := range jstati {
-						keys[j.Key] = true
-					}
-					So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "f5c0d6240167a6e0b803e23f74e3a085": true})
-
-					response, err = http.Get(jobsEndPoint + "/?state=buried&std=true")
-					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati2 []jstatus
-					err = json.Unmarshal(responseData, &jstati2)
-					So(err, ShouldBeNil)
-					So(len(jstati2), ShouldEqual, 1)
-
-					So(jstati2[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-					So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
-					So(jstati2[0].State, ShouldEqual, "buried")
-					So(jstati2[0].StdOut, ShouldEqual, "3")
-
-					response, err = http.Get(jobsEndPoint + "/?state=buried&std=false")
-					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati3 []jstatus
-					err = json.Unmarshal(responseData, &jstati3)
-					So(err, ShouldBeNil)
-					So(len(jstati3), ShouldEqual, 1)
-
-					So(jstati3[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-					So(jstati3[0].CwdBase, ShouldEqual, "/tmp")
-					So(jstati3[0].State, ShouldEqual, "buried")
-					So(jstati3[0].StdOut, ShouldEqual, "")
-				})
-
-				Convey("You can GET all jobs by state and RepGroup", func() {
-					response, err := http.Get(jobsEndPoint + "/rp1?state=ready")
-					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati []jstatus
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 1)
-					So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
-				})
-			})
-		})
-
-		Convey("You must supply certain properties when adding jobs", func() {
-			inputJobs := []*JobViaJSON{{RepGrp: "foo"}}
-			jsonValue, err := json.Marshal(inputJobs)
-			So(err, ShouldBeNil)
-			response, err := http.Post(jobsEndPoint+"/", "application/json", bytes.NewBuffer(jsonValue))
-			So(err, ShouldBeNil)
-			So(response.StatusCode, ShouldEqual, 400)
-			responseData, err := ioutil.ReadAll(response.Body)
-			So(err, ShouldBeNil)
-			So(string(responseData), ShouldEqual, "There was a problem interpreting your job: cmd was not specified\n")
-		})
-
-		Convey("You can POST with optional parameters to set new job defaults", func() {
-			inputJobs := []*JobViaJSON{{Cmd: "echo defaults"}}
-			jsonValue, err := json.Marshal(inputJobs)
-			So(err, ShouldBeNil)
-			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
-			mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
-			mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
-			response, err := http.Post(jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m"+bs+mounts, "application/json", bytes.NewBuffer(jsonValue))
-			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
-			So(err, ShouldBeNil)
-			var jstati []jstatus
-			err = json.Unmarshal(responseData, &jstati)
-			So(err, ShouldBeNil)
-			So(len(jstati), ShouldEqual, 1)
-
-			So(jstati[0].Key, ShouldEqual, "b17c665295e0a3fcf2e07c6d7ad6ddd4")
-			So(jstati[0].State, ShouldEqual, "ready")
-			So(jstati[0].CwdBase, ShouldEqual, "/tmp/foo")
-			So(jstati[0].RepGroup, ShouldEqual, "defaultedRepGrp")
-			So(jstati[0].Cores, ShouldEqual, 2)
-			So(jstati[0].DepGroups, ShouldResemble, []string{"a", "b", "c"})
-			So(jstati[0].Dependencies, ShouldResemble, []string{"x", "y"})
-			So(jstati[0].HomeChanged, ShouldBeTrue)
-			So(jstati[0].ExpectedRAM, ShouldEqual, 3072)
-			So(jstati[0].ExpectedTime, ShouldEqual, 240)
-			So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
-			So(jstati[0].Mounts, ShouldEqual, mountJSON)
-		})
-
-		Reset(func() {
-			server.Stop(true)
-		})
-	})
-
-	if server != nil {
-		server.Stop(true)
+	if breakTestJobqueue {
+		Serve(serverConfig)
+	} else {
+		Serve(ServerConfig{})
 	}
+
+	//*** temp commenting out the actual tests to focus on the bizarre problem
+	// above...
+
+	// // load our config to know where our development manager port is supposed to
+	// // be; we'll use that to test jobqueue
+	// config := internal.ConfigLoad("development", true)
+	// managerDBBkFile := config.ManagerDbFile + "_bk" // not config.ManagerDbBkFile in case it is an s3 url
+	// serverConfig := ServerConfig{
+	// 	Port:            config.ManagerPort,
+	// 	WebPort:         config.ManagerWeb,
+	// 	SchedulerName:   "local",
+	// 	SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
+	// 	DBFile:          config.ManagerDbFile,
+	// 	DBFileBackup:    managerDBBkFile,
+	// 	Deployment:      config.Deployment,
+	// }
+	// addr := "localhost:" + config.ManagerPort
+	// baseUrl := "http://localhost:" + config.ManagerWeb
+	// jobsEndPoint := baseUrl + "/rest/v1/jobs"
+
+	// ServerInterruptTime = 10 * time.Millisecond
+	// ServerReserveTicker = 10 * time.Millisecond
+	// ClientReleaseDelay = 100 * time.Millisecond
+	// ServerItemTTR = 200 * time.Millisecond
+	// ClientTouchInterval = 50 * time.Millisecond
+	// clientConnectTime := 1500 * time.Millisecond
+
+	// var server *Server
+	// var err error
+	// Convey("Once the jobqueue server is up", t, func() {
+	// 	server, _, err = Serve(serverConfig)
+	// 	So(err, ShouldBeNil)
+
+	// 	Convey("Initial GET queries return nothing", func() {
+	// 		response, err := http.Get(jobsEndPoint)
+	// 		So(err, ShouldBeNil)
+	// 		responseData, err := ioutil.ReadAll(response.Body)
+	// 		So(err, ShouldBeNil)
+
+	// 		var jstati []jstatus
+	// 		err = json.Unmarshal(responseData, &jstati)
+	// 		So(err, ShouldBeNil)
+	// 		So(len(jstati), ShouldEqual, 0)
+	// 	})
+
+	// 	Convey("You can POST to add jobs to the queue", func() {
+	// 		var inputJobs []*JobViaJSON
+	// 		inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1"})
+	// 		inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
+	// 		pri := 2
+	// 		cpus := 2
+	// 		inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 3 && false", CwdMatters: true, RepGrp: "rp1", Memory: "50M", CPUs: &cpus, Time: "2m", Priority: &pri, Env: []string{"foo=bar", "test=case"}})
+	// 		jsonValue, err := json.Marshal(inputJobs)
+	// 		So(err, ShouldBeNil)
+
+	// 		response, err := http.Post(jobsEndPoint+"/", "application/json", bytes.NewBuffer(jsonValue))
+	// 		So(err, ShouldBeNil)
+	// 		responseData, err := ioutil.ReadAll(response.Body)
+	// 		So(err, ShouldBeNil)
+	// 		var jstati []jstatus
+	// 		err = json.Unmarshal(responseData, &jstati)
+	// 		So(err, ShouldBeNil)
+	// 		So(len(jstati), ShouldEqual, 3)
+
+	// 		So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+	// 		So(jstati[0].State, ShouldEqual, "ready")
+	// 		So(jstati[0].CwdBase, ShouldEqual, "/tmp")
+	// 		So(jstati[0].RepGroup, ShouldEqual, "rp1")
+	// 		So(jstati[0].ExpectedRAM, ShouldEqual, 1000)
+	// 		So(jstati[0].ExpectedTime, ShouldEqual, 3600)
+	// 		So(jstati[0].Cores, ShouldEqual, 1)
+	// 		So(jstati[1].Key, ShouldEqual, "f5c0d6240167a6e0b803e23f74e3a085")
+	// 		So(jstati[1].RepGroup, ShouldEqual, "rp2")
+	// 		So(jstati[1].CwdBase, ShouldEqual, "/tmp/foo")
+	// 		So(jstati[2].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+	// 		So(jstati[2].State, ShouldEqual, "ready")
+	// 		So(jstati[2].CwdBase, ShouldEqual, "/tmp")
+	// 		So(jstati[2].RepGroup, ShouldEqual, "rp1")
+	// 		So(jstati[2].ExpectedRAM, ShouldEqual, 50)
+	// 		So(jstati[2].ExpectedTime, ShouldEqual, 120)
+	// 		So(jstati[2].Cores, ShouldEqual, 2)
+
+	// 		Convey("You can GET the current status of all jobs", func() {
+	// 			response, err := http.Get(jobsEndPoint)
+	// 			So(err, ShouldBeNil)
+	// 			responseData, err := ioutil.ReadAll(response.Body)
+	// 			So(err, ShouldBeNil)
+
+	// 			var jstati []jstatus
+	// 			err = json.Unmarshal(responseData, &jstati)
+	// 			So(err, ShouldBeNil)
+	// 			So(len(jstati), ShouldEqual, 3)
+	// 		})
+
+	// 		Convey("You can GET the status of particular jobs using their ids", func() {
+	// 			response, err := http.Get(jobsEndPoint + "/de6d167c58701e55f5b9f9e1e91d7807")
+	// 			So(err, ShouldBeNil)
+	// 			responseData, err := ioutil.ReadAll(response.Body)
+	// 			So(err, ShouldBeNil)
+
+	// 			var jstati []jstatus
+	// 			err = json.Unmarshal(responseData, &jstati)
+	// 			So(err, ShouldBeNil)
+	// 			So(len(jstati), ShouldEqual, 1)
+	// 			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+
+	// 			response, err = http.Get(jobsEndPoint + "/de6d167c58701e55f5b9f9e1e91d7807,db1e7d99becace3306c1c2470331c78e")
+	// 			So(err, ShouldBeNil)
+	// 			responseData, err = ioutil.ReadAll(response.Body)
+	// 			So(err, ShouldBeNil)
+
+	// 			var jstati2 []jstatus
+	// 			err = json.Unmarshal(responseData, &jstati2)
+	// 			So(err, ShouldBeNil)
+	// 			So(len(jstati2), ShouldEqual, 2)
+	// 			So(jstati2[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+	// 			So(jstati2[1].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+	// 		})
+
+	// 		Convey("You can GET the status of jobs by RepGroup", func() {
+	// 			response, err := http.Get(jobsEndPoint + "/rp1")
+	// 			So(err, ShouldBeNil)
+	// 			responseData, err := ioutil.ReadAll(response.Body)
+	// 			So(err, ShouldBeNil)
+
+	// 			var jstati []jstatus
+	// 			err = json.Unmarshal(responseData, &jstati)
+	// 			So(err, ShouldBeNil)
+	// 			So(len(jstati), ShouldEqual, 2)
+	// 			keys := make(map[string]bool)
+	// 			for _, j := range jstati {
+	// 				keys[j.Key] = true
+	// 			}
+	// 			So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
+
+	// 			Convey("And you can modify the results by changing limit", func() {
+	// 				response, err := http.Get(jobsEndPoint + "/rp1?limit=1")
+	// 				So(err, ShouldBeNil)
+	// 				responseData, err := ioutil.ReadAll(response.Body)
+	// 				So(err, ShouldBeNil)
+
+	// 				var jstati []jstatus
+	// 				err = json.Unmarshal(responseData, &jstati)
+	// 				So(err, ShouldBeNil)
+	// 				So(len(jstati), ShouldEqual, 1)
+	// 				So(jstati[0].Similar, ShouldEqual, 1)
+	// 			})
+	// 		})
+
+	// 		Convey("Once one of the jobs has changed state", func() {
+	// 			jq, err := Connect(addr, "cmds", clientConnectTime)
+	// 			So(err, ShouldBeNil)
+	// 			defer jq.Disconnect()
+
+	// 			job, err := jq.Reserve(50 * time.Millisecond)
+	// 			So(err, ShouldBeNil)
+	// 			So(job.Cmd, ShouldEqual, "echo 3 && false")
+	// 			So(job.State, ShouldEqual, JobStateReserved)
+	// 			So(job.Attempts, ShouldEqual, 0)
+	// 			So(job.UntilBuried, ShouldEqual, 1)
+	// 			env, err := job.Env()
+	// 			So(err, ShouldBeNil)
+	// 			So(env, ShouldContain, "foo=bar")
+	// 			So(env, ShouldContain, "test=case")
+
+	// 			err = jq.Execute(job, config.RunnerExecShell)
+	// 			So(err, ShouldNotBeNil)
+	// 			So(job.State, ShouldEqual, JobStateBuried)
+	// 			So(job.Exited, ShouldBeTrue)
+	// 			So(job.Exitcode, ShouldEqual, 1)
+
+	// 			Convey("You can GET all jobs by state, and get their stdout/err", func() {
+	// 				response, err := http.Get(jobsEndPoint + "/?state=ready")
+	// 				So(err, ShouldBeNil)
+	// 				responseData, err := ioutil.ReadAll(response.Body)
+	// 				So(err, ShouldBeNil)
+
+	// 				var jstati []jstatus
+	// 				err = json.Unmarshal(responseData, &jstati)
+	// 				So(err, ShouldBeNil)
+	// 				So(len(jstati), ShouldEqual, 2)
+	// 				keys := make(map[string]bool)
+	// 				for _, j := range jstati {
+	// 					keys[j.Key] = true
+	// 				}
+	// 				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "f5c0d6240167a6e0b803e23f74e3a085": true})
+
+	// 				response, err = http.Get(jobsEndPoint + "/?state=buried&std=true")
+	// 				So(err, ShouldBeNil)
+	// 				responseData, err = ioutil.ReadAll(response.Body)
+	// 				So(err, ShouldBeNil)
+
+	// 				var jstati2 []jstatus
+	// 				err = json.Unmarshal(responseData, &jstati2)
+	// 				So(err, ShouldBeNil)
+	// 				So(len(jstati2), ShouldEqual, 1)
+
+	// 				So(jstati2[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+	// 				So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
+	// 				So(jstati2[0].State, ShouldEqual, "buried")
+	// 				So(jstati2[0].StdOut, ShouldEqual, "3")
+
+	// 				response, err = http.Get(jobsEndPoint + "/?state=buried&std=false")
+	// 				So(err, ShouldBeNil)
+	// 				responseData, err = ioutil.ReadAll(response.Body)
+	// 				So(err, ShouldBeNil)
+
+	// 				var jstati3 []jstatus
+	// 				err = json.Unmarshal(responseData, &jstati3)
+	// 				So(err, ShouldBeNil)
+	// 				So(len(jstati3), ShouldEqual, 1)
+
+	// 				So(jstati3[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+	// 				So(jstati3[0].CwdBase, ShouldEqual, "/tmp")
+	// 				So(jstati3[0].State, ShouldEqual, "buried")
+	// 				So(jstati3[0].StdOut, ShouldEqual, "")
+	// 			})
+
+	// 			Convey("You can GET all jobs by state and RepGroup", func() {
+	// 				response, err := http.Get(jobsEndPoint + "/rp1?state=ready")
+	// 				So(err, ShouldBeNil)
+	// 				responseData, err := ioutil.ReadAll(response.Body)
+	// 				So(err, ShouldBeNil)
+
+	// 				var jstati []jstatus
+	// 				err = json.Unmarshal(responseData, &jstati)
+	// 				So(err, ShouldBeNil)
+	// 				So(len(jstati), ShouldEqual, 1)
+	// 				So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+	// 			})
+	// 		})
+	// 	})
+
+	// 	Convey("You must supply certain properties when adding jobs", func() {
+	// 		inputJobs := []*JobViaJSON{{RepGrp: "foo"}}
+	// 		jsonValue, err := json.Marshal(inputJobs)
+	// 		So(err, ShouldBeNil)
+	// 		response, err := http.Post(jobsEndPoint+"/", "application/json", bytes.NewBuffer(jsonValue))
+	// 		So(err, ShouldBeNil)
+	// 		So(response.StatusCode, ShouldEqual, 400)
+	// 		responseData, err := ioutil.ReadAll(response.Body)
+	// 		So(err, ShouldBeNil)
+	// 		So(string(responseData), ShouldEqual, "There was a problem interpreting your job: cmd was not specified\n")
+	// 	})
+
+	// 	Convey("You can POST with optional parameters to set new job defaults", func() {
+	// 		inputJobs := []*JobViaJSON{{Cmd: "echo defaults"}}
+	// 		jsonValue, err := json.Marshal(inputJobs)
+	// 		So(err, ShouldBeNil)
+	// 		bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
+	// 		mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
+	// 		mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
+	// 		response, err := http.Post(jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m"+bs+mounts, "application/json", bytes.NewBuffer(jsonValue))
+	// 		So(err, ShouldBeNil)
+	// 		responseData, err := ioutil.ReadAll(response.Body)
+	// 		So(err, ShouldBeNil)
+	// 		var jstati []jstatus
+	// 		err = json.Unmarshal(responseData, &jstati)
+	// 		So(err, ShouldBeNil)
+	// 		So(len(jstati), ShouldEqual, 1)
+
+	// 		So(jstati[0].Key, ShouldEqual, "b17c665295e0a3fcf2e07c6d7ad6ddd4")
+	// 		So(jstati[0].State, ShouldEqual, "ready")
+	// 		So(jstati[0].CwdBase, ShouldEqual, "/tmp/foo")
+	// 		So(jstati[0].RepGroup, ShouldEqual, "defaultedRepGrp")
+	// 		So(jstati[0].Cores, ShouldEqual, 2)
+	// 		So(jstati[0].DepGroups, ShouldResemble, []string{"a", "b", "c"})
+	// 		So(jstati[0].Dependencies, ShouldResemble, []string{"x", "y"})
+	// 		So(jstati[0].HomeChanged, ShouldBeTrue)
+	// 		So(jstati[0].ExpectedRAM, ShouldEqual, 3072)
+	// 		So(jstati[0].ExpectedTime, ShouldEqual, 240)
+	// 		So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
+	// 		So(jstati[0].Mounts, ShouldEqual, mountJSON)
+	// 	})
+
+	// 	Reset(func() {
+	// 		server.Stop(true)
+	// 	})
+	// })
+
+	// if server != nil {
+	// 	server.Stop(true)
+	// }
 }
