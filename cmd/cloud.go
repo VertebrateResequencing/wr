@@ -206,6 +206,9 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 
 		// get/spawn a "head node" server
+		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
+		fmPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
+		fwPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
 		var server *cloud.Server
 		usingExistingServer := false
 		servers := provider.Servers()
@@ -214,6 +217,21 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				usingExistingServer = true
 				server = thisServer
 				info("using existing %s server at %s", providerName, server.IP)
+
+				// see if this server is already running wr manager by trying
+				// to re-establish our port forwarding, which may have failed
+				// due to temporary networking issues
+				startForwarding(server.IP, serverPort, osUsername, keyPath, mp, fmPidPath)
+				startForwarding(server.IP, serverPort, osUsername, keyPath, wp, fwPidPath)
+				jq = connect(2 * time.Second)
+				if jq != nil {
+					sstats, err := jq.ServerStats()
+					if err == nil {
+						info("reconnected to existing wr manager on %s", sAddr(sstats.ServerInfo))
+						info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
+						return
+					}
+				}
 				break
 			}
 		}
@@ -246,13 +264,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		// to work reliably and completely, we'll just spawn ssh -L in the
 		// background and keep note of the pids so we can kill them during
 		// teardown
-		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
-		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid"))
+		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, fmPidPath)
 		if err != nil {
 			provider.TearDown()
 			die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 		}
-		err = startForwarding(server.IP, serverPort, osUsername, keyPath, wp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid"))
+		err = startForwarding(server.IP, serverPort, osUsername, keyPath, wp, fwPidPath)
 		if err != nil {
 			provider.TearDown()
 			die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
