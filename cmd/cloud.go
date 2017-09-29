@@ -232,6 +232,19 @@ most likely to succeed if you use an IP address instead of a host name.`,
 						return
 					}
 				}
+
+				// clean up any existing or partially failed forwarding
+				pid, running := checkProcess(fmPidPath)
+				if running {
+					killProcess(pid)
+				}
+				os.Remove(fmPidPath)
+				pid, running = checkProcess(fwPidPath)
+				if running {
+					killProcess(pid)
+				}
+				os.Remove(fwPidPath)
+
 				break
 			}
 		}
