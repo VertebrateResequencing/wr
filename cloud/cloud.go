@@ -636,6 +636,7 @@ func (p *Provider) loadResources(resourceName string) (resources *Resources, err
 			// add in the ref to ourselves to each of our servers
 			for _, server := range resources.Servers {
 				server.provider = p
+				server.cancelRunCmd = make(map[int]chan bool)
 			}
 		}
 	}
