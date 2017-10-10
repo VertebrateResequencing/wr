@@ -70,11 +70,13 @@ case that you wish the contents of 1 or more remote directories to be accessible
 from a single local directory ('mnt' when using this command, the command
 working directory when using 'wr add'). For anything more complicated you'll
 need to use --mount_json. You can't use both --mounts and --mount_json at once.
-The format is a comma-separated list of [c|u][r|w]:bucket[/path] strings. The
-first character as 'c' means to turn on caching, while 'u' means uncached. The
-second character as 'r' means read-only, while 'w' means writeable (only one of
-them can have w). After the colon you specify the remote bucket name and ideally
-the path to the deepest subdirectory that contains the data you with to access.
+The format is a comma-separated list of [c|u][r|w]:[profile@]bucket[/path]
+strings. The first character as 'c' means to turn on caching, while 'u' means
+uncached. The second character as 'r' means read-only, while 'w' means writeable
+(only one of them can have w). After the colon you can optionally specift the
+profile name followed by the @ symbol, followed by the required remote bucket
+name and ideally the path to the deepest subdirectory that contains the data you
+wish to access.
 
 
 --mount_json is the JSON string for an array of Config objects describing all
@@ -311,11 +313,24 @@ func mountParseSimple(simpleString string) (mcs jobqueue.MountConfigs) {
 			die("'%s' did not specify w or r", simple)
 		}
 
-		targets = append(targets, jobqueue.MountTarget{
-			Path:  parts[1],
+		path := parts[1]
+		var profile string
+		if strings.Contains(path, "@") {
+			parts := strings.Split(path, "@")
+			profile = parts[0]
+			path = parts[1]
+		}
+
+		mt := jobqueue.MountTarget{
+			Path:  path,
 			Cache: cache,
 			Write: write,
-		})
+		}
+		if profile != "" {
+			mt.Profile = profile
+		}
+
+		targets = append(targets, mt)
 	}
 
 	mcs = append(mcs, jobqueue.MountConfig{Targets: targets})
