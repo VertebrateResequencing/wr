@@ -194,6 +194,8 @@ func (s *lsf) initialize(config interface{}) error {
 					}
 					unit := matches[nextIsMemlimit-1][2]
 					switch unit {
+					case "T":
+						val *= 1000000
 					case "G":
 						val *= 1000
 					case "K":
