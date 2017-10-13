@@ -409,15 +409,16 @@ func TestOpenstack(t *testing.T) {
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	rName := "wr-testing-" + localUser
 	config := &ConfigOpenStack{
-		ResourceName:   rName,
-		OSPrefix:       osPrefix,
-		OSUser:         osUser,
-		OSRAM:          2048,
-		FlavorRegex:    flavorRegex,
-		ServerPorts:    []int{22},
-		ServerKeepTime: 15 * time.Second,
-		Shell:          "bash",
-		MaxInstances:   -1,
+		ResourceName:         rName,
+		OSPrefix:             osPrefix,
+		OSUser:               osUser,
+		OSRAM:                2048,
+		FlavorRegex:          flavorRegex,
+		ServerPorts:          []int{22},
+		ServerKeepTime:       15 * time.Second,
+		ServerCheckFrequency: 1 * time.Second,
+		Shell:                "bash",
+		MaxInstances:         -1,
 	}
 	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
@@ -548,31 +549,30 @@ func TestOpenstack(t *testing.T) {
 		_, err = exec.LookPath("nova")
 		if err == nil && oss.provider.InCloud() {
 			Convey("The canCount during and after spawning is correct", func() {
-				os := s.impl.(*opst)
 				// *** these tests are only going to work if no external process
 				// changes resource usage before we finish...
 
 				// avoid running anything on ourselves, so we actually spawn a
 				// new server
-				r := os.reqForSpawn(possibleReq)
-				for _, server := range os.servers {
+				r := oss.reqForSpawn(possibleReq)
+				for _, server := range oss.servers {
 					if server.Flavor.RAM >= r.RAM {
 						r.RAM = server.Flavor.RAM + 1
 					}
 				}
-				numServers := len(os.servers)
+				numServers := len(oss.servers)
 
-				flavor, err := os.determineFlavor(r)
+				flavor, err := oss.determineFlavor(r)
 				So(err, ShouldBeNil)
 				testReq := &Requirements{flavor.RAM, 1 * time.Minute, flavor.Cores, 0, otherReqs}
-				can := os.canCount(testReq)
+				can := oss.canCount(testReq)
 
 				done := make(chan bool, 1)
 				go func() {
 					i := 0
 					for {
 						i++
-						err := os.runCmd("sleep 1", testReq)
+						err := oss.runCmd("sleep 1", testReq)
 						if err == nil || i == 3 {
 							done <- true
 							break
@@ -582,28 +582,28 @@ func TestOpenstack(t *testing.T) {
 
 				<-time.After(900 * time.Millisecond)
 
-				So(len(os.servers)+len(os.standins), ShouldEqual, numServers+1)
-				So(os.canCount(testReq), ShouldEqual, can-1)
+				So(len(oss.servers)+len(oss.standins), ShouldEqual, numServers+1)
+				So(oss.canCount(testReq), ShouldEqual, can-1)
 
 				<-done
 
-				for sid, server := range os.servers {
+				for sid, server := range oss.servers {
 					if server.Destroyed() {
-						delete(os.servers, sid)
+						delete(oss.servers, sid)
 					}
 				}
-				So(len(os.servers), ShouldEqual, numServers+1)
-				So(os.canCount(testReq), ShouldEqual, can)
+				So(len(oss.servers), ShouldEqual, numServers+1)
+				So(oss.canCount(testReq), ShouldEqual, can)
 
 				<-time.After(20 * time.Second)
 
-				for sid, server := range os.servers {
+				for sid, server := range oss.servers {
 					if server.Destroyed() {
-						delete(os.servers, sid)
+						delete(oss.servers, sid)
 					}
 				}
-				So(len(os.servers), ShouldEqual, numServers)
-				So(os.canCount(testReq), ShouldEqual, can)
+				So(len(oss.servers), ShouldEqual, numServers)
+				So(oss.canCount(testReq), ShouldEqual, can)
 			})
 
 			Convey("Schedule() lets you...", func() {

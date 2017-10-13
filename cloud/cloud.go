@@ -50,7 +50,7 @@ than 1 process at a time.
 
     // spawn a server
     flavor := provider.CheapestServerFlavor(1, 1024, "")
-    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 120 * time.Second, true)
+    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, 1 * time.Minute, true)
     server.WaitUntilReady()
 
     // simplistic way of making the most of the server by running as many
@@ -164,16 +164,16 @@ type Quota struct {
 
 // provideri must be satisfied to add support for a particular cloud provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                             // return the environment variables required to function
-	initialize() error                                                                                                                                 // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error                                           // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	inCloud() bool                                                                                                                                     // achieve the aims of InCloud()
-	getQuota() (*Quota, error)                                                                                                                         // achieve the aims of GetQuota()
-	flavors() map[string]Flavor                                                                                                                        // return a map of all server flavors, with their flavor ids as keys
-	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) // achieve the aims of Spawn(), creating sentinelFilePath once the new server is ready to use.
-	checkServer(serverID string) (working bool, err error)                                                                                             // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                               // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                               // achieve the aims of TearDown()
+	requiredEnv() []string                                                                                                                           // return the environment variables required to function
+	initialize() error                                                                                                                               // do any initial config set up such as authentication
+	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error                                         // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	inCloud() bool                                                                                                                                   // achieve the aims of InCloud()
+	getQuota() (*Quota, error)                                                                                                                       // achieve the aims of GetQuota()
+	flavors() map[string]Flavor                                                                                                                      // return a map of all server flavors, with their flavor ids as keys
+	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error) // achieve the aims of Spawn(), creating sentinelFilePath once the new server is ready to use.
+	checkServer(serverID string) (working bool, err error)                                                                                           // achieve the aims of CheckServer()
+	destroyServer(serverID string) error                                                                                                             // achieve the aims of DestroyServer()
+	tearDown(resources *Resources) error                                                                                                             // achieve the aims of TearDown()
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
@@ -186,6 +186,7 @@ type Provider struct {
 	inCloud      bool
 	madeHeadNode bool
 	Debug        bool
+	servers      map[string]*Server // by name
 	sync.RWMutex
 }
 
@@ -249,6 +250,11 @@ func New(name string, resourceName string, savePath string) (p *Provider, err er
 		p.resources, err = p.loadResources(resourceName)
 		if err != nil {
 			return
+		}
+
+		p.servers = make(map[string]*Server)
+		for _, server := range p.resources.Servers {
+			p.servers[server.Name] = server
 		}
 
 		var missingEnv []string
@@ -382,28 +388,38 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 // given os name, with the given flavor ID (that you could get from
 // CheapestServerFlavor().ID) and at least the given amount of disk space
 // (creating a temporary volume of the required size if the flavor's root disk
-// is too small). If you supply a non-zero value for the ttd argument, then this
-// amount of time after the last s.Release() call you make (or after the last
-// cmd you started with s.RunCmd exits) that causes the server to be considered
-// idle, the server will be destroyed. If you need an external IP so that you
-// can ssh to the server externally, supply true as the last argument. Returns a
-// *Server so you can s.Destroy it later, find out its ip address so you can ssh
-// to it, and get its admin password in case you need to sudo on the server. You
-// will need to know the username that you can log in with on your chosen OS
-// image. If you call Spawn() while running on a cloud server, then the newly
-// spawned server will be in the same network and security group as the current
-// server. If you get an err, you will want to call server.Destroy() as this is
-// not done for you. NB: the server will likely not be ready to use yet, having
-// not completed its boot up; call server.WaitUntilReady() before trying to use
-// the server for anything.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool) (server *Server, err error) {
+// is too small).
+//
+// If you supply a non-zero value for the ttd argument, then this amount of time
+// after the last s.Release() call you make (or after the last cmd you started
+// with s.RunCmd exits) that causes the server to be considered idle, the server
+// will be destroyed.
+//
+// If you supply a non-zero value for the checkFrequency argument, then whenever
+// the returned server is asked to run a command it will check itself at this
+// frequency to make sure that ssh is still possible. If not, we assume that the
+// server is dead and the command failed to run to completion.
+//
+// If you need an external IP so that you can ssh to the server externally,
+// supply true as the last argument.
+//
+// Returns a *Server so you can s.Destroy it later, find out its ip address so
+// you can ssh to it, and get its admin password in case you need to sudo on the
+// server. You will need to know the username that you can log in with on your
+// chosen OS image. If you call Spawn() while running on a cloud server, then
+// the newly spawned server will be in the same network and security group as
+// the current server. If you get an err, you will want to call server.Destroy()
+// as this is not done for you. NB: the server will likely not be ready to use
+// yet, having not completed its boot up; call server.WaitUntilReady() before
+// trying to use the server for anything.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd, checkFrequency time.Duration, externalIP bool) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
 		return
 	}
 
-	serverID, serverIP, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP)
+	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP)
 
 	maxDisk := f.Disk
 	if diskGB > maxDisk {
@@ -411,22 +427,26 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	server = &Server{
-		ID:           serverID,
-		IP:           serverIP,
-		OS:           os,
-		AdminPass:    adminPass,
-		UserName:     osUser,
-		Flavor:       f,
-		Disk:         maxDisk,
-		TTD:          ttd,
-		provider:     p,
-		cancelRunCmd: make(map[int]chan bool),
-		debugMode:    p.Debug,
+		ID:             serverID,
+		Name:           serverName,
+		IP:             serverIP,
+		OS:             os,
+		AdminPass:      adminPass,
+		UserName:       osUser,
+		Flavor:         f,
+		Disk:           maxDisk,
+		TTD:            ttd,
+		CheckFrequency: checkFrequency,
+		provider:       p,
+		cancelRunCmd:   make(map[int]chan bool),
+		debugMode:      p.Debug,
 	}
+
+	p.Lock()
+	p.servers[serverName] = server
 
 	if err == nil && externalIP {
 		// if this is the first server created, note it is the "head node"
-		p.Lock()
 		if !p.madeHeadNode {
 			server.IsHeadNode = true
 			p.madeHeadNode = true
@@ -436,6 +456,8 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		p.resources.Servers[serverID] = server
 		p.Unlock()
 		err = p.saveResources()
+	} else {
+		p.Unlock()
 	}
 
 	return
@@ -560,6 +582,14 @@ func (p *Provider) Servers() map[string]*Server {
 	p.RLock()
 	defer p.RUnlock()
 	return p.resources.Servers
+}
+
+// GetServerByName returns the Server with the given name, which corresponds to
+// its hostname. Returns nil if we did not spawn a server with that name.
+func (p *Provider) GetServerByName(name string) *Server {
+	p.RLock()
+	defer p.RUnlock()
+	return p.servers[name]
 }
 
 // HeadNode returns the first server created under this deployment that had an

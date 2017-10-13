@@ -839,6 +839,8 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				job.FailReason = FailReasonRelease
 				job.EndTime = time.Now()
 
+				s.decrementGroupCount(job.schedulerGroup, q)
+
 				if job.UntilBuried <= 0 {
 					return queue.SubQueueBury
 				}

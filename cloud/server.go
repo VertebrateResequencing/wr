@@ -50,6 +50,7 @@ type Flavor struct {
 // methods that let you keep track of how you use that server.
 type Server struct {
 	ID                string
+	Name              string // ought to correspond to the hostname
 	IP                string // ip address that you could SSH to
 	OS                string // the name of the Operating System image
 	UserName          string // the username needed to log in to the server
@@ -58,6 +59,7 @@ type Server struct {
 	Flavor            Flavor
 	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
+	CheckFrequency    time.Duration // when running a command on this server, how frequently to check the server is still alive
 	IsHeadNode        bool
 	usedRAM           int
 	usedCores         int
@@ -312,18 +314,36 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	outCh := make(chan string, 1)
 	errCh := make(chan string, 1)
 	finished := make(chan bool, 1)
-	go func() {
-		select {
-		case <-cancelCh:
-			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
-		case <-finished:
-			// leave the select
+	go func(checkFrequency time.Duration) {
+		if checkFrequency == 0 {
+			checkFrequency = 2087 * time.Hour
+		}
+		ticker := time.NewTicker(checkFrequency)
+		for {
+			select {
+			case <-ticker.C:
+				session, err := s.SSHSession()
+				if err != nil {
+					ticker.Stop()
+					done <- fmt.Errorf("cloud RunCmd() cancelled due to ssh failure to server %s: %s", s.ID, err)
+					break
+				}
+				session.Close()
+				continue
+			case <-cancelCh:
+				ticker.Stop()
+				done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
+				break
+			case <-finished:
+				ticker.Stop()
+				break
+			}
 		}
 		s.mutex.Lock()
 		close(cancelCh)
 		delete(s.cancelRunCmd, cancelID)
 		s.mutex.Unlock()
-	}()
+	}(s.CheckFrequency)
 	go func() {
 		// run the command, returning stdout
 		if background {
@@ -581,7 +601,7 @@ func (s *Server) Destroy() error {
 		s.debug("server %s Destroy(), cancelled auto-destruction\n", s.ID)
 	}
 
-	// if the user is in the middle RunCmd(), have those return an error now
+	// if the user is in the middle of RunCmd(), have those return an error now
 	for _, ch := range s.cancelRunCmd {
 		ch <- true
 	}

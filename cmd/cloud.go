@@ -255,7 +255,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, 0*time.Second, true)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)

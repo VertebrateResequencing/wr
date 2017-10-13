@@ -131,6 +131,12 @@ type ConfigOpenStack struct {
 	// Zero duration means "never destroy due to being idle".
 	ServerKeepTime time.Duration
 
+	// ServerCheckFrequency is the frequency at which to check spawned servers
+	// that are being used to run things, to see if they're still alive.
+	// Zero duration means "don't do these checks and assume servers never have
+	// problems".
+	ServerCheckFrequency time.Duration
+
 	// MaxInstances is the maximum number of instances we are allowed to spawn.
 	// -1 means we will be limited by your quota, if any. 0 (the default) means
 	// no additional instances will be spawned (commands will run locally on the
@@ -669,7 +675,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	for sid, thisServer := range s.servers {
 		if thisServer.ID != "" && !thisServer.Alive(true) {
 			delete(s.servers, sid)
-			s.debug("b2 %s existing server %s died\n", uniqueDebug, server.ID)
+			s.debug("b2 %s existing server %s died\n", uniqueDebug, thisServer.ID)
 			continue
 		}
 		if thisServer.OS == osPrefix && bytes.Equal(thisServer.Script, osScript) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
@@ -808,7 +814,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}()
 
 		// spawn
-		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false)
+		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, s.config.ServerCheckFrequency, false)
 		s.debug("p %s spawned\n", uniqueDebug)
 
 		<-unlocked // in case the spawn call takes less than 10ms
@@ -1015,6 +1021,15 @@ func (s *opst) eraseStandin(standinID string) {
 	}
 	delete(s.standinToCmd, standinID)
 	delete(s.standins, standinID)
+}
+
+// hostToID does the necessary lookup to convert hostname to instance id.
+func (s *opst) hostToID(host string) string {
+	server := s.provider.GetServerByName(host)
+	if server == nil {
+		return ""
+	}
+	return server.ID
 }
 
 // cleanup destroys our internal queues and brings down our servers.

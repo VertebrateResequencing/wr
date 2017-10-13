@@ -665,6 +665,11 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 	return
 }
 
+// hostToID always returns an empty string, since we're not in the cloud.
+func (s *lsf) hostToID(host string) string {
+	return ""
+}
+
 // cleanup bkills any remaining jobs we created
 func (s *lsf) cleanup() {
 	toKill := []string{"-b"}

@@ -66,6 +66,24 @@ func CurrentIP(cidr string) (ip string) {
 		// this method...
 	}
 
+	conn, err := net.Dial("udp", "8.8.8.8:80") // doesn't actually connect, dest doesn't need to exist
+	if err == nil {
+		defer conn.Close()
+		localAddr := conn.LocalAddr().(*net.UDPAddr)
+		ip := localAddr.IP
+
+		// paranoid confirmation this ip is in our CIDR
+		if ipNet != nil {
+			if ipNet.Contains(ip) {
+				return ip.String()
+			}
+		} else {
+			return ip.String()
+		}
+	}
+
+	// fall-back on the old method we had...
+
 	// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
 	// cross-linux&MacOS solution that works reliably...
 	out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output()

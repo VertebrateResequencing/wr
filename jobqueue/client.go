@@ -245,6 +245,10 @@ type Job struct {
 	Pid int
 	// host the process is running or did run on.
 	Host string
+	// host id the process is running or did run on (cloud specific).
+	HostID string
+	// host ip the process is running or did run on (cloud specific).
+	HostIP string
 	// time the cmd started running.
 	StartTime time.Time
 	// time the cmd stopped running.
@@ -622,6 +626,8 @@ type Client struct {
 	queue       string
 	ch          codec.Handle
 	clientid    uuid.UUID
+	hostID      string
+	gotHostID   bool
 	user        string
 	hasReserved bool
 	teMutex     sync.Mutex // to protect Touch() from other methods during Execute()
@@ -885,10 +891,11 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // Otherwise, it will have been Release()d or Bury()ied as appropriate.
 //
 // The supplied shell is the shell to execute the Cmd under, ideally bash
-// (something that understand the command "set -o pipefail"). You have to have
-// been the one to Reserve() the supplied Job, or this will immediately return
-// an error. NB: the peak RAM tracking assumes we are running on a modern linux
-// system with /proc/*/smaps.
+// (something that understand the command "set -o pipefail").
+//
+// You have to have been the one to Reserve() the supplied Job, or this will
+// immediately return an error. NB: the peak RAM tracking assumes we are running
+// on a modern linux system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
@@ -998,11 +1005,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	// update the server that we've started the job
-	host, err := os.Hostname()
-	if err != nil {
-		host = "localhost"
-	}
-	err = c.Started(job, cmd.Process.Pid, host)
+	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
@@ -1266,10 +1269,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 }
 
 // Started updates a Job on the server with information that you've started
-// running the Job's Cmd.
-func (c *Client) Started(job *Job, pid int, host string) (err error) {
-	job.Pid = pid
+// running the Job's Cmd. Started also figures out some host name, ip and
+// possibly id (in cloud situations) to associate with the job, so that if
+// something goes wrong the user can go to the host and investigate. Note that
+// HostID will not be set on job after this call; only the server will know
+// about it (use one of the Get methods afterwards to get a new object with the
+// HostID set if necessary).
+func (c *Client) Started(job *Job, pid int) (err error) {
+	// host details
+	host, err := os.Hostname()
+	if err != nil {
+		host = "localhost"
+	}
 	job.Host = host
+	job.HostIP = CurrentIP("")
+	job.Pid = pid
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
 	_, err = c.request(&clientRequest{Method: "jstart", Job: job})

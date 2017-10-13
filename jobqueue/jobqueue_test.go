@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	// "github.com/boltdb/bolt"
@@ -3138,53 +3139,54 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
 	clientConnectTime := 10 * time.Second
-	ServerItemTTR = 10 * time.Second
+	ServerItemTTR = 1 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
 	host, _ := os.Hostname()
 	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
 		var server *Server
-		Convey("You can connect with an OpenStack scheduler to run commands with different hardware requirements while dropping the count", t, func() {
-			config := internal.ConfigLoad("development", true)
-			addr := "localhost:" + config.ManagerPort
+		config := internal.ConfigLoad("development", true)
+		addr := "localhost:" + config.ManagerPort
 
-			runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(runnertmpdir)
+		runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(runnertmpdir)
 
-			// our runnerCmd will be running ourselves in --runnermode, so first
-			// we'll compile ourselves to the tmpdir
-			runnerCmd := filepath.Join(runnertmpdir, "runner")
-			cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
-			err = cmd.Run()
-			if err != nil {
-				log.Fatal(err)
-			}
+		// our runnerCmd will be running ourselves in --runnermode, so first
+		// we'll compile ourselves to the tmpdir
+		runnerCmd := filepath.Join(runnertmpdir, "runner")
+		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
+		err = cmd.Run()
+		if err != nil {
+			log.Fatal(err)
+		}
 
-			osConfig := ServerConfig{
-				Port:            config.ManagerPort,
-				WebPort:         config.ManagerWeb,
-				SchedulerName:   "local",
-				SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
-				DBFile:          config.ManagerDbFile,
-				DBFileBackup:    config.ManagerDbBkFile,
-				Deployment:      config.Deployment,
-				RunnerCmd:       runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
-			}
-			osConfig.SchedulerName = "openstack"
-			osConfig.SchedulerConfig = &jqs.ConfigOpenStack{
-				ResourceName:   "wr-testing-" + localUser,
-				OSPrefix:       osPrefix,
-				OSUser:         osUser,
-				OSRAM:          2048,
-				FlavorRegex:    flavorRegex,
-				ServerPorts:    []int{22},
-				ServerKeepTime: 15 * time.Second,
-				Shell:          "bash",
-				MaxInstances:   -1,
-			}
+		resourceName := "wr-testing-" + localUser
+		osConfig := ServerConfig{
+			Port:          config.ManagerPort,
+			WebPort:       config.ManagerWeb,
+			SchedulerName: "openstack",
+			SchedulerConfig: &jqs.ConfigOpenStack{
+				ResourceName:         resourceName,
+				OSPrefix:             osPrefix,
+				OSUser:               osUser,
+				OSRAM:                2048,
+				FlavorRegex:          flavorRegex,
+				ServerPorts:          []int{22},
+				ServerKeepTime:       15 * time.Second,
+				ServerCheckFrequency: 1 * time.Second,
+				Shell:                "bash",
+				MaxInstances:         -1,
+			},
+			DBFile:       config.ManagerDbFile,
+			DBFileBackup: config.ManagerDbBkFile,
+			Deployment:   config.Deployment,
+			RunnerCmd:    runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+		}
+
+		Convey("You can connect with an OpenStack scheduler", t, func() {
 			server, _, err = Serve(osConfig)
 			So(err, ShouldBeNil)
 			defer server.Stop(true)
@@ -3193,44 +3195,150 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
-			var jobs []*Job
-			dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
-			jobs = append(jobs, &Job{Cmd: "sleep 1", Cwd: "/tmp", ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, Override: uint8(2), Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 4", Cwd: "/tmp", ReqGroup: "echo", Requirements: dropReq, Priority: uint8(255), Retries: uint8(3), RepGroup: "manually_added"})
-			jobs = append(jobs, &Job{Cmd: "echo 5", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, Retries: uint8(3), RepGroup: "manually_added"})
-			count := 100
-			for i := 6; i <= count; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
-			}
-			inserts, already, err := jq.Add(jobs, envVars, true)
-			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, count)
-			So(already, ShouldEqual, 0)
+			Convey("You can run commands with different hardware requirements while dropping the count", func() {
+				var jobs []*Job
+				dropReq := &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 0}
+				jobs = append(jobs, &Job{Cmd: "sleep 1", Cwd: "/tmp", ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 1}, Override: uint8(2), Retries: uint8(3), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 2, Disk: 0}, Retries: uint8(3), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: "echo 4", Cwd: "/tmp", ReqGroup: "echo", Requirements: dropReq, Priority: uint8(255), Retries: uint8(3), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: "echo 5", Cwd: "/tmp", ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 1, Disk: 20}, Retries: uint8(3), RepGroup: "manually_added"})
+				count := 100
+				for i := 6; i <= count; i++ {
+					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "sleep", Requirements: dropReq, Retries: uint8(3), RepGroup: "manually_added"})
+				}
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, count)
+				So(already, ShouldEqual, 0)
 
-			// wait for the jobs to get run
-			done := make(chan bool, 1)
-			go func() {
-				limit := time.After(180 * time.Second)
-				ticker := time.NewTicker(1 * time.Second)
-				for {
-					select {
-					case <-ticker.C:
-						if !server.HasRunners() {
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(180 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
 							ticker.Stop()
-							done <- true
+							done <- false
 							return
 						}
-						continue
-					case <-limit:
-						ticker.Stop()
-						done <- false
-						return
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+			})
+
+			Convey("The manager reacts correctly to spawned servers going down", func() {
+				p, err := cloud.New("openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
+				So(err, ShouldBeNil)
+				// err = p.Deploy(&DeployConfig{RequiredPorts: []int{22}})
+				// So(err, ShouldBeNil)
+
+				flavor, err := p.CheapestServerFlavor(1, 2048, flavorRegex)
+				So(err, ShouldBeNil)
+
+				var jobs []*Job
+				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: 1, Disk: 0}
+				schedGrp := fmt.Sprintf("%d:60:1:0", flavor.RAM)
+				jobs = append(jobs, &Job{Cmd: "sleep 300", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
+				jobs = append(jobs, &Job{Cmd: "sleep 301", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 2)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to start running
+				started := make(chan bool, 1)
+				waitForBothRunning := func() {
+					limit := time.After(180 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							if server.HasRunners() {
+								got, err := jq.GetByRepGroup("sleep", 0, JobStateRunning, false, false)
+								if err != nil {
+									ticker.Stop()
+									started <- false
+									return
+								}
+								if len(got) == 2 {
+									ticker.Stop()
+									started <- true
+									return
+								}
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							started <- false
+							return
+						}
 					}
 				}
-			}()
-			So(<-done, ShouldBeTrue)
+				go waitForBothRunning()
+				So(<-started, ShouldBeTrue)
+
+				// pretend a server went down by manually terminating one of
+				// them, while monitoring that we never request more than 2
+				// runners, and that we eventually spawn exactly 1 new server
+				// to get the killed job running again
+				got, err := jq.GetByRepGroup("sleep", 0, JobStateRunning, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 2)
+
+				moreThan2 := make(chan bool, 1)
+				stopChecking := make(chan bool, 1)
+				go func() {
+					ticker := time.NewTicker(10 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							server.sgcmutex.Lock()
+							if server.sgroupcounts[schedGrp] > 2 {
+								ticker.Stop()
+								moreThan2 <- true
+								server.sgcmutex.Unlock()
+								break
+							}
+							server.sgcmutex.Unlock()
+						case <-stopChecking:
+							ticker.Stop()
+							moreThan2 <- false
+							break
+						}
+					}
+				}()
+
+				destroyed := false
+				for _, job := range got {
+					if job.Host != host {
+						So(job.HostID, ShouldNotBeBlank)
+						So(job.HostIP, ShouldNotBeBlank)
+						err = p.DestroyServer(job.HostID)
+						So(err, ShouldBeNil)
+						destroyed = true
+						break
+					}
+				}
+				So(destroyed, ShouldBeTrue)
+
+				<-time.After(2 * time.Second)
+
+				// wait until they both start running again
+				go waitForBothRunning()
+				So(<-started, ShouldBeTrue)
+				stopChecking <- true
+				So(<-moreThan2, ShouldBeFalse)
+			})
 
 			Reset(func() {
 				if server != nil {
@@ -3703,7 +3811,7 @@ func TestJobqueueSpeed(t *testing.T) {
 						// 	if job == nil {
 						// 		break
 						// 	}
-						// 	jq.Started(job, 123, "host")
+						// 	jq.Started(job, 123)
 						// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
 						// 	err = jq.Archive(job)
 						// 	if err != nil {
@@ -3782,7 +3890,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 				if job == nil {
 					break
 				}
-				gojq.Started(job, 123, "host")
+				gojq.Started(job, 123)
 				gojq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
 				err = gojq.Archive(job)
 				if err != nil {

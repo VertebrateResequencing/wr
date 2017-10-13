@@ -108,11 +108,11 @@ func TestOpenStack(t *testing.T) {
 				So(flavor.Cores, ShouldBeGreaterThanOrEqualTo, 1)
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
-					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, true)
+					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, 0*time.Second, true)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "no OS image with prefix [osPrefix] was found")
 
-					server, err = p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					server, err = p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					So(server.ID, ShouldNotBeBlank)
 					So(server.AdminPass, ShouldNotBeBlank)
@@ -126,7 +126,7 @@ func TestOpenStack(t *testing.T) {
 					So(ok, ShouldBeTrue)
 
 					Convey("And you can Spawn another with an internal ip and destroy it with DestroyServer", func() {
-						server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, false)
+						server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, 0*time.Second, false)
 						So(err, ShouldBeNil)
 						So(server2.ID, ShouldNotBeBlank)
 						So(server2.AdminPass, ShouldNotBeBlank)
@@ -153,7 +153,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Once deployed you can Spawn a server with an internal ip", func() {
-					server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, false)
+					server2, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, 0*time.Second, false)
 					So(err, ShouldBeNil)
 
 					ok, err := p.CheckServer(server2.ID)
@@ -173,7 +173,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					defer server.Destroy()
 					err = server.WaitUntilReady([]byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
@@ -273,7 +273,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					err = server.WaitUntilReady([]byte("#!/bin/bash\nfalse"))
 					So(err, ShouldNotBeNil)
@@ -284,7 +284,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can Spawn a server with a time to destruction", func() {
-					server3, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 2*time.Second, false)
+					server3, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 2*time.Second, 0*time.Second, false)
 					So(err, ShouldBeNil)
 
 					ok := server3.Alive()
@@ -357,7 +357,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)

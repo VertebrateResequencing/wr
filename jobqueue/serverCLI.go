@@ -223,8 +223,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
 					srerr = ErrBadRequest
 				} else {
-					job.Pid = cr.Job.Pid
 					job.Host = cr.Job.Host
+					if job.Host != "" {
+						job.HostID = s.scheduler.HostToID(job.Host)
+					}
+					job.HostIP = cr.Job.HostIP
+					job.Pid = cr.Job.Pid
 					job.StartTime = time.Now()
 					var tend time.Time
 					job.EndTime = tend
@@ -334,6 +338,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
+					} else {
+						s.decrementGroupCount(job.getSchedulerGroup(), q)
 					}
 				}
 			}
@@ -530,6 +536,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		EndTime:      sjob.EndTime,
 		Pid:          sjob.Pid,
 		Host:         sjob.Host,
+		HostID:       sjob.HostID,
+		HostIP:       sjob.HostIP,
 		CPUtime:      sjob.CPUtime,
 		State:        state,
 		Attempts:     sjob.Attempts,

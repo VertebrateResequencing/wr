@@ -290,9 +290,9 @@ func (s *local) processQueue() error {
 					}
 				}
 			} else if err.Error() != "giving up waiting to spawn" {
-				// *** we shouldn't really log from a library call, but have no
-				// other way of letting the user know about these errors?...
-				log.Printf("jobqueue scheduler runCmd error: %s\n", err)
+				// *** figure out a better way of always letting users know
+				// about these errors
+				s.debug("jobqueue scheduler runCmd error: %s\n", err)
 			}
 			s.mutex.Unlock()
 			if stopAuto {
@@ -328,7 +328,7 @@ func (s *local) canCount(req *Requirements) (canCount int) {
 // runCmd runs the command, kills it if it goes much over RAM or time limits.
 // NB: we only return an error if we can't start the cmd, not if the command
 // fails (schedule() only guarantees that the cmds are run count times, not that
-// they are /successful/ that many times).
+// they run /successful/ that many times).
 func (s *local) runCmd(cmd string, req *Requirements) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd)
 	err := ec.Start()
@@ -411,7 +411,7 @@ func (s *local) stopAutoProcessing() {
 }
 
 // busy returns true if there's anything in our queue or we are still running
-// any cmd
+// any cmd.
 func (s *local) busy() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -424,7 +424,12 @@ func (s *local) busy() bool {
 	return true
 }
 
-// cleanup destroys our internal queue
+// hostToID always returns an empty string, since we're not in the cloud.
+func (s *local) hostToID(host string) string {
+	return ""
+}
+
+// cleanup destroys our internal queue.
 func (s *local) cleanup() {
 	s.stopAutoProcessing()
 	s.mutex.Lock()

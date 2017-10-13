@@ -73,6 +73,8 @@ type jstatus struct {
 	FailReason    string
 	Pid           int
 	Host          string
+	HostID        string
+	HostIP        string
 	Walltime      float64
 	CPUtime       float64
 	Started       int64
@@ -367,6 +369,8 @@ func jobToStatus(job *Job) jstatus {
 		FailReason:    job.FailReason,
 		Pid:           job.Pid,
 		Host:          job.Host,
+		HostID:        job.HostID,
+		HostIP:        job.HostIP,
 		Walltime:      job.WallTime().Seconds(),
 		CPUtime:       job.CPUtime.Seconds(),
 		Started:       job.StartTime.Unix(),
