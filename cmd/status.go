@@ -219,12 +219,17 @@ very many (tens of thousands+) commands.`,
 					fmt.Printf("Previous problem: %s\n", job.FailReason)
 				}
 
+				var hostID string
+				if job.HostID != "" {
+					hostID = ", ID: " + job.HostID
+				}
+
 				if job.Exited {
 					prefix := "Stats"
 					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.Pid)
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
 					if showextra && showStd && job.Exitcode != 0 {
 						stdout, err := job.StdOut()
 						if err != nil {
@@ -244,7 +249,7 @@ very many (tens of thousands+) commands.`,
 						}
 					}
 				} else if job.State == jobqueue.JobStateRunning {
-					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.WallTime(), job.Host, job.Pid)
+					fmt.Printf("Stats: { Wall time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", job.WallTime(), job.Host, job.HostIP, hostID, job.Pid)
 					//*** we should be able to peek at STDOUT & STDERR, and see
 					// Peak memory during a run... but is that possible/ too
 					// expensive? Maybe we could communicate directly with the

@@ -241,6 +241,16 @@
                                             <dd data-bind="text: Host"></dd>
                                         </dl>
                                         <dl>
+                                            <dt>Host IP</dt>
+                                            <dd data-bind="text: HostIP"></dd>
+                                        </dl>
+                                        <!-- ko if: HostID != "" -->
+                                            <dl>
+                                                <dt>Host ID</dt>
+                                                <dd data-bind="text: HostID"></dd>
+                                            </dl>
+                                        <!-- /ko -->
+                                        <dl>
                                             <dt>Pid</dt>
                                             <dd data-bind="text: Pid"></dd>
                                         </dl>
@@ -259,6 +269,16 @@
                                             <dt>Host</dt>
                                             <dd data-bind="text: Host"></dd>
                                         </dl>
+                                        <dl>
+                                            <dt>Host IP</dt>
+                                            <dd data-bind="text: HostIP"></dd>
+                                        </dl>
+                                        <!-- ko if: HostID != "" -->
+                                            <dl>
+                                                <dt>Host ID</dt>
+                                                <dd data-bind="text: HostID"></dd>
+                                            </dl>
+                                        <!-- /ko -->
                                         <dl>
                                             <dt>Pid</dt>
                                             <dd data-bind="text: Pid"></dd>
