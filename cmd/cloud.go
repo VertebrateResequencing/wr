@@ -411,7 +411,7 @@ and accessible.`,
 		// and overwrite any existing file) *** currently missing the final
 		// shutdown message doing things this way, but ok?...
 		headNode := provider.HeadNode()
-		if headNode != nil {
+		if headNode != nil && headNode.Alive() {
 			headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), config.ManagerLogFile+"."+providerName)
 		}
 
