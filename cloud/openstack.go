@@ -621,6 +621,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
 		}
+		if timeoutS < 90 {
+			timeoutS = 90
+		}
 		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		start := time.Now()
