@@ -42,7 +42,7 @@ func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", &ConfigLocal{"bash"})
+		s, err := New("local", &ConfigLocal{"bash", 1 * time.Second})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -416,7 +416,7 @@ func TestOpenstack(t *testing.T) {
 		FlavorRegex:          flavorRegex,
 		ServerPorts:          []int{22},
 		ServerKeepTime:       15 * time.Second,
-		ServerCheckFrequency: 1 * time.Second,
+		StateUpdateFrequency: 1 * time.Second,
 		Shell:                "bash",
 		MaxInstances:         -1,
 	}

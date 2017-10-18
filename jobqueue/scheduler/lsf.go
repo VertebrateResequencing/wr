@@ -670,6 +670,17 @@ func (s *lsf) hostToID(host string) string {
 	return ""
 }
 
+// setMessageCallBack does nothing at the moment, since we don't generate any
+// messages for the user.
+func (s *lsf) setMessageCallBack(cb MessageCallBack) {
+	return
+}
+
+// setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
+func (s *lsf) setBadServerCallBack(cb BadServerCallBack) {
+	return
+}
+
 // cleanup bkills any remaining jobs we created
 func (s *lsf) cleanup() {
 	toKill := []string{"-b"}

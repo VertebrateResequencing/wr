@@ -414,7 +414,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 			PostCreationScript:   postCreation,
 			ConfigFiles:          cloudConfigFiles,
 			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
-			ServerCheckFrequency: 1 * time.Minute,
+			StateUpdateFrequency: 1 * time.Minute,
 			MaxInstances:         maxServers,
 			Shell:                config.RunnerExecShell,
 			GatewayIP:            cloudGatewayIP,

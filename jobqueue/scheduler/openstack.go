@@ -38,8 +38,11 @@ import (
 	"time"
 )
 
-const gb = uint64(1.07374182e9) // for byte to GB conversion
-const unquotadVal = 1000000     // a "large" number for use when we don't have quota
+const (
+	gb               = uint64(1.07374182e9) // for byte to GB conversion
+	unquotadVal      = 1000000              // a "large" number for use when we don't have quota
+	standinNotNeeded = "standin no longer needed"
+)
 
 // debugCounter and debugEffect are used by tests to prove some bugs
 var debugCounter int
@@ -66,6 +69,9 @@ type opst struct {
 	waitingToSpawn    int
 	cmdToStandins     map[string]map[string]bool
 	standinToCmd      map[string]map[string]bool
+	updatingState     bool
+	msgCB             MessageCallBack
+	badServerCB       BadServerCallBack
 }
 
 // ConfigOpenStack represents the configuration options required by the
@@ -131,11 +137,10 @@ type ConfigOpenStack struct {
 	// Zero duration means "never destroy due to being idle".
 	ServerKeepTime time.Duration
 
-	// ServerCheckFrequency is the frequency at which to check spawned servers
+	// StateUpdateFrequency is the frequency at which to check spawned servers
 	// that are being used to run things, to see if they're still alive.
-	// Zero duration means "don't do these checks and assume servers never have
-	// problems".
-	ServerCheckFrequency time.Duration
+	// 0 (default) is treated as 1 minute.
+	StateUpdateFrequency time.Duration
 
 	// MaxInstances is the maximum number of instances we are allowed to spawn.
 	// -1 means we will be limited by your quota, if any. 0 (the default) means
@@ -179,6 +184,7 @@ type standin struct {
 	usedDisk       int
 	mutex          sync.RWMutex
 	alreadyFailed  bool
+	failReason     string
 	nowWaiting     int // for waitForServer()
 	endWait        chan *cloud.Server
 	waitingToSpawn bool // for isExtraneous() and opst's runCmd()
@@ -264,8 +270,8 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 	if s.waitingToSpawn {
 		if server.OS == s.os && server.HasSpaceFor(s.usedCores, s.usedRAM, s.usedDisk) > 0 {
 			s.mutex.RUnlock()
-			failed = s.failed()
-			s.debug("standin %s isExtraneous, failed = %s\n", s.id, failed)
+			failed = s.failed(standinNotNeeded)
+			s.debug("standin %s isExtraneous, failed = %v\n", s.id, failed)
 		} else {
 			s.mutex.RUnlock()
 		}
@@ -278,17 +284,18 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 // failed is what you call if the server that this is a standin for failed to
 // start up; anything that is waiting on waitForServer() will then receive nil.
 // Returns true if it hadn't already been failed.
-func (s *standin) failed() bool {
-	s.mutex.RLock()
+func (s *standin) failed(msg string) bool {
+	s.mutex.Lock()
 	alreadyFailed := s.alreadyFailed
 	waitingToSpawn := s.waitingToSpawn
+	s.failReason = msg
 	if s.nowWaiting > 0 {
-		s.mutex.RUnlock()
+		s.mutex.Unlock()
 		s.debug("standin %s failed(), will send nil to endWait...\n", s.id)
 		s.endWait <- nil
-		s.debug("standin %s failed(), nil was sendt to endWait\n", s.id)
+		s.debug("standin %s failed(), nil was sent to endWait\n", s.id)
 	} else {
-		s.mutex.RUnlock()
+		s.mutex.Unlock()
 	}
 	if alreadyFailed || !waitingToSpawn {
 		s.debug("standin %s failed(), already failed or not waiting to spawn, returning false\n", s.id)
@@ -322,7 +329,7 @@ func (s *standin) worked(server *cloud.Server) {
 
 // waitForServer waits until another goroutine calls failed() or worked(). You
 // would use this after checking hasSpaceFor() and doing allocate().
-func (s *standin) waitForServer() *cloud.Server {
+func (s *standin) waitForServer() (server *cloud.Server, err error) {
 	// *** is this broken if called multiple times?...
 	s.mutex.Lock()
 	s.nowWaiting++
@@ -351,7 +358,13 @@ func (s *standin) waitForServer() *cloud.Server {
 			}
 		}
 	}()
-	return <-done
+	server = <-done
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	if s.failReason != "" {
+		err = fmt.Errorf(s.failReason)
+	}
+	return
 }
 
 // initialize sets up an openstack scheduler.
@@ -453,6 +466,11 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
 	s.cancelRunCmdFunc = s.cancelRun
+	s.stateUpdateFunc = s.stateUpdate
+	s.stateUpdateFreq = s.config.StateUpdateFrequency
+	if s.stateUpdateFreq == 0 {
+		s.stateUpdateFreq = 1 * time.Minute
+	}
 
 	// pass through our shell config to our local embed
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
@@ -508,14 +526,11 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	// the best heuristic. Sort the objects in decreasing order of size, so that
 	// the biggest object is first and the smallest last. Insert each object one
 	// by one in to the first bin that has room for it.”
-	for sid, server := range s.servers {
-		if server.ID != "" && !server.Alive(true) {
-			delete(s.servers, sid)
-			s.debug("existing server %s died\n", sid)
-			continue
+	for _, server := range s.servers {
+		if !server.IsBad() {
+			space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
+			canCount += space
 		}
-		space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
-		canCount += space
 	}
 
 	// now we get the smallest server type that can run our job, and calculate
@@ -673,15 +688,10 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	s.debug("a %s lock, %d servers, %d standins\n", uniqueDebug, len(s.servers), len(s.standins))
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
-		if thisServer.ID != "" && !thisServer.Alive(true) {
-			delete(s.servers, sid)
-			s.debug("b2 %s existing server %s died\n", uniqueDebug, thisServer.ID)
-			continue
-		}
-		if thisServer.OS == osPrefix && bytes.Equal(thisServer.Script, osScript) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if !thisServer.IsBad() && thisServer.OS == osPrefix && bytes.Equal(thisServer.Script, osScript) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
-			s.debug("b %s using existing server %s\n", uniqueDebug, server.ID)
+			s.debug("b %s using existing server %s\n", uniqueDebug, sid)
 			break
 		}
 	}
@@ -694,10 +704,11 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				standinServer.allocate(req)
 				s.mutex.Unlock()
 				s.debug("c %s will use standin %s, unlocked\n", uniqueDebug, standinServer.id)
-				server = standinServer.waitForServer()
-				if server == nil || (server.ID != "" && !server.Alive(true)) {
+				var err error
+				server, err = standinServer.waitForServer()
+				if err != nil || server == nil {
 					s.debug("d %s giving up waiting on standin %s\n", uniqueDebug, standinServer.id)
-					return errors.New("giving up waiting to spawn")
+					return err
 				}
 				s.mutex.Lock()
 				s.debug("e %s got server %s from standin %s, locked\n", uniqueDebug, server.ID, standinServer.id)
@@ -717,7 +728,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			if numServers >= s.quotaMaxInstances {
 				s.mutex.Unlock()
 				s.debug("f %s over quota, unlocked\n", uniqueDebug)
-				return errors.New("giving up waiting to spawn")
+				return errors.New("over quota")
 			}
 		}
 
@@ -760,7 +771,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 						return
 					case <-standinServer.noLongerNeeded:
 						s.debug("k %s standin %s no longer needed\n", uniqueDebug, standinID)
-						done <- errors.New("giving up waiting to spawn")
+						done <- errors.New(standinNotNeeded)
 						s.debug("m %s sent give up error on done channel\n", uniqueDebug)
 						return
 					}
@@ -814,7 +825,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		}()
 
 		// spawn
-		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, s.config.ServerCheckFrequency, false)
+		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false)
 		s.debug("p %s spawned\n", uniqueDebug)
 
 		<-unlocked // in case the spawn call takes less than 10ms
@@ -899,10 +910,11 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 		// handle Spawn() or upload-of-exe errors now, by destroying the server
 		// and noting we failed
+		// *** and tell the user about it...
 		if err != nil {
 			server.Destroy()
 			s.debug("v %s will fail standin due to err %s\n", uniqueDebug, err)
-			standinServer.failed()
+			standinServer.failed(fmt.Sprintf("New server failed to spawn correctly: %s", err))
 			s.mutex.Unlock()
 			s.debug("w %s unlocked after failing standin\n", uniqueDebug)
 			return err
@@ -926,11 +938,12 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.debug("z %s unlocked, server %s will runCmd(%s)\n", uniqueDebug, server.ID, cmd)
 		_, _, err = server.RunCmd(cmd, false)
 
-		// if we got an error running the command, assume the server has gone
-		// bad and destroy it *** but only if nothing else is running on it!
-		if err != nil {
-			server.Destroy()
-			s.debug("z2 %s destroyed server %s since it hit err [%s]\n", uniqueDebug, server.ID, err)
+		// if we got an error running the command, tell the user it may have
+		// gone bad and mark it to not be used in the future
+		if err != nil && !server.Destroyed() {
+			server.GoneBad()
+			s.notifyBadServer(server)
+			s.debug("z2 %s server %s has gone bad, won't be used again: %s\n", uniqueDebug, server.ID, err)
 			return err
 		}
 	}
@@ -945,11 +958,11 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	if s.waitingToSpawn > 0 {
 		for _, otherStandinServer := range s.standins {
 			if otherStandinServer.isExtraneous(server) {
-				s.debug("z5 %s other standin %s is extraneous, will send nolongerneeded\n", uniqueDebug, otherStandinServer.id)
+				s.debug("z5 %s other standin %s is extraneous, will send noLongerNeeded\n", uniqueDebug, otherStandinServer.id)
 				s.waitingToSpawn--
 				s.eraseStandin(otherStandinServer.id)
 				otherStandinServer.noLongerNeeded <- true
-				s.debug("z6 %s sent nolongerneeded to otherstandin\n", uniqueDebug)
+				s.debug("z6 %s sent noLongerNeeded to otherstandin\n", uniqueDebug)
 				break
 			}
 		}
@@ -969,7 +982,7 @@ func (s *opst) cancelRun(cmd string, desiredCount int) {
 			cancelled := 0
 			for standinID := range lookup {
 				if standinServer, existed := s.standins[standinID]; existed {
-					if standinServer.failed() {
+					if standinServer.failed(standinNotNeeded) {
 						cancelled++
 						s.waitingToSpawn--
 						s.eraseStandin(standinServer.id)
@@ -986,6 +999,56 @@ func (s *opst) cancelRun(cmd string, desiredCount int) {
 			}
 		}
 	}
+}
+
+// stateUpdate checks all our servers are really alive.
+func (s *opst) stateUpdate() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var servers []*cloud.Server
+	for _, server := range s.servers {
+		if server.ID != "" {
+			if server.Destroyed() {
+				delete(s.servers, server.ID)
+				continue
+			}
+			servers = append(servers, server)
+		}
+	}
+
+	if s.updatingState || s.cleaned {
+		return
+	}
+	s.updatingState = true
+
+	// stateUpdate must return quickly, but checking on the servers with the
+	// Alive() call can take too long, so we do the rest in a goroutine
+	go func() {
+		for _, server := range servers {
+			if server.Destroyed() {
+				continue
+			}
+
+			alive := server.Alive(true)
+			if server.IsBad() {
+				// check if the server is fine now
+				if alive {
+					server.NotBad()
+					s.notifyBadServer(server)
+					s.debug("existing server %s was bad, now working again\n", server.ID)
+				}
+			} else if !alive {
+				server.GoneBad()
+				s.notifyBadServer(server)
+				s.debug("existing server %s is no longer alive, marked as bad\n", server.ID)
+			}
+		}
+
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		s.updatingState = false
+	}()
 }
 
 // recordStandin stores some lookups for the given standin. Only call when you
@@ -1032,6 +1095,30 @@ func (s *opst) hostToID(host string) string {
 	return server.ID
 }
 
+// setMessageCallBack sets the given callback.
+func (s *opst) setMessageCallBack(cb MessageCallBack) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.msgCB = cb
+}
+
+// setBadServerCallBack sets the given callback.
+func (s *opst) setBadServerCallBack(cb BadServerCallBack) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.badServerCB = cb
+}
+
+// notifyBadServer calls the bad server callback with the given server in a
+// goroutine, if that callback has been set.
+func (s *opst) notifyBadServer(server *cloud.Server) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.badServerCB != nil {
+		go s.badServerCB(server)
+	}
+}
+
 // cleanup destroys our internal queues and brings down our servers.
 func (s *opst) cleanup() {
 	s.mutex.Lock()
@@ -1045,13 +1132,23 @@ func (s *opst) cleanup() {
 	// cancel all standins
 	for _, standinServer := range s.standins {
 		s.eraseStandin(standinServer.id)
-		if standinServer.failed() {
+		if standinServer.failed(standinNotNeeded) {
 			standinServer.noLongerNeeded <- true
 		}
 	}
 	s.waitingToSpawn = 0
 	s.cmdToStandins = nil
 	s.standinToCmd = nil
+
+	// wait for any ongoing state update to complete
+	for {
+		if !s.updatingState {
+			break
+		}
+		s.mutex.Unlock()
+		<-time.After(10 * time.Millisecond)
+		s.mutex.Lock()
+	}
 
 	// bring down all our servers
 	for sid, server := range s.servers {

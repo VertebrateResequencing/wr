@@ -59,7 +59,6 @@ type Server struct {
 	Flavor            Flavor
 	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
-	CheckFrequency    time.Duration // when running a command on this server, how frequently to check the server is still alive
 	IsHeadNode        bool
 	usedRAM           int
 	usedCores         int
@@ -73,6 +72,7 @@ type Server struct {
 	provider          *Provider
 	sshclient         *ssh.Client
 	location          *time.Location
+	goneBad           bool
 	debugMode         bool
 }
 
@@ -314,36 +314,18 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	outCh := make(chan string, 1)
 	errCh := make(chan string, 1)
 	finished := make(chan bool, 1)
-	go func(checkFrequency time.Duration) {
-		if checkFrequency == 0 {
-			checkFrequency = 2087 * time.Hour
-		}
-		ticker := time.NewTicker(checkFrequency)
-		for {
-			select {
-			case <-ticker.C:
-				session, err := s.SSHSession()
-				if err != nil {
-					ticker.Stop()
-					done <- fmt.Errorf("cloud RunCmd() cancelled due to ssh failure to server %s: %s", s.ID, err)
-					break
-				}
-				session.Close()
-				continue
-			case <-cancelCh:
-				ticker.Stop()
-				done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
-				break
-			case <-finished:
-				ticker.Stop()
-				break
-			}
+	go func() {
+		select {
+		case <-cancelCh:
+			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
+		case <-finished:
+			// end select
 		}
 		s.mutex.Lock()
 		close(cancelCh)
 		delete(s.cancelRunCmd, cancelID)
 		s.mutex.Unlock()
-	}(s.CheckFrequency)
+	}()
 	go func() {
 		// run the command, returning stdout
 		if background {
@@ -584,6 +566,30 @@ func (s *Server) MkDir(dest string) (err error) {
 	return
 }
 
+// GoneBad lets you mark a server as having something wrong with it, so you can
+// avoid using it in the future, until the problems are confirmed. (At that
+// point you'd either Destroy() it, or if this was a false alarm, call
+// NotBad()).
+func (s *Server) GoneBad() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.goneBad = true
+}
+
+// NotBad lets you change your mind about a server you called GoneBad() on.
+func (s *Server) NotBad() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.goneBad = false
+}
+
+// IsBad tells you if GoneBad() has been called (more recently than NotBad()).
+func (s *Server) IsBad() bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.goneBad
+}
+
 // Destroy immediately destroys the server.
 func (s *Server) Destroy() error {
 	s.mutex.Lock()
@@ -616,6 +622,7 @@ func (s *Server) Destroy() error {
 	}
 
 	s.destroyed = true
+	s.goneBad = true
 	return nil
 }
 
@@ -630,8 +637,7 @@ func (s *Server) Destroyed() bool {
 
 // Alive tells you if a server is usable. It first does the same check as
 // Destroyed() before calling out to the provider. Supplying an optional boolean
-// will double check the server to make sure it can be ssh'd to. If the server
-// is not alive but seems to exist, it will be destroyed.
+// will double check the server to make sure it can be ssh'd to.
 func (s *Server) Alive(checkSSH ...bool) bool {
 	s.mutex.Lock()
 	if s.destroyed {
@@ -641,7 +647,6 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 	ok, _ := s.provider.CheckServer(s.ID)
 	if !ok {
 		s.mutex.Unlock()
-		go s.Destroy()
 		return false
 	}
 	s.mutex.Unlock()
@@ -651,7 +656,6 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 		// usable; confirm we can still ssh to it
 		session, err := s.SSHSession()
 		if err != nil {
-			go s.Destroy()
 			return false
 		}
 		session.Close()

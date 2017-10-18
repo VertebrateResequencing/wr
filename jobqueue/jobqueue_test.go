@@ -3176,7 +3176,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 				FlavorRegex:          flavorRegex,
 				ServerPorts:          []int{22},
 				ServerKeepTime:       15 * time.Second,
-				ServerCheckFrequency: 1 * time.Second,
+				StateUpdateFrequency: 1 * time.Second,
 				Shell:                "bash",
 				MaxInstances:         -1,
 			},
@@ -3239,11 +3239,19 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			Convey("The manager reacts correctly to spawned servers going down", func() {
 				p, err := cloud.New("openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
 				So(err, ShouldBeNil)
-				// err = p.Deploy(&DeployConfig{RequiredPorts: []int{22}})
-				// So(err, ShouldBeNil)
 
 				flavor, err := p.CheapestServerFlavor(1, 2048, flavorRegex)
 				So(err, ShouldBeNil)
+
+				destroyedBadServer := 0
+				badServerCB := func(server *cloud.Server) {
+					err := server.Destroy()
+					if err == nil {
+						destroyedBadServer++
+					}
+				}
+
+				server.scheduler.SetBadServerCallBack(badServerCB)
 
 				var jobs []*Job
 				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: 1, Disk: 0}
@@ -3338,6 +3346,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 				So(<-started, ShouldBeTrue)
 				stopChecking <- true
 				So(<-moreThan2, ShouldBeFalse)
+				So(destroyedBadServer, ShouldEqual, 1)
 			})
 
 			Reset(func() {

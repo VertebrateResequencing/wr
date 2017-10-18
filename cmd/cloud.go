@@ -255,7 +255,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, 0*time.Second, true)
+			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -301,6 +301,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 
 		info("wr manager remotely started on %s", sAddr(sstats.ServerInfo))
+		info("Should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
 		info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
 	},
 }

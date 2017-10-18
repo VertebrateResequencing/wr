@@ -50,7 +50,7 @@ than 1 process at a time.
 
     // spawn a server
     flavor := provider.CheapestServerFlavor(1, 1024, "")
-    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, 1 * time.Minute, true)
+    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, true)
     server.WaitUntilReady()
 
     // simplistic way of making the most of the server by running as many
@@ -395,11 +395,6 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 // with s.RunCmd exits) that causes the server to be considered idle, the server
 // will be destroyed.
 //
-// If you supply a non-zero value for the checkFrequency argument, then whenever
-// the returned server is asked to run a command it will check itself at this
-// frequency to make sure that ssh is still possible. If not, we assume that the
-// server is dead and the command failed to run to completion.
-//
 // If you need an external IP so that you can ssh to the server externally,
 // supply true as the last argument.
 //
@@ -412,7 +407,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 // as this is not done for you. NB: the server will likely not be ready to use
 // yet, having not completed its boot up; call server.WaitUntilReady() before
 // trying to use the server for anything.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd, checkFrequency time.Duration, externalIP bool) (server *Server, err error) {
+func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool) (server *Server, err error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		err = Error{"openstack", "Spawn", ErrBadFlavor}
@@ -427,19 +422,18 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	server = &Server{
-		ID:             serverID,
-		Name:           serverName,
-		IP:             serverIP,
-		OS:             os,
-		AdminPass:      adminPass,
-		UserName:       osUser,
-		Flavor:         f,
-		Disk:           maxDisk,
-		TTD:            ttd,
-		CheckFrequency: checkFrequency,
-		provider:       p,
-		cancelRunCmd:   make(map[int]chan bool),
-		debugMode:      p.Debug,
+		ID:           serverID,
+		Name:         serverName,
+		IP:           serverIP,
+		OS:           os,
+		AdminPass:    adminPass,
+		UserName:     osUser,
+		Flavor:       f,
+		Disk:         maxDisk,
+		TTD:          ttd,
+		provider:     p,
+		cancelRunCmd: make(map[int]chan bool),
+		debugMode:    p.Debug,
 	}
 
 	p.Lock()
