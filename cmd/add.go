@@ -247,6 +247,8 @@ machine was started.`,
 			Priority:    cmdPri,
 			Retries:     cmdRet,
 			Env:         cmdEnv,
+			CloudOS:     cmdOsPrefix,
+			CloudUser:   cmdOsUsername,
 			CloudScript: cmdPostCreationScript,
 			CloudOSRam:  cmdOsRAM,
 		}
