@@ -539,32 +539,63 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	reqForSpawn := s.reqForSpawn(req)
 	flavor, err := s.determineFlavor(reqForSpawn)
 	if err != nil {
+		s.debug("determineFlavor failed: %s\n", err)
 		return
 	}
+
 	quota, err := s.provider.GetQuota() // this includes resources used by currently spawning servers
 	if err != nil {
+		s.debug("GetQuota failed: %s\n", err)
 		return
 	}
 	remainingInstances := unquotadVal
-	if s.quotaMaxInstances > -1 { // this instead of quota.MaxInstances because our own config may be lower
-		remainingInstances = s.quotaMaxInstances - quota.UsedInstances - s.reservedInstances
+	if quota.MaxInstances > 0 {
+		remainingInstances = quota.MaxInstances - quota.UsedInstances - s.reservedInstances
+		if remainingInstances < 1 {
+			s.debug("remainingInstances %d = quota.MaxInstances %d - quota.UsedInstances %d - reservedInstances %d", remainingInstances, quota.MaxInstances, quota.UsedInstances, s.reservedInstances)
+			s.notifyMessage("Out of instance quota")
+		}
+	}
+	if remainingInstances > 0 && s.quotaMaxInstances > -1 && s.quotaMaxInstances < quota.MaxInstances {
+		// also check that the users configured max instances hasn't been breached
+		used := len(s.servers) + s.reservedInstances
+		remaining := s.quotaMaxInstances - used
+		if remaining < remainingInstances {
+			remainingInstances = remaining
+		}
+		if remainingInstances < 1 {
+			s.debug("remainingInstances %d = configuredMaxInstances %d - personallyUsedInstances %d - reservedInstances %d", remainingInstances, s.quotaMaxInstances, len(s.servers), s.reservedInstances)
+		}
 	}
 	remainingRAM := unquotadVal
 	if quota.MaxRAM > 0 {
 		remainingRAM = quota.MaxRAM - quota.UsedRAM - s.reservedRAM
+		if remainingRAM < flavor.RAM {
+			s.debug("remainingRAM %d = quota.MaxRAM %d - quota.UsedRAM %d - reservedRAM %d", remainingRAM, quota.MaxRAM, quota.UsedRAM, s.reservedRAM)
+			s.notifyMessage(fmt.Sprintf("Out of RAM quota (need %d, have %d)", flavor.RAM, remainingRAM))
+		}
 	}
 	remainingCores := unquotadVal
 	if quota.MaxCores > 0 {
 		remainingCores = quota.MaxCores - quota.UsedCores - s.reservedCores
+		if remainingCores < flavor.Cores {
+			s.debug("remainingCores %d = quota.MaxCores %d - quota.UsedCores %d - reservedCores %d", remainingCores, quota.MaxCores, quota.UsedCores, s.reservedCores)
+			s.notifyMessage(fmt.Sprintf("Out of cores quota (need %d, have %d)", flavor.Cores, remainingCores))
+		}
 	}
 	remainingVolume := unquotadVal
 	checkVolume := req.Disk > flavor.Disk // we'll only use up volume if we need more than the flavor offers
 	if quota.MaxVolume > 0 && checkVolume {
 		remainingVolume = quota.MaxVolume - quota.UsedVolume - s.reservedVolume
+		if remainingVolume < req.Disk {
+			s.debug("remainingVolume %d = quota.MaxVolume %d - quota.UsedVolume %d - reservedVolume %d", remainingVolume, quota.MaxVolume, quota.UsedVolume, s.reservedVolume)
+			s.notifyMessage(fmt.Sprintf("Out of volume quota (need %d, have %d)", flavor.Disk, remainingVolume))
+		}
 	}
 	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores || remainingVolume < req.Disk {
 		return
 	}
+
 	spawnable := remainingInstances
 	if spawnable > 1 {
 		n := remainingRAM / flavor.RAM // dividing ints == floor
