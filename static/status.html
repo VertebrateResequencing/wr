@@ -44,14 +44,27 @@
                 <div class="alert alert-danger fade in">
                     <div class="panel panel-warning">
                         <div class="panel-heading">
-                            Server <u class="dotted" data-bind="tooltip: { title: 'If this is just a temporary connectivity issue, this message will go away by itself.' }">might be dead</u>
+                            Server
+                                <!-- ko if: Problem == "" -->
+                                    <u class="dotted" data-bind="tooltip: { title: 'If this is just a temporary connectivity issue, this message will go away by itself.' }">might be dead</u>
+                                <!-- /ko -->
+                                <!-- ko if: !Problem == "" -->
+                                    <u class="dotted" data-bind="tooltip: { title: 'There was a problem using this server. It will not be used to run other jobs. Investigate it manually if you like, before hitting the `Kill it` button.' }">is no longer usable</u>
+                                <!-- /ko -->
                         </div>
                         <div class="panel-body">
                             Name: <span data-bind="text: Name"></span><br>
                             ID: <span data-bind="text: ID"></span><br>
                             IP: <span data-bind="text: IP"></span><br>
-                            Lost contact: <span data-bind="text: Date.toDate()"></span>
-                            <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">It's really dead</button>
+                            <!-- ko if: Problem == "" -->
+                                Lost contact: <span data-bind="text: Date.toDate()"></span>
+                                <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">It's really dead</button>
+                            <!-- /ko -->
+                            <!-- ko if: !Problem == "" -->
+                                Problem encountered: <span data-bind="text: Problem"></span><br>
+                                Problem encountered at: <span data-bind="text: Date.toDate()"></span>
+                                <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">Kill it</button>
+                            <!-- /ko -->
                         </div>
                     </div>
                 </div>

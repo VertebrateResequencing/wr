@@ -43,8 +43,8 @@ import (
 	"time"
 )
 
-// Err* constants are found in the our returned Errors under err.Err, so you
-// can cast and check if it's a certain type of error. ServerMode* constants are
+// Err* constants are found in our returned Errors under err.Err, so you can
+// cast and check if it's a certain type of error. ServerMode* constants are
 // used to report on the status of the server, found inside ServerInfo.
 const (
 	ErrInternalError  = "internal error"
@@ -150,11 +150,12 @@ type jstateCount struct {
 // status webpage. Previously bad servers can also be sent if they become good
 // again, hence the IsBad boolean.
 type badServer struct {
-	ID    string
-	Name  string
-	IP    string
-	Date  int64 // seconds since Unix epoch
-	IsBad bool
+	ID      string
+	Name    string
+	IP      string
+	Date    int64 // seconds since Unix epoch
+	IsBad   bool
+	Problem string
 }
 
 // Server represents the server side of the socket that clients Connect() to.
@@ -452,11 +453,12 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			s.badServers[server.ID] = server
 			s.bsmutex.Unlock()
 			s.badServerCaster.Send(&badServer{
-				ID:    server.ID,
-				Name:  server.Name,
-				IP:    server.IP,
-				Date:  time.Now().Unix(),
-				IsBad: server.IsBad(),
+				ID:      server.ID,
+				Name:    server.Name,
+				IP:      server.IP,
+				Date:    time.Now().Unix(),
+				IsBad:   server.IsBad(),
+				Problem: server.PermanentProblem(),
 			})
 		}
 		s.scheduler.SetBadServerCallBack(badServerCB)

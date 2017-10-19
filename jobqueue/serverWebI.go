@@ -227,11 +227,12 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						s.bsmutex.RLock()
 						for _, server := range s.badServers {
 							s.badServerCaster.Send(&badServer{
-								ID:    server.ID,
-								Name:  server.Name,
-								IP:    server.IP,
-								Date:  time.Now().Unix(),
-								IsBad: server.IsBad(),
+								ID:      server.ID,
+								Name:    server.Name,
+								IP:      server.IP,
+								Date:    time.Now().Unix(),
+								IsBad:   server.IsBad(),
+								Problem: server.PermanentProblem(),
 							})
 						}
 						s.bsmutex.RUnlock()

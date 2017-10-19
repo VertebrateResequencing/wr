@@ -73,6 +73,7 @@ type Server struct {
 	sshclient         *ssh.Client
 	location          *time.Location
 	goneBad           bool
+	permanentProblem  string
 	debugMode         bool
 }
 
@@ -570,17 +571,30 @@ func (s *Server) MkDir(dest string) (err error) {
 // avoid using it in the future, until the problems are confirmed. (At that
 // point you'd either Destroy() it, or if this was a false alarm, call
 // NotBad()).
-func (s *Server) GoneBad() {
+//
+// The optional permanentProblem arg (some explanatory error message) makes it
+// such that NotBad() will have no effect. For use when the server is Alive()
+// but you just never want to re-use this server. The only reason you don't just
+// Destroy() it is that you want to allow an end user to investigate the server
+// manually.
+func (s *Server) GoneBad(permanentProblem ...string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.goneBad = true
+
+	if len(permanentProblem) == 1 {
+		s.permanentProblem = permanentProblem[0]
+	}
 }
 
 // NotBad lets you change your mind about a server you called GoneBad() on.
+// (Unless GoneBad() was called with a permanentProblem.)
 func (s *Server) NotBad() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.goneBad = false
+	if s.permanentProblem == "" {
+		s.goneBad = false
+	}
 }
 
 // IsBad tells you if GoneBad() has been called (more recently than NotBad()).
@@ -588,6 +602,14 @@ func (s *Server) IsBad() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	return s.goneBad
+}
+
+// PermanentProblem tells you if GoneBad("problem message") has been called,
+// returning that reason the server is not usable.
+func (s *Server) PermanentProblem() string {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.permanentProblem
 }
 
 // Destroy immediately destroys the server.

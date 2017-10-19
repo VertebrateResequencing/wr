@@ -938,11 +938,16 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		s.debug("z %s unlocked, server %s will runCmd(%s)\n", uniqueDebug, server.ID, cmd)
 		_, _, err = server.RunCmd(cmd, false)
 
-		// if we got an error running the command, tell the user it may have
-		// gone bad and mark it to not be used in the future
-		if err != nil && !server.Destroyed() {
-			server.GoneBad()
-			s.notifyBadServer(server)
+		// if we got an error running the command, we won't use this server
+		// again
+		if err != nil {
+			if !server.Destroyed() {
+				// tell the user about why we're not using this server, but
+				// don't just Destroy it: let them investigate the server
+				// manually if they wish, and let them Destroy when they wish.
+				server.GoneBad(err.Error())
+				s.notifyBadServer(server)
+			}
 			s.debug("z2 %s server %s has gone bad, won't be used again: %s\n", uniqueDebug, server.ID, err)
 			return err
 		}
@@ -1033,7 +1038,7 @@ func (s *opst) stateUpdate() {
 			alive := server.Alive(true)
 			if server.IsBad() {
 				// check if the server is fine now
-				if alive {
+				if alive && server.PermanentProblem() == "" {
 					server.NotBad()
 					s.notifyBadServer(server)
 					s.debug("existing server %s was bad, now working again\n", server.ID)
