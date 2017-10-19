@@ -40,6 +40,23 @@
                 </div>
             </div>
             
+            <div id="badservers" data-bind="foreach: badservers">
+                <div class="alert alert-danger fade in">
+                    <div class="panel panel-warning">
+                        <div class="panel-heading">
+                            Server <u class="dotted" data-bind="tooltip: { title: 'If this is just a temporary connectivity issue, this message will go away by itself.' }">might be dead</u>
+                        </div>
+                        <div class="panel-body">
+                            Name: <span data-bind="text: Name"></span><br>
+                            ID: <span data-bind="text: ID"></span><br>
+                            IP: <span data-bind="text: IP"></span><br>
+                            Lost contact: <span data-bind="text: Date.toDate()"></span>
+                            <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">It's really dead</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
                     <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
@@ -450,9 +467,6 @@
         </div>
         
         <script type="text/javascript">
-            // turn on bootstrap tooltips
-            $('[data-toggle="tooltip"]').tooltip({'placement': 'top'});
-            
             ko.options.deferUpdates = true;
             
             // viewmodel for displaying status
@@ -460,6 +474,7 @@
                 var self = this;
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
+                self.badservers = ko.observableArray();
                 self.repGroup = ko.observable();
                 self.detailsRepgroup = '';
                 self.detailsState = '';
@@ -467,6 +482,12 @@
                 self.wallTimeUpdater;
                 self.wallTimeUpdaters = new Array();
                 self.rateLimit = 350;
+                
+                self.removeBadServer = function (id) {
+                    self.badservers.remove(function(server) {
+                        return server.ID == id;
+                    });
+                }
                 
                 self.inflight = {
                     'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
@@ -716,6 +737,14 @@
                                 }
                                 self.detailsOA.push(json);
                             }
+                        } else if (json.hasOwnProperty('IP')) {
+                            // it's either a new bad server, or an existing
+                            // bad server that is now fine
+                            if (json['IsBad']) {
+                                self.badservers.push(json);
+                            } else {
+                                self.removeBadServer(json['ID'])
+                            }
                         }
                     }
                 }
@@ -880,6 +909,12 @@
                     self.jobToActionDetails(job, 'remove');
                     self.actionModalHeader('Remove Delayed Commands');
                     self.actionModalVisible(true);
+                };
+                
+                // act if the user confirms that a server is dead
+                self.confirmDeadServer = function(server) {
+                    self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
+                    self.removeBadServer(server.ID)
                 };
             }
             var svm = new StatusViewModel();

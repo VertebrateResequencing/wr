@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
@@ -36,6 +37,7 @@ import (
 // details = get example job details for jobs in the RepGroup, grouped by having
 //           the same Status, Exitcode and FailReason.
 // retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
+// confirmBadServer = confirm that the server with ID ServerID is bad.
 type jstatusReq struct {
 	Key        string   // sending Key means "give me detailed info about this single job"
 	RepGroup   string   // sending RepGroup means "send me limited info about the jobs with this RepGroup"
@@ -43,6 +45,7 @@ type jstatusReq struct {
 	Exitcode   int
 	FailReason string
 	All        bool // If false, retry mode will act on a single random matching job, instead of all of them
+	ServerID   string
 	Request    string
 }
 
@@ -219,6 +222,20 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 						}
+
+						// also send details of dead servers
+						s.bsmutex.RLock()
+						for _, server := range s.badServers {
+							s.badServerCaster.Send(&badServer{
+								ID:    server.ID,
+								Name:  server.Name,
+								IP:    server.IP,
+								Date:  time.Now().Unix(),
+								IsBad: server.IsBad(),
+							})
+						}
+						s.bsmutex.RUnlock()
+
 						writeMutex.Unlock()
 						if failed {
 							break
@@ -310,6 +327,16 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							delete(s.rpl.lookup[req.RepGroup], key)
 						}
 						s.rpl.RUnlock()
+					case "confirmBadServer":
+						if req.ServerID != "" {
+							s.bsmutex.Lock()
+							server := s.badServers[req.ServerID]
+							delete(s.badServers, req.ServerID)
+							s.bsmutex.Unlock()
+							if server != nil && server.IsBad() {
+								server.Destroy()
+							}
+						}
 					default:
 						continue
 					}
@@ -319,7 +346,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 			}
 		}(conn)
 
-		// go routine to push changes to the client
+		// go routines to push changes to the client
 		go func(conn *websocket.Conn) {
 			// log panics and die
 			defer s.logPanic("jobqueue websocket status updating", true)
@@ -334,6 +361,20 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				}
 			}
 			statusReceiver.Close()
+		}(conn)
+
+		go func(conn *websocket.Conn) {
+			defer s.logPanic("jobqueue websocket bad server updating", true)
+			badserverReceiver := s.badServerCaster.Join()
+			for server := range badserverReceiver.In {
+				writeMutex.Lock()
+				err := conn.WriteJSON(server)
+				writeMutex.Unlock()
+				if err != nil {
+					break
+				}
+			}
+			badserverReceiver.Close()
 		}(conn)
 	}
 }

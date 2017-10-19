@@ -114,3 +114,25 @@ Number.prototype.mbIEC = function () {
 String.prototype.capitalizeFirstLetter = function() {
     return this.charAt(0).toUpperCase() + this.slice(1);
 }
+
+// we have a binding handler to make bootstrap tooltips work with knockout
+// (taken from https://stackoverflow.com/a/16876013/675083)
+ko.bindingHandlers.tooltip = {
+    init: function(element, valueAccessor) {
+        var local = ko.utils.unwrapObservable(valueAccessor()),
+            options = {};
+
+        ko.utils.extend(options, ko.bindingHandlers.tooltip.options);
+        ko.utils.extend(options, local);
+
+        $(element).tooltip(options);
+
+        ko.utils.domNodeDisposal.addDisposeCallback(element, function() {
+            $(element).tooltip("destroy");
+        });
+    },
+    options: {
+        placement: "top",
+        trigger: "hover"
+    }
+};

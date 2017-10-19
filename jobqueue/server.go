@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"fmt"
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -145,6 +146,17 @@ type jstateCount struct {
 	Count     int // num in FromState drop by this much, num in ToState rise by this much
 }
 
+// badServer is the details of servers that have gone bad that we send to the
+// status webpage. Previously bad servers can also be sent if they become good
+// again, hence the IsBad boolean.
+type badServer struct {
+	ID    string
+	Name  string
+	IP    string
+	Date  int64 // seconds since Unix epoch
+	IsBad bool
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo   *ServerInfo
@@ -158,20 +170,23 @@ type Server struct {
 	drain        bool
 	blocking     bool
 	sync.Mutex
-	qs            map[string]*queue.Queue
-	rpl           *rgToKeys
-	scheduler     *scheduler.Scheduler
-	sgroupcounts  map[string]int
-	sgrouptrigs   map[string]int
-	sgtr          map[string]*scheduler.Requirements
-	sgcmutex      sync.Mutex
-	racmutex      sync.RWMutex
-	rc            string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
-	httpServer    *http.Server
-	statusCaster  *bcast.Group
-	racCheckTimer *time.Timer
-	racChecking   bool
-	racCheckReady int
+	qs              map[string]*queue.Queue
+	rpl             *rgToKeys
+	scheduler       *scheduler.Scheduler
+	sgroupcounts    map[string]int
+	sgrouptrigs     map[string]int
+	sgtr            map[string]*scheduler.Requirements
+	sgcmutex        sync.Mutex
+	racmutex        sync.RWMutex
+	rc              string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	httpServer      *http.Server
+	statusCaster    *bcast.Group
+	badServerCaster *bcast.Group
+	racCheckTimer   *time.Timer
+	racChecking     bool
+	racCheckReady   int
+	bsmutex         sync.RWMutex
+	badServers      map[string]*cloud.Server
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -326,22 +341,24 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
-		allowedUsers: allowedUsersMap,
-		sock:         sock,
-		ch:           new(codec.BincHandle),
-		qs:           make(map[string]*queue.Queue),
-		rpl:          &rgToKeys{lookup: make(map[string]map[string]bool)},
-		db:           db,
-		stop:         stop,
-		done:         done,
-		up:           true,
-		scheduler:    sch,
-		sgroupcounts: make(map[string]int),
-		sgrouptrigs:  make(map[string]int),
-		sgtr:         make(map[string]*scheduler.Requirements),
-		rc:           config.RunnerCmd,
-		statusCaster: bcast.NewGroup(),
+		ServerInfo:      &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		allowedUsers:    allowedUsersMap,
+		sock:            sock,
+		ch:              new(codec.BincHandle),
+		qs:              make(map[string]*queue.Queue),
+		rpl:             &rgToKeys{lookup: make(map[string]map[string]bool)},
+		db:              db,
+		stop:            stop,
+		done:            done,
+		up:              true,
+		scheduler:       sch,
+		sgroupcounts:    make(map[string]int),
+		sgrouptrigs:     make(map[string]int),
+		sgtr:            make(map[string]*scheduler.Requirements),
+		rc:              config.RunnerCmd,
+		statusCaster:    bcast.NewGroup(),
+		badServerCaster: bcast.NewGroup(),
+		badServers:      make(map[string]*cloud.Server),
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
@@ -428,6 +445,21 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		s.httpServer = srv
 
 		go s.statusCaster.Broadcasting(0)
+		go s.badServerCaster.Broadcasting(0)
+
+		badServerCB := func(server *cloud.Server) {
+			s.bsmutex.Lock()
+			s.badServers[server.ID] = server
+			s.bsmutex.Unlock()
+			s.badServerCaster.Send(&badServer{
+				ID:    server.ID,
+				Name:  server.Name,
+				IP:    server.IP,
+				Date:  time.Now().Unix(),
+				IsBad: server.IsBad(),
+			})
+		}
+		s.scheduler.SetBadServerCallBack(badServerCB)
 
 		// wait a while for ListenAndServe() to start listening
 		<-time.After(10 * time.Millisecond)
