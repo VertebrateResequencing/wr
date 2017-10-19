@@ -76,12 +76,12 @@
                         <div class="panel-heading">
                             Scheduler Issue
                                 <!-- ko if: Count() > 1 -->
-                                    [first reported at <span data-bind="text: FirstDate.toDate()"></span>]
+                                    [first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
                                 <!-- /ko -->
                         </div>
                         <div class="panel-body">
                             <span data-bind="text: Msg"></span><br>
-                            Reported at <span data-bind="text: LastDate().toDate()"></span>
+                            Reported at: <span data-bind="text: LastDate().toDate()"></span>
                             <!-- ko if: Count() > 1 -->
                                 <br>Reported: <span data-bind="text: Count"></span> times
                             <!-- /ko -->
