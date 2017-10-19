@@ -70,6 +70,27 @@
                 </div>
             </div>
             
+            <div id="messages" data-bind="foreach: messages">
+                <div class="alert alert-danger fade in">
+                    <div class="panel panel-warning">
+                        <div class="panel-heading">
+                            Scheduler Issue
+                                <!-- ko if: Count() > 1 -->
+                                    [first reported at <span data-bind="text: FirstDate.toDate()"></span>]
+                                <!-- /ko -->
+                        </div>
+                        <div class="panel-body">
+                            <span data-bind="text: Msg"></span><br>
+                            Reported at <span data-bind="text: LastDate().toDate()"></span>
+                            <!-- ko if: Count() > 1 -->
+                                <br>Reported: <span data-bind="text: Count"></span> times
+                            <!-- /ko -->
+                            <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessage">Dismiss</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
                     <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
@@ -488,6 +509,7 @@
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
                 self.badservers = ko.observableArray();
+                self.messages = ko.observableArray();
                 self.repGroup = ko.observable();
                 self.detailsRepgroup = '';
                 self.detailsState = '';
@@ -499,6 +521,12 @@
                 self.removeBadServer = function (id) {
                     self.badservers.remove(function(server) {
                         return server.ID == id;
+                    });
+                }
+                
+                self.removeMessage = function (msg) {
+                    self.messages.remove(function(schedIssue) {
+                        return schedIssue.Msg == msg;
                     });
                 }
                 
@@ -758,6 +786,30 @@
                             } else {
                                 self.removeBadServer(json['ID'])
                             }
+                        } else if (json.hasOwnProperty('Msg')) {
+                            // it's either a new scheduler message, or we want
+                            // to update one we're already displaying
+                            var updated = false
+                            var messages = self.messages();
+                            for (var i = 0; i < messages.length; ++i) {
+                                var si = messages[i];
+                                if (si.Msg == json['Msg']) {
+                                    si.LastDate(json['LastDate'])
+                                    si.Count(json['Count'])
+                                    updated = true
+                                    break
+                                }
+                            }
+                            
+                            if (! updated) {
+                                var schedIssue = {
+                                    'Msg': json['Msg'],
+                                    'FirstDate': json['FirstDate'],
+                                    'LastDate': ko.observable(json['LastDate']),
+                                    'Count': ko.observable(json['Count']),
+                                }
+                                self.messages.push(schedIssue);
+                            }
                         }
                     }
                 }
@@ -928,6 +980,12 @@
                 self.confirmDeadServer = function(server) {
                     self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
                     self.removeBadServer(server.ID)
+                };
+                
+                // act if the user dismisses a message
+                self.dismissMessage = function(si) {
+                    self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));
+                    self.removeMessage(si.Msg)
                 };
             }
             var svm = new StatusViewModel();

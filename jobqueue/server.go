@@ -158,6 +158,15 @@ type badServer struct {
 	Problem string
 }
 
+// schedulerIssue is the details of scheduler problems encountered that we send
+// to the status webpage.
+type schedulerIssue struct {
+	Msg       string
+	FirstDate int64 // seconds since Unix epoch
+	LastDate  int64
+	Count     int // the number of identical Msg sent
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo   *ServerInfo
@@ -183,11 +192,14 @@ type Server struct {
 	httpServer      *http.Server
 	statusCaster    *bcast.Group
 	badServerCaster *bcast.Group
+	schedCaster     *bcast.Group
 	racCheckTimer   *time.Timer
 	racChecking     bool
 	racCheckReady   int
 	bsmutex         sync.RWMutex
 	badServers      map[string]*cloud.Server
+	simutex         sync.RWMutex
+	schedIssues     map[string]*schedulerIssue
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -360,6 +372,8 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		statusCaster:    bcast.NewGroup(),
 		badServerCaster: bcast.NewGroup(),
 		badServers:      make(map[string]*cloud.Server),
+		schedCaster:     bcast.NewGroup(),
+		schedIssues:     make(map[string]*schedulerIssue),
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
@@ -447,6 +461,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 		go s.statusCaster.Broadcasting(0)
 		go s.badServerCaster.Broadcasting(0)
+		go s.schedCaster.Broadcasting(0)
 
 		badServerCB := func(server *cloud.Server) {
 			s.bsmutex.Lock()
@@ -462,6 +477,27 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			})
 		}
 		s.scheduler.SetBadServerCallBack(badServerCB)
+
+		messageCB := func(msg string) {
+			s.simutex.Lock()
+			var si *schedulerIssue
+			var existed bool
+			if si, existed = s.schedIssues[msg]; existed {
+				si.LastDate = time.Now().Unix()
+				si.Count = si.Count + 1
+			} else {
+				si = &schedulerIssue{
+					Msg:       msg,
+					FirstDate: time.Now().Unix(),
+					LastDate:  time.Now().Unix(),
+					Count:     1,
+				}
+				s.schedIssues[msg] = si
+			}
+			s.simutex.Unlock()
+			s.schedCaster.Send(si)
+		}
+		s.scheduler.SetMessageCallBack(messageCB)
 
 		// wait a while for ListenAndServe() to start listening
 		<-time.After(10 * time.Millisecond)

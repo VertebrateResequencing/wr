@@ -38,6 +38,7 @@ import (
 //           the same Status, Exitcode and FailReason.
 // retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
 // confirmBadServer = confirm that the server with ID ServerID is bad.
+// dismissMsg = dismiss the given Msg.
 type jstatusReq struct {
 	Key        string   // sending Key means "give me detailed info about this single job"
 	RepGroup   string   // sending RepGroup means "send me limited info about the jobs with this RepGroup"
@@ -46,6 +47,7 @@ type jstatusReq struct {
 	FailReason string
 	All        bool // If false, retry mode will act on a single random matching job, instead of all of them
 	ServerID   string
+	Msg        string
 	Request    string
 }
 
@@ -237,6 +239,13 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 						s.bsmutex.RUnlock()
 
+						// and of scheduler messages
+						s.simutex.RLock()
+						for _, si := range s.schedIssues {
+							s.schedCaster.Send(si)
+						}
+						s.simutex.RUnlock()
+
 						writeMutex.Unlock()
 						if failed {
 							break
@@ -338,6 +347,12 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								server.Destroy()
 							}
 						}
+					case "dismissMsg":
+						if req.Msg != "" {
+							s.simutex.Lock()
+							delete(s.schedIssues, req.Msg)
+							s.simutex.Unlock()
+						}
 					default:
 						continue
 					}
@@ -376,6 +391,20 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				}
 			}
 			badserverReceiver.Close()
+		}(conn)
+
+		go func(conn *websocket.Conn) {
+			defer s.logPanic("jobqueue websocket scheduler issue updating", true)
+			schedIssueReceiver := s.schedCaster.Join()
+			for si := range schedIssueReceiver.In {
+				writeMutex.Lock()
+				err := conn.WriteJSON(si)
+				writeMutex.Unlock()
+				if err != nil {
+					break
+				}
+			}
+			schedIssueReceiver.Close()
 		}(conn)
 	}
 }

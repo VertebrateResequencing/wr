@@ -311,8 +311,8 @@ func (s *local) processQueue() error {
 					}
 				}
 			} else if err.Error() != standinNotNeeded {
-				// *** figure out a better way of always letting users know
-				// about these errors
+				// users are notified of relevant errors during runCmd; here we
+				// just debug log everything
 				s.debug("jobqueue scheduler runCmd error: %s\n", err)
 			}
 			s.mutex.Unlock()

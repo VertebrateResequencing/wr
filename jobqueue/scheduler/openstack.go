@@ -70,6 +70,7 @@ type opst struct {
 	cmdToStandins     map[string]map[string]bool
 	standinToCmd      map[string]map[string]bool
 	updatingState     bool
+	cbmutex           sync.RWMutex
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
 }
@@ -735,6 +736,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		flavor, err := s.determineFlavor(s.reqForSpawn(req))
 		if err != nil {
 			s.mutex.Unlock()
+			s.notifyMessage(fmt.Sprintf("Was unable to determine a flavor for req %s: %s", req.Stringify(), err))
 			return err
 		}
 		volumeAffected := req.Disk > flavor.Disk
@@ -910,13 +912,13 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 		// handle Spawn() or upload-of-exe errors now, by destroying the server
 		// and noting we failed
-		// *** and tell the user about it...
 		if err != nil {
 			server.Destroy()
 			s.debug("v %s will fail standin due to err %s\n", uniqueDebug, err)
 			standinServer.failed(fmt.Sprintf("New server failed to spawn correctly: %s", err))
 			s.mutex.Unlock()
 			s.debug("w %s unlocked after failing standin\n", uniqueDebug)
+			s.notifyMessage(fmt.Sprintf("Failed to create a usable server: %s", err))
 			return err
 		}
 
@@ -1102,23 +1104,33 @@ func (s *opst) hostToID(host string) string {
 
 // setMessageCallBack sets the given callback.
 func (s *opst) setMessageCallBack(cb MessageCallBack) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.cbmutex.Lock()
+	defer s.cbmutex.Unlock()
 	s.msgCB = cb
+}
+
+// notifyMessage calls the message callback with the given message in a
+// goroutine, if that callback has been set.
+func (s *opst) notifyMessage(msg string) {
+	s.cbmutex.RLock()
+	defer s.cbmutex.RUnlock()
+	if s.msgCB != nil {
+		go s.msgCB(msg)
+	}
 }
 
 // setBadServerCallBack sets the given callback.
 func (s *opst) setBadServerCallBack(cb BadServerCallBack) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.cbmutex.Lock()
+	defer s.cbmutex.Unlock()
 	s.badServerCB = cb
 }
 
 // notifyBadServer calls the bad server callback with the given server in a
 // goroutine, if that callback has been set.
 func (s *opst) notifyBadServer(server *cloud.Server) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.cbmutex.RLock()
+	defer s.cbmutex.RUnlock()
 	if s.badServerCB != nil {
 		go s.badServerCB(server)
 	}
