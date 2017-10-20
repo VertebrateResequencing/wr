@@ -918,7 +918,15 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 							err = fmt.Errorf("Could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
 						}
 					} else {
-						err = fmt.Errorf("Could not check exe with [file %s]: %s", exePath, err)
+						// checking for exePath with the file command failed for
+						// some reason, and without any stdout... but let's just
+						// try the upload anyway, assuming the exe isn't there
+						err = server.UploadFile(exePath, exePath)
+						if err == nil {
+							_, _, err = server.RunCmd("chmod u+x "+exePath, false)
+						} else {
+							err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
+						}
 					}
 				} else {
 					err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
