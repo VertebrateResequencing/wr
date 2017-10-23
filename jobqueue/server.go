@@ -99,13 +99,14 @@ type itemErr struct {
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
-	Err     string // string instead of error so we can decode on the client side
-	Added   int
-	Existed int
-	Job     *Job
-	Jobs    []*Job
-	SStats  *ServerStats
-	DB      []byte
+	Err        string // string instead of error so we can decode on the client side
+	Added      int
+	Existed    int
+	KillCalled bool
+	Job        *Job
+	Jobs       []*Job
+	SStats     *ServerStats
+	DB         []byte
 }
 
 // ServerInfo holds basic addressing info about the server.

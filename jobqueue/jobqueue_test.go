@@ -2456,6 +2456,84 @@ func TestJobqueue(t *testing.T) {
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
 
+		Convey("You can connect, and add a job that you can kill while it's running", func() {
+			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "sleep 20", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(3), Override: uint8(2), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// wait for the job to start running
+			started := make(chan bool, 1)
+			go func() {
+				limit := time.After(10 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateRunning, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == 1 {
+							ticker.Stop()
+							started <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						started <- false
+						return
+					}
+				}
+			}()
+			So(<-started, ShouldBeTrue)
+
+			killCount, err := jq.Kill([]*JobEssence{{Cmd: "sleep 20"}})
+			So(err, ShouldBeNil)
+			So(killCount, ShouldEqual, 1)
+
+			// wait for the job to get killed
+			killed := make(chan bool, 1)
+			go func() {
+				limit := time.After(2 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateBuried, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == 1 {
+							ticker.Stop()
+							killed <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						killed <- false
+						return
+					}
+				}
+			}()
+			So(<-killed, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("manually_added", 0, JobStateBuried, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].State, ShouldEqual, JobStateBuried)
+			So(jobs[0].FailReason, ShouldEqual, FailReasonKilled)
+			So(jobs[0].Exitcode, ShouldEqual, -1)
+		})
+
 		Convey("You can connect, and add some real jobs", func() {
 			jq, err := Connect(addr, "test_queue", clientConnectTime)
 			So(err, ShouldBeNil)
@@ -3007,6 +3085,7 @@ func TestJobqueue(t *testing.T) {
 	if server != nil {
 		server.Stop(true)
 	}
+	return
 
 	// start these tests anew because these tests have the server spawn runners
 	// that fail, simulating some network issue

@@ -37,6 +37,7 @@ import (
 // details = get example job details for jobs in the RepGroup, grouped by having
 //           the same Status, Exitcode and FailReason.
 // retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
+// kill = kill the running jobs with the given RepGroup.
 // confirmBadServer = confirm that the server with ID ServerID is bad.
 // dismissMsg = dismiss the given Msg.
 type jstatusReq struct {
@@ -335,6 +336,22 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 						for _, key := range toDelete {
 							delete(s.rpl.lookup[req.RepGroup], key)
+						}
+						s.rpl.RUnlock()
+					case "kill":
+						s.rpl.RLock()
+						for key := range s.rpl.lookup[req.RepGroup] {
+							item, err := q.Get(key)
+							if err != nil {
+								break
+							}
+							stats := item.Stats()
+							if stats.State == queue.ItemStateRun {
+								job := item.Data.(*Job)
+								job.Lock()
+								job.killCalled = true
+								job.Unlock()
+							}
 						}
 						s.rpl.RUnlock()
 					case "confirmBadServer":

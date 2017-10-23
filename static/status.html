@@ -404,6 +404,9 @@
                                     <!-- ko if: State == "dependent" -->
                                         <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDep">Remove</button>
                                     <!-- /ko -->
+                                    <!-- ko if: State == "running" -->
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmKill">Kill</button>
+                                    <!-- /ko -->
                                     <!-- ko if: State == "buried" -->
                                         <div class="btn-group pull-right">
                                             <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemoveFail">Remove</button>
@@ -433,7 +436,13 @@
                 <!-- ko if: ! exited -->
                     ?
                 <!-- /ko -->
-                <small>(removal of commands that have other commands depending on them will silently fail)</small>
+                <br>
+                <!-- ko if: action() == "kill" -->
+                    <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become buried)</small>
+                <!-- /ko -->
+                <!-- ko if: action() == "remove" -->
+                    <small>(removal of commands that have other commands depending on them will silently fail)</small>
+                <!-- /ko -->
             </script>
             <script type="text/html" id="actionModalFooterTemplate">
                 <div class="btn-group">
@@ -973,6 +982,11 @@
                 self.confirmRemoveDelay = function(job) {
                     self.jobToActionDetails(job, 'remove');
                     self.actionModalHeader('Remove Delayed Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmKill = function(job) {
+                    self.jobToActionDetails(job, 'kill');
+                    self.actionModalHeader('Kill Running Commands');
                     self.actionModalVisible(true);
                 };
                 

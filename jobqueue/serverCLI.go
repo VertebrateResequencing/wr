@@ -233,19 +233,30 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					var tend time.Time
 					job.EndTime = tend
 					job.Attempts++
+					job.killCalled = false
 				}
 				job.Unlock()
 			}
 		case "jtouch":
-			// update the job's ttr
+			var job *Job
 			var item *queue.Item
-			item, _, srerr = s.getij(cr, q)
+			var killCalled bool
+			item, job, srerr = s.getij(cr, q)
 			if srerr == "" {
-				err = q.Touch(item.Key)
-				if err != nil {
-					srerr = ErrInternalError
-					qerr = err.Error()
+				// if kill has been called for this job, just return KillCalled
+				job.Lock()
+				killCalled = job.killCalled
+				job.Unlock()
+
+				if !killCalled {
+					// else, update the job's ttr
+					err = q.Touch(item.Key)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+					}
 				}
+				sr = &serverResponse{KillCalled: killCalled}
 			}
 		case "jend":
 			// update the job's cmd-ended-related properties
@@ -366,8 +377,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "jkick":
 			// move the jobs from the bury queue to the ready queue; unlike the
-			// other j* methods, client doesn't have to be the Reserve() owner of
-			// these jobs, and we don't want the "in run queue" test
+			// other j* methods, client doesn't have to be the Reserve() owner
+			// of these jobs, and we don't want the "in run queue" test
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
@@ -415,6 +426,28 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 				}
 				sr = &serverResponse{Existed: deleted}
+			}
+		case "jkill":
+			// set the killCalled property on the jobs, to change the subsequent
+			// behaviour of jtouch; as per jkick, client doesn't have to be the
+			// Reserve() owner of these jobs, though we do want the "in run
+			// queue" test
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
+			} else {
+				killable := 0
+				for _, jobkey := range cr.Keys {
+					item, err := q.Get(jobkey)
+					if err != nil || item.Stats().State != queue.ItemStateRun {
+						continue
+					}
+					job := item.Data.(*Job)
+					job.Lock()
+					job.killCalled = true
+					job.Unlock()
+					killable++
+				}
+				sr = &serverResponse{Existed: killable}
 			}
 		case "getbc":
 			// get jobs by their keys (which come from their Cmds & Cwds)

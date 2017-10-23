@@ -236,6 +236,9 @@ type Job struct {
 	// later; this is purely client side
 	mountedFS []*muxfys.MuxFys
 
+	// killCalled is set for running jobs if Kill() is called on them
+	killCalled bool
+
 	sync.RWMutex
 }
 

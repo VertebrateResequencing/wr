@@ -57,6 +57,7 @@ const (
 	FailReasonResource = "resource requirements cannot be met"
 	FailReasonMount    = "mounting of remote file system(s) failed"
 	FailReasonUpload   = "failed to upload files to remote file system"
+	FailReasonKilled   = "killed by user request"
 )
 
 // these global variables are primarily exported for testing purposes; you
@@ -345,6 +346,9 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // Cmd and returning Error.Err(FailReasonSignal); you should check for this and
 // exit your process. Finally it calls Unmount() and TriggerBehaviours().
 //
+// If Kill() is called while executing the Cmd, the next internal Touch() call
+// will result in the Cmd being killed and the job being Bury()ied.
+//
 // If no error is returned, the Cmd will have run OK, exited with status 0, and
 // been Archive()d from the queue while being placed in the permanent store.
 // Otherwise, it will have been Release()d or Bury()ied as appropriate.
@@ -483,6 +487,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	ranoutMem := false
 	ranoutTime := false
 	signalled := false
+	killCalled := false
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
@@ -504,13 +509,20 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 				stateMutex.Unlock()
 
-				err := c.Touch(job)
+				kc, err := c.Touch(job)
 				if err != nil {
 					// this could fail for a number of reasons and it's important
 					// we bail out on failure to Touch()
 					cmd.Process.Kill()
 					stateMutex.Lock()
 					bailed = true
+					stateMutex.Unlock()
+					return
+				}
+				if kc {
+					cmd.Process.Kill()
+					stateMutex.Lock()
+					killCalled = true
 					stateMutex.Unlock()
 					return
 				}
@@ -611,6 +623,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 						failreason = FailReasonSignal
 						myerr = Error{c.queue, "Execute", job.key(), FailReasonSignal}
 					}
+				} else if killCalled {
+					dobury = true
+					failreason = FailReasonKilled
+					myerr = Error{c.queue, "Execute", job.key(), FailReasonKilled}
 				} else {
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
@@ -642,9 +658,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-sigs:
 				return
 			case <-ticker2.C:
-				err := c.Touch(job)
-				if err != nil {
-					return
+				if !killCalled {
+					_, err := c.Touch(job)
+					if err != nil {
+						return
+					}
 				}
 			case <-stopChecking2:
 				return
@@ -702,7 +720,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// update our job end state
 	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
 
-	if err != nil {
+	if err != nil && !killCalled {
 		// if we can't access the server, we'll have to treat this as failed
 		// and let it auto-Release
 		if bailed {
@@ -750,11 +768,17 @@ func (c *Client) Started(job *Job, pid int) (err error) {
 }
 
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
-// you must have reserved the job before you can touch it.
-func (c *Client) Touch(job *Job) (err error) {
+// you must have reserved the job before you can touch it. If the returned
+// killCalled bool is true, you stop doing what you're doing and bury the job,
+// since this means that Kill() has been called for this job.
+func (c *Client) Touch(job *Job) (killCalled bool, err error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
-	_, err = c.request(&clientRequest{Method: "jtouch", Job: job})
+	resp, err := c.request(&clientRequest{Method: "jtouch", Job: job})
+	if err != nil {
+		return
+	}
+	killCalled = resp.KillCalled
 	return
 }
 
@@ -865,6 +889,26 @@ func (c *Client) Delete(jes []*JobEssence) (deleted int, err error) {
 		return
 	}
 	deleted = resp.Existed
+	return
+}
+
+// Kill will cause the next Touch() call for the job(s) described by the input
+// to return a kill signal. Touches happening as part of an Execute() will
+// respond to this signal by terminating their execution and burying the job. As
+// such you should note that there could be a delay between calling Kill() and
+// execution ceasing; wait until the jobs actually get buried before retrying
+// the jobs if desired.
+//
+// Kill returns a count of jobs that were eligible to be killed (those still in
+// running state). Errors will only be related to not being able to contact the
+// server.
+func (c *Client) Kill(jes []*JobEssence) (killable int, err error) {
+	keys := c.jesToKeys(jes)
+	resp, err := c.request(&clientRequest{Method: "jkill", Keys: keys})
+	if err != nil {
+		return
+	}
+	killable = resp.Existed
 	return
 }
 
