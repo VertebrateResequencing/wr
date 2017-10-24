@@ -40,15 +40,18 @@ import (
 // JobState is how we describe the possible job states.
 type JobState string
 
-// JobState* constants represent all the possible job states. The fake "new"
-// and "deleted" states are for the benefit of the web interface (jstateCount).
-// "unknown" is an error case that shouldn't happen.
+// JobState* constants represent all the possible job states. The fake "new" and
+// "deleted" states are for the benefit of the web interface (jstateCount).
+// "lost" is also a "fake" state indicating the job was running and we lost
+// contact with it; it may be dead. "unknown" is an error case that shouldn't
+// happen.
 const (
 	JobStateNew       JobState = "new"
 	JobStateDelayed   JobState = "delayed"
 	JobStateReady     JobState = "ready"
 	JobStateReserved  JobState = "reserved"
 	JobStateRunning   JobState = "running"
+	JobStateLost      JobState = "lost"
 	JobStateBuried    JobState = "buried"
 	JobStateDependent JobState = "dependent"
 	JobStateComplete  JobState = "complete"
@@ -175,8 +178,10 @@ type Job struct {
 	// if the job ran and exited, its exit code is recorded here, but check
 	// Exited because when this is not set it could like like exit code 0.
 	Exitcode int
+	// true if the job was running but we've lost contact with it
+	Lost bool
 	// if the job failed to complete successfully, this will hold one of the
-	// FailReason* strings.
+	// FailReason* strings. Also set if Lost == true.
 	FailReason string
 	// pid of the running or ran process.
 	Pid int

@@ -201,6 +201,9 @@ type Server struct {
 	badServers      map[string]*cloud.Server
 	simutex         sync.RWMutex
 	schedIssues     map[string]*schedulerIssue
+	krmutex         sync.RWMutex
+	killRunners     bool
+	stopServing     chan bool
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -398,34 +401,24 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	// set up responding to command-line clients and signals
+	stopServing := make(chan bool, 1)
+	s.stopServing = stopServing
 	go func() {
 		// log panics and die
 		defer s.logPanic("jobqueue serving", true)
 
 		for {
 			select {
-			case sig := <-sigs:
-				s.shutdown()
-				var serr error
-				switch sig {
-				case os.Interrupt:
-					serr = Error{"", "Serve", "", ErrClosedInt}
-				case syscall.SIGTERM:
-					serr = Error{"", "Serve", "", ErrClosedTerm}
-				}
-				signal.Stop(sigs)
-				done <- serr
-				return
-			case <-stop:
-				s.shutdown()
-				signal.Stop(sigs)
-				done <- Error{"", "Serve", "", ErrClosedStop}
+			case <-stopServing:
 				return
 			default:
 				// receive a clientRequest from a client
 				m, rerr := sock.RecvMsg()
 				if rerr != nil {
-					if rerr != mangos.ErrRecvTimeout {
+					s.krmutex.RLock()
+					inShutdown := s.killRunners
+					s.krmutex.RUnlock()
+					if !inShutdown && rerr != mangos.ErrRecvTimeout {
 						log.Println(rerr)
 					}
 					continue
@@ -438,10 +431,35 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 					herr := s.handleRequest(m)
 					if ServerLogClientErrors && herr != nil {
-						log.Println(herr)
+						s.krmutex.RLock()
+						inShutdown := s.killRunners
+						s.krmutex.RUnlock()
+						if !inShutdown {
+							log.Println(herr)
+						}
 					}
 				}()
 			}
+		}
+	}()
+	go func() {
+		defer s.logPanic("jobqueue signal handling", true)
+		select {
+		case sig := <-sigs:
+			s.shutdown()
+			var serr error
+			switch sig {
+			case os.Interrupt:
+				serr = Error{"", "Serve", "", ErrClosedInt}
+			case syscall.SIGTERM:
+				serr = Error{"", "Serve", "", ErrClosedTerm}
+			}
+			signal.Stop(sigs)
+			done <- serr
+		case <-stop:
+			s.shutdown()
+			signal.Stop(sigs)
+			done <- Error{"", "Serve", "", ErrClosedStop}
 		}
 	}()
 
@@ -875,6 +893,8 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 
 			// calculate counts per RepGroup
 			groups := make(map[string]int)
+			groupsLost := make(map[string]int)
+			lost := 0
 			for _, inter := range data {
 				job := inter.(*Job)
 
@@ -882,39 +902,55 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				// runner for the job
 				if from == JobStateRunning {
 					job.setScheduledRunner(false)
+
+					job.RLock()
+					l := job.Lost
+					job.RUnlock()
+					if l {
+						lost++
+						groupsLost[job.RepGroup]++
+						continue
+					}
 				}
 
 				groups[job.RepGroup]++
 			}
 
 			// send out the counts
-			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data)})
+			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data) - lost})
 			for group, count := range groups {
 				s.statusCaster.Send(&jstateCount{group, from, to, count})
+			}
+
+			if lost > 0 {
+				s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
+				for group, count := range groupsLost {
+					s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
+				}
 			}
 		})
 
 		// we set a callback for running items that hit their ttr because the
-		// runner died or because of networking issues: we treat it like a
-		// normal release, which means it becomes delayed unless it is out of
-		// retries, in which case it gets buried
+		// runner died or because of networking issues: we keep them in the
+		// running queue, but mark them up as having possibly failed, leaving it
+		// up the user if they want to confirm the jobs are dead by killing
+		// them or leaving them to spring back to life if not.
 		q.SetTTRCallback(func(data interface{}) queue.SubQueue {
 			job := data.(*Job)
 
 			job.Lock()
 			defer job.Unlock()
 			if !job.StartTime.IsZero() && !job.Exited {
-				job.UntilBuried--
-				job.Exited = true
-				job.Exitcode = -1
-				job.FailReason = FailReasonRelease
+				job.Lost = true
+				job.FailReason = FailReasonLost
 				job.EndTime = time.Now()
 
-				s.decrementGroupCount(job.schedulerGroup, q)
+				// since our changed callback won't be called, send out this
+				// transition from running to lost state
+				defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
+				defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
 
-				if job.UntilBuried <= 0 {
-					return queue.SubQueueBury
-				}
+				return queue.SubQueueRun
 			}
 
 			return queue.SubQueueDelay
@@ -1021,6 +1057,60 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 	return
 }
 
+// killJob sets the killCalled property on a job, to change the subsequent
+// behaviour of touching, which should result in an executing job killing
+// itself.
+//
+// If we have lost contact with the job, calling killJob is also the way to
+// confirm it is definitely dead and won't spring back to life in the future:
+// we release or bury it as appropriate.
+//
+// If the job wasn't running, eligible will be false and nothing will have been
+// done.
+func (s *Server) killJob(q *queue.Queue, jobkey string) (eligible bool, err error) {
+	item, err := q.Get(jobkey)
+	if err != nil || item.Stats().State != queue.ItemStateRun {
+		return
+	}
+
+	eligible = true
+	job := item.Data.(*Job)
+	job.Lock()
+	job.killCalled = true
+
+	if job.Lost {
+		job.UntilBuried--
+		ub := job.UntilBuried
+		job.Exited = true
+		job.Exitcode = -1
+		job.EndTime = time.Now()
+		job.FailReason = FailReasonLost
+		job.Unlock()
+		s.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
+
+		if ub <= 0 {
+			err = q.Bury(item.Key)
+			if err != nil {
+				return
+			} else {
+				s.decrementGroupCount(job.getSchedulerGroup(), q)
+			}
+			return
+		} else {
+			err = q.Release(item.Key)
+			if err != nil {
+				return
+			} else {
+				s.decrementGroupCount(job.getSchedulerGroup(), q)
+			}
+			return
+		}
+	}
+
+	job.Unlock()
+	return
+}
+
 // getJobsByKeys gets jobs with the given keys (current and complete)
 func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
@@ -1122,9 +1212,14 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 		jState := job.State
 		jExitCode := job.Exitcode
 		jFailReason := job.FailReason
+		jLost := job.Lost
 		job.RUnlock()
 		if jState == JobStateRunning {
-			jState = JobStateReserved
+			if jLost {
+				jState = JobStateLost
+			} else {
+				jState = JobStateReserved
+			}
 		}
 
 		if state != "" {
@@ -1300,7 +1395,20 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 
 // shutdown stops listening to client connections, close all queues and
 // persists them to disk.
+//
+// For now it also kills all currently running jobs so that their runners don't
+// stay alive uselessly. *** This adds 15s to our shutdown time...
 func (s *Server) shutdown() {
+	// change touch to always return a kill signal
+	s.krmutex.Lock()
+	s.killRunners = true
+	s.krmutex.Unlock()
+	if s.HasRunners() {
+		// wait until everything must have attempted a touch
+		<-time.After(ClientTouchInterval)
+	}
+	s.stopServing <- true
+
 	s.Lock()
 	s.sock.Close()
 	s.db.close()
@@ -1333,6 +1441,10 @@ func (s *Server) shutdown() {
 		q.Destroy()
 	}
 	s.qs = nil
+
+	s.krmutex.Lock()
+	s.killRunners = false
+	s.krmutex.Unlock()
 }
 
 // logPanic is for (ideally temporary) use in a go routine, deferred at the

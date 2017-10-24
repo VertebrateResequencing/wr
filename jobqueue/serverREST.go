@@ -423,8 +423,8 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 // restJobsStatus gets the status of the requested jobs in the given queue. The
 // request url can be suffixed with comma seperated job keys or RepGroups.
 // Possible query parameters are std, env (which can take a "true" value), limit
-// (a number) and state (one of delayed|ready|reserved|running|buried|dependent|
-// complete).
+// (a number) and state (one of delayed|ready|reserved|running|lost|buried|
+// dependent|complete).
 func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, status int, err error) {
 	status = http.StatusOK
 
@@ -456,6 +456,8 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 			state = JobStateReserved
 		case "running":
 			state = JobStateRunning
+		case "lost":
+			state = JobStateLost
 		case "buried":
 			state = JobStateBuried
 		case "dependent":

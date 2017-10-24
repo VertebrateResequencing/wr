@@ -52,7 +52,7 @@ const (
 	FailReasonRAM      = "command used too much RAM"
 	FailReasonTime     = "command used too much time"
 	FailReasonAbnormal = "command failed to complete normally"
-	FailReasonRelease  = "lost contact with runner"
+	FailReasonLost     = "lost contact with runner"
 	FailReasonSignal   = "runner received a signal to stop"
 	FailReasonResource = "resource requirements cannot be met"
 	FailReasonMount    = "mounting of remote file system(s) failed"
@@ -483,7 +483,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 	peakmem := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
-	bailed := false
 	ranoutMem := false
 	ranoutTime := false
 	signalled := false
@@ -511,13 +510,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 				kc, err := c.Touch(job)
 				if err != nil {
-					// this could fail for a number of reasons and it's important
-					// we bail out on failure to Touch()
-					cmd.Process.Kill()
-					stateMutex.Lock()
-					bailed = true
-					stateMutex.Unlock()
-					return
+					// we may have lost contact with the manager; this is OK. We
+					// will keep trying to touch until it works
+					continue
 				}
 				if kc {
 					cmd.Process.Kill()
@@ -716,28 +711,43 @@ func (c *Client) Execute(job *Job, shell string) error {
 		finalStdErr = append(finalStdErr, berr.Error()...)
 	}
 
-	// though we may have bailed or had some other problem, we always try and
-	// update our job end state
-	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
+	// though we may have had some problem, we always try and update our job end
+	// state, and we try many times to avoid having to repeat jobs unnecessarily
+	// (we keep retying for ~12+ hrs, giving plenty of time for issues to be
+	// fixed and potentially a new manager to be brought online for us to
+	// connect to and succeed)
+	maxRetries := 300
+	endedWorked := false
+	worked := false
+	for retryNum := 0; retryNum < maxRetries; retryNum++ {
+		if !endedWorked {
+			err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
 
-	if err != nil && !killCalled {
-		// if we can't access the server, we'll have to treat this as failed
-		// and let it auto-Release
-		if bailed {
-			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
+			if err != nil {
+				<-time.After(time.Duration(retryNum*100) * time.Millisecond)
+				continue
+			}
+			endedWorked = true
 		}
-		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+
+		// update the database with our final state
+		if dobury {
+			err = c.Bury(job, failreason)
+		} else if dorelease {
+			err = c.Release(job, failreason) // which buries after job.Retries fails in a row
+		} else if doarchive {
+			err = c.Archive(job)
+		}
+		if err != nil {
+			<-time.After(time.Duration(retryNum*100) * time.Millisecond)
+			continue
+		}
+
+		worked = true
+		break
 	}
 
-	// update the database with our final state
-	if dobury {
-		err = c.Bury(job, failreason)
-	} else if dorelease {
-		err = c.Release(job, failreason) // which buries after job.Retries fails in a row
-	} else if doarchive {
-		err = c.Archive(job)
-	}
-	if err != nil {
+	if !worked {
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}

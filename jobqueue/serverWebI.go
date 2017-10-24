@@ -341,17 +341,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "kill":
 						s.rpl.RLock()
 						for key := range s.rpl.lookup[req.RepGroup] {
-							item, err := q.Get(key)
-							if err != nil {
-								break
-							}
-							stats := item.Stats()
-							if stats.State == queue.ItemStateRun {
-								job := item.Data.(*Job)
-								job.Lock()
-								job.killCalled = true
-								job.Unlock()
-							}
+							s.killJob(q, key)
 						}
 						s.rpl.RUnlock()
 					case "confirmBadServer":
@@ -431,9 +421,15 @@ func jobToStatus(job *Job) jstatus {
 	stdout, _ := job.StdOut()
 	// env, _ := job.Env()
 	var cwdLeaf string
+	job.RLock()
+	defer job.RUnlock()
 	if job.ActualCwd != "" {
 		cwdLeaf, _ = filepath.Rel(job.Cwd, job.ActualCwd)
 		cwdLeaf = "/" + cwdLeaf
+	}
+	state := job.State
+	if state == JobStateRunning && job.Lost {
+		state = JobStateLost
 	}
 	return jstatus{
 		Key:           job.key(),
@@ -441,7 +437,7 @@ func jobToStatus(job *Job) jstatus {
 		DepGroups:     job.DepGroups,
 		Dependencies:  job.Dependencies.Stringify(),
 		Cmd:           job.Cmd,
-		State:         job.State,
+		State:         state,
 		CwdBase:       job.Cwd,
 		Cwd:           cwdLeaf,
 		HomeChanged:   job.ChangeHome,

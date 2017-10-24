@@ -234,19 +234,28 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					job.EndTime = tend
 					job.Attempts++
 					job.killCalled = false
+					job.Lost = false
 				}
 				job.Unlock()
 			}
 		case "jtouch":
 			var job *Job
 			var item *queue.Item
-			var killCalled bool
 			item, job, srerr = s.getij(cr, q)
 			if srerr == "" {
 				// if kill has been called for this job, just return KillCalled
 				job.Lock()
-				killCalled = job.killCalled
+				killCalled := job.killCalled
+				lost := job.Lost
 				job.Unlock()
+
+				if !killCalled {
+					// also just return killCalled if server has been set to
+					// kill all jobs
+					s.krmutex.RLock()
+					killCalled = s.killRunners
+					s.krmutex.RUnlock()
+				}
 
 				if !killCalled {
 					// else, update the job's ttr
@@ -254,6 +263,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
+					} else if lost {
+						job.Lock()
+						job.Lost = false
+						job.EndTime = time.Time{}
+						job.Unlock()
+
+						// since our changed callback won't be called, send out
+						// this transition from lost to running state
+						s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, JobStateRunning, 1})
+						s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateLost, JobStateRunning, 1})
 					}
 				}
 				sr = &serverResponse{KillCalled: killCalled}
@@ -437,15 +456,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				killable := 0
 				for _, jobkey := range cr.Keys {
-					item, err := q.Get(jobkey)
-					if err != nil || item.Stats().State != queue.ItemStateRun {
+					k, err := s.killJob(q, jobkey)
+					if err != nil {
 						continue
 					}
-					job := item.Data.(*Job)
-					job.Lock()
-					job.killCalled = true
-					job.Unlock()
-					killable++
+					if k {
+						killable++
+					}
 				}
 				sr = &serverResponse{Existed: killable}
 			}
@@ -544,6 +561,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 	state := itemsStateToJobState[stats.State]
 	if state == "" {
 		state = JobStateUnknown
+	} else if state == JobStateReserved && sjob.Lost {
+		state = JobStateLost
 	}
 
 	// we're going to fill in some properties of the Job and return

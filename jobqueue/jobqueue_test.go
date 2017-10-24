@@ -579,7 +579,7 @@ func TestJobqueue(t *testing.T) {
 				jq.Disconnect()
 
 				syscall.Kill(os.Getpid(), syscall.SIGTERM)
-				<-time.After(50 * time.Millisecond)
+				<-time.After(ClientTouchInterval)
 				_, err := Connect(addr, "test_queue", clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
@@ -594,7 +594,7 @@ func TestJobqueue(t *testing.T) {
 				jq.Disconnect()
 
 				syscall.Kill(os.Getpid(), syscall.SIGINT)
-				<-time.After(50 * time.Millisecond)
+				<-time.After(ClientTouchInterval)
 				_, err = Connect(addr, "test_queue", clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok = err.(Error)
@@ -1323,7 +1323,7 @@ func TestJobqueue(t *testing.T) {
 					So(entries[0].Name(), ShouldEqual, "jobqueue_cwd")
 				})
 
-				Convey("Jobs that take longer than the ttr can execute successfully, unless the clienttouchinterval is > ttr", func() {
+				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {
 					jobs = nil
 					cmd := "perl -e 'for (1..3) { sleep(1) }'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "should_pass"})
@@ -1337,7 +1337,6 @@ func TestJobqueue(t *testing.T) {
 					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(job, config.RunnerExecShell)
-					<-time.After(100 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -1348,8 +1347,8 @@ func TestJobqueue(t *testing.T) {
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateComplete)
 
-					// same again, but we'll alter the clienttouchinterval to be invalid
-					ClientTouchInterval = 250 * time.Millisecond
+					// same again, but we'll alter the clienttouchinterval to be > ttr
+					ClientTouchInterval = 500 * time.Millisecond
 					inserts, _, err = jq.Add(jobs, envVars, false)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 1)
@@ -1359,22 +1358,34 @@ func TestJobqueue(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
+					lostCh := make(chan bool)
+					go func() {
+						<-time.After(300 * time.Millisecond)
+						// after ttr but before first touch, it becomes lost
+						job2, err := jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
+						if err != nil || job2 == nil || job2.State != JobStateLost || job2.FailReason != FailReasonLost || job2.Exited {
+							lostCh <- false
+						}
+
+						<-time.After(250 * time.Millisecond)
+						// after the first touch, it becomes running again
+						job2, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
+						if err != nil || job2 == nil || job2.State != JobStateRunning || job2.FailReason != FailReasonLost || job2.Exited {
+							lostCh <- false
+						}
+						lostCh <- true
+					}()
+
 					err = jq.Execute(job, config.RunnerExecShell)
-					<-time.After(100 * time.Millisecond)
-					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldEqual, "command ["+cmd+"] was running fine, but will need to be rerun due to a jobqueue server error")
-					// because Execute() just returns in this situation, job.* won't be updated,
+					So(err, ShouldBeNil)
 
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 
-					// in this situation, the job got auto-released to ready
-					// with an indication of what happened
-					So(job2.State, ShouldEqual, JobStateReady)
+					So(job2.State, ShouldEqual, JobStateComplete)
 					So(job2.Exited, ShouldBeTrue)
-					So(job2.Exitcode, ShouldEqual, -1)
-					So(job2.FailReason, ShouldEqual, FailReasonRelease)
+					So(<-lostCh, ShouldBeTrue)
 				})
 			})
 		})

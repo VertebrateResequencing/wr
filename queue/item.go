@@ -236,6 +236,14 @@ func (item *Item) releasable() bool {
 	return item.releaseAt.Before(time.Now())
 }
 
+// tempDisableTTR is a thread-safe way to effectively temporarily disable an
+// item's time to release by setting it to a year from now.
+func (item *Item) tempDisableTTR() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.releaseAt = time.Now().Add(8760 * time.Hour)
+}
+
 // update after we've switched from the delay to the ready sub-queue
 func (item *Item) switchDelayReady() {
 	item.mutex.Lock()
