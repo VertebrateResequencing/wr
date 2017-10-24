@@ -580,6 +580,7 @@ func TestJobqueue(t *testing.T) {
 
 				syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				<-time.After(ClientTouchInterval)
+				<-time.After(ClientTouchInterval)
 				_, err := Connect(addr, "test_queue", clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
@@ -594,6 +595,7 @@ func TestJobqueue(t *testing.T) {
 				jq.Disconnect()
 
 				syscall.Kill(os.Getpid(), syscall.SIGINT)
+				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
 				_, err = Connect(addr, "test_queue", clientConnectTime)
 				So(err, ShouldNotBeNil)
