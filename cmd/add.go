@@ -242,7 +242,11 @@ machine was started.`,
 
 		jd := &jobqueue.JobDefaults{
 			RepGrp:      cmdRepGroup,
+			ReqGrp:      reqGroup,
+			CwdMatters:  cmdCwdMatters,
+			ChangeHome:  cmdChangeHome,
 			CPUs:        cmdCPUs,
+			Disk:        cmdDisk,
 			Override:    cmdOvr,
 			Priority:    cmdPri,
 			Retries:     cmdRet,
