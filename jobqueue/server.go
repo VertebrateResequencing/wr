@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the functions to implement a jobqueue server.
 
 import (
+	"context"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -1413,7 +1414,7 @@ func (s *Server) shutdown() {
 	s.sock.Close()
 	s.db.close()
 	s.scheduler.Cleanup()
-	s.httpServer.Shutdown(nil)
+	s.httpServer.Shutdown(context.Background())
 
 	// wait until the ports are really no longer being listened to (which isn't
 	// the same as them being available to be reconnected to, but this is the
