@@ -553,7 +553,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		remainingInstances = quota.MaxInstances - quota.UsedInstances - s.reservedInstances
 		if remainingInstances < 1 {
 			s.debug("remainingInstances %d = quota.MaxInstances %d - quota.UsedInstances %d - reservedInstances %d", remainingInstances, quota.MaxInstances, quota.UsedInstances, s.reservedInstances)
-			s.notifyMessage("Out of instance quota")
+			s.notifyMessage("OpenStack: Not enough instance quota to create another server")
 		}
 	}
 	if remainingInstances > 0 && s.quotaMaxInstances > -1 && s.quotaMaxInstances < quota.MaxInstances {
@@ -572,7 +572,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		remainingRAM = quota.MaxRAM - quota.UsedRAM - s.reservedRAM
 		if remainingRAM < flavor.RAM {
 			s.debug("remainingRAM %d = quota.MaxRAM %d - quota.UsedRAM %d - reservedRAM %d", remainingRAM, quota.MaxRAM, quota.UsedRAM, s.reservedRAM)
-			s.notifyMessage(fmt.Sprintf("Out of RAM quota (need %d, have %d)", flavor.RAM, remainingRAM))
+			s.notifyMessage(fmt.Sprintf("OpenStack: Not enough RAM quota to create another server (need %d, have %d)", flavor.RAM, remainingRAM))
 		}
 	}
 	remainingCores := unquotadVal
@@ -580,7 +580,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		remainingCores = quota.MaxCores - quota.UsedCores - s.reservedCores
 		if remainingCores < flavor.Cores {
 			s.debug("remainingCores %d = quota.MaxCores %d - quota.UsedCores %d - reservedCores %d", remainingCores, quota.MaxCores, quota.UsedCores, s.reservedCores)
-			s.notifyMessage(fmt.Sprintf("Out of cores quota (need %d, have %d)", flavor.Cores, remainingCores))
+			s.notifyMessage(fmt.Sprintf("OpenStack: Not enough cores quota to create another server (need %d, have %d)", flavor.Cores, remainingCores))
 		}
 	}
 	remainingVolume := unquotadVal
@@ -589,7 +589,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		remainingVolume = quota.MaxVolume - quota.UsedVolume - s.reservedVolume
 		if remainingVolume < req.Disk {
 			s.debug("remainingVolume %d = quota.MaxVolume %d - quota.UsedVolume %d - reservedVolume %d", remainingVolume, quota.MaxVolume, quota.UsedVolume, s.reservedVolume)
-			s.notifyMessage(fmt.Sprintf("Out of volume quota (need %d, have %d)", flavor.Disk, remainingVolume))
+			s.notifyMessage(fmt.Sprintf("OpenStack: Not enough volume quota to create another server (need %d, have %d)", flavor.Disk, remainingVolume))
 		}
 	}
 	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores || remainingVolume < req.Disk {
@@ -767,7 +767,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		flavor, err := s.determineFlavor(s.reqForSpawn(req))
 		if err != nil {
 			s.mutex.Unlock()
-			s.notifyMessage(fmt.Sprintf("Was unable to determine a flavor for req %s: %s", req.Stringify(), err))
+			s.notifyMessage(fmt.Sprintf("OpenStack: Was unable to determine a server flavor to use for requirements %s: %s", req.Stringify(), err))
 			return err
 		}
 		volumeAffected := req.Disk > flavor.Disk
@@ -957,7 +957,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			standinServer.failed(fmt.Sprintf("New server failed to spawn correctly: %s", err))
 			s.mutex.Unlock()
 			s.debug("w %s unlocked after failing standin\n", uniqueDebug)
-			s.notifyMessage(fmt.Sprintf("Failed to create a usable server: %s", err))
+			s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
 			return err
 		}
 
