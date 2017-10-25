@@ -51,10 +51,10 @@ func TestREST(t *testing.T) {
 		Deployment:      config.Deployment,
 	}
 	addr := "localhost:" + config.ManagerPort
-	baseUrl := "http://localhost:" + config.ManagerWeb
-	jobsEndPoint := baseUrl + "/rest/v1/jobs"
-	warningsEndPoint := baseUrl + "/rest/v1/warnings/"
-	serversEndPoint := baseUrl + "/rest/v1/servers/"
+	baseURL := "http://localhost:" + config.ManagerWeb
+	jobsEndPoint := baseURL + "/rest/v1/jobs"
+	warningsEndPoint := baseURL + "/rest/v1/warnings/"
+	serversEndPoint := baseURL + "/rest/v1/servers/"
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond

@@ -31,9 +31,15 @@ import (
 
 const (
 	configCommonBasename = ".wr_config.yml"
-	S3Prefix             = "s3://"
-	Production           = "production"
-	Development          = "development"
+
+	// S3Prefix is the prefix used by S3 paths
+	S3Prefix = "s3://"
+
+	// Production is the name of the main deployment
+	Production = "production"
+
+	// Development is the name of the development deployment, used during testing
+	Development = "development"
 )
 
 // Config holds the configuration options for jobqueue server and client

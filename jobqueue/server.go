@@ -1099,19 +1099,16 @@ func (s *Server) killJob(q *queue.Queue, jobkey string) (eligible bool, err erro
 			err = q.Bury(item.Key)
 			if err != nil {
 				return
-			} else {
-				s.decrementGroupCount(job.getSchedulerGroup(), q)
 			}
-			return
-		} else {
-			err = q.Release(item.Key)
-			if err != nil {
-				return
-			} else {
-				s.decrementGroupCount(job.getSchedulerGroup(), q)
-			}
+			s.decrementGroupCount(job.getSchedulerGroup(), q)
 			return
 		}
+		err = q.Release(item.Key)
+		if err != nil {
+			return
+		}
+		s.decrementGroupCount(job.getSchedulerGroup(), q)
+		return
 	}
 
 	job.Unlock()

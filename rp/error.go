@@ -39,5 +39,5 @@ type Error struct {
 }
 
 func (e Error) Error() string {
-	return fmt.Sprintf("protector(%s) %s (%d): %s", e.Protector, e.Op, e.Request, e.Err)
+	return fmt.Sprintf("protector(%s) %s (%s): %s", e.Protector, e.Op, e.Request, e.Err)
 }

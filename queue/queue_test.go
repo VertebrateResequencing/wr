@@ -151,28 +151,26 @@ func TestQueue(t *testing.T) {
 				// value now and wait some more if not present
 				if searchChanged(changes, from, to, count) {
 					return true
-				} else {
-					for {
-						enableWaitForChanged = true
-						callBackLock2.Unlock()
-						changedLimit := time.After(100 * time.Millisecond)
-						select {
-						case <-waitForChanged:
-							callBackLock2.Lock()
-							if searchChanged(changes, from, to, count) {
-								changes = nil
-								enableChangedCollection = false
-								return true
-							} else {
-								continue
-							}
-						case <-changedLimit:
-							callBackLock2.Lock()
+				}
+				for {
+					enableWaitForChanged = true
+					callBackLock2.Unlock()
+					changedLimit := time.After(100 * time.Millisecond)
+					select {
+					case <-waitForChanged:
+						callBackLock2.Lock()
+						if searchChanged(changes, from, to, count) {
 							changes = nil
-							enableWaitForChanged = false
 							enableChangedCollection = false
-							return false
+							return true
 						}
+						continue
+					case <-changedLimit:
+						callBackLock2.Lock()
+						changes = nil
+						enableWaitForChanged = false
+						enableChangedCollection = false
+						return false
 					}
 				}
 			}

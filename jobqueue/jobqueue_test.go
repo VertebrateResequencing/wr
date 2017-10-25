@@ -3098,7 +3098,6 @@ func TestJobqueue(t *testing.T) {
 	if server != nil {
 		server.Stop(true)
 	}
-	return
 
 	// start these tests anew because these tests have the server spawn runners
 	// that fail, simulating some network issue

@@ -71,7 +71,6 @@ func (r *request) waitUntilGranted() bool {
 		r.mu.Unlock()
 		return false
 	}
-	return false
 }
 
 // touch sends on our touchCh, which will be read by the Protector that granted
