@@ -475,6 +475,8 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
 		cmdsQ := s.getOrCreateQueue("cmds")
 		mux.HandleFunc(restJobsEndpoint, restJobs(s, cmdsQ))
+		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
+		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
 		go srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
 		s.httpServer = srv
@@ -485,7 +487,11 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 		badServerCB := func(server *cloud.Server) {
 			s.bsmutex.Lock()
-			s.badServers[server.ID] = server
+			if server.IsBad() {
+				s.badServers[server.ID] = server
+			} else {
+				delete(s.badServers, server.ID)
+			}
 			s.bsmutex.Unlock()
 			s.badServerCaster.Send(&badServer{
 				ID:      server.ID,
@@ -1392,6 +1398,24 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 		s.sgcmutex.Unlock()
 		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 	}
+}
+
+// getBadServers converts the slice of cloud.Server objects we hold in to a
+// slice of badServer structs.
+func (s *Server) getBadServers() (bs []*badServer) {
+	s.bsmutex.RLock()
+	for _, server := range s.badServers {
+		bs = append(bs, &badServer{
+			ID:      server.ID,
+			Name:    server.Name,
+			IP:      server.IP,
+			Date:    time.Now().Unix(),
+			IsBad:   server.IsBad(),
+			Problem: server.PermanentProblem(),
+		})
+	}
+	s.bsmutex.RUnlock()
+	return
 }
 
 // shutdown stops listening to client connections, close all queues and

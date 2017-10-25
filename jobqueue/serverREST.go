@@ -39,6 +39,8 @@ import (
 )
 
 const restJobsEndpoint = "/rest/v1/jobs/"
+const restWarningsEndpoint = "/rest/v1/warnings/"
+const restBadServersEndpoint = "/rest/v1/servers/"
 
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
 // queue, convenient if they are supplying JSON.
@@ -391,9 +393,9 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 		var status int
 		var err error
 		switch r.Method {
-		case "GET":
+		case http.MethodGet:
 			jobs, status, err = restJobsStatus(r, s, q)
-		case "POST":
+		case http.MethodPost:
 			jobs, status, err = restJobsAdd(r, s, q)
 		default:
 			http.Error(w, "So far only GET and POST are supported", http.StatusBadRequest)
@@ -651,6 +653,80 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 	}
 
 	return
+}
+
+// restWarnings lets you read warnings from the scheduler, and auto-"dismisses"
+// (deletes) them.
+func restWarnings(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// carry out a different action based on the HTTP Verb
+		sis := []*schedulerIssue{}
+		switch r.Method {
+		case http.MethodGet:
+			s.simutex.Lock()
+			for key, si := range s.schedIssues {
+				sis = append(sis, si)
+				delete(s.schedIssues, key)
+			}
+			s.simutex.Unlock()
+		default:
+			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+			return
+		}
+
+		// return schedulerIssues as JSON
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		encoder.Encode(sis)
+	}
+}
+
+// restJobs lets you do CRUD on cloud servers that have gone bad. The DELETE
+// verb has a required 'id' parameter, being the ID of a server you wish to
+// confirm as bad and have terminated if it still exists.
+func restBadServers(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+
+		// carry out a different action based on the HTTP Verb
+		switch r.Method {
+		case http.MethodGet:
+			servers := s.getBadServers()
+			if len(servers) == 0 {
+				servers = []*badServer{}
+			}
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			encoder := json.NewEncoder(w)
+			encoder.SetEscapeHTML(false)
+			encoder.Encode(servers)
+			return
+		case http.MethodDelete:
+			serverID := r.Form.Get("id")
+			if serverID == "" {
+				http.Error(w, "id parameter is required", http.StatusBadRequest)
+				return
+			}
+			s.bsmutex.Lock()
+			server := s.badServers[serverID]
+			delete(s.badServers, serverID)
+			s.bsmutex.Unlock()
+			if server == nil {
+				http.Error(w, "Server was not known to be bad", http.StatusNotFound)
+				return
+			}
+			if server.IsBad() {
+				server.Destroy()
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		default:
+			http.Error(w, "Only GET and DELETE are supported", http.StatusBadRequest)
+			return
+		}
+	}
 }
 
 // urlStringToInt takes a possible string from a url parameter value and

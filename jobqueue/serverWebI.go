@@ -28,7 +28,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
@@ -227,18 +226,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 
 						// also send details of dead servers
-						s.bsmutex.RLock()
-						for _, server := range s.badServers {
-							s.badServerCaster.Send(&badServer{
-								ID:      server.ID,
-								Name:    server.Name,
-								IP:      server.IP,
-								Date:    time.Now().Unix(),
-								IsBad:   server.IsBad(),
-								Problem: server.PermanentProblem(),
-							})
+						for _, bs := range s.getBadServers() {
+							s.badServerCaster.Send(bs)
 						}
-						s.bsmutex.RUnlock()
 
 						// and of scheduler messages
 						s.simutex.RLock()

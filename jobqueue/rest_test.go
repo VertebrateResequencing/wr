@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -52,6 +53,8 @@ func TestREST(t *testing.T) {
 	addr := "localhost:" + config.ManagerPort
 	baseUrl := "http://localhost:" + config.ManagerWeb
 	jobsEndPoint := baseUrl + "/rest/v1/jobs"
+	warningsEndPoint := baseUrl + "/rest/v1/warnings/"
+	serversEndPoint := baseUrl + "/rest/v1/servers/"
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -306,6 +309,103 @@ func TestREST(t *testing.T) {
 			So(jstati[0].ExpectedTime, ShouldEqual, 240)
 			So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
 			So(jstati[0].Mounts, ShouldEqual, mountJSON)
+		})
+
+		Convey("Initial GET queries on the warnings endpoint return nothing", func() {
+			response, err := http.Get(warningsEndPoint)
+			So(err, ShouldBeNil)
+			responseData, err := ioutil.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+
+			var sis []*schedulerIssue
+			err = json.Unmarshal(responseData, &sis)
+			So(err, ShouldBeNil)
+			So(len(sis), ShouldEqual, 0)
+
+			Convey("After adding some warnings, you can retrieve them, which also dismisses them", func() {
+				server.simutex.Lock()
+				server.schedIssues["msg1"] = &schedulerIssue{
+					Msg:       "msg1",
+					FirstDate: time.Now().Unix(),
+					LastDate:  time.Now().Unix(),
+					Count:     1,
+				}
+				server.schedIssues["msg2"] = &schedulerIssue{
+					Msg:       "msg2",
+					FirstDate: time.Now().Unix(),
+					LastDate:  time.Now().Unix(),
+					Count:     2,
+				}
+				So(len(server.schedIssues), ShouldEqual, 2)
+				server.simutex.Unlock()
+
+				response, err := http.Get(warningsEndPoint)
+				So(err, ShouldBeNil)
+				responseData, err := ioutil.ReadAll(response.Body)
+				So(err, ShouldBeNil)
+
+				var sis []*schedulerIssue
+				err = json.Unmarshal(responseData, &sis)
+				So(err, ShouldBeNil)
+				So(len(sis), ShouldEqual, 2)
+
+				server.simutex.RLock()
+				So(len(server.schedIssues), ShouldEqual, 0)
+				server.simutex.RUnlock()
+			})
+		})
+
+		Convey("Initial GET queries on the warnings and servers endpoints return nothing", func() {
+			response, err := http.Get(serversEndPoint)
+			So(err, ShouldBeNil)
+			responseData, err := ioutil.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+
+			var servers []*badServer
+			err = json.Unmarshal(responseData, &servers)
+			So(err, ShouldBeNil)
+			So(len(servers), ShouldEqual, 0)
+
+			Convey("After adding some bad servers, you can get and delete them", func() {
+				cloudServer := &cloud.Server{
+					ID:   "serverid1",
+					Name: "name",
+					IP:   "192.168.0.1",
+				}
+				cloudServer.GoneBad()
+				server.bsmutex.Lock()
+				server.badServers["serverid1"] = cloudServer
+				So(len(server.badServers), ShouldEqual, 1)
+				server.bsmutex.Unlock()
+
+				response, err := http.Get(serversEndPoint)
+				So(err, ShouldBeNil)
+				responseData, err := ioutil.ReadAll(response.Body)
+				So(err, ShouldBeNil)
+
+				var servers []*badServer
+				err = json.Unmarshal(responseData, &servers)
+				So(err, ShouldBeNil)
+				So(len(servers), ShouldEqual, 1)
+				So(servers[0].Name, ShouldEqual, "name")
+
+				req, err := http.NewRequest(http.MethodDelete, serversEndPoint, nil)
+				So(err, ShouldBeNil)
+				client := http.DefaultClient
+				response, err = client.Do(req)
+				So(err, ShouldBeNil)
+				So(response.StatusCode, ShouldEqual, http.StatusBadRequest)
+
+				req, err = http.NewRequest(http.MethodDelete, serversEndPoint+"?id=serverid1", nil)
+				So(err, ShouldBeNil)
+				response, err = client.Do(req)
+				So(err, ShouldBeNil)
+				So(response.StatusCode, ShouldEqual, http.StatusOK)
+
+				server.bsmutex.RLock()
+				So(len(server.badServers), ShouldEqual, 0)
+				server.bsmutex.RUnlock()
+			})
 		})
 
 		Reset(func() {

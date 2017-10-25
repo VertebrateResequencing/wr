@@ -634,6 +634,11 @@ func (s *Server) Destroy() error {
 		ch <- true
 	}
 
+	// for testing purposes, we anticipate that provider isn't set
+	if s.provider == nil {
+		return fmt.Errorf("provider not set")
+	}
+
 	err := s.provider.DestroyServer(s.ID)
 	s.debug("server %s Destroy() called DestroyServer() and got err %s\n", s.ID, err)
 	if err != nil {
