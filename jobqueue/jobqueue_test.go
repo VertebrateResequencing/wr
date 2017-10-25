@@ -3552,7 +3552,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			<-time.After(2 * time.Second)
+			<-time.After(4 * time.Second)
 
 			info, err := os.Stat(config.ManagerDbFile)
 			So(err, ShouldBeNil)
