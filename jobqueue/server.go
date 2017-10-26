@@ -487,20 +487,30 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 		badServerCB := func(server *cloud.Server) {
 			s.bsmutex.Lock()
+			skip := false
 			if server.IsBad() {
-				s.badServers[server.ID] = server
+				// double check that due to timing issues this server hasn't
+				// been destroyed, which is not something to warn anyone about
+				if server.Destroyed() {
+					skip = true
+				} else {
+					s.badServers[server.ID] = server
+				}
 			} else {
 				delete(s.badServers, server.ID)
 			}
 			s.bsmutex.Unlock()
-			s.badServerCaster.Send(&badServer{
-				ID:      server.ID,
-				Name:    server.Name,
-				IP:      server.IP,
-				Date:    time.Now().Unix(),
-				IsBad:   server.IsBad(),
-				Problem: server.PermanentProblem(),
-			})
+
+			if !skip {
+				s.badServerCaster.Send(&badServer{
+					ID:      server.ID,
+					Name:    server.Name,
+					IP:      server.IP,
+					Date:    time.Now().Unix(),
+					IsBad:   server.IsBad(),
+					Problem: server.PermanentProblem(),
+				})
+			}
 		}
 		s.scheduler.SetBadServerCallBack(badServerCB)
 

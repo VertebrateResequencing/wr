@@ -634,6 +634,9 @@ func (s *Server) Destroy() error {
 		ch <- true
 	}
 
+	s.destroyed = true
+	s.goneBad = true
+
 	// for testing purposes, we anticipate that provider isn't set
 	if s.provider == nil {
 		return fmt.Errorf("provider not set")
@@ -648,8 +651,6 @@ func (s *Server) Destroy() error {
 		}
 	}
 
-	s.destroyed = true
-	s.goneBad = true
 	return nil
 }
 
