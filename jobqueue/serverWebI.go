@@ -31,24 +31,33 @@ import (
 )
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
-// The possible Requests are:
-// current = get count info for every job in every RepGroup in the cmds queue.
-// details = get example job details for jobs in the RepGroup, grouped by having
-//           the same Status, Exitcode and FailReason.
-// retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
-// kill = kill the running jobs with the given RepGroup.
-// confirmBadServer = confirm that the server with ID ServerID is bad.
-// dismissMsg = dismiss the given Msg.
 type jstatusReq struct {
-	Key        string   // sending Key means "give me detailed info about this single job"
-	RepGroup   string   // sending RepGroup means "send me limited info about the jobs with this RepGroup"
-	State      JobState // A Job.State to limit RepGroup by
+	// possible Requests are:
+	// current = get count info for every job in every RepGroup in the cmds
+	//           queue.
+	// details = get example job details for jobs in the RepGroup, grouped by
+	//           having the same Status, Exitcode and FailReason.
+	// retry = retry buried jobs.
+	// remove = remove non-running jobs.
+	// kill = kill running jobs or confirm lost jobs are dead.
+	// confirmBadServer = confirm that the server with ID ServerID is bad.
+	// dismissMsg = dismiss the given Msg.
+	Request string
+
+	// sending Key means "give me detailed info about this single job", and
+	// modifies retry, remove and kill to only work on this job
+	Key string
+
+	// sending RepGroup means "send me limited info about the jobs with this
+	// RepGroup", and modifies retry, remove and kill to work on all jobs with
+	// the given RepGroup, ExitCode and FailReason
+	RepGroup string
+
+	State      JobState // A Job.State to limit RepGroup by in details mode
 	Exitcode   int
 	FailReason string
-	All        bool // If false, retry mode will act on a single random matching job, instead of all of them
-	ServerID   string
-	Msg        string
-	Request    string
+	ServerID   string // required argument for confirmBadServer
+	Msg        string // required argument for dismissMsg
 }
 
 // jstatus is the job info we send to the status webpage (only real difference
@@ -181,17 +190,6 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				}
 
 				switch {
-				case req.Key != "":
-					jobs, _, errstr := s.getJobsByKeys(q, []string{req.Key}, true, true)
-					if errstr == "" && len(jobs) == 1 {
-						status := jobToStatus(jobs[0])
-						writeMutex.Lock()
-						err = conn.WriteJSON(status)
-						writeMutex.Unlock()
-						if err != nil {
-							break
-						}
-					}
 				case req.Request != "":
 					switch req.Request {
 					case "current":
@@ -264,79 +262,49 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							}
 						}
 					case "retry":
-						s.rpl.RLock()
-						for key := range s.rpl.lookup[req.RepGroup] {
-							item, err := q.Get(key)
+						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateBury})
+						for _, job := range jobs {
+							err := q.Kick(job.key())
 							if err != nil {
-								break
+								continue
 							}
-							stats := item.Stats()
-							if stats.State == queue.ItemStateBury {
-								job := item.Data.(*Job)
-								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									err := q.Kick(key)
-									if err != nil {
-										break
-									}
-									job.UntilBuried = job.Retries + 1
-									if !req.All {
-										break
-									}
-								}
-							}
+							job.UntilBuried = job.Retries + 1
 						}
-						s.rpl.RUnlock()
 					case "remove":
-						s.rpl.RLock()
+						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						var toDelete []string
-						for key := range s.rpl.lookup[req.RepGroup] {
-							item, err := q.Get(key)
-							if err != nil {
-								break
-							}
-							stats := item.Stats()
-							if stats.State == queue.ItemStateBury || stats.State == queue.ItemStateDelay || stats.State == queue.ItemStateDependent || stats.State == queue.ItemStateReady {
-								job := item.Data.(*Job)
-								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									// we can't allow the removal of jobs that
-									// have dependencies, as *queue would regard
-									// that as satisfying the dependency and
-									// downstream jobs would start
-									hasDeps, err := q.HasDependents(key)
-									if err != nil || hasDeps {
-										continue
-									}
+						for _, job := range jobs {
+							key := job.key()
 
-									err = q.Remove(key)
-									if err != nil {
-										break
-									}
-									if err == nil {
-										s.db.deleteLiveJob(key)
-										toDelete = append(toDelete, key)
-										if stats.State == queue.ItemStateDelay || stats.State == queue.ItemStateReady {
-											s.decrementGroupCount(job.schedulerGroup, q)
-										}
-									}
-									if !req.All {
-										break
-									}
-								}
+							// we can't allow the removal of jobs that have
+							// dependencies, as *queue would regard that as
+							// satisfying the dependency and downstream jobs
+							// would start
+							hasDeps, err := q.HasDependents(key)
+							if err != nil || hasDeps {
+								continue
+							}
+
+							err = q.Remove(key)
+							if err != nil {
+								continue
+							}
+							s.db.deleteLiveJob(key)
+							toDelete = append(toDelete, key)
+							if job.State == JobStateReady {
+								s.decrementGroupCount(job.schedulerGroup, q)
 							}
 						}
+						s.rpl.Lock()
 						for _, key := range toDelete {
 							delete(s.rpl.lookup[req.RepGroup], key)
 						}
-						s.rpl.RUnlock()
+						s.rpl.Unlock()
 					case "kill":
-						s.rpl.RLock()
-						for key := range s.rpl.lookup[req.RepGroup] {
-							e, err := s.killJob(q, key)
-							if !req.All && e && err == nil {
-								break
-							}
+						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateRun})
+						for _, job := range jobs {
+							s.killJob(q, job.key())
 						}
-						s.rpl.RUnlock()
 					case "confirmBadServer":
 						if req.ServerID != "" {
 							s.bsmutex.Lock()
@@ -355,6 +323,17 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 					default:
 						continue
+					}
+				case req.Key != "":
+					jobs, _, errstr := s.getJobsByKeys(q, []string{req.Key}, true, true)
+					if errstr == "" && len(jobs) == 1 {
+						status := jobToStatus(jobs[0])
+						writeMutex.Lock()
+						err = conn.WriteJSON(status)
+						writeMutex.Unlock()
+						if err != nil {
+							break
+						}
 					}
 				default:
 					continue
@@ -458,6 +437,43 @@ func jobToStatus(job *Job) jstatus {
 		StdOut:        stdout,
 		// Env:           env,
 	}
+}
+
+// reqToJobs takes a request from the status webpage and returns the requested
+// jobs.
+func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []queue.ItemState) (jobs []*Job) {
+	allowed := make(map[queue.ItemState]bool)
+	for _, is := range allowedItemStates {
+		allowed[is] = true
+	}
+
+	if req.RepGroup != "" {
+		s.rpl.RLock()
+		defer s.rpl.RUnlock()
+		for key := range s.rpl.lookup[req.RepGroup] {
+			item, err := q.Get(key)
+			if item == nil || err != nil {
+				continue
+			}
+			stats := item.Stats()
+			if allowed[stats.State] {
+				job := item.Data.(*Job)
+				if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
+					jobs = append(jobs, job)
+				}
+			}
+		}
+	} else if req.Key != "" {
+		item, err := q.Get(req.Key)
+		if item == nil || err != nil {
+			return
+		}
+		stats := item.Stats()
+		if allowed[stats.State] {
+			jobs = append(jobs, item.Data.(*Job))
+		}
+	}
+	return
 }
 
 // webInterfaceStatusSendGroupStateCount sends the per-repgroup state counts

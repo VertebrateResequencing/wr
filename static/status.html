@@ -962,6 +962,7 @@
                 self.actionDetails = {
                     action: ko.observable(),
                     button: ko.observable(),
+                    key: ko.observable(),
                     repGroup: ko.observable(),
                     state: ko.observable(),
                     exited: ko.observable(),
@@ -972,6 +973,7 @@
                 self.jobToActionDetails = function(job, action, button) {
                     self.actionDetails.action(action);
                     self.actionDetails.button(button);
+                    self.actionDetails.key(job.Key);
                     self.actionDetails.repGroup(job.RepGroup);
                     self.actionDetails.state(job.State);
                     self.actionDetails.exitCode(job.Exited);
@@ -981,14 +983,20 @@
                 };
                 self.commitAction = function(all) {
                     // request the action
-                    self.ws.send(JSON.stringify({
-                        Request: self.actionDetails.action(),
-                        RepGroup: self.actionDetails.repGroup(),
-                        State: self.actionDetails.state(),
-                        Exitcode: self.actionDetails.exitCode(),
-                        FailReason: self.actionDetails.failReason(),
-                        All: all
-                    }));
+                    if (all) {
+                        self.ws.send(JSON.stringify({
+                            Request: self.actionDetails.action(),
+                            RepGroup: self.actionDetails.repGroup(),
+                            State: self.actionDetails.state(),
+                            Exitcode: self.actionDetails.exitCode(),
+                            FailReason: self.actionDetails.failReason(),
+                        }));
+                    } else {
+                        self.ws.send(JSON.stringify({
+                            Request: self.actionDetails.action(),
+                            Key: self.actionDetails.key(),
+                        }));
+                    }
                     
                     // reset the ui
                     if (self.detailsOA) {
