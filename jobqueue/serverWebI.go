@@ -331,7 +331,10 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "kill":
 						s.rpl.RLock()
 						for key := range s.rpl.lookup[req.RepGroup] {
-							s.killJob(q, key)
+							e, err := s.killJob(q, key)
+							if !req.All && e && err == nil {
+								break
+							}
 						}
 						s.rpl.RUnlock()
 					case "confirmBadServer":
