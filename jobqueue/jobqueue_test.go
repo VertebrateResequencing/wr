@@ -3282,7 +3282,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer server.Stop(true)
 
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, "cmds", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3418,6 +3418,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 				}()
 
 				destroyed := false
+				var killedJobEssence *JobEssence
 				for _, job := range got {
 					if job.Host != host {
 						So(job.HostID, ShouldNotBeBlank)
@@ -3425,12 +3426,44 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 						err = p.DestroyServer(job.HostID)
 						So(err, ShouldBeNil)
 						destroyed = true
+						killedJobEssence = &JobEssence{JobKey: job.key()}
 						break
 					}
 				}
 				So(destroyed, ShouldBeTrue)
 
-				<-time.After(2 * time.Second)
+				// wait for the killed job to be marked as lost and then release
+				// it
+				gotLost := make(chan bool, 1)
+				go func() {
+					limit := time.After(20 * time.Second)
+					ticker := time.NewTicker(10 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							job, err := jq.GetByEssence(killedJobEssence, false, false)
+							if err != nil {
+								ticker.Stop()
+								gotLost <- false
+								return
+							}
+							if job.State == JobStateLost {
+								ticker.Stop()
+								e, err := server.killJob(server.qs["cmds"], killedJobEssence.JobKey)
+								if !e || err != nil {
+									gotLost <- false
+								}
+								gotLost <- true
+								return
+							}
+						case <-limit:
+							ticker.Stop()
+							gotLost <- false
+							break
+						}
+					}
+				}()
+				So(<-gotLost, ShouldBeTrue)
 
 				// wait until they both start running again
 				go waitForBothRunning()
