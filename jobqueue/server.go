@@ -1432,6 +1432,10 @@ func (s *Server) getBadServers() (bs []*badServer) {
 // stay alive uselessly. *** This adds 15s to our shutdown time...
 func (s *Server) shutdown() {
 	// change touch to always return a kill signal
+	s.racmutex.Lock()
+	s.drain = true
+	s.ServerInfo.Mode = ServerModeDrain
+	s.racmutex.Unlock()
 	s.krmutex.Lock()
 	s.killRunners = true
 	s.krmutex.Unlock()
