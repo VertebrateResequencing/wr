@@ -22,24 +22,18 @@ package jobqueue
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
-	"math"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -58,52 +52,13 @@ const (
 	FailReasonRAM      = "command used too much RAM"
 	FailReasonTime     = "command used too much time"
 	FailReasonAbnormal = "command failed to complete normally"
-	FailReasonRelease  = "lost contact with runner"
+	FailReasonLost     = "lost contact with runner"
 	FailReasonSignal   = "runner received a signal to stop"
 	FailReasonResource = "resource requirements cannot be met"
 	FailReasonMount    = "mounting of remote file system(s) failed"
 	FailReasonUpload   = "failed to upload files to remote file system"
+	FailReasonKilled   = "killed by user request"
 )
-
-// JobState is how we describe the possible job states.
-type JobState string
-
-// JobState* constants represent all the possible job states. The fake "new"
-// and "deleted" states are for the benefit of the web interface (jstateCount).
-// "unknown" is an error case that shouldn't happen.
-const (
-	JobStateNew       JobState = "new"
-	JobStateDelayed   JobState = "delayed"
-	JobStateReady     JobState = "ready"
-	JobStateReserved  JobState = "reserved"
-	JobStateRunning   JobState = "running"
-	JobStateBuried    JobState = "buried"
-	JobStateDependent JobState = "dependent"
-	JobStateComplete  JobState = "complete"
-	JobStateDeleted   JobState = "deleted"
-	JobStateUnknown   JobState = "unknown"
-)
-
-// subqueueToJobState converts queue.SubQueue entries to JobStates.
-var subqueueToJobState = map[queue.SubQueue]JobState{
-	queue.SubQueueNew:       JobStateNew,
-	queue.SubQueueDelay:     JobStateDelayed,
-	queue.SubQueueReady:     JobStateReady,
-	queue.SubQueueRun:       JobStateRunning,
-	queue.SubQueueBury:      JobStateBuried,
-	queue.SubQueueDependent: JobStateDependent,
-	queue.SubQueueRemoved:   JobStateComplete,
-}
-
-// itemsStateToJobState converts queue.ItemState entries to JobStates.
-var itemsStateToJobState = map[queue.ItemState]JobState{
-	queue.ItemStateDelay:     JobStateDelayed,
-	queue.ItemStateReady:     JobStateReady,
-	queue.ItemStateRun:       JobStateReserved,
-	queue.ItemStateBury:      JobStateBuried,
-	queue.ItemStateDependent: JobStateDependent,
-	queue.ItemStateRemoved:   JobStateComplete,
-}
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
@@ -139,481 +94,6 @@ type clientRequest struct {
 	FirstReserve   bool
 }
 
-// Job is a struct that represents a command that needs to be run and some
-// associated metadata. If you get a Job back from the server (via Reserve() or
-// Get*()), you should treat the properties as read-only: changing them will
-// have no effect.
-type Job struct {
-	// Cmd is the actual command line that will be run via the shell.
-	Cmd string
-
-	// Cwd determines the command working directory, the directory we cd to
-	// before running Cmd. When CwdMatters, Cwd is used exactly, otherwise a
-	// unique sub-directory of Cwd is used as the command working directory.
-	Cwd string
-
-	// CwdMatters should be made true when Cwd contains input files that you
-	// will refer to using relative (from Cwd) paths in Cmd, and when other Jobs
-	// have identical Cmds because you have many different directories that
-	// contain different but identically named input files. Cwd will become part
-	// of what makes the Job unique.
-	// When CwdMatters is false (default), Cmd gets run in a unique subfolder of
-	// Cwd, enabling features like tracking disk space usage and clean up of the
-	// working directory by simply deleting the whole thing. The TMPDIR
-	// environment variable is also set to a sister folder of the unique
-	// subfolder, and this is always cleaned up after the Cmd exits.
-	CwdMatters bool
-
-	// ChangeHome sets the $HOME environment variable to the actual working
-	// directory before running Cmd, but only when CwdMatters is false.
-	ChangeHome bool
-
-	// RepGroup is a name associated with related Jobs to help group them
-	// together when reporting on their status etc.
-	RepGroup string
-
-	// ReqGroup is a string that you supply to group together all commands that
-	// you expect to have similar resource requirements.
-	ReqGroup string
-
-	// Requirements describes the resources this Cmd needs to run, such as RAM,
-	// Disk and time. These may be determined for you by the system (depending
-	// on Override) based on past experience of running jobs with the same
-	// ReqGroup.
-	Requirements *scheduler.Requirements
-
-	// Override determines if your own supplied Requirements get used, or if the
-	// systems' calculated values get used. 0 means prefer the system values. 1
-	// means prefer your values if they are higher. 2 means always use your
-	// values.
-	Override uint8
-
-	// Priority is a number between 0 and 255 inclusive - higher numbered jobs
-	// will run before lower numbered ones (the default is 0).
-	Priority uint8
-
-	// Retries is the number of times to retry running a Cmd if it fails.
-	Retries uint8
-
-	// DepGroups are the dependency groups this job belongs to that other jobs
-	// can refer to in their Dependencies.
-	DepGroups []string
-
-	// Dependencies describe the jobs that must be complete before this job
-	// starts.
-	Dependencies Dependencies
-
-	// Behaviours describe what should happen after Cmd is executed, depending
-	// on its success.
-	Behaviours Behaviours
-
-	// MountConfigs describes remote file systems or object stores that you wish
-	// to be fuse mounted prior to running the Cmd. Once Cmd exits, the mounts
-	// will be unmounted (with uploads only occurring if it exits with code 0).
-	// If you want multiple separate mount points accessed from different local
-	// directories, you will supply more than one MountConfig in the slice. If
-	// you want multiple remote locations multiplexed and accessible from a
-	// single local directory, you will supply a single MountConfig in the
-	// slice, configured with multiple MountTargets. Relative paths for your
-	// MountConfig.Mount options will be relative to Cwd (or ActualCwd if
-	// CwdMatters == false). If a MountConfig.Mount is not specified, it
-	// defaults to Cwd/mnt if CwdMatters, otherwise ActualCwd itself will be the
-	// mount point. If a MountConfig.CachBase is not specified, it defaults to
-	// to Cwd if CwdMatters, otherwise it will be a sister directory of
-	// ActualCwd.
-	MountConfigs MountConfigs
-
-	// The remaining properties are used to record information about what
-	// happened when Cmd was executed, or otherwise provide its current state.
-	// It is meaningless to set these yourself.
-
-	// the actual working directory used, which would have been created with a
-	// unique name if CwdMatters = false
-	ActualCwd string
-	// peak RAM (MB) used.
-	PeakRAM int
-	// true if the Cmd was run and exited.
-	Exited bool
-	// if the job ran and exited, its exit code is recorded here, but check
-	// Exited because when this is not set it could like like exit code 0.
-	Exitcode int
-	// if the job failed to complete successfully, this will hold one of the
-	// FailReason* strings.
-	FailReason string
-	// pid of the running or ran process.
-	Pid int
-	// host the process is running or did run on.
-	Host string
-	// time the cmd started running.
-	StartTime time.Time
-	// time the cmd stopped running.
-	EndTime time.Time
-	// CPU time used.
-	CPUtime time.Duration
-	// to read, call job.StdErr() instead; if the job ran, its (truncated)
-	// STDERR will be here.
-	StdErrC []byte
-	// to read, call job.StdOut() instead; if the job ran, its (truncated)
-	// STDOUT will be here.
-	StdOutC []byte
-	// to read, call job.Env() instead, to get the environment variables as a
-	// []string, where each string is like "key=value".
-	EnvC []byte
-	// if set (using output of CompressEnv()), they will be returned in the
-	// results of job.Env().
-	EnvOverride []byte
-	// job's state in the queue: 'delayed', 'ready', 'reserved', 'running',
-	// 'buried', 'complete' or 'dependent'.
-	State JobState
-	// number of times the job had ever entered 'running' state.
-	Attempts uint32
-	// remaining number of Release()s allowed before being buried instead.
-	UntilBuried uint8
-	// we note which client reserved this job, for validating if that client has
-	// permission to do other stuff to this Job; the server only ever sets this
-	// on Reserve(), so clients can't cheat by changing this on their end.
-	ReservedBy uuid.UUID
-	// on the server we don't store EnvC with the job, but look it up in db via
-	// this key.
-	EnvKey string
-	// when retrieving jobs with a limit, this tells you how many jobs were
-	// excluded.
-	Similar int
-	// name of the queue the Job was added to.
-	Queue string
-
-	// we add this internally to match up runners we spawn via the scheduler to
-	// the Jobs they're allowed to ReserveFiltered().
-	schedulerGroup string
-
-	// the server uses this to track if it already scheduled a runner for this
-	// job.
-	scheduledRunner bool
-
-	// we store the MuxFys that we mount during Mount() so we can Unmount() them
-	// later; this is purely client side
-	mountedFS []*muxfys.MuxFys
-
-	sync.RWMutex
-}
-
-// WallTime returns the time the job took to run if it ran to completion, or the
-// time taken so far if it is currently running.
-func (j *Job) WallTime() (d time.Duration) {
-	if !j.StartTime.IsZero() {
-		if j.EndTime.IsZero() || j.State == JobStateReserved {
-			d = time.Since(j.StartTime)
-		} else {
-			d = j.EndTime.Sub(j.StartTime)
-		}
-	}
-	return
-}
-
-// JobEssence struct describes the essential aspects of a Job that make it
-// unique, used to describe a Job when eg. you want to search for one.
-type JobEssence struct {
-	// JobKey can be set by itself if you already know the "key" of the desired
-	// job; you can get these keys when you use GetByRepGroup() or
-	// GetIncomplete() with a limit. When this is set, other properties are
-	// ignored.
-	JobKey string
-
-	// Cmd always forms an essential part of a Job.
-	Cmd string
-
-	// Cwd should only be set if the Job was created with CwdMatters = true.
-	Cwd string
-
-	// Mounts should only be set if the Job was created with Mounts
-	MountConfigs MountConfigs
-}
-
-// Key returns the same value that key() on the matching Job would give you.
-func (j *JobEssence) Key() string {
-	if j.JobKey != "" {
-		return j.JobKey
-	}
-
-	if j.Cwd != "" {
-		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
-	}
-	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
-}
-
-// Stringify returns a nice printable form of a JobEssence.
-func (j *JobEssence) Stringify() string {
-	if j.JobKey != "" {
-		return j.JobKey
-	}
-	out := j.Cmd
-	if j.Cwd != "" {
-		out += " [" + j.Cwd + "]"
-	}
-	return out
-}
-
-// Dependencies is a slice of *Dependency, for use in Job.Dependencies. It
-// describes the jobs that must be complete before the Job you associate this
-// with will start.
-type Dependencies []*Dependency
-
-// incompleteJobKeys converts the constituent Dependency structs in to internal
-// job keys that uniquely identify the jobs we are dependent upon. Note that if
-// you have dependencies that are specified with DepGroups, then you should re-
-// call this and update every time a new Job is added with with one of our
-// DepGroups() in its *Job.DepGroups. It will only return keys for jobs that
-// are incomplete (they could have been Archive()d in the past if they are now
-// being re-run).
-func (d Dependencies) incompleteJobKeys(db *db) []string {
-	// we initially store in a map to avoid duplicates
-	jobKeys := make(map[string]bool)
-	for _, dep := range d {
-		for _, key := range dep.incompleteJobKeys(db) {
-			jobKeys[key] = true
-		}
-	}
-
-	keys := make([]string, len(jobKeys))
-	i := 0
-	for key := range jobKeys {
-		keys[i] = key
-		i++
-	}
-
-	return keys
-}
-
-// DepGroups returns all the DepGroups of our constituent Dependency structs.
-func (d Dependencies) DepGroups() (depGroups []string) {
-	for _, dep := range d {
-		if dep.DepGroup != "" {
-			depGroups = append(depGroups, dep.DepGroup)
-		}
-	}
-	return
-}
-
-// Stringify converts our constituent Dependency structs in to a slice of
-// strings, each of which could be JobEssence or DepGroup based.
-func (d Dependencies) Stringify() (strings []string) {
-	for _, dep := range d {
-		if dep.DepGroup != "" {
-			strings = append(strings, dep.DepGroup)
-		} else if dep.Essence != nil {
-			strings = append(strings, dep.Essence.Stringify())
-		}
-	}
-	return
-}
-
-// Dependency is a struct that describes a Job purely in terms of a JobEssence,
-// or in terms of a Job's DepGroup, for use in Dependencies. If DepGroup is
-// specified, then Essence is ignored.
-type Dependency struct {
-	Essence  *JobEssence
-	DepGroup string
-}
-
-// incompleteJobKeys calculates the job keys that this dependency refers to. For
-// a Dependency made with Essence, you will get a single key which will be the
-// same key you'd get from *Job.key() on a Job made with the same essence.
-// For a Dependency made with a DepGroup, you will get the *Job.key()s of all
-// the jobs in the queue and database that have that DepGroup in their
-// DepGroups. You will only get keys for jobs that are currently in the queue.
-func (d *Dependency) incompleteJobKeys(db *db) []string {
-	if d.DepGroup != "" {
-		keys, _ := db.retrieveIncompleteJobKeysByDepGroup(d.DepGroup) // *** we're just throwing away the error here...
-		return keys
-	}
-	if d.Essence != nil {
-		jobKey := d.Essence.Key()
-		live, _ := db.checkIfLive(jobKey)
-		if live {
-			return []string{jobKey}
-		}
-	}
-	return []string{}
-}
-
-// NewEssenceDependency makes it a little easier to make a new *Dependency based
-// on Cmd+Cwd, for use in NewDependencies(). Leave cwd as an empty string if the
-// job you are describing does not have CwdMatters true.
-func NewEssenceDependency(cmd string, cwd string) *Dependency {
-	return &Dependency{
-		Essence: &JobEssence{Cmd: cmd, Cwd: cwd},
-	}
-}
-
-// NewDepGroupDependency makes it a little easier to make a new *Dependency
-// based on a dep group, for use in NewDependencies().
-func NewDepGroupDependency(depgroup string) *Dependency {
-	return &Dependency{
-		DepGroup: depgroup,
-	}
-}
-
-// MountConfig struct is used for setting in a Job to specify that a remote file
-// system or object store should be fuse mounted prior to running the Job's Cmd.
-// Currently only supports S3-like object stores.
-type MountConfig struct {
-	// Mount is the local directory on which to mount your Target(s). It can be
-	// (in) any directory you're able to write to. If the directory doesn't
-	// exist, it will be created first. Otherwise, it must be empty. If not
-	// supplied, defaults to the subdirectory "mnt" in the Job's working
-	// directory if CwdMatters, otherwise the actual working directory will be
-	// used as the mount point.
-	Mount string `json:",omitempty"`
-
-	// CacheBase is the parent directory to use for the CacheDir of any Targets
-	// configured with Cache on, but CacheDir undefined, or specified with a
-	// relative path. If CacheBase is also undefined, the base will be the Job's
-	// Cwd if CwdMatters, otherwise it will be the parent of the Job's actual
-	// working directory.
-	CacheBase string `json:",omitempty"`
-
-	// Retries is the number of retries that should be attempted when
-	// encountering errors in trying to access your remote S3 bucket. At least 3
-	// is recommended. It defaults to 10 if not provided.
-	Retries int `json:",omitempty"`
-
-	// Verbose is a boolean, which if true, would cause timing information on
-	// all remote S3 calls to appear as lines of all job STDERR that use the
-	// mount. Errors always appear there.
-	Verbose bool `json:",omitempty"`
-
-	// Targets is a slice of MountTarget which define what you want to access at
-	// your Mount. It's a slice to allow you to multiplex different buckets (or
-	// different subdirectories of the same bucket) so that it looks like all
-	// their data is in the same place, for easier access to files in your
-	// mount. You can only have one of these configured to be writeable.
-	Targets []MountTarget
-}
-
-// MountTarget struct is used for setting in a MountConfig to define what you
-// want to access at your Mount.
-type MountTarget struct {
-	// Profile is the S3 configuration profile name to use. If not supplied, the
-	// value of the $AWS_DEFAULT_PROFILE or $AWS_PROFILE environment variables
-	// is used, and if those are unset it defaults to "default".
-	//
-	// We look at number of standard S3 configuration files and environment
-	// variables to determine the scheme, domain, region and authentication
-	// details to connect to S3 with. All possible sources are checked to fill
-	// in any missing values from more preferred sources.
-	//
-	// The preferred file is ~/.s3cfg, since this is the only config file type
-	// that allows the specification of a custom domain. This file is Amazon's
-	// s3cmd config file, described here: http://s3tools.org/kb/item14.htm. wr
-	// will look at the access_key, secret_key, use_https and host_base options
-	// under the section with the given Profile name. If you don't wish to use
-	// any other config files or environment variables, you can add the non-
-	// standard region option to this file if you need to specify a specific
-	// region.
-	//
-	// The next file checked is the one pointed to by the
-	// $AWS_SHARED_CREDENTIALS_FILE environment variable, or ~/.aws/credentials.
-	// This file is described here:
-	// http://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-
-	// started.html. wr will look at the aws_access_key_id and
-	// aws_secret_access_key options under the section with the given Profile
-	// name.
-	//
-	// wr also checks the file pointed to by the $AWS_CONFIG_FILE environment
-	// variable, or ~/.aws/config, described in the previous link. From here the
-	// region option is used from the section with the given Profile name. If
-	// you don't wish to use a ~/.s3cfg file but do need to specify a custom
-	// domain, you can add the non-standard host_base and use_https options to
-	// this file instead.
-	//
-	// As a last resort, ~/.awssecret is checked. This is s3fs's config file,
-	// and consists of a single line with your access key and secret key
-	// separated by a colon.
-	//
-	// If set, the environment variables $AWS_ACCESS_KEY_ID,
-	// $AWS_SECRET_ACCESS_KEY and $AWS_DEFAULT_REGION override corresponding
-	// options found in any config file.
-	Profile string `json:",omitempty"`
-
-	// Path (required) is the name of your S3 bucket, optionally followed URL-
-	// style (separated with forward slashes) by sub-directory names. The
-	// highest performance is gained by specifying the deepest path under your
-	// bucket that holds all the files you wish to access.
-	Path string
-
-	// Cache is a boolean, which if true, turns on data caching of any data
-	// retrieved, or any data you wish to upload.
-	Cache bool `json:",omitempty"`
-
-	// CacheDir is the local directory to store cached data. If this parameter
-	// is supplied, Cache is forced true and so doesn't need to be provided. If
-	// this parameter is not supplied but Cache is true, the directory will be a
-	// unique directory in the containing MountConfig's CacheBase, and will get
-	// deleted on unmount. If it's a relative path, it will be relative to the
-	// CacheBase.
-	CacheDir string `json:",omitempty"`
-
-	// Write is a boolean, which if true, makes the mount point writeable. If
-	// you don't intend to write to a mount, just leave this parameter out.
-	// Because writing currently requires caching, turning this on forces Cache
-	// to be considered true.
-	Write bool `json:",omitempty"`
-}
-
-// MountConfigs is a slice of MountConfig.
-type MountConfigs []MountConfig
-
-// String provides a JSON representation of the MountConfigs.
-func (mcs MountConfigs) String() string {
-	if len(mcs) == 0 {
-		return ""
-	}
-	b, _ := json.Marshal(mcs)
-	return string(b)
-}
-
-// Key returns a string representation of the most critical parts of the config
-// that would make it different from other MountConfigs in practical terms of
-// what files are accessible from where: only Mount, Target.Profile and
-// Target.Path are considered. The order of Targets (but not of MountConfig) is
-// considered as well.
-func (mcs MountConfigs) Key() string {
-	if len(mcs) == 0 {
-		return ""
-	}
-
-	// sort mcs first, since the order doesn't affect what files are available
-	// where
-	if len(mcs) > 1 {
-		sort.Slice(mcs, func(i, j int) bool {
-			return mcs[i].Mount < mcs[j].Mount
-		})
-	}
-
-	var key bytes.Buffer
-	for _, mc := range mcs {
-		mount := mc.Mount
-		if mount == "" {
-			mount = "mnt"
-		}
-		key.WriteString(mount)
-		key.WriteString(":")
-
-		for _, t := range mc.Targets {
-			profile := t.Profile
-			if profile == "" {
-				profile = "default"
-			}
-			key.WriteString(profile)
-			key.WriteString("-")
-			key.WriteString(t.Path)
-			key.WriteString(";")
-		}
-	}
-
-	return key.String()
-}
-
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue.
 type Client struct {
@@ -621,6 +101,8 @@ type Client struct {
 	queue       string
 	ch          codec.Handle
 	clientid    uuid.UUID
+	hostID      string
+	gotHostID   bool
 	user        string
 	hasReserved bool
 	teMutex     sync.Mutex // to protect Touch() from other methods during Execute()
@@ -731,21 +213,6 @@ func (c *Client) ShutdownServer() bool {
 	return false
 }
 
-// Stats returns stats of the jobqueue server queue you connected to.
-// func (c *Conn) Stats() (s TubeStats, err error) {
-// 	data, err := c.beanstalk.StatsTube(c.tube)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to get stats for beanstalk tube %s: %s\n", c.tube, err.Error())
-// 		return
-// 	}
-// 	s = TubeStats{}
-// 	err = yaml.Unmarshal(data, &s)
-// 	if err != nil {
-// 		err = fmt.Errorf("Failed to parse yaml for beanstalk tube %s stats: %s", c.tube, err.Error())
-// 	}
-// 	return
-// }
-
 // ServerStats returns stats of the jobqueue server itself.
 func (c *Client) ServerStats() (s *ServerStats, err error) {
 	resp, err := c.request(&clientRequest{Method: "sstats"})
@@ -753,6 +220,23 @@ func (c *Client) ServerStats() (s *ServerStats, err error) {
 		return
 	}
 	s = resp.SStats
+	return
+}
+
+// BackupDB backs up the server's database to the given path. Note that
+// automatic backups occur to the configured location without calling this.
+func (c *Client) BackupDB(path string) (err error) {
+	resp, err := c.request(&clientRequest{Method: "backup"})
+	if err != nil {
+		return
+	}
+	tmpPath := path + ".tmp"
+	err = ioutil.WriteFile(tmpPath, resp.DB, dbFilePermission)
+	if err == nil {
+		err = os.Rename(tmpPath, path)
+	} else {
+		os.Remove(tmpPath)
+	}
 	return
 }
 
@@ -862,15 +346,19 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // Cmd and returning Error.Err(FailReasonSignal); you should check for this and
 // exit your process. Finally it calls Unmount() and TriggerBehaviours().
 //
+// If Kill() is called while executing the Cmd, the next internal Touch() call
+// will result in the Cmd being killed and the job being Bury()ied.
+//
 // If no error is returned, the Cmd will have run OK, exited with status 0, and
 // been Archive()d from the queue while being placed in the permanent store.
 // Otherwise, it will have been Release()d or Bury()ied as appropriate.
 //
 // The supplied shell is the shell to execute the Cmd under, ideally bash
-// (something that understand the command "set -o pipefail"). You have to have
-// been the one to Reserve() the supplied Job, or this will immediately return
-// an error. NB: the peak RAM tracking assumes we are running on a modern linux
-// system with /proc/*/smaps.
+// (something that understand the command "set -o pipefail").
+//
+// You have to have been the one to Reserve() the supplied Job, or this will
+// immediately return an error. NB: the peak RAM tracking assumes we are running
+// on a modern linux system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
@@ -980,11 +468,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	// update the server that we've started the job
-	host, err := os.Hostname()
-	if err != nil {
-		host = "localhost"
-	}
-	err = c.Started(job, cmd.Process.Pid, host)
+	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
@@ -999,10 +483,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 	peakmem := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
-	bailed := false
 	ranoutMem := false
 	ranoutTime := false
 	signalled := false
+	killCalled := false
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
@@ -1024,13 +508,16 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 				stateMutex.Unlock()
 
-				err := c.Touch(job)
+				kc, err := c.Touch(job)
 				if err != nil {
-					// this could fail for a number of reasons and it's important
-					// we bail out on failure to Touch()
+					// we may have lost contact with the manager; this is OK. We
+					// will keep trying to touch until it works
+					continue
+				}
+				if kc {
 					cmd.Process.Kill()
 					stateMutex.Lock()
-					bailed = true
+					killCalled = true
 					stateMutex.Unlock()
 					return
 				}
@@ -1131,6 +618,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 						failreason = FailReasonSignal
 						myerr = Error{c.queue, "Execute", job.key(), FailReasonSignal}
 					}
+				} else if killCalled {
+					dobury = true
+					failreason = FailReasonKilled
+					myerr = Error{c.queue, "Execute", job.key(), FailReasonKilled}
 				} else {
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
@@ -1162,9 +653,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-sigs:
 				return
 			case <-ticker2.C:
-				err := c.Touch(job)
-				if err != nil {
-					return
+				if !killCalled {
+					_, err := c.Touch(job)
+					if err != nil {
+						return
+					}
 				}
 			case <-stopChecking2:
 				return
@@ -1218,28 +711,43 @@ func (c *Client) Execute(job *Job, shell string) error {
 		finalStdErr = append(finalStdErr, berr.Error()...)
 	}
 
-	// though we may have bailed or had some other problem, we always try and
-	// update our job end state
-	err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
+	// though we may have had some problem, we always try and update our job end
+	// state, and we try many times to avoid having to repeat jobs unnecessarily
+	// (we keep retying for ~12+ hrs, giving plenty of time for issues to be
+	// fixed and potentially a new manager to be brought online for us to
+	// connect to and succeed)
+	maxRetries := 300
+	endedWorked := false
+	worked := false
+	for retryNum := 0; retryNum < maxRetries; retryNum++ {
+		if !endedWorked {
+			err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
 
-	if err != nil {
-		// if we can't access the server, we'll have to treat this as failed
-		// and let it auto-Release
-		if bailed {
-			return fmt.Errorf("command [%s] was running fine, but will need to be rerun due to a jobqueue server error", job.Cmd)
+			if err != nil {
+				<-time.After(time.Duration(retryNum*100) * time.Millisecond)
+				continue
+			}
+			endedWorked = true
 		}
-		return fmt.Errorf("command [%s] ended, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+
+		// update the database with our final state
+		if dobury {
+			err = c.Bury(job, failreason)
+		} else if dorelease {
+			err = c.Release(job, failreason) // which buries after job.Retries fails in a row
+		} else if doarchive {
+			err = c.Archive(job)
+		}
+		if err != nil {
+			<-time.After(time.Duration(retryNum*100) * time.Millisecond)
+			continue
+		}
+
+		worked = true
+		break
 	}
 
-	// update the database with our final state
-	if dobury {
-		err = c.Bury(job, failreason)
-	} else if dorelease {
-		err = c.Release(job, failreason) // which buries after job.Retries fails in a row
-	} else if doarchive {
-		err = c.Archive(job)
-	}
-	if err != nil {
+	if !worked {
 		job.TriggerBehaviours(false)
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
 	}
@@ -1248,10 +756,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 }
 
 // Started updates a Job on the server with information that you've started
-// running the Job's Cmd.
-func (c *Client) Started(job *Job, pid int, host string) (err error) {
-	job.Pid = pid
+// running the Job's Cmd. Started also figures out some host name, ip and
+// possibly id (in cloud situations) to associate with the job, so that if
+// something goes wrong the user can go to the host and investigate. Note that
+// HostID will not be set on job after this call; only the server will know
+// about it (use one of the Get methods afterwards to get a new object with the
+// HostID set if necessary).
+func (c *Client) Started(job *Job, pid int) (err error) {
+	// host details
+	host, err := os.Hostname()
+	if err != nil {
+		host = "localhost"
+	}
 	job.Host = host
+	job.HostIP = CurrentIP("")
+	job.Pid = pid
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
 	_, err = c.request(&clientRequest{Method: "jstart", Job: job})
@@ -1259,11 +778,17 @@ func (c *Client) Started(job *Job, pid int, host string) (err error) {
 }
 
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
-// you must have reserved the job before you can touch it.
-func (c *Client) Touch(job *Job) (err error) {
+// you must have reserved the job before you can touch it. If the returned
+// killCalled bool is true, you stop doing what you're doing and bury the job,
+// since this means that Kill() has been called for this job.
+func (c *Client) Touch(job *Job) (killCalled bool, err error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
-	_, err = c.request(&clientRequest{Method: "jtouch", Job: job})
+	resp, err := c.request(&clientRequest{Method: "jtouch", Job: job})
+	if err != nil {
+		return
+	}
+	killCalled = resp.KillCalled
 	return
 }
 
@@ -1377,6 +902,26 @@ func (c *Client) Delete(jes []*JobEssence) (deleted int, err error) {
 	return
 }
 
+// Kill will cause the next Touch() call for the job(s) described by the input
+// to return a kill signal. Touches happening as part of an Execute() will
+// respond to this signal by terminating their execution and burying the job. As
+// such you should note that there could be a delay between calling Kill() and
+// execution ceasing; wait until the jobs actually get buried before retrying
+// the jobs if desired.
+//
+// Kill returns a count of jobs that were eligible to be killed (those still in
+// running state). Errors will only be related to not being able to contact the
+// server.
+func (c *Client) Kill(jes []*JobEssence) (killable int, err error) {
+	keys := c.jesToKeys(jes)
+	resp, err := c.request(&clientRequest{Method: "jkill", Keys: keys})
+	if err != nil {
+		return
+	}
+	killable = resp.Existed
+	return
+}
+
 // GetByEssence gets a Job given a JobEssence to describe it. With the boolean
 // args set to true, this is the only way to get a Job that StdOut() and
 // StdErr() will work on, and one of 2 ways that Env() will work (the other
@@ -1441,324 +986,6 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 	}
 	jobs = resp.Jobs
 	return
-}
-
-// Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are
-// the environment variables the Job's Cmd should run/ran under). Note that EnvC
-// is only populated if you got the Job from GetByCmd(_, _, true) or Reserve().
-// If no environment variables were passed in when the job was Add()ed to the
-// queue, returns current environment variables instead. In both cases, alters
-// the return value to apply any overrides stored in job.EnvOverride.
-func (j *Job) Env() (env []string, err error) {
-	if len(j.EnvC) == 0 {
-		return
-	}
-
-	decompressed, err := decompress(j.EnvC)
-	if err != nil {
-		return
-	}
-	ch := new(codec.BincHandle)
-	dec := codec.NewDecoderBytes([]byte(decompressed), ch)
-	es := &envStr{}
-	err = dec.Decode(es)
-	if err != nil {
-		return
-	}
-	env = es.Environ
-
-	if len(env) == 0 {
-		env = os.Environ()
-	}
-
-	if len(j.EnvOverride) > 0 {
-		decompressed, err = decompress(j.EnvOverride)
-		if err != nil {
-			return
-		}
-		ch = new(codec.BincHandle)
-		dec = codec.NewDecoderBytes([]byte(decompressed), ch)
-		es = &envStr{}
-		err = dec.Decode(es)
-		if err != nil {
-			return
-		}
-
-		if len(es.Environ) > 0 {
-			env = envOverride(env, es.Environ)
-		}
-	}
-
-	return
-}
-
-// StdOut returns the decompressed job.StdOutC, which is the head and tail of
-// job.Cmd's STDOUT when it ran. If the Cmd hasn't run yet, or if it output
-// nothing to STDOUT, you will get an empty string. Note that StdOutC is only
-// populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
-// but failed.
-func (j *Job) StdOut() (stdout string, err error) {
-	if len(j.StdOutC) == 0 {
-		return
-	}
-	decomp, err := decompress(j.StdOutC)
-	if err != nil {
-		return
-	}
-	stdout = string(decomp)
-	return
-}
-
-// StdErr returns the decompressed job.StdErrC, which is the head and tail of
-// job.Cmd's STDERR when it ran. If the Cmd hasn't run yet, or if it output
-// nothing to STDERR, you will get an empty string. Note that StdErrC is only
-// populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
-// but failed.
-func (j *Job) StdErr() (stderr string, err error) {
-	if len(j.StdErrC) == 0 {
-		return
-	}
-	decomp, err := decompress(j.StdErrC)
-	if err != nil {
-		return
-	}
-	stderr = string(decomp)
-	return
-}
-
-// TriggerBehaviours triggers this Job's Behaviours based on if its Cmd got
-// executed successfully or not. Should only be called as part of or after
-// Execute().
-func (j *Job) TriggerBehaviours(success bool) error {
-	return j.Behaviours.Trigger(success, j)
-}
-
-// Mount uses the Job's MountConfigs to mount the remote file systems at the
-// desired mount points. If a mount point is unspecified, mounts in the sub
-// folder Cwd/mnt if CwdMatters (and unspecified CacheBase becomes Cwd),
-// otherwise the actual working directory is used as the mount point (and the
-// parent of that used for unspecified CacheBase). Relative CacheDir options
-// are treated relative to the CacheBase.
-func (j *Job) Mount() error {
-	cwd := j.Cwd
-	defaultMount := filepath.Join(j.Cwd, "mnt")
-	defaultCacheBase := cwd
-	if j.ActualCwd != "" {
-		cwd = j.ActualCwd
-		defaultMount = cwd
-		defaultCacheBase = filepath.Dir(cwd)
-	}
-
-	for _, mc := range j.MountConfigs {
-		var rcs []*muxfys.RemoteConfig
-		for _, mt := range mc.Targets {
-			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
-			if err != nil {
-				j.Unmount()
-				return err
-			}
-			accessor, err := muxfys.NewS3Accessor(accessorConfig)
-			if err != nil {
-				j.Unmount()
-				return err
-			}
-
-			cacheDir := mt.CacheDir
-			if cacheDir != "" && !filepath.IsAbs(cacheDir) {
-				cacheDir = filepath.Join(defaultCacheBase, cacheDir)
-			}
-			rc := &muxfys.RemoteConfig{
-				Accessor:  accessor,
-				CacheData: mt.Cache,
-				CacheDir:  cacheDir,
-				Write:     mt.Write,
-			}
-
-			rcs = append(rcs, rc)
-		}
-
-		if len(rcs) == 0 {
-			j.Unmount()
-			return fmt.Errorf("No Targets specified")
-		}
-
-		retries := 10
-		if mc.Retries > 0 {
-			retries = mc.Retries
-		}
-
-		mount := mc.Mount
-		if mount != "" {
-			if !filepath.IsAbs(mount) {
-				mount = filepath.Join(cwd, mount)
-			}
-		} else {
-			mount = defaultMount
-		}
-		cacheBase := mc.CacheBase
-		if cacheBase != "" {
-			if !filepath.IsAbs(cacheBase) {
-				cacheBase = filepath.Join(cwd, cacheBase)
-			}
-		} else {
-			cacheBase = defaultCacheBase
-		}
-		cfg := &muxfys.Config{
-			Mount:     mount,
-			CacheBase: cacheBase,
-			Retries:   retries,
-			Verbose:   mc.Verbose,
-		}
-
-		fs, err := muxfys.New(cfg)
-		if err != nil {
-			j.Unmount()
-			return err
-		}
-
-		err = fs.Mount(rcs...)
-		if err != nil {
-			j.Unmount()
-			return err
-		}
-
-		// (we can't use each fs.UnmountOnDeath() function because that tries
-		// to upload, but if we get killed we don't want that)
-
-		j.mountedFS = append(j.mountedFS, fs)
-	}
-
-	// unmount all on death without trying to upload
-	if len(j.mountedFS) > 0 {
-		deathSignals := make(chan os.Signal, 2)
-		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			select {
-			case <-deathSignals:
-				for _, fs := range j.mountedFS {
-					fs.Unmount(true)
-				}
-				return
-			}
-		}()
-	}
-
-	return nil
-}
-
-// Unmount unmounts any remote filesystems that were previously mounted with
-// Mount(). Returns nil if Mount() had not been called or there were no
-// MountConfigs. Note that for cached writable mounts, created files will only
-// begin to upload once Unmount() is called, so this may take some time to
-// return. Supply true to disable uploading of files (eg. if you're unmounting
-// following an error). If uploading, error could contain the string "failed to
-// upload", which you may want to check for. On success, triggers the deletion
-// of any empty directories between the mount point(s) and Cwd if not CwdMatters
-// and the mount point was (within) ActualCwd.
-func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
-	var doNotUpload bool
-	if len(stopUploads) == 1 {
-		doNotUpload = stopUploads[0]
-	}
-	var errors []string
-	var allLogs []string
-	for _, fs := range j.mountedFS {
-		uerr := fs.Unmount(doNotUpload)
-		if err != nil {
-			errors = append(errors, uerr.Error())
-		}
-		theseLogs := fs.Logs()
-		if len(theseLogs) > 0 {
-			allLogs = append(allLogs, theseLogs...)
-		}
-	}
-	j.mountedFS = nil
-	if len(allLogs) > 0 {
-		logs = strings.TrimSpace(strings.Join(allLogs, ""))
-	}
-
-	if len(errors) > 0 {
-		err = fmt.Errorf("Unmount failure(s): %s", errors)
-		return
-	}
-
-	// delete any empty dirs
-	if j.ActualCwd != "" {
-		for _, mc := range j.MountConfigs {
-			if mc.Mount == "" {
-				rmEmptyDirs(j.ActualCwd, j.Cwd)
-			} else if !filepath.IsAbs(mc.Mount) {
-				rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
-			}
-		}
-	}
-
-	return
-}
-
-// updateRecsAfterFailure checks the FailReason and bumps RAM or Time as
-// appropriate.
-func (j *Job) updateRecsAfterFailure() {
-	switch j.FailReason {
-	case FailReasonRAM:
-		// increase by 1GB or [100% if under 8GB, 30% if over], whichever is
-		// greater, and round up to nearest 100
-		// *** increase to greater than max seen for jobs in our ReqGroup?
-		updatedMB := float64(j.PeakRAM)
-		if updatedMB <= RAMIncreaseMultBreakpoint {
-			updatedMB *= RAMIncreaseMultLow
-		} else {
-			updatedMB *= RAMIncreaseMultHigh
-		}
-		if updatedMB < float64(j.PeakRAM)+RAMIncreaseMin {
-			updatedMB = float64(j.PeakRAM) + RAMIncreaseMin
-		}
-		j.Requirements.RAM = int(math.Ceil(updatedMB/100) * 100)
-		j.Override = uint8(1)
-	case FailReasonTime:
-		j.Requirements.Time += 1 * time.Hour
-		j.Override = uint8(1)
-	}
-}
-
-// key calculates a unique key to describe the job.
-func (j *Job) key() string {
-	if j.CwdMatters {
-		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
-	}
-	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
-}
-
-// getScheduledRunner provides a thread-safe way of getting the scheduledRunner
-// property of a Job.
-func (j *Job) getScheduledRunner() bool {
-	j.RLock()
-	defer j.RUnlock()
-	return j.scheduledRunner
-}
-
-// setScheduledRunner provides a thread-safe way of setting the scheduledRunner
-// property of a Job.
-func (j *Job) setScheduledRunner(newval bool) {
-	j.Lock()
-	defer j.Unlock()
-	j.scheduledRunner = newval
-}
-
-// getSchedulerGroup provides a thread-safe way of getting the schedulerGroup
-// property of a Job.
-func (j *Job) getSchedulerGroup() string {
-	j.RLock()
-	defer j.RUnlock()
-	return j.schedulerGroup
-}
-
-// setSchedulerGroup provides a thread-safe way of setting the schedulerGroup
-// property of a Job.
-func (j *Job) setSchedulerGroup(newval string) {
-	j.Lock()
-	defer j.Unlock()
-	j.schedulerGroup = newval
 }
 
 // request the server do something and get back its response. We can only cope

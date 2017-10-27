@@ -41,6 +41,7 @@ import (
 var foreground bool
 var scheduler string
 var localUsername string
+var backupPath string
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -241,7 +242,12 @@ running until the drain completes (or the manager is stopped) and the manager is
 then started again.
 
 It is safe to repeat this command to get an update on how long before the drain
-completes.`,
+completes.
+
+NB: if using 'wr cloud deploy --deployment production', do not use drain without
+also configuring an S3 location for your database backup, as otherwise any
+changes to the database between calling drain and the manager finally shutting
+down will be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first try and connect
 		jq := connect(5 * time.Second)
@@ -296,6 +302,39 @@ var managerStatusCmd = &cobra.Command{
 	},
 }
 
+// backup sub-command does a database backup
+var managerBackupCmd = &cobra.Command{
+	Use:   "backup",
+	Short: "Backup wr's database",
+	Long: `Manually backup wr's job database.
+
+The manager automatically backs up its database to the configured location every
+time there is a change.
+
+You can use this command to create an additional backup to a different location.
+Note that the manager must be running.
+
+(When the manager is stopped, you can backup the database by simply copying it
+somewhere.)`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if backupPath == "" {
+			die("--path is required")
+		}
+		timeout := time.Duration(timeoutint) * time.Second
+
+		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		if err != nil {
+			die("%s", err)
+		}
+		defer jq.Disconnect()
+
+		err = jq.BackupDB(backupPath)
+		if err != nil {
+			die("%s", err)
+		}
+	},
+}
+
 // reportLiveStatus is used by the status command on a working connection to
 // distinguish between the server being in a normal 'started' state or the
 // 'drain' state.
@@ -314,6 +353,7 @@ func init() {
 	managerCmd.AddCommand(managerDrainCmd)
 	managerCmd.AddCommand(managerStopCmd)
 	managerCmd.AddCommand(managerStatusCmd)
+	managerCmd.AddCommand(managerBackupCmd)
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig()
@@ -333,6 +373,8 @@ func init() {
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
 	managerStartCmd.Flags().BoolVar(&cloudDebug, "cloud_debug", false, "for cloud schedulers, include extra debugging information in the logs")
+
+	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
 
 func logStarted(s *jobqueue.ServerInfo) {
@@ -361,23 +403,24 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	case "openstack":
 		mport, _ := strconv.Atoi(config.ManagerPort)
 		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:       cloudResourceName(localUsername),
-			SavePath:           filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
-			ServerPorts:        []int{22, mport},
-			OSPrefix:           osPrefix,
-			OSUser:             osUsername,
-			OSRAM:              osRAM,
-			OSDisk:             osDisk,
-			FlavorRegex:        flavorRegex,
-			PostCreationScript: postCreation,
-			ConfigFiles:        cloudConfigFiles,
-			ServerKeepTime:     time.Duration(serverKeepAlive) * time.Second,
-			MaxInstances:       maxServers,
-			Shell:              config.RunnerExecShell,
-			GatewayIP:          cloudGatewayIP,
-			CIDR:               cloudCIDR,
-			DNSNameServers:     strings.Split(cloudDNS, ","),
-			Debug:              cloudDebug,
+			ResourceName:         cloudResourceName(localUsername),
+			SavePath:             filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+			ServerPorts:          []int{22, mport},
+			OSPrefix:             osPrefix,
+			OSUser:               osUsername,
+			OSRAM:                osRAM,
+			OSDisk:               osDisk,
+			FlavorRegex:          flavorRegex,
+			PostCreationScript:   postCreation,
+			ConfigFiles:          cloudConfigFiles,
+			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
+			StateUpdateFrequency: 1 * time.Minute,
+			MaxInstances:         maxServers,
+			Shell:                config.RunnerExecShell,
+			GatewayIP:            cloudGatewayIP,
+			CIDR:                 cloudCIDR,
+			DNSNameServers:       strings.Split(cloudDNS, ","),
+			Debug:                cloudDebug,
 		}
 		serverCIDR = cloudCIDR
 	}

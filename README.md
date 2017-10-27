@@ -46,8 +46,8 @@ Alternatively, build it yourself (at least v1.8 of go is required):
 (make sure to set your `$GOPATH`). An example way of setting up a personal Go
 installation in your home directory would be:
 
-        wget "https://storage.googleapis.com/golang/go1.8.linux-amd64.tar.gz"
-        tar -xvzf go1.8.linux-amd64.tar.gz && rm go1.8.linux-amd64.tar.gz
+        wget "https://storage.googleapis.com/golang/go1.9.2.linux-amd64.tar.gz"
+        tar -xvzf go1.9.2.linux-amd64.tar.gz && rm go1.9.2.linux-amd64.tar.gz
         export GOROOT=$HOME/go
         export PATH=$PATH:$GOROOT/bin
         mkdir work
@@ -84,6 +84,8 @@ the config options available. The main things you need to know are:
   something, copy the example config file to ~/.wr_config.yml and make
   changes to that. Alternatively, as the example config file explains, add
   environment variables to your shell login script and then source it.
+  If you'll be using OpenStack, it is strongly recommended to configure
+  database backups to go to S3.
 * The wr executable must be available at that same absolute path on all
   compute nodes in your cluster, so you either need to place it on a shared
   disk, or install it in the same place on all machines (eg. have it as part of
@@ -122,6 +124,10 @@ If you have any problems getting things to start up, check out the
 [wiki](https://github.com/VertebrateResequencing/wr/wiki) for additional
 guidance.
 
+An alternative way of interacting with wr is to use it's REST API, also
+documented on the
+[wiki](https://github.com/VertebrateResequencing/wr/wiki/REST-API)
+
 Implemented so far
 ------------------
 * Adding manually generated commands to the manager's queue.
@@ -146,7 +152,6 @@ Not yet implemented
   implemented (though you can manually build a workflow by specifying command
   dependencies).
 * Get a complete listing of all commands with a given id via the webpage.
-* Database backups.
 * Checkpointing for long running commands.
 * Security (anyone with an account on your machine can use your
   manager).

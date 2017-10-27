@@ -74,6 +74,7 @@ type openstackp struct {
 	poolName          string
 	externalNetworkID string
 	fmap              map[string]Flavor
+	lastFlavorCache   time.Time
 	ownName           string
 	networkName       string
 	networkUUID       string
@@ -135,24 +136,10 @@ func (p *openstackp) initialize() (err error) {
 
 	// get the details of all the possible server flavors
 	p.fmap = make(map[string]Flavor)
-	pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		flavorList, err := flavors.ExtractFlavors(page)
-		if err != nil {
-			return false, err
-		}
-
-		for _, f := range flavorList {
-			p.fmap[f.ID] = Flavor{
-				ID:    f.ID,
-				Name:  f.Name,
-				Cores: f.VCPUs,
-				RAM:   f.RAM,
-				Disk:  f.Disk,
-			}
-		}
-		return true, nil
-	})
+	err = p.cacheFlavors()
+	if err != nil {
+		return
+	}
 
 	// to get a reasonable new server timeout we'll keep track of how long it
 	// takes to spawn them using an exponentially weighted moving average. We
@@ -171,6 +158,35 @@ func (p *openstackp) initialize() (err error) {
 	}
 
 	return
+}
+
+// cacheFlavors retrieves the current list of flavors from OpenStack at most
+// once every 30mins, and caches them in p. Old no-longer existent flavors are
+// kept forever, so we can still see what resources old instances are using.
+func (p *openstackp) cacheFlavors() error {
+	if len(p.fmap) == 0 || time.Since(p.lastFlavorCache) > 30*time.Minute {
+		pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
+		err := pager.EachPage(func(page pagination.Page) (bool, error) {
+			flavorList, err := flavors.ExtractFlavors(page)
+			if err != nil {
+				return false, err
+			}
+
+			for _, f := range flavorList {
+				p.fmap[f.ID] = Flavor{
+					ID:    f.ID,
+					Name:  f.Name,
+					Cores: f.VCPUs,
+					RAM:   f.RAM,
+					Disk:  f.Disk,
+				}
+			}
+			return true, nil
+		})
+		p.lastFlavorCache = time.Now()
+		return err
+	}
+	return nil
 }
 
 // deploy achieves the aims of Deploy().
@@ -286,8 +302,8 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 		// ICMP may help networking work as expected
 		_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
 			ParentGroupID: group.ID,
-			FromPort:      0,
-			ToPort:        0, // *** results in a port of '0', which is not the same as "ALL ICMP" which then says "Any" in the web interface
+			FromPort:      -1,
+			ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
 			IPProtocol:    "ICMP",
 			CIDR:          "0.0.0.0/0",
 		}).Extract()
@@ -421,10 +437,18 @@ func (p *openstackp) inCloud() bool {
 
 					// get the first security group *** again, not sure how to
 					// pick the "best" if more than one
+					foundNonDefault := false
 					for _, smap := range server.SecurityGroups {
 						if value, found := smap["name"]; found && value.(string) != "" {
-							p.securityGroup = value.(string)
-							break
+							if value.(string) == "default" {
+								p.hasDefaultGroup = true
+							} else if !foundNonDefault {
+								p.securityGroup = value.(string)
+								foundNonDefault = true
+							}
+							if p.hasDefaultGroup && foundNonDefault {
+								break
+							}
 						}
 					}
 
@@ -444,6 +468,7 @@ func (p *openstackp) inCloud() bool {
 
 // flavors returns all our flavors.
 func (p *openstackp) flavors() map[string]Flavor {
+	p.cacheFlavors()
 	return p.fmap
 }
 
@@ -463,6 +488,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 
 	// query all servers to figure out what we've used of our quota
 	// (*** gophercloud currently doesn't implement getting this properly)
+	p.cacheFlavors()
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -487,7 +513,7 @@ func (p *openstackp) getQuota() (quota *Quota, err error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool) (serverID string, serverIP string, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error) {
 	// get available images, pick the one that matches desired OS
 	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
 	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
@@ -544,8 +570,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// create the server with a unique name
 	var server *servers.Server
+	serverName = uniqueResourceName(resources.ResourceName)
 	createOpts := servers.CreateOpts{
-		Name:           uniqueResourceName(resources.ResourceName),
+		Name:           serverName,
 		FlavorRef:      flavorID,
 		ImageRef:       imageID,
 		SecurityGroups: secGroups,
@@ -593,6 +620,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		}
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
+		}
+		if timeoutS < 90 {
+			timeoutS = 90
 		}
 		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)

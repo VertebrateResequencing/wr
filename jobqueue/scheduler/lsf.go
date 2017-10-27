@@ -194,6 +194,8 @@ func (s *lsf) initialize(config interface{}) error {
 					}
 					unit := matches[nextIsMemlimit-1][2]
 					switch unit {
+					case "T":
+						val *= 1000000
 					case "G":
 						val *= 1000
 					case "K":
@@ -408,9 +410,9 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 
 	megabytes := req.RAM
 	m := float32(megabytes) * s.memLimitMultiplier
-	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d]'", megabytes, megabytes))
+	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
 	if req.Cores > 1 {
-		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores), "-R", "'span[hosts=1]'")
+		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores))
 	}
 	if len(req.Other) > 0 {
 		// *** not yet implemented; would check this map for lsf-related keys
@@ -660,6 +662,22 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 	if err != nil {
 		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
 	}
+	return
+}
+
+// hostToID always returns an empty string, since we're not in the cloud.
+func (s *lsf) hostToID(host string) string {
+	return ""
+}
+
+// setMessageCallBack does nothing at the moment, since we don't generate any
+// messages for the user.
+func (s *lsf) setMessageCallBack(cb MessageCallBack) {
+	return
+}
+
+// setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
+func (s *lsf) setBadServerCallBack(cb BadServerCallBack) {
 	return
 }
 

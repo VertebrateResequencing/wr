@@ -21,7 +21,9 @@ package jobqueue
 // This file contains the functions to implement a jobqueue server.
 
 import (
+	"context"
 	"fmt"
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -30,6 +32,7 @@ import (
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/ugorji/go/codec"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -41,8 +44,8 @@ import (
 	"time"
 )
 
-// Err* constants are found in the our returned Errors under err.Err, so you
-// can cast and check if it's a certain type of error. ServerMode* constants are
+// Err* constants are found in our returned Errors under err.Err, so you can
+// cast and check if it's a certain type of error. ServerMode* constants are
 // used to report on the status of the server, found inside ServerInfo.
 const (
 	ErrInternalError  = "internal error"
@@ -97,12 +100,14 @@ type itemErr struct {
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
-	Err     string // string instead of error so we can decode on the client side
-	Added   int
-	Existed int
-	Job     *Job
-	Jobs    []*Job
-	SStats  *ServerStats
+	Err        string // string instead of error so we can decode on the client side
+	Added      int
+	Existed    int
+	KillCalled bool
+	Job        *Job
+	Jobs       []*Job
+	SStats     *ServerStats
+	DB         []byte
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -143,6 +148,27 @@ type jstateCount struct {
 	Count     int // num in FromState drop by this much, num in ToState rise by this much
 }
 
+// badServer is the details of servers that have gone bad that we send to the
+// status webpage. Previously bad servers can also be sent if they become good
+// again, hence the IsBad boolean.
+type badServer struct {
+	ID      string
+	Name    string
+	IP      string
+	Date    int64 // seconds since Unix epoch
+	IsBad   bool
+	Problem string
+}
+
+// schedulerIssue is the details of scheduler problems encountered that we send
+// to the status webpage.
+type schedulerIssue struct {
+	Msg       string
+	FirstDate int64 // seconds since Unix epoch
+	LastDate  int64
+	Count     int // the number of identical Msg sent
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo   *ServerInfo
@@ -156,19 +182,29 @@ type Server struct {
 	drain        bool
 	blocking     bool
 	sync.Mutex
-	qs            map[string]*queue.Queue
-	rpl           *rgToKeys
-	scheduler     *scheduler.Scheduler
-	sgroupcounts  map[string]int
-	sgrouptrigs   map[string]int
-	sgtr          map[string]*scheduler.Requirements
-	sgcmutex      sync.Mutex
-	racmutex      sync.RWMutex
-	rc            string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
-	statusCaster  *bcast.Group
-	racCheckTimer *time.Timer
-	racChecking   bool
-	racCheckReady int
+	qs              map[string]*queue.Queue
+	rpl             *rgToKeys
+	scheduler       *scheduler.Scheduler
+	sgroupcounts    map[string]int
+	sgrouptrigs     map[string]int
+	sgtr            map[string]*scheduler.Requirements
+	sgcmutex        sync.Mutex
+	racmutex        sync.RWMutex
+	rc              string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	httpServer      *http.Server
+	statusCaster    *bcast.Group
+	badServerCaster *bcast.Group
+	schedCaster     *bcast.Group
+	racCheckTimer   *time.Timer
+	racChecking     bool
+	racCheckReady   int
+	bsmutex         sync.RWMutex
+	badServers      map[string]*cloud.Server
+	simutex         sync.RWMutex
+	schedIssues     map[string]*schedulerIssue
+	krmutex         sync.RWMutex
+	killRunners     bool
+	stopServing     chan bool
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -323,22 +359,26 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	s = &Server{
-		ServerInfo:   &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
-		allowedUsers: allowedUsersMap,
-		sock:         sock,
-		ch:           new(codec.BincHandle),
-		qs:           make(map[string]*queue.Queue),
-		rpl:          &rgToKeys{lookup: make(map[string]map[string]bool)},
-		db:           db,
-		stop:         stop,
-		done:         done,
-		up:           true,
-		scheduler:    sch,
-		sgroupcounts: make(map[string]int),
-		sgrouptrigs:  make(map[string]int),
-		sgtr:         make(map[string]*scheduler.Requirements),
-		rc:           config.RunnerCmd,
-		statusCaster: bcast.NewGroup(),
+		ServerInfo:      &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		allowedUsers:    allowedUsersMap,
+		sock:            sock,
+		ch:              new(codec.BincHandle),
+		qs:              make(map[string]*queue.Queue),
+		rpl:             &rgToKeys{lookup: make(map[string]map[string]bool)},
+		db:              db,
+		stop:            stop,
+		done:            done,
+		up:              true,
+		scheduler:       sch,
+		sgroupcounts:    make(map[string]int),
+		sgrouptrigs:     make(map[string]int),
+		sgtr:            make(map[string]*scheduler.Requirements),
+		rc:              config.RunnerCmd,
+		statusCaster:    bcast.NewGroup(),
+		badServerCaster: bcast.NewGroup(),
+		badServers:      make(map[string]*cloud.Server),
+		schedCaster:     bcast.NewGroup(),
+		schedIssues:     make(map[string]*schedulerIssue),
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
@@ -362,34 +402,24 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	// set up responding to command-line clients and signals
+	stopServing := make(chan bool, 1)
+	s.stopServing = stopServing
 	go func() {
 		// log panics and die
 		defer s.logPanic("jobqueue serving", true)
 
 		for {
 			select {
-			case sig := <-sigs:
-				s.shutdown()
-				var serr error
-				switch sig {
-				case os.Interrupt:
-					serr = Error{"", "Serve", "", ErrClosedInt}
-				case syscall.SIGTERM:
-					serr = Error{"", "Serve", "", ErrClosedTerm}
-				}
-				signal.Stop(sigs)
-				done <- serr
-				return
-			case <-stop:
-				s.shutdown()
-				signal.Stop(sigs)
-				done <- Error{"", "Serve", "", ErrClosedStop}
+			case <-stopServing:
 				return
 			default:
 				// receive a clientRequest from a client
 				m, rerr := sock.RecvMsg()
 				if rerr != nil {
-					if rerr != mangos.ErrRecvTimeout {
+					s.krmutex.RLock()
+					inShutdown := s.killRunners
+					s.krmutex.RUnlock()
+					if !inShutdown && rerr != mangos.ErrRecvTimeout {
 						log.Println(rerr)
 					}
 					continue
@@ -402,14 +432,40 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 					herr := s.handleRequest(m)
 					if ServerLogClientErrors && herr != nil {
-						log.Println(herr)
+						s.krmutex.RLock()
+						inShutdown := s.killRunners
+						s.krmutex.RUnlock()
+						if !inShutdown {
+							log.Println(herr)
+						}
 					}
 				}()
 			}
 		}
 	}()
+	go func() {
+		defer s.logPanic("jobqueue signal handling", true)
+		select {
+		case sig := <-sigs:
+			s.shutdown()
+			var serr error
+			switch sig {
+			case os.Interrupt:
+				serr = Error{"", "Serve", "", ErrClosedInt}
+			case syscall.SIGTERM:
+				serr = Error{"", "Serve", "", ErrClosedTerm}
+			}
+			signal.Stop(sigs)
+			done <- serr
+		case <-stop:
+			s.shutdown()
+			signal.Stop(sigs)
+			done <- Error{"", "Serve", "", ErrClosedStop}
+		}
+	}()
 
 	// set up the web interface
+	ready := make(chan bool)
 	go func() {
 		// log panics and die
 		defer s.logPanic("jobqueue web server", true)
@@ -417,9 +473,73 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", webInterfaceStatic)
 		mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
-		go http.ListenAndServe("0.0.0.0:"+config.WebPort, mux) // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+		cmdsQ := s.getOrCreateQueue("cmds")
+		mux.HandleFunc(restJobsEndpoint, restJobs(s, cmdsQ))
+		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
+		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
+		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
+		go srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+		s.httpServer = srv
+
 		go s.statusCaster.Broadcasting(0)
+		go s.badServerCaster.Broadcasting(0)
+		go s.schedCaster.Broadcasting(0)
+
+		badServerCB := func(server *cloud.Server) {
+			s.bsmutex.Lock()
+			skip := false
+			if server.IsBad() {
+				// double check that due to timing issues this server hasn't
+				// been destroyed, which is not something to warn anyone about
+				if server.Destroyed() {
+					skip = true
+				} else {
+					s.badServers[server.ID] = server
+				}
+			} else {
+				delete(s.badServers, server.ID)
+			}
+			s.bsmutex.Unlock()
+
+			if !skip {
+				s.badServerCaster.Send(&badServer{
+					ID:      server.ID,
+					Name:    server.Name,
+					IP:      server.IP,
+					Date:    time.Now().Unix(),
+					IsBad:   server.IsBad(),
+					Problem: server.PermanentProblem(),
+				})
+			}
+		}
+		s.scheduler.SetBadServerCallBack(badServerCB)
+
+		messageCB := func(msg string) {
+			s.simutex.Lock()
+			var si *schedulerIssue
+			var existed bool
+			if si, existed = s.schedIssues[msg]; existed {
+				si.LastDate = time.Now().Unix()
+				si.Count = si.Count + 1
+			} else {
+				si = &schedulerIssue{
+					Msg:       msg,
+					FirstDate: time.Now().Unix(),
+					LastDate:  time.Now().Unix(),
+					Count:     1,
+				}
+				s.schedIssues[msg] = si
+			}
+			s.simutex.Unlock()
+			s.schedCaster.Send(si)
+		}
+		s.scheduler.SetMessageCallBack(messageCB)
+
+		// wait a while for ListenAndServe() to start listening
+		<-time.After(10 * time.Millisecond)
+		ready <- true
 	}()
+	<-ready
 
 	return
 }
@@ -432,7 +552,6 @@ func (s *Server) Block() (err error) {
 	s.blocking = true
 	s.racmutex.Unlock()
 	err = <-s.done
-	s.db.close() //*** do one last backup?
 	s.racmutex.Lock()
 	s.up = false
 	s.blocking = false
@@ -442,8 +561,7 @@ func (s *Server) Block() (err error) {
 
 // Stop will cause a graceful shut down of the server. Supplying an optional
 // bool of true will cause Stop() to wait until all runners have exited and
-// the server is truly down before returning. It also confirms that the port
-// the server was listening on has really been released.
+// the server is truly down before returning.
 func (s *Server) Stop(wait ...bool) (err error) {
 	s.racmutex.Lock()
 	if s.up {
@@ -452,7 +570,6 @@ func (s *Server) Stop(wait ...bool) (err error) {
 			s.up = false
 			s.racmutex.Unlock()
 			err = <-s.done
-			s.db.close()
 		} else {
 			s.racmutex.Unlock()
 		}
@@ -464,15 +581,7 @@ func (s *Server) Stop(wait ...bool) (err error) {
 				case <-ticker.C:
 					if !s.HasRunners() {
 						ticker.Stop()
-
-						for {
-							conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
-							if conn != nil {
-								conn.Close()
-								continue
-							}
-							return
-						}
+						return
 					}
 				}
 			}
@@ -555,6 +664,13 @@ func (s *Server) GetServerStats() *ServerStats {
 	}
 
 	return &ServerStats{ServerInfo: s.ServerInfo, Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
+}
+
+// BackupDB lets you do a manual live backup of the server's database to a given
+// writer. Note that automatic backups occur to the configured location
+// without calling this.
+func (s *Server) BackupDB(w io.Writer) error {
+	return s.db.backup(w)
 }
 
 // HasRunners tells you if there are currently runner clients in the job
@@ -794,6 +910,8 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 
 			// calculate counts per RepGroup
 			groups := make(map[string]int)
+			groupsLost := make(map[string]int)
+			lost := 0
 			for _, inter := range data {
 				job := inter.(*Job)
 
@@ -801,37 +919,55 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 				// runner for the job
 				if from == JobStateRunning {
 					job.setScheduledRunner(false)
+
+					job.RLock()
+					l := job.Lost
+					job.RUnlock()
+					if l {
+						lost++
+						groupsLost[job.RepGroup]++
+						continue
+					}
 				}
 
 				groups[job.RepGroup]++
 			}
 
 			// send out the counts
-			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data)})
+			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data) - lost})
 			for group, count := range groups {
 				s.statusCaster.Send(&jstateCount{group, from, to, count})
+			}
+
+			if lost > 0 {
+				s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
+				for group, count := range groupsLost {
+					s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
+				}
 			}
 		})
 
 		// we set a callback for running items that hit their ttr because the
-		// runner died or because of networking issues: we treat it like a
-		// normal release, which means it becomes delayed unless it is out of
-		// retries, in which case it gets buried
+		// runner died or because of networking issues: we keep them in the
+		// running queue, but mark them up as having possibly failed, leaving it
+		// up the user if they want to confirm the jobs are dead by killing
+		// them or leaving them to spring back to life if not.
 		q.SetTTRCallback(func(data interface{}) queue.SubQueue {
 			job := data.(*Job)
 
 			job.Lock()
 			defer job.Unlock()
 			if !job.StartTime.IsZero() && !job.Exited {
-				job.UntilBuried--
-				job.Exited = true
-				job.Exitcode = -1
-				job.FailReason = FailReasonRelease
+				job.Lost = true
+				job.FailReason = FailReasonLost
 				job.EndTime = time.Now()
 
-				if job.UntilBuried <= 0 {
-					return queue.SubQueueBury
-				}
+				// since our changed callback won't be called, send out this
+				// transition from running to lost state
+				defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
+				defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
+
+				return queue.SubQueueRun
 			}
 
 			return queue.SubQueueDelay
@@ -859,6 +995,133 @@ func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added 
 	}
 	s.rpl.Unlock()
 
+	return
+}
+
+// createJobs creates new jobs, adding them to the database and the in-memory
+// queue. It returns 2 errors; the first is one of our Err constant strings,
+// the second is the actual error with more details.
+func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
+	// create itemdefs for the jobs
+	for _, job := range inputJobs {
+		job.Lock()
+		job.EnvKey = envkey
+		job.UntilBuried = job.Retries + 1
+		job.Queue = q.Name
+		if s.rc != "" {
+			job.schedulerGroup = job.Requirements.Stringify()
+		}
+		job.Unlock()
+
+		// in cloud deployments we may bring up a server running an operating
+		// system with a different username, which we must allow access to
+		// ourselves
+		if user, set := job.Requirements.Other["cloud_user"]; set {
+			if _, allowed := s.allowedUsers[user]; !allowed {
+				s.allowedUsers[user] = true
+				s.ServerInfo.AllowedUsers = append(s.ServerInfo.AllowedUsers, user)
+			}
+		}
+	}
+
+	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
+	// waiting on this database write to persist to disk. The alternative would
+	// be to return success to the client as soon as the jobs were in the in-
+	// memory queue, then lazily persist to disk in a goroutine, but we must
+	// guarantee that jobs are never lost or a workflow could hopelessly break
+	// if the server node goes down between returning success and the write to
+	// disk succeeding. (If we don't return success to the client, it won't
+	// Remove the job that created the new jobs from the queue and when we
+	// recover, at worst the creating job will be run again - no jobs get lost.)
+	jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(inputJobs, ignoreComplete)
+	if err != nil {
+		srerr = ErrDBError
+		qerr = err
+	} else {
+		// now that jobs are in the db we can get dependencies fully, so now we
+		// can build our itemdefs *** we really need to test for cycles, because
+		// if the user creates one, we won't let them delete the bad jobs!
+		// storeNewJobs() returns jobsToQueue, which is all of cr.Jobs plus any
+		// previously Archive()d jobs that were resurrected because of one of
+		// their DepGroup dependencies being in cr.Jobs
+		var itemdefs []*queue.ItemDef
+		for _, job := range jobsToQueue {
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+		}
+
+		// storeNewJobs also returns jobsToUpdate, which are those jobs
+		// currently in the queue that need their dependencies updated because
+		// they just changed when we stored cr.Jobs
+		for _, job := range jobsToUpdate {
+			thisErr := q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
+			if thisErr != nil {
+				qerr = thisErr
+				break
+			}
+		}
+
+		if qerr != nil {
+			srerr = ErrInternalError
+		} else {
+			// add the jobs to the in-memory job queue
+			added, dups, qerr = s.enqueueItems(q, itemdefs)
+			if qerr != nil {
+				srerr = ErrInternalError
+			}
+		}
+	}
+
+	return
+}
+
+// killJob sets the killCalled property on a job, to change the subsequent
+// behaviour of touching, which should result in an executing job killing
+// itself.
+//
+// If we have lost contact with the job, calling killJob is also the way to
+// confirm it is definitely dead and won't spring back to life in the future:
+// we release or bury it as appropriate.
+//
+// If the job wasn't running, eligible will be false and nothing will have been
+// done.
+func (s *Server) killJob(q *queue.Queue, jobkey string) (eligible bool, err error) {
+	item, err := q.Get(jobkey)
+	if err != nil || item.Stats().State != queue.ItemStateRun {
+		return
+	}
+
+	eligible = true
+	job := item.Data.(*Job)
+	job.Lock()
+	job.killCalled = true
+
+	if job.Lost {
+		job.UntilBuried--
+		ub := job.UntilBuried
+		job.Exited = true
+		job.Exitcode = -1
+		job.EndTime = time.Now()
+		job.FailReason = FailReasonLost
+		job.Unlock()
+		s.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
+
+		if ub <= 0 {
+			err = q.Bury(item.Key)
+			if err != nil {
+				return
+			}
+			s.decrementGroupCount(job.getSchedulerGroup(), q)
+			return
+		}
+		err = q.Release(item.Key)
+		if err != nil {
+			return
+		}
+		s.decrementGroupCount(job.getSchedulerGroup(), q)
+		return
+	}
+
+	job.Unlock()
 	return
 }
 
@@ -963,9 +1226,14 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 		jState := job.State
 		jExitCode := job.Exitcode
 		jFailReason := job.FailReason
+		jLost := job.Lost
 		job.RUnlock()
 		if jState == JobStateRunning {
-			jState = JobStateReserved
+			if jLost {
+				jState = JobStateLost
+			} else {
+				jState = JobStateReserved
+			}
 		}
 
 		if state != "" {
@@ -1139,18 +1407,67 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 	}
 }
 
+// getBadServers converts the slice of cloud.Server objects we hold in to a
+// slice of badServer structs.
+func (s *Server) getBadServers() (bs []*badServer) {
+	s.bsmutex.RLock()
+	for _, server := range s.badServers {
+		bs = append(bs, &badServer{
+			ID:      server.ID,
+			Name:    server.Name,
+			IP:      server.IP,
+			Date:    time.Now().Unix(),
+			IsBad:   server.IsBad(),
+			Problem: server.PermanentProblem(),
+		})
+	}
+	s.bsmutex.RUnlock()
+	return
+}
+
 // shutdown stops listening to client connections, close all queues and
 // persists them to disk.
+//
+// For now it also kills all currently running jobs so that their runners don't
+// stay alive uselessly. *** This adds 15s to our shutdown time...
 func (s *Server) shutdown() {
+	// change touch to always return a kill signal
+	s.racmutex.Lock()
+	s.drain = true
+	s.ServerInfo.Mode = ServerModeDrain
+	s.racmutex.Unlock()
+	s.krmutex.Lock()
+	s.killRunners = true
+	s.krmutex.Unlock()
+	if s.HasRunners() {
+		// wait until everything must have attempted a touch
+		<-time.After(ClientTouchInterval)
+	}
+	s.stopServing <- true
+
 	s.Lock()
 	s.sock.Close()
 	s.db.close()
 	s.scheduler.Cleanup()
-	s.Unlock()
+	s.httpServer.Shutdown(context.Background())
 
-	//*** we want to persist production queues to disk
-	//*** want to do db backup; in cloud mode we want to copy backup to local
-	// deploy client that spawned us, and also to s3
+	// wait until the ports are really no longer being listened to (which isn't
+	// the same as them being available to be reconnected to, but this is the
+	// best we can do?)
+	for {
+		conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
+		if conn != nil {
+			conn.Close()
+			continue
+		}
+		conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
+		if conn != nil {
+			conn.Close()
+			continue
+		}
+		break
+	}
+	s.Unlock()
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this
@@ -1160,6 +1477,10 @@ func (s *Server) shutdown() {
 		q.Destroy()
 	}
 	s.qs = nil
+
+	s.krmutex.Lock()
+	s.killRunners = false
+	s.krmutex.Unlock()
 }
 
 // logPanic is for (ideally temporary) use in a go routine, deferred at the

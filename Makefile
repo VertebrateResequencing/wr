@@ -24,9 +24,11 @@ install: vendor
 	@go install -tags netgo ${LDFLAGS}
 	@echo installed to ${GOPATH}/bin/wr
 
+test: export CGO_ENABLED = 0
 test:
 	@go test -p 1 -tags netgo -timeout 15m ${PKG_LIST}
 
+race: export CGO_ENABLED = 1
 race:
 	@go test -p 1 -tags netgo -race -v ./queue
 	@go test -p 1 -tags netgo -race -v ./jobqueue
@@ -34,7 +36,8 @@ race:
 	@go test -p 1 -tags netgo -race -v ./jobqueue/scheduler -run TestLSF
 	@go test -p 1 -tags netgo -race -v -timeout 20m ./jobqueue/scheduler -run TestOpenstack
 	@go test -p 1 -tags netgo -race -v -timeout 15m ./cloud
-	
+	@go test -p 1 -tags netgo -race -v ./rp
+
 report: lint vet inef spell
 
 lint:
@@ -57,6 +60,7 @@ clean:
 	@rm -f ./dist.zip
 	@rm -fr ./vendor
 
+dist: export CGO_ENABLED = 0
 dist:
 	# go get -u github.com/gobuild/gopack
 	gopack pack --os linux --arch amd64 -o linux-dist.zip

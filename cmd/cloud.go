@@ -87,7 +87,10 @@ var cloudDeployCmd = &cobra.Command{
 	Long: `Start up 'wr manager' on a cloud server.
 
 Deploy creates all the necessary cloud resources (networks, keys, security
-profiles etc.) and starts a cloud server, on which 'wr manager' is run.
+profiles etc.) and starts a cloud server, on which 'wr manager' is run. In a
+production deployment the remote manager will use a copy of the latest version
+of the wr database, taken from your S3 db backup location, or if you don't use
+S3, from your local filesystem.
 
 Deploy then sets up ssh forwarding in the background that lets you use the
 normal wr command line utilities such as 'wr add' and view the wr website
@@ -203,6 +206,9 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 
 		// get/spawn a "head node" server
+		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
+		fmPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
+		fwPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
 		var server *cloud.Server
 		usingExistingServer := false
 		servers := provider.Servers()
@@ -211,6 +217,34 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				usingExistingServer = true
 				server = thisServer
 				info("using existing %s server at %s", providerName, server.IP)
+
+				// see if this server is already running wr manager by trying
+				// to re-establish our port forwarding, which may have failed
+				// due to temporary networking issues
+				startForwarding(server.IP, serverPort, osUsername, keyPath, mp, fmPidPath)
+				startForwarding(server.IP, serverPort, osUsername, keyPath, wp, fwPidPath)
+				jq = connect(2 * time.Second)
+				if jq != nil {
+					sstats, err := jq.ServerStats()
+					if err == nil {
+						info("reconnected to existing wr manager on %s", sAddr(sstats.ServerInfo))
+						info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
+						return
+					}
+				}
+
+				// clean up any existing or partially failed forwarding
+				pid, running := checkProcess(fmPidPath)
+				if running {
+					killProcess(pid)
+				}
+				os.Remove(fmPidPath)
+				pid, running = checkProcess(fwPidPath)
+				if running {
+					killProcess(pid)
+				}
+				os.Remove(fwPidPath)
+
 				break
 			}
 		}
@@ -243,13 +277,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		// to work reliably and completely, we'll just spawn ssh -L in the
 		// background and keep note of the pids so we can kill them during
 		// teardown
-		keyPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
-		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid"))
+		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, fmPidPath)
 		if err != nil {
 			provider.TearDown()
 			die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 		}
-		err = startForwarding(server.IP, serverPort, osUsername, keyPath, wp, filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid"))
+		err = startForwarding(server.IP, serverPort, osUsername, keyPath, wp, fwPidPath)
 		if err != nil {
 			provider.TearDown()
 			die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
@@ -268,6 +301,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 
 		info("wr manager remotely started on %s", sAddr(sstats.ServerInfo))
+		info("Should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
 		info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
 	},
 }
@@ -286,7 +320,14 @@ storage.)
 Note that any runners that are currently running will die, along with any
 commands they were running. It is more graceful to issue 'wr manager drain'
 first, and regularly rerun drain until it reports the manager is stopped, and
-only then request a teardown.`,
+only then request a teardown (you'll need to add the --force option). But this
+is only a good idea if you have configured wr to back up its database to S3, as
+otherwise your database going forward will not reflect anything you did during
+that cloud deployment.
+
+If you don't back up to S3, the teardown command tries to copy the remote
+database locally, which is only possible while the remote server is still up
+and accessible.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if providerName == "" {
 			die("--provider is required")
@@ -303,22 +344,52 @@ only then request a teardown.`,
 		fmPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
-		// try and stop the remote manager; *** doing this is supposed to result
-		// in a graceful saving of the db locally, but doesn't yet
+		// try and stop the remote manager
 		noManagerMsg := "; deploy first or use --force option"
-		noManagerForcedMsg := "; tearing down anyway!"
+		noManagerForcedMsg := "; tearing down anyway - you may lose changes if not backing up the database to S3!"
 		if fmRunning {
 			jq := connect(1 * time.Second)
 			if jq != nil {
+				var syncMsg string
+				if internal.IsRemote(config.ManagerDbBkFile) {
+					if _, err := os.Stat(config.ManagerDbFile); !os.IsNotExist(err) {
+						// move aside the local database so that if the manager is
+						// started locally, the database will be restored from S3
+						// and have the history of what was run in the cloud
+						if err = os.Rename(config.ManagerDbFile, config.ManagerDbFile+".old"); err == nil {
+							syncMsg = "; the local database will be updated from S3 if manager started locally"
+						} else {
+							warn("could not rename the local database; if the manager is started locally, it will not be updated with the latest changes in S3! %s", err)
+						}
+					}
+				} else {
+					// copy the remote database locally, so if the manager is
+					// started locally we have the history of what was run in
+					// the cloud. The gap between backing up and shutting down
+					// is "fine"; though some db writes may occur, the user
+					// obviously doesn't care about them. On recovery we won't
+					// break any pipelines.
+					err := jq.BackupDB(config.ManagerDbFile)
+					if err != nil {
+						msg := "there was an error trying to sync the remote database: " + err.Error()
+						if forceTearDown {
+							warn(msg + noManagerForcedMsg)
+						} else {
+							die(msg)
+						}
+					}
+					syncMsg = " and local database updated"
+				}
+
 				ok := jq.ShutdownServer()
 				if ok {
-					info("the remote wr manager was shut down")
+					info("the remote wr manager was shut down" + syncMsg)
 				} else {
 					msg := "there was an error trying to shut down the remote wr manager"
 					if forceTearDown {
 						warn(msg + noManagerForcedMsg)
 					} else {
-						die(msg + noManagerMsg)
+						die(msg)
 					}
 				}
 			} else {
@@ -341,7 +412,7 @@ only then request a teardown.`,
 		// and overwrite any existing file) *** currently missing the final
 		// shutdown message doing things this way, but ok?...
 		headNode := provider.HeadNode()
-		if headNode != nil {
+		if headNode != nil && headNode.Alive() {
 			headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), config.ManagerLogFile+"."+providerName)
 		}
 
@@ -406,15 +477,31 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	// create a config file on the remote to have the remote wr work on the same
-	// ports that we'd use locally
-	err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\n", mp, wp), wrConfigFileName)
-	if err != nil {
+	// ports that we'd use locally, and have it use an S3 db backup location if
+	// configured
+	dbBk := "db_bk"
+	if internal.IsRemote(config.ManagerDbBkFile) {
+		dbBk = config.ManagerDbBkFile
+	} else if config.IsProduction() {
+		// copy over our database
+		if _, err := os.Stat(config.ManagerDbFile); err == nil {
+			if err = server.UploadFile(config.ManagerDbFile, filepath.Join("./.wr_"+config.Deployment, "db")); err == nil {
+				info("copied local database to remote server")
+			} else if !wrMayHaveStarted {
+				provider.TearDown()
+				die("failed to upload local database to the server at %s: %s", server.IP, err)
+			}
+		} else if !os.IsNotExist(err) {
+			provider.TearDown()
+			die("failed to access the local database: %s", err)
+		}
+	}
+	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\n", mp, wp, dbBk), wrConfigFileName); err != nil {
 		provider.TearDown()
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
 
-	_, _, err = server.RunCmd("chmod u+x "+remoteExe, false)
-	if err != nil && !wrMayHaveStarted {
+	if _, _, err = server.RunCmd("chmod u+x "+remoteExe, false); err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to make remote wr executable: %s", err)
 	}
@@ -423,20 +510,17 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	cRN := cloudResourceName("")
 	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+"."+cRN)
 	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+"."+cRN)
-	err = server.UploadFile(localResourceFile, remoteResourceFile)
-	if err != nil && !wrMayHaveStarted {
+	if err = server.UploadFile(localResourceFile, remoteResourceFile); err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to upload wr cloud resources file to the server at %s: %s", server.IP, err)
 	}
 	localKeyFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
-	err = ioutil.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600)
-	if err != nil {
+	if err = ioutil.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600); err != nil {
 		provider.TearDown()
 		die("failed to create key file %s: %s", localKeyFile, err)
 	}
 	remoteKeyFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".key")
-	err = server.UploadFile(localKeyFile, remoteKeyFile)
-	if err != nil && !wrMayHaveStarted {
+	if err = server.UploadFile(localKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
 		provider.TearDown()
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}

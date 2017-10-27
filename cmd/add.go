@@ -23,13 +23,9 @@ import (
 	"code.cloudfoundry.org/bytefmt"
 	"encoding/json"
 	"github.com/VertebrateResequencing/wr/jobqueue"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/spf13/cobra"
 	"io"
-	"io/ioutil"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -60,35 +56,6 @@ var cmdOsPrefix string
 var cmdOsUsername string
 var cmdPostCreationScript string
 var cmdOsRAM int
-
-// addCmdOpts is the struct we decode user's JSON options in to
-type addCmdOpts struct {
-	Cmd          string                     `json:"cmd"`
-	Cwd          string                     `json:"cwd"`
-	CwdMatters   bool                       `json:"cwd_matters"`
-	ChangeHome   bool                       `json:"change_home"`
-	MountConfigs jobqueue.MountConfigs      `json:"mounts"`
-	ReqGrp       string                     `json:"req_grp"`
-	Memory       string                     `json:"memory"`
-	Time         string                     `json:"time"`
-	CPUs         *int                       `json:"cpus"`
-	Disk         *int                       `json:"disk"`
-	Override     *int                       `json:"override"`
-	Priority     *int                       `json:"priority"`
-	Retries      *int                       `json:"retries"`
-	RepGrp       string                     `json:"rep_grp"`
-	DepGrps      []string                   `json:"dep_grps"`
-	Deps         []string                   `json:"deps"`
-	CmdDeps      jobqueue.Dependencies      `json:"cmd_deps"`
-	OnFailure    jobqueue.BehavioursViaJSON `json:"on_failure"`
-	OnSuccess    jobqueue.BehavioursViaJSON `json:"on_success"`
-	OnExit       jobqueue.BehavioursViaJSON `json:"on_exit"`
-	Env          []string                   `json:"env"`
-	CloudOS      string                     `json:"cloud_os"`
-	CloudUser    string                     `json:"cloud_username"`
-	CloudScript  string                     `json:"cloud_script"`
-	CloudOSRam   *int                       `json:"cloud_ram"`
-}
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -272,105 +239,88 @@ machine was started.`,
 		if cmdFile == "" {
 			die("--file is required")
 		}
-		if cmdRepGroup == "" {
-			cmdRepGroup = "manually_added"
+
+		jd := &jobqueue.JobDefaults{
+			RepGrp:      cmdRepGroup,
+			ReqGrp:      reqGroup,
+			CwdMatters:  cmdCwdMatters,
+			ChangeHome:  cmdChangeHome,
+			CPUs:        cmdCPUs,
+			Disk:        cmdDisk,
+			Override:    cmdOvr,
+			Priority:    cmdPri,
+			Retries:     cmdRet,
+			Env:         cmdEnv,
+			CloudOS:     cmdOsPrefix,
+			CloudUser:   cmdOsUsername,
+			CloudScript: cmdPostCreationScript,
+			CloudOSRam:  cmdOsRAM,
 		}
-		var cmdMB int
+
+		if jd.RepGrp == "" {
+			jd.RepGrp = "manually_added"
+		}
 		var err error
 		if cmdMem == "" {
-			cmdMB = 0
+			jd.Memory = 0
 		} else {
 			mb, err := bytefmt.ToMegabytes(cmdMem)
 			if err != nil {
 				die("--memory was not specified correctly: %s", err)
 			}
-			cmdMB = int(mb)
+			jd.Memory = int(mb)
 		}
-		var cmdDuration time.Duration
 		if cmdTime == "" {
-			cmdDuration = 0 * time.Second
+			jd.Time = 0 * time.Second
 		} else {
-			cmdDuration, err = time.ParseDuration(cmdTime)
+			jd.Time, err = time.ParseDuration(cmdTime)
 			if err != nil {
 				die("--time was not specified correctly: %s", err)
 			}
 		}
-		if cmdCPUs < 1 {
-			cmdCPUs = 1
-		}
-		if cmdOvr < 0 || cmdOvr > 2 {
-			die("--override must be in the range 0..2")
-		}
-		if cmdPri < 0 || cmdPri > 255 {
-			die("--priority must be in the range 0..255")
-		}
-		if cmdRet < 0 || cmdRet > 255 {
-			die("--retries must be in the range 0..255")
-		}
-		timeout := time.Duration(timeoutint) * time.Second
 
-		var defaultDepGroups []string
 		if cmdDepGroups != "" {
-			defaultDepGroups = strings.Split(cmdDepGroups, ",")
+			jd.DepGroups = strings.Split(cmdDepGroups, ",")
 		}
 
-		var defaultDeps jobqueue.Dependencies
 		if cmdCmdDeps != "" {
 			cols := strings.Split(cmdCmdDeps, ",")
 			if len(cols)%2 != 0 {
 				die("--cmd_deps must have an even number of comma-separated entries")
 			}
-			defaultDeps = colsToDeps(cols)
+			jd.Deps = colsToDeps(cols)
 		}
 		if cmdGroupDeps != "" {
-			defaultDeps = append(defaultDeps, groupsToDeps(cmdGroupDeps)...)
+			jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
 		}
 
-		var defaultOnFailure jobqueue.Behaviours
 		if cmdOnFailure != "" {
 			var bjs jobqueue.BehavioursViaJSON
 			err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
 			if err != nil {
 				die("bad --on_failure: %s", err)
 			}
-			defaultOnFailure = bjs.Behaviours(jobqueue.OnFailure)
+			jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
 		}
-		var defaultOnSuccess jobqueue.Behaviours
 		if cmdOnSuccess != "" {
 			var bjs jobqueue.BehavioursViaJSON
 			err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
 			if err != nil {
 				die("bad --on_success: %s", err)
 			}
-			defaultOnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
+			jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
 		}
-		var defaultOnExit jobqueue.Behaviours
 		if cmdOnExit != "" {
 			var bjs jobqueue.BehavioursViaJSON
 			err = json.Unmarshal([]byte(cmdOnExit), &bjs)
 			if err != nil {
 				die("bad --on_exit: %s", err)
 			}
-			defaultOnExit = bjs.Behaviours(jobqueue.OnExit)
+			jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
 		}
 
-		var defaultMounts jobqueue.MountConfigs
 		if mountJSON != "" || mountSimple != "" {
-			defaultMounts = mountParse(mountJSON, mountSimple)
-		}
-
-		var defaultScript string
-		if cmdPostCreationScript != "" {
-			data, err := ioutil.ReadFile(cmdPostCreationScript)
-			if err != nil {
-				die("--cloud_script could not be read: %s", err)
-			}
-			defaultScript = string(data)
-		}
-
-		var defaultOSRAM string
-		if cmdOsRAM > 0 {
-			defaultOSRAM = strconv.Itoa(cmdOsRAM)
+			jd.MountConfigs = mountParse(mountJSON, mountSimple)
 		}
 
 		// open file or set up to read from STDIN
@@ -387,6 +337,7 @@ machine was started.`,
 
 		// we'll default to pwd if the manager is on the same host as us, /tmp
 		// otherwise
+		timeout := time.Duration(timeoutint) * time.Second
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
 			die("%s", err)
@@ -396,7 +347,7 @@ machine was started.`,
 			die("even though I was able to connect to the manager, it failed to tell me its location")
 		}
 		var pwd string
-		var remoteWarning int
+		var remoteWarning bool
 		var envVars []string
 		if jobqueue.CurrentIP("")+":"+config.ManagerPort == sstats.ServerInfo.Addr {
 			pwd, err = os.Getwd()
@@ -406,14 +357,9 @@ machine was started.`,
 			envVars = os.Environ()
 		} else {
 			pwd = "/tmp"
-			remoteWarning = 1
+			remoteWarning = true
 		}
 		jq.Disconnect()
-
-		var defaultExtraEnv []byte
-		if cmdEnv != "" {
-			defaultExtraEnv = jq.CompressEnv(strings.Split(cmdEnv, ","))
-		}
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
@@ -433,18 +379,18 @@ machine was started.`,
 			}
 
 			// determine all the options for this command
-			var cmdOpts addCmdOpts
+			var jvj *jobqueue.JobViaJSON
 			var jsonErr error
 			if colsn == 2 {
-				jsonErr = json.Unmarshal([]byte(cols[1]), &cmdOpts)
+				jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
 				if jsonErr == nil {
-					cmdOpts.Cmd = cols[0]
+					jvj.Cmd = cols[0]
 				}
 			} else {
 				if strings.HasPrefix(cols[0], "{") {
-					jsonErr = json.Unmarshal([]byte(cols[0]), &cmdOpts)
+					jsonErr = json.Unmarshal([]byte(cols[0]), &jvj)
 				} else {
-					cmdOpts = addCmdOpts{Cmd: cols[0]}
+					jvj = &jobqueue.JobViaJSON{Cmd: cols[0]}
 				}
 			}
 
@@ -452,213 +398,23 @@ machine was started.`,
 				die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
 			}
 
-			var cmd, cwd, rg, repg string
-			var mb, cpus, disk, override, priority, retries int
-			var dur time.Duration
-			var envOverride []byte
-			var depGroups []string
-			var deps jobqueue.Dependencies
-			var behaviours jobqueue.Behaviours
-			var mounts jobqueue.MountConfigs
-
-			cmd = cmdOpts.Cmd
-			if cmd == "" {
-				die("line %d does not specify a cmd", lineNum)
-			}
-
-			if cmdOpts.Cwd == "" {
-				if cmdCwd != "" {
-					cwd = cmdCwd
-				} else {
-					if remoteWarning == 1 {
-						warn("command working directories defaulting to /tmp since the manager is running remotely")
-						remoteWarning = 0
-					}
-					cwd = pwd
+			if jvj.Cwd == "" && jd.Cwd == "" {
+				if remoteWarning {
+					warn("command working directories defaulting to /tmp since the manager is running remotely")
 				}
-			} else {
-				cwd = cmdOpts.Cwd
+				jd.Cwd = pwd
 			}
 
-			cwdMatters := cmdCwdMatters
-			if cmdOpts.CwdMatters {
-				cwdMatters = true
-			}
-
-			changeHome := cmdChangeHome
-			if cmdOpts.ChangeHome {
-				changeHome = true
-			}
-
-			if cmdOpts.RepGrp == "" {
-				if reqGroup != "" {
-					rg = reqGroup
-				} else {
-					parts := strings.Split(cmd, " ")
-					rg = filepath.Base(parts[0])
-				}
-			} else {
-				rg = cmdOpts.RepGrp
-			}
-
-			if cmdOpts.Memory == "" {
-				mb = cmdMB
-			} else {
-				thismb, err := bytefmt.ToMegabytes(cmdOpts.Memory)
-				if err != nil {
-					die("line %d's memory value (%s) was not specified correctly: %s", lineNum, cmdOpts.Memory, err)
-				}
-				mb = int(thismb)
-			}
-
-			if cmdOpts.Time == "" {
-				dur = cmdDuration
-			} else {
-				dur, err = time.ParseDuration(cmdOpts.Time)
-				if err != nil {
-					die("line %d's time value (%s) was not specified correctly: %s", lineNum, cmdOpts.Time, err)
-				}
-			}
-
-			if cmdOpts.Override == nil {
-				override = cmdOvr
-			} else {
-				override = *cmdOpts.Override
-				if override < 0 || override > 2 {
-					die("line %d's override value (%d) is not in the range 0..2", lineNum, override)
-				}
-			}
-
-			if cmdOpts.CPUs == nil {
-				cpus = cmdCPUs
-			} else {
-				cpus = *cmdOpts.CPUs
-			}
-
-			if cmdOpts.Disk == nil {
-				disk = cmdDisk
-			} else {
-				disk = *cmdOpts.Disk
-			}
-
-			if cmdOpts.Priority == nil {
-				priority = cmdPri
-			} else {
-				priority = *cmdOpts.Priority
-				if priority < 0 || priority > 255 {
-					die("line %d's priority value (%d) is not in the range 0..255", lineNum, priority)
-				}
-			}
-
-			if cmdOpts.Retries == nil {
-				retries = cmdRet
-			} else {
-				retries = *cmdOpts.Retries
-				if retries < 0 || retries > 255 {
-					die("line %d's retries value (%d) is not in the range 0..255", lineNum, retries)
-				}
-			}
-
-			if cmdOpts.RepGrp == "" {
-				repg = cmdRepGroup
+			if jvj.RepGrp == "" {
 				defaultedRepG = true
-			} else {
-				repg = cmdOpts.RepGrp
 			}
 
-			if len(cmdOpts.DepGrps) == 0 {
-				depGroups = defaultDepGroups
-			} else {
-				depGroups = cmdOpts.DepGrps
+			job, err := jvj.Convert(jd)
+			if err != nil {
+				die("line %d had a problem: %s\n", lineNum, err)
 			}
 
-			if len(cmdOpts.Deps) == 0 && len(cmdOpts.CmdDeps) == 0 {
-				deps = defaultDeps
-			} else {
-				if len(cmdOpts.CmdDeps) > 0 {
-					deps = cmdOpts.CmdDeps
-				}
-				if len(cmdOpts.Deps) > 0 {
-					for _, depgroup := range cmdOpts.Deps {
-						deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
-					}
-				}
-			}
-
-			if len(cmdOpts.Env) > 0 {
-				envOverride = jq.CompressEnv(cmdOpts.Env)
-			} else if len(defaultExtraEnv) > 0 {
-				envOverride = defaultExtraEnv
-			}
-
-			if len(cmdOpts.OnFailure) > 0 {
-				behaviours = append(behaviours, cmdOpts.OnFailure.Behaviours(jobqueue.OnFailure)...)
-			} else if len(defaultOnFailure) > 0 {
-				behaviours = append(behaviours, defaultOnFailure...)
-			}
-			if len(cmdOpts.OnSuccess) > 0 {
-				behaviours = append(behaviours, cmdOpts.OnSuccess.Behaviours(jobqueue.OnSuccess)...)
-			} else if len(defaultOnSuccess) > 0 {
-				behaviours = append(behaviours, defaultOnSuccess...)
-			}
-			if len(cmdOpts.OnExit) > 0 {
-				behaviours = append(behaviours, cmdOpts.OnExit.Behaviours(jobqueue.OnExit)...)
-			} else if len(defaultOnExit) > 0 {
-				behaviours = append(behaviours, defaultOnExit...)
-			}
-
-			if len(cmdOpts.MountConfigs) > 0 {
-				mounts = cmdOpts.MountConfigs
-			} else if len(defaultMounts) > 0 {
-				mounts = defaultMounts
-			}
-
-			// scheduler-specific options
-			other := make(map[string]string)
-			if cmdOpts.CloudOS != "" {
-				other["cloud_os"] = cmdOpts.CloudOS
-			} else if cmdOsPrefix != "" {
-				other["cloud_os"] = cmdOsPrefix
-			}
-			if cmdOpts.CloudUser != "" {
-				other["cloud_user"] = cmdOpts.CloudUser
-			} else if cmdOsUsername != "" {
-				other["cloud_user"] = cmdOsUsername
-			}
-			if cmdOpts.CloudScript != "" {
-				var postCreation []byte
-				postCreation, err = ioutil.ReadFile(cmdOpts.CloudScript)
-				if err != nil {
-					die("line %d's cloud_script value (%s) could not be read: %s", lineNum, cmdOpts.CloudScript, err)
-				}
-				other["cloud_script"] = string(postCreation)
-			} else if defaultScript != "" {
-				other["cloud_script"] = defaultScript
-			}
-			if cmdOpts.CloudOSRam != nil {
-				ram := *cmdOpts.CloudOSRam
-				other["cloud_os_ram"] = strconv.Itoa(ram)
-			} else if defaultOSRAM != "" {
-				other["cloud_os_ram"] = defaultOSRAM
-			}
-
-			jobs = append(jobs, &jobqueue.Job{
-				RepGroup:     repg,
-				Cmd:          cmd,
-				Cwd:          cwd,
-				CwdMatters:   cwdMatters,
-				ChangeHome:   changeHome,
-				ReqGroup:     rg,
-				Requirements: &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
-				Override:     uint8(override),
-				Priority:     uint8(priority),
-				Retries:      uint8(retries),
-				DepGroups:    depGroups,
-				Dependencies: deps,
-				EnvOverride:  envOverride,
-				Behaviours:   behaviours,
-				MountConfigs: mounts,
-			})
+			jobs = append(jobs, job)
 		}
 
 		// connect to the server

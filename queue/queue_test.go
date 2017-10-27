@@ -124,10 +124,19 @@ func TestQueue(t *testing.T) {
 			callBackLock2.Unlock()
 		}
 
-		checkChanged := func(from, to SubQueue, count int) (ok bool) {
+		searchChanged := func(c []*changedStruct, from, to SubQueue, count int) bool {
+			for _, cs := range c {
+				if cs.from != from || cs.to != to || cs.count != count {
+					continue
+				}
+				return true
+			}
+			return false
+		}
+
+		checkChanged := func(from, to SubQueue, count int) bool {
 			callBackLock2.Lock()
 			defer callBackLock2.Unlock()
-			var check []*changedStruct
 			if enableChangedCollection {
 				if len(changes) == 0 {
 					enableWaitForChanged = true
@@ -135,22 +144,37 @@ func TestQueue(t *testing.T) {
 					<-waitForChanged
 					callBackLock2.Lock()
 				}
-				check = changes
-			} else {
-				check = []*changedStruct{changed}
-			}
-			for _, cs := range check {
-				if cs.from != from || cs.to != to || cs.count != count {
-					continue
+
+				// because the change we have might be an old undesired one that
+				// came through after prepareToCheckChanged() was called but
+				// before our desired change happened, we check for the desired
+				// value now and wait some more if not present
+				if searchChanged(changes, from, to, count) {
+					return true
 				}
-				ok = true
-				break
+				for {
+					enableWaitForChanged = true
+					callBackLock2.Unlock()
+					changedLimit := time.After(100 * time.Millisecond)
+					select {
+					case <-waitForChanged:
+						callBackLock2.Lock()
+						if searchChanged(changes, from, to, count) {
+							changes = nil
+							enableChangedCollection = false
+							return true
+						}
+						continue
+					case <-changedLimit:
+						callBackLock2.Lock()
+						changes = nil
+						enableWaitForChanged = false
+						enableChangedCollection = false
+						return false
+					}
+				}
 			}
-			if enableChangedCollection {
-				changes = nil
-				enableChangedCollection = false
-			}
-			return
+			return searchChanged([]*changedStruct{changed}, from, to, count)
 		}
 
 		items := make(map[string]*Item)
@@ -752,7 +776,9 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("The queue won't fall over if we manage to change the item's readyAt without updating the queue", func() {
+			So(item.State(), ShouldEqual, ItemStateDelay)
 			<-time.After(45 * time.Millisecond)
+			So(item.State(), ShouldEqual, ItemStateDelay)
 			item.mutex.Lock()
 			item.readyAt = time.Now().Add(25 * time.Millisecond)
 			item.mutex.Unlock()
@@ -763,7 +789,9 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("The delay can be updated even in the delay queue", func() {
+			So(item.State(), ShouldEqual, ItemStateDelay)
 			<-time.After(25 * time.Millisecond)
+			So(item.State(), ShouldEqual, ItemStateDelay)
 			err := queue.Update("item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
 			So(err, ShouldBeNil)
 			<-time.After(30 * time.Millisecond)
@@ -822,22 +850,27 @@ func TestQueue(t *testing.T) {
 			Convey("The queue won't fall over if we manage to change the item's releaseAt without updating the queue", func() {
 				So(item.State(), ShouldEqual, ItemStateRun)
 				<-time.After(49 * time.Millisecond)
-				// the state should still be run at this point, but due to
-				// timing vagueries it might not be; be more forgiving to
-				// following tests by testing against current state instead of
-				// explicit 'run'
-				currentState := item.state
 				item.mutex.Lock()
-				item.releaseAt = time.Now().Add(25 * time.Millisecond)
-				item.mutex.Unlock()
-				<-time.After(6 * time.Millisecond)
-				So(item.State(), ShouldEqual, currentState)
-				<-time.After(25 * time.Millisecond)
-				So(item.State(), ShouldEqual, ItemStateReady)
+				if item.state == ItemStateRun {
+					item.releaseAt = time.Now().Add(25 * time.Millisecond)
+					item.mutex.Unlock()
+					<-time.After(6 * time.Millisecond)
+					So(item.State(), ShouldEqual, ItemStateRun)
+					<-time.After(25 * time.Millisecond)
+					So(item.State(), ShouldEqual, ItemStateReady)
+				} else {
+					// due to timing vagueries, the state might not be run, so
+					// just wait until it's definitely ready
+					item.mutex.Unlock()
+					<-time.After(35 * time.Millisecond)
+					So(item.State(), ShouldEqual, ItemStateReady)
+				}
 			})
 
 			Convey("When running the ttr can be updated", func() {
+				So(item.State(), ShouldEqual, ItemStateRun)
 				<-time.After(25 * time.Millisecond)
+				So(item.State(), ShouldEqual, ItemStateRun)
 				err := queue.Update("item1", "", "data", 0, 50*time.Millisecond, 75*time.Millisecond)
 				So(err, ShouldBeNil)
 				<-time.After(30 * time.Millisecond)

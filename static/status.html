@@ -40,6 +40,57 @@
                 </div>
             </div>
             
+            <div id="badservers" data-bind="foreach: badservers">
+                <div class="alert alert-danger fade in">
+                    <div class="panel panel-warning">
+                        <div class="panel-heading">
+                            Server
+                                <!-- ko if: Problem == "" -->
+                                    <u class="dotted" data-bind="tooltip: { title: 'If this is just a temporary connectivity issue, this message will go away by itself.' }">might be dead</u>
+                                <!-- /ko -->
+                                <!-- ko if: !Problem == "" -->
+                                    <u class="dotted" data-bind="tooltip: { title: 'There was a problem using this server. It will not be used to run other jobs. Investigate it manually if you like, before hitting the `Kill it` button.' }">is no longer usable</u>
+                                <!-- /ko -->
+                        </div>
+                        <div class="panel-body">
+                            Name: <span data-bind="text: Name"></span><br>
+                            ID: <span data-bind="text: ID"></span><br>
+                            IP: <span data-bind="text: IP"></span><br>
+                            <!-- ko if: Problem == "" -->
+                                Lost contact: <span data-bind="text: Date.toDate()"></span>
+                                <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">It's really dead</button>
+                            <!-- /ko -->
+                            <!-- ko if: !Problem == "" -->
+                                Problem encountered: <span data-bind="text: Problem"></span><br>
+                                Problem encountered at: <span data-bind="text: Date.toDate()"></span>
+                                <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">Kill it</button>
+                            <!-- /ko -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="messages" data-bind="foreach: messages">
+                <div class="alert alert-danger fade in">
+                    <div class="panel panel-warning">
+                        <div class="panel-heading">
+                            Scheduler Issue
+                                <!-- ko if: Count() > 1 -->
+                                    [first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
+                                <!-- /ko -->
+                        </div>
+                        <div class="panel-body">
+                            <span data-bind="text: Msg"></span><br>
+                            Reported at: <span data-bind="text: LastDate().toDate()"></span>
+                            <!-- ko if: Count() > 1 -->
+                                <br>Reported: <span data-bind="text: Count"></span> times
+                            <!-- /ko -->
+                            <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessage">Dismiss</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
                     <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
@@ -63,6 +114,11 @@
                             <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
                                 <!-- ko if: inflight.running() > 0 -->
                                     <span data-bind="text: inflight.running"></span> running
+                                <!-- /ko -->
+                            </div>
+                            <div class="progress-bar progress-bar-striped active progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.lostPct() + '%' }">
+                                <!-- ko if: inflight.lost() > 0 -->
+                                    <span data-bind="text: inflight.lost"></span> lost contact
                                 <!-- /ko -->
                             </div>
                             <div class="progress-bar progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
@@ -121,6 +177,11 @@
                                         <span data-bind="text: running"></span> running
                                     <!-- /ko -->
                                 </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-danger clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: lostPct() + '%' }, click: $parent.showRepgroupLost, attr: { 'aria-valuenow': lostPct() }">
+                                    <!-- ko if: lost() > 0 -->
+                                        <span data-bind="text: lost"></span> lost contact
+                                    <!-- /ko -->
+                                </div>
                                 <div class="progress-bar progress-bar-danger clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried, attr: { 'aria-valuenow': buryPct() }">
                                     <!-- ko if: buried() > 0 -->
                                         <span data-bind="text: buried"></span> buried
@@ -140,7 +201,7 @@
                         </div>
                         
                         <!-- ko foreach: details -->
-                            <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried', 'panel-success': State == 'complete' }">
+                            <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
                                 <div class="panel-heading">
                                     <h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
                                     <div style="overflow-x: auto">
@@ -241,24 +302,49 @@
                                             <dd data-bind="text: Host"></dd>
                                         </dl>
                                         <dl>
+                                            <dt>Host IP</dt>
+                                            <dd data-bind="text: HostIP"></dd>
+                                        </dl>
+                                        <!-- ko if: HostID != "" -->
+                                            <dl>
+                                                <dt>Host ID</dt>
+                                                <dd data-bind="text: HostID"></dd>
+                                            </dl>
+                                        <!-- /ko -->
+                                        <dl>
                                             <dt>Pid</dt>
                                             <dd data-bind="text: Pid"></dd>
                                         </dl>
                                     <!-- /ko -->
                                     
-                                    <!-- ko if: ! Exited && (State == "reserved" || State == "running") -->
+                                    <!-- ko if: ! Exited && (State == "reserved" || State == "running" || State == "lost") -->
                                         <dl>
                                             <dt>Started</dt>
                                             <dd data-bind="text: Started.toDate()"></dd>
                                         </dl>
                                         <dl>
                                             <dt>Walltime</dt>
-                                            <dd data-bind="text: LiveWalltime().toDuration()"></dd>
+                                            <!-- ko if: State == "lost" -->
+                                                <dd data-bind="text: Walltime.toDuration()"></dd>
+                                            <!-- /ko -->
+                                            <!-- ko if: State != "lost" -->
+                                                <dd data-bind="text: LiveWalltime().toDuration()"></dd>
+                                            <!-- /ko -->
                                         </dl>
                                         <dl>
                                             <dt>Host</dt>
                                             <dd data-bind="text: Host"></dd>
                                         </dl>
+                                        <dl>
+                                            <dt>Host IP</dt>
+                                            <dd data-bind="text: HostIP"></dd>
+                                        </dl>
+                                        <!-- ko if: HostID != "" -->
+                                            <dl>
+                                                <dt>Host ID</dt>
+                                                <dd data-bind="text: HostID"></dd>
+                                            </dl>
+                                        <!-- /ko -->
                                         <dl>
                                             <dt>Pid</dt>
                                             <dd data-bind="text: Pid"></dd>
@@ -333,6 +419,13 @@
                                     <!-- ko if: State == "dependent" -->
                                         <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDep">Remove</button>
                                     <!-- /ko -->
+                                    <!-- ko if: State == "running" -->
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmKill">Kill</button>
+                                    <!-- /ko -->
+                                    <!-- ko if: State == "lost" -->
+                                        <small>This job appears dead, but this could be due to a temporary issue such as a networking failure; if the job is actually fine, it will revert to running state automatically when the problem is fixed.</small><br>
+                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDead">Confirm Dead</button>
+                                    <!-- /ko -->
                                     <!-- ko if: State == "buried" -->
                                         <div class="btn-group pull-right">
                                             <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemoveFail">Remove</button>
@@ -355,23 +448,34 @@
                 footer: { name: 'actionModalFooterTemplate', data: actionDetails }
             }"></div>
             <script type="text/html" id="actionModalBodyTemplate">
+                <!-- ko if: button() != "confirm" -->
                 Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>"
-                <!-- ko if: exited -->
-                    that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
+                    <!-- ko if: exited -->
+                        that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
+                    <!-- /ko -->
+                    <!-- ko if: ! exited -->
+                        ?
+                    <!-- /ko -->
                 <!-- /ko -->
-                <!-- ko if: ! exited -->
-                    ?
+                <!-- ko if: button() == "confirm" -->
+                Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>" are really dead?
                 <!-- /ko -->
-                <small>(removal of commands that have other commands depending on them will silently fail)</small>
+                <br>
+                <!-- ko if: button() == "kill" -->
+                    <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become buried)</small>
+                <!-- /ko -->
+                <!-- ko if: button() == "remove" -->
+                    <small>(removal of commands that have other commands depending on them will silently fail)</small>
+                <!-- /ko -->
             </script>
             <script type="text/html" id="actionModalFooterTemplate">
                 <div class="btn-group">
                     <!-- ko if: count() > 1 -->
-                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: action().capitalizeFirstLetter() + ' all'"></button>
-                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action().capitalizeFirstLetter() + ' 1'"></button>
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: button().capitalizeFirstLetter() + ' all'"></button>
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter() + ' 1'"></button>
                     <!-- /ko -->
                     <!-- ko if: count() == 1 -->
-                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: action().capitalizeFirstLetter()"></button>
+                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter()"></button>
                     <!-- /ko -->
                     <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
                 </div>
@@ -430,9 +534,6 @@
         </div>
         
         <script type="text/javascript">
-            // turn on bootstrap tooltips
-            $('[data-toggle="tooltip"]').tooltip({'placement': 'top'});
-            
             ko.options.deferUpdates = true;
             
             // viewmodel for displaying status
@@ -440,6 +541,8 @@
                 var self = this;
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
+                self.badservers = ko.observableArray();
+                self.messages = ko.observableArray();
                 self.repGroup = ko.observable();
                 self.detailsRepgroup = '';
                 self.detailsState = '';
@@ -448,16 +551,30 @@
                 self.wallTimeUpdaters = new Array();
                 self.rateLimit = 350;
                 
+                self.removeBadServer = function (id) {
+                    self.badservers.remove(function(server) {
+                        return server.ID == id;
+                    });
+                }
+                
+                self.removeMessage = function (msg) {
+                    self.messages.remove(function(schedIssue) {
+                        return schedIssue.Msg == msg;
+                    });
+                }
+                
                 self.inflight = {
                     'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'running': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'lost': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'buried': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'delayPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'dependentPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'readyPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'runPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                    'lostPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'buryPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'old_total': 0,
                     'delay_compute': 0
@@ -467,20 +584,21 @@
                         return self.inflight['old_total'];
                     }
                     
-                    var total = self.inflight['delayed']() + self.inflight['dependent']() + self.inflight['ready']() + self.inflight['running']() + self.inflight['buried']();
+                    var total = self.inflight['delayed']() + self.inflight['dependent']() + self.inflight['ready']() + self.inflight['running']() + self.inflight['lost']() + self.inflight['buried']();
                     if (total > 0) {
                         var multiplier = 100 / total;
                         // we scale to 98 to avoid a bug in bootstrap progress
                         // bars which will result in the right-most bar
                         // flickering out of existence, even though we never
                         // total over 100
-                        var scaled = percentScaler([(multiplier * self.inflight['delayed']()), (multiplier * self.inflight['dependent']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['running']()), (multiplier * self.inflight['buried']())], 98);
+                        var scaled = percentScaler([(multiplier * self.inflight['delayed']()), (multiplier * self.inflight['dependent']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['running']()), (multiplier * self.inflight['lost']()), (multiplier * self.inflight['buried']())], 98);
                         var rounded = percentRounder(scaled, 2);
                         self.inflight['delayPct'](rounded[0]);
                         self.inflight['dependentPct'](rounded[1]);
                         self.inflight['readyPct'](rounded[2]);
                         self.inflight['runPct'](rounded[3]);
-                        self.inflight['buryPct'](rounded[4]);
+                        self.inflight['lostPct'](rounded[4]);
+                        self.inflight['buryPct'](rounded[5]);
                     }
                         
                     self.inflight['old_total'] = total;
@@ -521,6 +639,7 @@
                                     'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                                     'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                                     'running': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+                                    'lost': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                                     'buried': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                                     'deleted': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                                     'complete': ko.observable(0).extend({ rateLimit: self.rateLimit }),
@@ -528,6 +647,7 @@
                                     'dependentPct': ko.observable(0),
                                     'readyPct': ko.observable(0),
                                     'runPct': ko.observable(0),
+                                    'lostPct': ko.observable(0),
                                     'buryPct': ko.observable(0),
                                     'deletePct': ko.observable(0),
                                     'completePct': ko.observable(0),
@@ -540,7 +660,7 @@
                                         return repgroup['old_total'];
                                     }
                                     
-                                    var total = repgroup['delayed']() + repgroup['dependent']() + repgroup['ready']() + repgroup['running']() + repgroup['buried']() + repgroup['deleted']() + repgroup['complete']();
+                                    var total = repgroup['delayed']() + repgroup['dependent']() + repgroup['ready']() + repgroup['running']() + repgroup['lost']() + repgroup['buried']() + repgroup['deleted']() + repgroup['complete']();
                                     if (total > 0) {
                                         var multiplier = 100 / total;
                                         // we scale to 98 to avoid a bug in
@@ -548,7 +668,7 @@
                                         // result in the right-most bar
                                         // flickering out of existence, even
                                         // though we never total over 100
-                                        var scaled = percentScaler([(multiplier * repgroup['delayed']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['running']()), (multiplier * repgroup['buried']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 98);
+                                        var scaled = percentScaler([(multiplier * repgroup['delayed']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['running']()), (multiplier * repgroup['lost']()), (multiplier * repgroup['buried']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 98);
                                         var rounded = percentRounder(scaled, 2);
                                         
                                         // to avoid the percentage bars
@@ -557,13 +677,13 @@
                                         // first; not sure if this really helps
                                         // avoid some instances of flickering,
                                         // but it might...
-                                        var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'buryPct', 'deletePct', 'completePct'];
-                                        for (var i = 0; i < 7; i++) {
+                                        var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
+                                        for (var i = 0; i < 8; i++) {
                                             if (repgroup[keys[i]]() > rounded[i]) {
                                                 repgroup[keys[i]](rounded[i]);
                                             }
                                         }
-                                        for (var i = 0; i < 7; i++) {
+                                        for (var i = 0; i < 8; i++) {
                                             if (repgroup[keys[i]]() < rounded[i]) {
                                                 repgroup[keys[i]](rounded[i]);
                                             }
@@ -598,6 +718,9 @@
                                 case 'running':
                                     from = repgroup['running'];
                                     break;
+                                case 'lost':
+                                    from = repgroup['lost'];
+                                    break;
                                 case 'buried':
                                     from = repgroup['buried'];
                                     break;
@@ -627,6 +750,9 @@
                                         break;
                                     case 'running':
                                         to = repgroup['running'];
+                                        break;
+                                    case 'lost':
+                                        to = repgroup['lost'];
                                         break;
                                     case 'buried':
                                         to = repgroup['buried'];
@@ -696,6 +822,38 @@
                                 }
                                 self.detailsOA.push(json);
                             }
+                        } else if (json.hasOwnProperty('IP')) {
+                            // it's either a new bad server, or an existing
+                            // bad server that is now fine
+                            if (json['IsBad']) {
+                                self.badservers.push(json);
+                            } else {
+                                self.removeBadServer(json['ID'])
+                            }
+                        } else if (json.hasOwnProperty('Msg')) {
+                            // it's either a new scheduler message, or we want
+                            // to update one we're already displaying
+                            var updated = false
+                            var messages = self.messages();
+                            for (var i = 0; i < messages.length; ++i) {
+                                var si = messages[i];
+                                if (si.Msg == json['Msg']) {
+                                    si.LastDate(json['LastDate'])
+                                    si.Count(json['Count'])
+                                    updated = true
+                                    break
+                                }
+                            }
+                            
+                            if (! updated) {
+                                var schedIssue = {
+                                    'Msg': json['Msg'],
+                                    'FirstDate': json['FirstDate'],
+                                    'LastDate': ko.observable(json['LastDate']),
+                                    'Count': ko.observable(json['Count']),
+                                }
+                                self.messages.push(schedIssue);
+                            }
                         }
                     }
                 }
@@ -720,6 +878,9 @@
                 };
                 self.showRepgroupRunning = function(repGroup) {
                     self.showGroupState(repGroup, 'reserved'); // which includes 'running'
+                };
+                self.showRepgroupLost = function(repGroup) {
+                    self.showGroupState(repGroup, 'lost');
                 };
                 self.showRepgroupBuried = function(repGroup) {
                     self.showGroupState(repGroup, 'buried');
@@ -800,6 +961,8 @@
                 self.actionModalHeader = ko.observable();
                 self.actionDetails = {
                     action: ko.observable(),
+                    button: ko.observable(),
+                    key: ko.observable(),
                     repGroup: ko.observable(),
                     state: ko.observable(),
                     exited: ko.observable(),
@@ -807,8 +970,10 @@
                     failReason: ko.observable(),
                     count: ko.observable()
                 };
-                self.jobToActionDetails = function(job, action) {
+                self.jobToActionDetails = function(job, action, button) {
                     self.actionDetails.action(action);
+                    self.actionDetails.button(button);
+                    self.actionDetails.key(job.Key);
                     self.actionDetails.repGroup(job.RepGroup);
                     self.actionDetails.state(job.State);
                     self.actionDetails.exitCode(job.Exited);
@@ -818,14 +983,20 @@
                 };
                 self.commitAction = function(all) {
                     // request the action
-                    self.ws.send(JSON.stringify({
-                        Request: self.actionDetails.action(),
-                        RepGroup: self.actionDetails.repGroup(),
-                        State: self.actionDetails.state(),
-                        Exitcode: self.actionDetails.exitCode(),
-                        FailReason: self.actionDetails.failReason(),
-                        All: all
-                    }));
+                    if (all) {
+                        self.ws.send(JSON.stringify({
+                            Request: self.actionDetails.action(),
+                            RepGroup: self.actionDetails.repGroup(),
+                            State: self.actionDetails.state(),
+                            Exitcode: self.actionDetails.exitCode(),
+                            FailReason: self.actionDetails.failReason(),
+                        }));
+                    } else {
+                        self.ws.send(JSON.stringify({
+                            Request: self.actionDetails.action(),
+                            Key: self.actionDetails.key(),
+                        }));
+                    }
                     
                     // reset the ui
                     if (self.detailsOA) {
@@ -837,29 +1008,51 @@
                     self.actionModalVisible(false);
                 };
                 self.confirmRetry = function(job) {
-                    self.jobToActionDetails(job, 'retry');
+                    self.jobToActionDetails(job, 'retry', 'retry');
                     self.actionModalHeader('Retry Buried Commands');
                     self.actionModalVisible(true);
                 };
                 self.confirmRemoveFail = function(job) {
-                    self.jobToActionDetails(job, 'remove');
+                    self.jobToActionDetails(job, 'remove', 'remove');
                     self.actionModalHeader('Remove Failed Commands');
                     self.actionModalVisible(true);
                 };
                 self.confirmRemoveDep = function(job) {
-                    self.jobToActionDetails(job, 'remove');
+                    self.jobToActionDetails(job, 'remove', 'remove');
                     self.actionModalHeader('Remove Dependent Commands');
                     self.actionModalVisible(true);
                 };
                 self.confirmRemovePend = function(job) {
-                    self.jobToActionDetails(job, 'remove');
+                    self.jobToActionDetails(job, 'remove', 'remove');
                     self.actionModalHeader('Remove Pending Commands');
                     self.actionModalVisible(true);
                 };
                 self.confirmRemoveDelay = function(job) {
-                    self.jobToActionDetails(job, 'remove');
+                    self.jobToActionDetails(job, 'remove', 'remove');
                     self.actionModalHeader('Remove Delayed Commands');
                     self.actionModalVisible(true);
+                };
+                self.confirmKill = function(job) {
+                    self.jobToActionDetails(job, 'kill', 'kill');
+                    self.actionModalHeader('Kill Running Commands');
+                    self.actionModalVisible(true);
+                };
+                self.confirmDead = function(job) {
+                    self.jobToActionDetails(job, 'kill', 'confirm');
+                    self.actionModalHeader('Confirm Commands are Dead');
+                    self.actionModalVisible(true);
+                };
+                
+                // act if the user confirms that a server is dead
+                self.confirmDeadServer = function(server) {
+                    self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
+                    self.removeBadServer(server.ID)
+                };
+                
+                // act if the user dismisses a message
+                self.dismissMessage = function(si) {
+                    self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));
+                    self.removeMessage(si.Msg)
                 };
             }
             var svm = new StatusViewModel();

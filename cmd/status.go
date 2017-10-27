@@ -165,7 +165,7 @@ very many (tens of thousands+) commands.`,
 		}
 
 		if quietMode {
-			var d, re, b, ru, c int
+			var d, re, b, ru, l, c int
 			for _, job := range jobs {
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -176,11 +176,13 @@ very many (tens of thousands+) commands.`,
 					b += 1 + job.Similar
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					ru += 1 + job.Similar
+				case jobqueue.JobStateLost:
+					l += 1 + job.Similar
 				case jobqueue.JobStateComplete:
 					c += 1 + job.Similar
 				}
 			}
-			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndelayed: %d\nburied: %d\n", c, ru, re, d, b)
+			fmt.Printf("complete: %d\nrunning: %d\nready: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, l, d, b)
 		} else {
 			// print out status information for each job
 			for _, job := range jobs {
@@ -211,6 +213,8 @@ very many (tens of thousands+) commands.`,
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
+				case jobqueue.JobStateLost:
+					fmt.Printf("Status: lost contact (started %s; lost %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				case jobqueue.JobStateComplete:
 					fmt.Printf("Status: complete (started %s; ended %s)\n", job.StartTime.Format(shortTimeFormat), job.EndTime.Format(shortTimeFormat))
 				}
@@ -219,12 +223,17 @@ very many (tens of thousands+) commands.`,
 					fmt.Printf("Previous problem: %s\n", job.FailReason)
 				}
 
+				var hostID string
+				if job.HostID != "" {
+					hostID = ", ID: " + job.HostID
+				}
+
 				if job.Exited {
 					prefix := "Stats"
 					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s; Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.Pid)
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
 					if showextra && showStd && job.Exitcode != 0 {
 						stdout, err := job.StdOut()
 						if err != nil {
@@ -243,8 +252,8 @@ very many (tens of thousands+) commands.`,
 							fmt.Printf("StdErr: [none]\n")
 						}
 					}
-				} else if job.State == jobqueue.JobStateRunning {
-					fmt.Printf("Stats: { Wall time: %s }\nHost: %s; Pid: %d\n", job.WallTime(), job.Host, job.Pid)
+				} else if job.State == jobqueue.JobStateRunning || job.State == jobqueue.JobStateLost {
+					fmt.Printf("Stats: { Wall time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", job.WallTime(), job.Host, job.HostIP, hostID, job.Pid)
 					//*** we should be able to peek at STDOUT & STDERR, and see
 					// Peak memory during a run... but is that possible/ too
 					// expensive? Maybe we could communicate directly with the

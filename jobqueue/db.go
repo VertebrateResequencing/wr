@@ -26,13 +26,18 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
+	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/boltdb/bolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/ugorji/go/codec"
+	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,6 +45,7 @@ import (
 const (
 	dbDelimiter          = "_::_"
 	jobStatWindowPercent = float32(5)
+	dbFilePermission     = 0600
 )
 
 var (
@@ -54,6 +60,7 @@ var (
 	bucketJobMBs       = []byte("jobMBs")
 	bucketJobSecs      = []byte("jobSecs")
 	wipeDevDBOnInit    = true
+	forceBackups       = false
 )
 
 // Rec* variables are only exported for testing purposes (*** though they should
@@ -91,39 +98,105 @@ type db struct {
 	envcache             *lru.ARCCache
 	ch                   codec.Handle
 	updatingAfterJobExit int
+	backupsEnabled       bool
+	backupPath           string
+	backupMount          *muxfys.MuxFys
+	backingUp            bool
+	backupQueued         bool
+	backupFinal          bool
+	backupNotification   chan bool
+	slowBackups          bool // just for testing purposes
+	closed               bool
 	sync.RWMutex
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
 // doesn't exist or seems corrupted, we copy it from backup if that exists,
-// otherwise we start fresh. In development we delete any existing db and force
-// a fresh start.
+// otherwise we start fresh.
+//
+// dbBkFile can be an S3 url specified like: s3://[profile@]bucket/path/file
+// which will cause that s3 path to be mounted in the same directory as dbFile
+// and backups will be written there.
+//
+// In development we delete any existing db and force a fresh start. Backups
+// are also not carried out, so dbBkFile is ignored.
 func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, msg string, err error) {
-	if wipeDevDBOnInit && deployment == "development" {
+	var backupsEnabled bool
+	bkPath := dbBkFile
+	var fs *muxfys.MuxFys
+	if deployment == internal.Production || forceBackups {
+		backupsEnabled = true
+		if internal.InS3(dbBkFile) {
+			if deployment == internal.Development {
+				dbBkFile += "." + deployment
+			}
+			path := strings.TrimPrefix(dbBkFile, internal.S3Prefix)
+			pp := strings.Split(path, "@")
+			profile := "default"
+			if len(pp) == 2 {
+				profile = pp[0]
+				path = pp[1]
+			}
+			base := filepath.Base(path)
+			path = filepath.Dir(path)
+
+			mnt := filepath.Join(filepath.Dir(dbFile), ".db_bk_mount", path)
+			bkPath = filepath.Join(mnt, base)
+
+			var accessorConfig *muxfys.S3Config
+			accessorConfig, err = muxfys.S3ConfigFromEnvironment(profile, path)
+			if err != nil {
+				return
+			}
+			var accessor *muxfys.S3Accessor
+			accessor, err = muxfys.NewS3Accessor(accessorConfig)
+			if err != nil {
+				return
+			}
+			remoteConfig := &muxfys.RemoteConfig{
+				Accessor: accessor,
+				Write:    true,
+			}
+			cfg := &muxfys.Config{
+				Mount:   mnt,
+				Retries: 10,
+			}
+			fs, err = muxfys.New(cfg)
+			if err != nil {
+				return
+			}
+			err = fs.Mount(remoteConfig)
+			if err != nil {
+				return
+			}
+			fs.UnmountOnDeath()
+		}
+	}
+
+	if wipeDevDBOnInit && deployment == internal.Development {
 		os.Remove(dbFile)
-		os.Remove(dbBkFile)
+		os.Remove(bkPath)
 	}
 
 	var boltdb *bolt.DB
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
-		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) { //*** need to handle bk being on another machine, possibly an S3-style object store
-			boltdb, err = bolt.Open(dbFile, 0600, nil)
+		if _, err = os.Stat(bkPath); os.IsNotExist(err) {
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 			msg = "created new empty db file " + dbFile
 		} else {
-			// copy bk to main *** need to handle bk being in an object store
-			err = copyFile(dbBkFile, dbFile)
+			err = copyFile(bkPath, dbFile)
 			if err != nil {
 				return
 			}
-			boltdb, err = bolt.Open(dbFile, 0600, nil)
+			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 		}
 	} else {
-		boltdb, err = bolt.Open(dbFile, 0600, nil)
+		boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 		if err != nil {
-			// try the backup *** again, need to handle bk being elsewhere
+			// try the backup
 			if _, errbk := os.Stat(dbBkFile); errbk == nil {
-				boltdb, errbk = bolt.Open(dbBkFile, 0600, nil)
+				boltdb, errbk = bolt.Open(bkPath, dbFilePermission, nil)
 				if errbk == nil {
 					origerr := err
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -131,11 +204,11 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 					if err != nil {
 						return
 					}
-					err = copyFile(dbBkFile, dbFile)
+					err = copyFile(bkPath, dbFile)
 					if err != nil {
 						return
 					}
-					boltdb, err = bolt.Open(dbFile, 0600, nil)
+					boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
 			}
@@ -199,7 +272,17 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		return
 	}
 
-	dbstruct = &db{bolt: boltdb, envcache: envcache, ch: new(codec.BincHandle)}
+	dbstruct = &db{
+		bolt:               boltdb,
+		envcache:           envcache,
+		ch:                 new(codec.BincHandle),
+		backupsEnabled:     backupsEnabled,
+		backupPath:         bkPath,
+		backupNotification: make(chan bool),
+	}
+	if fs != nil {
+		dbstruct.backupMount = fs
+	}
 	return
 }
 
@@ -221,6 +304,8 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 // and returned in jobsToQueue. If the affected job was in the live bucket
 // (currently queued), it will be returned in the jobsToUpdate slice: you should
 // use queue methods to update the job in the queue.
+//
+// Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
@@ -362,6 +447,10 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 	// non-existent jobs based on lookups that shouldn't be there, they are
 	// silently skipped)
 
+	if err == nil && alreadyAdded != len(jobs) {
+		db.backgroundBackup()
+	}
+
 	return
 }
 
@@ -403,7 +492,7 @@ func (db *db) checkIfAdded(key string) (isInDB bool, err error) {
 // archiveJob deletes a job from the live bucket, and adds a new version of it
 // (with different properties) to the complete bucket. The key you supply must
 // be the key of the job you supply, or bad things will happen - no checking is
-// done!
+// done! A backgroundBackup() is triggered afterwards.
 func (db *db) archiveJob(key string, job *Job) (err error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -420,6 +509,9 @@ func (db *db) archiveJob(key string, job *Job) (err error) {
 		err := b.Put([]byte(key), encoded)
 		return err
 	})
+
+	db.backgroundBackup()
+
 	return
 }
 
@@ -427,6 +519,7 @@ func (db *db) archiveJob(key string, job *Job) (err error) {
 // added in error.
 func (db *db) deleteLiveJob(key string) {
 	db.remove(bucketJobsLive, key)
+	db.backgroundBackup()
 	//*** we're not removing the lookup entries from the bucket*TK buckets...
 }
 
@@ -923,7 +1016,108 @@ func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) (err error) {
 	return
 }
 
-// close shuts down the db, should be used prior to exiting
+// close shuts down the db, should be used prior to exiting. Ensures any
+// ongoing backgroundBackup() completes first (but does not wait for backup() to
+// complete).
 func (db *db) close() {
-	db.bolt.Close()
+	db.Lock()
+	defer db.Unlock()
+	if !db.closed {
+		db.closed = true
+
+		// before actually closing, wait for any ongoing backup to complete
+		if db.backingUp {
+			db.backupFinal = true
+			db.Unlock()
+			<-db.backupNotification
+			db.Lock()
+		}
+
+		db.bolt.Close()
+		if db.backupMount != nil {
+			db.backupMount.Unmount()
+		}
+	}
+}
+
+// backgroundBackup backs up the database to a file (the location given during
+// initDB()) in a goroutine, doing one backup at a time and queueing a further
+// backup if any other backup requests come in while a backup is running. Any
+// errors are silently ignored.
+func (db *db) backgroundBackup() {
+	db.Lock()
+	defer db.Unlock()
+	if db.closed || !db.backupsEnabled {
+		return
+	}
+	if db.backingUp {
+		db.backupQueued = true
+		return
+	}
+
+	db.backingUp = true
+	slowBackups := db.slowBackups
+	go func() {
+		if slowBackups {
+			// just for testing purposes
+			<-time.After(100 * time.Millisecond)
+		}
+
+		// create the new backup file with temp name
+		tmpBackupPath := db.backupPath + ".tmp"
+		err := db.bolt.View(func(tx *bolt.Tx) error {
+			return tx.CopyFile(tmpBackupPath, dbFilePermission)
+		})
+		// *** currently not logging the error message anywhere...
+
+		if slowBackups {
+			<-time.After(100 * time.Millisecond)
+		}
+
+		if err != nil {
+			// if it failed, delete any partial file that got made
+			os.Remove(tmpBackupPath)
+		} else {
+			// backup succeeded, move it over any old backup
+			os.Rename(tmpBackupPath, db.backupPath)
+		}
+
+		db.Lock()
+		db.backingUp = false
+
+		if db.backupFinal {
+			// close() has been called, don't do any more backups and tell
+			// close() we finished our backup
+			db.backupFinal = false
+			db.Unlock()
+			db.backupNotification <- true
+			return
+		}
+
+		if db.backupQueued {
+			db.backupQueued = false
+			db.Unlock()
+			db.backgroundBackup()
+		} else {
+			db.Unlock()
+		}
+	}()
+}
+
+// backup backs up the database to the given writer. Can be called at the same
+// time as an active backgroundBackup() or even another backup(). You will get
+// a consistent view of the database at the time you call this. NB: this can be
+// interrupted by calling db.close().
+func (db *db) backup(w io.Writer) error {
+	db.RLock()
+	if db.closed {
+		db.RUnlock()
+		return fmt.Errorf("database closed")
+	}
+	db.RUnlock()
+
+	return db.bolt.View(func(tx *bolt.Tx) error {
+		_, txErr := tx.WriteTo(w)
+		return txErr
+	})
 }

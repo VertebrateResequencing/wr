@@ -9,6 +9,6 @@ includes:
 excludes:
   - \.git
 script:
-  - go get github.com/Masterminds/glide
-  - glide -q install
-  - go build -tags netgo -ldflags "-X github.com/VertebrateResequencing/wr/cmd.wrVersion=`git describe --tags --always --long --dirty`"
+  - rm -fr vendor
+  - CGO_ENABLED=0 glide -q install
+  - CGO_ENABLED=0 go build -tags netgo -ldflags "-X github.com/VertebrateResequencing/wr/cmd.wrVersion=`git describe --tags --always --long --dirty`"

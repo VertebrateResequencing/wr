@@ -53,6 +53,13 @@ type reqChecker func(req *Requirements) error
 // have their own canCounter implementation.)
 type canCounter func(req *Requirements) (canCount int)
 
+// stateUpdaters are functions used by processQueue() to update any global state
+// that might have become invalid due to changes external to our own actions.
+// (We make use of this in the local struct so that other implementers of
+// scheduleri can embed local, use local's processQueue(), but have their own
+// stateUpdater implementation.)
+type stateUpdater func()
+
 // cmdRunners are functions used by processQueue() to actually run cmds.
 // (Their reason for being is the same as for canCounters.)
 type cmdRunner func(cmd string, req *Requirements) error
@@ -78,6 +85,8 @@ type local struct {
 	cleaned          bool
 	reqCheckFunc     reqChecker
 	canCountFunc     canCounter
+	stateUpdateFunc  stateUpdater
+	stateUpdateFreq  time.Duration
 	runCmdFunc       cmdRunner
 	cancelRunCmdFunc cancelCmdRunner
 	autoProcessing   bool
@@ -91,6 +100,10 @@ type ConfigLocal struct {
 	// Shell is the shell to use to run your commands with; 'bash' is
 	// recommended.
 	Shell string
+
+	// StateUpdateFrequency is the frequency at which to re-check the queue to
+	// see if anything can now run. 0 (default) is treated as 1 minute.
+	StateUpdateFrequency time.Duration
 }
 
 // jobs are what we store in our queue.
@@ -119,6 +132,11 @@ func (s *local) initialize(config interface{}) (err error) {
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
 	s.cancelRunCmdFunc = s.cancelRun
+	s.stateUpdateFunc = s.stateUpdate
+	s.stateUpdateFreq = s.config.StateUpdateFrequency
+	if s.stateUpdateFreq == 0 {
+		s.stateUpdateFreq = 1 * time.Minute
+	}
 
 	return
 }
@@ -196,6 +214,9 @@ func (s *local) reqCheck(req *Requirements) error {
 // processQueue gets the oldest job in the queue, sees if it's possible to run
 // it, does so if it is, otherwise returns the job to the queue.
 func (s *local) processQueue() error {
+	// first perform any global state update needed by the scheduler
+	s.stateUpdateFunc()
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -289,10 +310,10 @@ func (s *local) processQueue() error {
 						stopAuto = true
 					}
 				}
-			} else if err.Error() != "giving up waiting to spawn" {
-				// *** we shouldn't really log from a library call, but have no
-				// other way of letting the user know about these errors?...
-				log.Printf("jobqueue scheduler runCmd error: %s\n", err)
+			} else if err.Error() != standinNotNeeded {
+				// users are notified of relevant errors during runCmd; here we
+				// just debug log everything
+				s.debug("jobqueue scheduler runCmd error: %s\n", err)
 			}
 			s.mutex.Unlock()
 			if stopAuto {
@@ -328,7 +349,7 @@ func (s *local) canCount(req *Requirements) (canCount int) {
 // runCmd runs the command, kills it if it goes much over RAM or time limits.
 // NB: we only return an error if we can't start the cmd, not if the command
 // fails (schedule() only guarantees that the cmds are run count times, not that
-// they are /successful/ that many times).
+// they run /successful/ that many times).
 func (s *local) runCmd(cmd string, req *Requirements) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd)
 	err := ec.Start()
@@ -365,6 +386,12 @@ func (s *local) cancelRun(cmd string, cancelCount int) {
 	return
 }
 
+// stateUpdate in the local scheduler is a no-op, since there currently isn't
+// any state out of our control we worry about.
+func (s *local) stateUpdate() {
+	return
+}
+
 // startAutoProcessing begins periodic running of processQueue(). Normally
 // processQueue is only called when cmds are added or complete. Calling it
 // periodically as well means we are responsive to external events freeing up
@@ -379,7 +406,7 @@ func (s *local) startAutoProcessing() {
 
 	s.stopAuto = make(chan bool)
 	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
+		ticker := time.NewTicker(s.stateUpdateFreq)
 		for {
 			select {
 			case <-ticker.C:
@@ -411,7 +438,7 @@ func (s *local) stopAutoProcessing() {
 }
 
 // busy returns true if there's anything in our queue or we are still running
-// any cmd
+// any cmd.
 func (s *local) busy() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -424,7 +451,23 @@ func (s *local) busy() bool {
 	return true
 }
 
-// cleanup destroys our internal queue
+// hostToID always returns an empty string, since we're not in the cloud.
+func (s *local) hostToID(host string) string {
+	return ""
+}
+
+// setMessageCallBack does nothing at the moment, since we don't generate any
+// messages for the user.
+func (s *local) setMessageCallBack(cb MessageCallBack) {
+	return
+}
+
+// setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
+func (s *local) setBadServerCallBack(cb BadServerCallBack) {
+	return
+}
+
+// cleanup destroys our internal queue.
 func (s *local) cleanup() {
 	s.stopAutoProcessing()
 	s.mutex.Lock()

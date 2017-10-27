@@ -1,16 +1,16 @@
 hash: d24970895baf6afba8742d50169a04ba9eb198b8bac51bff30a5c2843e274b18
-updated: 2017-08-11T15:48:01.566871539+01:00
+updated: 2017-09-20T13:06:09.587437138+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: f4415fafc5619dd75599a54a7c91fb3948ad58bd
 - name: github.com/boltdb/bolt
-  version: 2f1ce7a837dcb8da3ec595b1dac9d0632f0f99e8
+  version: fa5367d20c994db73282594be0146ab221657943
 - name: github.com/BurntSushi/toml
   version: a368813c5e648fee92e5f6c30e3944ff9d5e8895
 - name: github.com/dgryski/go-farm
   version: e2d0fe22b456fa0a35cd883ba355ecfcf1881490
 - name: github.com/go-ini/ini
-  version: 3d73f4b845efdf9989fffd4b4e562727744a34ba
+  version: c787282c39ac1fc618827141a1f762240def08a3
 - name: github.com/go-mangos/mangos
   version: e3181ec4a2a556d80619da0f841e35c2007733af
   subpackages:
@@ -24,7 +24,7 @@ imports:
 - name: github.com/go-stack/stack
   version: 817915b46b97fd7bb80e8ab6b69f01a53ac3eebf
 - name: github.com/gophercloud/gophercloud
-  version: 6815b423bf0c148daf04b7e4c5bf9a299aafb0aa
+  version: 2c4569ba8b3cbb36ed983e28e9e524d9f62eb6c2
   repo: https://github.com/sb10/gophercloud.git
   subpackages:
   - openstack
@@ -45,11 +45,11 @@ imports:
   - openstack/utils
   - pagination
 - name: github.com/gorilla/websocket
-  version: a69d9f6de432e2c6b296a947d8a5ee88f68522cf
+  version: 6f34763140ed8887aed6a044912009832b4733d7
 - name: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
-  version: 204b45dba899dfa147235c255908236d5fde2d32
+  version: bd6c960a60d61508688f5ead6b2f80fc2e41980a
   subpackages:
   - fuse
   - fuse/nodefs
@@ -66,21 +66,21 @@ imports:
 - name: github.com/inconshreveable/mousetrap
   version: 76626ae9c91c4f2a10f34cad8ce83ea42c93bb75
 - name: github.com/jinzhu/configor
-  version: ff2ac2b1ce3d687c3a1da0d2847fbce42524a7f3
+  version: 6c409036e1aea1420f2e1a196f95c0e3c4aef091
 - name: github.com/jpillora/backoff
-  version: 06c7a16c845dc8e0bf575fafeeca0f5462f5eb4d
+  version: 8eab2debe79d12b7bd3d10653910df25fa9552ba
 - name: github.com/kardianos/osext
   version: ae77be60afb1dcacde03767a8c37337fad28ac14
 - name: github.com/kr/fs
   version: 2788f0dbd16903de03cb8186e5c7d97b69ad387b
 - name: github.com/mattn/go-colorable
-  version: 6df6d4d004b64986bbb0d1b25945f42b44787e90
+  version: ad5389df28cdac544c99bd7b9161a0b5b6ca9d1b
 - name: github.com/mattn/go-isatty
   version: fc9e8d8ef48496124e79ae0df75490096eccf6fe
 - name: github.com/minio/go-homedir
   version: 21304a94172ae3a09dee2cd86a12fb6f842138c7
 - name: github.com/minio/minio-go
-  version: 6871a5431f3bbcc282281554067f1afc06436187
+  version: 0e3126e7d5f208566504f8ec9c9b0e0752e7d1db
   subpackages:
   - pkg/credentials
   - pkg/encrypt
@@ -91,9 +91,9 @@ imports:
 - name: github.com/mitchellh/go-homedir
   version: b8bc1bf767474819792c23f32d8286a45736f1c6
 - name: github.com/pkg/errors
-  version: c605e284fe17294bda444b34710735b29d1a9d90
+  version: 2b3a18b5f0fb6b4f9190549597d3f962c02bc5eb
 - name: github.com/pkg/sftp
-  version: 1a91f318a0be84de50afcf22d3b3d78bfe32025c
+  version: 98203f5a8333288eb3163b7c667d4260fe1333e9
 - name: github.com/ricochet2200/go-disk-usage
   version: f0d1b743428fc09792f93233d9412f89f88fa2ab
   subpackages:
@@ -107,7 +107,7 @@ imports:
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: 3aa2ffab12a1852644f6d33cd782f877272bf305
+  version: 4c9fd1f200a4b10915b383ff2a5bb401b6710e87
   subpackages:
   - cpu
   - host
@@ -118,50 +118,48 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: b26b538f693051ac6518e65672de3144ce3fbedc
+  version: b78744579491c1ceeaaa3b40205e56b0591b93a3
 - name: github.com/spf13/pflag
-  version: e57e3eeb33f795204c1ca35f56c44f83227c6e66
+  version: 7aff26db30c1be810f9de5038ec5ef96ac41fd7c
 - name: github.com/StackExchange/wmi
   version: ea383cf3ba6ec950874b8486cd72356d007c768f
 - name: github.com/ugorji/go
-  version: 5efa3251c7f7d05e5d9704a69a984ec9f1386a40
+  version: 54210f4e076c57f351166f0ed60e67d3fca57a36
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: 3cf15ac6ed153b2c8b8e2a843b0839154566576a
+  version: 9e1a7df7db4443edff325e9b29ea1002990b7748
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: b176d7def5d71bdd214203491f89843ed217f420
+  version: 7d9177d70076375b9a59c8fde23d52d9c4a7ecd5
   subpackages:
   - curve25519
   - ed25519
   - ed25519/internal/edwards25519
   - ssh
 - name: golang.org/x/sys
-  version: e42485b6e20ae7d2304ec72e535b103ed350cc02
+  version: b6e1ae21643682ce023deb8d152024597b0e9bb4
   subpackages:
   - unix
   - windows
-- name: gopkg.in/yaml.v1
-  version: 9f9df34309c04878acc86042b16630b0f696e1de
+- name: gopkg.in/yaml.v2
+  version: eb3733d160e74a9c7e442f435eb3bea458e1d19f
 testImports:
 - name: github.com/gopherjs/gopherjs
-  version: 2b1d432c8a82c9bff0b0baffaeb3ec6e92974112
+  version: b40cd48c38f9a18eb3db20d163bad78de12cf0b7
   subpackages:
   - js
 - name: github.com/jtolds/gls
   version: 77f18212c9c7edc9bd6a33d383a7b545ce62f064
 - name: github.com/smartystreets/assertions
-  version: 1540c14c9f1bd1abeba90f29762a4c6e50582303
+  version: 9c0ea8acbc1d8ad689f9e6fe0c1fa5838e0cabc2
   subpackages:
   - internal/go-render/render
   - internal/oglematchers
 - name: github.com/smartystreets/goconvey
-  version: 9e8dc3f972df6c8fcc0375ef492c24d0bb204857
+  version: e5b2b7c9111590d019a696c7800593f666e1a7f4
   subpackages:
   - convey
   - convey/gotest
   - convey/reporting
-- name: github.com/smartystreets/logging
-  version: ac3a674540761aa0b4382094ba4795f917e85c7f

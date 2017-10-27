@@ -19,11 +19,13 @@
 package cloud
 
 import (
+	"fmt"
 	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,9 +175,10 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
+					defer server.Destroy()
 					err = server.WaitUntilReady([]byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
-					ok := server.Alive()
+					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 
 					n := server.HasSpaceFor(1, 0, 0)
@@ -231,9 +234,45 @@ func TestOpenStack(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "uploadable content")
 						So(stderr, ShouldBeBlank)
-					})
 
-					server.Destroy()
+						Convey("You can run multiple commands at once and they get cancelled if the server silently locks up", func() {
+							// first find out our network interface so we
+							// can later simulate a server lock up by killing
+							// the network
+							intf, _, err := server.RunCmd("route | grep '^default' | grep -o '[^ ]*$'", false)
+							So(err, ShouldBeNil)
+							intf = strings.TrimSpace(intf)
+							So(intf, ShouldNotBeBlank)
+
+							num := 3
+							results := make(chan bool, num)
+							for i := 1; i <= num; i++ {
+								go func(i int) {
+									cmd := "sleep 5"
+									if i == num {
+										cmd = fmt.Sprintf("sudo ifconfig %s down", intf)
+										go func() {
+											<-time.After(2 * time.Second)
+											alive := server.Alive(true)
+											if !alive {
+												server.Destroy()
+											}
+										}()
+									}
+									_, _, err := server.RunCmd(cmd, false)
+									if err != nil {
+										results <- true
+									} else {
+										results <- false
+									}
+								}(i)
+							}
+
+							for i := 1; i <= num; i++ {
+								So(<-results, ShouldBeTrue)
+							}
+						})
+					})
 				})
 
 				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
@@ -241,7 +280,7 @@ func TestOpenStack(t *testing.T) {
 					So(err, ShouldBeNil)
 					err = server.WaitUntilReady([]byte("#!/bin/bash\nfalse"))
 					So(err, ShouldNotBeNil)
-					ok := server.Alive()
+					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
 					server.Destroy()
@@ -323,7 +362,7 @@ func TestOpenStack(t *testing.T) {
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					ok := server.Alive()
+					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 
 					stdout, _, err := server.RunCmd("df -h .", false)

@@ -26,10 +26,20 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const (
 	configCommonBasename = ".wr_config.yml"
+
+	// S3Prefix is the prefix used by S3 paths
+	S3Prefix = "s3://"
+
+	// Production is the name of the main deployment
+	Production = "production"
+
+	// Development is the name of the development deployment, used during testing
+	Development = "development"
 )
 
 // Config holds the configuration options for jobqueue server and client
@@ -94,7 +104,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	}
 
 	// if deployment not set on the command line
-	if deployment != "development" && deployment != "production" {
+	if deployment != Development && deployment != Production {
 		deployment = DefaultDeployment()
 	}
 	os.Setenv("CONFIGOR_ENV", deployment)
@@ -151,8 +161,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	if !filepath.IsAbs(config.ManagerDbFile) {
 		config.ManagerDbFile = filepath.Join(config.ManagerDir, config.ManagerDbFile)
 	}
-	if !filepath.IsAbs(config.ManagerDbBkFile) {
-		//*** we need to support this being on a different machine, possibly on an S3-style object store
+	if !IsRemote(config.ManagerDbBkFile) && !filepath.IsAbs(config.ManagerDbBkFile) {
 		config.ManagerDbBkFile = filepath.Join(config.ManagerDir, config.ManagerDbBkFile)
 	}
 
@@ -168,6 +177,16 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	return config
 }
 
+// IsProduction tells you if we're in the production deployment.
+func (c Config) IsProduction() bool {
+	return c.Deployment == Production
+}
+
+// IsDevelopment tells you if we're in the development deployment.
+func (c Config) IsDevelopment() bool {
+	return c.Deployment == Development
+}
+
 // DefaultDeployment works out the default deployment.
 func DefaultDeployment() (deployment string) {
 	pwd, err := os.Getwd()
@@ -179,15 +198,15 @@ func DefaultDeployment() (deployment string) {
 	// if we're in the git repository
 	if _, err := os.Stat(filepath.Join(pwd, "jobqueue", "server.go")); err == nil {
 		// force development
-		deployment = "development"
+		deployment = Development
 	} else {
 		// default to production
-		deployment = "production"
+		deployment = Production
 
 		// and allow env var to override with development
 		if deploymentEnv := os.Getenv("WR_DEPLOYMENT"); deploymentEnv != "" {
-			if deploymentEnv == "development" {
-				deployment = "development"
+			if deploymentEnv == Development {
+				deployment = Development
 			}
 		}
 	}
@@ -229,7 +248,7 @@ func calculatePort(deployment string, ptype string) (port string) {
 		os.Exit(1)
 	}
 
-	if deployment == "development" {
+	if deployment == Development {
 		pn += 2
 	}
 	if ptype == "webi" {
@@ -239,4 +258,17 @@ func calculatePort(deployment string, ptype string) (port string) {
 	// it's easier for the things that use this port number if it's a string
 	// (because it's used as part of a connection string)
 	return strconv.Itoa(pn)
+}
+
+// InS3 tells you if a path is to a file in S3.
+func InS3(path string) bool {
+	return strings.HasPrefix(path, S3Prefix)
+}
+
+// IsRemote tells you if a path is to a remote file system or object store,
+// based on its URI.
+func IsRemote(path string) bool {
+	// (right now we only support S3, but IsRemote is to future-proof us and
+	// avoid calling InS3() directly)
+	return InS3(path)
 }

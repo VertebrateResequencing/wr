@@ -50,6 +50,7 @@ type Flavor struct {
 // methods that let you keep track of how you use that server.
 type Server struct {
 	ID                string
+	Name              string // ought to correspond to the hostname
 	IP                string // ip address that you could SSH to
 	OS                string // the name of the Operating System image
 	UserName          string // the username needed to log in to the server
@@ -65,10 +66,14 @@ type Server struct {
 	onDeathrow        bool
 	mutex             sync.RWMutex
 	cancelDestruction chan bool
+	cancelRunCmd      map[int]chan bool
+	cancelID          int
 	destroyed         bool
 	provider          *Provider
 	sshclient         *ssh.Client
 	location          *time.Location
+	goneBad           bool
+	permanentProblem  string
 	debugMode         bool
 }
 
@@ -197,6 +202,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 				ssh.PublicKeys(signer),
 			},
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
+			Timeout:         5 * time.Second,
 		}
 
 		// dial in to the server, allowing certain errors that indicate that the
@@ -243,38 +249,117 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 	return s.sshclient, nil
 }
 
+// SSHSession returns an ssh.Session object that could be used to do things via
+// ssh on the server. Will time out and return an error if the session can't be
+// created within 5s.
+func (s *Server) SSHSession() (*ssh.Session, error) {
+	sshClient, err := s.SSHClient()
+	if err != nil {
+		s.debug("ssh to existing server %s could not be established: %s\n", s.ID, err)
+		return nil, fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
+	}
+
+	// *** even though sshclient has a timeout, it still hangs forever if we
+	// try to get a NewSession to a dead server, so we implement our own 5s
+	// timeout here
+
+	done := make(chan error, 1)
+	worked := make(chan bool, 1)
+	sessionCh := make(chan *ssh.Session)
+	go func() {
+		select {
+		case <-time.After(5 * time.Second):
+			s.debug("ssh to existing server %s timed out\n", s.ID)
+			done <- fmt.Errorf("cloud SSHSession() timed out")
+		case <-worked:
+			return
+		}
+	}()
+	go func() {
+		session, err := sshClient.NewSession()
+		if err != nil {
+			s.debug("ssh to existing server %s failed: %s\n", s.ID, err)
+			done <- fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
+			return
+		}
+		worked <- true
+		done <- nil
+		sessionCh <- session
+	}()
+
+	err = <-done
+	if err != nil {
+		return nil, err
+	}
+	return <-sessionCh, nil
+}
+
 // RunCmd runs the given command on the server, optionally in the background.
 // You get the command's STDOUT and STDERR as a strings.
 func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
-	sshClient, err := s.SSHClient()
-	if err != nil {
-		return
-	}
-
 	// create a session
-	session, err := sshClient.NewSession()
+	session, err := s.SSHSession()
 	if err != nil {
 		return
 	}
 	defer session.Close()
 
-	// run the command, returning stdout
-	if background {
-		cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
-	}
-	var o bytes.Buffer
-	var e bytes.Buffer
-	session.Stdout = &o
-	session.Stderr = &e
-	err = session.Run(cmd)
-	if o.Len() > 0 {
-		stdout = o.String()
-	}
-	if e.Len() > 0 {
-		stderr = e.String()
-	}
-	if err != nil {
-		err = fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, err.Error())
+	// if the sever is destroyed while running, arrange to immediately return an
+	// error
+	s.mutex.Lock()
+	cancelID := s.cancelID
+	s.cancelID = cancelID + 1
+	cancelCh := make(chan bool, 1)
+	s.cancelRunCmd[cancelID] = cancelCh
+	done := make(chan error, 1)
+	outCh := make(chan string, 1)
+	errCh := make(chan string, 1)
+	finished := make(chan bool, 1)
+	go func() {
+		select {
+		case <-cancelCh:
+			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
+		case <-finished:
+			// end select
+		}
+		s.mutex.Lock()
+		close(cancelCh)
+		delete(s.cancelRunCmd, cancelID)
+		s.mutex.Unlock()
+	}()
+	go func() {
+		// run the command, returning stdout
+		if background {
+			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
+		}
+		var o bytes.Buffer
+		var e bytes.Buffer
+		session.Stdout = &o
+		session.Stderr = &e
+		err = session.Run(cmd)
+		finished <- true
+		if o.Len() > 0 {
+			outCh <- o.String()
+		} else {
+			outCh <- ""
+		}
+		if e.Len() > 0 {
+			errCh <- e.String()
+		} else {
+			errCh <- ""
+		}
+		if err != nil {
+			done <- fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, err.Error())
+		} else {
+			done <- nil
+		}
+	}()
+	s.mutex.Unlock()
+
+	err = <-done
+	if err == nil {
+		stdout = <-outCh
+		stderr = <-errCh
 	}
 	return
 }
@@ -482,6 +567,51 @@ func (s *Server) MkDir(dest string) (err error) {
 	return
 }
 
+// GoneBad lets you mark a server as having something wrong with it, so you can
+// avoid using it in the future, until the problems are confirmed. (At that
+// point you'd either Destroy() it, or if this was a false alarm, call
+// NotBad()).
+//
+// The optional permanentProblem arg (some explanatory error message) makes it
+// such that NotBad() will have no effect. For use when the server is Alive()
+// but you just never want to re-use this server. The only reason you don't just
+// Destroy() it is that you want to allow an end user to investigate the server
+// manually.
+func (s *Server) GoneBad(permanentProblem ...string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.goneBad = true
+
+	if len(permanentProblem) == 1 {
+		s.permanentProblem = permanentProblem[0]
+	}
+}
+
+// NotBad lets you change your mind about a server you called GoneBad() on.
+// (Unless GoneBad() was called with a permanentProblem.)
+func (s *Server) NotBad() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.permanentProblem == "" {
+		s.goneBad = false
+	}
+}
+
+// IsBad tells you if GoneBad() has been called (more recently than NotBad()).
+func (s *Server) IsBad() bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.goneBad
+}
+
+// PermanentProblem tells you if GoneBad("problem message") has been called,
+// returning that reason the server is not usable.
+func (s *Server) PermanentProblem() string {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.permanentProblem
+}
+
 // Destroy immediately destroys the server.
 func (s *Server) Destroy() error {
 	s.mutex.Lock()
@@ -499,6 +629,19 @@ func (s *Server) Destroy() error {
 		s.debug("server %s Destroy(), cancelled auto-destruction\n", s.ID)
 	}
 
+	// if the user is in the middle of RunCmd(), have those return an error now
+	for _, ch := range s.cancelRunCmd {
+		ch <- true
+	}
+
+	s.destroyed = true
+	s.goneBad = true
+
+	// for testing purposes, we anticipate that provider isn't set
+	if s.provider == nil {
+		return fmt.Errorf("provider not set")
+	}
+
 	err := s.provider.DestroyServer(s.ID)
 	s.debug("server %s Destroy() called DestroyServer() and got err %s\n", s.ID, err)
 	if err != nil {
@@ -508,7 +651,6 @@ func (s *Server) Destroy() error {
 		}
 	}
 
-	s.destroyed = true
 	return nil
 }
 
@@ -522,13 +664,30 @@ func (s *Server) Destroyed() bool {
 }
 
 // Alive tells you if a server is usable. It first does the same check as
-// Destroyed() before calling out to the provider.
-func (s *Server) Alive() bool {
+// Destroyed() before calling out to the provider. Supplying an optional boolean
+// will double check the server to make sure it can be ssh'd to.
+func (s *Server) Alive(checkSSH ...bool) bool {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	if s.destroyed {
+		s.mutex.Unlock()
 		return false
 	}
 	ok, _ := s.provider.CheckServer(s.ID)
-	return ok
+	if !ok {
+		s.mutex.Unlock()
+		return false
+	}
+	s.mutex.Unlock()
+
+	if len(checkSSH) == 1 && checkSSH[0] {
+		// provider may claim the server is fine, but it might not really be
+		// usable; confirm we can still ssh to it
+		session, err := s.SSHSession()
+		if err != nil {
+			return false
+		}
+		session.Close()
+	}
+
+	return true
 }

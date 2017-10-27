@@ -31,39 +31,54 @@ import (
 )
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.
-// The possible Requests are:
-// current = get count info for every job in every RepGroup in the cmds queue.
-// details = get example job details for jobs in the RepGroup, grouped by having
-//           the same Status, Exitcode and FailReason.
-// retry = retry the buried jobs with the given RepGroup, ExitCode and FailReason.
 type jstatusReq struct {
-	Key        string   // sending Key means "give me detailed info about this single job"
-	RepGroup   string   // sending RepGroup means "send me limited info about the jobs with this RepGroup"
-	State      JobState // A Job.State to limit RepGroup by
+	// possible Requests are:
+	// current = get count info for every job in every RepGroup in the cmds
+	//           queue.
+	// details = get example job details for jobs in the RepGroup, grouped by
+	//           having the same Status, Exitcode and FailReason.
+	// retry = retry buried jobs.
+	// remove = remove non-running jobs.
+	// kill = kill running jobs or confirm lost jobs are dead.
+	// confirmBadServer = confirm that the server with ID ServerID is bad.
+	// dismissMsg = dismiss the given Msg.
+	Request string
+
+	// sending Key means "give me detailed info about this single job", and
+	// modifies retry, remove and kill to only work on this job
+	Key string
+
+	// sending RepGroup means "send me limited info about the jobs with this
+	// RepGroup", and modifies retry, remove and kill to work on all jobs with
+	// the given RepGroup, ExitCode and FailReason
+	RepGroup string
+
+	State      JobState // A Job.State to limit RepGroup by in details mode
 	Exitcode   int
 	FailReason string
-	All        bool // If false, retry mode will act on a single random matching job, instead of all of them
-	Request    string
+	ServerID   string // required argument for confirmBadServer
+	Msg        string // required argument for dismissMsg
 }
 
 // jstatus is the job info we send to the status webpage (only real difference
-// to Job is that some of the values are converted to easy-to-display forms ***
-// not really sure if we really need this and should just give the webpage Jobs
-// directly instead).
+// to Job is that some of the values are converted to easy-to-display forms).
 type jstatus struct {
-	Key           string
-	RepGroup      string
-	DepGroups     []string
-	Dependencies  []string
-	Cmd           string
-	State         JobState
-	Cwd           string
-	CwdBase       string
-	HomeChanged   bool
-	Behaviours    string
-	Mounts        string
-	ExpectedRAM   int
-	ExpectedTime  float64
+	Key          string
+	RepGroup     string
+	DepGroups    []string
+	Dependencies []string
+	Cmd          string
+	State        JobState
+	Cwd          string
+	CwdBase      string
+	HomeChanged  bool
+	Behaviours   string
+	Mounts       string
+	// ExpectedRAM is in Megabytes.
+	ExpectedRAM int
+	// ExpectedTime is in seconds.
+	ExpectedTime float64
+	// RequestedDisk is in Gigabytes.
 	RequestedDisk int
 	Cores         int
 	PeakRAM       int
@@ -72,6 +87,8 @@ type jstatus struct {
 	FailReason    string
 	Pid           int
 	Host          string
+	HostID        string
+	HostIP        string
 	Walltime      float64
 	CPUtime       float64
 	Started       int64
@@ -173,55 +190,6 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				}
 
 				switch {
-				case req.Key != "":
-					jobs, _, errstr := s.getJobsByKeys(q, []string{req.Key}, true, true)
-					if errstr == "" && len(jobs) == 1 {
-						stderr, _ := jobs[0].StdErr()
-						stdout, _ := jobs[0].StdOut()
-						// env, _ := jobs[0].Env()
-						var cwdLeaf string
-						if jobs[0].ActualCwd != "" {
-							cwdLeaf, _ = filepath.Rel(jobs[0].Cwd, jobs[0].ActualCwd)
-							cwdLeaf = "/" + cwdLeaf
-						}
-						status := jstatus{
-							Key:           jobs[0].key(),
-							RepGroup:      jobs[0].RepGroup,
-							DepGroups:     jobs[0].DepGroups,
-							Dependencies:  jobs[0].Dependencies.Stringify(),
-							Cmd:           jobs[0].Cmd,
-							State:         jobs[0].State,
-							CwdBase:       jobs[0].Cwd,
-							Cwd:           cwdLeaf,
-							HomeChanged:   jobs[0].ChangeHome,
-							Behaviours:    jobs[0].Behaviours.String(),
-							Mounts:        jobs[0].MountConfigs.String(),
-							ExpectedRAM:   jobs[0].Requirements.RAM,
-							ExpectedTime:  jobs[0].Requirements.Time.Seconds(),
-							RequestedDisk: jobs[0].Requirements.Disk,
-							Cores:         jobs[0].Requirements.Cores,
-							PeakRAM:       jobs[0].PeakRAM,
-							Exited:        jobs[0].Exited,
-							Exitcode:      jobs[0].Exitcode,
-							FailReason:    jobs[0].FailReason,
-							Pid:           jobs[0].Pid,
-							Host:          jobs[0].Host,
-							Walltime:      jobs[0].WallTime().Seconds(),
-							CPUtime:       jobs[0].CPUtime.Seconds(),
-							Started:       jobs[0].StartTime.Unix(),
-							Ended:         jobs[0].EndTime.Unix(),
-							StdErr:        stderr,
-							StdOut:        stdout,
-							// Env:           env,
-							Attempts: jobs[0].Attempts,
-						}
-						writeMutex.Lock()
-						err = conn.WriteJSON(status)
-						writeMutex.Unlock()
-						if err != nil {
-							break
-						}
-					}
 				case req.Request != "":
 					switch req.Request {
 					case "current":
@@ -254,6 +222,19 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 								break
 							}
 						}
+
+						// also send details of dead servers
+						for _, bs := range s.getBadServers() {
+							s.badServerCaster.Send(bs)
+						}
+
+						// and of scheduler messages
+						s.simutex.RLock()
+						for _, si := range s.schedIssues {
+							s.schedCaster.Send(si)
+						}
+						s.simutex.RUnlock()
+
 						writeMutex.Unlock()
 						if failed {
 							break
@@ -267,46 +248,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							writeMutex.Lock()
 							failed := false
 							for _, job := range jobs {
-								stderr, _ := job.StdErr()
-								stdout, _ := job.StdOut()
-								// env, _ := job.Env()
-								var cwdLeaf string
-								if job.ActualCwd != "" {
-									cwdLeaf, _ = filepath.Rel(job.Cwd, job.ActualCwd)
-									cwdLeaf = "/" + cwdLeaf
-								}
-								status := jstatus{
-									Key:           job.key(),
-									RepGroup:      req.RepGroup, // not job.RepGroup, since we want to return the group the user asked for, not the most recent group the job was made for
-									DepGroups:     job.DepGroups,
-									Dependencies:  job.Dependencies.Stringify(),
-									Cmd:           job.Cmd,
-									State:         job.State,
-									CwdBase:       job.Cwd,
-									Cwd:           cwdLeaf,
-									HomeChanged:   job.ChangeHome,
-									Behaviours:    job.Behaviours.String(),
-									Mounts:        job.MountConfigs.String(),
-									ExpectedRAM:   job.Requirements.RAM,
-									ExpectedTime:  job.Requirements.Time.Seconds(),
-									RequestedDisk: job.Requirements.Disk,
-									Cores:         job.Requirements.Cores,
-									PeakRAM:       job.PeakRAM,
-									Exited:        job.Exited,
-									Exitcode:      job.Exitcode,
-									FailReason:    job.FailReason,
-									Pid:           job.Pid,
-									Host:          job.Host,
-									Walltime:      job.WallTime().Seconds(),
-									CPUtime:       job.CPUtime.Seconds(),
-									Started:       job.StartTime.Unix(),
-									Ended:         job.EndTime.Unix(),
-									Attempts:      job.Attempts,
-									Similar:       job.Similar,
-									StdErr:        stderr,
-									StdOut:        stdout,
-									// Env:           env,
-								}
+								status := jobToStatus(job)
+								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
 								err = conn.WriteJSON(status)
 								if err != nil {
 									failed = true
@@ -319,72 +262,78 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							}
 						}
 					case "retry":
-						s.rpl.RLock()
-						for key := range s.rpl.lookup[req.RepGroup] {
-							item, err := q.Get(key)
+						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateBury})
+						for _, job := range jobs {
+							err := q.Kick(job.key())
 							if err != nil {
-								break
+								continue
 							}
-							stats := item.Stats()
-							if stats.State == queue.ItemStateBury {
-								job := item.Data.(*Job)
-								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									err := q.Kick(key)
-									if err != nil {
-										break
-									}
-									job.UntilBuried = job.Retries + 1
-									if !req.All {
-										break
-									}
-								}
-							}
+							job.UntilBuried = job.Retries + 1
 						}
-						s.rpl.RUnlock()
 					case "remove":
-						s.rpl.RLock()
+						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						var toDelete []string
-						for key := range s.rpl.lookup[req.RepGroup] {
-							item, err := q.Get(key)
-							if err != nil {
-								break
-							}
-							stats := item.Stats()
-							if stats.State == queue.ItemStateBury || stats.State == queue.ItemStateDelay || stats.State == queue.ItemStateDependent || stats.State == queue.ItemStateReady {
-								job := item.Data.(*Job)
-								if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
-									// we can't allow the removal of jobs that
-									// have dependencies, as *queue would regard
-									// that as satisfying the dependency and
-									// downstream jobs would start
-									hasDeps, err := q.HasDependents(key)
-									if err != nil || hasDeps {
-										continue
-									}
+						for _, job := range jobs {
+							key := job.key()
 
-									err = q.Remove(key)
-									if err != nil {
-										break
-									}
-									if err == nil {
-										s.db.deleteLiveJob(key)
-										toDelete = append(toDelete, key)
-										if stats.State == queue.ItemStateDelay || stats.State == queue.ItemStateReady {
-											s.decrementGroupCount(job.schedulerGroup, q)
-										}
-									}
-									if !req.All {
-										break
-									}
-								}
+							// we can't allow the removal of jobs that have
+							// dependencies, as *queue would regard that as
+							// satisfying the dependency and downstream jobs
+							// would start
+							hasDeps, err := q.HasDependents(key)
+							if err != nil || hasDeps {
+								continue
+							}
+
+							err = q.Remove(key)
+							if err != nil {
+								continue
+							}
+							s.db.deleteLiveJob(key)
+							toDelete = append(toDelete, key)
+							if job.State == JobStateReady {
+								s.decrementGroupCount(job.schedulerGroup, q)
 							}
 						}
+						s.rpl.Lock()
 						for _, key := range toDelete {
 							delete(s.rpl.lookup[req.RepGroup], key)
 						}
-						s.rpl.RUnlock()
+						s.rpl.Unlock()
+					case "kill":
+						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateRun})
+						for _, job := range jobs {
+							s.killJob(q, job.key())
+						}
+					case "confirmBadServer":
+						if req.ServerID != "" {
+							s.bsmutex.Lock()
+							server := s.badServers[req.ServerID]
+							delete(s.badServers, req.ServerID)
+							s.bsmutex.Unlock()
+							if server != nil && server.IsBad() {
+								server.Destroy()
+							}
+						}
+					case "dismissMsg":
+						if req.Msg != "" {
+							s.simutex.Lock()
+							delete(s.schedIssues, req.Msg)
+							s.simutex.Unlock()
+						}
 					default:
 						continue
+					}
+				case req.Key != "":
+					jobs, _, errstr := s.getJobsByKeys(q, []string{req.Key}, true, true)
+					if errstr == "" && len(jobs) == 1 {
+						status := jobToStatus(jobs[0])
+						writeMutex.Lock()
+						err = conn.WriteJSON(status)
+						writeMutex.Unlock()
+						if err != nil {
+							break
+						}
 					}
 				default:
 					continue
@@ -392,7 +341,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 			}
 		}(conn)
 
-		// go routine to push changes to the client
+		// go routines to push changes to the client
 		go func(conn *websocket.Conn) {
 			// log panics and die
 			defer s.logPanic("jobqueue websocket status updating", true)
@@ -408,7 +357,123 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 			}
 			statusReceiver.Close()
 		}(conn)
+
+		go func(conn *websocket.Conn) {
+			defer s.logPanic("jobqueue websocket bad server updating", true)
+			badserverReceiver := s.badServerCaster.Join()
+			for server := range badserverReceiver.In {
+				writeMutex.Lock()
+				err := conn.WriteJSON(server)
+				writeMutex.Unlock()
+				if err != nil {
+					break
+				}
+			}
+			badserverReceiver.Close()
+		}(conn)
+
+		go func(conn *websocket.Conn) {
+			defer s.logPanic("jobqueue websocket scheduler issue updating", true)
+			schedIssueReceiver := s.schedCaster.Join()
+			for si := range schedIssueReceiver.In {
+				writeMutex.Lock()
+				err := conn.WriteJSON(si)
+				writeMutex.Unlock()
+				if err != nil {
+					break
+				}
+			}
+			schedIssueReceiver.Close()
+		}(conn)
 	}
+}
+
+func jobToStatus(job *Job) jstatus {
+	stderr, _ := job.StdErr()
+	stdout, _ := job.StdOut()
+	// env, _ := job.Env()
+	var cwdLeaf string
+	job.RLock()
+	defer job.RUnlock()
+	if job.ActualCwd != "" {
+		cwdLeaf, _ = filepath.Rel(job.Cwd, job.ActualCwd)
+		cwdLeaf = "/" + cwdLeaf
+	}
+	state := job.State
+	if state == JobStateRunning && job.Lost {
+		state = JobStateLost
+	}
+	return jstatus{
+		Key:           job.key(),
+		RepGroup:      job.RepGroup,
+		DepGroups:     job.DepGroups,
+		Dependencies:  job.Dependencies.Stringify(),
+		Cmd:           job.Cmd,
+		State:         state,
+		CwdBase:       job.Cwd,
+		Cwd:           cwdLeaf,
+		HomeChanged:   job.ChangeHome,
+		Behaviours:    job.Behaviours.String(),
+		Mounts:        job.MountConfigs.String(),
+		ExpectedRAM:   job.Requirements.RAM,
+		ExpectedTime:  job.Requirements.Time.Seconds(),
+		RequestedDisk: job.Requirements.Disk,
+		Cores:         job.Requirements.Cores,
+		PeakRAM:       job.PeakRAM,
+		Exited:        job.Exited,
+		Exitcode:      job.Exitcode,
+		FailReason:    job.FailReason,
+		Pid:           job.Pid,
+		Host:          job.Host,
+		HostID:        job.HostID,
+		HostIP:        job.HostIP,
+		Walltime:      job.WallTime().Seconds(),
+		CPUtime:       job.CPUtime.Seconds(),
+		Started:       job.StartTime.Unix(),
+		Ended:         job.EndTime.Unix(),
+		Attempts:      job.Attempts,
+		Similar:       job.Similar,
+		StdErr:        stderr,
+		StdOut:        stdout,
+		// Env:           env,
+	}
+}
+
+// reqToJobs takes a request from the status webpage and returns the requested
+// jobs.
+func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []queue.ItemState) (jobs []*Job) {
+	allowed := make(map[queue.ItemState]bool)
+	for _, is := range allowedItemStates {
+		allowed[is] = true
+	}
+
+	if req.RepGroup != "" {
+		s.rpl.RLock()
+		defer s.rpl.RUnlock()
+		for key := range s.rpl.lookup[req.RepGroup] {
+			item, err := q.Get(key)
+			if item == nil || err != nil {
+				continue
+			}
+			stats := item.Stats()
+			if allowed[stats.State] {
+				job := item.Data.(*Job)
+				if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
+					jobs = append(jobs, job)
+				}
+			}
+		}
+	} else if req.Key != "" {
+		item, err := q.Get(req.Key)
+		if item == nil || err != nil {
+			return
+		}
+		stats := item.Stats()
+		if allowed[stats.State] {
+			jobs = append(jobs, item.Data.(*Job))
+		}
+	}
+	return
 }
 
 // webInterfaceStatusSendGroupStateCount sends the per-repgroup state counts

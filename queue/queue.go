@@ -137,7 +137,8 @@ type ChangedCallback func(from, to SubQueue, data []interface{})
 // TTRCallback is used as a callback to decide which sub-queue an item should
 // move to when a an item in the run sub-queue hits its TTR, based on that
 // item's data. Valid return values are SubQueueDelay, SubQueueReady and
-// SubQueueBury (other values will be treated as SubQueueReady).
+// SubQueueBury. SubQueueRun can be used to avoid changing subqueue. Other
+// values will be treated as SubQueueReady).
 type TTRCallback func(data interface{}) SubQueue
 
 // defaultTTRCallback is used if the the user never calls SetTTRCallback() and
@@ -755,10 +756,10 @@ func (queue *Queue) Reserve(reserveGroup ...string) (item *Item, err error) {
 // is allowed to run.
 func (queue *Queue) Touch(key string) (err error) {
 	queue.mutex.Lock()
-	defer queue.mutex.Unlock()
 
 	if queue.closed {
 		err = Error{queue.Name, "Touch", key, ErrQueueClosed}
+		queue.mutex.Unlock()
 		return
 	}
 
@@ -766,18 +767,23 @@ func (queue *Queue) Touch(key string) (err error) {
 	item, ok := queue.items[key]
 	if !ok {
 		err = Error{queue.Name, "Touch", key, ErrNotFound}
+		queue.mutex.Unlock()
 		return
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
 		err = Error{queue.Name, "Touch", key, ErrNotRunning}
+		queue.mutex.Unlock()
 		return
 	}
 
 	// touch and update the heap
 	item.touch()
 	queue.runQueue.update(item)
+
+	queue.mutex.Unlock()
+	queue.ttrNotificationTrigger(item)
 
 	return
 }
@@ -1099,23 +1105,31 @@ func (queue *Queue) startTTRProcessing() {
 					break
 				}
 
-				// remove it from the ttr sub-queue and obey the ttr callback
+				// obey the ttr callback
 				moveTo := queue.ttrCb(item.Data)
-				queue.runQueue.remove(item)
-				switch moveTo {
-				case SubQueueDelay:
-					item.restart()
-					queue.delayQueue.push(item)
-					item.switchRunDelay(true)
-					delayedItems = append(delayedItems, item)
-				case SubQueueBury:
-					queue.buryQueue.push(item)
-					item.switchRunBury(true)
-					buriedItems = append(buriedItems, item)
-				default:
-					queue.readyQueue.push(item)
-					item.switchRunReady()
-					readyItems = append(readyItems, item)
+				if moveTo == SubQueueRun {
+					// increase this item's time to release to a year from now,
+					// but keep it in the run queue
+					item.tempDisableTTR()
+					queue.runQueue.update(item)
+				} else {
+					// remove it from the ttr sub-queue and move to another
+					queue.runQueue.remove(item)
+					switch moveTo {
+					case SubQueueDelay:
+						item.restart()
+						queue.delayQueue.push(item)
+						item.switchRunDelay(true)
+						delayedItems = append(delayedItems, item)
+					case SubQueueBury:
+						queue.buryQueue.push(item)
+						item.switchRunBury(true)
+						buriedItems = append(buriedItems, item)
+					default:
+						queue.readyQueue.push(item)
+						item.switchRunReady()
+						readyItems = append(readyItems, item)
+					}
 				}
 			}
 

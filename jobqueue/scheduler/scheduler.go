@@ -42,6 +42,7 @@ package scheduler
 import (
 	"crypto/md5"
 	"fmt"
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/dgryski/go-farm"
 	"math/rand"
 	"sort"
@@ -121,6 +122,20 @@ type CmdStatus struct {
 	Other   [][2]int // ditto, for jobs in some strange state
 }
 
+// MessageCallBack functions receive a message that would be good to display to
+// end users, so they understand current error conditions related to the
+// scheduler.
+type MessageCallBack func(msg string)
+
+// BadServerCallBack functions receive a server when a cloud scheduler discovers
+// that a server it spawned no longer seems functional. It's possible that this
+// was due to a temporary networking issue, in which case the callback will be
+// called again with the same server when it is working fine again: check
+// server.IsBad(). If it's bad, you'd probably call server.Destroy() after
+// confirming the server is definitely unusable (eg. ask the end user to
+// manually check).
+type BadServerCallBack func(server *cloud.Server)
+
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
@@ -129,6 +144,9 @@ type scheduleri interface {
 	busy() bool                                              // achieve the aims of Busy()
 	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
+	hostToID(host string) string                             // achieve the aims of HostToID()
+	setMessageCallBack(MessageCallBack)                      // achieve the aims of SetMessageCallBack()
+	setBadServerCallBack(BadServerCallBack)                  // achieve the aims of SetBadServerCallBack()
 	cleanup()                                                // do any clean up once you've finished using the job scheduler
 }
 
@@ -164,6 +182,20 @@ func New(name string, config interface{}) (s *Scheduler, err error) {
 	}
 
 	return
+}
+
+// SetMessageCallBack sets the function that will be called when a scheduler has
+// some message that could be informative to end users wondering why something
+// is not getting scheduled. The message typically describes an error condition.
+func (s *Scheduler) SetMessageCallBack(cb MessageCallBack) {
+	s.impl.setMessageCallBack(cb)
+}
+
+// SetBadServerCallBack sets the function that will be called when a cloud
+// scheduler discovers that one of the servers it spawned seems to no longer be
+// functional or reachable. Only relevant for cloud schedulers.
+func (s *Scheduler) SetBadServerCallBack(cb BadServerCallBack) {
+	s.impl.setBadServerCallBack(cb)
 }
 
 // Schedule gets your cmd scheduled in the job scheduler. You give it a command
@@ -228,6 +260,12 @@ func (s *Scheduler) ReserveTimeout() int {
 // as "infinite" queue time.
 func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 	return s.impl.maxQueueTime(req)
+}
+
+// HostToID will return the server id of the server with the given host name, if
+// the scheduler is cloud based. Otherwise this just returns an empty string.
+func (s *Scheduler) HostToID(host string) string {
+	return s.impl.hostToID(host)
 }
 
 // Cleanup means you've finished using a scheduler and it can delete any

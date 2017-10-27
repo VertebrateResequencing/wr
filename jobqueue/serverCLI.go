@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the command line interface code of the server.
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
@@ -64,6 +65,17 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// do nothing - not returning an error to client means ping success
 		case "sstats":
 			sr = &serverResponse{SStats: s.GetServerStats()}
+		case "backup":
+			// make an io.Writer that writes to a byte slice, so we can return
+			// the db as that
+			var b bytes.Buffer
+			err := s.BackupDB(&b)
+			if err != nil {
+				srerr = ErrInternalError
+				qerr = err.Error()
+			} else {
+				sr = &serverResponse{DB: b.Bytes()}
+			}
 		case "drain":
 			err := s.Drain()
 			if err != nil {
@@ -91,83 +103,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					qerr = err.Error()
 				} else {
 					if srerr == "" {
-						// create itemdefs for the jobs
-						for _, job := range cr.Jobs {
-							job.Lock()
-							job.EnvKey = envkey
-							job.UntilBuried = job.Retries + 1
-							job.Queue = cr.Queue
-							if s.rc != "" {
-								job.schedulerGroup = job.Requirements.Stringify()
-							}
-							job.Unlock()
-
-							// in cloud deployments we may bring up a server running an
-							// operating system with a different username, which we must
-							// allow access to ourselves
-							if user, set := job.Requirements.Other["cloud_user"]; set {
-								if _, allowed := s.allowedUsers[user]; !allowed {
-									s.allowedUsers[user] = true
-									s.ServerInfo.AllowedUsers = append(s.ServerInfo.AllowedUsers, user)
-								}
-							}
-						}
-
-						// keep an on-disk record of these new jobs; we sacrifice a
-						// lot of speed by waiting on this database write to persist
-						// to disk. The alternative would be to return success to
-						// the client as soon as the jobs were in the in-memory
-						// queue, then lazily persist to disk in a goroutine, but we
-						// must guarantee that jobs are never lost or a workflow
-						// could hopelessly break if the server node goes down
-						// between returning success and the write to disk
-						// succeeding. (If we don't return success to the client, it
-						// won't Remove the job that created the new jobs from the
-						// queue and when we recover, at worst the creating job will
-						// be run again - no jobs get lost.)
-						jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(cr.Jobs, cr.IgnoreComplete)
+						// create the jobs server-side
+						added, dups, alreadyComplete, thisSrerr, err := s.createJobs(q, cr.Jobs, envkey, cr.IgnoreComplete)
 						if err != nil {
-							srerr = ErrDBError
+							srerr = thisSrerr
 							qerr = err.Error()
 						} else {
-							// now that jobs are in the db we can get dependencies
-							// fully, so now we can build our itemdefs *** we really
-							// need to test for cycles, because if the user creates
-							// one, we won't let them delete the bad jobs!
-							// storeNewJobs() returns jobsToQueue, which is all of
-							// cr.Jobs plus any previously Archive()d jobs that were
-							// resurrected because of one of their DepGroup
-							// dependencies being in cr.Jobs
-							var itemdefs []*queue.ItemDef
-							for _, job := range jobsToQueue {
-								itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
-							}
-
-							// storeNewJobs also returns jobsToUpdate, which are
-							// those jobs currently in the queue that need their
-							// dependencies updated because they just changed when
-							// we stored cr.Jobs
-							var updateErr error
-							for _, job := range jobsToUpdate {
-								thisErr := q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
-								if thisErr != nil {
-									updateErr = thisErr
-									break
-								}
-							}
-
-							if updateErr != nil {
-								srerr = ErrInternalError
-								qerr = updateErr.Error()
-							} else {
-								// add the jobs to the in-memory job queue
-								added, dups, err := s.enqueueItems(q, itemdefs)
-								if err != nil {
-									srerr = ErrInternalError
-									qerr = err.Error()
-								}
-								sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
-							}
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
 						}
 					}
 				}
@@ -281,25 +223,59 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
 					srerr = ErrBadRequest
 				} else {
-					job.Pid = cr.Job.Pid
 					job.Host = cr.Job.Host
+					if job.Host != "" {
+						job.HostID = s.scheduler.HostToID(job.Host)
+					}
+					job.HostIP = cr.Job.HostIP
+					job.Pid = cr.Job.Pid
 					job.StartTime = time.Now()
 					var tend time.Time
 					job.EndTime = tend
 					job.Attempts++
+					job.killCalled = false
+					job.Lost = false
 				}
 				job.Unlock()
 			}
 		case "jtouch":
-			// update the job's ttr
+			var job *Job
 			var item *queue.Item
-			item, _, srerr = s.getij(cr, q)
+			item, job, srerr = s.getij(cr, q)
 			if srerr == "" {
-				err = q.Touch(item.Key)
-				if err != nil {
-					srerr = ErrInternalError
-					qerr = err.Error()
+				// if kill has been called for this job, just return KillCalled
+				job.Lock()
+				killCalled := job.killCalled
+				lost := job.Lost
+				job.Unlock()
+
+				if !killCalled {
+					// also just return killCalled if server has been set to
+					// kill all jobs
+					s.krmutex.RLock()
+					killCalled = s.killRunners
+					s.krmutex.RUnlock()
 				}
+
+				if !killCalled {
+					// else, update the job's ttr
+					err = q.Touch(item.Key)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+					} else if lost {
+						job.Lock()
+						job.Lost = false
+						job.EndTime = time.Time{}
+						job.Unlock()
+
+						// since our changed callback won't be called, send out
+						// this transition from lost to running state
+						s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, JobStateRunning, 1})
+						s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateLost, JobStateRunning, 1})
+					}
+				}
+				sr = &serverResponse{KillCalled: killCalled}
 			}
 		case "jend":
 			// update the job's cmd-ended-related properties
@@ -392,6 +368,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
+					} else {
+						s.decrementGroupCount(job.getSchedulerGroup(), q)
 					}
 				}
 			}
@@ -418,8 +396,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "jkick":
 			// move the jobs from the bury queue to the ready queue; unlike the
-			// other j* methods, client doesn't have to be the Reserve() owner of
-			// these jobs, and we don't want the "in run queue" test
+			// other j* methods, client doesn't have to be the Reserve() owner
+			// of these jobs, and we don't want the "in run queue" test
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
@@ -467,6 +445,26 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 				}
 				sr = &serverResponse{Existed: deleted}
+			}
+		case "jkill":
+			// set the killCalled property on the jobs, to change the subsequent
+			// behaviour of jtouch; as per jkick, client doesn't have to be the
+			// Reserve() owner of these jobs, though we do want the "in run
+			// queue" test
+			if cr.Keys == nil {
+				srerr = ErrBadRequest
+			} else {
+				killable := 0
+				for _, jobkey := range cr.Keys {
+					k, err := s.killJob(q, jobkey)
+					if err != nil {
+						continue
+					}
+					if k {
+						killable++
+					}
+				}
+				sr = &serverResponse{Existed: killable}
 			}
 		case "getbc":
 			// get jobs by their keys (which come from their Cmds & Cwds)
@@ -563,6 +561,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 	state := itemsStateToJobState[stats.State]
 	if state == "" {
 		state = JobStateUnknown
+	} else if state == JobStateReserved && sjob.Lost {
+		state = JobStateLost
 	}
 
 	// we're going to fill in some properties of the Job and return
@@ -588,6 +588,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 		EndTime:      sjob.EndTime,
 		Pid:          sjob.Pid,
 		Host:         sjob.Host,
+		HostID:       sjob.HostID,
+		HostIP:       sjob.HostIP,
 		CPUtime:      sjob.CPUtime,
 		State:        state,
 		Attempts:     sjob.Attempts,
