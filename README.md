@@ -46,8 +46,8 @@ Alternatively, build it yourself (at least v1.8 of go is required):
 (make sure to set your `$GOPATH`). An example way of setting up a personal Go
 installation in your home directory would be:
 
-        wget "https://storage.googleapis.com/golang/go1.8.linux-amd64.tar.gz"
-        tar -xvzf go1.8.linux-amd64.tar.gz && rm go1.8.linux-amd64.tar.gz
+        wget "https://storage.googleapis.com/golang/go1.9.2.linux-amd64.tar.gz"
+        tar -xvzf go1.9.2.linux-amd64.tar.gz && rm go1.9.2.linux-amd64.tar.gz
         export GOROOT=$HOME/go
         export PATH=$PATH:$GOROOT/bin
         mkdir work
@@ -123,6 +123,10 @@ know how it works.
 If you have any problems getting things to start up, check out the
 [wiki](https://github.com/VertebrateResequencing/wr/wiki) for additional
 guidance.
+
+An alternative way of interacting with wr is to use it's REST API, also
+documented on the
+[wiki](https://github.com/VertebrateResequencing/wr/wiki/REST-API)
 
 Implemented so far
 ------------------
