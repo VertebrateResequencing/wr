@@ -5,6 +5,55 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.10.0] - 2017-10-27
+### Added
+- New REST API. See https://github.com/VertebrateResequencing/wr/wiki/REST-API
+- Automatic database backups now occur. Manual ones can be taken. The backup
+  location can be in S3. This allows for state to be retained across cloud
+  deployments.
+- OpenStack scheduler now continuously monitors the servers it creates, and
+  sends a warning to the user via the web interface or REST API to let them
+  know when a server might have died. The user can confirm death to have wr
+  destroy the server and spawn a new one (if still needed).
+- OpenStack scheduler now reports other issues it encounters to the web
+  interface or REST API, so users know why they have jobs stuck pending (eg.
+  they've run out of quota).
+- If `wr cloud deploy` was used, and the remote `wr manager` is still running
+  but your ssh connectivity to it got broken, another `wr cloud deploy` will
+  reconnect.
+- Running jobs can now be killed (via the web interface).
+
+### Changed
+- When the manager loses contact with a job and thinks it must be dead, the job
+  is no longer automatically killed. Instead it enters "lost" state and the user
+  can confirm it is dead (in order to subsequently retry it). Otherwise it will
+  come back to life automatically once the (eg. connectivity) issue is resolved.
+- Cloud deployments create security groups with "ALL ICMP" enabled.
+- OpenStack scheduler regularly checks for changes to available flavors, instead
+  of only getting a list at start-up. 
+- `wr mount --mounts` and similar for `add` can now take a profile name.
+- Status of jobs now includes the IP address of the server the job ran on, and
+  for cloud deployments, the server ID.
+- OpenStack scheduler now has a minimum spawn timeout, instead of being based
+  purely on the running average spawn time.
+- On the status web page, if you choose to kill, retry or remove just 1 of many
+  jobs in a report group, instead of acting on a random job in the report group,
+  it now acts on the specific job you were looking at.
+
+### Fixed
+- LSF scheduler now works correctly when a job needs more than 1 core.
+- LSF scheduler now works with LSF queues that have been configured in TB.
+- `wr manager start -m` value was off by 1.
+- OpenStack scheduler could sometimes think the wrong number of things were
+  running.
+- `wr cloud teardown` no longer hangs when the resources have already been
+  destroyed (by a third party).
+- OpenStack scheduler was miscalculating remaining instance quota when
+  `wr cloud deploy --max_servers` was used.
+- Cloud deployments and subsequent creation of servers to run jobs are now more
+  likely to succeed.
+
+
 ## [0.9.1] - 2017-08-15
 ### Fixed
 - Data races, for general reliability and stability improvements.
