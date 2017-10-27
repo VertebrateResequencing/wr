@@ -423,7 +423,7 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 }
 
 // restJobsStatus gets the status of the requested jobs in the given queue. The
-// request url can be suffixed with comma seperated job keys or RepGroups.
+// request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are std, env (which can take a "true" value), limit
 // (a number) and state (one of delayed|ready|reserved|running|lost|buried|
 // dependent|complete).
