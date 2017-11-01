@@ -73,7 +73,7 @@ need to use --mount_json. You can't use both --mounts and --mount_json at once.
 The format is a comma-separated list of [c|u][r|w]:[profile@]bucket[/path]
 strings. The first character as 'c' means to turn on caching, while 'u' means
 uncached. The second character as 'r' means read-only, while 'w' means writeable
-(only one of them can have w). After the colon you can optionally specift the
+(only one of them can have w). After the colon you can optionally specify the
 profile name followed by the @ symbol, followed by the required remote bucket
 name and ideally the path to the deepest subdirectory that contains the data you
 wish to access.
