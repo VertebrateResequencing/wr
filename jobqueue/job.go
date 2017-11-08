@@ -166,6 +166,10 @@ type Job struct {
 	// ActualCwd.
 	MountConfigs MountConfigs
 
+	// BsubMode true when Add()ing a job will result in the job being assigned
+	// a BsubID.
+	BsubMode bool
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -228,6 +232,11 @@ type Job struct {
 	// when retrieving jobs with a limit, this tells you how many jobs were
 	// excluded.
 	Similar int
+	// name of the queue the Job was added to.
+	Queue string
+	// unique (for this manager session) id of the job submission, present if
+	// BsubMode was true when the job was added.
+	BsubID uint64
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -385,7 +394,12 @@ func (j *Job) TriggerBehaviours(success bool) error {
 // otherwise the actual working directory is used as the mount point (and the
 // parent of that used for unspecified CacheBase). Relative CacheDir options
 // are treated relative to the CacheBase.
-func (j *Job) Mount() error {
+//
+// If the optional onCwd argument is supplied true, and ActualCwd is not
+// defined, then instead of mounting at j.Cwd/mnt, it tries to mount at j.Cwd
+// itself. (This will fail if j.Cwd is not empty or already mounted by another
+// process.)
+func (j *Job) Mount(onCwd ...bool) error {
 	cwd := j.Cwd
 	defaultMount := filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase := cwd
@@ -393,6 +407,9 @@ func (j *Job) Mount() error {
 		cwd = j.ActualCwd
 		defaultMount = cwd
 		defaultCacheBase = filepath.Dir(cwd)
+	} else if len(onCwd) == 1 && onCwd[0] {
+		defaultMount = j.Cwd
+		defaultCacheBase = filepath.Dir(j.Cwd)
 	}
 
 	for _, mc := range j.MountConfigs {

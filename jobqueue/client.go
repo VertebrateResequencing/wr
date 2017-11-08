@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -60,6 +61,10 @@ const (
 	FailReasonUpload   = "failed to upload files to remote file system"
 	FailReasonKilled   = "killed by user request"
 )
+
+// lsfEmulationDir is the name of the directory we store our LSF emulation
+// symlinks in
+const lsfEmulationDir = ".wr_lsf_emulation"
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
@@ -393,6 +398,46 @@ func (c *Client) Execute(job *Job, shell string) error {
 	stdout := &prefixSuffixSaver{N: 4096}
 	stdoutWait := stdFilter(outReader, stdout)
 
+	var onCwd bool
+	var prependPath string
+	if job.BsubMode {
+		// create parent of job.Cwd so we can later mount at job.Cwd
+		parent := filepath.Dir(job.Cwd)
+		os.MkdirAll(parent, os.ModePerm)
+		if fi, err := os.Stat(parent); err != nil || !fi.Mode().IsDir() {
+			c.Bury(job, FailReasonCwd)
+			return fmt.Errorf("parent of working directory [%s] could not be created", parent)
+		}
+
+		// create bsub and bjobs symlinks in a sister dir of job.Cwd
+		prependPath = filepath.Join(parent, lsfEmulationDir)
+		os.MkdirAll(prependPath, os.ModePerm)
+		if fi, err := os.Stat(prependPath); err != nil || !fi.Mode().IsDir() {
+			c.Bury(job, FailReasonCwd)
+			return fmt.Errorf("sister of working directory [%s] could not be created", prependPath)
+		}
+
+		wr, err := os.Executable()
+		if err != nil {
+			c.Bury(job, FailReasonAbnormal)
+			return fmt.Errorf("could not get path to wr: %s", err)
+		}
+		bsub := filepath.Join(prependPath, "bsub")
+		bjobs := filepath.Join(prependPath, "bjobs")
+		err = os.Symlink(wr, bsub)
+		if err != nil {
+			c.Bury(job, FailReasonAbnormal)
+			return fmt.Errorf("could not create bsub symlink: %s", err)
+		}
+		err = os.Symlink(wr, bjobs)
+		if err != nil {
+			c.Bury(job, FailReasonAbnormal)
+			return fmt.Errorf("could not create bjobs symlink: %s", err)
+		}
+
+		onCwd = job.CwdMatters
+	}
+
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
 	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
@@ -422,7 +467,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	// we'll mount any configured remote file systems
-	err = job.Mount()
+	err = job.Mount(onCwd)
 	if err != nil {
 		if strings.Contains(err.Error(), "fusermount exited with code 256") {
 			// *** not sure what causes this, but perhaps trying again after a
@@ -476,6 +521,18 @@ func (c *Client) Execute(job *Job, shell string) error {
 		if job.ChangeHome {
 			env = envOverride(env, []string{"HOME=" + actualCwd})
 		}
+	}
+	if prependPath != "" {
+		// alter env PATH to have prependPath come first
+		override := []string{"PATH=" + prependPath}
+		for _, envvar := range env {
+			pair := strings.Split(envvar, "=")
+			if pair[0] == "PATH" {
+				override[0] += ":" + pair[1]
+				break
+			}
+		}
+		env = envOverride(env, override)
 	}
 	cmd.Env = env
 

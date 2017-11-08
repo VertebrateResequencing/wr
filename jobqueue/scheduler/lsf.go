@@ -46,6 +46,9 @@ type lsf struct {
 	queues             map[string]map[string]int
 	sortedqs           map[int][]string
 	sortedqKeys        []int
+	bsubExe            string
+	bjobsExe           string
+	bkillExe           string
 	log15.Logger
 }
 
@@ -64,6 +67,12 @@ type ConfigLSF struct {
 func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	s.config = config.(*ConfigLSF)
 	s.Logger = logger.New("scheduler", "lsf")
+
+	// find the real paths to the main LSF exes, since thanks to wr's LSF
+	// compatibility mode, might not be the first in $PATH
+	s.bsubExe = internal.Which("bsub")
+	s.bjobsExe = internal.Which("bjobs")
+	s.bkillExe = internal.Which("bkill")
 
 	// set up what should be global vars, but we don't really want these taking
 	// up space if the user never uses LSF
@@ -436,10 +445,10 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
 	// submit to the queue
-	bsubcmd := exec.Command("bsub", bsubArgs...) // #nosec
+	bsubcmd := exec.Command(s.bsubExe, bsubArgs...) // #nosec
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
-		return Error{"lsf", "schedule", fmt.Sprintf("failed to run bsub %s: %s", bsubArgs, err)}
+		return Error{"lsf", "schedule", fmt.Sprintf("failed to run %s %s: %s", s.bsubExe, bsubArgs, err)}
 	}
 
 	// unfortunately, a job can be successfully submitted to the queue but not
@@ -460,7 +469,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 			for {
 				select {
 				case <-ticker.C:
-					bjcmd := exec.Command("bjobs", "-w", matches[1]) // #nosec
+					bjcmd := exec.Command(s.bjobsExe, "-w", matches[1]) // #nosec
 					bjout, errf := bjcmd.CombinedOutput()
 					if errf != nil {
 						continue
@@ -585,7 +594,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		err = s.parseBjobs(jobPrefix, cb)
 
 		if len(toKill) > 1 {
-			killcmd := exec.Command("bkill", toKill...) // #nosec
+			killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
 			errk := killcmd.Run()
 			if errk != nil {
 				s.Warn("checkCmd bkill failed", "err", errk)
@@ -608,7 +617,7 @@ type bjobsCB func(matches []string)
 // `^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(jobPrefix\S+)` to your
 // callback for each bjobs output line.
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
-	bjcmd := exec.Command(s.config.Shell, "-c", "bjobs -w") // #nosec
+	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w") // #nosec
 	bjout, err := bjcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
@@ -664,7 +673,7 @@ func (s *lsf) cleanup() {
 		s.Error("cleaup parse bjobs failed", "err", err)
 	}
 	if len(toKill) > 1 {
-		killcmd := exec.Command("bkill", toKill...) // #nosec
+		killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
 		err = killcmd.Run()
 		if err != nil {
 			s.Warn("cleanup bkill failed", "err", err)

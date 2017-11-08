@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -79,6 +80,10 @@ var (
 	ServerCheckRunnerTime = 1 * time.Minute
 	ServerLogClientErrors = true
 )
+
+// BsubID is used to give added jobs a unique (atomically incremented) id when
+// pretending to be bsub.
+var BsubID uint64 = 0
 
 // Error records an error and the operation and item that caused it.
 type Error struct {
@@ -1077,6 +1082,10 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 		job.UntilBuried = job.Retries + 1
 		if s.rc != "" {
 			job.schedulerGroup = job.Requirements.Stringify()
+		}
+		if job.BsubMode {
+			atomic.AddUint64(&BsubID, 1)
+			job.BsubID = atomic.LoadUint64(&BsubID)
 		}
 		job.Unlock()
 
