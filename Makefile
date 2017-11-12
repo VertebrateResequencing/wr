@@ -4,6 +4,9 @@ GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
 TAG := $(shell git describe --abbrev=0 --tags)
 LDFLAGS = -ldflags "-X ${PKG}/cmd.wrVersion=${VERSION}"
+export GOPATH := $(shell go env GOPATH)
+PATH := $(PATH):${GOPATH}/bin
+SHELL := env PATH=${PATH} $(SHELL)
 GLIDE := $(shell command -v glide 2> /dev/null)
 
 default: install
@@ -13,7 +16,7 @@ ifndef GLIDE
 	@mkdir -p ${GOPATH}/bin
 	@curl -s https://glide.sh/get | sh
 endif
-	@${GOPATH}/bin/glide -q install
+	@glide -q install
 	@echo installed latest dependencies
 
 build: vendor
