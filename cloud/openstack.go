@@ -649,7 +649,11 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				}
 				if current.Status == "ERROR" {
 					ticker.Stop()
-					waitForActive <- errors.New("there was an error in bringing up the new server")
+					msg := current.Fault.Message
+					if msg == "" {
+						msg = "the server is in ERROR state following an unknown problem"
+					}
+					waitForActive <- errors.New(msg)
 					return
 				}
 				continue

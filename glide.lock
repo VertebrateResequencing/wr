@@ -24,7 +24,7 @@ imports:
 - name: github.com/go-stack/stack
   version: 817915b46b97fd7bb80e8ab6b69f01a53ac3eebf
 - name: github.com/gophercloud/gophercloud
-  version: 2c4569ba8b3cbb36ed983e28e9e524d9f62eb6c2
+  version: 0b6b13c4dd9e07a89f83cbe4617c13ad646d6362
   repo: https://github.com/sb10/gophercloud.git
   subpackages:
   - openstack
