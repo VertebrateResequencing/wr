@@ -801,10 +801,10 @@
                             if (self.detailsOA && rg == self.detailsRepgroup) {
                                 // the user has clicked on a progress bar for
                                 // a particular repgroup; add to its details
+                                var walltime = json['Walltime'];
                                 if (json['State'] == "running") {
                                     // have Walltime on running jobs auto-
                                     // increment
-                                    var walltime = json['Walltime'];
                                     var began = new Date();
                                     var now = ko.observable(new Date());
                                     json['LiveWalltime'] = ko.computed(function() {
@@ -819,6 +819,10 @@
                                             };
                                         }, 1000);
                                     }
+                                } else {
+                                    json['LiveWalltime'] = ko.computed(function() {
+                                        return walltime;
+                                    });
                                 }
                                 self.detailsOA.push(json);
                             }
