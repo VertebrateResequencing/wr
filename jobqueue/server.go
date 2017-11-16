@@ -1083,7 +1083,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 		if s.rc != "" {
 			job.schedulerGroup = job.Requirements.Stringify()
 		}
-		if job.BsubMode {
+		if job.BsubMode != "" {
 			atomic.AddUint64(&BsubID, 1)
 			job.BsubID = atomic.LoadUint64(&BsubID)
 		}

@@ -19,13 +19,12 @@
 package cmd
 
 import (
-	"fmt"
-	// "github.com/VertebrateResequencing/wr/internal"
 	"bufio"
+	"encoding/json"
+	"fmt"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/spf13/cobra"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,24 +67,37 @@ effectively emulates all the work being done on an LSF farm with shared disk.`,
 // bsub sub-command emulates bsub.
 var lsfBsubCmd = &cobra.Command{
 	Use:   "bsub",
-	Short: "Add jobs using bsub syntax",
-	Long:  `Add jobs to the queue using bsub syntax.`,
+	Short: "Add a job using bsub syntax",
+	Long:  `Add a job to the queue using bsub syntax.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		wd, err := os.Getwd()
 		if err != nil {
 			die(err.Error())
 		}
 
-		// *** use os.Executable() to find the directory of the bsub symlink,
-		// and inside read the .bsub_config file to get the cloud_* and mount
-		// options that should be included on job
-
 		job := &jobqueue.Job{
-			BsubMode:     true,
+			BsubMode:     deployment,
 			RepGroup:     "bsub",
 			Cwd:          wd,
 			CwdMatters:   true,
 			Requirements: &jqs.Requirements{Cores: 1, RAM: 1000, Time: 1 * time.Hour},
+			Retries:      uint8(0),
+		}
+
+		// since bsub calls can't communicate possibly necessary cloud_* and
+		// mount options for the job we're going to add, we read these from an
+		// environment variable that got created when a job was added to the
+		// queue with --bsub option; since this arrangement is in theory
+		// "optional", we ignore errors
+		if jsonStr := os.Getenv("WR_BSUB_CONFIG"); jsonStr != "" {
+			configJob := &jobqueue.Job{}
+			if err := json.Unmarshal([]byte(jsonStr), configJob); err == nil {
+				job.MountConfigs = configJob.MountConfigs
+				job.Requirements.Other = configJob.Requirements.Other
+				job.BsubMode = configJob.BsubMode
+				deployment = configJob.BsubMode
+				initConfig()
+			}
 		}
 
 		r := regexp.MustCompile(`^#BSUB\s+-(\w)\s+(.+)$`)
@@ -158,7 +170,7 @@ var lsfBsubCmd = &cobra.Command{
 			os.Exit(255)
 		}
 
-		j, err := jq.GetByEssence(&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd}, false, false)
+		j, err := jq.GetByEssence(&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd, MountConfigs: job.MountConfigs}, false, false)
 		if err != nil {
 			die(err.Error())
 		}

@@ -166,9 +166,9 @@ type Job struct {
 	// ActualCwd.
 	MountConfigs MountConfigs
 
-	// BsubMode true when Add()ing a job will result in the job being assigned
-	// a BsubID.
-	BsubMode bool
+	// BsubMode set to either Production or Development when Add()ing a job will
+	// result in the job being assigned a BsubID.
+	BsubMode string
 
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
@@ -235,7 +235,7 @@ type Job struct {
 	// name of the queue the Job was added to.
 	Queue string
 	// unique (for this manager session) id of the job submission, present if
-	// BsubMode was true when the job was added.
+	// BsubMode was set when the job was added.
 	BsubID uint64
 
 	// we add this internally to match up runners we spawn via the scheduler to
@@ -349,6 +349,23 @@ func (j *Job) EnvAddOverride(env []string) error {
 	return err
 }
 
+// Getenv is like os.Getenv(), but for the environment variables stored in the
+// the job, including any overrides. Returns blank if Env() would have returned
+// an error.
+func (j *Job) Getenv(key string) (value string) {
+	env, err := j.Env()
+	if err != nil {
+		return
+	}
+	for _, envvar := range env {
+		pair := strings.Split(envvar, "=")
+		if pair[0] == key {
+			return pair[1]
+		}
+	}
+	return
+}
+
 // StdOut returns the decompressed job.StdOutC, which is the head and tail of
 // job.Cmd's STDOUT when it ran. If the Cmd hasn't run yet, or if it output
 // nothing to STDOUT, you will get an empty string. Note that StdOutC is only
@@ -400,6 +417,9 @@ func (j *Job) TriggerBehaviours(success bool) error {
 // itself. (This will fail if j.Cwd is not empty or already mounted by another
 // process.)
 func (j *Job) Mount(onCwd ...bool) error {
+	// j.Lock()
+	// defer j.Unlock()
+
 	cwd := j.Cwd
 	defaultMount := filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase := cwd
@@ -542,6 +562,9 @@ func (j *Job) Mount(onCwd ...bool) error {
 // directories between the mount point(s) and Cwd if not CwdMatters and the
 // mount point was (within) ActualCwd.
 func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
+	// j.Lock()
+	// defer j.Unlock()
+
 	var doNotUpload bool
 	if len(stopUploads) == 1 {
 		doNotUpload = stopUploads[0]
