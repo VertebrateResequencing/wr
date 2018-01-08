@@ -700,7 +700,8 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		osScript = s.config.PostCreationScript
 	}
 
-	uniqueDebug := uuid.NewV4().String()
+	u, _ := uuid.NewV4()
+	uniqueDebug := u.String()
 
 	s.mutex.Lock()
 
@@ -781,7 +782,8 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			s.reservedVolume += req.Disk
 		}
 
-		standinID := uuid.NewV4().String()
+		u, _ = uuid.NewV4()
+		standinID := u.String()
 		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix, osScript, s.debugMode)
 		standinServer.allocate(req)
 		s.recordStandin(standinServer, cmd)

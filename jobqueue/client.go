@@ -155,7 +155,8 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	// since speed doesn't matter: a typical client executable will only
 	// Connect() once; on the other hand, we avoid any possible problem with
 	// running on machines with low time resolution
-	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: uuid.NewV4()}
+	u, _ := uuid.NewV4()
+	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: u}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()

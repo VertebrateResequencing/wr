@@ -677,5 +677,6 @@ func (p *Provider) deleteResourceFile() (err error) {
 // uniqueResourceName takes the given prefix and appends a unique string to it
 // (a uuid).
 func uniqueResourceName(prefix string) (unique string) {
-	return prefix + "-" + uuid.NewV4().String()
+	u, _ := uuid.NewV4() // this used to return no error, and now I don't want to change my own method signature...
+	return prefix + "-" + u.String()
 }
