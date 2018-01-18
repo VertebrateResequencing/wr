@@ -3331,7 +3331,12 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 				p, err := cloud.New("openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
 				So(err, ShouldBeNil)
 
-				flavor, err := p.CheapestServerFlavor(1, 2048, flavorRegex)
+				// for this test to work, we need 1 job to run on another
+				// server, so we need to use all the cores of this server per
+				// job
+				cores := runtime.NumCPU()
+
+				flavor, err := p.CheapestServerFlavor(cores, 2048, flavorRegex)
 				So(err, ShouldBeNil)
 
 				destroyedBadServer := 0
@@ -3345,8 +3350,8 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 				server.scheduler.SetBadServerCallBack(badServerCB)
 
 				var jobs []*Job
-				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: 1, Disk: 0}
-				schedGrp := fmt.Sprintf("%d:60:1:0", flavor.RAM)
+				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: cores, Disk: 0}
+				schedGrp := fmt.Sprintf("%d:60:%d:0", flavor.RAM, cores)
 				jobs = append(jobs, &Job{Cmd: "sleep 300", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 				jobs = append(jobs, &Job{Cmd: "sleep 301", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 				inserts, already, err := jq.Add(jobs, envVars, true)
