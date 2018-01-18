@@ -1,8 +1,8 @@
 hash: d24970895baf6afba8742d50169a04ba9eb198b8bac51bff30a5c2843e274b18
-updated: 2018-01-08T13:30:06.989348844Z
+updated: 2018-01-17T16:37:27.449475547Z
 imports:
 - name: code.cloudfoundry.org/bytefmt
-  version: a052d587819f45f719a22e344a8ad7858deb3733
+  version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
 - name: github.com/alexflint/go-filemutex
   version: d358565f3c3f5334209f1e80693e4f621650c489
 - name: github.com/boltdb/bolt
@@ -10,7 +10,7 @@ imports:
 - name: github.com/BurntSushi/toml
   version: a368813c5e648fee92e5f6c30e3944ff9d5e8895
 - name: github.com/dgryski/go-farm
-  version: ac7624ea8da311f2fbbd94401d8c1cf66089f9fb
+  version: 2de33835d10275975374b37b2dcfd22c9020a1f5
 - name: github.com/go-ini/ini
   version: 32e4c1e6bc4e7d0d8451aa6b75200d19e37a536a
 - name: github.com/go-mangos/mangos
@@ -47,11 +47,11 @@ imports:
   - openstack/utils
   - pagination
 - name: github.com/gorilla/websocket
-  version: d965e9adc66deebadcc7d0c6c7598e2a4baa7838
+  version: 292fd08b2560ad524ee37396253d71570339a821
 - name: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
-  version: 14c301560741efa61ca3a9e7695bc8cdf5002fad
+  version: 00d53976f3f71ce3d8327b3af528ce3d4700620e
   subpackages:
   - fuse
   - fuse/nodefs
@@ -74,11 +74,11 @@ imports:
 - name: github.com/kr/fs
   version: 2788f0dbd16903de03cb8186e5c7d97b69ad387b
 - name: github.com/mattn/go-colorable
-  version: 586e6dcca296d085100876beb6dbf02287a247f7
+  version: 6cc8b475d4682021d75d2cbe2bc481bec4ce98e5
 - name: github.com/mattn/go-isatty
   version: 6ca4dbf54d38eea1a992b3c722a76a5d1c4cb25c
 - name: github.com/minio/minio-go
-  version: 6ca54ef551fc38182e7516273a8b9f475efe16ea
+  version: d218e4cb1bfc13dcef0eb5c3e74507a35be0dd3a
   subpackages:
   - pkg/credentials
   - pkg/encrypt
@@ -91,7 +91,7 @@ imports:
 - name: github.com/pkg/errors
   version: e881fd58d78e04cf6d0de1217f8707c8cc2249bc
 - name: github.com/pkg/sftp
-  version: 30b632cf56a40e07133af5255a01cadc216933ec
+  version: 9917fead0c27827eb2f78208dc494d1d708089ec
 - name: github.com/ricochet2200/go-disk-usage
   version: f0d1b743428fc09792f93233d9412f89f88fa2ab
   subpackages:
@@ -103,7 +103,7 @@ imports:
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: 7ec06ec280df1dd1f08befc535049d49d63ae18a
+  version: 6a368fb7cd1221fa6ea90facc9447c9a2234c255
   subpackages:
   - cpu
   - host
@@ -114,33 +114,45 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: b95ab734e27d33e0d8fbabf71ca990568d4e2020
+  version: 0c34d16c3123764e413b9ed982ada58b1c3d53ea
 - name: github.com/spf13/pflag
   version: 4c012f6dcd9546820e378d0bdda4d8fc772cdfea
 - name: github.com/StackExchange/wmi
-  version: ea383cf3ba6ec950874b8486cd72356d007c768f
+  version: 5d049714c4a64225c3c79a7cf7d02f7fb5b96338
 - name: github.com/ugorji/go
-  version: ccfe18359b55b97855cee1d3f74e5efbda4869dc
+  version: 9831f2c3ac1068a78f50999a30db84270f647af6
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: 38dc6daddf685df38a5e3e040889598d9c2bb261
+  version: e36fece8ceb53d66dd714aa7c922423ba6ce2c07
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: 0fcca4842a8d74bfddc2c96a073bd2a4d2a7a2e8
+  version: 13931e22f9e72ea58bb73048bc752b48c6d4d4ac
   subpackages:
   - curve25519
   - ed25519
   - ed25519/internal/edwards25519
   - ssh
+- name: golang.org/x/net
+  version: 5ccada7d0a7ba9aeb5d3aca8d3501b4c2a509fec
+  subpackages:
+  - idna
+  - lex/httplex
 - name: golang.org/x/sys
-  version: 1792d66dc88e503d3cb2400578221cdf1f7fe26f
+  version: fff93fa7cd278d84afc205751523809c464168ab
   subpackages:
   - unix
   - windows
+- name: golang.org/x/text
+  version: e19ae1496984b1c655b8044a65c0300a3c878dd3
+  subpackages:
+  - secure/bidirule
+  - transform
+  - unicode/bidi
+  - unicode/norm
 - name: gopkg.in/yaml.v2
-  version: 1244d3ce02e3e1c16820ada0bae506b6c479f106
+  version: d670f9405373e636a5a2765eea47fac0c9bc91a4
 testImports:
 - name: github.com/gopherjs/gopherjs
   version: 444abdf920945de5d4a977b572bcc6c674d1e4eb
