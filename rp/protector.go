@@ -106,8 +106,9 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	}
 
 	// create a request object
+	u, _ := uuid.NewV4()
 	r := &request{
-		id:        Receipt(uuid.NewV4().String()),
+		id:        Receipt(u.String()),
 		grantedCh: make(chan bool, 1),
 		cancelCh:  make(chan bool, 1),
 		releaseCh: make(chan bool, 1),
