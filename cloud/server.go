@@ -318,6 +318,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	go func() {
 		select {
 		case <-cancelCh:
+			outCh <- ""
+			errCh <- ""
 			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
 		case <-finished:
 			// end select
@@ -357,10 +359,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	s.mutex.Unlock()
 
 	err = <-done
-	if err == nil {
-		stdout = <-outCh
-		stderr = <-errCh
-	}
+	stdout = <-outCh
+	stderr = <-errCh
 	return
 }
 
