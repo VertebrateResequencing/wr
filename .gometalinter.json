@@ -1,1 +1,1 @@
-{ "Enable": ["maligned", "unconvert", "interfacer", "gotypex", "structcheck", "gofmt", "varcheck", "gotype", "goconst", "dupl", "deadcode", "vet", "unparam", "golint", "goimports", "gas", "megacheck", "ineffassign"] }
+{ "Enable": ["maligned", "unconvert", "interfacer", "gotypex", "structcheck", "gofmt", "varcheck", "gotype", "goconst", "deadcode", "vet", "unparam", "golint", "goimports", "gas", "megacheck", "ineffassign"] }
