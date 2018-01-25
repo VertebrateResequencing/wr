@@ -40,11 +40,11 @@ race:
 	@go test -p 1 -tags netgo -race -v -timeout 20m ./jobqueue/scheduler -run TestOpenstack
 	@go test -p 1 -tags netgo -race -v -timeout 15m ./cloud
 	@go test -p 1 -tags netgo -race -v ./rp
-	
+
 # go get -u gopkg.in/alecthomas/gometalinter.v2
-# gometalinter --install
+# gometalinter.v2 --install
 lint:
-	@gometalinter.v2 --vendor --aggregate --deadline=120s ./...
+	@gometalinter.v2 --vendor --aggregate --deadline=120s ./... | sort
 
 clean:
 	@rm -f ./wr
