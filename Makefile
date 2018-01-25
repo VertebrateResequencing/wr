@@ -40,23 +40,11 @@ race:
 	@go test -p 1 -tags netgo -race -v -timeout 20m ./jobqueue/scheduler -run TestOpenstack
 	@go test -p 1 -tags netgo -race -v -timeout 15m ./cloud
 	@go test -p 1 -tags netgo -race -v ./rp
-
-report: lint vet inef spell
-
+	
+# go get -u gopkg.in/alecthomas/gometalinter.v2
+# gometalinter --install
 lint:
-	@for file in ${GO_FILES} ;  do \
-		gofmt -s -l $$file ; \
-		golint $$file ; \
-	done
-
-vet:
-	@go vet ${PKG_LIST}
-
-inef:
-	@ineffassign ./
-
-spell:
-	@misspell ${PKG_LIST}
+	@gometalinter.v2 --vendor --aggregate --deadline=120s ./...
 
 clean:
 	@rm -f ./wr
@@ -64,14 +52,15 @@ clean:
 	@rm -fr ./vendor
 
 dist: export CGO_ENABLED = 0
+
+# go get -u github.com/gobuild/gopack
+# go get -u github.com/aktau/github-release
 dist:
-	# go get -u github.com/gobuild/gopack
 	gopack pack --os linux --arch amd64 -o linux-dist.zip
 	gopack pack --os darwin --arch amd64 -o darwin-dist.zip
-	# go get -u github.com/aktau/github-release
 	github-release release --tag ${TAG} --pre-release
 	github-release upload --tag ${TAG} --name wr-linux-x86-64.zip --file linux-dist.zip
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test race report lint vet inef spell install clean dist
+.PHONY: build test race lintl install clean dist
