@@ -899,7 +899,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		if err == nil {
 			// wait until boot is finished, ssh is ready, and osScript has
 			// completed
-			err = server.WaitUntilReady(osScript)
+			err = server.WaitUntilReady(s.config.ConfigFiles, osScript)
 
 			if err == nil {
 				// check that the exe of the cmd we're supposed to run exists on the
@@ -937,14 +937,6 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 					}
 				} else {
 					err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
-				}
-
-				if err == nil && s.config.ConfigFiles != "" {
-					// copy over config files
-					err = server.CopyOver(s.config.ConfigFiles)
-					if err != nil {
-						err = fmt.Errorf("Could not upload config files [%s]: %s", s.config.ConfigFiles, err)
-					}
 				}
 			}
 		}

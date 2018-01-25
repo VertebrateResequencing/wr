@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -176,7 +177,7 @@ func TestOpenStack(t *testing.T) {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					defer server.Destroy()
-					err = server.WaitUntilReady([]byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
@@ -278,12 +279,34 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					err = server.WaitUntilReady([]byte("#!/bin/bash\nfalse"))
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\nfalse"))
 					So(err, ShouldNotBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
 					server.Destroy()
+				})
+
+				Convey("Spawning with a start up script that relies on an unsupplied file returns an error", func() {
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\ncat /tmp/foo"))
+					So(err, ShouldNotBeNil)
+					ok := server.Alive(true)
+					So(ok, ShouldBeTrue)
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
+					server.Destroy()
+
+					Convey("But supplying the file makes it work", func() {
+						server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+						So(err, ShouldBeNil)
+						_, filename, _, _ := runtime.Caller(0)
+						err = server.WaitUntilReady(filename+":/tmp/foo", []byte("#!/bin/bash\ncat /tmp/foo"))
+						So(err, ShouldBeNil)
+						ok := server.Alive(true)
+						So(ok, ShouldBeTrue)
+						server.Destroy()
+					})
 				})
 
 				Convey("You can Spawn a server with a time to destruction", func() {

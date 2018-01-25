@@ -260,7 +260,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
 			}
-			err = server.WaitUntilReady(postCreation)
+			err = server.WaitUntilReady(cloudConfigFiles, postCreation)
 			if err != nil {
 				provider.TearDown()
 				die("failed to launch a server in %s: %s", providerName, err)
@@ -567,12 +567,6 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 
 		var configFilesArg string
 		if cloudConfigFiles != "" {
-			err = server.CopyOver(cloudConfigFiles)
-			if err != nil && !wrMayHaveStarted {
-				provider.TearDown()
-				die("failed to upload wr cloud config files to the server at %s: %s", server.IP, err)
-			}
-
 			// strip any local file locations
 			var remoteConfigFiles []string
 			for _, cf := range strings.Split(cloudConfigFiles, ",") {

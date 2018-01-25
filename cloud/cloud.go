@@ -51,7 +51,7 @@ than 1 process at a time.
     // spawn a server
     flavor := provider.CheapestServerFlavor(1, 1024, "")
     server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, true)
-    server.WaitUntilReady()
+    server.WaitUntilReady("~/.s3cfg")
 
     // simplistic way of making the most of the server by running as many
     // commands as possible:
@@ -462,10 +462,16 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // because you may not want or be able to ssh to your server, and so that you
 // can Spawn() another server while waiting for this one to become ready. If you
 // get an err, you will want to call server.Destroy() as this is not done for
-// you. postCreationScript is the optional []byte content of a script that will
-// be run on the server (as the user supplied to Spawn()) once it is ready, and
-// it will complete before this function returns; empty slice means do nothing.
-func (s *Server) WaitUntilReady(postCreationScript ...[]byte) (err error) {
+// you.
+//
+// files is a string in the format taken by the CopyOver() method; if supplied
+// non-blank it will CopyOver the specified files (after the server is ready,
+// before any postCreationScript is run).
+//
+// postCreationScript is the optional []byte content of a script that will be
+// run on the server (as the user supplied to Spawn()) once it is ready, and it
+// will complete before this function returns; empty slice means do nothing.
+func (s *Server) WaitUntilReady(files string, postCreationScript ...[]byte) (err error) {
 	// wait for ssh to come up
 	_, err = s.SSHClient()
 	if err != nil {
@@ -490,6 +496,15 @@ SENTINEL:
 		case <-limit:
 			ticker.Stop()
 			err = errors.New("cloud server never became ready to use")
+			return
+		}
+	}
+
+	// copy over any desired files
+	if files != "" {
+		err = s.CopyOver(files)
+		if err != nil {
+			err = fmt.Errorf("cloud server files failed to upload: %s", err)
 			return
 		}
 	}
