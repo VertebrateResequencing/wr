@@ -25,10 +25,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/ricochet2200/go-disk-usage/du"
-	"github.com/satori/go.uuid"
 	"log"
 	"os/exec"
 	"runtime"
@@ -36,6 +32,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/ricochet2200/go-disk-usage/du"
+	"github.com/satori/go.uuid"
 )
 
 const (

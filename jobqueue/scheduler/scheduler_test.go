@@ -20,7 +20,6 @@ package scheduler
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"log"
 	"os"
@@ -33,6 +32,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 var maxCPU = runtime.NumCPU()

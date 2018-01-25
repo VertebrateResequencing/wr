@@ -21,13 +21,14 @@ package jobqueue
 // This file contains the web interface code of the server.
 
 import (
-	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gorilla/websocket"
 )
 
 // jstatusReq is what the status webpage sends us to ask for info about jobs.

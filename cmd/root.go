@@ -22,13 +22,14 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"syscall"
+	"time"
+
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
-	"os"
-	"syscall"
-	"time"
 )
 
 // these variables are accessible by all subcommands.

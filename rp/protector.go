@@ -22,9 +22,10 @@ package rp
 // the Protector.
 
 import (
-	"github.com/satori/go.uuid"
 	"sync"
 	"time"
+
+	"github.com/satori/go.uuid"
 )
 
 // Protector struct is used to Protect a particular resource by granting tokens

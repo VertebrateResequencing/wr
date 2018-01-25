@@ -20,14 +20,15 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/kardianos/osext"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/kardianos/osext"
+	"github.com/spf13/cobra"
 )
 
 // options for this cmd

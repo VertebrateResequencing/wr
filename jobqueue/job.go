@@ -22,11 +22,6 @@ package jobqueue
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/muxfys"
-	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/satori/go.uuid"
-	"github.com/ugorji/go/codec"
 	"math"
 	"os"
 	"os/signal"
@@ -35,6 +30,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/satori/go.uuid"
+	"github.com/ugorji/go/codec"
 )
 
 // JobState is how we describe the possible job states.

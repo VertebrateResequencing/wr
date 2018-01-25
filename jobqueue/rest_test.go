@@ -22,15 +22,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/VertebrateResequencing/wr/internal"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestREST(t *testing.T) {

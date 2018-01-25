@@ -19,9 +19,10 @@
 package rp
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestRP(t *testing.T) {

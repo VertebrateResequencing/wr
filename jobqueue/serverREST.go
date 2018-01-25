@@ -23,12 +23,8 @@ package jobqueue
 // with the job queue using JSON over HTTP.
 
 import (
-	"code.cloudfoundry.org/bytefmt"
 	"encoding/json"
 	"fmt"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/ugorji/go/codec"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -36,6 +32,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"code.cloudfoundry.org/bytefmt"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/ugorji/go/codec"
 )
 
 const restJobsEndpoint = "/rest/v1/jobs/"

@@ -26,7 +26,6 @@ import (
 	"bytes"
 	"compress/zlib"
 	"fmt"
-	"github.com/dgryski/go-farm"
 	"io"
 	"io/ioutil"
 	"net"
@@ -35,6 +34,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/dgryski/go-farm"
 )
 
 // AppName gets used in certain places like naming the base directory of created

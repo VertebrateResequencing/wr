@@ -24,14 +24,15 @@ package scheduler
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/shirou/gopsutil/mem"
 	"log"
 	"math"
 	"os/exec"
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/shirou/gopsutil/mem"
 )
 
 const (

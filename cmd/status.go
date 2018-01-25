@@ -21,12 +21,13 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/spf13/cobra"
 )
 
 const shortTimeFormat = "06/1/2-15:04:05"

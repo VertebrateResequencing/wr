@@ -76,12 +76,13 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"github.com/satori/go.uuid"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/satori/go.uuid"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can

@@ -20,12 +20,6 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/kardianos/osext"
-	"github.com/sevlyar/go-daemon"
-	"github.com/spf13/cobra"
 	"io/ioutil"
 	"log"
 	"os"
@@ -35,6 +29,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/kardianos/osext"
+	"github.com/sevlyar/go-daemon"
+	"github.com/spf13/cobra"
 )
 
 // options for this cmd

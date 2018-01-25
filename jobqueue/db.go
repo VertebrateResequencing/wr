@@ -26,11 +26,6 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
-	"github.com/VertebrateResequencing/muxfys"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/boltdb/bolt"
-	"github.com/hashicorp/golang-lru"
-	"github.com/ugorji/go/codec"
 	"io"
 	"math"
 	"os"
@@ -40,6 +35,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/boltdb/bolt"
+	"github.com/hashicorp/golang-lru"
+	"github.com/ugorji/go/codec"
 )
 
 const (

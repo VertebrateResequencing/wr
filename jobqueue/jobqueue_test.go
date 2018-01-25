@@ -21,15 +21,6 @@ package jobqueue
 import (
 	"flag"
 	"fmt"
-	"github.com/VertebrateResequencing/muxfys"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/VertebrateResequencing/wr/internal"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	// "github.com/boltdb/bolt"
-	"github.com/sevlyar/go-daemon"
-	. "github.com/smartystreets/goconvey/convey"
-	// "github.com/ugorji/go/codec"
-	"github.com/shirou/gopsutil/process"
 	"io"
 	"io/ioutil"
 	"log"
@@ -44,6 +35,14 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/sevlyar/go-daemon"
+	"github.com/shirou/gopsutil/process"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 var runnermode bool

@@ -42,12 +42,13 @@ package scheduler
 import (
 	"crypto/md5"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/dgryski/go-farm"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/dgryski/go-farm"
 )
 
 const (

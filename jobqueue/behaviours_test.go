@@ -21,12 +21,13 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestBehaviours(t *testing.T) {

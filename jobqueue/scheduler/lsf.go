@@ -24,7 +24,6 @@ package scheduler
 import (
 	"bufio"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
 	"math"
 	"os/exec"
 	"regexp"
@@ -32,6 +31,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
 )
 
 // lsf is our implementer of scheduleri

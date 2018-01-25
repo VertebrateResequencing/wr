@@ -20,14 +20,15 @@ package cmd
 
 import (
 	"bufio"
-	"code.cloudfoundry.org/bytefmt"
 	"encoding/json"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"strings"
 	"time"
+
+	"code.cloudfoundry.org/bytefmt"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/spf13/cobra"
 )
 
 // options for this cmd

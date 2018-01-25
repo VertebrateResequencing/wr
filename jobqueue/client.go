@@ -23,12 +23,6 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/req"
-	"github.com/go-mangos/mangos/transport/tcp"
-	"github.com/satori/go.uuid"
-	"github.com/ugorji/go/codec"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -38,6 +32,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/go-mangos/mangos"
+	"github.com/go-mangos/mangos/protocol/req"
+	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/satori/go.uuid"
+	"github.com/ugorji/go/codec"
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs

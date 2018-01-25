@@ -23,11 +23,12 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
+	"time"
+
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
-	"time"
 )
 
 // handleRequest parses the bytes received from a connected client in to a

@@ -27,6 +27,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
 	"github.com/VividCortex/ewma"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
@@ -44,11 +50,6 @@ import (
 	"github.com/gophercloud/gophercloud/pagination"
 	"github.com/jpillora/backoff"
 	"golang.org/x/crypto/ssh"
-	"net"
-	"os"
-	"regexp"
-	"strings"
-	"time"
 )
 
 // initialServerSpawnTimeout is how long we wait for the first server we ever

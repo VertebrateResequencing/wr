@@ -20,7 +20,6 @@ package cloud
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"log"
 	"os"
@@ -29,6 +28,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 const crfile = "cloud.resources"

@@ -24,9 +24,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 	"io"
 	"log"
 	"os"
@@ -34,6 +31,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 )
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware

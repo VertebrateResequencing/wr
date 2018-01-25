@@ -22,11 +22,12 @@ package internal
 
 import (
 	"fmt"
-	"github.com/jinzhu/configor"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/jinzhu/configor"
 )
 
 const (

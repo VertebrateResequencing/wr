@@ -20,9 +20,10 @@ package queue
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestDependencyQueue(t *testing.T) {

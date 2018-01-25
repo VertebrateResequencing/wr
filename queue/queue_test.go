@@ -20,12 +20,13 @@ package queue
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"math/rand"
 	"sort"
 	"sync"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 type changedStruct struct {

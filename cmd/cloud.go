@@ -20,10 +20,6 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/kardianos/osext"
-	"github.com/spf13/cobra"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -32,6 +28,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/kardianos/osext"
+	"github.com/spf13/cobra"
 )
 
 // cloudBinDir is where we will upload executables to our created cloud server;

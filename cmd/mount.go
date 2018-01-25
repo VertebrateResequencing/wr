@@ -20,15 +20,16 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
 )
 
 // options for this cmd
