@@ -526,7 +526,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		}
 
 		for _, i := range imageList {
-			if i.Progress == 100 && strings.HasPrefix(i.Name, osPrefix) {
+			if i.Progress == 100 && ( strings.HasPrefix(i.Name, osPrefix) || strings.HasPrefix(i.ID, osPrefix) ) {
 				imageID = i.ID
 				imageDisk = i.MinDisk
 				return false, nil
