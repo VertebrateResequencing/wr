@@ -84,10 +84,7 @@ func (s sobsd) Swap(i, j int) {
 }
 func (s sobsd) Less(i, j int) bool {
 	cmp := bytes.Compare(s[i][0], s[j][0])
-	if cmp == -1 {
-		return true
-	}
-	return false
+	return cmp == -1
 }
 
 // sobsdStorer is the kind of function that stores the contents of a sobsd in
@@ -95,20 +92,20 @@ func (s sobsd) Less(i, j int) bool {
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
-	bolt                 *bolt.DB
-	envcache             *lru.ARCCache
-	ch                   codec.Handle
-	updatingAfterJobExit int
-	backupsEnabled       bool
-	backupPath           string
-	backupMount          *muxfys.MuxFys
-	backingUp            bool
-	backupQueued         bool
-	backupFinal          bool
-	backupNotification   chan bool
-	slowBackups          bool // just for testing purposes
-	closed               bool
+	backingUp          bool
+	backupFinal        bool
+	backupMount        *muxfys.MuxFys
+	backupNotification chan bool
+	backupPath         string
+	backupQueued       bool
+	backupsEnabled     bool
+	bolt               *bolt.DB
+	ch                 codec.Handle
+	closed             bool
+	envcache           *lru.ARCCache
+	slowBackups        bool // just for testing purposes
 	sync.RWMutex
+	updatingAfterJobExit int
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -551,7 +548,7 @@ func (db *db) recoverIncompleteJobs() (jobs []*Job, err error) {
 
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
 // jobs bucket (ie. those that have gone through the queue and been Remove()d).
-func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool) (jobs []*Job, err error) {
+func (db *db) retrieveCompleteJobsByKeys(keys []string) (jobs []*Job, err error) {
 	err = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsComplete)
 		for _, key := range keys {
@@ -679,28 +676,14 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 	return
 }
 
-// retrieveIncompleteJobKeysByDepGroup gets jobs with the given RepGroup from
+// retrieveIncompleteJobKeysByDepGroup gets jobs with the given DepGroup from
 // the live bucket (ie. those that have been added to the queue and not yet
 // Archive()d - even if they've been added and archived in the past).
 func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) (jobKeys []string, err error) {
-	return db.retrieveIncompleteJobsKeysByGroup(depgroup, bucketDTK)
-}
-
-// retrieveIncompleteJobKeysByDepGroupDependency gets jobs that had a dependency
-// on jobs with the given RepGroup from the live bucket (ie. those that have
-// been added to the queue and not yet Archive()d - even if they've been added
-// and archived in the past).
-func (db *db) retrieveIncompleteJobKeysByDepGroupDependency(depgroup string) (jobKeys []string, err error) {
-	return db.retrieveIncompleteJobsKeysByGroup(depgroup, bucketRDTK)
-}
-
-// retrieveIncompleteJobsKeysByGroup gets job keys with the given group (using
-// the lookup from the given bucket) from the live jobs bucket.
-func (db *db) retrieveIncompleteJobsKeysByGroup(group string, bucket []byte) (jobKeys []string, err error) {
 	err = db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
-		lookupBucket := tx.Bucket(bucket).Cursor()
-		prefix := []byte(group + dbDelimiter)
+		lookupBucket := tx.Bucket(bucketDTK).Cursor()
+		prefix := []byte(depgroup + dbDelimiter)
 		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 			key := bytes.TrimPrefix(k, prefix)
 			if newJobBucket.Get(key) != nil {
