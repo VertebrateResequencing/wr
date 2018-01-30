@@ -44,9 +44,10 @@ import (
 )
 
 const (
-	dbDelimiter          = "_::_"
-	jobStatWindowPercent = float32(5)
-	dbFilePermission     = 0600
+	dbDelimiter               = "_::_"
+	jobStatWindowPercent      = float32(5)
+	dbFilePermission          = 0600
+	minimumTimeBetweenBackups = 30 * time.Second
 )
 
 var (
@@ -94,10 +95,12 @@ type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 type db struct {
 	backingUp          bool
 	backupFinal        bool
+	backupLast         time.Time
 	backupMount        *muxfys.MuxFys
 	backupNotification chan bool
 	backupPath         string
 	backupQueued       bool
+	backupWait         time.Duration
 	backupsEnabled     bool
 	bolt               *bolt.DB
 	ch                 codec.Handle
@@ -277,6 +280,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		backupsEnabled:     backupsEnabled,
 		backupPath:         bkPath,
 		backupNotification: make(chan bool),
+		backupWait:         minimumTimeBetweenBackups,
 	}
 	if fs != nil {
 		dbstruct.backupMount = fs
@@ -1027,7 +1031,9 @@ func (db *db) close() {
 // backgroundBackup backs up the database to a file (the location given during
 // initDB()) in a goroutine, doing one backup at a time and queueing a further
 // backup if any other backup requests come in while a backup is running. Any
-// errors are silently ignored.
+// errors are silently ignored. Spaces out sequential backups so that there is a
+// gap of max(30s, [time taken to complete previous backup]) seconds between
+// them.
 func (db *db) backgroundBackup() {
 	db.Lock()
 	defer db.Unlock()
@@ -1041,13 +1047,23 @@ func (db *db) backgroundBackup() {
 
 	db.backingUp = true
 	slowBackups := db.slowBackups
-	go func() {
+	go func(last time.Time, wait time.Duration, doNotWait bool) {
+		if !doNotWait {
+			now := time.Now()
+			if !last.IsZero() && last.Add(wait).After(now) {
+				// wait before doing another backup, so we don't slow down new
+				// db accessses all the time
+				<-time.After(last.Add(wait).Sub(now))
+			}
+		}
+
 		if slowBackups {
 			// just for testing purposes
 			<-time.After(100 * time.Millisecond)
 		}
 
 		// create the new backup file with temp name
+		start := time.Now()
 		tmpBackupPath := db.backupPath + ".tmp"
 		err := db.bolt.View(func(tx *bolt.Tx) error {
 			return tx.CopyFile(tmpBackupPath, dbFilePermission)
@@ -1068,6 +1084,11 @@ func (db *db) backgroundBackup() {
 
 		db.Lock()
 		db.backingUp = false
+		db.backupLast = time.Now()
+		duration := time.Since(start)
+		if duration > minimumTimeBetweenBackups {
+			db.backupWait = duration
+		}
 
 		if db.backupFinal {
 			// close() has been called, don't do any more backups and tell
@@ -1085,7 +1106,7 @@ func (db *db) backgroundBackup() {
 		} else {
 			db.Unlock()
 		}
-	}()
+	}(db.backupLast, db.backupWait, db.backupFinal)
 }
 
 // backup backs up the database to the given writer. Can be called at the same
