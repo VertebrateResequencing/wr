@@ -1,14 +1,14 @@
-hash: d24970895baf6afba8742d50169a04ba9eb198b8bac51bff30a5c2843e274b18
-updated: 2018-01-17T16:37:27.449475547Z
+hash: 62f4477d8dd4918ce333a409be781861d3822cbe6230723ef01f98abf889d874
+updated: 2018-01-30T14:59:11.036429075Z
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
 - name: github.com/alexflint/go-filemutex
   version: d358565f3c3f5334209f1e80693e4f621650c489
-- name: github.com/boltdb/bolt
-  version: 9da31745363232bc1e27dbab3569e77383a51585
 - name: github.com/BurntSushi/toml
   version: a368813c5e648fee92e5f6c30e3944ff9d5e8895
+- name: github.com/coreos/bbolt
+  version: 48ea1b39c25fc1bab3506fbc712ecbaa842c4d2d
 - name: github.com/dgryski/go-farm
   version: 2de33835d10275975374b37b2dcfd22c9020a1f5
 - name: github.com/go-ini/ini
@@ -47,16 +47,20 @@ imports:
   - openstack/utils
   - pagination
 - name: github.com/gorilla/websocket
-  version: 292fd08b2560ad524ee37396253d71570339a821
+  version: 91f589db023d66e4aba7112d44cc0d2fb091c553
 - name: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
-  version: 00d53976f3f71ce3d8327b3af528ce3d4700620e
+  version: 6975cb38d30430450455caad8a62d5eba93e0e4e
   subpackages:
   - fuse
   - fuse/nodefs
   - fuse/pathfs
   - splice
+- name: github.com/hashicorp/errwrap
+  version: 7554cd9344cec97297fa6649b055a8c98c2a1e55
+- name: github.com/hashicorp/go-multierror
+  version: b7773ae218740a7be65057fc60b366a49b538a44
 - name: github.com/hashicorp/golang-lru
   version: 0a025b7e63adc15a622f29b0b2c4c3848243bbf6
   subpackages:
@@ -89,9 +93,9 @@ imports:
 - name: github.com/mitchellh/go-homedir
   version: b8bc1bf767474819792c23f32d8286a45736f1c6
 - name: github.com/pkg/errors
-  version: e881fd58d78e04cf6d0de1217f8707c8cc2249bc
+  version: 30136e27e2ac8d167177e8a583aa4c3fea5be833
 - name: github.com/pkg/sftp
-  version: 9917fead0c27827eb2f78208dc494d1d708089ec
+  version: 738e088bbd93f7080e538c2a1ca50fadfc5183c0
 - name: github.com/ricochet2200/go-disk-usage
   version: f0d1b743428fc09792f93233d9412f89f88fa2ab
   subpackages:
@@ -103,7 +107,7 @@ imports:
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: 6a368fb7cd1221fa6ea90facc9447c9a2234c255
+  version: c432be29ccce470088d07eea25b3ea7e68a8afbb
   subpackages:
   - cpu
   - host
@@ -114,13 +118,13 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: 0c34d16c3123764e413b9ed982ada58b1c3d53ea
+  version: f91529fc609202eededff4de2dc0ba2f662240a3
 - name: github.com/spf13/pflag
   version: 4c012f6dcd9546820e378d0bdda4d8fc772cdfea
 - name: github.com/StackExchange/wmi
   version: 5d049714c4a64225c3c79a7cf7d02f7fb5b96338
 - name: github.com/ugorji/go
-  version: 9831f2c3ac1068a78f50999a30db84270f647af6
+  version: d2b24cf3d3b4fe77f5ca411be71afb460ce4c92d
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
@@ -128,19 +132,21 @@ imports:
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: 13931e22f9e72ea58bb73048bc752b48c6d4d4ac
+  version: 1875d0a70c90e57f11972aefd42276df65e895b9
   subpackages:
   - curve25519
   - ed25519
   - ed25519/internal/edwards25519
+  - internal/chacha20
+  - poly1305
   - ssh
 - name: golang.org/x/net
-  version: 5ccada7d0a7ba9aeb5d3aca8d3501b4c2a509fec
+  version: 0ed95abb35c445290478a5348a7b38bb154135fd
   subpackages:
   - idna
   - lex/httplex
 - name: golang.org/x/sys
-  version: fff93fa7cd278d84afc205751523809c464168ab
+  version: 3dbebcf8efb6a5011a60c2b4591c1022a759af8a
   subpackages:
   - unix
   - windows
@@ -155,7 +161,7 @@ imports:
   version: d670f9405373e636a5a2765eea47fac0c9bc91a4
 testImports:
 - name: github.com/gopherjs/gopherjs
-  version: 444abdf920945de5d4a977b572bcc6c674d1e4eb
+  version: 178c176a91fe05e3e6c58fa5c989bad19e6cdcb3
   subpackages:
   - js
 - name: github.com/jtolds/gls

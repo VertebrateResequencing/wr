@@ -38,7 +38,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/boltdb/bolt"
+	bolt "github.com/coreos/bbolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/ugorji/go/codec"
 )
