@@ -77,37 +77,35 @@ var (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
-	User           string
 	ClientID       uuid.UUID
+	Env            []byte // compressed binc encoding of []string
+	FirstReserve   bool
+	GetEnv         bool
+	GetStd         bool
+	IgnoreComplete bool
+	Job            *Job
+	Jobs           []*Job
+	Keys           []string
+	Limit          int
 	Method         string
 	Queue          string
-	Jobs           []*Job
-	Job            *Job
-	IgnoreComplete bool
-	Keys           []string
-	Timeout        time.Duration
 	SchedulerGroup string
-	Env            []byte // compressed binc encoding of []string
-	GetStd         bool
-	GetEnv         bool
-	Limit          int
 	State          JobState
-	FirstReserve   bool
+	Timeout        time.Duration
+	User           string
 }
 
 // Client represents the client side of the socket that the jobqueue server is
 // Serve()ing, specific to a particular queue.
 type Client struct {
-	sock        mangos.Socket
-	queue       string
 	ch          codec.Handle
 	clientid    uuid.UUID
-	hostID      string
-	gotHostID   bool
-	user        string
 	hasReserved bool
-	teMutex     sync.Mutex // to protect Touch() from other methods during Execute()
+	queue       string
+	sock        mangos.Socket
 	sync.Mutex
+	teMutex sync.Mutex // to protect Touch() from other methods during Execute()
+	user    string
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -376,7 +374,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if strings.Contains(jc, " | ") {
 		jc = "set -o pipefail; " + jc
 	}
-	cmd := exec.Command(shell, "-c", jc)
+	cmd := exec.Command(shell, "-c", jc) // #nosec Our whole purpose is to allow users to run arbitrary commands via us...
 
 	// we'll filter STDERR/OUT of the cmd to keep only the first and last line
 	// of any contiguous block of \r terminated lines (to mostly eliminate
@@ -580,7 +578,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	peakmem += ourmem
 
 	// get the exit code and figure out what to do with the Job
-	exitcode := 0
+	var exitcode int
 	var myerr error
 	dobury := false
 	dorelease := false
