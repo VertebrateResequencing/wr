@@ -261,6 +261,7 @@ machine was started.`,
 		if jd.RepGrp == "" {
 			jd.RepGrp = "manually_added"
 		}
+
 		var err error
 		if cmdMem == "" {
 			jd.Memory = 0
@@ -336,8 +337,8 @@ machine was started.`,
 			defer reader.(*os.File).Close()
 		}
 
-		// we'll default to pwd if the manager is on the same host as us, /tmp
-		// otherwise
+		// we'll default to pwd if the manager is on the same host as us, or if
+		// cwd matters, /tmp otherwise
 		timeout := time.Duration(timeoutint) * time.Second
 		jq, err := jobqueue.Connect(addr, "cmds", timeout)
 		if err != nil {
@@ -347,15 +348,18 @@ machine was started.`,
 		if err != nil {
 			die("even though I was able to connect to the manager, it failed to tell me its location")
 		}
+		wd, err := os.Getwd()
+		if err != nil {
+			die("%s", err)
+		}
 		var pwd string
 		var remoteWarning bool
 		var envVars []string
 		if jobqueue.CurrentIP("")+":"+config.ManagerPort == sstats.ServerInfo.Addr {
-			pwd, err = os.Getwd()
-			if err != nil {
-				die("%s", err)
-			}
+			pwd = wd
 			envVars = os.Environ()
+		} else if cmdCwdMatters {
+			pwd = wd
 		} else {
 			pwd = "/tmp"
 			remoteWarning = true
