@@ -53,9 +53,7 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) (sortedKeys []stri
 	}
 
 	for _, val := range vals {
-		for _, key := range valToKeys[val] {
-			sortedKeys = append(sortedKeys, key)
-		}
+		sortedKeys = append(sortedKeys, valToKeys[val]...)
 	}
 
 	return
@@ -82,9 +80,7 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 	}
 
 	for _, val := range criterionValues {
-		for _, key := range criterionValueToKeys[val] {
-			sortedKeys = append(sortedKeys, key)
-		}
+		sortedKeys = append(sortedKeys, criterionValueToKeys[val]...)
 	}
 
 	return
@@ -125,7 +121,7 @@ func Userid() (uid int, err error) {
 
 // parseIDCmd parses the output of the unix 'id' command.
 func parseIDCmd(idopts ...string) (user string, err error) {
-	idcmd := exec.Command("id", idopts...)
+	idcmd := exec.Command("/usr/bin/id", idopts...) // #nosec
 	var idout []byte
 	idout, err = idcmd.Output()
 	if err != nil {

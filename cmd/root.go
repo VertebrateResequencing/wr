@@ -105,17 +105,17 @@ func cloudResourceName(username string) string {
 
 // info is a convenience to print a msg to STDOUT.
 func info(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stdout, "info: %s\n", fmt.Sprintf(msg, a...))
+	fmt.Fprintf(os.Stdout, "info: %s\n", fmt.Sprintf(msg, a...)) // #nosec
 }
 
 // warn is a convenience to print a msg to STDERR.
 func warn(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "warning: %s\n", fmt.Sprintf(msg, a...))
+	fmt.Fprintf(os.Stderr, "warning: %s\n", fmt.Sprintf(msg, a...)) // #nosec
 }
 
 // die is a convenience to print an error to STDERR and exit indicating error.
 func die(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(msg, a...))
+	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(msg, a...)) // #nosec
 	os.Exit(1)
 }
 
@@ -154,9 +154,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Proces
 		args = append(args, config.Deployment)
 	}
 
-	for _, extra := range extraArgs {
-		args = append(args, extra)
-	}
+	args = append(args, extraArgs...)
 
 	context = &daemon.Context{
 		PidFileName: pidFile,
@@ -176,10 +174,10 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Proces
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
 // checking it really exited
-func stopdaemon(pid int, source string, name string) bool {
+func stopdaemon(pid int, source string) bool {
 	err := syscall.Kill(pid, syscall.SIGTERM)
 	if err != nil {
-		warn("wr %s is running with pid %d according to %s, but failed to send it SIGTERM: %s", name, pid, source, err)
+		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
 		return false
 	}
 
@@ -213,7 +211,7 @@ func stopdaemon(pid int, source string, name string) bool {
 	// if it didn't stop, offer to force kill it? That's a bit dangerous...
 	// just warn for now
 	if !ok {
-		warn("wr %s, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", name, pid, source, giveupseconds)
+		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", pid, source, giveupseconds)
 	}
 
 	return ok

@@ -108,8 +108,16 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	if deployment != Development && deployment != Production {
 		deployment = DefaultDeployment()
 	}
-	os.Setenv("CONFIGOR_ENV", deployment)
-	os.Setenv("CONFIGOR_ENV_PREFIX", "WR")
+	err = os.Setenv("CONFIGOR_ENV", deployment)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	err = os.Setenv("CONFIGOR_ENV_PREFIX", "WR")
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	ConfigDeploymentBasename := ".wr_config." + deployment + ".yml"
 
 	// read the config files. We have to check file existence before passing
@@ -137,7 +145,11 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	}
 
 	config := Config{}
-	configor.Load(&config, configFiles...)
+	err = configor.Load(&config, configFiles...)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	config.Deployment = deployment
 
 	// convert the possible ~/ in Manager_dir to abs path to user's home

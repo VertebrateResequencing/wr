@@ -163,7 +163,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		var stopped bool
 		if err == nil {
-			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile, "manager")
+			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile)
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
@@ -206,7 +206,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		sAddr := sstats.ServerInfo.Addr
 		if myAddr == sAddr {
 			jq.Disconnect()
-			stopped = stopdaemon(sstats.ServerInfo.PID, "the manager itself", "manager")
+			stopped = stopdaemon(sstats.ServerInfo.PID, "the manager itself")
 		} else {
 			// use the client command to stop it
 			stopped = jq.ShutdownServer()
@@ -445,7 +445,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	}
 
 	// start logging to configured file
-	logfile, errlog := os.OpenFile(config.ManagerLogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	logfile, errlog := os.OpenFile(config.ManagerLogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if errlog != nil {
 		warn("could not log to %s, will log to STDOUT: %v", config.ManagerLogFile, errlog)
 	} else {

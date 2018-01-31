@@ -32,8 +32,6 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const crfile = "cloud.resources"
-
 func TestOpenStack(t *testing.T) {
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")
@@ -214,14 +212,14 @@ func TestOpenStack(t *testing.T) {
 						err = server.MkDir("/tmp/foo/bar")
 						So(err, ShouldBeNil)
 
-						stdout, stderr, err = server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
+						stdout, _, err = server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "")
 
 						err = server.CreateFile("my content", "/tmp/foo/bar/a/b/file")
 						So(err, ShouldBeNil)
 
-						stdout, stderr, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
+						stdout, _, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "my content")
 
@@ -368,12 +366,14 @@ func TestOpenStack(t *testing.T) {
 				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
 					flavor, err := p.CheapestServerFlavor(1, 50, "^!!!!!!!!!!!!!!$")
 					So(err, ShouldNotBeNil)
+					So(flavor, ShouldBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
 
 					flavor, err = p.CheapestServerFlavor(1, 50, "^!!!!(")
 					So(err, ShouldNotBeNil)
+					So(flavor, ShouldBeNil)
 					perr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrBadRegex)

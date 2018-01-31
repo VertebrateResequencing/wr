@@ -391,7 +391,12 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	if len(priorJobs) > 0 {
 		jobsByQueue := make(map[string][]*queue.ItemDef)
 		for _, job := range priorJobs {
-			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+			var deps []string
+			deps, err = job.Dependencies.incompleteJobKeys(s.db)
+			if err != nil {
+				return
+			}
+			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 		for qname, itemdefs := range jobsByQueue {
 			q := s.getOrCreateQueue(qname)
@@ -726,9 +731,9 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					if rec, existed := groupToReqs[job.ReqGroup]; existed {
 						recommendedReq = rec
 					} else {
-						recm, _ := s.db.recommendedReqGroupMemory(job.ReqGroup)
-						recs, _ := s.db.recommendedReqGroupTime(job.ReqGroup)
-						if recm == 0 || recs == 0 {
+						recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
+						recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
+						if recm == 0 || recs == 0 || errm != nil || errs != nil {
 							groupToReqs[job.ReqGroup] = nil
 						} else {
 							recommendedReq = &scheduler.Requirements{RAM: recm, Time: time.Duration(recs) * time.Second}
@@ -1047,14 +1052,26 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 		// their DepGroup dependencies being in cr.Jobs
 		var itemdefs []*queue.ItemDef
 		for _, job := range jobsToQueue {
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: job.Dependencies.incompleteJobKeys(s.db)})
+			deps, err := job.Dependencies.incompleteJobKeys(s.db)
+			if err != nil {
+				srerr = ErrDBError
+				qerr = err
+				break
+			}
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 
 		// storeNewJobs also returns jobsToUpdate, which are those jobs
 		// currently in the queue that need their dependencies updated because
 		// they just changed when we stored cr.Jobs
 		for _, job := range jobsToUpdate {
-			thisErr := q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, job.Dependencies.incompleteJobKeys(s.db))
+			deps, err := job.Dependencies.incompleteJobKeys(s.db)
+			if err != nil {
+				srerr = ErrDBError
+				qerr = err
+				break
+			}
+			thisErr := q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
 			if thisErr != nil {
 				qerr = thisErr
 				break
@@ -1146,11 +1163,16 @@ func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEn
 
 	if len(notfound) > 0 {
 		// try and get the jobs from the permanent store
-		found, err := s.db.retrieveCompleteJobsByKeys(notfound, getStd, getEnv)
+		found, err := s.db.retrieveCompleteJobsByKeys(notfound)
 		if err != nil {
 			srerr = ErrDBError
 			qerr = err.Error()
 		} else if len(found) > 0 {
+			if getEnv { // complete jobs don't have any std
+				for _, job := range found {
+					s.jobPopulateStdEnv(job, false, getEnv)
+				}
+			}
 			jobs = append(jobs, found...)
 		}
 	}

@@ -261,7 +261,11 @@ func (b *Behaviour) run(j *Job) (err error) {
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
 	}
-	cmd := exec.Command("bash", "-c", bc) // *** hardcoding bash here, when we could in theory have client.Execute() pass shell in?
+	// *** hardcoding bash here, when we could in theory have client.Execute()
+	// pass shell in? And yes, we're allowing user to run absolutely any command
+	// they like, but that is the very nature of this app. This runs as them,
+	// so can do whatever they can do...
+	cmd := exec.Command("/bin/bash", "-c", bc) // #nosec
 	cmd.Dir = actualCwd
 	out, err := cmd.CombinedOutput()
 	if err != nil {

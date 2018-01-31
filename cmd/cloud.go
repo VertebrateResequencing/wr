@@ -194,7 +194,6 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
-		serverPort := "22"
 		info("please wait while %s resources are created...", providerName)
 		err = provider.Deploy(&cloud.DeployConfig{
 			RequiredPorts:  []int{22, mp, wp},
@@ -222,8 +221,8 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				// see if this server is already running wr manager by trying
 				// to re-establish our port forwarding, which may have failed
 				// due to temporary networking issues
-				startForwarding(server.IP, serverPort, osUsername, keyPath, mp, fmPidPath)
-				startForwarding(server.IP, serverPort, osUsername, keyPath, wp, fwPidPath)
+				startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
+				startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 				jq = connect(2 * time.Second)
 				if jq != nil {
 					sstats, err := jq.ServerStats()
@@ -278,12 +277,12 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		// to work reliably and completely, we'll just spawn ssh -L in the
 		// background and keep note of the pids so we can kill them during
 		// teardown
-		err = startForwarding(server.IP, serverPort, osUsername, keyPath, mp, fmPidPath)
+		err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
 		if err != nil {
 			provider.TearDown()
 			die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
 		}
-		err = startForwarding(server.IP, serverPort, osUsername, keyPath, wp, fwPidPath)
+		err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 		if err != nil {
 			provider.TearDown()
 			die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
@@ -622,7 +621,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 }
 
-func startForwarding(serverIP, serverPort, serverUser, keyFile string, port int, pidPath string) (err error) {
+func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath string) (err error) {
 	// first check if pidPath already has a pid and if that pid is alive
 	if _, running := checkProcess(pidPath); running {
 		//info("assuming the process with id %d is already forwarding port %d to %s:%d", pid, port, serverIP, port)
@@ -630,7 +629,7 @@ func startForwarding(serverIP, serverPort, serverUser, keyFile string, port int,
 	}
 
 	// start ssh -L running
-	cmd := exec.Command("ssh", "-i", keyFile, "-o", "ExitOnForwardFailure yes", "-o", "UserKnownHostsFile /dev/null", "-o", "StrictHostKeyChecking no", "-qngNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port), fmt.Sprintf("%s@%s", serverUser, serverIP))
+	cmd := exec.Command("/usr/bin/ssh", "-i", keyFile, "-o", "ExitOnForwardFailure yes", "-o", "UserKnownHostsFile /dev/null", "-o", "StrictHostKeyChecking no", "-qngNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port), fmt.Sprintf("%s@%s", serverUser, serverIP)) // #nosec
 	err = cmd.Start()
 	if err != nil {
 		return

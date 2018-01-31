@@ -276,7 +276,7 @@ func (j *Job) Env() (env []string, err error) {
 			return
 		}
 		ch := new(codec.BincHandle)
-		dec := codec.NewDecoderBytes([]byte(decompressed), ch)
+		dec := codec.NewDecoderBytes(decompressed, ch)
 		err = dec.Decode(overrideEs)
 		if err != nil {
 			return
@@ -296,7 +296,7 @@ func (j *Job) Env() (env []string, err error) {
 		return
 	}
 	ch := new(codec.BincHandle)
-	dec := codec.NewDecoderBytes([]byte(decompressed), ch)
+	dec := codec.NewDecoderBytes(decompressed, ch)
 	es := &envStr{}
 	err = dec.Decode(es)
 	if err != nil {
@@ -456,12 +456,9 @@ func (j *Job) Mount() error {
 		deathSignals := make(chan os.Signal, 2)
 		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 		go func() {
-			select {
-			case <-deathSignals:
-				for _, fs := range j.mountedFS {
-					fs.Unmount(true)
-				}
-				return
+			<-deathSignals
+			for _, fs := range j.mountedFS {
+				fs.Unmount(true)
 			}
 		}()
 	}

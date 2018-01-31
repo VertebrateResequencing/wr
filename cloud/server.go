@@ -50,32 +50,32 @@ type Flavor struct {
 // Server provides details of the server that Spawn() created for you, and some
 // methods that let you keep track of how you use that server.
 type Server struct {
-	ID                string
-	Name              string // ought to correspond to the hostname
-	IP                string // ip address that you could SSH to
-	OS                string // the name of the Operating System image
-	UserName          string // the username needed to log in to the server
-	Script            []byte // the content of a start-up script run on the server
 	AdminPass         string
+	Disk              int // GB of available disk space
 	Flavor            Flavor
-	Disk              int           // GB of available disk space
-	TTD               time.Duration // amount of idle time allowed before destruction
+	ID                string
+	IP                string // ip address that you could SSH to
 	IsHeadNode        bool
-	usedRAM           int
-	usedCores         int
-	usedDisk          int
-	onDeathrow        bool
-	mutex             sync.RWMutex
+	Name              string        // ought to correspond to the hostname
+	OS                string        // the name of the Operating System image
+	Script            []byte        // the content of a start-up script run on the server
+	TTD               time.Duration // amount of idle time allowed before destruction
+	UserName          string        // the username needed to log in to the server
 	cancelDestruction chan bool
-	cancelRunCmd      map[int]chan bool
 	cancelID          int
+	cancelRunCmd      map[int]chan bool
+	debugMode         bool
 	destroyed         bool
+	goneBad           bool
+	location          *time.Location
+	mutex             sync.RWMutex
+	onDeathrow        bool
+	permanentProblem  string
 	provider          *Provider
 	sshclient         *ssh.Client
-	location          *time.Location
-	goneBad           bool
-	permanentProblem  string
-	debugMode         bool
+	usedCores         int
+	usedDisk          int
+	usedRAM           int
 }
 
 func (s *Server) debug(msg string, a ...interface{}) {

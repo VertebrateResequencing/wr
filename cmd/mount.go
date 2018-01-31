@@ -236,16 +236,14 @@ not cached, only serial writes are possible.`,
 		if len(mounted) > 0 {
 			deathSignals := make(chan os.Signal, 2)
 			signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
-			select {
-			case <-deathSignals:
-				for _, fs := range mounted {
-					err := fs.Unmount()
-					if err != nil {
-						fs.Error("Failed to unmount", "err", err)
-					}
+			<-deathSignals
+			for _, fs := range mounted {
+				err := fs.Unmount()
+				if err != nil {
+					fs.Error("Failed to unmount", "err", err)
 				}
-				return
 			}
+			return
 		}
 	},
 }

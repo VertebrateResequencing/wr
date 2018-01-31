@@ -48,6 +48,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	"github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
 	"golang.org/x/crypto/ssh"
 )
@@ -71,21 +72,21 @@ var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "O
 // openstackp is our implementer of provideri
 type openstackp struct {
 	computeClient     *gophercloud.ServiceClient
-	networkClient     *gophercloud.ServiceClient
-	poolName          string
+	errorBackoff      *backoff.Backoff
 	externalNetworkID string
 	fmap              map[string]Flavor
+	hasDefaultGroup   bool
+	ipNet             *net.IPNet
 	lastFlavorCache   time.Time
-	ownName           string
+	networkClient     *gophercloud.ServiceClient
 	networkName       string
 	networkUUID       string
-	hasDefaultGroup   bool
+	ownName           string
+	poolName          string
 	securityGroup     string
-	ipNet             *net.IPNet
+	spawnFailed       bool
 	spawnTimes        ewma.MovingAverage
 	spawnTimesVolume  ewma.MovingAverage
-	spawnFailed       bool
-	errorBackoff      *backoff.Backoff
 }
 
 // requiredEnv returns envs.
@@ -213,7 +214,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			// create a new keypair; we can't just let Openstack create one for
 			// us because in latest versions it does not return a DER encoded
 			// key, which is what GO built-in library supports.
-			privateKey, errk := rsa.GenerateKey(rand.Reader, 1024)
+			privateKey, errk := rsa.GenerateKey(rand.Reader, 2048)
 			if errk != nil {
 				err = errk
 				return
@@ -768,13 +769,15 @@ func (p *openstackp) destroyServer(serverID string) (err error) {
 }
 
 // tearDown achieves the aims of TearDown()
-func (p *openstackp) tearDown(resources *Resources) (err error) {
+func (p *openstackp) tearDown(resources *Resources) error {
 	// throughout we'll ignore errors because we want to try and delete
-	// as much as possible; we'll end up returning the last error we encountered
+	// as much as possible; we'll end up returning a concatenation of all of
+	// them though
+	var merr *multierror.Error
 
 	// delete servers, except for ourselves
 	pager := servers.List(p.computeClient, servers.ListOpts{})
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
+	err := pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
 		if err != nil {
 			return false, err
@@ -788,25 +791,40 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 
 		return true, nil
 	})
+	if err != nil {
+		merr = multierror.Append(merr, err)
+	}
 
 	if p.ownName == "" {
 		// delete router
 		if id := resources.Details["router"]; id != "" {
 			if subnetid := resources.Details["subnet"]; subnetid != "" {
 				// remove the interface from our router first
-				_, err = routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+				_, err := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+				if err != nil {
+					merr = multierror.Append(merr, err)
+				}
 			}
-			err = routers.Delete(p.networkClient, id).ExtractErr()
+			err := routers.Delete(p.networkClient, id).ExtractErr()
+			if err != nil {
+				merr = multierror.Append(merr, err)
+			}
 		}
 
 		// delete network (and its subnet)
 		if id := resources.Details["network"]; id != "" {
-			err = networks.Delete(p.networkClient, id).ExtractErr()
+			err := networks.Delete(p.networkClient, id).ExtractErr()
+			if err != nil {
+				merr = multierror.Append(merr, err)
+			}
 		}
 
 		// delete secgroup
 		if id := resources.Details["secgroup"]; id != "" {
-			err = secgroups.Delete(p.computeClient, id).ExtractErr()
+			err := secgroups.Delete(p.computeClient, id).ExtractErr()
+			if err != nil {
+				merr = multierror.Append(merr, err)
+			}
 		}
 	}
 
@@ -815,12 +833,15 @@ func (p *openstackp) tearDown(resources *Resources) (err error) {
 	// the same keypair we used to spawn our servers
 	if id := resources.Details["keypair"]; id != "" {
 		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
-			err = keypairs.Delete(p.computeClient, id).ExtractErr()
+			err := keypairs.Delete(p.computeClient, id).ExtractErr()
+			if err != nil {
+				merr = multierror.Append(merr, err)
+			}
 			resources.PrivateKey = ""
 		}
 	}
 
-	return
+	return merr.ErrorOrNil()
 }
 
 // getAvailableFloatingIP gets or creates an unused floating ip
