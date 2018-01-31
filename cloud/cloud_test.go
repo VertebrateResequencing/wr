@@ -366,21 +366,21 @@ func TestOpenStack(t *testing.T) {
 				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
 					flavor, err := p.CheapestServerFlavor(1, 50, "^!!!!!!!!!!!!!!$")
 					So(err, ShouldNotBeNil)
-					So(flavor, ShouldBeNil)
+					So(flavor.ID, ShouldBeBlank)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
 
 					flavor, err = p.CheapestServerFlavor(1, 50, "^!!!!(")
 					So(err, ShouldNotBeNil)
-					So(flavor, ShouldBeNil)
+					So(flavor.ID, ShouldBeBlank)
 					perr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrBadRegex)
 
 					flavor, err = p.CheapestServerFlavor(1, 50, ".*$")
 					So(err, ShouldBeNil)
-					So(flavor, ShouldNotBeNil)
+					So(flavor.ID, ShouldNotBeBlank)
 				})
 
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {

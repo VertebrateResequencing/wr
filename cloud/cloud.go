@@ -385,8 +385,8 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 	return
 }
 
-// Spawn creates a new server using an OS image with a name or ID prefixed with
-// the given os name or ID, with the given flavor ID (that you could get from
+// Spawn creates a new server using an OS image with a name prefixed with the
+// given os name, with the given flavor ID (that you could get from
 // CheapestServerFlavor().ID) and at least the given amount of disk space
 // (creating a temporary volume of the required size if the flavor's root disk
 // is too small).
