@@ -56,7 +56,7 @@ func TestBehaviours(t *testing.T) {
 		job2 := &Job{Cwd: cwd}
 
 		Convey("Individual Behaviour can be nicely stringified", func() {
-			So(fmt.Sprintf("test Sprintf %s", b1), ShouldEqual, `"test Sprintf {"on_exit":[{"cleanup_all":true}]}`)
+			So(fmt.Sprintf("test Sprintf %s", b1), ShouldEqual, `test Sprintf {"on_exit":[{"cleanup_all":true}]}`)
 			So(b1.String(), ShouldEqual, `{"on_exit":[{"cleanup_all":true}]}`)
 			So(b2.String(), ShouldEqual, `{"on_success":[{"cleanup_all":true}]}`)
 			So(b3.String(), ShouldEqual, `{"on_failure":[{"cleanup_all":true}]}`)
