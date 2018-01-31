@@ -268,25 +268,15 @@ func (j *Job) WallTime() (d time.Duration) {
 // queue, returns current environment variables instead. In both cases, alters
 // the return value to apply any overrides stored in job.EnvOverride.
 func (j *Job) Env() (env []string, err error) {
-	overrideEs := &envStr{}
-	if len(j.EnvOverride) > 0 {
-		decompressed, derr := decompress(j.EnvOverride)
-		if derr != nil {
-			err = derr
-			return
-		}
-		ch := new(codec.BincHandle)
-		dec := codec.NewDecoderBytes(decompressed, ch)
-		err = dec.Decode(overrideEs)
-		if err != nil {
-			return
-		}
+	overrideEs, err := j.envCurrentOverrides()
+	if err != nil {
+		return
 	}
 
 	if len(j.EnvC) == 0 {
 		env = os.Environ()
-		if len(overrideEs.Environ) > 0 {
-			env = envOverride(env, overrideEs.Environ)
+		if len(overrideEs) > 0 {
+			env = envOverride(env, overrideEs)
 		}
 		return
 	}
@@ -308,11 +298,47 @@ func (j *Job) Env() (env []string, err error) {
 		env = os.Environ()
 	}
 
-	if len(overrideEs.Environ) > 0 {
-		env = envOverride(env, overrideEs.Environ)
+	if len(overrideEs) > 0 {
+		env = envOverride(env, overrideEs)
 	}
 
 	return
+}
+
+// envCurrentOverrides decompresses and decodes any existing EnvOverride.
+func (j *Job) envCurrentOverrides() (env []string, err error) {
+	if len(j.EnvOverride) > 0 {
+		decompressed, derr := decompress(j.EnvOverride)
+		if derr != nil {
+			err = derr
+			return
+		}
+		ch := new(codec.BincHandle)
+		dec := codec.NewDecoderBytes(decompressed, ch)
+		overrideEs := &envStr{}
+		err = dec.Decode(overrideEs)
+		if err != nil {
+			return
+		}
+		env = overrideEs.Environ
+	}
+	return
+}
+
+// EnvAddOverride adds additional overrides to the jobs existing overrides (if
+// any). These will then get used to determine the final value of Env(). NB:
+// This does not do any updates to a job on the server if called from a client,
+// but is suitable for altering a job's environment prior to calling
+// Client.Execute().
+func (j *Job) EnvAddOverride(env []string) error {
+	current, err := j.envCurrentOverrides()
+	if err != nil {
+		return err
+	}
+
+	j.EnvOverride = compressEnv(envOverride(current, env))
+
+	return nil
 }
 
 // StdOut returns the decompressed job.StdOutC, which is the head and tail of

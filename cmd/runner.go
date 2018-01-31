@@ -74,13 +74,14 @@ complete.`,
 		}
 		defer jq.Disconnect()
 
-		// in case any job we execute has a Cmd that calls `wr add`, we alter
-		// the environment to make that call work
+		// in case any job we execute has a Cmd that calls `wr add`, we will
+		// override their environment to make that call work
+		var envOverrides []string
 		if rserver != "" {
 			hostPort := strings.Split(rserver, ":")
 			if len(hostPort) == 2 {
-				os.Setenv("WR_MANAGERHOST", hostPort[0])
-				os.Setenv("WR_MANAGERPORT", hostPort[1])
+				envOverrides = append(envOverrides, "WR_MANAGERHOST="+hostPort[0])
+				envOverrides = append(envOverrides, "WR_MANAGERPORT="+hostPort[1])
 			}
 
 			// add our own wr exe to the path in case its not there
@@ -89,7 +90,7 @@ complete.`,
 				die("%s", err)
 			}
 			exePath := filepath.Dir(exe)
-			os.Setenv("PATH", os.Getenv("PATH")+":"+exePath)
+			envOverrides = append(envOverrides, "PATH="+os.Getenv("PATH")+":"+exePath)
 		}
 
 		// we'll stop the below loop before using up too much time
@@ -128,6 +129,9 @@ complete.`,
 			}
 
 			// actually run the cmd
+			if len(envOverrides) > 0 {
+				job.EnvAddOverride(envOverrides)
+			}
 			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {
 				warn("%s", err)
