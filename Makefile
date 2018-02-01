@@ -46,6 +46,9 @@ race:
 lint:
 	@gometalinter.v2 --vendor --aggregate --deadline=120s ./... | sort
 
+lintextra:
+	@gometalinter.v2 --vendor --aggregate --deadline=120s --disable-all --enable=nakedret --enable=vetshadow --enable=errcheck--enable=gocyclo --enable=dupl ./... | sort
+
 clean:
 	@rm -f ./wr
 	@rm -f ./dist.zip
@@ -63,4 +66,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test race lintl install clean dist
+.PHONY: build test race lint lintextra install clean dist
