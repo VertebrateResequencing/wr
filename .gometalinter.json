@@ -1,1 +1,1 @@
-{ "Enable": ["unconvert", "interfacer", "gotypex", "structcheck", "gofmt", "varcheck", "gotype", "goconst", "deadcode", "vet", "unparam", "golint", "goimports", "gas", "megacheck", "ineffassign"] }
+{ "Enable": ["unconvert", "interfacer", "gotypex", "structcheck", "gofmt", "varcheck", "gotype", "goconst", "deadcode", "vet", "unparam", "golint", "goimports", "gas", "megacheck", "ineffassign"], "Exclude": ["jobqueue/static.go"] }
