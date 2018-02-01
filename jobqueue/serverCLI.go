@@ -520,12 +520,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	}
 
 	// send reply to client
-	err = s.reply(m, sr)
-	if err != nil {
-		// log failure to reply
-		return err
-	}
-	return nil
+	err = s.reply(m, sr) // *** log failure to reply?
+	return err
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get

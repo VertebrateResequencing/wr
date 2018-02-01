@@ -626,7 +626,6 @@ func TestOpenstack(t *testing.T) {
 					go func() {
 						<-time.After(time.Duration(int(eta/2)) * time.Second)
 						spawnedCh <- novaCountServers(rName, "")
-						return
 					}()
 
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)

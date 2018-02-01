@@ -82,8 +82,8 @@ func (s *lsf) initialize(config interface{}) error {
 	s.bsubRegex = regexp.MustCompile(`^Job <(\d+)>`)
 
 	// use lsadmin to see what units memlimit (bsub -M) is in
-	s.memLimitMultiplier = float32(1000) // by default assume it's KB
-	cmdout, err := exec.Command(s.config.Shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output()
+	s.memLimitMultiplier = float32(1000)                                                                          // by default assume it's KB
+	cmdout, err := exec.Command(s.config.Shell, "-c", "lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS").Output() // #nosec
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to run [lsadmin showconf lim | grep LSF_UNIT_FOR_LIMITS]: %s", err)}
 	}
@@ -102,7 +102,7 @@ func (s *lsf) initialize(config interface{}) error {
 	}
 
 	// parse bqueues -l to figure out what usable queues we have
-	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l")
+	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l") // #nosec
 	bqout, err := bqcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bqueues -l]: %s", err)}
@@ -136,7 +136,7 @@ func (s *lsf) initialize(config interface{}) error {
 	for bqScanner.Scan() {
 		line := bqScanner.Text()
 
-		if matches := reQueue.FindStringSubmatch(line); matches != nil && len(matches) == 2 {
+		if matches := reQueue.FindStringSubmatch(line); len(matches) == 2 {
 			queue = matches[1]
 			s.queues[queue] = make(map[string]int)
 			continue
@@ -210,7 +210,7 @@ func (s *lsf) initialize(config interface{}) error {
 				nextIsRunlimit = true
 				continue
 			} else if nextIsRunlimit {
-				if matches := reParseRunlimit.FindStringSubmatch(line); matches != nil && len(matches) == 2 {
+				if matches := reParseRunlimit.FindStringSubmatch(line); len(matches) == 2 {
 					mins, err := strconv.Atoi(matches[1])
 					if err != nil {
 						return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
@@ -225,7 +225,7 @@ func (s *lsf) initialize(config interface{}) error {
 			}
 		}
 
-		if matches := reUserHosts.FindStringSubmatch(line); matches != nil && len(matches) == 3 {
+		if matches := reUserHosts.FindStringSubmatch(line); len(matches) == 3 {
 			kind := strings.ToLower(matches[1])
 			vals := strings.Fields(matches[2])
 			if kind == "users" {
@@ -251,7 +251,7 @@ func (s *lsf) initialize(config interface{}) error {
 			}
 		}
 
-		if matches := reChunkJobSize.FindStringSubmatch(line); matches != nil && len(matches) == 2 {
+		if matches := reChunkJobSize.FindStringSubmatch(line); len(matches) == 2 {
 			chunks, err := strconv.Atoi(matches[1])
 			if err != nil {
 				return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
@@ -403,6 +403,9 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	// removing from the queue anything not currently running when we're over
 	// the desired count
 	scheduledCount, err := s.checkCmd(cmd, count)
+	if err != nil {
+		return err
+	}
 	stillNeeded := count - scheduledCount
 	if stillNeeded < 1 {
 		return nil
@@ -415,10 +418,10 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	if req.Cores > 1 {
 		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", req.Cores))
 	}
-	if len(req.Other) > 0 {
-		// *** not yet implemented; would check this map for lsf-related keys
-		// and handle them appropriately...
-	}
+	// if len(req.Other) > 0 {
+	// *** not yet implemented; would check this map for lsf-related keys
+	// and handle them appropriately...
+	// }
 
 	// for checkCmd() to work efficiently we must always set a job name that
 	// corresponds to the cmd. It must also be unique otherwise LSF would not
@@ -430,7 +433,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
 	// submit to the queue
-	bsubcmd := exec.Command("bsub", bsubArgs...)
+	bsubcmd := exec.Command("bsub", bsubArgs...) // #nosec
 	bsubout, err := bsubcmd.Output()
 	if err != nil {
 		return Error{"lsf", "schedule", fmt.Sprintf("failed to run bsub %s: %s", bsubArgs, err)}
@@ -444,7 +447,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	// running. To solve this issue we will wait until bjobs -w <jobid> is found
 	// and only then return. If a subsequent busy() call returns false, that
 	// means the job completed and we're really not busy.
-	if matches := s.bsubRegex.FindStringSubmatch(string(bsubout)); matches != nil && len(matches) == 2 {
+	if matches := s.bsubRegex.FindStringSubmatch(string(bsubout)); len(matches) == 2 {
 		ready := make(chan bool, 1)
 		go func() {
 			limit := time.After(10 * time.Second)
@@ -452,7 +455,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 			for {
 				select {
 				case <-ticker.C:
-					bjcmd := exec.Command("bjobs", "-w", matches[1])
+					bjcmd := exec.Command("bjobs", "-w", matches[1]) // #nosec
 					bjout, err := bjcmd.CombinedOutput()
 					if err != nil {
 						continue
@@ -594,17 +597,17 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 			count++
 			if count > max && matches[2] != "RUN" {
 				sidaid := matches[1]
-				if aidmatch := reAid.FindStringSubmatch(matches[3]); aidmatch != nil && len(aidmatch) == 2 {
+				if aidmatch := reAid.FindStringSubmatch(matches[3]); len(aidmatch) == 2 {
 					sidaid = sidaid + "[" + aidmatch[1] + "]"
 				}
 				toKill = append(toKill, sidaid)
 				count--
 			}
 		}
-		s.parseBjobs(jobPrefix, cb)
+		err = s.parseBjobs(jobPrefix, cb)
 
 		if len(toKill) > 1 {
-			killcmd := exec.Command("bkill", toKill...)
+			killcmd := exec.Command("bkill", toKill...) // #nosec
 			killcmd.Run()
 		}
 
@@ -617,7 +620,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		cb := func(matches []string) {
 			count++
 		}
-		s.parseBjobs(jobPrefix, cb)
+		err = s.parseBjobs(jobPrefix, cb)
 	}
 
 	return
@@ -630,7 +633,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 type bjobsCB func(matches []string)
 
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
-	bjcmd := exec.Command(s.config.Shell, "-c", "bjobs -w")
+	bjcmd := exec.Command(s.config.Shell, "-c", "bjobs -w") // #nosec
 	bjout, err := bjcmd.StdoutPipe()
 	if err != nil {
 		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
@@ -647,7 +650,7 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 	for bjScanner.Scan() {
 		line := bjScanner.Text()
 
-		if matches := reParse.FindStringSubmatch(line); matches != nil && len(matches) == 4 {
+		if matches := reParse.FindStringSubmatch(line); len(matches) == 4 {
 			if matches[2] == "EXIT" || matches[2] == "DONE" {
 				continue
 			}
@@ -673,14 +676,10 @@ func (s *lsf) hostToID(host string) string {
 
 // setMessageCallBack does nothing at the moment, since we don't generate any
 // messages for the user.
-func (s *lsf) setMessageCallBack(cb MessageCallBack) {
-	return
-}
+func (s *lsf) setMessageCallBack(cb MessageCallBack) {}
 
 // setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
-func (s *lsf) setBadServerCallBack(cb BadServerCallBack) {
-	return
-}
+func (s *lsf) setBadServerCallBack(cb BadServerCallBack) {}
 
 // cleanup bkills any remaining jobs we created
 func (s *lsf) cleanup() {
@@ -688,9 +687,9 @@ func (s *lsf) cleanup() {
 	cb := func(matches []string) {
 		toKill = append(toKill, matches[1])
 	}
-	s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
+	s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb) // *** throwing away error
 	if len(toKill) > 1 {
-		killcmd := exec.Command("bkill", toKill...)
+		killcmd := exec.Command("bkill", toKill...) // #nosec
 		killcmd.Run()
 	}
 }

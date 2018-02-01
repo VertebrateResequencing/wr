@@ -257,7 +257,11 @@ func (c *Client) BackupDB(path string) (err error) {
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
 func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added int, existed int, err error) {
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: c.CompressEnv(envVars), IgnoreComplete: ignoreComplete})
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return
+	}
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
 	if err != nil {
 		return
 	}
@@ -807,10 +811,16 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 		job.ActualCwd = cwd
 	}
 	if len(stdout) > 0 {
-		job.StdOutC = compress(stdout)
+		job.StdOutC, err = compress(stdout)
+		if err != nil {
+			return
+		}
 	}
 	if len(stderr) > 0 {
-		job.StdErrC = compress(stderr)
+		job.StdErrC, err = compress(stderr)
+		if err != nil {
+			return
+		}
 	}
 	_, err = c.request(&clientRequest{Method: "jend", Job: job})
 	return
@@ -866,7 +876,10 @@ func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) 
 	defer c.teMutex.Unlock()
 	job.FailReason = failreason
 	if len(stderr) == 1 && stderr[0] != nil {
-		job.StdErrC = compress([]byte(stderr[0].Error()))
+		job.StdErrC, err = compress([]byte(stderr[0].Error()))
+		if err != nil {
+			return
+		}
 	}
 	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
 	if err == nil {
@@ -1037,9 +1050,10 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 // strings) and then compresses that, so that for Add() the server can store it
 // on disc without holding it in memory, and pass the compressed bytes back to
 // us when we need to know the Env (during Execute()).
-func (c *Client) CompressEnv(envars []string) []byte {
+func (c *Client) CompressEnv(envars []string) (compressed []byte, err error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
 	enc.Encode(&envStr{envars})
-	return compress(encoded)
+	compressed, err = compress(encoded)
+	return
 }

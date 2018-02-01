@@ -39,9 +39,12 @@ import (
 	"github.com/ugorji/go/codec"
 )
 
-const restJobsEndpoint = "/rest/v1/jobs/"
-const restWarningsEndpoint = "/rest/v1/warnings/"
-const restBadServersEndpoint = "/rest/v1/servers/"
+const (
+	restJobsEndpoint       = "/rest/v1/jobs/"
+	restWarningsEndpoint   = "/rest/v1/warnings/"
+	restBadServersEndpoint = "/rest/v1/servers/"
+	restFormTrue           = "true"
+)
 
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
 // queue, convenient if they are supplying JSON.
@@ -148,11 +151,12 @@ func (jd *JobDefaults) DefaultTime() time.Duration {
 }
 
 // DefaultEnv returns an encoded compressed version of the Env value.
-func (jd *JobDefaults) DefaultEnv() []byte {
+func (jd *JobDefaults) DefaultEnv() ([]byte, error) {
+	var err error
 	if len(jd.compressedEnv) == 0 {
-		jd.compressedEnv = compressEnv(strings.Split(jd.Env, ","))
+		jd.compressedEnv, err = compressEnv(strings.Split(jd.Env, ","))
 	}
-	return jd.compressedEnv
+	return jd.compressedEnv, err
 }
 
 // DefaultCloudOSRam returns a string version of the CloudOSRam value, which is
@@ -303,9 +307,15 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 	}
 
 	if len(jvj.Env) > 0 {
-		envOverride = compressEnv(jvj.Env)
+		envOverride, err = compressEnv(jvj.Env)
+		if err != nil {
+			return
+		}
 	} else if len(jd.Env) > 0 {
-		envOverride = jd.DefaultEnv()
+		envOverride, err = jd.DefaultEnv()
+		if err != nil {
+			return
+		}
 	}
 
 	if len(jvj.OnFailure) > 0 {
@@ -409,7 +419,7 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 		}
 
 		// convert jobs to jstatus
-		jstati := make([]jstatus, len(jobs), len(jobs))
+		jstati := make([]jstatus, len(jobs))
 		for i, job := range jobs {
 			jstati[i] = jobToStatus(job)
 		}
@@ -436,10 +446,10 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 	var limit int
 	var state JobState
 
-	if r.Form.Get("std") == "true" {
+	if r.Form.Get("std") == restFormTrue {
 		getStd = true
 	}
-	if r.Form.Get("env") == "true" {
+	if r.Form.Get("env") == restFormTrue {
 		// getEnv = true // *** currently disabled for security purposes
 	}
 	if r.Form.Get("limit") != "" {
@@ -532,10 +542,10 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 		CloudScript: r.Form.Get("cloud_script"),
 		CloudOSRam:  urlStringToInt(r.Form.Get("cloud_ram")),
 	}
-	if r.Form.Get("cwd_matters") == "true" {
+	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true
 	}
-	if r.Form.Get("change_home") == "true" {
+	if r.Form.Get("change_home") == restFormTrue {
 		jd.ChangeHome = true
 	}
 	if r.Form.Get("memory") != "" {
@@ -772,7 +782,7 @@ func urlStringToStruct(value string, v interface{}) (err error) {
 
 // compressEnv is a slower (?) version of Client.CompressEnv since we have to
 // make a new codec each time
-func compressEnv(envars []string) []byte {
+func compressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, new(codec.BincHandle))
 	enc.Encode(&envStr{envars})

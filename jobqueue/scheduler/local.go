@@ -40,8 +40,6 @@ const (
 	localReserveTimeout = 1
 )
 
-var mt = []byte("MemTotal:")
-
 // reqCheckers are functions used by schedule() to see if it is at all possible
 // to ever run a job with the given resource requirements. (We make use of this
 // in the local struct so that other implementers of scheduleri can embed local,
@@ -352,7 +350,7 @@ func (s *local) canCount(req *Requirements) (canCount int) {
 // fails (schedule() only guarantees that the cmds are run count times, not that
 // they run /successful/ that many times).
 func (s *local) runCmd(cmd string, req *Requirements) error {
-	ec := exec.Command(s.config.Shell, "-c", cmd)
+	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	err := ec.Start()
 	if err != nil {
 		fmt.Println(err)
@@ -383,15 +381,11 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 
 // cancelRun in the local scheduler is a no-op, since our runCmd immediately
 // starts running the cmd and is never eligible for cancellation.
-func (s *local) cancelRun(cmd string, cancelCount int) {
-	return
-}
+func (s *local) cancelRun(cmd string, cancelCount int) {}
 
 // stateUpdate in the local scheduler is a no-op, since there currently isn't
 // any state out of our control we worry about.
-func (s *local) stateUpdate() {
-	return
-}
+func (s *local) stateUpdate() {}
 
 // startAutoProcessing begins periodic running of processQueue(). Normally
 // processQueue is only called when cmds are added or complete. Calling it
@@ -459,14 +453,10 @@ func (s *local) hostToID(host string) string {
 
 // setMessageCallBack does nothing at the moment, since we don't generate any
 // messages for the user.
-func (s *local) setMessageCallBack(cb MessageCallBack) {
-	return
-}
+func (s *local) setMessageCallBack(cb MessageCallBack) {}
 
 // setBadServerCallBack does nothing, since we're not a cloud-based scheduler.
-func (s *local) setBadServerCallBack(cb BadServerCallBack) {
-	return
-}
+func (s *local) setBadServerCallBack(cb BadServerCallBack) {}
 
 // cleanup destroys our internal queue.
 func (s *local) cleanup() {
@@ -475,7 +465,6 @@ func (s *local) cleanup() {
 	defer s.mutex.Unlock()
 	s.cleaned = true
 	s.queue.Destroy()
-	return
 }
 
 func (s *local) debug(msg string, a ...interface{}) {

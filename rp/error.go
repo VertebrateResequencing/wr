@@ -25,6 +25,7 @@ import (
 )
 
 // rp has some typical errors
+/* #nosec */
 const (
 	ErrOverMaximumTokens = "more tokens requested than can ever be supplied"
 	ErrShutDown          = "the protector has been shut down"

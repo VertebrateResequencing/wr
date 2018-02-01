@@ -582,13 +582,10 @@ func (s *Server) Stop(wait ...bool) (err error) {
 
 		if len(wait) == 1 && wait[0] {
 			ticker := time.NewTicker(100 * time.Millisecond)
-			for {
-				select {
-				case <-ticker.C:
-					if !s.HasRunners() {
-						ticker.Stop()
-						return
-					}
+			for range ticker.C {
+				if !s.HasRunners() {
+					ticker.Stop()
+					return
 				}
 			}
 		}
@@ -610,28 +607,25 @@ func (s *Server) Drain() (err error) {
 			go func() {
 				ticker := time.NewTicker(1 * time.Second)
 			TICKS:
-				for {
-					select {
-					case <-ticker.C:
-						// check our queues for things running, which is cheap
-						s.racmutex.Lock()
-						for _, q := range s.qs {
-							stats := q.Stats()
-							if stats.Running > 0 {
-								s.racmutex.Unlock()
-								continue TICKS
-							}
+				for range ticker.C {
+					// check our queues for things running, which is cheap
+					s.racmutex.Lock()
+					for _, q := range s.qs {
+						stats := q.Stats()
+						if stats.Running > 0 {
+							s.racmutex.Unlock()
+							continue TICKS
 						}
-						s.racmutex.Unlock()
-						ticker.Stop()
-
-						// now that we think nothing should be running, get
-						// Stop() to wait for the runner clients to exit so the
-						// job scheduler will be nice and clean
-						s.scheduler.Cleanup()
-						s.Stop(true)
-						return
 					}
+					s.racmutex.Unlock()
+					ticker.Stop()
+
+					// now that we think nothing should be running, get
+					// Stop() to wait for the runner clients to exit so the
+					// job scheduler will be nice and clean
+					s.scheduler.Cleanup()
+					s.Stop(true)
+					return
 				}
 			}()
 		}
@@ -871,18 +865,14 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 					s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
 
 					go func() {
-						select {
-						case <-s.racCheckTimer.C:
-							s.racmutex.Lock()
-							s.racChecking = false
-							stats := q.Stats()
-							s.racmutex.Unlock()
+						<-s.racCheckTimer.C
+						s.racmutex.Lock()
+						s.racChecking = false
+						stats := q.Stats()
+						s.racmutex.Unlock()
 
-							if stats.Ready >= s.racCheckReady {
-								q.TriggerReadyAddedCallback()
-							}
-
-							return
+						if stats.Ready >= s.racCheckReady {
+							q.TriggerReadyAddedCallback()
 						}
 					}()
 

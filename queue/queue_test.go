@@ -888,11 +888,9 @@ func TestQueue(t *testing.T) {
 		type testdata struct {
 			ID int
 		}
-		var dataids []int
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
-			dataids = append(dataids, dataid)
 			_, err := queue.Add(key, "", &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second)
 			So(err, ShouldBeNil)
 		}
@@ -1357,6 +1355,7 @@ func depTestFunc(queue *Queue) {
 
 	Convey("Once parent items are removed, dependent items become ready", func() {
 		item, err := queue.Get("key_4")
+		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_1")
@@ -1374,6 +1373,7 @@ func depTestFunc(queue *Queue) {
 		So(stats.Dependant, ShouldEqual, 4)
 
 		item, err = queue.Get("key_6")
+		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_3")
@@ -1408,6 +1408,7 @@ func depTestFunc(queue *Queue) {
 		So(stats.Dependant, ShouldEqual, 3)
 
 		item, err = queue.Get("key_5")
+		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_2")
@@ -1422,8 +1423,10 @@ func depTestFunc(queue *Queue) {
 		So(stats.Dependant, ShouldEqual, 2)
 
 		item7, err := queue.Get("key_7")
+		So(err, ShouldBeNil)
 		So(item7.Stats().State, ShouldEqual, ItemStateDependent)
 		item8, err := queue.Get("key_8")
+		So(err, ShouldBeNil)
 		So(item8.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_5")

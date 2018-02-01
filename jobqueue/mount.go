@@ -141,7 +141,11 @@ func (mcs MountConfigs) String() string {
 	if len(mcs) == 0 {
 		return ""
 	}
-	b, _ := json.Marshal(mcs)
+	b, err := json.Marshal(mcs)
+	if err != nil {
+		// *** throwing away this error...
+		return ""
+	}
 	return string(b)
 }
 

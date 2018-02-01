@@ -1018,9 +1018,9 @@ func (queue *Queue) startDelayProcessing() {
 		queue.mutex.Lock()
 		var sleepTime time.Duration
 		if queue.delayQueue.len() > 0 {
-			sleepTime = queue.delayQueue.firstItem().ReadyAt().Sub(time.Now())
+			sleepTime = time.Until(queue.delayQueue.firstItem().ReadyAt())
 		} else {
-			sleepTime = time.Duration(1 * time.Hour)
+			sleepTime = 1 * time.Hour
 		}
 
 		queue.delayTime = time.Now().Add(sleepTime)
@@ -1030,7 +1030,7 @@ func (queue *Queue) startDelayProcessing() {
 		}
 
 		select {
-		case <-time.After(queue.delayTime.Sub(time.Now())):
+		case <-time.After(time.Until(queue.delayTime)):
 			queue.mutex.Lock()
 			len := queue.delayQueue.len()
 			addedReady := false
@@ -1082,9 +1082,9 @@ func (queue *Queue) startTTRProcessing() {
 		var sleepTime time.Duration
 		queue.mutex.Lock()
 		if queue.runQueue.len() > 0 {
-			sleepTime = queue.runQueue.firstItem().ReleaseAt().Sub(time.Now())
+			sleepTime = time.Until(queue.runQueue.firstItem().ReleaseAt())
 		} else {
-			sleepTime = time.Duration(1 * time.Hour)
+			sleepTime = 1 * time.Hour
 		}
 
 		queue.ttrTime = time.Now().Add(sleepTime)
@@ -1094,7 +1094,7 @@ func (queue *Queue) startTTRProcessing() {
 		}
 
 		select {
-		case <-time.After(queue.ttrTime.Sub(time.Now())):
+		case <-time.After(time.Until(queue.ttrTime)):
 			queue.mutex.Lock()
 			length := queue.runQueue.len()
 			var delayedItems, buriedItems, readyItems []*Item

@@ -336,9 +336,9 @@ func (j *Job) EnvAddOverride(env []string) error {
 		return err
 	}
 
-	j.EnvOverride = compressEnv(envOverride(current, env))
+	j.EnvOverride, err = compressEnv(envOverride(current, env))
 
-	return nil
+	return err
 }
 
 // StdOut returns the decompressed job.StdOutC, which is the head and tail of

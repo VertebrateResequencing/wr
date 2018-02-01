@@ -542,6 +542,8 @@ func TestJobqueue(t *testing.T) {
 				server.rc = ""
 				server.racmutex.Unlock()
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")
+				compressed, err := jq.CompressEnv([]string{"wr_jobqueue_test_no_envvar=c", "wr_jobqueue_test_no_envvar2=d"})
+				So(err, ShouldBeNil)
 				inserts, already, err := jq.Add([]*Job{{
 					Cmd:          "echo $wr_jobqueue_test_no_envvar && echo $wr_jobqueue_test_no_envvar2 && false",
 					Cwd:          "/tmp",
@@ -550,7 +552,7 @@ func TestJobqueue(t *testing.T) {
 					Requirements: standardReqs,
 					Priority:     uint8(100),
 					Retries:      uint8(0),
-					EnvOverride:  jq.CompressEnv([]string{"wr_jobqueue_test_no_envvar=c", "wr_jobqueue_test_no_envvar2=d"}),
+					EnvOverride:  compressed,
 				}}, []string{}, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 1)
@@ -1408,6 +1410,7 @@ func TestJobqueue(t *testing.T) {
 			Convey("You can reserve and execute those", func() {
 				for i := 0; i < 3; i++ {
 					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 				}
@@ -1424,6 +1427,7 @@ func TestJobqueue(t *testing.T) {
 
 					for i := 0; i < 4; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
 						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
@@ -1462,6 +1466,7 @@ func TestJobqueue(t *testing.T) {
 				Convey("You can then reserve and execute the only 4 jobs", func() {
 					for i := 0; i < 4; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
 						err = jq.Execute(job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
@@ -1561,24 +1566,21 @@ func TestJobqueue(t *testing.T) {
 						var touchLock sync.Mutex
 						go func() {
 							ticker := time.NewTicker(50 * time.Millisecond)
-							for {
-								select {
-								case <-ticker.C:
-									touchLock.Lock()
-									if touchJ2 {
-										jq.Touch(j2)
-									}
-									if touchJ3 {
-										jq.Touch(j3)
-									}
-									if !touchJ2 && !touchJ3 {
-										ticker.Stop()
-										touchLock.Unlock()
-										return
-									}
-									touchLock.Unlock()
-									continue
+							for range ticker.C {
+								touchLock.Lock()
+								if touchJ2 {
+									jq.Touch(j2)
 								}
+								if touchJ3 {
+									jq.Touch(j3)
+								}
+								if !touchJ2 && !touchJ3 {
+									ticker.Stop()
+									touchLock.Unlock()
+									return
+								}
+								touchLock.Unlock()
+								continue
 							}
 						}()
 
@@ -1635,20 +1637,17 @@ func TestJobqueue(t *testing.T) {
 						touchJ6 := true
 						go func() {
 							ticker := time.NewTicker(50 * time.Millisecond)
-							for {
-								select {
-								case <-ticker.C:
-									touchLock.Lock()
-									if touchJ6 {
-										jq.Touch(j6)
-									} else {
-										ticker.Stop()
-										touchLock.Unlock()
-										return
-									}
+							for range ticker.C {
+								touchLock.Lock()
+								if touchJ6 {
+									jq.Touch(j6)
+								} else {
+									ticker.Stop()
 									touchLock.Unlock()
-									continue
+									return
 								}
+								touchLock.Unlock()
+								continue
 							}
 						}()
 
@@ -1801,24 +1800,21 @@ func TestJobqueue(t *testing.T) {
 						var touchLock sync.Mutex
 						go func() {
 							ticker := time.NewTicker(50 * time.Millisecond)
-							for {
-								select {
-								case <-ticker.C:
-									touchLock.Lock()
-									if touchJ2 {
-										jq.Touch(j2)
-									}
-									if touchJ3 {
-										jq.Touch(j3)
-									}
-									if !touchJ2 && !touchJ3 {
-										ticker.Stop()
-										touchLock.Unlock()
-										return
-									}
-									touchLock.Unlock()
-									continue
+							for range ticker.C {
+								touchLock.Lock()
+								if touchJ2 {
+									jq.Touch(j2)
 								}
+								if touchJ3 {
+									jq.Touch(j3)
+								}
+								if !touchJ2 && !touchJ3 {
+									ticker.Stop()
+									touchLock.Unlock()
+									return
+								}
+								touchLock.Unlock()
+								continue
 							}
 						}()
 
@@ -1875,20 +1871,17 @@ func TestJobqueue(t *testing.T) {
 						touchJ6 := true
 						go func() {
 							ticker := time.NewTicker(50 * time.Millisecond)
-							for {
-								select {
-								case <-ticker.C:
-									touchLock.Lock()
-									if touchJ6 {
-										jq.Touch(j6)
-									} else {
-										ticker.Stop()
-										touchLock.Unlock()
-										return
-									}
+							for range ticker.C {
+								touchLock.Lock()
+								if touchJ6 {
+									jq.Touch(j6)
+								} else {
+									ticker.Stop()
 									touchLock.Unlock()
-									continue
+									return
 								}
+								touchLock.Unlock()
+								continue
 							}
 						}()
 
@@ -2257,6 +2250,7 @@ func TestJobqueue(t *testing.T) {
 
 				server.Stop(true)
 				f, err := os.OpenFile(config.ManagerDbFile, os.O_TRUNC|os.O_RDWR, dbFilePermission)
+				So(err, ShouldBeNil)
 				f.WriteString("corrupt!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 				f.Sync()
 				f.Close()
@@ -3410,13 +3404,13 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 								ticker.Stop()
 								moreThan2 <- true
 								server.sgcmutex.Unlock()
-								break
+								return
 							}
 							server.sgcmutex.Unlock()
 						case <-stopChecking:
 							ticker.Stop()
 							moreThan2 <- false
-							break
+							return
 						}
 					}
 				}()
@@ -3463,7 +3457,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 						case <-limit:
 							ticker.Stop()
 							gotLost <- false
-							break
+							return
 						}
 					}
 				}()
@@ -3841,31 +3835,26 @@ func TestJobqueueSpeed(t *testing.T) {
 		m := int(math.Ceil(float64(n) / float64(o)))
 		for i := 1; i <= o; i++ {
 			go func(i int) {
-				start := time.After(beginat.Sub(time.Now()))
+				start := time.After(time.Until(beginat))
 				gjq, err := Connect(addr, "wr.des", clientConnectTime)
 				if err != nil {
 					log.Fatal(err)
 				}
 				defer gjq.Disconnect()
-				for {
-					select {
-					case <-start:
-						reserved := 0
-						na := 0
-						for j := 0; j < m; j++ {
-							job, err := gjq.Reserve(5 * time.Second)
-							if err != nil || job == nil {
-								for k := j; k < m; k++ {
-									na++
-									reserves <- -i
-								}
-								break
-							} else {
-								reserved++
-								reserves <- i
-							}
+				<-start
+				reserved := 0
+				na := 0
+				for j := 0; j < m; j++ {
+					job, err := gjq.Reserve(5 * time.Second)
+					if err != nil || job == nil {
+						for k := j; k < m; k++ {
+							na++
+							reserves <- -i
 						}
-						return
+						break
+					} else {
+						reserved++
+						reserves <- i
 					}
 				}
 			}(i)

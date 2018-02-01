@@ -109,9 +109,9 @@ func (item *Item) Stats() *ItemStats {
 	age := time.Since(item.creation)
 	var remaining time.Duration
 	if item.state == ItemStateDelay {
-		remaining = item.readyAt.Sub(time.Now())
+		remaining = time.Until(item.readyAt)
 	} else if item.state == ItemStateRun {
-		remaining = item.releaseAt.Sub(time.Now())
+		remaining = time.Until(item.releaseAt)
 	} else {
 		remaining = time.Duration(0) * time.Second
 	}

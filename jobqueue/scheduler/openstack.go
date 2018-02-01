@@ -55,7 +55,6 @@ type opst struct {
 	local
 	config            *ConfigOpenStack
 	provider          *cloud.Provider
-	flavorRegex       string
 	quotaMaxInstances int
 	quotaMaxCores     int
 	quotaMaxRAM       int
@@ -339,25 +338,20 @@ func (s *standin) waitForServer() (server *cloud.Server, err error) {
 	s.mutex.Unlock()
 	done := make(chan *cloud.Server)
 	go func() {
-		for {
-			select {
-			case server := <-s.endWait:
-				done <- server
-				s.mutex.Lock()
-				s.nowWaiting--
-				nowWaiting := s.nowWaiting
-				s.mutex.Unlock()
-				s.debug("standin %s waitForServer(), received on endWait, nowWaiting = %d\n", s.id, s.nowWaiting)
+		server := <-s.endWait
+		done <- server
+		s.mutex.Lock()
+		s.nowWaiting--
+		nowWaiting := s.nowWaiting
+		s.mutex.Unlock()
+		s.debug("standin %s waitForServer(), received on endWait, nowWaiting = %d\n", s.id, s.nowWaiting)
 
-				// multiple goroutines may have called waitForServer(), so we
-				// will repeat for the next one if so
-				if nowWaiting > 0 {
-					s.debug("standin %s waitForServer(), resending on endWait\n", s.id)
-					s.endWait <- server
-					s.debug("standin %s waitForServer(), resent on endWait\n", s.id)
-				}
-				return
-			}
+		// multiple goroutines may have called waitForServer(), so we
+		// will repeat for the next one if so
+		if nowWaiting > 0 {
+			s.debug("standin %s waitForServer(), resending on endWait\n", s.id)
+			s.endWait <- server
+			s.debug("standin %s waitForServer(), resent on endWait\n", s.id)
 		}
 	}()
 	server = <-done

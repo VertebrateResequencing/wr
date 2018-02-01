@@ -87,7 +87,7 @@ func CurrentIP(cidr string) (ip string) {
 
 	// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
 	// cross-linux&MacOS solution that works reliably...
-	out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output()
+	out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
 	if err == nil {
 		ip = string(out)
 
@@ -163,12 +163,21 @@ func copyFile(source string, dest string) (err error) {
 // compress uses zlib to compress stuff, for transferring big stuff like
 // stdout, stderr and environment variables over the network, and for storing
 // of same on disk.
-func compress(data []byte) []byte {
+func compress(data []byte) ([]byte, error) {
 	var compressed bytes.Buffer
-	w, _ := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
-	w.Write(data)
-	w.Close()
-	return compressed.Bytes()
+	w, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	_, err = w.Write(data)
+	if err != nil {
+		return nil, err
+	}
+	err = w.Close()
+	if err != nil {
+		return nil, err
+	}
+	return compressed.Bytes(), nil
 }
 
 // decompress uses zlib to decompress stuff compressed by compress().
@@ -179,7 +188,10 @@ func decompress(compressed []byte) (data []byte, err error) {
 		return
 	}
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(r)
+	_, err = buf.ReadFrom(r)
+	if err != nil {
+		return
+	}
 	data = buf.Bytes()
 	return
 }
@@ -292,14 +304,14 @@ func stdFilter(std io.Reader, out io.Writer) chan bool {
 			p, err := reader.ReadBytes('\n')
 
 			lines := bytes.Split(p, cr)
-			out.Write(lines[0])
+			out.Write(lines[0]) // #nosec
 			if len(lines) > 2 {
-				out.Write(lf)
+				out.Write(lf) // #nosec
 				if len(lines) > 3 {
-					out.Write(ellipses)
+					out.Write(ellipses) // #nosec
 				}
-				out.Write(lines[len(lines)-2])
-				out.Write(lf)
+				out.Write(lines[len(lines)-2]) // #nosec
+				out.Write(lf)                  // #nosec
 			}
 
 			if err != nil {
@@ -363,7 +375,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 		// remove these dirs
 		tries = 0
 		var f *os.File
-		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0666)
+		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0600)
 		if err != nil {
 			tries++
 			if tries <= 3 {
@@ -371,7 +383,10 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 			}
 			return
 		}
-		f.Close()
+		err = f.Close()
+		if err != nil {
+			return
+		}
 
 		break
 	}
@@ -402,7 +417,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 // stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
 // doesn't exist.
 func rmEmptyDirs(leafDir, baseDir string) {
-	os.Remove(leafDir)
+	os.Remove(leafDir) // #nosec - ok if this fails
 	current := leafDir
 	parent := filepath.Dir(current)
 	for ; parent != baseDir; parent = filepath.Dir(current) {
