@@ -41,17 +41,17 @@ func (q *buryQueue) push(item *Item) {
 	q.items = append(q.items, item)
 }
 
-func (q *buryQueue) pop() (item *Item) {
+func (q *buryQueue) pop() *Item {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	lasti := len(q.items) - 1
 	if lasti == -1 {
-		return
+		return nil
 	}
-	item = q.items[lasti]
+	item := q.items[lasti]
 	item.queueIndexes[3] = -1
 	q.items = q.items[:lasti]
-	return
+	return item
 }
 
 func (q *buryQueue) remove(item *Item) {

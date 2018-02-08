@@ -45,17 +45,17 @@ func (q *depQueue) push(item *Item) {
 	q.items = append(q.items, item)
 }
 
-func (q *depQueue) pop() (item *Item) {
+func (q *depQueue) pop() *Item {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	lasti := len(q.items) - 1
 	if lasti == -1 {
-		return
+		return nil
 	}
-	item = q.items[lasti]
+	item := q.items[lasti]
 	item.queueIndexes[4] = -1
 	q.items = q.items[:lasti]
-	return
+	return item
 }
 
 func (q *depQueue) remove(item *Item) {

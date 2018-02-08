@@ -481,7 +481,7 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 		return Error{"lsf", "schedule", fmt.Sprintf("bsub %s returned unexpected output: %s", bsubArgs, bsubout)}
 	}
 
-	return nil
+	return err
 }
 
 // busy returns true if there are any jobs with our jobName() prefix in any
@@ -500,7 +500,7 @@ func (s *lsf) busy() bool {
 // job the soonest (amongst those that are capable of running it). *** globalMax
 // option and associated code may be removed if we never have a way for user
 // to pass this in.
-func (s *lsf) determineQueue(req *Requirements, globalMax int) (chosenQueue string, err error) {
+func (s *lsf) determineQueue(req *Requirements, globalMax int) (string, error) {
 	seconds := req.Time.Seconds()
 	mb := req.RAM
 	sortedQueue := 0
@@ -524,15 +524,10 @@ func (s *lsf) determineQueue(req *Requirements, globalMax int) (chosenQueue stri
 			continue
 		}
 
-		chosenQueue = queue
-		break
+		return queue, nil
 	}
 
-	if chosenQueue == "" {
-		err = Error{"lsf", "determineQueue", ErrImpossible}
-	}
-
-	return
+	return "", Error{"lsf", "determineQueue", ErrImpossible}
 }
 
 // checkCmd asks LSF how many of the supplied cmd are running, and if max >= 0
@@ -568,29 +563,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		// then bmod back to allowing lots to run. However, use of bmod resulted
 		// in big rescheduling delays, and overall it seemed better (in terms of
 		// getting jobs run quicker) to allow the race condition and allow some
-		// cmds to start running and then get killed. Hence the bmod-related
-		// code is now commented out.
-
-		// modIds := make(map[string]bool)
-		// cb := func(matches []string) {
-		// 	if matches[2] != "RUN" {
-		// 		modIds[matches[1]] = true
-		// 	}
-		// }
-		// s.parseBjobs(jobPrefix, cb)
-
-		// toMod := make([]string, len(modIds)+1)
-		// if len(modIds) > 0 {
-		// 	toMod[0] = "-J%0"
-		// 	i := 1
-		// 	for k := range modIds {
-		// 		toMod[i] = k
-		// 		i++
-		// 	}
-		// 	modcmd := exec.Command("bmod", toMod...)
-		// 	modcmd.Run()
-		// }
-
+		// cmds to start running and then get killed.
 		reAid := regexp.MustCompile(`\[(\d+)\]$`)
 		toKill := []string{"-b"}
 		cb := func(matches []string) {
@@ -610,12 +583,6 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 			killcmd := exec.Command("bkill", toKill...) // #nosec
 			killcmd.Run()
 		}
-
-		// if len(modIds) > 0 {
-		// 	toMod[0] = "-J%1000000"
-		// 	modcmd := exec.Command("bmod", toMod...)
-		// 	modcmd.Run()
-		// }
 	} else {
 		cb := func(matches []string) {
 			count++
@@ -623,7 +590,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		err = s.parseBjobs(jobPrefix, cb)
 	}
 
-	return
+	return count, err
 }
 
 // parseBjobs runs bjobs, filters on a job name prefix, excludes exited jobs and
@@ -632,17 +599,15 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 // callback for each bjobs output line.
 type bjobsCB func(matches []string)
 
-func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
+func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	bjcmd := exec.Command(s.config.Shell, "-c", "bjobs -w") // #nosec
 	bjout, err := bjcmd.StdoutPipe()
 	if err != nil {
-		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
-		return
+		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to create pipe for [bjobs -w]: %s", err)}
 	}
 	err = bjcmd.Start()
 	if err != nil {
-		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
-		return
+		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
 	}
 	bjScanner := bufio.NewScanner(bjout)
 
@@ -658,15 +623,14 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) (err error) {
 		}
 	}
 
-	if serr := bjScanner.Err(); serr != nil {
-		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", serr)}
-		return
+	if err := bjScanner.Err(); err != nil {
+		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", err)}
 	}
 	err = bjcmd.Wait()
 	if err != nil {
 		err = Error{"lsf", "parseBjobs", fmt.Sprintf("failed to finish running [bjobs -w]: %s", err)}
 	}
-	return
+	return err
 }
 
 // hostToID always returns an empty string, since we're not in the cloud.

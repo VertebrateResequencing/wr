@@ -201,7 +201,7 @@ func (c Config) IsDevelopment() bool {
 }
 
 // DefaultDeployment works out the default deployment.
-func DefaultDeployment() (deployment string) {
+func DefaultDeployment() string {
 	pwd, err := os.Getwd()
 	if err != nil {
 		fmt.Println(err)
@@ -209,6 +209,7 @@ func DefaultDeployment() (deployment string) {
 	}
 
 	// if we're in the git repository
+	var deployment string
 	if _, err := os.Stat(filepath.Join(pwd, "jobqueue", "server.go")); err == nil {
 		// force development
 		deployment = Development
@@ -223,7 +224,7 @@ func DefaultDeployment() (deployment string) {
 			}
 		}
 	}
-	return
+	return deployment
 }
 
 // DefaultConfig works out the default config for when we need to be able to

@@ -114,12 +114,13 @@ type job struct {
 
 // initialize finds out about the local machine. Compatible with amd64 archs
 // only!
-func (s *local) initialize(config interface{}) (err error) {
+func (s *local) initialize(config interface{}) error {
 	s.config = config.(*ConfigLocal)
 	s.maxCores = runtime.NumCPU()
+	var err error
 	s.maxRAM, err = s.procMeminfoMBs()
 	if err != nil {
-		return
+		return err
 	}
 
 	// make our queue
@@ -137,21 +138,20 @@ func (s *local) initialize(config interface{}) (err error) {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 
-	return
+	return err
 }
 
 // procMeminfoMBs uses gopsutil (amd64 freebsd, linux, windows, darwin, openbds
 // only!) to find the total number of MBs of memory physically installed on the
 // current system.
-func (s *local) procMeminfoMBs() (mbs int, err error) {
+func (s *local) procMeminfoMBs() (int, error) {
 	v, err := mem.VirtualMemory()
 	if err != nil {
-		return
+		return 0, err
 	}
 
 	// convert bytes to MB
-	mbs = int((v.Total / 1024) / 1024)
-	return
+	return int((v.Total / 1024) / 1024), err
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
@@ -329,20 +329,20 @@ func (s *local) processQueue() error {
 
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources.
-func (s *local) canCount(req *Requirements) (canCount int) {
+func (s *local) canCount(req *Requirements) int {
 	// we don't do any actual checking of current resources on the machine, but
 	// instead rely on our simple tracking based on how many cores and RAM prior
 	// cmds were /supposed/ to use. This could be bad for misbehaving cmds that
 	// use too much RAM, but we will end up killing cmds that do this, so it
 	// shouldn't be too much of an issue.
-	canCount = int(math.Floor(float64(s.maxRAM-s.ram) / float64(req.RAM)))
+	canCount := int(math.Floor(float64(s.maxRAM-s.ram) / float64(req.RAM)))
 	if canCount >= 1 {
 		canCount2 := int(math.Floor(float64(s.maxCores-s.cores) / float64(req.Cores)))
 		if canCount2 < canCount {
 			canCount = canCount2
 		}
 	}
-	return
+	return canCount
 }
 
 // runCmd runs the command, kills it if it goes much over RAM or time limits.
@@ -376,7 +376,7 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 	}
 	s.mutex.Unlock()
 
-	return nil
+	return err
 }
 
 // cancelRun in the local scheduler is a no-op, since our runCmd immediately

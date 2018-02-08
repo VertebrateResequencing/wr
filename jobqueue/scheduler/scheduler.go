@@ -164,7 +164,8 @@ type Scheduler struct {
 // Possible names so far are "lsf", "local" and "openstack". You must also
 // provide a config struct appropriate for your chosen scheduler, eg. for the
 // local scheduler you will provide a ConfigLocal.
-func New(name string, config interface{}) (s *Scheduler, err error) {
+func New(name string, config interface{}) (*Scheduler, error) {
+	var s *Scheduler
 	switch name {
 	case "lsf":
 		s = &Scheduler{impl: new(lsf)}
@@ -172,17 +173,15 @@ func New(name string, config interface{}) (s *Scheduler, err error) {
 		s = &Scheduler{impl: new(local)}
 	case "openstack":
 		s = &Scheduler{impl: new(opst)}
+	default:
+		return nil, Error{name, "New", ErrBadScheduler}
 	}
 
-	if s == nil {
-		err = Error{name, "New", ErrBadScheduler}
-	} else {
-		s.Name = name
-		s.limiter = make(map[string]int)
-		err = s.impl.initialize(config)
-	}
+	s.Name = name
+	s.limiter = make(map[string]int)
+	err := s.impl.initialize(config)
 
-	return
+	return s, err
 }
 
 // SetMessageCallBack sets the function that will be called when a scheduler has
@@ -278,9 +277,9 @@ func (s *Scheduler) Cleanup() {
 // jobName could be useful to a scheduleri implementer if it needs a constant-
 // width (length 36) string unique to the cmd and deployment, and optionally
 // suffixed with a random string (length 9, total length 45).
-func jobName(cmd string, deployment string, unique bool) (name string) {
+func jobName(cmd string, deployment string, unique bool) string {
 	l, h := farm.Hash128([]byte(cmd))
-	name = fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
+	name := fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
 
 	if unique {
 		// based on http://stackoverflow.com/a/31832326/675083
@@ -300,5 +299,5 @@ func jobName(cmd string, deployment string, unique bool) (name string) {
 		name += "_" + string(b)
 	}
 
-	return
+	return name
 }

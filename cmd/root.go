@@ -140,7 +140,7 @@ func createWorkingDir() {
 // the child is forced to run from /). Supplying extraArgs can override earlier
 // args (to eg. re-specify an option with a relative path with an absolute
 // path).
-func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Process, context *daemon.Context) {
+func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *daemon.Context) {
 	args := os.Args
 	hadDeployment := false
 	for _, arg := range args {
@@ -156,7 +156,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Proces
 
 	args = append(args, extraArgs...)
 
-	context = &daemon.Context{
+	context := &daemon.Context{
 		PidFileName: pidFile,
 		PidFilePerm: 0644,
 		WorkDir:     "/",
@@ -164,12 +164,11 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Proces
 		Umask:       umask,
 	}
 
-	var err error
-	child, err = context.Reborn()
+	child, err := context.Reborn()
 	if err != nil {
 		die("failed to daemonize: %s", err)
 	}
-	return
+	return child, context
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
@@ -219,14 +218,14 @@ func stopdaemon(pid int, source string) bool {
 
 // sAddr gets a nice manager address to report in logs, preferring hostname,
 // falling back on the ip address if that wasn't set
-func sAddr(s *jobqueue.ServerInfo) (addr string) {
-	addr = s.Host
+func sAddr(s *jobqueue.ServerInfo) string {
+	addr := s.Host
 	if addr == "localhost" {
 		addr = s.Addr
 	} else {
 		addr += ":" + s.Port
 	}
-	return
+	return addr
 }
 
 // connect gives you a client connected to a queue that shouldn't be used; use

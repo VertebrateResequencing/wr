@@ -29,6 +29,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/hashicorp/go-multierror"
 )
 
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
@@ -173,7 +175,7 @@ func (b *Behaviour) String() string {
 // cleanup with all == true wipes out the Job's unique dir as aggressively as
 // possible, along with all empty parent dirs up to Cwd. Without all, will keep
 // files designated as outputs (*** designation not yet implemented).
-func (b *Behaviour) cleanup(j *Job, all bool) (err error) {
+func (b *Behaviour) cleanup(j *Job, all bool) error {
 	if !all {
 		// *** not yet implemented, we just wipe everything!
 	}
@@ -181,7 +183,7 @@ func (b *Behaviour) cleanup(j *Job, all bool) (err error) {
 	if j.ActualCwd == "" {
 		// must be a CwdMatters job, or somehow ActualCwd didn't get set; we do
 		// nothing in this case
-		return
+		return nil
 	}
 
 	// it's the parent of ActualCwd that is the unique dir that got created
@@ -207,14 +209,14 @@ func (b *Behaviour) cleanup(j *Job, all bool) (err error) {
 
 		if !keepActualCwd {
 			if len(keepDirs) > 0 {
-				err = removeAllExcept(j.ActualCwd, keepDirs)
+				err := removeAllExcept(j.ActualCwd, keepDirs)
 				if err != nil {
-					return
+					return err
 				}
 			} else {
-				err = os.RemoveAll(j.ActualCwd)
+				err := os.RemoveAll(j.ActualCwd)
 				if err != nil {
-					return
+					return err
 				}
 			}
 		}
@@ -235,20 +237,20 @@ func (b *Behaviour) cleanup(j *Job, all bool) (err error) {
 		}
 	} else {
 		// just try and delete everything in one go
-		err = os.RemoveAll(workSpace)
+		err := os.RemoveAll(workSpace)
 		if err != nil {
-			return
+			return err
 		}
 	}
 
 	// delete any empty parent directories up to Cwd
 	rmEmptyDirs(workSpace, j.Cwd)
 
-	return
+	return nil
 }
 
 // run simply runs the given command from Job's actual cwd.
-func (b *Behaviour) run(j *Job) (err error) {
+func (b *Behaviour) run(j *Job) error {
 	actualCwd := j.ActualCwd
 	if actualCwd == "" {
 		actualCwd = j.Cwd
@@ -271,12 +273,12 @@ func (b *Behaviour) run(j *Job) (err error) {
 	if err != nil {
 		return fmt.Errorf("run behaviour failed: %s\n%s", err, string(out))
 	}
-	return
+	return err
 }
 
 // copyToManager copies the files specified in the Arg slice to the configured
 // location on the manager's machine.
-func (b *Behaviour) copyToManager(j *Job) (err error) {
+func (b *Behaviour) copyToManager(j *Job) error {
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
 		return fmt.Errorf("Arg %s is type %T, not []string", b.Arg, b.Arg)
@@ -284,7 +286,7 @@ func (b *Behaviour) copyToManager(j *Job) (err error) {
 
 	// *** not yet implemented
 
-	return
+	return nil
 }
 
 // Behaviours are a slice of Behaviour.
@@ -304,11 +306,11 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 		status = OnFailure
 	}
 
-	var errors []string
+	var merr *multierror.Error
 	for _, b := range bs {
 		err := b.Trigger(status, j)
 		if err != nil {
-			errors = append(errors, err.Error())
+			merr = multierror.Append(merr, err)
 		}
 	}
 
@@ -316,17 +318,11 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	for _, b := range bs {
 		err := b.Trigger(status, j)
 		if err != nil {
-			errors = append(errors, err.Error())
+			merr = multierror.Append(merr, err)
 		}
 	}
 
-	if len(errors) > 0 {
-		if len(errors) > 1 {
-			return fmt.Errorf("%d behaviours had errors: %s", len(errors), errors)
-		}
-		return fmt.Errorf(errors[0])
-	}
-	return nil
+	return merr.ErrorOrNil()
 }
 
 // String provides a nice string representation of Behaviours for user
@@ -389,11 +385,12 @@ func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
 type BehavioursViaJSON []BehaviourViaJSON
 
 // Behaviours converts a BehavioursViaJSON to real Behaviours.
-func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) (bs Behaviours) {
+func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) Behaviours {
+	var bs Behaviours
 	for _, bj := range bjs {
 		bs = append(bs, bj.Behaviour(when))
 	}
-	return
+	return bs
 }
 
 // bvjMapping struct is used by Behaviour*.String() to do its JSON conversion.

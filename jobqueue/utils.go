@@ -56,7 +56,7 @@ var ellipses = []byte("[...]\n")
 // The cidr argument can be an empty string, but if set to the CIDR of the
 // machine's primary network, it helps us be sure of getting the correct IP
 // address (for when there are multiple network interfaces on the machine).
-func CurrentIP(cidr string) (ip string) {
+func CurrentIP(cidr string) string {
 	var ipNet *net.IPNet
 	if cidr != "" {
 		_, ipn, err := net.ParseCIDR(cidr)
@@ -68,65 +68,67 @@ func CurrentIP(cidr string) (ip string) {
 	}
 
 	conn, err := net.Dial("udp", "8.8.8.8:80") // doesn't actually connect, dest doesn't need to exist
-	if err == nil {
-		defer conn.Close()
-		localAddr := conn.LocalAddr().(*net.UDPAddr)
-		ip := localAddr.IP
+	if err != nil {
+		// fall-back on the old method we had...
 
-		// paranoid confirmation this ip is in our CIDR
-		if ipNet != nil {
-			if ipNet.Contains(ip) {
-				return ip.String()
-			}
-		} else {
-			return ip.String()
-		}
-	}
-
-	// fall-back on the old method we had...
-
-	// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
-	// cross-linux&MacOS solution that works reliably...
-	out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
-	if err == nil {
-		ip = string(out)
-
-		// paranoid confirmation this ip is in our CIDR
-		if ip != "" && ipNet != nil {
-			pip := net.ParseIP(ip)
-			if pip != nil {
-				if !ipNet.Contains(pip) {
-					ip = ""
-				}
-			}
-		}
-	}
-
-	// if the above fails, fall back on manually going through all our network
-	// interfaces
-	if ip == "" {
-		addrs, err := net.InterfaceAddrs()
+		// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
+		// cross-linux&MacOS solution that works reliably...
+		out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
+		var ip string
 		if err != nil {
-			return
-		}
-		for _, address := range addrs {
-			if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
-				if thisIPNet.IP.To4() != nil {
-					if ipNet != nil {
-						if ipNet.Contains(thisIPNet.IP) {
-							ip = thisIPNet.IP.String()
-							break
-						}
-					} else {
-						ip = thisIPNet.IP.String()
-						break
+			ip = string(out)
+
+			// paranoid confirmation this ip is in our CIDR
+			if ip != "" && ipNet != nil {
+				pip := net.ParseIP(ip)
+				if pip != nil {
+					if !ipNet.Contains(pip) {
+						ip = ""
 					}
 				}
 			}
 		}
+
+		// if the above fails, fall back on manually going through all our network
+		// interfaces
+		if ip == "" {
+			addrs, err := net.InterfaceAddrs()
+			if err != nil {
+				return ""
+			}
+			for _, address := range addrs {
+				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
+					if thisIPNet.IP.To4() != nil {
+						if ipNet != nil {
+							if ipNet.Contains(thisIPNet.IP) {
+								ip = thisIPNet.IP.String()
+								break
+							}
+						} else {
+							ip = thisIPNet.IP.String()
+							break
+						}
+					}
+				}
+			}
+		}
+
+		return ip
 	}
 
-	return
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	ip := localAddr.IP
+
+	// paranoid confirmation this ip is in our CIDR
+	if ipNet != nil {
+		if ipNet.Contains(ip) {
+			return ip.String()
+		}
+	} else {
+		return ip.String()
+	}
+	return ""
 }
 
 // byteKey calculates a unique key that describes a byte slice.
@@ -137,27 +139,26 @@ func byteKey(b []byte) string {
 
 // copy a file *** should be updated to handle source being on a different
 // machine or in an S3-style object store.
-func copyFile(source string, dest string) (err error) {
+func copyFile(source string, dest string) error {
 	in, err := os.Open(source)
 	if err != nil {
-		return
+		return err
 	}
 	defer in.Close()
 	out, err := os.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	cerr := out.Close()
 	if err != nil {
-		return
+		return err
 	}
 	if cerr != nil {
-		err = cerr
-		return
+		return cerr
 	}
-	return
+	return nil
 }
 
 // compress uses zlib to compress stuff, for transferring big stuff like
@@ -181,19 +182,18 @@ func compress(data []byte) ([]byte, error) {
 }
 
 // decompress uses zlib to decompress stuff compressed by compress().
-func decompress(compressed []byte) (data []byte, err error) {
+func decompress(compressed []byte) ([]byte, error) {
 	b := bytes.NewReader(compressed)
 	r, err := zlib.NewReader(b)
 	if err != nil {
-		return
+		return nil, err
 	}
 	buf := new(bytes.Buffer)
 	_, err = buf.ReadFrom(r)
 	if err != nil {
-		return
+		return nil, err
 	}
-	data = buf.Bytes()
-	return
+	return buf.Bytes(), err
 }
 
 // get the current memory usage of a pid, relying on modern linux /proc/*/smaps
@@ -240,7 +240,7 @@ type prefixSuffixSaver struct {
 	skipped   int64
 }
 
-func (w *prefixSuffixSaver) Write(p []byte) (n int, err error) {
+func (w *prefixSuffixSaver) Write(p []byte) (int, error) {
 	lenp := len(p)
 	p = w.fill(&w.prefix, p)
 	if overage := len(p) - w.N; overage > 0 {
@@ -259,7 +259,7 @@ func (w *prefixSuffixSaver) Write(p []byte) (n int, err error) {
 	}
 	return lenp, nil
 }
-func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) (pRemain []byte) {
+func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) []byte {
 	if remain := w.N - len(*dst); remain > 0 {
 		add := minInt(len(p), remain)
 		*dst = append(*dst, p[:add]...)
@@ -324,15 +324,15 @@ func stdFilter(std io.Reader, out io.Writer) chan bool {
 }
 
 // envOverride deals with values you get from os.Environ, overriding one set
-// with values from another.
-func envOverride(orig []string, over []string) (env []string) {
+// with values from another. Returns the new slice of environment variables.
+func envOverride(orig []string, over []string) []string {
 	override := make(map[string]string)
 	for _, envvar := range over {
 		pair := strings.Split(envvar, "=")
 		override[pair[0]] = envvar
 	}
 
-	env = orig
+	env := orig
 	for i, envvar := range env {
 		pair := strings.Split(envvar, "=")
 		if replace, do := override[pair[0]]; do {
@@ -344,7 +344,7 @@ func envOverride(orig []string, over []string) (env []string) {
 	for _, envvar := range override {
 		env = append(env, envvar)
 	}
-	return
+	return env
 }
 
 // mkHashedDir uses tohash (which should be a 32 char long string from
@@ -368,7 +368,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 				// rmEmptyDirs on the same baseDir and so conflicting with us
 				continue
 			}
-			return
+			return cwd, tmpDir, err
 		}
 
 		// and drop a temp file in here so rmEmptyDirs will not immediately
@@ -381,11 +381,11 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 			if tries <= 3 {
 				continue
 			}
-			return
+			return cwd, tmpDir, err
 		}
 		err = f.Close()
 		if err != nil {
-			return
+			return cwd, tmpDir, err
 		}
 
 		break
@@ -399,18 +399,17 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	// the same working directory
 	dir, err = ioutil.TempDir(dir, leaf)
 	if err != nil {
-		return
+		return cwd, tmpDir, err
 	}
 
 	cwd = filepath.Join(dir, "cwd")
 	err = os.Mkdir(cwd, os.ModePerm)
 	if err != nil {
-		return
+		return cwd, tmpDir, err
 	}
 
 	tmpDir = filepath.Join(dir, "tmp")
-	err = os.Mkdir(tmpDir, os.ModePerm)
-	return
+	return cwd, tmpDir, os.Mkdir(tmpDir, os.ModePerm)
 }
 
 // rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
@@ -487,5 +486,5 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 			}
 		}
 	}
-	return nil
+	return err
 }

@@ -175,7 +175,7 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // Convert considers the supplied defaults and returns a *Job based on the
 // properties of this JobViaJSON. The Job will not be in the queue until passed
 // to a method that adds jobs to the queue.
-func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
+func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var cmd, cwd, rg, repg string
 	var mb, cpus, disk, override, priority, retries int
 	var dur time.Duration
@@ -193,8 +193,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 
 	cmd = jvj.Cmd
 	if cmd == "" {
-		err = fmt.Errorf("cmd was not specified")
-		return
+		return nil, fmt.Errorf("cmd was not specified")
 	}
 
 	if jvj.Cwd == "" {
@@ -233,10 +232,9 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 	if jvj.Memory == "" {
 		mb = jd.DefaultMemory()
 	} else {
-		thismb, berr := bytefmt.ToMegabytes(jvj.Memory)
-		if berr != nil {
-			err = fmt.Errorf("memory value (%s) was not specified correctly: %s", jvj.Memory, berr)
-			return
+		thismb, err := bytefmt.ToMegabytes(jvj.Memory)
+		if err != nil {
+			return nil, fmt.Errorf("memory value (%s) was not specified correctly: %s", jvj.Memory, err)
 		}
 		mb = int(thismb)
 	}
@@ -244,10 +242,10 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 	if jvj.Time == "" {
 		dur = jd.DefaultTime()
 	} else {
+		var err error
 		dur, err = time.ParseDuration(jvj.Time)
 		if err != nil {
-			err = fmt.Errorf("time value (%s) was not specified correctly: %s", jvj.Time, err)
-			return
+			return nil, fmt.Errorf("time value (%s) was not specified correctly: %s", jvj.Time, err)
 		}
 	}
 
@@ -257,8 +255,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 		override = *jvj.Override
 	}
 	if override < 0 || override > 2 {
-		err = fmt.Errorf("override value (%d) is not in the range 0..2", override)
-		return
+		return nil, fmt.Errorf("override value (%d) is not in the range 0..2", override)
 	}
 
 	if jvj.Disk == nil {
@@ -273,8 +270,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 		priority = *jvj.Priority
 	}
 	if priority < 0 || priority > 255 {
-		err = fmt.Errorf("priority value (%d) is not in the range 0..255", priority)
-		return
+		return nil, fmt.Errorf("priority value (%d) is not in the range 0..255", priority)
 	}
 
 	if jvj.Retries == nil {
@@ -283,8 +279,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 		retries = *jvj.Retries
 	}
 	if retries < 0 || retries > 255 {
-		err = fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
-		return
+		return nil, fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
 	}
 
 	if len(jvj.DepGrps) == 0 {
@@ -307,14 +302,16 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 	}
 
 	if len(jvj.Env) > 0 {
+		var err error
 		envOverride, err = compressEnv(jvj.Env)
 		if err != nil {
-			return
+			return nil, err
 		}
 	} else if len(jd.Env) > 0 {
+		var err error
 		envOverride, err = jd.DefaultEnv()
 		if err != nil {
-			return
+			return nil, err
 		}
 	}
 
@@ -359,11 +356,9 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 		cloudScriptPath = jd.CloudScript
 	}
 	if cloudScriptPath != "" {
-		var postCreation []byte
-		postCreation, err = ioutil.ReadFile(cloudScriptPath)
+		postCreation, err := ioutil.ReadFile(cloudScriptPath)
 		if err != nil {
-			err = fmt.Errorf("cloud_script [%s] could not be read: %s", cloudScriptPath, err)
-			return
+			return nil, fmt.Errorf("cloud_script [%s] could not be read: %s", cloudScriptPath, err)
 		}
 		other["cloud_script"] = string(postCreation)
 	}
@@ -374,7 +369,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 		other["cloud_os_ram"] = jd.DefaultCloudOSRam()
 	}
 
-	job = &Job{
+	return &Job{
 		RepGroup:     repg,
 		Cmd:          cmd,
 		Cwd:          cwd,
@@ -390,8 +385,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (job *Job, err error) {
 		EnvOverride:  envOverride,
 		Behaviours:   behaviours,
 		MountConfigs: mounts,
-	}
-	return
+	}, nil
 }
 
 // restJobs lets you do CRUD on jobs in the "cmds" queue.
@@ -437,14 +431,13 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 // request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are std, env (which can take a "true" value), limit
 // (a number) and state (one of delayed|ready|reserved|running|lost|buried|
-// dependent|complete).
-func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, status int, err error) {
-	status = http.StatusOK
-
+// dependent|complete). Returns the Jobs, a http.Status* value and error.
+func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	var getStd, getEnv bool
 	var limit int
 	var state JobState
+	var err error
 
 	if r.Form.Get("std") == restFormTrue {
 		getStd = true
@@ -455,8 +448,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 	if r.Form.Get("limit") != "" {
 		limit, err = strconv.Atoi(r.Form.Get("limit"))
 		if err != nil {
-			status = http.StatusBadRequest
-			return
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if r.Form.Get("state") != "" {
@@ -483,6 +475,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 	if len(r.URL.Path) > len(restJobsEndpoint) {
 		// get the requested jobs
 		ids := r.URL.Path[len(restJobsEndpoint):]
+		var jobs []*Job
 		for _, id := range strings.Split(ids, ",") {
 			if len(id) == 32 {
 				// id might be a Job.key()
@@ -496,25 +489,18 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 			// id might be a Job.RepGroup
 			theseJobs, _, qerr := s.getJobsByRepGroup(q, id, limit, state, getStd, getEnv)
 			if qerr != "" {
-				status = http.StatusInternalServerError
-				err = fmt.Errorf(qerr)
-				return
+				return nil, http.StatusInternalServerError, fmt.Errorf(qerr)
 			}
 			if len(theseJobs) > 0 {
 				jobs = append(jobs, theseJobs...)
 			}
 		}
-		return
+		return jobs, http.StatusOK, err
 	}
 
 	// get all current jobs
-	jobs = s.getJobsCurrent(q, limit, state, getStd, getEnv)
-	return
+	return s.getJobsCurrent(q, limit, state, getStd, getEnv), http.StatusOK, err
 }
-
-// type JobViaJSON struct {
-//     MountConfigs MountConfigs      `json:"mounts"`
-// }
 
 // restJobsAdd creates and adds jobs to the queue and returns them on success.
 // The request must have some POSTed JSON that is a []*JobViaJSON.
@@ -524,7 +510,9 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, st
 // cmd_deps). For dep_grps, deps and env, which normally take []string, provide
 // a comma-separated list. mounts, on_failure, on_success and on_exit values
 // should be supplied as url query escaped JSON strings.
-func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, status int, err error) {
+//
+// The returned int is a http.Status* variable.
+func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	jd := &JobDefaults{
 		Cwd:         r.Form.Get("cwd"),
@@ -549,19 +537,17 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 		jd.ChangeHome = true
 	}
 	if r.Form.Get("memory") != "" {
-		mb, berr := bytefmt.ToMegabytes(r.Form.Get("memory"))
-		if berr != nil {
-			status = http.StatusBadRequest
-			err = berr
-			return
+		mb, err := bytefmt.ToMegabytes(r.Form.Get("memory"))
+		if err != nil {
+			return nil, http.StatusBadRequest, err
 		}
 		jd.Memory = int(mb)
 	}
 	if r.Form.Get("time") != "" {
+		var err error
 		jd.Time, err = time.ParseDuration(r.Form.Get("time"))
 		if err != nil {
-			status = http.StatusBadRequest
-			return
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	defaultDeps := urlStringToSlice(r.Form.Get("deps"))
@@ -572,10 +558,9 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 	}
 	if r.Form.Get("on_failure") != "" {
 		var bvj BehavioursViaJSON
-		err = urlStringToStruct(r.Form.Get("on_failure"), &bvj)
+		err := urlStringToStruct(r.Form.Get("on_failure"), &bvj)
 		if err != nil {
-			status = http.StatusBadRequest
-			return
+			return nil, http.StatusBadRequest, err
 		}
 		if bvj != nil {
 			jd.OnFailure = bvj.Behaviours(OnFailure)
@@ -583,10 +568,9 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 	}
 	if r.Form.Get("on_success") != "" {
 		var bvj BehavioursViaJSON
-		err = urlStringToStruct(r.Form.Get("on_success"), &bvj)
+		err := urlStringToStruct(r.Form.Get("on_success"), &bvj)
 		if err != nil {
-			status = http.StatusBadRequest
-			return
+			return nil, http.StatusBadRequest, err
 		}
 		if bvj != nil {
 			jd.OnSuccess = bvj.Behaviours(OnSuccess)
@@ -594,10 +578,9 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 	}
 	if r.Form.Get("on_exit") != "" {
 		var bvj BehavioursViaJSON
-		err = urlStringToStruct(r.Form.Get("on_exit"), &bvj)
+		err := urlStringToStruct(r.Form.Get("on_exit"), &bvj)
 		if err != nil {
-			status = http.StatusBadRequest
-			return
+			return nil, http.StatusBadRequest, err
 		}
 		if bvj != nil {
 			jd.OnExit = bvj.Behaviours(OnExit)
@@ -605,10 +588,9 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 	}
 	if r.Form.Get("mounts") != "" {
 		var mcs MountConfigs
-		err = urlStringToStruct(r.Form.Get("mounts"), &mcs)
+		err := urlStringToStruct(r.Form.Get("mounts"), &mcs)
 		if err != nil {
-			status = http.StatusBadRequest
-			return
+			return nil, http.StatusBadRequest, err
 		}
 		if mcs != nil {
 			jd.MountConfigs = mcs
@@ -617,42 +599,37 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 
 	// decode the posted JSON
 	var jvjs []*JobViaJSON
-	err = json.NewDecoder(r.Body).Decode(&jvjs)
+	err := json.NewDecoder(r.Body).Decode(&jvjs)
 	if err != nil {
-		status = http.StatusBadRequest
-		return
+		return nil, http.StatusBadRequest, err
 	}
 
 	// convert to real Job structs with default values filled in
 	var inputJobs []*Job
 	for _, jvj := range jvjs {
-		job, cerr := jvj.Convert(jd)
-		if cerr != nil {
-			status = http.StatusBadRequest
-			err = fmt.Errorf("There was a problem interpreting your job: %s", cerr)
-			return
+		job, err := jvj.Convert(jd)
+		if err != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("There was a problem interpreting your job: %s", err)
 		}
 		inputJobs = append(inputJobs, job)
 	}
 
 	envkey, err := s.db.storeEnv([]byte{})
 	if err != nil {
-		status = http.StatusInternalServerError
-		return
+		return nil, http.StatusInternalServerError, err
 	}
 
 	_, _, _, _, err = s.createJobs(q, inputJobs, envkey, true)
 	if err != nil {
-		status = http.StatusInternalServerError
-		return
+		return nil, http.StatusInternalServerError, err
 	}
-	status = http.StatusCreated
 
 	// see which of the inputJobs are now actually in the queue
 	// *** queue.AddMany doesn't currently return which jobs were added and
 	// which were dups, and server.createJobs doesn't know which were ignored
 	// due to being incomplete, so we do this loop even though it's probably
 	// slow and wasteful?...
+	var jobs []*Job
 	for _, job := range inputJobs {
 		item, qerr := q.Get(job.key())
 		if qerr == nil && item != nil {
@@ -663,7 +640,7 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) (jobs []*Job, statu
 		}
 	}
 
-	return
+	return jobs, http.StatusCreated, err
 }
 
 // restWarnings lets you read warnings from the scheduler, and auto-"dismisses"
@@ -757,27 +734,25 @@ func urlStringToInt(value string) int {
 // urlStringToSlice takes a possible comma-delimited string from a url parameter
 // value and converts it to []string. If the value is "", returns an empty
 // slice.
-func urlStringToSlice(value string) (slice []string) {
+func urlStringToSlice(value string) []string {
 	if value == "" {
-		return
+		return nil
 	}
-	slice = strings.Split(value, ",")
-	return
+	return strings.Split(value, ",")
 }
 
 // urlStringToStruct takes a possible query escaped JSON string from a url
 // parameter value and unmarshals it in to the pointed to struct. If the value
 // is "", does nothing.
-func urlStringToStruct(value string, v interface{}) (err error) {
+func urlStringToStruct(value string, v interface{}) error {
 	if value == "" {
-		return
+		return nil
 	}
 	jsonString, err := url.QueryUnescape(value)
 	if err != nil {
-		return
+		return err
 	}
-	err = json.Unmarshal([]byte(jsonString), v)
-	return
+	return json.Unmarshal([]byte(jsonString), v)
 }
 
 // compressEnv is a slower (?) version of Client.CompressEnv since we have to

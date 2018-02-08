@@ -259,7 +259,7 @@ func init() {
 
 // mountParse takes possible json string or simple string (as per `wr mount -h`)
 // and parses exactly 1 of them to a MountConfig for each mount defined.
-func mountParse(jsonString, simpleString string) (mcs jobqueue.MountConfigs) {
+func mountParse(jsonString, simpleString string) jobqueue.MountConfigs {
 	if jsonString == "" && simpleString == "" {
 		die("--mounts or --mount_json is required")
 	}
@@ -275,18 +275,19 @@ func mountParse(jsonString, simpleString string) (mcs jobqueue.MountConfigs) {
 
 // mountParseJSON takes a json string (as per `wr mount --help`) and parses it
 // to a MountConfig for each mount defined.
-func mountParseJSON(jsonString string) (mcs jobqueue.MountConfigs) {
+func mountParseJSON(jsonString string) jobqueue.MountConfigs {
+	var mcs jobqueue.MountConfigs
 	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
 	}
-	return
+	return mcs
 }
 
 // mountParseSimple takes a comma-separated list of [c|u][r|w]:bucket[/path] and
 // parses it to a MountConfig in a MountConfigs (to match the output type of
 // mountParseJSON).
-func mountParseSimple(simpleString string) (mcs jobqueue.MountConfigs) {
+func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 	var targets []jobqueue.MountTarget
 	for _, simple := range strings.Split(simpleString, ",") {
 		parts := strings.Split(simple, ":")
@@ -332,6 +333,6 @@ func mountParseSimple(simpleString string) (mcs jobqueue.MountConfigs) {
 		targets = append(targets, mt)
 	}
 
-	mcs = append(mcs, jobqueue.MountConfig{Targets: targets})
-	return
+	var mcs jobqueue.MountConfigs
+	return append(mcs, jobqueue.MountConfig{Targets: targets})
 }

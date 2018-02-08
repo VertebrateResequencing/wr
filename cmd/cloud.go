@@ -621,18 +621,18 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 }
 
-func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath string) (err error) {
+func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath string) error {
 	// first check if pidPath already has a pid and if that pid is alive
 	if _, running := checkProcess(pidPath); running {
 		//info("assuming the process with id %d is already forwarding port %d to %s:%d", pid, port, serverIP, port)
-		return
+		return nil
 	}
 
 	// start ssh -L running
 	cmd := exec.Command("/usr/bin/ssh", "-i", keyFile, "-o", "ExitOnForwardFailure yes", "-o", "UserKnownHostsFile /dev/null", "-o", "StrictHostKeyChecking no", "-qngNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port), fmt.Sprintf("%s@%s", serverUser, serverIP)) // #nosec
-	err = cmd.Start()
+	err := cmd.Start()
 	if err != nil {
-		return
+		return err
 	}
 
 	// store ssh's pid to file
@@ -641,37 +641,36 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 	// don't cmd.Wait(); ssh will continue running in the background after we
 	// exit
 
-	return
+	return err
 }
 
 func checkProcess(pidPath string) (pid int, running bool) {
 	// read file (treat errors such as file not existing as no process)
 	pidBytes, err := ioutil.ReadFile(pidPath)
 	if err != nil {
-		return
+		return pid, running
 	}
 
 	// convert file contents to pid (also treating errors as no process)
 	pid, err = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
 	if err != nil {
-		return
+		return pid, running
 	}
 
 	// see if the pid is running
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		return
+		return pid, running
 	}
 	err = process.Signal(syscall.Signal(0))
 	running = err == nil
-	return
+	return pid, running
 }
 
-func killProcess(pid int) (err error) {
+func killProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		return
+		return err
 	}
-	err = process.Signal(syscall.Signal(9))
-	return
+	return process.Signal(syscall.Signal(9))
 }

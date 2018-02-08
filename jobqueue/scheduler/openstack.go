@@ -176,7 +176,7 @@ type ConfigOpenStack struct {
 // allocations while they're still being created.
 type standin struct {
 	id             string
-	flavor         cloud.Flavor
+	flavor         *cloud.Flavor
 	disk           int
 	os             string
 	script         []byte
@@ -195,7 +195,7 @@ type standin struct {
 }
 
 // newStandin returns a new standin server
-func newStandin(id string, flavor cloud.Flavor, disk int, osPrefix string, script []byte, debug bool) *standin {
+func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, script []byte, debug bool) *standin {
 	availableDisk := flavor.Disk
 	if disk > availableDisk {
 		availableDisk = disk
@@ -266,8 +266,9 @@ func (s *standin) willBeUsed() {
 // isExtraneous checks if all prior allocate()ions on this standin can fit on
 // the given server. If they can, this standin will get failed() and we return
 // true.
-func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
+func (s *standin) isExtraneous(server *cloud.Server) bool {
 	s.mutex.RLock()
+	var failed bool
 	if s.waitingToSpawn {
 		if server.OS == s.os && server.HasSpaceFor(s.usedCores, s.usedRAM, s.usedDisk) > 0 {
 			s.mutex.RUnlock()
@@ -279,7 +280,7 @@ func (s *standin) isExtraneous(server *cloud.Server) (failed bool) {
 	} else {
 		s.mutex.RUnlock()
 	}
-	return
+	return failed
 }
 
 // failed is what you call if the server that this is a standin for failed to
@@ -330,7 +331,7 @@ func (s *standin) worked(server *cloud.Server) {
 
 // waitForServer waits until another goroutine calls failed() or worked(). You
 // would use this after checking hasSpaceFor() and doing allocate().
-func (s *standin) waitForServer() (server *cloud.Server, err error) {
+func (s *standin) waitForServer() (*cloud.Server, error) {
 	// *** is this broken if called multiple times?...
 	s.mutex.Lock()
 	s.nowWaiting++
@@ -354,17 +355,17 @@ func (s *standin) waitForServer() (server *cloud.Server, err error) {
 			s.debug("standin %s waitForServer(), resent on endWait\n", s.id)
 		}
 	}()
-	server = <-done
+	server := <-done
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	if s.failReason != "" {
-		err = fmt.Errorf(s.failReason)
+		return server, fmt.Errorf(s.failReason)
 	}
-	return
+	return server, nil
 }
 
 // initialize sets up an openstack scheduler.
-func (s *opst) initialize(config interface{}) (err error) {
+func (s *opst) initialize(config interface{}) error {
 	s.config = config.(*ConfigOpenStack)
 	if s.config.OSRAM == 0 {
 		s.config.OSRAM = 2048
@@ -381,7 +382,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	// openstack
 	provider, err := cloud.New("openstack", s.config.ResourceName, s.config.SavePath)
 	if err != nil {
-		return
+		return err
 	}
 	provider.Debug = s.debugMode
 	s.provider = provider
@@ -393,7 +394,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 		DNSNameServers: s.config.DNSNameServers,
 	})
 	if err != nil {
-		return
+		return err
 	}
 
 	// to debug spawned servers that don't work correctly:
@@ -404,7 +405,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	// instances; 0 will mean unlimited
 	quota, err := provider.GetQuota()
 	if err != nil {
-		return
+		return err
 	}
 	if quota.MaxCores == 0 {
 		s.quotaMaxCores = unquotadVal
@@ -441,7 +442,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.servers = make(map[string]*cloud.Server)
 	maxRAM, err := s.procMeminfoMBs()
 	if err != nil {
-		return
+		return err
 	}
 	usage := du.NewDiskUsage(".")
 	diskSize := int(usage.Size() / gb)
@@ -475,7 +476,7 @@ func (s *opst) initialize(config interface{}) (err error) {
 	s.cmdToStandins = make(map[string]map[string]bool)
 	s.standinToCmd = make(map[string]map[string]bool)
 
-	return
+	return err
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met,
@@ -493,19 +494,19 @@ func (s *opst) reqCheck(req *Requirements) error {
 
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
 // amongst those that are capable of running it.
-func (s *opst) determineFlavor(req *Requirements) (flavor cloud.Flavor, err error) {
-	flavor, err = s.provider.CheapestServerFlavor(req.Cores, req.RAM, s.config.FlavorRegex)
+func (s *opst) determineFlavor(req *Requirements) (*cloud.Flavor, error) {
+	flavor, err := s.provider.CheapestServerFlavor(req.Cores, req.RAM, s.config.FlavorRegex)
 	if err != nil {
 		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
 			err = Error{"openstack", "determineFlavor", ErrImpossible}
 		}
 	}
-	return
+	return flavor, err
 }
 
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources.
-func (s *opst) canCount(req *Requirements) (canCount int) {
+func (s *opst) canCount(req *Requirements) int {
 	// we don't do any actual checking of current resources on the machines, but
 	// instead rely on our simple tracking based on how many cores and RAM
 	// prior cmds were /supposed/ to use. This could be bad for misbehaving cmds
@@ -522,6 +523,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	// the best heuristic. Sort the objects in decreasing order of size, so that
 	// the biggest object is first and the smallest last. Insert each object one
 	// by one in to the first bin that has room for it.”
+	var canCount int
 	for _, server := range s.servers {
 		if !server.IsBad() {
 			space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
@@ -535,13 +537,13 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 	flavor, err := s.determineFlavor(reqForSpawn)
 	if err != nil {
 		s.debug("determineFlavor failed: %s\n", err)
-		return
+		return canCount
 	}
 
 	quota, err := s.provider.GetQuota() // this includes resources used by currently spawning servers
 	if err != nil {
 		s.debug("GetQuota failed: %s\n", err)
-		return
+		return canCount
 	}
 	remainingInstances := unquotadVal
 	if quota.MaxInstances > 0 {
@@ -588,7 +590,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		}
 	}
 	if remainingInstances < 1 || remainingRAM < flavor.RAM || remainingCores < flavor.Cores || remainingVolume < req.Disk {
-		return
+		return canCount
 	}
 
 	spawnable := remainingInstances
@@ -633,7 +635,7 @@ func (s *opst) canCount(req *Requirements) (canCount int) {
 		}
 	}
 	canCount += spawnable * perServer
-	return
+	return canCount
 }
 
 // reqForSpawn checks the input Requirements and if the configured OSRAM (or

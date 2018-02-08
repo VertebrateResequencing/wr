@@ -196,9 +196,9 @@ func (p *Protector) Granted(receipt Receipt) (granted, keepChecking bool) {
 		if !granted {
 			keepChecking = !r.finished()
 		}
-		return
+		return granted, keepChecking
 	}
-	return
+	return granted, keepChecking
 }
 
 // Touch for a request (identified by the given receipt) prevents it timing out

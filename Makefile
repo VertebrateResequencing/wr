@@ -47,7 +47,7 @@ lint:
 	@gometalinter.v2 --vendor --aggregate --deadline=120s ./... | sort
 
 lintextra:
-	@gometalinter.v2 --vendor --aggregate --deadline=120s --disable-all --enable=nakedret --enable=vetshadow --enable=errcheck--enable=gocyclo --enable=dupl ./... | sort
+	@gometalinter.v2 --vendor --aggregate --deadline=120s --disable-all --enable=vetshadow --enable=errcheck--enable=gocyclo --enable=dupl ./... | sort
 
 clean:
 	@rm -f ./wr

@@ -281,7 +281,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// in the future
 	owner, err := internal.Username()
 	if err != nil {
-		return
+		return s, msg, err
 	}
 	var allowedUsers []string
 	allowedUsersMap := make(map[string]bool)
@@ -296,7 +296,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 	sock, err := rep.NewSocket()
 	if err != nil {
-		return
+		return s, msg, err
 	}
 
 	// we open ourselves up to possible denial-of-service attack if a client
@@ -304,25 +304,25 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// forever when it legitimately wants to Add() a ton of jobs
 	// unlimited Recv() length
 	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return
+		return s, msg, err
 	}
 
 	// we use raw mode, allowing us to respond to multiple clients in
 	// parallel
 	if err = sock.SetOption(mangos.OptionRaw, true); err != nil {
-		return
+		return s, msg, err
 	}
 
 	// we'll wait ServerInterruptTime to recv from clients before trying again,
 	// allowing us to check if signals have been passed
 	if err = sock.SetOption(mangos.OptionRecvDeadline, ServerInterruptTime); err != nil {
-		return
+		return s, msg, err
 	}
 
 	sock.AddTransport(tcp.NewTransport())
 
 	if err = sock.Listen("tcp://0.0.0.0:" + config.Port); err != nil {
-		return
+		return s, msg, err
 	}
 
 	// serving will happen in a goroutine that will stop on SIGINT or SIGTERM,
@@ -336,8 +336,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// our non-loopback ip address so they can connect to us
 	ip := CurrentIP(config.CIDR)
 	if ip == "" {
-		err = Error{"", "Serve", "", ErrNoHost}
-		return
+		return s, msg, Error{"", "Serve", "", ErrNoHost}
 	}
 
 	// to be friendly we also record the hostname, but it's possible this isn't
@@ -350,13 +349,13 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// we will spawn runner clients via the requested job scheduler
 	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig)
 	if err != nil {
-		return
+		return s, msg, err
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
 	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment)
 	if err != nil {
-		return
+		return s, msg, err
 	}
 
 	s = &Server{
@@ -386,7 +385,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// need to load those in to the appropriate queues now
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
-		return
+		return nil, msg, err
 	}
 	if len(priorJobs) > 0 {
 		jobsByQueue := make(map[string][]*queue.ItemDef)
@@ -394,7 +393,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			var deps []string
 			deps, err = job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
-				return
+				return nil, msg, err
 			}
 			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
@@ -402,7 +401,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			q := s.getOrCreateQueue(qname)
 			_, _, err = s.enqueueItems(q, itemdefs)
 			if err != nil {
-				return
+				return nil, msg, err
 			}
 		}
 	}
@@ -547,29 +546,30 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}()
 	<-ready
 
-	return
+	return s, msg, err
 }
 
 // Block makes you block while the server does the job of serving clients. This
 // will return with an error indicating why it stopped blocking, which will
 // be due to receiving a signal or because you called Stop()
-func (s *Server) Block() (err error) {
+func (s *Server) Block() error {
 	s.racmutex.Lock()
 	s.blocking = true
 	s.racmutex.Unlock()
-	err = <-s.done
+	err := <-s.done
 	s.racmutex.Lock()
 	s.up = false
 	s.blocking = false
 	s.racmutex.Unlock()
-	return
+	return err
 }
 
 // Stop will cause a graceful shut down of the server. Supplying an optional
 // bool of true will cause Stop() to wait until all runners have exited and
 // the server is truly down before returning.
-func (s *Server) Stop(wait ...bool) (err error) {
+func (s *Server) Stop(wait ...bool) error {
 	s.racmutex.Lock()
+	var err error
 	if s.up {
 		s.stop <- true // results in shutdown()
 		if !s.blocking {
@@ -585,21 +585,22 @@ func (s *Server) Stop(wait ...bool) (err error) {
 			for range ticker.C {
 				if !s.HasRunners() {
 					ticker.Stop()
-					return
+					break
 				}
 			}
 		}
 	} else {
 		s.racmutex.Unlock()
 	}
-	return
+	return err
 }
 
 // Drain will stop the server spawning new runners and stop Reserve*() from
 // returning any more Jobs. Once all current runners exit, we Stop().
-func (s *Server) Drain() (err error) {
+func (s *Server) Drain() error {
 	s.racmutex.Lock()
 	defer s.racmutex.Unlock()
+	var err error
 	if s.up {
 		if !s.drain {
 			s.drain = true
@@ -625,14 +626,14 @@ func (s *Server) Drain() (err error) {
 					// job scheduler will be nice and clean
 					s.scheduler.Cleanup()
 					s.Stop(true)
-					return
+					break
 				}
 			}()
 		}
 	} else {
 		err = Error{"", "Drain", "", ErrNoServer}
 	}
-	return
+	return err
 }
 
 // GetServerStats returns basic info about the server along with some simple
@@ -974,10 +975,10 @@ func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
 }
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
-func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added int, dups int, err error) {
+func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added, dups int, err error) {
 	added, dups, err = q.AddMany(itemdefs)
 	if err != nil {
-		return
+		return added, dups, err
 	}
 
 	// add to our lookup of job RepGroup to key
@@ -991,7 +992,7 @@ func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added 
 	}
 	s.rpl.Unlock()
 
-	return
+	return added, dups, err
 }
 
 // createJobs creates new jobs, adding them to the database and the in-memory
@@ -1079,7 +1080,7 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 		}
 	}
 
-	return
+	return added, dups, alreadyComplete, srerr, qerr
 }
 
 // killJob sets the killCalled property on a job, to change the subsequent
@@ -1090,15 +1091,14 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 // confirm it is definitely dead and won't spring back to life in the future:
 // we release or bury it as appropriate.
 //
-// If the job wasn't running, eligible will be false and nothing will have been
-// done.
-func (s *Server) killJob(q *queue.Queue, jobkey string) (eligible bool, err error) {
+// If the job wasn't running, returned bool will be false and nothing will have
+// been done.
+func (s *Server) killJob(q *queue.Queue, jobkey string) (bool, error) {
 	item, err := q.Get(jobkey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
-		return
+		return false, err
 	}
 
-	eligible = true
 	job := item.Data.(*Job)
 	job.Lock()
 	job.killCalled = true
@@ -1116,21 +1116,21 @@ func (s *Server) killJob(q *queue.Queue, jobkey string) (eligible bool, err erro
 		if ub <= 0 {
 			err = q.Bury(item.Key)
 			if err != nil {
-				return
+				return true, err
 			}
 			s.decrementGroupCount(job.getSchedulerGroup(), q)
-			return
+			return true, err
 		}
 		err = q.Release(item.Key)
 		if err != nil {
-			return
+			return true, err
 		}
 		s.decrementGroupCount(job.getSchedulerGroup(), q)
-		return
+		return true, err
 	}
 
 	job.Unlock()
-	return
+	return true, err
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete)
@@ -1167,7 +1167,7 @@ func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEn
 		}
 	}
 
-	return
+	return jobs, srerr, qerr
 }
 
 // getJobsByRepGroup gets jobs in the given group (current and complete)
@@ -1203,7 +1203,7 @@ func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, s
 	if limit > 0 || state != "" || getStd || getEnv {
 		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
 	}
-	return
+	return jobs, srerr, qerr
 }
 
 // getCompleteJobsByRepGroup gets complete jobs in the given group
@@ -1213,11 +1213,12 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 		srerr = ErrDBError
 		qerr = err.Error()
 	}
-	return
+	return jobs, srerr, qerr
 }
 
 // getJobsCurrent gets all current (incomplete) jobs
-func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job) {
+func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state JobState, getStd bool, getEnv bool) []*Job {
+	var jobs []*Job
 	for _, item := range q.AllItems() {
 		jobs = append(jobs, s.itemToJob(item, false, false))
 	}
@@ -1226,14 +1227,15 @@ func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state JobState, getSt
 		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
 	}
 
-	return
+	return jobs
 }
 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
-func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, getEnv bool) (limited []*Job) {
+func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	groups := make(map[string][]*Job)
+	var limited []*Job
 	for _, job := range jobs {
 		job.RLock()
 		jState := job.State
@@ -1290,7 +1292,7 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 		}
 	}
 
-	return
+	return limited
 }
 
 func (s *Server) scheduleRunners(q *queue.Queue, group string) {
@@ -1422,8 +1424,9 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 
 // getBadServers converts the slice of cloud.Server objects we hold in to a
 // slice of badServer structs.
-func (s *Server) getBadServers() (bs []*badServer) {
+func (s *Server) getBadServers() []*badServer {
 	s.bsmutex.RLock()
+	var bs []*badServer
 	for _, server := range s.badServers {
 		bs = append(bs, &badServer{
 			ID:      server.ID,
@@ -1435,7 +1438,7 @@ func (s *Server) getBadServers() (bs []*badServer) {
 		})
 	}
 	s.bsmutex.RUnlock()
-	return
+	return bs
 }
 
 // shutdown stops listening to client connections, close all queues and

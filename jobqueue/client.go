@@ -117,7 +117,7 @@ type envStr struct {
 // queue. Timeout determines how long to wait for a response from the server,
 // not only while connecting, but for all subsequent interactions with it using
 // the returned Client.
-func Connect(addr string, queue string, timeout time.Duration) (c *Client, err error) {
+func Connect(addr string, queue string, timeout time.Duration) (*Client, error) {
 	// a server is only allowed to be accessed by a particular user, so we get
 	// our username here. NB: *** this is not real security, since someone could
 	// just recompile with the following line altered to a hardcoded username
@@ -125,28 +125,28 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	// server
 	user, err := internal.Username()
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	sock, err := req.NewSocket()
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return
+		return nil, err
 	}
 
 	err = sock.SetOption(mangos.OptionRecvDeadline, timeout)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	sock.AddTransport(tcp.NewTransport())
 
 	err = sock.Dial("tcp://" + addr)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	// clients identify themselves (only for the purpose of calling methods that
@@ -154,23 +154,25 @@ func Connect(addr string, queue string, timeout time.Duration) (c *Client, err e
 	// since speed doesn't matter: a typical client executable will only
 	// Connect() once; on the other hand, we avoid any possible problem with
 	// running on machines with low time resolution
-	u, _ := uuid.NewV4()
-	c = &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: u}
+	u, err := uuid.NewV4()
+	if err != nil {
+		return nil, err
+	}
+	c := &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: u}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
 	err = c.Ping(timeout)
 	if err != nil {
 		sock.Close()
-		c = nil
 		msg := ErrNoServer
 		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
 			msg = ErrWrongUser
 		}
-		err = Error{queue, "Connect", "", msg}
+		return nil, Error{queue, "Connect", "", msg}
 	}
 
-	return
+	return c, err
 }
 
 // Disconnect closes the connection to the jobqueue server. It is CRITICAL that
@@ -181,9 +183,9 @@ func (c *Client) Disconnect() {
 
 // Ping tells you if your connection to the server is working. If err is nil,
 // it works.
-func (c *Client) Ping(timeout time.Duration) (err error) {
-	_, err = c.request(&clientRequest{Method: "ping", Timeout: timeout})
-	return
+func (c *Client) Ping(timeout time.Duration) error {
+	_, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
+	return err
 }
 
 // DrainServer tells the server to stop spawning new runners, stop letting
@@ -193,12 +195,12 @@ func (c *Client) Ping(timeout time.Duration) (err error) {
 func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	resp, err := c.request(&clientRequest{Method: "drain"})
 	if err != nil {
-		return
+		return running, etc, err
 	}
 	s := resp.SStats
 	running = s.Running
 	etc = s.ETC
-	return
+	return running, etc, err
 }
 
 // ShutdownServer tells the server to immediately cease all operations. Its last
@@ -214,30 +216,32 @@ func (c *Client) ShutdownServer() bool {
 }
 
 // ServerStats returns stats of the jobqueue server itself.
-func (c *Client) ServerStats() (s *ServerStats, err error) {
+func (c *Client) ServerStats() (*ServerStats, error) {
 	resp, err := c.request(&clientRequest{Method: "sstats"})
 	if err != nil {
-		return
+		return nil, err
 	}
-	s = resp.SStats
-	return
+	return resp.SStats, err
 }
 
 // BackupDB backs up the server's database to the given path. Note that
 // automatic backups occur to the configured location without calling this.
-func (c *Client) BackupDB(path string) (err error) {
+func (c *Client) BackupDB(path string) error {
 	resp, err := c.request(&clientRequest{Method: "backup"})
 	if err != nil {
-		return
+		return err
 	}
 	tmpPath := path + ".tmp"
 	err = ioutil.WriteFile(tmpPath, resp.DB, dbFilePermission)
-	if err == nil {
-		err = os.Rename(tmpPath, path)
-	} else {
-		os.Remove(tmpPath)
+	if err != nil {
+		rerr := os.Remove(tmpPath)
+		if rerr != nil {
+			err = fmt.Errorf("%s\n%s", err.Error(), rerr.Error())
+		}
+		return err
 	}
-	return
+
+	return os.Rename(tmpPath, path)
 }
 
 // Add adds new jobs to the job queue, but only if those jobs aren't already in
@@ -256,18 +260,16 @@ func (c *Client) BackupDB(path string) (err error) {
 // The envVars argument is a slice of ("key=value") strings with the environment
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
-func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added int, existed int, err error) {
+func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added, existed int, err error) {
 	compressed, err := c.CompressEnv(envVars)
 	if err != nil {
-		return
+		return 0, 0, err
 	}
 	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
 	if err != nil {
-		return
+		return 0, 0, err
 	}
-	added = resp.Added
-	existed = resp.Existed
-	return
+	return resp.Added, resp.Existed, err
 }
 
 // Reserve takes a job off the jobqueue. If you process the job successfully you
@@ -283,7 +285,7 @@ func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added 
 // NB: if your jobs have schedulerGroups (and they will if you added them to a
 // server configured with a RunnerCmd), this will most likely not return any
 // jobs; use ReserveScheduled() instead.
-func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
+func (c *Client) Reserve(timeout time.Duration) (*Job, error) {
 	fr := false
 	if !c.hasReserved {
 		fr = true
@@ -291,10 +293,9 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 	}
 	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, FirstReserve: fr})
 	if err != nil {
-		return
+		return nil, err
 	}
-	j = resp.Job
-	return
+	return resp.Job, err
 }
 
 // ReserveScheduled is like Reserve(), except that it will only return jobs from
@@ -308,7 +309,7 @@ func (c *Client) Reserve(timeout time.Duration) (j *Job, err error) {
 // the runners can reserve only Jobs that they're supposed to. Therefore, it
 // does not make sense for you to call this yourself; it is only for use by
 // runners spawned by the server.
-func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) (j *Job, err error) {
+func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) (*Job, error) {
 	fr := false
 	if !c.hasReserved {
 		fr = true
@@ -316,10 +317,9 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 	}
 	resp, err := c.request(&clientRequest{Method: "reserve", Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr})
 	if err != nil {
-		return
+		return nil, err
 	}
-	j = resp.Job
-	return
+	return resp.Job, err
 }
 
 // Execute runs the given Job's Cmd and blocks until it exits. Then any Job
@@ -766,7 +766,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 // HostID will not be set on job after this call; only the server will know
 // about it (use one of the Get methods afterwards to get a new object with the
 // HostID set if necessary).
-func (c *Client) Started(job *Job, pid int) (err error) {
+func (c *Client) Started(job *Job, pid int) error {
 	// host details
 	host, err := os.Hostname()
 	if err != nil {
@@ -778,29 +778,28 @@ func (c *Client) Started(job *Job, pid int) (err error) {
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
 	_, err = c.request(&clientRequest{Method: "jstart", Job: job})
-	return
+	return err
 }
 
 // Touch adds to a job's ttr, allowing you more time to work on it. Note that
-// you must have reserved the job before you can touch it. If the returned
-// killCalled bool is true, you stop doing what you're doing and bury the job,
-// since this means that Kill() has been called for this job.
-func (c *Client) Touch(job *Job) (killCalled bool, err error) {
+// you must have reserved the job before you can touch it. If the returned bool
+// is true, you stop doing what you're doing and bury the job, since this means
+// that Kill() has been called for this job.
+func (c *Client) Touch(job *Job) (bool, error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	resp, err := c.request(&clientRequest{Method: "jtouch", Job: job})
 	if err != nil {
-		return
+		return false, err
 	}
-	killCalled = resp.KillCalled
-	return
+	return resp.KillCalled, err
 }
 
 // Ended updates a Job on the server with information that you've finished
 // running the Job's Cmd. Peakram should be in MB. The cwd you supply should be
 // the actual working directory used, which may be different to the Job's Cwd
 // property; if not, supply empty string.
-func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) (err error) {
+func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	job.Exited = true
@@ -810,34 +809,36 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 	if cwd != "" {
 		job.ActualCwd = cwd
 	}
+	var err error
 	if len(stdout) > 0 {
 		job.StdOutC, err = compress(stdout)
 		if err != nil {
-			return
+			return err
 		}
 	}
 	if len(stderr) > 0 {
 		job.StdErrC, err = compress(stderr)
 		if err != nil {
-			return
+			return err
 		}
 	}
 	_, err = c.request(&clientRequest{Method: "jend", Job: job})
-	return
+	return err
 }
 
 // Archive removes a job from the jobqueue and adds it to the database of
 // complete jobs, for use after you have run the job successfully. You have to
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
-func (c *Client) Archive(job *Job) (err error) {
+func (c *Client) Archive(job *Job) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
-	_, err = c.request(&clientRequest{Method: "jarchive", Job: job})
-	if err == nil {
-		job.State = JobStateComplete
+	_, err := c.request(&clientRequest{Method: "jarchive", Job: job})
+	if err != nil {
+		return err
 	}
-	return
+	job.State = JobStateComplete
+	return err
 }
 
 // Release places a job back on the jobqueue, for use when you can't handle the
@@ -847,72 +848,74 @@ func (c *Client) Archive(job *Job) (err error) {
 // has been run and failed; a subsequent call to Release() will instead result
 // in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
 // number of times.)
-func (c *Client) Release(job *Job, failreason string) (err error) {
+func (c *Client) Release(job *Job, failreason string) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	job.FailReason = failreason
-	_, err = c.request(&clientRequest{Method: "jrelease", Job: job})
-	if err == nil {
-		// update our process with what the server would have done
-		if job.Exited && job.Exitcode != 0 {
-			job.UntilBuried--
-			job.updateRecsAfterFailure()
-		}
-		if job.UntilBuried <= 0 {
-			job.State = JobStateBuried
-		} else {
-			job.State = JobStateDelayed
-		}
+	_, err := c.request(&clientRequest{Method: "jrelease", Job: job})
+	if err != nil {
+		return err
 	}
-	return
+
+	// update our process with what the server would have done
+	if job.Exited && job.Exitcode != 0 {
+		job.UntilBuried--
+		job.updateRecsAfterFailure()
+	}
+	if job.UntilBuried <= 0 {
+		job.State = JobStateBuried
+	} else {
+		job.State = JobStateDelayed
+	}
+	return err
 }
 
 // Bury marks a job as unrunnable, so it will be ignored (until the user does
 // something to perhaps make it runnable and kicks the job). Note that you must
 // reserve a job before you can bury it. Optionally supply an error that will
 // be be displayed as the Job's stderr.
-func (c *Client) Bury(job *Job, failreason string, stderr ...error) (err error) {
+func (c *Client) Bury(job *Job, failreason string, stderr ...error) error {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	job.FailReason = failreason
+	var err error
 	if len(stderr) == 1 && stderr[0] != nil {
 		job.StdErrC, err = compress([]byte(stderr[0].Error()))
 		if err != nil {
-			return
+			return err
 		}
 	}
 	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
-	if err == nil {
-		job.State = JobStateBuried
+	if err != nil {
+		return err
 	}
-	return
+	job.State = JobStateBuried
+	return err
 }
 
 // Kick makes previously Bury()'d jobs runnable again (it can be Reserve()d in
 // the future). It returns a count of jobs that it actually kicked. Errors will
 // only be related to not being able to contact the server.
-func (c *Client) Kick(jes []*JobEssence) (kicked int, err error) {
+func (c *Client) Kick(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jkick", Keys: keys})
 	if err != nil {
-		return
+		return 0, err
 	}
-	kicked = resp.Existed
-	return
+	return resp.Existed, err
 }
 
 // Delete removes previously Bury()'d jobs from the queue completely. For use
 // when jobs were created incorrectly/ by accident, or they can never be fixed.
 // It returns a count of jobs that it actually removed. Errors will only be
 // related to not being able to contact the server.
-func (c *Client) Delete(jes []*JobEssence) (deleted int, err error) {
+func (c *Client) Delete(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
 	if err != nil {
-		return
+		return 0, err
 	}
-	deleted = resp.Existed
-	return
+	return resp.Existed, err
 }
 
 // Kill will cause the next Touch() call for the job(s) described by the input
@@ -925,51 +928,50 @@ func (c *Client) Delete(jes []*JobEssence) (deleted int, err error) {
 // Kill returns a count of jobs that were eligible to be killed (those still in
 // running state). Errors will only be related to not being able to contact the
 // server.
-func (c *Client) Kill(jes []*JobEssence) (killable int, err error) {
+func (c *Client) Kill(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jkill", Keys: keys})
 	if err != nil {
-		return
+		return 0, err
 	}
-	killable = resp.Existed
-	return
+	return resp.Existed, err
 }
 
 // GetByEssence gets a Job given a JobEssence to describe it. With the boolean
 // args set to true, this is the only way to get a Job that StdOut() and
 // StdErr() will work on, and one of 2 ways that Env() will work (the other
 // being Reserve()).
-func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (j *Job, err error) {
+func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getbc", Keys: []string{je.Key()}, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
-		return
+		return nil, err
 	}
 	jobs := resp.Jobs
-	if len(jobs) > 0 {
-		j = jobs[0]
+	if len(jobs) == 0 {
+		return nil, err
 	}
-	return
+	return jobs[0], err
 }
 
 // GetByEssences gets multiple Jobs at once given JobEssences that describe
 // them.
-func (c *Client) GetByEssences(jes []*JobEssence) (out []*Job, err error) {
+func (c *Client) GetByEssences(jes []*JobEssence) ([]*Job, error) {
 	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys})
 	if err != nil {
-		return
+		return nil, err
 	}
-	out = resp.Jobs
-	return
+	return resp.Jobs, err
 }
 
 // jesToKeys deals with the jes arg that GetByEccences(), Kick() and Delete()
 // take.
-func (c *Client) jesToKeys(jes []*JobEssence) (keys []string) {
+func (c *Client) jesToKeys(jes []*JobEssence) []string {
+	var keys []string
 	for _, je := range jes {
 		keys = append(keys, je.Key())
 	}
-	return
+	return keys
 }
 
 // GetByRepGroup gets multiple Jobs at once given their RepGroup (an arbitrary
@@ -980,31 +982,29 @@ func (c *Client) jesToKeys(jes []*JobEssence) (keys []string) {
 // number of other excluded jobs there were in that group. Providing 'state'
 // only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
 // stdout, stderr and environement variables for the Jobs.
-func (c *Client) GetByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, err error) {
+func (c *Client) GetByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
-		return
+		return nil, err
 	}
-	jobs = resp.Jobs
-	return
+	return resp.Jobs, err
 }
 
 // GetIncomplete gets all Jobs that are currently in the jobqueue, ie. excluding
 // those that are complete and have been Archive()d. The args are as in
 // GetByRepGroup().
-func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, err error) {
+func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getin", Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
-		return
+		return nil, err
 	}
-	jobs = resp.Jobs
-	return
+	return resp.Jobs, err
 }
 
 // request the server do something and get back its response. We can only cope
 // with one request at a time per client, or we'll get replies back in the
 // wrong order, hence we lock.
-func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
+func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	c.Lock()
 	defer c.Unlock()
 
@@ -1014,25 +1014,25 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 	cr.Queue = c.queue
 	cr.User = c.user
 	cr.ClientID = c.clientid
-	err = enc.Encode(cr)
+	err := enc.Encode(cr)
 	if err != nil {
-		return
+		return nil, err
 	}
 	err = c.sock.Send(encoded)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	// get the response and decode it
 	resp, err := c.sock.Recv()
 	if err != nil {
-		return
+		return nil, err
 	}
-	sr = &serverResponse{}
+	sr := &serverResponse{}
 	dec := codec.NewDecoderBytes(resp, c.ch)
 	err = dec.Decode(sr)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	// pull the error out of sr
@@ -1041,19 +1041,18 @@ func (c *Client) request(cr *clientRequest) (sr *serverResponse, err error) {
 		if cr.Job != nil {
 			key = cr.Job.key()
 		}
-		err = Error{cr.Queue, cr.Method, key, sr.Err}
+		return sr, Error{cr.Queue, cr.Method, key, sr.Err}
 	}
-	return
+	return sr, err
 }
 
 // CompressEnv encodes the given environment variables (slice of "key=value"
 // strings) and then compresses that, so that for Add() the server can store it
 // on disc without holding it in memory, and pass the compressed bytes back to
 // us when we need to know the Env (during Execute()).
-func (c *Client) CompressEnv(envars []string) (compressed []byte, err error) {
+func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
 	enc.Encode(&envStr{envars})
-	compressed, err = compress(encoded)
-	return
+	return compress(encoded)
 }

@@ -288,13 +288,12 @@ func (queue *Queue) SetTTRCallback(callback TTRCallback) {
 
 // Destroy shuts down a queue, destroying any contents. You can't do anything
 // useful with it after that.
-func (queue *Queue) Destroy() (err error) {
+func (queue *Queue) Destroy() error {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Destroy", "", ErrQueueClosed}
-		return
+		return Error{queue.Name, "Destroy", "", ErrQueueClosed}
 	}
 
 	queue.ttrClose <- true
@@ -306,7 +305,7 @@ func (queue *Queue) Destroy() (err error) {
 	queue.buryQueue.empty()
 	queue.depQueue.empty()
 	queue.closed = true
-	return
+	return nil
 }
 
 // Stats returns information about the number of items in the queue and each
@@ -338,20 +337,18 @@ func (queue *Queue) Stats() *Stats {
 // dependency sub-queue and only transfer to the ready sub-queue when items with
 // these ids get Remove()d from the queue. Add() returns an item, which may have
 // already existed (in which case, nothing was actually added or changed).
-func (queue *Queue) Add(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (item *Item, err error) {
+func (queue *Queue) Add(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Add", key, ErrQueueClosed}
-		return
+		return nil, Error{queue.Name, "Add", key, ErrQueueClosed}
 	}
 
 	item, existed := queue.items[key]
 	if existed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Add", key, ErrAlreadyExists}
-		return
+		return item, Error{queue.Name, "Add", key, ErrAlreadyExists}
 	}
 
 	item = newItem(key, reserveGroup, data, priority, delay, ttr)
@@ -362,7 +359,7 @@ func (queue *Queue) Add(key string, reserveGroup string, data interface{}, prior
 		queue.setItemDependencies(item, deps[0])
 		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
-		return
+		return item, nil
 	}
 
 	if delay.Nanoseconds() == 0 {
@@ -379,7 +376,7 @@ func (queue *Queue) Add(key string, reserveGroup string, data interface{}, prior
 		queue.delayNotificationTrigger(item)
 	}
 
-	return
+	return item, nil
 }
 
 // setItemDependencies sets the given item keys as the dependencies of the given
@@ -421,13 +418,12 @@ func (queue *Queue) itemHasDeps(item *Item) bool {
 // returns the number that were actually added and the number of items that were
 // not added because they were duplicates of items already in the queue. If an
 // error occurs, nothing will have been added.
-func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
+func (queue *Queue) AddMany(items []*ItemDef) (added, dups int, err error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "AddMany", "", ErrQueueClosed}
-		return
+		return 0, 0, Error{queue.Name, "AddMany", "", ErrQueueClosed}
 	}
 
 	deferredTrigger := false
@@ -475,46 +471,45 @@ func (queue *Queue) AddMany(items []*ItemDef) (added int, dups int, err error) {
 	if len(addedDepItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueDependent, addedDepItems)
 	}
-	return
+	return added, dups, err
 }
 
 // Get is a thread-safe way to get an item by the key you used to Add() it.
-func (queue *Queue) Get(key string) (item *Item, err error) {
+func (queue *Queue) Get(key string) (*Item, error) {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Get", key, ErrQueueClosed}
-		return
+		return nil, Error{queue.Name, "Get", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
-
 	if !exists {
-		err = Error{queue.Name, "Get", key, ErrNotFound}
+		return nil, Error{queue.Name, "Get", key, ErrNotFound}
 	}
-
-	return
+	return item, nil
 }
 
 // GetRunningData gets all the item.Data of items currently in the run sub-
 // queue.
-func (queue *Queue) GetRunningData() (data []interface{}) {
+func (queue *Queue) GetRunningData() []interface{} {
 	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+	var data []interface{}
 	for _, item := range queue.runQueue.items {
 		data = append(data, item.Data)
 	}
-	queue.mutex.RUnlock()
-	return
+	return data
 }
 
 // AllItems returns the items in the queue. NB: You should NOT do anything
 // to these items - use for read-only purposes.
-func (queue *Queue) AllItems() (items []*Item) {
+func (queue *Queue) AllItems() []*Item {
+	var items []*Item
 	for _, item := range queue.items {
 		items = append(items, item)
 	}
-	return
+	return items
 }
 
 // Update is a thread-safe way to change the data, ReserveGroup, priority, delay,
@@ -524,20 +519,18 @@ func (queue *Queue) AllItems() (items []*Item) {
 // the item with Get() (giving you item.Key, item.ReserveGroup, item.Data and
 // item.UnresolvedDependencies()), and then calling item.Stats() to get
 // stats.Priority, stats.Delay and stats.TTR.
-func (queue *Queue) Update(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (err error) {
+func (queue *Queue) Update(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Update", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Update", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
-		err = Error{queue.Name, "Update", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Update", key, ErrNotFound}
 	}
 
 	var changedFrom SubQueue
@@ -644,23 +637,21 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		queue.changed(changedFrom, SubQueueDependent, []*Item{item})
 	}
 
-	return
+	return nil
 }
 
 // SetDelay is a thread-safe way to change the delay of an item.
-func (queue *Queue) SetDelay(key string, delay time.Duration) (err error) {
+func (queue *Queue) SetDelay(key string, delay time.Duration) error {
 	queue.mutex.Lock()
 	if queue.closed {
-		err = Error{queue.Name, "SetDelay", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "SetDelay", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
-		err = Error{queue.Name, "SetDelay", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "SetDelay", key, ErrNotFound}
 	}
 
 	if item.delay != delay {
@@ -670,27 +661,25 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) (err error) {
 			queue.delayQueue.update(item)
 			queue.mutex.Unlock()
 			queue.delayNotificationTrigger(item)
-			return
+			return nil
 		}
 	}
 	queue.mutex.Unlock()
-	return
+	return nil
 }
 
 // SetReserveGroup is a thread-safe way to change the ReserveGroup of an item.
-func (queue *Queue) SetReserveGroup(key string, newGroup string) (err error) {
+func (queue *Queue) SetReserveGroup(key string, newGroup string) error {
 	queue.mutex.Lock()
 	if queue.closed {
-		err = Error{queue.Name, "SetReserveGroup", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "SetReserveGroup", key, ErrQueueClosed}
 	}
 
 	item, exists := queue.items[key]
 	if !exists {
-		err = Error{queue.Name, "SetReserveGroup", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "SetReserveGroup", key, ErrNotFound}
 	}
 
 	oldGroup := item.ReserveGroup
@@ -701,7 +690,7 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) (err error) {
 		}
 	}
 	queue.mutex.Unlock()
-	return
+	return nil
 }
 
 // Reserve is a thread-safe way to get the highest priority (or for those with
@@ -719,13 +708,12 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) (err error) {
 // call. If you know you can't handle it right now, but someone else might be
 // able to later, you can manually call Release(), which moves it to the delay
 // sub-queue.
-func (queue *Queue) Reserve(reserveGroup ...string) (item *Item, err error) {
+func (queue *Queue) Reserve(reserveGroup ...string) (*Item, error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrQueueClosed}
-		return
+		return nil, Error{queue.Name, "Reserve", "", ErrQueueClosed}
 	}
 
 	var group string
@@ -734,11 +722,10 @@ func (queue *Queue) Reserve(reserveGroup ...string) (item *Item, err error) {
 	}
 
 	// pop an item from the ready queue and add it to the run queue
-	item = queue.readyQueue.pop(group)
+	item := queue.readyQueue.pop(group)
 	if item == nil {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Reserve", "", ErrNothingReady}
-		return
+		return item, Error{queue.Name, "Reserve", "", ErrNothingReady}
 	}
 
 	item.touch()
@@ -749,33 +736,30 @@ func (queue *Queue) Reserve(reserveGroup ...string) (item *Item, err error) {
 	queue.ttrNotificationTrigger(item)
 	queue.changed(SubQueueReady, SubQueueRun, []*Item{item})
 
-	return
+	return item, nil
 }
 
 // Touch is a thread-safe way to extend the amount of time a Reserve()d item
 // is allowed to run.
-func (queue *Queue) Touch(key string) (err error) {
+func (queue *Queue) Touch(key string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Touch", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Touch", key, ErrQueueClosed}
 	}
 
 	// check it's actually still in the queue first
 	item, ok := queue.items[key]
 	if !ok {
-		err = Error{queue.Name, "Touch", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Touch", key, ErrNotFound}
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
-		err = Error{queue.Name, "Touch", key, ErrNotRunning}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Touch", key, ErrNotRunning}
 	}
 
 	// touch and update the heap
@@ -785,33 +769,30 @@ func (queue *Queue) Touch(key string) (err error) {
 	queue.mutex.Unlock()
 	queue.ttrNotificationTrigger(item)
 
-	return
+	return nil
 }
 
 // Release is a thread-safe way to switch an item in the run sub-queue to the
 // delay sub-queue, for when the item should be dealt with later, not now.
-func (queue *Queue) Release(key string) (err error) {
+func (queue *Queue) Release(key string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Release", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Release", key, ErrQueueClosed}
 	}
 
 	// check it's actually still in the queue first
 	item, ok := queue.items[key]
 	if !ok {
-		err = Error{queue.Name, "Release", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Release", key, ErrNotFound}
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
-		err = Error{queue.Name, "Release", key, ErrNotRunning}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Release", key, ErrNotRunning}
 	}
 
 	// switch from run to delay queue (unless there is no delay, in which case
@@ -832,34 +813,31 @@ func (queue *Queue) Release(key string) (err error) {
 		queue.changed(SubQueueRun, SubQueueDelay, []*Item{item})
 	}
 
-	return
+	return nil
 }
 
 // Bury is a thread-safe way to switch an item in the run sub-queue to the
 // bury sub-queue, for when the item can't be dealt with ever, at least until
 // the user takes some action and changes something.
-func (queue *Queue) Bury(key string) (err error) {
+func (queue *Queue) Bury(key string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Bury", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Bury", key, ErrQueueClosed}
 	}
 
 	// check it's actually still in the queue first
 	item, ok := queue.items[key]
 	if !ok {
-		err = Error{queue.Name, "Bury", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Bury", key, ErrNotFound}
 	}
 
 	// and it must be in the run queue
 	if ok = item.state == ItemStateRun; !ok {
-		err = Error{queue.Name, "Bury", key, ErrNotRunning}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Bury", key, ErrNotRunning}
 	}
 
 	// switch from run to bury queue
@@ -869,33 +847,30 @@ func (queue *Queue) Bury(key string) (err error) {
 	queue.mutex.Unlock()
 	queue.changed(SubQueueRun, SubQueueBury, []*Item{item})
 
-	return
+	return nil
 }
 
 // Kick is a thread-safe way to switch an item in the bury sub-queue to the
 // ready sub-queue, for when a previously buried item can now be handled.
-func (queue *Queue) Kick(key string) (err error) {
+func (queue *Queue) Kick(key string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Kick", key, ErrQueueClosed}
-		return
+		return Error{queue.Name, "Kick", key, ErrQueueClosed}
 	}
 
 	// check it's actually still in the queue first
 	item, ok := queue.items[key]
 	if !ok {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Kick", key, ErrNotFound}
-		return
+		return Error{queue.Name, "Kick", key, ErrNotFound}
 	}
 
 	// and it must be in the bury queue
 	if ok = item.state == ItemStateBury; !ok {
 		queue.mutex.Unlock()
-		err = Error{queue.Name, "Kick", key, ErrNotBuried}
-		return
+		return Error{queue.Name, "Kick", key, ErrNotBuried}
 	}
 
 	// switch from bury to ready or dependent queue
@@ -912,25 +887,23 @@ func (queue *Queue) Kick(key string) (err error) {
 		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
 		queue.readyAdded()
 	}
-	return
+	return nil
 }
 
 // Remove is a thread-safe way to remove an item from the queue.
-func (queue *Queue) Remove(key string) (err error) {
+func (queue *Queue) Remove(key string) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Remove", key, ErrQueueClosed}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Remove", key, ErrQueueClosed}
 	}
 
 	// check it's actually still in the queue first
 	item, existed := queue.items[key]
 	if !existed {
-		err = Error{queue.Name, "Remove", key, ErrNotFound}
 		queue.mutex.Unlock()
-		return
+		return Error{queue.Name, "Remove", key, ErrNotFound}
 	}
 
 	// transfer any dependants to the ready queue
@@ -992,24 +965,23 @@ func (queue *Queue) Remove(key string) (err error) {
 		queue.readyAdded()
 	}
 
-	return
+	return nil
 }
 
 // HasDependents tells you if the item with the given key has any other items
 // depending upon it. You'd want to check this before Remove()ing this item if
 // you're removing it because it was undesired as opposed to complete, as
 // Remove() always triggers dependent items to become ready.
-func (queue *Queue) HasDependents(key string) (has bool, err error) {
+func (queue *Queue) HasDependents(key string) (bool, error) {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
 
 	if queue.closed {
-		err = Error{queue.Name, "Remove", key, ErrQueueClosed}
-		return
+		return false, Error{queue.Name, "Remove", key, ErrQueueClosed}
 	}
 
-	_, has = queue.dependants[key]
-	return
+	_, has := queue.dependants[key]
+	return has, nil
 }
 
 func (queue *Queue) startDelayProcessing() {

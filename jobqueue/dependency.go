@@ -56,18 +56,20 @@ func (d Dependencies) incompleteJobKeys(db *db) ([]string, error) {
 }
 
 // DepGroups returns all the DepGroups of our constituent Dependency structs.
-func (d Dependencies) DepGroups() (depGroups []string) {
+func (d Dependencies) DepGroups() []string {
+	var depGroups []string
 	for _, dep := range d {
 		if dep.DepGroup != "" {
 			depGroups = append(depGroups, dep.DepGroup)
 		}
 	}
-	return
+	return depGroups
 }
 
 // Stringify converts our constituent Dependency structs in to a slice of
 // strings, each of which could be JobEssence or DepGroup based.
-func (d Dependencies) Stringify() (strings []string) {
+func (d Dependencies) Stringify() []string {
+	var strings []string
 	for _, dep := range d {
 		if dep.DepGroup != "" {
 			strings = append(strings, dep.DepGroup)
@@ -75,7 +77,7 @@ func (d Dependencies) Stringify() (strings []string) {
 			strings = append(strings, dep.Essence.Stringify())
 		}
 	}
-	return
+	return strings
 }
 
 // Dependency is a struct that describes a Job purely in terms of a JobEssence,

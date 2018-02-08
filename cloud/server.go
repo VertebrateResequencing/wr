@@ -301,7 +301,7 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	// create a session
 	session, err := s.SSHSession()
 	if err != nil {
-		return
+		return stdout, stderr, err
 	}
 	defer session.Close()
 
@@ -362,43 +362,43 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	err = <-done
 	stdout = <-outCh
 	stderr = <-errCh
-	return
+	return stdout, stderr, err
 }
 
 // UploadFile uploads a local file to the given location on the server.
-func (s *Server) UploadFile(source string, dest string) (err error) {
+func (s *Server) UploadFile(source string, dest string) error {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		return
+		return err
 	}
 	defer client.Close()
 
 	// create all parent dirs of dest
 	err = s.MkDir(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// open source, create dest
 	sourceFile, err := os.Open(source)
 	if err != nil {
-		return
+		return err
 	}
 	defer sourceFile.Close()
 
 	destFile, err := client.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
-	return
+	return err
 }
 
 // CopyOver uploads the given local files to the corresponding locations on the
@@ -413,10 +413,10 @@ func (s *Server) UploadFile(source string, dest string) (err error) {
 // If a specified local path does not exist, it is silently ignored, allowing
 // the specification of multiple possible config files when you might only have
 // one. The mtimes of the files are retained.
-func (s *Server) CopyOver(files string) (err error) {
+func (s *Server) CopyOver(files string) error {
 	timezone, err := s.GetTimeZone()
 	if err != nil {
-		return
+		return err
 	}
 
 	for _, path := range strings.Split(files, ",") {
@@ -446,7 +446,7 @@ func (s *Server) CopyOver(files string) (err error) {
 
 		err = s.UploadFile(localPath, remotePath)
 		if err != nil {
-			return
+			return err
 		}
 
 		// if these are config files we likely need to make them user-only read,
@@ -454,7 +454,7 @@ func (s *Server) CopyOver(files string) (err error) {
 		// read? This is a single user server and I'm the only one using it...
 		_, _, err = s.RunCmd("chmod 600 "+remotePath, false)
 		if err != nil {
-			return
+			return err
 		}
 
 		// sometimes the mtime of the file matters, so we try and set that on
@@ -462,110 +462,110 @@ func (s *Server) CopyOver(files string) (err error) {
 		timestamp := info.ModTime().UTC().In(timezone).Format(touchStampFormat)
 		_, _, err = s.RunCmd(fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
 		if err != nil {
-			return
+			return err
 		}
 	}
-	return
+	return err
 }
 
 // GetTimeZone gets the server's time zone as a fixed time.Location in the fake
 // timezone 'SER'; you should only rely on the offset to convert times.
-func (s *Server) GetTimeZone() (location *time.Location, err error) {
+func (s *Server) GetTimeZone() (*time.Location, error) {
 	if s.location != nil {
 		return s.location, nil
 	}
 
 	serverDate, _, err := s.RunCmd(`date +%z`, false)
 	if err != nil {
-		return
+		return nil, err
 	}
 	serverDate = strings.TrimSpace(serverDate)
 
 	t, err := time.Parse("-0700", serverDate)
 	if err != nil {
-		return
+		return nil, err
 	}
 	_, offset := t.Zone()
 
-	location = time.FixedZone("SER", offset)
+	location := time.FixedZone("SER", offset)
 	s.location = location
-	return
+	return location, err
 }
 
 // CreateFile creates a new file with the given content on the server.
-func (s *Server) CreateFile(content string, dest string) (err error) {
+func (s *Server) CreateFile(content string, dest string) error {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		return
+		return err
 	}
 	defer client.Close()
 
 	// create all parent dirs of dest
 	err = s.MkDir(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// create dest
 	destFile, err := client.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// write the content
 	_, err = io.WriteString(destFile, content)
-	return
+	return err
 }
 
 // DownloadFile downloads a file from the server and stores it locally. The
 // directory for your local file must already exist.
-func (s *Server) DownloadFile(source string, dest string) (err error) {
+func (s *Server) DownloadFile(source string, dest string) error {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		return
+		return err
 	}
 	defer client.Close()
 
 	// open source, create dest
 	sourceFile, err := client.Open(source)
 	if err != nil {
-		return
+		return err
 	}
 	defer sourceFile.Close()
 
 	destFile, err := os.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
-	return
+	return err
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.
-func (s *Server) MkDir(dest string) (err error) {
+func (s *Server) MkDir(dest string) error {
 	//*** it would be nice to do this with client.Mkdir, but that doesn't do
 	// the equivalent of mkdir -p, and errors out if dirs already exist... for
 	// now it's easier to just call mkdir
 	dir := filepath.Dir(dest)
 	if dir != "." {
-		_, _, err = s.RunCmd("mkdir -p "+dir, false)
+		_, _, err := s.RunCmd("mkdir -p "+dir, false)
 		if err != nil {
-			return
+			return err
 		}
 	}
-	return
+	return nil
 }
 
 // GoneBad lets you mark a server as having something wrong with it, so you can
@@ -652,7 +652,7 @@ func (s *Server) Destroy() error {
 		}
 	}
 
-	return nil
+	return err
 }
 
 // Destroyed tells you if a server was destroyed using Destroy() or the

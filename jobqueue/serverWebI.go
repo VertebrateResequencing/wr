@@ -147,18 +147,17 @@ func webInterfaceStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 // webSocket upgrades a http connection to a websocket
-func webSocket(w http.ResponseWriter, r *http.Request) (conn *websocket.Conn, ok bool) {
+func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 	var upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
-	ok = true
 	if err != nil {
 		http.Error(w, "Could not open websocket connection", http.StatusBadRequest)
-		ok = false
+		return conn, false
 	}
-	return
+	return conn, true
 }
 
 // webInterfaceStatusWS reads from and writes to the websocket on the status
@@ -442,12 +441,13 @@ func jobToStatus(job *Job) jstatus {
 
 // reqToJobs takes a request from the status webpage and returns the requested
 // jobs.
-func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []queue.ItemState) (jobs []*Job) {
+func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []queue.ItemState) []*Job {
 	allowed := make(map[queue.ItemState]bool)
 	for _, is := range allowedItemStates {
 		allowed[is] = true
 	}
 
+	var jobs []*Job
 	if req.RepGroup != "" {
 		s.rpl.RLock()
 		defer s.rpl.RUnlock()
@@ -467,19 +467,19 @@ func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []q
 	} else if req.Key != "" {
 		item, err := q.Get(req.Key)
 		if item == nil || err != nil {
-			return
+			return nil
 		}
 		stats := item.Stats()
 		if allowed[stats.State] {
 			jobs = append(jobs, item.Data.(*Job))
 		}
 	}
-	return
+	return jobs
 }
 
 // webInterfaceStatusSendGroupStateCount sends the per-repgroup state counts
 // to the status webpage websocket
-func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) (err error) {
+func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) error {
 	stateCounts := make(map[JobState]int)
 	for _, job := range jobs {
 		var state JobState
@@ -495,10 +495,10 @@ func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string
 		stateCounts[state]++
 	}
 	for to, count := range stateCounts {
-		err = conn.WriteJSON(&jstateCount{repGroup, JobStateNew, to, count})
+		err := conn.WriteJSON(&jstateCount{repGroup, JobStateNew, to, count})
 		if err != nil {
-			return
+			return err
 		}
 	}
-	return
+	return nil
 }

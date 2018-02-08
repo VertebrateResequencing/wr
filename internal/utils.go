@@ -34,7 +34,7 @@ var userid int
 
 // SortMapKeysByIntValue sorts the keys of a map[string]int by its values,
 // reversed if you supply true as the second arg.
-func SortMapKeysByIntValue(imap map[string]int, reverse bool) (sortedKeys []string) {
+func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 	// from http://stackoverflow.com/a/18695428/675083 *** should also try the
 	// idiomatic way to see if that's better in any way
 	valToKeys := map[int][]string{}
@@ -52,17 +52,17 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) (sortedKeys []stri
 		sort.Sort(sort.IntSlice(vals))
 	}
 
+	var sortedKeys []string
 	for _, val := range vals {
 		sortedKeys = append(sortedKeys, valToKeys[val]...)
 	}
-
-	return
+	return sortedKeys
 }
 
 // SortMapKeysByMapIntValue sorts the keys of a map[string]map[string]int by
 // a the values found at a given sub value, reversed if you supply true as the
 // second arg.
-func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, reverse bool) (sortedKeys []string) {
+func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, reverse bool) []string {
 	criterionValueToKeys := make(map[int][]string)
 	for key, submap := range imap {
 		val := submap[criterion]
@@ -79,56 +79,52 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 		sort.Sort(sort.IntSlice(criterionValues))
 	}
 
+	var sortedKeys []string
 	for _, val := range criterionValues {
 		sortedKeys = append(sortedKeys, criterionValueToKeys[val]...)
 	}
-
-	return
+	return sortedKeys
 }
 
 // Username returns the username of the current user. This avoids problems
 // with static compilation as it avoids the use of os/user. It will only work
 // on linux-like systems where 'id -u -n' works.
-func Username() (uname string, err error) {
+func Username() (string, error) {
 	if username == "" {
+		var err error
 		username, err = parseIDCmd("-u", "-n")
 		if err != nil {
-			return
+			return "", err
 		}
 	}
-	uname = username
-	return
+	return username, nil
 }
 
 // Userid returns the user id of the current user. This avoids problems
 // with static compilation as it avoids the use of os/user. It will only work
 // on linux-like systems where 'id -u' works.
-func Userid() (uid int, err error) {
+func Userid() (int, error) {
 	if userid == 0 {
-		var uidStr string
-		uidStr, err = parseIDCmd("-u")
+		uidStr, err := parseIDCmd("-u")
 		if err != nil {
-			return
+			return 0, err
 		}
 		userid, err = strconv.Atoi(uidStr)
 		if err != nil {
-			return
+			return 0, err
 		}
 	}
-	uid = userid
-	return
+	return userid, nil
 }
 
 // parseIDCmd parses the output of the unix 'id' command.
-func parseIDCmd(idopts ...string) (user string, err error) {
+func parseIDCmd(idopts ...string) (string, error) {
 	idcmd := exec.Command("/usr/bin/id", idopts...) // #nosec
-	var idout []byte
-	idout, err = idcmd.Output()
+	idout, err := idcmd.Output()
 	if err != nil {
-		return
+		return "", err
 	}
-	user = strings.TrimSuffix(string(idout), "\n")
-	return
+	return strings.TrimSuffix(string(idout), "\n"), err
 }
 
 // TildaToHome converts a path beginning with ~/ to the absolute path based in

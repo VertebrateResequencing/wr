@@ -525,31 +525,29 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
-// the desired item and job.
-func (s *Server) getij(cr *clientRequest, q *queue.Queue) (item *queue.Item, job *Job, errs string) {
+// the desired item and job. The returned string is one of our Err* constants.
+func (s *Server) getij(cr *clientRequest, q *queue.Queue) (*queue.Item, *Job, string) {
 	// clientRequest must have a Job
 	if cr.Job == nil {
-		errs = ErrBadRequest
-		return
+		return nil, nil, ErrBadRequest
 	}
 
 	item, err := q.Get(cr.Job.key())
 	if err != nil || item.Stats().State != queue.ItemStateRun {
-		errs = ErrBadJob
-		return
+		return item, nil, ErrBadJob
 	}
-	job = item.Data.(*Job)
+	job := item.Data.(*Job)
 
 	if !uuid.Equal(cr.ClientID, job.ReservedBy) {
-		errs = ErrMustReserve
+		return item, job, ErrMustReserve
 	}
 
-	return
+	return item, job, ""
 }
 
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
-func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job) {
+func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	sjob := item.Data.(*Job)
 	sjob.RLock()
 
@@ -565,7 +563,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 	// we're going to fill in some properties of the Job and return
 	// it to client, but don't want those properties set here for
 	// us, so we make a new Job and fill stuff in that
-	job = &Job{
+	job := &Job{
 		RepGroup:     sjob.RepGroup,
 		ReqGroup:     sjob.ReqGroup,
 		DepGroups:    sjob.DepGroups,
@@ -604,7 +602,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) (job *Job
 	}
 	sjob.RUnlock()
 	s.jobPopulateStdEnv(job, getStd, getEnv)
-	return
+	return job
 }
 
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
@@ -621,16 +619,15 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 }
 
 // reply to a client
-func (s *Server) reply(m *mangos.Message, sr *serverResponse) (err error) {
+func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
 	s.racmutex.RLock()
-	err = enc.Encode(sr)
+	err := enc.Encode(sr)
 	s.racmutex.RUnlock()
 	if err != nil {
-		return
+		return err
 	}
 	m.Body = encoded
-	err = s.sock.SendMsg(m)
-	return
+	return s.sock.SendMsg(m)
 }
