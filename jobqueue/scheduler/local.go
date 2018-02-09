@@ -353,7 +353,7 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	err := ec.Start()
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err) // *** log this properly somewhere...
 		return err
 	}
 
@@ -366,7 +366,7 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 
 	err = ec.Wait()
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err) // *** log this properly somewhere...
 	}
 
 	s.mutex.Lock()
@@ -376,7 +376,7 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 	}
 	s.mutex.Unlock()
 
-	return err
+	return nil // do not return error running the command
 }
 
 // cancelRun in the local scheduler is a no-op, since our runCmd immediately
