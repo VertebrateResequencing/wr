@@ -339,7 +339,7 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		var e bytes.Buffer
 		session.Stdout = &o
 		session.Stderr = &e
-		err = session.Run(cmd)
+		err := session.Run(cmd)
 		finished <- true
 		if o.Len() > 0 {
 			outCh <- o.String()
