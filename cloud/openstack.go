@@ -422,7 +422,7 @@ func (p *openstackp) inCloud() bool {
 			}
 
 			for _, server := range serverList {
-				if server.Name == hostname {
+				if nameToHostName(server.Name) == hostname {
 					p.ownName = hostname
 
 					// get the first networkUUID we come across *** not sure

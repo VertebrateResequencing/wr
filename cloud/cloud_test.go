@@ -32,6 +32,15 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestUtility(t *testing.T) {
+	Convey("nameToHostName works", t, func() {
+		So(nameToHostName("test-123-one"), ShouldEqual, "test-123-one")
+		So(nameToHostName("teSt-123-one"), ShouldEqual, "test-123-one")
+		So(nameToHostName("test_123-one"), ShouldEqual, "test-123-one")
+		So(nameToHostName("test_123*ONE"), ShouldEqual, "test-123-one")
+	})
+}
+
 func TestOpenStack(t *testing.T) {
 	osPrefix := os.Getenv("OS_OS_PREFIX")
 	osUser := os.Getenv("OS_OS_USERNAME")

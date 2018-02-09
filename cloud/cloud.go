@@ -128,6 +128,9 @@ const defaultCIDR = "192.168.0.0/18"
 // touchStampFormat is the time format expected by `touch -t`.
 const touchStampFormat = "200601021504.05"
 
+// hostNameRegex is used by nameToHostName() to make strings valid hostnames.
+var hostNameRegex = regexp.MustCompile(`[^a-z0-9\-]+`)
+
 // Error records an error and the operation and provider caused it.
 type Error struct {
 	Provider string // the provider's Name
@@ -697,4 +700,12 @@ func (p *Provider) deleteResourceFile() error {
 func uniqueResourceName(prefix string) string {
 	u, _ := uuid.NewV4() // this used to return no error, and now I don't want to change my own method signature...
 	return prefix + "-" + u.String()
+}
+
+// nameToHostName makes the given name compatible with being a hostname in the
+// same way that OpenStack horizon does: convert to lower case and convert non
+// [a-z1-9\-] characters to - characters.
+func nameToHostName(name string) string {
+	hostname := strings.ToLower(name)
+	return hostNameRegex.ReplaceAllString(hostname, "-")
 }
