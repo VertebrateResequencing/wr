@@ -646,9 +646,14 @@ func (s *Server) Destroy() error {
 	err := s.provider.DestroyServer(s.ID)
 	s.debug("server %s Destroy() called DestroyServer() and got err %s\n", s.ID, err)
 	if err != nil {
+		// check if the server exists
 		ok, _ := s.provider.CheckServer(s.ID)
 		if ok {
 			return err
+		} else {
+			// if not, assume there's no Server and ignore this error (which may
+			// just be along the lines of "the server doesn't exist")
+			return nil
 		}
 	}
 
