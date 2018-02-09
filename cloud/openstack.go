@@ -214,15 +214,15 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			// create a new keypair; we can't just let Openstack create one for
 			// us because in latest versions it does not return a DER encoded
 			// key, which is what GO built-in library supports.
-			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-			if err != nil {
-				return err
+			privateKey, errk := rsa.GenerateKey(rand.Reader, 2048)
+			if errk != nil {
+				return errk
 			}
 			privateKeyPEM := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}
 			privateKeyPEMBytes := pem.EncodeToMemory(privateKeyPEM)
-			pub, err := ssh.NewPublicKey(&privateKey.PublicKey)
-			if err != nil {
-				return err
+			pub, errk := ssh.NewPublicKey(&privateKey.PublicKey)
+			if errk != nil {
+				return errk
 			}
 			publicKeyStr := ssh.MarshalAuthorizedKey(pub)
 
@@ -232,6 +232,8 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			}
 
 			resources.PrivateKey = string(privateKeyPEMBytes)
+			// NB: reliant on err now being nil here, hence errk above, since we
+			// don't want to make err local to this block
 		} else {
 			return err
 		}
