@@ -104,8 +104,9 @@ type Client struct {
 	queue       string
 	sock        mangos.Socket
 	sync.Mutex
-	teMutex sync.Mutex // to protect Touch() from other methods during Execute()
-	user    string
+	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
+	user       string
+	ServerInfo *ServerInfo
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -162,7 +163,7 @@ func Connect(addr string, queue string, timeout time.Duration) (*Client, error) 
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
-	err = c.Ping(timeout)
+	si, err := c.Ping(timeout)
 	if err != nil {
 		sock.Close()
 		msg := ErrNoServer
@@ -171,6 +172,7 @@ func Connect(addr string, queue string, timeout time.Duration) (*Client, error) 
 		}
 		return nil, Error{queue, "Connect", "", msg}
 	}
+	c.ServerInfo = si
 
 	return c, err
 }
@@ -181,11 +183,14 @@ func (c *Client) Disconnect() {
 	c.sock.Close()
 }
 
-// Ping tells you if your connection to the server is working. If err is nil,
-// it works.
-func (c *Client) Ping(timeout time.Duration) error {
-	_, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
-	return err
+// Ping tells you if your connection to the server is working, returning static
+// information about the server. If err is nil, it works.
+func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
+	resp, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
+	if err != nil {
+		return nil, err
+	}
+	return resp.SInfo, err
 }
 
 // DrainServer tells the server to stop spawning new runners, stop letting
@@ -213,15 +218,6 @@ func (c *Client) ShutdownServer() bool {
 		return true
 	}
 	return false
-}
-
-// ServerStats returns stats of the jobqueue server itself.
-func (c *Client) ServerStats() (*ServerStats, error) {
-	resp, err := c.request(&clientRequest{Method: "sstats"})
-	if err != nil {
-		return nil, err
-	}
-	return resp.SStats, err
 }
 
 // BackupDB backs up the server's database to the given path. Note that

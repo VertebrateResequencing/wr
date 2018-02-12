@@ -89,12 +89,7 @@ var managerStartCmd = &cobra.Command{
 		// most obvious case of failure to start
 		jq := connect(1 * time.Second)
 		if jq != nil {
-			sstats, err := jq.ServerStats()
-			var pid int
-			if err == nil {
-				pid = sstats.ServerInfo.PID
-			}
-			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, pid)
+			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, jq.ServerInfo.PID)
 		}
 
 		var postCreation []byte
@@ -133,11 +128,7 @@ var managerStartCmd = &cobra.Command{
 				if jq == nil {
 					die("wr manager failed to start on port %s after 10s", config.ManagerPort)
 				}
-				sstats, err := jq.ServerStats()
-				if err != nil {
-					die("wr manager started but doesn't seem to be functional: %s", err)
-				}
-				logStarted(sstats.ServerInfo)
+				logStarted(jq.ServerInfo)
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer context.Release()
@@ -192,21 +183,15 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			}
 		}
 
-		// we managed to connect to the daemon; get it's real pid and try to
-		// stop it again
-		sstats, err := jq.ServerStats()
-		if err != nil {
-			die("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
-		}
-
-		// though it may actually be running on a remote host and we managed to
-		// connect to it via ssh port forwarding; compare the server ip to our
-		// own
+		// we managed to connect to the daemon; try to stop it again using its
+		// real pid; though it may actually be running on a remote host and we
+		// managed to connect to it via ssh port forwarding; compare the server
+		// ip to our own
 		myAddr := jobqueue.CurrentIP("") + ":" + config.ManagerPort
-		sAddr := sstats.ServerInfo.Addr
+		sAddr := jq.ServerInfo.Addr
 		if myAddr == sAddr {
 			jq.Disconnect()
-			stopped = stopdaemon(sstats.ServerInfo.PID, "the manager itself")
+			stopped = stopdaemon(jq.ServerInfo.PID, "the manager itself")
 		} else {
 			// use the client command to stop it
 			stopped = jq.ShutdownServer()
@@ -340,12 +325,7 @@ somewhere.)`,
 // distinguish between the server being in a normal 'started' state or the
 // 'drain' state.
 func reportLiveStatus(jq *jobqueue.Client) {
-	sstats, err := jq.ServerStats()
-	if err != nil {
-		die("even though I was able to connect to the manager, it wasn't able to tell me about itself: %s", err)
-	}
-	mode := sstats.ServerInfo.Mode
-	fmt.Println(mode)
+	fmt.Println(jq.ServerInfo.Mode)
 }
 
 func init() {

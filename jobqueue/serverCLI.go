@@ -63,9 +63,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	} else {
 		switch cr.Method {
 		case "ping":
-			// do nothing - not returning an error to client means ping success
-		case "sstats":
-			sr = &serverResponse{SStats: s.GetServerStats()}
+			sr = &serverResponse{SInfo: s.ServerInfo}
 		case "backup":
 			// make an io.Writer that writes to a byte slice, so we can return
 			// the db as that

@@ -344,10 +344,6 @@ machine was started.`,
 		if err != nil {
 			die("%s", err)
 		}
-		sstats, err := jq.ServerStats()
-		if err != nil {
-			die("even though I was able to connect to the manager, it failed to tell me its location")
-		}
 		wd, err := os.Getwd()
 		if err != nil {
 			die("%s", err)
@@ -355,7 +351,7 @@ machine was started.`,
 		var pwd string
 		var remoteWarning bool
 		var envVars []string
-		if jobqueue.CurrentIP("")+":"+config.ManagerPort == sstats.ServerInfo.Addr {
+		if jobqueue.CurrentIP("")+":"+config.ManagerPort == jq.ServerInfo.Addr {
 			pwd = wd
 			envVars = os.Environ()
 		} else if cmdCwdMatters {

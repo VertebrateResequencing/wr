@@ -107,6 +107,7 @@ type serverResponse struct {
 	KillCalled bool
 	Job        *Job
 	Jobs       []*Job
+	SInfo      *ServerInfo
 	SStats     *ServerStats
 	DB         []byte
 }
@@ -127,12 +128,11 @@ type ServerInfo struct {
 // ServerStats holds information about the jobqueue server for sending to
 // clients.
 type ServerStats struct {
-	ServerInfo *ServerInfo
-	Delayed    int           // how many jobs are waiting following a possibly transient error
-	Ready      int           // how many jobs are ready to begin running
-	Running    int           // how many jobs are currently running
-	Buried     int           // how many jobs are no longer being processed because of seemingly permanent errors
-	ETC        time.Duration // how long until the the slowest of the currently running jobs is expected to complete
+	Delayed int           // how many jobs are waiting following a possibly transient error
+	Ready   int           // how many jobs are ready to begin running
+	Running int           // how many jobs are currently running
+	Buried  int           // how many jobs are no longer being processed because of seemingly permanent errors
+	ETC     time.Duration // how long until the the slowest of the currently running jobs is expected to complete
 }
 
 type rgToKeys struct {
@@ -636,8 +636,8 @@ func (s *Server) Drain() error {
 	return err
 }
 
-// GetServerStats returns basic info about the server along with some simple
-// live stats about what's happening in the server's queues.
+// GetServerStats returns some simple live stats about what's happening in the
+// server's queues.
 func (s *Server) GetServerStats() *ServerStats {
 	var delayed, ready, running, buried int
 	var etc time.Time
@@ -664,7 +664,7 @@ func (s *Server) GetServerStats() *ServerStats {
 		}
 	}
 
-	return &ServerStats{ServerInfo: s.ServerInfo, Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
+	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
 }
 
 // BackupDB lets you do a manual live backup of the server's database to a given

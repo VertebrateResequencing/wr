@@ -168,9 +168,7 @@ func TestJobqueue(t *testing.T) {
 		So(err, ShouldBeNil)
 		defer jq.Disconnect()
 
-		sstats, err := jq.ServerStats()
-		So(err, ShouldBeNil)
-		So(sstats.ServerInfo.PID, ShouldEqual, child.Pid)
+		So(jq.ServerInfo.PID, ShouldEqual, child.Pid)
 
 		Convey("You can set up a long-running job for execution", func() {
 			cmd := "perl -e 'for (1..3) { sleep(1) }'"
@@ -284,11 +282,9 @@ func TestJobqueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
-			sstats, err := jq.ServerStats()
-			So(err, ShouldBeNil)
-			So(sstats.ServerInfo.Port, ShouldEqual, serverConfig.Port)
-			So(sstats.ServerInfo.PID, ShouldBeGreaterThan, 0)
-			So(sstats.ServerInfo.Deployment, ShouldEqual, "development")
+			So(jq.ServerInfo.Port, ShouldEqual, serverConfig.Port)
+			So(jq.ServerInfo.PID, ShouldBeGreaterThan, 0)
+			So(jq.ServerInfo.Deployment, ShouldEqual, "development")
 
 			var jobs []*Job
 			for i := 0; i < 10; i++ {
@@ -2362,7 +2358,7 @@ func TestJobqueue(t *testing.T) {
 
 				<-time.After(2 * time.Second)
 
-				err = jq.Ping(10 * time.Millisecond)
+				_, err = jq.Ping(10 * time.Millisecond)
 				So(err, ShouldNotBeNil)
 
 				wipeDevDBOnInit = false
@@ -2405,7 +2401,7 @@ func TestJobqueue(t *testing.T) {
 
 				<-time.After(2 * time.Second)
 
-				err = jq.Ping(10 * time.Millisecond)
+				_, err = jq.Ping(10 * time.Millisecond)
 				So(err, ShouldNotBeNil)
 
 				jq.Disconnect() // user must always Disconnect before connecting again!

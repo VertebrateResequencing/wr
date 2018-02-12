@@ -165,12 +165,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		// state of the pid file); we can't proxy if a manager is already up
 		jq := connect(1 * time.Second)
 		if jq != nil {
-			sstats, err := jq.ServerStats()
-			var pid int
-			if err == nil {
-				pid = sstats.ServerInfo.PID
-			}
-			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, pid)
+			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 		}
 
 		// we will spawn wr on the remote server we will create, which means we
@@ -225,12 +220,8 @@ most likely to succeed if you use an IP address instead of a host name.`,
 				startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 				jq = connect(2 * time.Second)
 				if jq != nil {
-					sstats, err := jq.ServerStats()
-					if err == nil {
-						info("reconnected to existing wr manager on %s", sAddr(sstats.ServerInfo))
-						info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
-						return
-					}
+					info("reconnected to existing wr manager on %s", sAddr(jq.ServerInfo))
+					info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 				}
 
 				// clean up any existing or partially failed forwarding
@@ -294,15 +285,10 @@ most likely to succeed if you use an IP address instead of a host name.`,
 			provider.TearDown()
 			die("could not talk to wr manager on server at %s after 40s", server.IP)
 		}
-		sstats, err := jq.ServerStats()
-		if err != nil {
-			provider.TearDown()
-			die("wr manager on server at %s started but doesn't seem to be functional: %s", server.IP, err)
-		}
 
-		info("wr manager remotely started on %s", sAddr(sstats.ServerInfo))
+		info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
 		info("Should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
-		info("wr's web interface can be reached locally at http://localhost:%s", sstats.ServerInfo.WebPort)
+		info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 	},
 }
 
