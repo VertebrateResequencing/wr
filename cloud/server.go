@@ -650,11 +650,10 @@ func (s *Server) Destroy() error {
 		ok, _ := s.provider.CheckServer(s.ID)
 		if ok {
 			return err
-		} else {
-			// if not, assume there's no Server and ignore this error (which may
-			// just be along the lines of "the server doesn't exist")
-			return nil
 		}
+		// if not, assume there's no Server and ignore this error (which may
+		// just be along the lines of "the server doesn't exist")
+		return nil
 	}
 
 	return err
