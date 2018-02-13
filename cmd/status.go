@@ -93,7 +93,7 @@ very many (tens of thousands+) commands.`,
 			defaultMounts = mountParseJSON(cmdMounts)
 		}
 
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}

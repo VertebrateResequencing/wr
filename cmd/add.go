@@ -340,7 +340,7 @@ machine was started.`,
 		// we'll default to pwd if the manager is on the same host as us, or if
 		// cwd matters, /tmp otherwise
 		timeout := time.Duration(timeoutint) * time.Second
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}
@@ -419,7 +419,7 @@ machine was started.`,
 		}
 
 		// connect to the server
-		jq, err = jobqueue.Connect(addr, "cmds", timeout)
+		jq, err = jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}

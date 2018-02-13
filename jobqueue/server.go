@@ -79,16 +79,15 @@ var (
 	ServerLogClientErrors = true
 )
 
-// Error records an error and the operation, item and queue that caused it.
+// Error records an error and the operation and item that caused it.
 type Error struct {
-	Queue string // the queue's Name
-	Op    string // name of the method
-	Item  string // the item's key
-	Err   string // one of our Err* vars
+	Op   string // name of the method
+	Item string // the item's key
+	Err  string // one of our Err* vars
 }
 
 func (e Error) Error() string {
-	return "jobqueue(" + e.Queue + ") " + e.Op + "(" + e.Item + "): " + e.Err
+	return "jobqueue " + e.Op + "(" + e.Item + "): " + e.Err
 }
 
 // itemErr is used internally to implement Reserve(), which needs to send item
@@ -183,7 +182,7 @@ type Server struct {
 	drain        bool
 	blocking     bool
 	sync.Mutex
-	qs              map[string]*queue.Queue
+	q               *queue.Queue
 	rpl             *rgToKeys
 	scheduler       *scheduler.Scheduler
 	sgroupcounts    map[string]int
@@ -191,7 +190,7 @@ type Server struct {
 	sgtr            map[string]*scheduler.Requirements
 	sgcmutex        sync.Mutex
 	racmutex        sync.RWMutex
-	rc              string // runner command string compatible with fmt.Sprintf(..., queueName, schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	rc              string // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
 	httpServer      *http.Server
 	statusCaster    *bcast.Group
 	badServerCaster *bcast.Group
@@ -206,6 +205,8 @@ type Server struct {
 	krmutex         sync.RWMutex
 	killRunners     bool
 	stopServing     chan bool
+	timings         map[string]*timingAvg
+	tmutex          sync.Mutex
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -234,13 +235,13 @@ type ServerConfig struct {
 	SchedulerConfig interface{}
 
 	// The command line needed to bring up a jobqueue runner client, which
-	// should contain 6 %s parts which will be replaced with the queue name,
-	// scheduler group, deployment ip:host address of the server, reservation
-	// time out and maximum number of minutes allowed, eg.
-	// "my_jobqueue_runner_client --queue %s --group '%s' --deployment %s
-	// --server '%s' --reserve_timeout %d --max_mins %d". If you supply an empty
-	// string (the default), runner clients will not be spawned; for any work to
-	// be done you will have to run your runner client yourself manually.
+	// should contain 5 %s parts which will be replaced with the scheduler
+	// group, deployment ip:host address of the server, reservation time out and
+	// maximum number of minutes allowed, eg. "my_jobqueue_runner_client --group
+	// '%s' --deployment %s --server '%s' --reserve_timeout %d --max_mins %d".
+	// If you supply an empty string (the default), runner clients will not be
+	// spawned; for any work to be done you will have to run your runner client
+	// yourself manually.
 	RunnerCmd string
 
 	// Absolute path to where the database file should be saved. The database is
@@ -336,7 +337,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// our non-loopback ip address so they can connect to us
 	ip := CurrentIP(config.CIDR)
 	if ip == "" {
-		return s, msg, Error{"", "Serve", "", ErrNoHost}
+		return s, msg, Error{"Serve", "", ErrNoHost}
 	}
 
 	// to be friendly we also record the hostname, but it's possible this isn't
@@ -363,7 +364,6 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		allowedUsers:    allowedUsersMap,
 		sock:            sock,
 		ch:              new(codec.BincHandle),
-		qs:              make(map[string]*queue.Queue),
 		rpl:             &rgToKeys{lookup: make(map[string]map[string]bool)},
 		db:              db,
 		stop:            stop,
@@ -379,30 +379,29 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		badServers:      make(map[string]*cloud.Server),
 		schedCaster:     bcast.NewGroup(),
 		schedIssues:     make(map[string]*schedulerIssue),
+		timings:         make(map[string]*timingAvg),
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
-	// need to load those in to the appropriate queues now
+	// need to load those in to our queue now
+	s.createQueue()
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
 		return nil, msg, err
 	}
 	if len(priorJobs) > 0 {
-		jobsByQueue := make(map[string][]*queue.ItemDef)
+		var itemdefs []*queue.ItemDef
 		for _, job := range priorJobs {
 			var deps []string
 			deps, err = job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
 				return nil, msg, err
 			}
-			jobsByQueue[job.Queue] = append(jobsByQueue[job.Queue], &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
-		for qname, itemdefs := range jobsByQueue {
-			q := s.getOrCreateQueue(qname)
-			_, _, err = s.enqueueItems(q, itemdefs)
-			if err != nil {
-				return nil, msg, err
-			}
+		_, _, err = s.enqueueItems(itemdefs)
+		if err != nil {
+			return nil, msg, err
 		}
 	}
 
@@ -456,16 +455,16 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			var serr error
 			switch sig {
 			case os.Interrupt:
-				serr = Error{"", "Serve", "", ErrClosedInt}
+				serr = Error{"Serve", "", ErrClosedInt}
 			case syscall.SIGTERM:
-				serr = Error{"", "Serve", "", ErrClosedTerm}
+				serr = Error{"Serve", "", ErrClosedTerm}
 			}
 			signal.Stop(sigs)
 			done <- serr
 		case <-stop:
 			s.shutdown()
 			signal.Stop(sigs)
-			done <- Error{"", "Serve", "", ErrClosedStop}
+			done <- Error{"Serve", "", ErrClosedStop}
 		}
 	}()
 
@@ -478,8 +477,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", webInterfaceStatic)
 		mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
-		cmdsQ := s.getOrCreateQueue("cmds")
-		mux.HandleFunc(restJobsEndpoint, restJobs(s, cmdsQ))
+		mux.HandleFunc(restJobsEndpoint, restJobs(s))
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
@@ -609,16 +607,11 @@ func (s *Server) Drain() error {
 				ticker := time.NewTicker(1 * time.Second)
 			TICKS:
 				for range ticker.C {
-					// check our queues for things running, which is cheap
-					s.racmutex.Lock()
-					for _, q := range s.qs {
-						stats := q.Stats()
-						if stats.Running > 0 {
-							s.racmutex.Unlock()
-							continue TICKS
-						}
+					// check our queue for things running, which is cheap
+					stats := s.q.Stats()
+					if stats.Running > 0 {
+						continue TICKS
 					}
-					s.racmutex.Unlock()
 					ticker.Stop()
 
 					// now that we think nothing should be running, get
@@ -631,37 +624,35 @@ func (s *Server) Drain() error {
 			}()
 		}
 	} else {
-		err = Error{"", "Drain", "", ErrNoServer}
+		err = Error{"Drain", "", ErrNoServer}
 	}
 	return err
 }
 
 // GetServerStats returns some simple live stats about what's happening in the
-// server's queues.
+// server's queue.
 func (s *Server) GetServerStats() *ServerStats {
 	var delayed, ready, running, buried int
 	var etc time.Time
 
-	for _, q := range s.qs {
-		stats := q.Stats()
-		delayed += stats.Delayed
-		ready += stats.Ready
-		buried += stats.Buried
+	stats := s.q.Stats()
+	delayed += stats.Delayed
+	ready += stats.Ready
+	buried += stats.Buried
 
-		for _, inter := range q.GetRunningData() {
-			running++
+	for _, inter := range s.q.GetRunningData() {
+		running++
 
-			// work out when this Job is going to end, and update etc if later
-			job := inter.(*Job)
-			job.RLock()
-			if !job.StartTime.IsZero() && job.Requirements.Time.Seconds() > 0 {
-				endTime := job.StartTime.Add(job.Requirements.Time)
-				if endTime.After(etc) {
-					etc = endTime
-				}
+		// work out when this Job is going to end, and update etc if later
+		job := inter.(*Job)
+		job.RLock()
+		if !job.StartTime.IsZero() && job.Requirements.Time.Seconds() > 0 {
+			endTime := job.StartTime.Add(job.Requirements.Time)
+			if endTime.After(etc) {
+				etc = endTime
 			}
-			job.RUnlock()
 		}
+		job.RUnlock()
 	}
 
 	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
@@ -680,303 +671,292 @@ func (s *Server) HasRunners() bool {
 	return s.scheduler.Busy()
 }
 
-// getOrCreateQueue returns a queue with the given name, creating one if we
-// hadn't already done so.
-func (s *Server) getOrCreateQueue(qname string) *queue.Queue {
-	s.racmutex.Lock()
-	defer s.racmutex.Unlock()
-	if !s.up {
-		return nil
-	}
+// createQueue creates and stores a queue.Queue on the Server and sets up its
+// callbacks.
+func (s *Server) createQueue() {
+	q := queue.New("cmds")
+	s.q = q
 
-	q, existed := s.qs[qname]
-	if !existed {
-		q = queue.New(qname)
-		s.qs[qname] = q
+	// we set a callback for things entering this queue's ready sub-queue.
+	// This function will be called in a go routine and receives a slice of
+	// all the ready jobs. Based on the requirements, we add to each job a
+	// schedulerGroup, which the runners we spawn will be able to pass to
+	// Reserve() so that they run the correct jobs for the machine and
+	// resource reservations the job scheduler will run them under
+	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+		// we must only ever run this 1 at a time
+		s.racmutex.Lock()
+		defer s.racmutex.Unlock()
 
-		// we set a callback for things entering this queue's ready sub-queue.
-		// This function will be called in a go routine and receives a slice of
-		// all the ready jobs. Based on the requirements, we add to each job a
-		// schedulerGroup, which the runners we spawn will be able to pass to
-		// Reserve() so that they run the correct jobs for the machine and
-		// resource reservations the job scheduler will run them under
-		q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
-			// we must only ever run this 1 at a time
-			s.racmutex.Lock()
-			defer s.racmutex.Unlock()
+		if s.drain || !s.up {
+			return
+		}
 
-			if s.drain || !s.up {
-				return
-			}
+		// calculate, set and count jobs by schedulerGroup
+		groups := make(map[string]int)
+		groupToReqs := make(map[string]*scheduler.Requirements)
+		groupsScheduledCounts := make(map[string]int)
+		noRecGroups := make(map[string]bool)
+		for _, inter := range allitemdata {
+			job := inter.(*Job)
 
-			// calculate, set and count jobs by schedulerGroup
-			groups := make(map[string]int)
-			groupToReqs := make(map[string]*scheduler.Requirements)
-			groupsScheduledCounts := make(map[string]int)
-			noRecGroups := make(map[string]bool)
-			for _, inter := range allitemdata {
-				job := inter.(*Job)
-
-				// depending on job.Override, get memory and time
-				// recommendations, which are rounded to get fewer larger
-				// groups
-				noRec := false
-				if job.Override != 2 {
-					var recommendedReq *scheduler.Requirements
-					if rec, existed := groupToReqs[job.ReqGroup]; existed {
-						recommendedReq = rec
+			// depending on job.Override, get memory and time
+			// recommendations, which are rounded to get fewer larger
+			// groups
+			noRec := false
+			if job.Override != 2 {
+				var recommendedReq *scheduler.Requirements
+				if rec, existed := groupToReqs[job.ReqGroup]; existed {
+					recommendedReq = rec
+				} else {
+					recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
+					recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
+					if recm == 0 || recs == 0 || errm != nil || errs != nil {
+						groupToReqs[job.ReqGroup] = nil
 					} else {
-						recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
-						recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
-						if recm == 0 || recs == 0 || errm != nil || errs != nil {
-							groupToReqs[job.ReqGroup] = nil
-						} else {
-							recommendedReq = &scheduler.Requirements{RAM: recm, Time: time.Duration(recs) * time.Second}
-							groupToReqs[job.ReqGroup] = recommendedReq
-						}
+						recommendedReq = &scheduler.Requirements{RAM: recm, Time: time.Duration(recs) * time.Second}
+						groupToReqs[job.ReqGroup] = recommendedReq
 					}
+				}
 
-					if recommendedReq != nil {
-						if job.Override == 1 {
-							if recommendedReq.RAM > job.Requirements.RAM {
-								job.Requirements.RAM = recommendedReq.RAM
-							}
-							if recommendedReq.Time > job.Requirements.Time {
-								job.Requirements.Time = recommendedReq.Time
-							}
-						} else {
+				if recommendedReq != nil {
+					if job.Override == 1 {
+						if recommendedReq.RAM > job.Requirements.RAM {
 							job.Requirements.RAM = recommendedReq.RAM
+						}
+						if recommendedReq.Time > job.Requirements.Time {
 							job.Requirements.Time = recommendedReq.Time
 						}
 					} else {
-						noRec = true
-					}
-				}
-
-				var req *scheduler.Requirements
-				if job.Requirements.RAM < 924 {
-					// our req will be like the jobs but with memory + 100 to
-					// allow some leeway in case the job scheduler calculates
-					// used memory differently, and for other memory usage
-					// vagaries
-					req = &scheduler.Requirements{
-						RAM:   job.Requirements.RAM + 100,
-						Time:  job.Requirements.Time,
-						Cores: job.Requirements.Cores,
-						Disk:  job.Requirements.Disk,
-						Other: job.Requirements.Other,
+						job.Requirements.RAM = recommendedReq.RAM
+						job.Requirements.Time = recommendedReq.Time
 					}
 				} else {
-					req = job.Requirements
+					noRec = true
 				}
+			}
 
-				prevSchedGroup := job.getSchedulerGroup()
-				schedulerGroup := req.Stringify()
-				if prevSchedGroup != schedulerGroup {
-					job.setSchedulerGroup(schedulerGroup)
-					if prevSchedGroup != "" {
-						job.setScheduledRunner(false)
-					}
-					if s.rc != "" {
-						q.SetReserveGroup(job.key(), schedulerGroup)
-					}
+			var req *scheduler.Requirements
+			if job.Requirements.RAM < 924 {
+				// our req will be like the jobs but with memory + 100 to
+				// allow some leeway in case the job scheduler calculates
+				// used memory differently, and for other memory usage
+				// vagaries
+				req = &scheduler.Requirements{
+					RAM:   job.Requirements.RAM + 100,
+					Time:  job.Requirements.Time,
+					Cores: job.Requirements.Cores,
+					Disk:  job.Requirements.Disk,
+					Other: job.Requirements.Other,
 				}
+			} else {
+				req = job.Requirements
+			}
 
+			prevSchedGroup := job.getSchedulerGroup()
+			schedulerGroup := req.Stringify()
+			if prevSchedGroup != schedulerGroup {
+				job.setSchedulerGroup(schedulerGroup)
+				if prevSchedGroup != "" {
+					job.setScheduledRunner(false)
+				}
 				if s.rc != "" {
-					if job.getScheduledRunner() {
-						groupsScheduledCounts[schedulerGroup]++
-					} else {
-						job.setScheduledRunner(true)
-					}
-					groups[schedulerGroup]++
-
-					if noRec {
-						noRecGroups[schedulerGroup] = true
-					}
-
-					s.sgcmutex.Lock()
-					if _, set := s.sgtr[schedulerGroup]; !set {
-						s.sgtr[schedulerGroup] = req
-					}
-					s.sgcmutex.Unlock()
+					q.SetReserveGroup(job.key(), schedulerGroup)
 				}
 			}
 
 			if s.rc != "" {
-				// clear out groups we no longer need
+				if job.getScheduledRunner() {
+					groupsScheduledCounts[schedulerGroup]++
+				} else {
+					job.setScheduledRunner(true)
+				}
+				groups[schedulerGroup]++
+
+				if noRec {
+					noRecGroups[schedulerGroup] = true
+				}
+
 				s.sgcmutex.Lock()
-				stillRunning := make(map[string]bool)
-				for _, inter := range q.GetRunningData() {
-					job := inter.(*Job)
-					stillRunning[job.getSchedulerGroup()] = true
-				}
-				for group := range s.sgroupcounts {
-					if _, needed := groups[group]; !needed && !stillRunning[group] {
-						s.sgroupcounts[group] = 0
-						go s.clearSchedulerGroup(group, q)
-					}
-				}
-				for group := range s.sgrouptrigs {
-					if _, needed := groups[group]; !needed && !stillRunning[group] {
-						delete(s.sgrouptrigs, group)
-					}
+				if _, set := s.sgtr[schedulerGroup]; !set {
+					s.sgtr[schedulerGroup] = req
 				}
 				s.sgcmutex.Unlock()
+			}
+		}
 
-				// schedule runners for each group in the job scheduler
-				for group, count := range groups {
-					// we also keep a count of how many we request for this
-					// group, so that when we Archive() or Bury() we can
-					// decrement the count and re-call Schedule() to get rid
-					// of no-longer-needed pending runners in the job
-					// scheduler
-					s.sgcmutex.Lock()
-					countIncRunning := count
-					if s.sgroupcounts[group] > 0 {
-						countIncRunning += s.sgroupcounts[group]
-					}
-					if groupsScheduledCounts[group] > 0 {
-						countIncRunning -= groupsScheduledCounts[group]
-					}
-					s.sgroupcounts[group] = countIncRunning
-
-					// if we got no resource requirement recommendations for
-					// this group, we'll set up a retrigger of this ready
-					// callback after 100 runners have been run
-					if _, noRec := noRecGroups[group]; noRec && count > 100 {
-						if _, existed := s.sgrouptrigs[group]; !existed {
-							s.sgrouptrigs[group] = 0
-						}
-					}
-
-					s.sgcmutex.Unlock()
-					go s.scheduleRunners(q, group)
-				}
-
-				// in the event that the runners we spawn can't reach us
-				// temporarily and just die, we need to make sure this callback
-				// gets triggered again even if no new jobs get added
-				s.racCheckReady = len(allitemdata)
-				if s.racChecking {
-					if !s.racCheckTimer.Stop() {
-						<-s.racCheckTimer.C
-					}
-					s.racCheckTimer.Reset(ServerCheckRunnerTime)
-				} else {
-					s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
-
-					go func() {
-						<-s.racCheckTimer.C
-						s.racmutex.Lock()
-						s.racChecking = false
-						stats := q.Stats()
-						s.racmutex.Unlock()
-
-						if stats.Ready >= s.racCheckReady {
-							q.TriggerReadyAddedCallback()
-						}
-					}()
-
-					s.racChecking = true
+		if s.rc != "" {
+			// clear out groups we no longer need
+			s.sgcmutex.Lock()
+			stillRunning := make(map[string]bool)
+			for _, inter := range q.GetRunningData() {
+				job := inter.(*Job)
+				stillRunning[job.getSchedulerGroup()] = true
+			}
+			for group := range s.sgroupcounts {
+				if _, needed := groups[group]; !needed && !stillRunning[group] {
+					s.sgroupcounts[group] = 0
+					go s.clearSchedulerGroup(group)
 				}
 			}
-		})
+			for group := range s.sgrouptrigs {
+				if _, needed := groups[group]; !needed && !stillRunning[group] {
+					delete(s.sgrouptrigs, group)
+				}
+			}
+			s.sgcmutex.Unlock()
 
-		// we set a callback for things changing in the queue, which lets us
-		// update the status webpage with the minimal work and data transfer
-		q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
-			var from, to JobState
-			if toQ == queue.SubQueueRemoved {
-				// things are removed from the queue if deleted or completed;
-				// disambiguate
-				to = JobStateDeleted
-				for _, inter := range data {
-					job := inter.(*Job)
-					job.RLock()
-					jState := job.State
-					job.RUnlock()
-					if jState == JobStateComplete {
-						to = JobStateComplete
-						break
+			// schedule runners for each group in the job scheduler
+			for group, count := range groups {
+				// we also keep a count of how many we request for this
+				// group, so that when we Archive() or Bury() we can
+				// decrement the count and re-call Schedule() to get rid
+				// of no-longer-needed pending runners in the job
+				// scheduler
+				s.sgcmutex.Lock()
+				countIncRunning := count
+				if s.sgroupcounts[group] > 0 {
+					countIncRunning += s.sgroupcounts[group]
+				}
+				if groupsScheduledCounts[group] > 0 {
+					countIncRunning -= groupsScheduledCounts[group]
+				}
+				s.sgroupcounts[group] = countIncRunning
+
+				// if we got no resource requirement recommendations for
+				// this group, we'll set up a retrigger of this ready
+				// callback after 100 runners have been run
+				if _, noRec := noRecGroups[group]; noRec && count > 100 {
+					if _, existed := s.sgrouptrigs[group]; !existed {
+						s.sgrouptrigs[group] = 0
 					}
 				}
+
+				s.sgcmutex.Unlock()
+				go s.scheduleRunners(group)
+			}
+
+			// in the event that the runners we spawn can't reach us
+			// temporarily and just die, we need to make sure this callback
+			// gets triggered again even if no new jobs get added
+			s.racCheckReady = len(allitemdata)
+			if s.racChecking {
+				if !s.racCheckTimer.Stop() {
+					<-s.racCheckTimer.C
+				}
+				s.racCheckTimer.Reset(ServerCheckRunnerTime)
 			} else {
-				to = subqueueToJobState[toQ]
-			}
-			from = subqueueToJobState[fromQ]
+				s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
 
-			// calculate counts per RepGroup
-			groups := make(map[string]int)
-			groupsLost := make(map[string]int)
-			lost := 0
+				go func() {
+					<-s.racCheckTimer.C
+					s.racmutex.Lock()
+					s.racChecking = false
+					stats := q.Stats()
+					s.racmutex.Unlock()
+
+					if stats.Ready >= s.racCheckReady {
+						q.TriggerReadyAddedCallback()
+					}
+				}()
+
+				s.racChecking = true
+			}
+		}
+	})
+
+	// we set a callback for things changing in the queue, which lets us
+	// update the status webpage with the minimal work and data transfer
+	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
+		var from, to JobState
+		if toQ == queue.SubQueueRemoved {
+			// things are removed from the queue if deleted or completed;
+			// disambiguate
+			to = JobStateDeleted
 			for _, inter := range data {
 				job := inter.(*Job)
-
-				// if we change from running, mark that we have not scheduled a
-				// runner for the job
-				if from == JobStateRunning {
-					job.setScheduledRunner(false)
-
-					job.RLock()
-					l := job.Lost
-					job.RUnlock()
-					if l {
-						lost++
-						groupsLost[job.RepGroup]++
-						continue
-					}
-				}
-
-				groups[job.RepGroup]++
-			}
-
-			// send out the counts
-			s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data) - lost})
-			for group, count := range groups {
-				s.statusCaster.Send(&jstateCount{group, from, to, count})
-			}
-
-			if lost > 0 {
-				s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
-				for group, count := range groupsLost {
-					s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
+				job.RLock()
+				jState := job.State
+				job.RUnlock()
+				if jState == JobStateComplete {
+					to = JobStateComplete
+					break
 				}
 			}
-		})
+		} else {
+			to = subqueueToJobState[toQ]
+		}
+		from = subqueueToJobState[fromQ]
 
-		// we set a callback for running items that hit their ttr because the
-		// runner died or because of networking issues: we keep them in the
-		// running queue, but mark them up as having possibly failed, leaving it
-		// up the user if they want to confirm the jobs are dead by killing
-		// them or leaving them to spring back to life if not.
-		q.SetTTRCallback(func(data interface{}) queue.SubQueue {
-			job := data.(*Job)
+		// calculate counts per RepGroup
+		groups := make(map[string]int)
+		groupsLost := make(map[string]int)
+		lost := 0
+		for _, inter := range data {
+			job := inter.(*Job)
 
-			job.Lock()
-			defer job.Unlock()
-			if !job.StartTime.IsZero() && !job.Exited {
-				job.Lost = true
-				job.FailReason = FailReasonLost
-				job.EndTime = time.Now()
+			// if we change from running, mark that we have not scheduled a
+			// runner for the job
+			if from == JobStateRunning {
+				job.setScheduledRunner(false)
 
-				// since our changed callback won't be called, send out this
-				// transition from running to lost state
-				defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
-				defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
-
-				return queue.SubQueueRun
+				job.RLock()
+				l := job.Lost
+				job.RUnlock()
+				if l {
+					lost++
+					groupsLost[job.RepGroup]++
+					continue
+				}
 			}
 
-			return queue.SubQueueDelay
-		})
-	}
+			groups[job.RepGroup]++
+		}
 
-	return q
+		// send out the counts
+		s.statusCaster.Send(&jstateCount{"+all+", from, to, len(data) - lost})
+		for group, count := range groups {
+			s.statusCaster.Send(&jstateCount{group, from, to, count})
+		}
+
+		if lost > 0 {
+			s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
+			for group, count := range groupsLost {
+				s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
+			}
+		}
+	})
+
+	// we set a callback for running items that hit their ttr because the
+	// runner died or because of networking issues: we keep them in the
+	// running queue, but mark them up as having possibly failed, leaving it
+	// up the user if they want to confirm the jobs are dead by killing
+	// them or leaving them to spring back to life if not.
+	q.SetTTRCallback(func(data interface{}) queue.SubQueue {
+		job := data.(*Job)
+
+		job.Lock()
+		defer job.Unlock()
+		if !job.StartTime.IsZero() && !job.Exited {
+			job.Lost = true
+			job.FailReason = FailReasonLost
+			job.EndTime = time.Now()
+
+			// since our changed callback won't be called, send out this
+			// transition from running to lost state
+			defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
+			defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
+
+			return queue.SubQueueRun
+		}
+
+		return queue.SubQueueDelay
+	})
 }
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
-func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	added, dups, err = q.AddMany(itemdefs)
+func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err error) {
+	added, dups, err = s.q.AddMany(itemdefs)
 	if err != nil {
 		return added, dups, err
 	}
@@ -998,13 +978,12 @@ func (s *Server) enqueueItems(q *queue.Queue, itemdefs []*queue.ItemDef) (added,
 // createJobs creates new jobs, adding them to the database and the in-memory
 // queue. It returns 2 errors; the first is one of our Err constant strings,
 // the second is the actual error with more details.
-func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
+func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
 	// create itemdefs for the jobs
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
 		job.UntilBuried = job.Retries + 1
-		job.Queue = q.Name
 		if s.rc != "" {
 			job.schedulerGroup = job.Requirements.Stringify()
 		}
@@ -1062,7 +1041,7 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 				qerr = err
 				break
 			}
-			thisErr := q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+			thisErr := s.q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
 			if thisErr != nil {
 				qerr = thisErr
 				break
@@ -1073,7 +1052,7 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 			srerr = ErrInternalError
 		} else {
 			// add the jobs to the in-memory job queue
-			added, dups, qerr = s.enqueueItems(q, itemdefs)
+			added, dups, qerr = s.enqueueItems(itemdefs)
 			if qerr != nil {
 				srerr = ErrInternalError
 			}
@@ -1093,8 +1072,8 @@ func (s *Server) createJobs(q *queue.Queue, inputJobs []*Job, envkey string, ign
 //
 // If the job wasn't running, returned bool will be false and nothing will have
 // been done.
-func (s *Server) killJob(q *queue.Queue, jobkey string) (bool, error) {
-	item, err := q.Get(jobkey)
+func (s *Server) killJob(jobkey string) (bool, error) {
+	item, err := s.q.Get(jobkey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
 		return false, err
 	}
@@ -1114,18 +1093,18 @@ func (s *Server) killJob(q *queue.Queue, jobkey string) (bool, error) {
 		s.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
 
 		if ub <= 0 {
-			err = q.Bury(item.Key)
+			err = s.q.Bury(item.Key)
 			if err != nil {
 				return true, err
 			}
-			s.decrementGroupCount(job.getSchedulerGroup(), q)
+			s.decrementGroupCount(job.getSchedulerGroup())
 			return true, err
 		}
-		err = q.Release(item.Key)
+		err = s.q.Release(item.Key)
 		if err != nil {
 			return true, err
 		}
-		s.decrementGroupCount(job.getSchedulerGroup(), q)
+		s.decrementGroupCount(job.getSchedulerGroup())
 		return true, err
 	}
 
@@ -1134,11 +1113,11 @@ func (s *Server) killJob(q *queue.Queue, jobkey string) (bool, error) {
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete)
-func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
 	for _, jobkey := range keys {
 		// try and get the job from the in-memory queue
-		item, err := q.Get(jobkey)
+		item, err := s.q.Get(jobkey)
 		var job *Job
 		if err == nil && item != nil {
 			job = s.itemToJob(item, getStd, getEnv)
@@ -1171,11 +1150,11 @@ func (s *Server) getJobsByKeys(q *queue.Queue, keys []string, getStd bool, getEn
 }
 
 // getJobsByRepGroup gets jobs in the given group (current and complete)
-func (s *Server) getJobsByRepGroup(q *queue.Queue, repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+func (s *Server) getJobsByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	// look in the in-memory queue for matching jobs
 	s.rpl.RLock()
 	for key := range s.rpl.lookup[repgroup] {
-		item, err := q.Get(key)
+		item, err := s.q.Get(key)
 		if err == nil && item != nil {
 			job := s.itemToJob(item, false, false)
 			jobs = append(jobs, job)
@@ -1217,9 +1196,9 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 }
 
 // getJobsCurrent gets all current (incomplete) jobs
-func (s *Server) getJobsCurrent(q *queue.Queue, limit int, state JobState, getStd bool, getEnv bool) []*Job {
+func (s *Server) getJobsCurrent(limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	var jobs []*Job
-	for _, item := range q.AllItems() {
+	for _, item := range s.q.AllItems() {
 		jobs = append(jobs, s.itemToJob(item, false, false))
 	}
 
@@ -1295,7 +1274,7 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 	return limited
 }
 
-func (s *Server) scheduleRunners(q *queue.Queue, group string) {
+func (s *Server) scheduleRunners(group string) {
 	s.racmutex.RLock()
 	rc := s.rc
 	s.racmutex.RUnlock()
@@ -1319,7 +1298,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, q.Name, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -1327,7 +1306,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 				problem = false
 				s.sgcmutex.Lock()
 				for {
-					item, err := q.Reserve(group)
+					item, err := s.q.Reserve(group)
 					if err != nil {
 						problem = true
 						break
@@ -1339,7 +1318,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 					job.Lock()
 					job.FailReason = FailReasonResource
 					job.Unlock()
-					q.Bury(item.Key)
+					s.q.Bury(item.Key)
 					s.sgroupcounts[group]--
 				}
 				s.sgcmutex.Unlock()
@@ -1356,7 +1335,7 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 				// retry the schedule in a while
 				go func() {
 					<-time.After(1 * time.Minute)
-					s.scheduleRunners(q, group)
+					s.scheduleRunners(group)
 				}()
 				return
 			}
@@ -1364,13 +1343,13 @@ func (s *Server) scheduleRunners(q *queue.Queue, group string) {
 	}
 
 	if doClear {
-		s.clearSchedulerGroup(group, q)
+		s.clearSchedulerGroup(group)
 	}
 }
 
 // adjust our count of how many jobs with this schedulerGroup we need in the job
 // scheduler.
-func (s *Server) decrementGroupCount(schedulerGroup string, q *queue.Queue) {
+func (s *Server) decrementGroupCount(schedulerGroup string) {
 	if s.rc != "" {
 		doSchedule := false
 		doTrigger := false
@@ -1395,18 +1374,18 @@ func (s *Server) decrementGroupCount(schedulerGroup string, q *queue.Queue) {
 			// we'll trigger our ready callback which will re-calculate the
 			// best resource requirements for the remaining jobs in the group
 			// and then call scheduleRunners
-			q.TriggerReadyAddedCallback()
+			s.q.TriggerReadyAddedCallback()
 		} else if doSchedule {
 			// notify the job scheduler we need less jobs for this job's cmd now;
 			// it will remove extraneous ones from its queue
-			s.scheduleRunners(q, schedulerGroup)
+			s.scheduleRunners(schedulerGroup)
 		}
 	}
 }
 
 // when we no longer need a schedulerGroup in the job scheduler, clean up and
 // make sure the job scheduler knows we don't need any runners for this group.
-func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
+func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 	if s.rc != "" {
 		s.sgcmutex.Lock()
 		req, hadreq := s.sgtr[schedulerGroup]
@@ -1418,7 +1397,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string, q *queue.Queue) {
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
-		s.scheduler.Schedule(fmt.Sprintf(s.rc, q.Name, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 	}
 }
 
@@ -1487,12 +1466,8 @@ func (s *Server) shutdown() {
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this
-	s.racmutex.Lock()
-	defer s.racmutex.Unlock()
-	for _, q := range s.qs {
-		q.Destroy()
-	}
-	s.qs = nil
+	s.q.Destroy()
+	s.q = nil
 
 	s.krmutex.Lock()
 	s.killRunners = false

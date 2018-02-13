@@ -47,7 +47,6 @@ import (
 
 var runnermode bool
 var runnerfail bool
-var queuename string
 var schedgrp string
 var runnermodetmpdir string
 var rdeployment string
@@ -59,7 +58,6 @@ var envVars = os.Environ()
 func init() {
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
-	flag.StringVar(&queuename, "queue", "", "queue for runnermode")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
@@ -164,7 +162,7 @@ func TestJobqueue(t *testing.T) {
 		}
 		// parent; wait a while for our child to bring up the server
 		defer syscall.Kill(child.Pid, syscall.SIGTERM)
-		jq, err := Connect(addr, "test_queue", 10*time.Second)
+		jq, err := Connect(addr, 10*time.Second)
 		So(err, ShouldBeNil)
 		defer jq.Disconnect()
 
@@ -224,7 +222,7 @@ func TestJobqueue(t *testing.T) {
 				So(<-j1worked, ShouldBeTrue)
 				So(<-j2worked, ShouldBeTrue)
 
-				jq2, err := Connect(addr, "test_queue", clientConnectTime)
+				jq2, err := Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq2.Disconnect()
 				job, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
@@ -264,7 +262,7 @@ func TestJobqueue(t *testing.T) {
 	var server *Server
 	var err error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
-		_, err = Connect(addr, "test_queue", clientConnectTime)
+		_, err = Connect(addr, clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
 		So(ok, ShouldBeTrue)
@@ -275,10 +273,10 @@ func TestJobqueue(t *testing.T) {
 		server, _, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
-		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
+		server.rc = `echo %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -420,7 +418,7 @@ func TestJobqueue(t *testing.T) {
 									ticks++
 									if ticks == 2 {
 										jobs = append(jobs, &Job{Cmd: "new", Cwd: "/fake/cwd", ReqGroup: "add_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 5 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
-										gojq, _ := Connect(addr, "test_queue", clientConnectTime)
+										gojq, _ := Connect(addr, clientConnectTime)
 										defer gojq.Disconnect()
 										gojq.Add(jobs, envVars, true)
 									}
@@ -578,7 +576,7 @@ func TestJobqueue(t *testing.T) {
 				syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
-				_, err := Connect(addr, "test_queue", clientConnectTime)
+				_, err := Connect(addr, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
@@ -587,14 +585,14 @@ func TestJobqueue(t *testing.T) {
 				server, _, err = Serve(serverConfig)
 				So(err, ShouldBeNil)
 
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 				jq.Disconnect()
 
 				syscall.Kill(os.Getpid(), syscall.SIGINT)
 				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
-				_, err = Connect(addr, "test_queue", clientConnectTime)
+				_, err = Connect(addr, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok = err.(Error)
 				So(ok, ShouldBeTrue)
@@ -602,7 +600,7 @@ func TestJobqueue(t *testing.T) {
 			})
 
 			Convey("You get a nice error if you send the server junk", func() {
-				_, err := jq.request(&clientRequest{Method: "junk", Queue: "test_queue"})
+				_, err := jq.request(&clientRequest{Method: "junk"})
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
@@ -629,10 +627,10 @@ func TestJobqueue(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
-			jq2, err := Connect(addr, "test_queue", clientConnectTime)
+			jq2, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq2.Disconnect()
 
@@ -863,7 +861,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
-					err = jq.Bury(job, "test bury")
+					err = jq.Bury(job, nil, "test bury")
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
@@ -878,7 +876,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 0)
 
-					err = jq.Bury(job, "test bury")
+					err = jq.Bury(job, nil, "test bury")
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.FailReason, ShouldEqual, "test bury")
@@ -1390,7 +1388,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("After connecting and adding some jobs under one RepGroup", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -1486,7 +1484,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("After connecting and adding some jobs under some RepGroups", func() {
-			jq, err := Connect(addr, "dep_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -1711,7 +1709,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(j4.RepGroup, ShouldEqual, "dep4")
 
-					jq.Release(j4, "")
+					jq.Release(j4, nil, "")
 
 					// *** we should implement rejection of dependency cycles
 					// and test for that
@@ -1720,7 +1718,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("After connecting you can add some jobs with DepGroups", func() {
-			jq, err := Connect(addr, "dep_queue2", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2092,7 +2090,7 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(j4.RepGroup, ShouldEqual, "dep4")
 
-					jq.Release(j4, "")
+					jq.Release(j4, nil, "")
 
 					// *** we should implement rejection of dependency cycles
 					// and test for that
@@ -2125,7 +2123,7 @@ func TestJobqueue(t *testing.T) {
 		So(err, ShouldNotBeNil)
 
 		Convey("You can connect, and add 2 jobs, which creates a db backup", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2178,7 +2176,7 @@ func TestJobqueue(t *testing.T) {
 				server.Stop(true)
 				server, _, err = Serve(serverConfig)
 				So(err, ShouldBeNil)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err := jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2193,7 +2191,7 @@ func TestJobqueue(t *testing.T) {
 				}()
 				server, _, err = Serve(serverConfig)
 				So(err, ShouldBeNil)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2213,7 +2211,7 @@ func TestJobqueue(t *testing.T) {
 				}()
 				server, _, err = Serve(serverConfig)
 				So(err, ShouldBeNil)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2237,7 +2235,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 32768)
 
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2261,7 +2259,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 32768)
 
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2284,7 +2282,7 @@ func TestJobqueue(t *testing.T) {
 				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.Reserve(50 * time.Millisecond)
@@ -2300,7 +2298,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, add a job, then immediately shutdown, and the db backup still completes", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2322,7 +2320,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect and add a non-instant job", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2365,7 +2363,7 @@ func TestJobqueue(t *testing.T) {
 				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
@@ -2410,7 +2408,7 @@ func TestJobqueue(t *testing.T) {
 				server, _, err = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(err, ShouldBeNil)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
@@ -2452,14 +2450,14 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
 		server, _, err := Serve(runningConfig)
 		So(err, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
 
 		Convey("You can connect, and add a job that you can kill while it's running", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2537,7 +2535,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, and add some real jobs", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2612,7 +2610,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, and add a job that buries with no retries", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2733,7 +2731,7 @@ func TestJobqueue(t *testing.T) {
 
 		if maxCPU > 2 {
 			Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
-				jq, err := Connect(addr, "test_queue", clientConnectTime)
+				jq, err := Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq.Disconnect()
 
@@ -2805,7 +2803,7 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2935,7 +2933,7 @@ func TestJobqueue(t *testing.T) {
 			}
 
 			clientConnectTime = 20 * time.Second // it takes a long time with -race to add 10000 jobs...
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3114,12 +3112,12 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
 		server, _, err := Serve(runningConfig)
 		So(err, ShouldBeNil)
 
 		Convey("You can connect, and add a job", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3263,7 +3261,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			DBFile:       config.ManagerDbFile,
 			DBFileBackup: config.ManagerDbBkFile,
 			Deployment:   config.Deployment,
-			RunnerCmd:    runnerCmd + " --runnermode --queue %s --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			RunnerCmd:    runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
 		}
 
 		Convey("You can connect with an OpenStack scheduler", t, func() {
@@ -3271,7 +3269,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer server.Stop(true)
 
-			jq, err := Connect(addr, "cmds", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3443,7 +3441,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 							}
 							if job.State == JobStateLost {
 								ticker.Stop()
-								e, err := server.killJob(server.qs["cmds"], killedJobEssence.JobKey)
+								e, err := server.killJob(killedJobEssence.JobKey)
 								if !e || err != nil {
 									gotLost <- false
 								}
@@ -3568,7 +3566,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		So(err, ShouldNotBeNil)
 
 		Convey("You can connect and add a job, which creates a db backup", func() {
-			jq, err := Connect(addr, "test_queue", clientConnectTime)
+			jq, err := Connect(addr, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3601,7 +3599,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				server, _, err = Serve(s3ServerConfig)
 				So(err, ShouldBeNil)
 				defer server.Stop(true)
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -3626,7 +3624,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 28672)
 
-				jq, err = Connect(addr, "test_queue", clientConnectTime)
+				jq, err = Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -3652,7 +3650,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 
 		standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
-		jq, err := Connect(addr, "test_queue", clientConnectTime)
+		jq, err := Connect(addr, clientConnectTime)
 		So(err, ShouldBeNil)
 		defer jq.Disconnect()
 
@@ -3804,7 +3802,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		}
 
 		clientConnectTime := 10 * time.Second
-		jq, err := Connect(addr, "wr.des", clientConnectTime)
+		jq, err := Connect(addr, clientConnectTime)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -3832,7 +3830,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		for i := 1; i <= o; i++ {
 			go func(i int) {
 				start := time.After(time.Until(beginat))
-				gjq, err := Connect(addr, "wr.des", clientConnectTime)
+				gjq, err := Connect(addr, clientConnectTime)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -4057,9 +4055,6 @@ func runner() {
 	// 	log.SetOutput(logfile)
 	// }
 
-	if queuename == "" {
-		log.Fatal("queue missing")
-	}
 	if schedgrp == "" {
 		log.Fatal("schedgrp missing")
 	}
@@ -4073,7 +4068,7 @@ func runner() {
 	//  runner client it would be used to end the below for loop before hitting
 	//  this limit)
 
-	jq, err := Connect(addr, queuename, timeout)
+	jq, err := Connect(addr, timeout)
 
 	if err != nil {
 		log.Fatalf("connect err: %s\n", err)
@@ -4100,7 +4095,7 @@ func runner() {
 				log.Fatalf("execute err: %s\n", err)
 			}
 		} else {
-			jq.Archive(job)
+			jq.Archive(job, nil)
 		}
 	}
 

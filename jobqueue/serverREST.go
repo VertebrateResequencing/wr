@@ -35,7 +35,6 @@ import (
 
 	"code.cloudfoundry.org/bytefmt"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
 )
 
@@ -389,7 +388,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 }
 
 // restJobs lets you do CRUD on jobs in the "cmds" queue.
-func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
+func restJobs(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 
@@ -399,9 +398,9 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 		var err error
 		switch r.Method {
 		case http.MethodGet:
-			jobs, status, err = restJobsStatus(r, s, q)
+			jobs, status, err = restJobsStatus(r, s)
 		case http.MethodPost:
-			jobs, status, err = restJobsAdd(r, s, q)
+			jobs, status, err = restJobsAdd(r, s)
 		default:
 			http.Error(w, "So far only GET and POST are supported", http.StatusBadRequest)
 			return
@@ -432,7 +431,7 @@ func restJobs(s *Server, q *queue.Queue) http.HandlerFunc {
 // Possible query parameters are std, env (which can take a "true" value), limit
 // (a number) and state (one of delayed|ready|reserved|running|lost|buried|
 // dependent|complete). Returns the Jobs, a http.Status* value and error.
-func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, error) {
+func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	var getStd, getEnv bool
 	var limit int
@@ -479,7 +478,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, er
 		for _, id := range strings.Split(ids, ",") {
 			if len(id) == 32 {
 				// id might be a Job.key()
-				theseJobs, _, qerr := s.getJobsByKeys(q, []string{id}, getStd, getEnv)
+				theseJobs, _, qerr := s.getJobsByKeys([]string{id}, getStd, getEnv)
 				if qerr == "" && len(theseJobs) > 0 {
 					jobs = append(jobs, theseJobs...)
 					continue
@@ -487,7 +486,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, er
 			}
 
 			// id might be a Job.RepGroup
-			theseJobs, _, qerr := s.getJobsByRepGroup(q, id, limit, state, getStd, getEnv)
+			theseJobs, _, qerr := s.getJobsByRepGroup(id, limit, state, getStd, getEnv)
 			if qerr != "" {
 				return nil, http.StatusInternalServerError, fmt.Errorf(qerr)
 			}
@@ -499,7 +498,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, er
 	}
 
 	// get all current jobs
-	return s.getJobsCurrent(q, limit, state, getStd, getEnv), http.StatusOK, err
+	return s.getJobsCurrent(limit, state, getStd, getEnv), http.StatusOK, err
 }
 
 // restJobsAdd creates and adds jobs to the queue and returns them on success.
@@ -512,7 +511,7 @@ func restJobsStatus(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, er
 // should be supplied as url query escaped JSON strings.
 //
 // The returned int is a http.Status* variable.
-func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, error) {
+func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	jd := &JobDefaults{
 		Cwd:         r.Form.Get("cwd"),
@@ -619,7 +618,7 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, error
 		return nil, http.StatusInternalServerError, err
 	}
 
-	_, _, _, _, err = s.createJobs(q, inputJobs, envkey, true)
+	_, _, _, _, err = s.createJobs(inputJobs, envkey, true)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
@@ -631,7 +630,7 @@ func restJobsAdd(r *http.Request, s *Server, q *queue.Queue) ([]*Job, int, error
 	// slow and wasteful?...
 	var jobs []*Job
 	for _, job := range inputJobs {
-		item, qerr := q.Get(job.key())
+		item, qerr := s.q.Get(job.key())
 		if qerr == nil && item != nil {
 			// append the q's version of the job, not the input job, since the
 			// job may have been a duplicate and we want to return its current

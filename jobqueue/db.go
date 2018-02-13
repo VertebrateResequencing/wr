@@ -286,6 +286,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (*db, string, err
 	if fs != nil {
 		dbstruct.backupMount = fs
 	}
+
 	return dbstruct, msg, err
 }
 
@@ -494,9 +495,13 @@ func (db *db) checkIfAdded(key string) (bool, error) {
 }
 
 // archiveJob deletes a job from the live bucket, and adds a new version of it
-// (with different properties) to the complete bucket. The key you supply must
-// be the key of the job you supply, or bad things will happen - no checking is
-// done! A backgroundBackup() is triggered afterwards.
+// (with different properties) to the complete bucket.
+//
+// Also does what updateJobAfterExit does, except for the storage of any new
+// stdout/err.
+//
+// The key you supply must be the key of the job you supply, or bad things will
+// happen - no checking is done! A backgroundBackup() is triggered afterwards.
 func (db *db) archiveJob(key string, job *Job) error {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -506,12 +511,29 @@ func (db *db) archiveJob(key string, job *Job) error {
 	}
 
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		bo := tx.Bucket(bucketStdO)
+		be := tx.Bucket(bucketStdE)
+		key := []byte(key)
+		bo.Delete(key)
+		be.Delete(key)
+
 		b := tx.Bucket(bucketJobsLive)
-		b.Delete([]byte(key))
+		b.Delete(key)
 
 		b = tx.Bucket(bucketJobsComplete)
-		err := b.Put([]byte(key), encoded)
-		return err
+		err := b.Put(key, encoded)
+		if err != nil {
+			return err
+		}
+
+		b = tx.Bucket(bucketJobMBs)
+		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+		if err != nil {
+			return err
+		}
+		b = tx.Bucket(bucketJobSecs)
+		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
+		return b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
 	})
 
 	db.backgroundBackup()

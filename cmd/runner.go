@@ -32,7 +32,6 @@ import (
 )
 
 // options for this cmd
-var queuename string
 var schedgrp string
 var reserveint int
 var rserver string
@@ -54,10 +53,6 @@ runner stops picking up new commands and exits instead; max_time does not cause
 the runner to kill itself if the cmd it is running takes longer than max_time to
 complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if queuename == "" {
-			die("--queue is required")
-		}
-
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
 		if timeoutint < (reserveint + 5) {
@@ -68,7 +63,7 @@ complete.`,
 
 		jobqueue.AppName = "wr"
 
-		jq, err := jobqueue.Connect(rserver, queuename, timeout)
+		jq, err := jobqueue.Connect(rserver, timeout)
 		if err != nil {
 			die("%s", err)
 		}
@@ -104,7 +99,7 @@ complete.`,
 		// loop, reserving and running commands from the queue, until there
 		// aren't any more commands in the queue
 		numrun := 0
-		exitReason := fmt.Sprintf("there are no more commands in queue '%s' in scheduler group '%s'", queuename, schedgrp)
+		exitReason := fmt.Sprintf("there are no more commands in scheduler group '%s'", schedgrp)
 		for {
 			var job *jobqueue.Job
 			var err error
@@ -123,7 +118,7 @@ complete.`,
 
 			// see if we have enough time left to run this
 			if time.Now().Add(job.Requirements.Time).After(endTime) {
-				jq.Release(job, job.FailReason)
+				jq.Release(job, nil, job.FailReason)
 				exitReason = "we're about to hit our maximum time limit"
 				break
 			}
@@ -154,7 +149,6 @@ func init() {
 	RootCmd.AddCommand(runnerCmd)
 
 	// flags specific to this sub-command
-	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "cmds", "specify the queue to pull commands from")
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")

@@ -232,7 +232,7 @@ func sAddr(s *jobqueue.ServerInfo) string {
 // the client just for calling non-queue-specific methods such as getting
 // server status or shutting it down etc.
 func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, "test_queue", wait)
+	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, wait)
 	if jqerr == nil {
 		return jq
 	}

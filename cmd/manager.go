@@ -308,7 +308,7 @@ somewhere.)`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}
@@ -413,7 +413,7 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
-		RunnerCmd:       exe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,

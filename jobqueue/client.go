@@ -84,11 +84,11 @@ type clientRequest struct {
 	GetStd         bool
 	IgnoreComplete bool
 	Job            *Job
+	JobEndState    *JobEndState
 	Jobs           []*Job
 	Keys           []string
 	Limit          int
 	Method         string
-	Queue          string
 	SchedulerGroup string
 	State          JobState
 	Timeout        time.Duration
@@ -101,7 +101,6 @@ type Client struct {
 	ch          codec.Handle
 	clientid    uuid.UUID
 	hasReserved bool
-	queue       string
 	sock        mangos.Socket
 	sync.Mutex
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
@@ -114,11 +113,10 @@ type envStr struct {
 	Environ []string
 }
 
-// Connect creates a connection to the jobqueue server, specific to a single
-// queue. Timeout determines how long to wait for a response from the server,
-// not only while connecting, but for all subsequent interactions with it using
-// the returned Client.
-func Connect(addr string, queue string, timeout time.Duration) (*Client, error) {
+// Connect creates a connection to the jobqueue server. Timeout determines how
+// long to wait for a response from the server, not only while connecting, but
+// for all subsequent interactions with it using the returned Client.
+func Connect(addr string, timeout time.Duration) (*Client, error) {
 	// a server is only allowed to be accessed by a particular user, so we get
 	// our username here. NB: *** this is not real security, since someone could
 	// just recompile with the following line altered to a hardcoded username
@@ -159,7 +157,7 @@ func Connect(addr string, queue string, timeout time.Duration) (*Client, error) 
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{sock: sock, queue: queue, ch: new(codec.BincHandle), user: user, clientid: u}
+	c := &Client{sock: sock, ch: new(codec.BincHandle), user: user, clientid: u}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
@@ -170,7 +168,7 @@ func Connect(addr string, queue string, timeout time.Duration) (*Client, error) 
 		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
 			msg = ErrWrongUser
 		}
-		return nil, Error{queue, "Connect", "", msg}
+		return nil, Error{"Connect", "", msg}
 	}
 	c.ServerInfo = si
 
@@ -339,12 +337,12 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // If any remote file system mounts have been configured for the Job, these are
 // mounted prior to running the Cmd, and unmounted afterwards.
 //
-// Internally, Execute() calls Mount(), Started() and Ended() and keeps track of
-// peak RAM used. It regularly calls Touch() on the Job so that the server knows
-// we are still alive and handling the Job successfully. It also intercepts
-// SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running
-// Cmd and returning Error.Err(FailReasonSignal); you should check for this and
-// exit your process. Finally it calls Unmount() and TriggerBehaviours().
+// Internally, Execute() calls Mount() and Started() and keeps track of peak RAM
+// used. It regularly calls Touch() on the Job so that the server knows we are
+// still alive and handling the Job successfully. It also intercepts SIGTERM,
+// SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and
+// returning Error.Err(FailReasonSignal); you should check for this and exit
+// your process. Finally it calls Unmount() and TriggerBehaviours().
 //
 // If Kill() is called while executing the Cmd, the next internal Touch() call
 // will result in the Cmd being killed and the job being Bury()ied.
@@ -365,7 +363,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
 	if !uuid.Equal(c.clientid, job.ReservedBy) {
-		return Error{c.queue, "Execute", job.key(), ErrMustReserve}
+		return Error{"Execute", job.key(), ErrMustReserve}
 	}
 
 	// we support arbitrary shell commands that may include semi-colons,
@@ -395,7 +393,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
 	if fi, err := os.Stat(job.Cwd); err != nil || !fi.Mode().IsDir() {
-		c.Bury(job, FailReasonCwd)
+		c.Bury(job, nil, FailReasonCwd)
 		return fmt.Errorf("working directory [%s] does not exist", job.Cwd)
 	}
 	var actualCwd, tmpDir string
@@ -406,7 +404,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.key())
 		if err != nil {
 			buryErr := fmt.Errorf("could not create working directory: %s", err)
-			c.Bury(job, FailReasonCwd, buryErr)
+			c.Bury(job, nil, FailReasonCwd, buryErr)
 			return buryErr
 		}
 		cmd.Dir = actualCwd
@@ -424,7 +422,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		if err != nil {
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %s", err)
-			c.Bury(job, FailReasonMount, buryErr)
+			c.Bury(job, nil, FailReasonMount, buryErr)
 			return buryErr
 		}
 	}
@@ -435,7 +433,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// to update a job with new env vars
 	env, err := job.Env()
 	if err != nil {
-		c.Bury(job, FailReasonEnv)
+		c.Bury(job, nil, FailReasonEnv)
 		job.Unmount(true)
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", job.key(), err)
 	}
@@ -462,7 +460,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
-		c.Release(job, FailReasonStart)
+		c.Release(job, nil, FailReasonStart)
 		job.Unmount(true)
 		return fmt.Errorf("could not start command [%s]: %s", jc, err)
 	}
@@ -609,19 +607,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 				dorelease = true
 				if ranoutMem {
 					failreason = FailReasonRAM
-					myerr = Error{c.queue, "Execute", job.key(), FailReasonRAM}
+					myerr = Error{"Execute", job.key(), FailReasonRAM}
 				} else if signalled {
 					if ranoutTime {
 						failreason = FailReasonTime
-						myerr = Error{c.queue, "Execute", job.key(), FailReasonTime}
+						myerr = Error{"Execute", job.key(), FailReasonTime}
 					} else {
 						failreason = FailReasonSignal
-						myerr = Error{c.queue, "Execute", job.key(), FailReasonSignal}
+						myerr = Error{"Execute", job.key(), FailReasonSignal}
 					}
 				} else if killCalled {
 					dobury = true
 					failreason = FailReasonKilled
-					myerr = Error{c.queue, "Execute", job.key(), FailReasonKilled}
+					myerr = Error{"Execute", job.key(), FailReasonKilled}
 				} else {
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
@@ -717,32 +715,29 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// fixed and potentially a new manager to be brought online for us to
 	// connect to and succeed)
 	maxRetries := 300
-	endedWorked := false
 	worked := false
+	jes := &JobEndState{
+		Cwd:      actualCwd,
+		Exitcode: exitcode,
+		PeakRAM:  peakmem,
+		CPUtime:  cmd.ProcessState.SystemTime(),
+		Stdout:   bytes.TrimSpace(stdout.Bytes()),
+		Stderr:   finalStdErr,
+		Exited:   true,
+	}
 	for retryNum := 0; retryNum < maxRetries; retryNum++ {
-		if !endedWorked {
-			err = c.Ended(job, actualCwd, exitcode, peakmem, cmd.ProcessState.SystemTime(), bytes.TrimSpace(stdout.Bytes()), finalStdErr)
-
-			if err != nil {
-				<-time.After(time.Duration(retryNum*100) * time.Millisecond)
-				continue
-			}
-			endedWorked = true
-		}
-
 		// update the database with our final state
 		if dobury {
-			err = c.Bury(job, failreason)
+			err = c.Bury(job, jes, failreason)
 		} else if dorelease {
-			err = c.Release(job, failreason) // which buries after job.Retries fails in a row
+			err = c.Release(job, jes, failreason) // which buries after job.Retries fails in a row
 		} else if doarchive {
-			err = c.Archive(job)
+			err = c.Archive(job, jes)
 		}
 		if err != nil {
 			<-time.After(time.Duration(retryNum*100) * time.Millisecond)
 			continue
 		}
-
 		worked = true
 		break
 	}
@@ -791,34 +786,52 @@ func (c *Client) Touch(job *Job) (bool, error) {
 	return resp.KillCalled, err
 }
 
-// Ended updates a Job on the server with information that you've finished
-// running the Job's Cmd. Peakram should be in MB. The cwd you supply should be
-// the actual working directory used, which may be different to the Job's Cwd
-// property; if not, supply empty string.
-func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime time.Duration, stdout []byte, stderr []byte) error {
+// JobEndState is used to describe the state of a job after it has (tried to)
+// execute it's Cmd. You supply these to Client.Bury(), Release() and Archive().
+// The cwd you supply should be the actual working directory used, which may be
+// different to the Job's Cwd property; if not, supply empty string. Always set
+// exited to true, and populate all other fields, unless you never actually
+// tried to execute the Cmd, in which case you would just provide a nil
+// JobEndState to the methods that need one.
+type JobEndState struct {
+	Cwd      string
+	Exitcode int
+	PeakRAM  int
+	CPUtime  time.Duration
+	Stdout   []byte
+	Stderr   []byte
+	Exited   bool
+}
+
+// ended updates a Job for the benefit of the client only; this has no effect on
+// the server's knowledge of the Job, but does alter the Job so that it's
+// StdOutC and StdErrC are populated correctly for passing to the server).
+func (c *Client) ended(job *Job, jes *JobEndState) error {
+	if jes == nil || !jes.Exited {
+		return nil
+	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	job.Exited = true
-	job.Exitcode = exitcode
-	job.PeakRAM = peakram
-	job.CPUtime = cputime
-	if cwd != "" {
-		job.ActualCwd = cwd
+	job.Exitcode = jes.Exitcode
+	job.PeakRAM = jes.PeakRAM
+	job.CPUtime = jes.CPUtime
+	if jes.Cwd != "" {
+		job.ActualCwd = jes.Cwd
 	}
 	var err error
-	if len(stdout) > 0 {
-		job.StdOutC, err = compress(stdout)
+	if len(jes.Stdout) > 0 {
+		job.StdOutC, err = compress(jes.Stdout)
 		if err != nil {
 			return err
 		}
 	}
-	if len(stderr) > 0 {
-		job.StdErrC, err = compress(stderr)
+	if len(jes.Stderr) > 0 {
+		job.StdErrC, err = compress(jes.Stderr)
 		if err != nil {
 			return err
 		}
 	}
-	_, err = c.request(&clientRequest{Method: "jend", Job: job})
 	return err
 }
 
@@ -826,10 +839,14 @@ func (c *Client) Ended(job *Job, cwd string, exitcode int, peakram int, cputime 
 // complete jobs, for use after you have run the job successfully. You have to
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
-func (c *Client) Archive(job *Job) error {
+func (c *Client) Archive(job *Job, jes *JobEndState) error {
+	err := c.ended(job, jes)
+	if err != nil {
+		return err
+	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
-	_, err := c.request(&clientRequest{Method: "jarchive", Job: job})
+	_, err = c.request(&clientRequest{Method: "jarchive", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
 	}
@@ -844,11 +861,15 @@ func (c *Client) Archive(job *Job) error {
 // has been run and failed; a subsequent call to Release() will instead result
 // in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
 // number of times.)
-func (c *Client) Release(job *Job, failreason string) error {
+func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
+	err := c.ended(job, jes)
+	if err != nil {
+		return err
+	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	job.FailReason = failreason
-	_, err := c.request(&clientRequest{Method: "jrelease", Job: job})
+	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
 	}
@@ -870,18 +891,21 @@ func (c *Client) Release(job *Job, failreason string) error {
 // something to perhaps make it runnable and kicks the job). Note that you must
 // reserve a job before you can bury it. Optionally supply an error that will
 // be be displayed as the Job's stderr.
-func (c *Client) Bury(job *Job, failreason string, stderr ...error) error {
+func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...error) error {
+	err := c.ended(job, jes)
+	if err != nil {
+		return err
+	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
 	job.FailReason = failreason
-	var err error
 	if len(stderr) == 1 && stderr[0] != nil {
 		job.StdErrC, err = compress([]byte(stderr[0].Error()))
 		if err != nil {
 			return err
 		}
 	}
-	_, err = c.request(&clientRequest{Method: "jbury", Job: job})
+	_, err = c.request(&clientRequest{Method: "jbury", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
 	}
@@ -1007,7 +1031,6 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	// encode and send the request
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	cr.Queue = c.queue
 	cr.User = c.user
 	cr.ClientID = c.clientid
 	err := enc.Encode(cr)
@@ -1037,7 +1060,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 		if cr.Job != nil {
 			key = cr.Job.key()
 		}
-		return sr, Error{cr.Queue, cr.Method, key, sr.Err}
+		return sr, Error{cr.Method, key, sr.Err}
 	}
 	return sr, err
 }

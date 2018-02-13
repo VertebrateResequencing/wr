@@ -228,8 +228,6 @@ type Job struct {
 	// when retrieving jobs with a limit, this tells you how many jobs were
 	// excluded.
 	Similar int
-	// name of the queue the Job was added to.
-	Queue string
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -542,6 +540,24 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	}
 
 	return logs, err
+}
+
+// updateAfterExit sets some properties on the job, only if the supplied
+// JobEndState indicates the job exited.
+func (j *Job) updateAfterExit(jes *JobEndState) {
+	if jes == nil || !jes.Exited {
+		return
+	}
+	j.Lock()
+	j.Exited = true
+	j.Exitcode = jes.Exitcode
+	j.PeakRAM = jes.PeakRAM
+	j.CPUtime = jes.CPUtime
+	j.EndTime = time.Now()
+	if jes.Cwd != "" {
+		j.ActualCwd = jes.Cwd
+	}
+	j.Unlock()
 }
 
 // updateRecsAfterFailure checks the FailReason and bumps RAM or Time as

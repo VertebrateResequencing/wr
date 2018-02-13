@@ -184,17 +184,12 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					break
 				}
 
-				q, existed := s.qs["cmds"]
-				if !existed {
-					continue
-				}
-
 				switch {
 				case req.Request != "":
 					switch req.Request {
 					case "current":
 						// get all current jobs
-						jobs := s.getJobsCurrent(q, 0, "", false, false)
+						jobs := s.getJobsCurrent(0, "", false, false)
 						writeMutex.Lock()
 						err := webInterfaceStatusSendGroupStateCount(conn, "+all+", jobs)
 						if err != nil {
@@ -243,7 +238,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						// *** probably want to take the count as a req option,
 						// so user can request to see more than just 1 job per
 						// State+Exitcode+FailReason
-						jobs, _, errstr := s.getJobsByRepGroup(q, req.RepGroup, 1, req.State, true, true)
+						jobs, _, errstr := s.getJobsByRepGroup(req.RepGroup, 1, req.State, true, true)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false
@@ -262,16 +257,16 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							}
 						}
 					case "retry":
-						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateBury})
+						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						for _, job := range jobs {
-							err := q.Kick(job.key())
+							err := s.q.Kick(job.key())
 							if err != nil {
 								continue
 							}
 							job.UntilBuried = job.Retries + 1
 						}
 					case "remove":
-						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
+						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						var toDelete []string
 						for _, job := range jobs {
 							key := job.key()
@@ -280,19 +275,19 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							// dependencies, as *queue would regard that as
 							// satisfying the dependency and downstream jobs
 							// would start
-							hasDeps, err := q.HasDependents(key)
+							hasDeps, err := s.q.HasDependents(key)
 							if err != nil || hasDeps {
 								continue
 							}
 
-							err = q.Remove(key)
+							err = s.q.Remove(key)
 							if err != nil {
 								continue
 							}
 							s.db.deleteLiveJob(key)
 							toDelete = append(toDelete, key)
 							if job.State == JobStateReady {
-								s.decrementGroupCount(job.schedulerGroup, q)
+								s.decrementGroupCount(job.schedulerGroup)
 							}
 						}
 						s.rpl.Lock()
@@ -301,9 +296,9 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						}
 						s.rpl.Unlock()
 					case "kill":
-						jobs := s.reqToJobs(q, req, []queue.ItemState{queue.ItemStateRun})
+						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
 						for _, job := range jobs {
-							s.killJob(q, job.key())
+							s.killJob(job.key())
 						}
 					case "confirmBadServer":
 						if req.ServerID != "" {
@@ -325,7 +320,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						continue
 					}
 				case req.Key != "":
-					jobs, _, errstr := s.getJobsByKeys(q, []string{req.Key}, true, true)
+					jobs, _, errstr := s.getJobsByKeys([]string{req.Key}, true, true)
 					if errstr == "" && len(jobs) == 1 {
 						status := jobToStatus(jobs[0])
 						writeMutex.Lock()
@@ -441,7 +436,7 @@ func jobToStatus(job *Job) jstatus {
 
 // reqToJobs takes a request from the status webpage and returns the requested
 // jobs.
-func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []queue.ItemState) []*Job {
+func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) []*Job {
 	allowed := make(map[queue.ItemState]bool)
 	for _, is := range allowedItemStates {
 		allowed[is] = true
@@ -452,7 +447,7 @@ func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []q
 		s.rpl.RLock()
 		defer s.rpl.RUnlock()
 		for key := range s.rpl.lookup[req.RepGroup] {
-			item, err := q.Get(key)
+			item, err := s.q.Get(key)
 			if item == nil || err != nil {
 				continue
 			}
@@ -465,7 +460,7 @@ func (s *Server) reqToJobs(q *queue.Queue, req jstatusReq, allowedItemStates []q
 			}
 		}
 	} else if req.Key != "" {
-		item, err := q.Get(req.Key)
+		item, err := s.q.Get(req.Key)
 		if item == nil || err != nil {
 			return nil
 		}
