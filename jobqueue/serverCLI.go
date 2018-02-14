@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/satori/go.uuid"
@@ -48,6 +49,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	var srerr string
 	var qerr string
 
+	s.ssmutex.RLock()
+	up := s.up
+	drain := s.drain
+	s.ssmutex.RUnlock()
+
 	// check that the client making the request has the expected username; NB:
 	// *** this is not real security, since the client could just lie about its
 	// username! Right now this is intended to stop accidental use of someone
@@ -55,7 +61,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	if cr.User == "" || !s.allowedUsers[cr.User] {
 		srerr = ErrWrongUser
 		qerr = fmt.Sprintf("User %s denied access (only %s allowed)", cr.User, s.ServerInfo.AllowedUsers)
-	} else if s.q == nil {
+	} else if s.q == nil || !up {
 		// the server just got shutdown, we shouldn't really end up here?... Can
 		// we even respond??
 		srerr = ErrClosedStop
@@ -63,7 +69,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	} else {
 		switch cr.Method {
 		case "ping":
-			sr = &serverResponse{SInfo: s.ServerInfo}
+			// avoid a later race condition when we try to encode ServerInfo by
+			// doing the read here, copying it under read lock
+			s.ssmutex.RLock()
+			si := &ServerInfo{}
+			*si = *s.ServerInfo
+			s.ssmutex.RUnlock()
+			sr = &serverResponse{SInfo: si}
 		case "backup":
 			// make an io.Writer that writes to a byte slice, so we can return
 			// the db as that
@@ -117,7 +129,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// return the next ready job
 			if cr.ClientID.String() == "00000000-0000-0000-0000-000000000000" {
 				srerr = ErrBadRequest
-			} else if !s.drain {
+			} else if !drain {
 				// first just try to Reserve normally
 				var item *queue.Item
 				var err error
@@ -293,7 +305,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					srerr = ErrBadJob
 					job.Unlock()
 				} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
-					log.Printf("dodgy job: %+v\n", job)
 					srerr = ErrBadRequest
 					job.Unlock()
 				} else {
@@ -316,7 +327,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 								delete(m, key)
 							}
 							s.rpl.Unlock()
-							s.decrementGroupCount(job.schedulerGroup)
+							go s.decrementGroupCount(job.schedulerGroup)
 						}
 					}
 				}
@@ -521,9 +532,8 @@ func (s *Server) logTimings(desc string, took time.Duration) {
 	if _, exists := s.timings[desc]; !exists {
 		s.timings[desc] = &timingAvg{}
 	}
-	s.tmutex.Unlock()
-
 	avg := s.timings[desc].store(took.Seconds())
+	s.tmutex.Unlock()
 	if avg > 0 {
 		log.Printf("timing for %s: %f\n", desc, avg)
 	}
@@ -594,6 +604,8 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	// we're going to fill in some properties of the Job and return
 	// it to client, but don't want those properties set here for
 	// us, so we make a new Job and fill stuff in that
+	req := &scheduler.Requirements{}
+	*req = *sjob.Requirements // copy reqs since server changes these, avoiding a race condition
 	job := &Job{
 		RepGroup:     sjob.RepGroup,
 		ReqGroup:     sjob.ReqGroup,
@@ -603,7 +615,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 		CwdMatters:   sjob.CwdMatters,
 		ChangeHome:   sjob.ChangeHome,
 		ActualCwd:    sjob.ActualCwd,
-		Requirements: sjob.Requirements,
+		Requirements: req,
 		Priority:     sjob.Priority,
 		Retries:      sjob.Retries,
 		PeakRAM:      sjob.PeakRAM,
@@ -653,12 +665,11 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
-	s.racmutex.RLock()
 	err := enc.Encode(sr)
-	s.racmutex.RUnlock()
 	if err != nil {
 		return err
 	}
 	m.Body = encoded
-	return s.sock.SendMsg(m)
+	err = s.sock.SendMsg(m)
+	return err
 }

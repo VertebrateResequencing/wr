@@ -189,8 +189,8 @@ type Server struct {
 	sgrouptrigs     map[string]int
 	sgtr            map[string]*scheduler.Requirements
 	sgcmutex        sync.Mutex
-	racmutex        sync.RWMutex
-	rc              string // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	racmutex        sync.RWMutex // to protect the readyaddedcallback
+	rc              string       // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
 	httpServer      *http.Server
 	statusCaster    *bcast.Group
 	badServerCaster *bcast.Group
@@ -207,6 +207,7 @@ type Server struct {
 	stopServing     chan bool
 	timings         map[string]*timingAvg
 	tmutex          sync.Mutex
+	ssmutex         sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -551,14 +552,14 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 // will return with an error indicating why it stopped blocking, which will
 // be due to receiving a signal or because you called Stop()
 func (s *Server) Block() error {
-	s.racmutex.Lock()
+	s.ssmutex.Lock()
 	s.blocking = true
-	s.racmutex.Unlock()
+	s.ssmutex.Unlock()
 	err := <-s.done
-	s.racmutex.Lock()
+	s.ssmutex.Lock()
 	s.up = false
 	s.blocking = false
-	s.racmutex.Unlock()
+	s.ssmutex.Unlock()
 	return err
 }
 
@@ -566,16 +567,16 @@ func (s *Server) Block() error {
 // bool of true will cause Stop() to wait until all runners have exited and
 // the server is truly down before returning.
 func (s *Server) Stop(wait ...bool) error {
-	s.racmutex.Lock()
+	s.ssmutex.Lock()
 	var err error
 	if s.up {
 		s.stop <- true // results in shutdown()
 		if !s.blocking {
 			s.up = false
-			s.racmutex.Unlock()
+			s.ssmutex.Unlock()
 			err = <-s.done
 		} else {
-			s.racmutex.Unlock()
+			s.ssmutex.Unlock()
 		}
 
 		if len(wait) == 1 && wait[0] {
@@ -588,7 +589,7 @@ func (s *Server) Stop(wait ...bool) error {
 			}
 		}
 	} else {
-		s.racmutex.Unlock()
+		s.ssmutex.Unlock()
 	}
 	return err
 }
@@ -596,37 +597,37 @@ func (s *Server) Stop(wait ...bool) error {
 // Drain will stop the server spawning new runners and stop Reserve*() from
 // returning any more Jobs. Once all current runners exit, we Stop().
 func (s *Server) Drain() error {
-	s.racmutex.Lock()
-	defer s.racmutex.Unlock()
-	var err error
-	if s.up {
-		if !s.drain {
-			s.drain = true
-			s.ServerInfo.Mode = ServerModeDrain
-			go func() {
-				ticker := time.NewTicker(1 * time.Second)
-			TICKS:
-				for range ticker.C {
-					// check our queue for things running, which is cheap
-					stats := s.q.Stats()
-					if stats.Running > 0 {
-						continue TICKS
-					}
-					ticker.Stop()
-
-					// now that we think nothing should be running, get
-					// Stop() to wait for the runner clients to exit so the
-					// job scheduler will be nice and clean
-					s.scheduler.Cleanup()
-					s.Stop(true)
-					break
-				}
-			}()
-		}
-	} else {
-		err = Error{"Drain", "", ErrNoServer}
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+	if !s.up {
+		return Error{"Drain", "", ErrNoServer}
 	}
-	return err
+	if s.drain {
+		return nil
+	}
+
+	s.drain = true
+	s.ServerInfo.Mode = ServerModeDrain
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+	TICKS:
+		for range ticker.C {
+			// check our queue for things running, which is cheap
+			stats := s.q.Stats()
+			if stats.Running > 0 {
+				continue TICKS
+			}
+			ticker.Stop()
+
+			// now that we think nothing should be running, get
+			// Stop() to wait for the runner clients to exit so the
+			// job scheduler will be nice and clean
+			s.scheduler.Cleanup()
+			s.Stop(true)
+			break
+		}
+	}()
+	return nil
 }
 
 // GetServerStats returns some simple live stats about what's happening in the
@@ -684,13 +685,16 @@ func (s *Server) createQueue() {
 	// Reserve() so that they run the correct jobs for the machine and
 	// resource reservations the job scheduler will run them under
 	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+		s.ssmutex.RLock()
+		if s.drain || !s.up {
+			s.ssmutex.RUnlock()
+			return
+		}
+		s.ssmutex.RUnlock()
+
 		// we must only ever run this 1 at a time
 		s.racmutex.Lock()
 		defer s.racmutex.Unlock()
-
-		if s.drain || !s.up {
-			return
-		}
 
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
@@ -720,6 +724,7 @@ func (s *Server) createQueue() {
 				}
 
 				if recommendedReq != nil {
+					job.Lock()
 					if job.Override == 1 {
 						if recommendedReq.RAM > job.Requirements.RAM {
 							job.Requirements.RAM = recommendedReq.RAM
@@ -731,6 +736,7 @@ func (s *Server) createQueue() {
 						job.Requirements.RAM = recommendedReq.RAM
 						job.Requirements.Time = recommendedReq.Time
 					}
+					job.Unlock()
 				} else {
 					noRec = true
 				}
@@ -1427,10 +1433,10 @@ func (s *Server) getBadServers() []*badServer {
 // stay alive uselessly. *** This adds 15s to our shutdown time...
 func (s *Server) shutdown() {
 	// change touch to always return a kill signal
-	s.racmutex.Lock()
+	s.ssmutex.Lock()
 	s.drain = true
 	s.ServerInfo.Mode = ServerModeDrain
-	s.racmutex.Unlock()
+	s.ssmutex.Unlock()
 	s.krmutex.Lock()
 	s.killRunners = true
 	s.krmutex.Unlock()

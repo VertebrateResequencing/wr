@@ -356,7 +356,9 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		var encoded []byte
 		enc := codec.NewEncoderBytes(&encoded, db.ch)
+		job.RLock()
 		err = enc.Encode(job)
+		job.RUnlock()
 		if err != nil {
 			return jobsToQueue, jobsToUpdate, alreadyAdded, err
 		}
@@ -379,7 +381,9 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 				key := []byte(job.key())
 				var encoded []byte
 				enc := codec.NewEncoderBytes(&encoded, db.ch)
+				job.RLock()
 				err = enc.Encode(job)
+				job.RUnlock()
 				if err != nil {
 					return jobsToQueue, jobsToUpdate, alreadyAdded, err
 				}
@@ -505,7 +509,9 @@ func (db *db) checkIfAdded(key string) (bool, error) {
 func (db *db) archiveJob(key string, job *Job) error {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
+	job.RLock()
 	err := enc.Encode(job)
+	job.RUnlock()
 	if err != nil {
 		return err
 	}
