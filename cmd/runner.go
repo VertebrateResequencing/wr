@@ -150,7 +150,7 @@ func init() {
 
 	// flags specific to this sub-command
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
-	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
+	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 60, "how long (seconds) to wait to get a reply from 'wr manager'")
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of wr manager")
