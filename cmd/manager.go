@@ -201,7 +201,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			if stopped {
 				jq = connect(1 * time.Second)
 				if jq != nil {
-					warn("I requested shut down of the remote manager at %s, but it still up!", sAddr)
+					warn("I requested shut down of the remote manager at %s, but it's still up!", sAddr)
 					stopped = false
 				}
 			}
@@ -210,7 +210,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
 		} else {
-			info("I've tried everything; giving up trying to stop the manager at %s", sAddr)
+			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
 	},
 }
