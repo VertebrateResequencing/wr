@@ -683,7 +683,9 @@ func (s *Server) createQueue() {
 	// all the ready jobs. Based on the requirements, we add to each job a
 	// schedulerGroup, which the runners we spawn will be able to pass to
 	// Reserve() so that they run the correct jobs for the machine and
-	// resource reservations the job scheduler will run them under
+	// resource reservations the job scheduler will run them under. queue
+	// package will only call this once at a time, so we don't need to worry
+	// about locking across the whole function.
 	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 		s.ssmutex.RLock()
 		if s.drain || !s.up {
@@ -691,10 +693,6 @@ func (s *Server) createQueue() {
 			return
 		}
 		s.ssmutex.RUnlock()
-
-		// we must only ever run this 1 at a time
-		s.racmutex.Lock()
-		defer s.racmutex.Unlock()
 
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
@@ -845,6 +843,8 @@ func (s *Server) createQueue() {
 			// in the event that the runners we spawn can't reach us
 			// temporarily and just die, we need to make sure this callback
 			// gets triggered again even if no new jobs get added
+			s.racmutex.Lock()
+			defer s.racmutex.Unlock()
 			s.racCheckReady = len(allitemdata)
 			if s.racChecking {
 				if !s.racCheckTimer.Stop() {

@@ -170,6 +170,9 @@ type Queue struct {
 	ttrTime                time.Time
 	closed                 bool
 	readyAddedCb           ReadyAddedCallback
+	readyAddedCbRunning    bool
+	readyAddedCbMutex      sync.Mutex
+	readyAddedCbRecall     bool
 	changedCb              ChangedCallback
 	ttrCb                  TTRCallback
 }
@@ -227,30 +230,56 @@ func New(name string) *Queue {
 // been added to the ready sub-queue. The callback will receive the name of the
 // queue, and a slice of the Data properties of every item currently in the
 // ready sub-queue. The callback will be initiated in a go routine.
+//
+// Note that we will wait for the callback to finish running before calling it
+// again. If new items enter the ready sub-queue while your callback is still
+// running, you will only know about them when your callback is called again,
+// immediately after the previous call completes.
 func (queue *Queue) SetReadyAddedCallback(callback ReadyAddedCallback) {
 	queue.readyAddedCb = callback
 }
 
 // TriggerReadyAddedCallback allows you to manually trigger your
 // readyAddedCallback at times when no new items have been added to the ready
-// queue.
+// queue. It will receive the current set of ready item data.
 func (queue *Queue) TriggerReadyAddedCallback() {
 	queue.readyAdded()
 }
 
 // readyAdded checks if a readyAddedCallback has been set, and if so calls it
-// in a go routine.
+// in a go routine. It never runs the callback concurrently though: if it is
+// still running from a previous call, we only schedule that the callback be
+// called (once) after the current call completes.
 func (queue *Queue) readyAdded() {
 	if queue.readyAddedCb != nil {
-		queue.mutex.RLock()
-		var data []interface{}
-		for _, il := range queue.readyQueue.groupedItems {
-			for _, item := range il {
-				data = append(data, item.Data)
-			}
+		queue.readyAddedCbMutex.Lock()
+		if queue.readyAddedCbRunning {
+			queue.readyAddedCbRecall = true
+			queue.readyAddedCbMutex.Unlock()
+			return
 		}
-		queue.mutex.RUnlock()
-		go queue.readyAddedCb(queue.Name, data)
+		queue.readyAddedCbRunning = true
+		queue.readyAddedCbMutex.Unlock()
+
+		go func() {
+			queue.mutex.RLock()
+			var data []interface{}
+			for _, il := range queue.readyQueue.groupedItems {
+				for _, item := range il {
+					data = append(data, item.Data)
+				}
+			}
+			queue.mutex.RUnlock()
+			queue.readyAddedCb(queue.Name, data)
+
+			queue.readyAddedCbMutex.Lock()
+			if queue.readyAddedCbRecall {
+				defer queue.readyAdded()
+				queue.readyAddedCbRecall = false
+			}
+			queue.readyAddedCbRunning = false
+			queue.readyAddedCbMutex.Unlock()
+		}()
 	}
 }
 

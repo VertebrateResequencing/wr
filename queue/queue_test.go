@@ -1342,6 +1342,48 @@ func TestQueue(t *testing.T) {
 			depTestFunc(queue)
 		})
 	})
+
+	Convey("When you add items to the queue over time, slow readyAddedCallbacks only get called once at a time", t, func() {
+		queue := New("myqueue")
+		defer queue.Destroy()
+
+		var callBackLock sync.RWMutex
+		var added []int
+		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			callBackLock.Lock()
+			defer callBackLock.Unlock()
+			added = append(added, len(allitemdata))
+			time.Sleep(50 * time.Millisecond)
+		})
+
+		for i := 0; i < 10; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			_, err := queue.Add(key, "", "data", 0, 0*time.Millisecond, 10*time.Millisecond)
+			So(err, ShouldBeNil)
+			if i == 0 {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 10)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 10)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+
+		callBackLock.RLock()
+		So(len(added), ShouldEqual, 1)
+		So(added[0], ShouldEqual, 1)
+		callBackLock.RUnlock()
+
+		<-time.After(100 * time.Millisecond)
+
+		callBackLock.RLock()
+		So(len(added), ShouldEqual, 2)
+		So(added[1], ShouldEqual, 10)
+		callBackLock.RUnlock()
+	})
 }
 
 func depTestFunc(queue *Queue) {
