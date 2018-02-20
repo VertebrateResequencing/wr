@@ -360,7 +360,7 @@ machine was started.`,
 			pwd = "/tmp"
 			remoteWarning = true
 		}
-		jq.Disconnect()
+		defer jq.Disconnect()
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
@@ -417,13 +417,6 @@ machine was started.`,
 
 			jobs = append(jobs, job)
 		}
-
-		// connect to the server
-		jq, err = jobqueue.Connect(addr, timeout)
-		if err != nil {
-			die("%s", err)
-		}
-		defer jq.Disconnect()
 
 		// add the jobs to the queue
 		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
