@@ -166,7 +166,7 @@ very many (tens of thousands+) commands.`,
 		}
 
 		if quietMode {
-			var d, re, b, ru, l, c int
+			var d, re, b, ru, l, c, dep int
 			for _, job := range jobs {
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -181,9 +181,11 @@ very many (tens of thousands+) commands.`,
 					l += 1 + job.Similar
 				case jobqueue.JobStateComplete:
 					c += 1 + job.Similar
+				case jobqueue.JobStateDependent:
+					dep += 1 + job.Similar
 				}
 			}
-			fmt.Printf("complete: %d\nrunning: %d\nready: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, l, d, b)
+			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, dep, l, d, b)
 		} else {
 			// print out status information for each job
 			for _, job := range jobs {
@@ -210,6 +212,8 @@ very many (tens of thousands+) commands.`,
 					fmt.Printf("Status: delayed following a temporary problem, will become ready soon (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
+				case jobqueue.JobStateDependent:
+					fmt.Println("Status: dependent on other jobs")
 				case jobqueue.JobStateBuried:
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
