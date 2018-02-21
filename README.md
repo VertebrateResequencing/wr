@@ -3,7 +3,7 @@ wr - workflow runner
 
 [![GoDoc](https://godoc.org/github.com/VertebrateResequencing/wr?status.svg)](https://godoc.org/github.com/VertebrateResequencing/wr)
 [![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
-develop branch: 
+develop branch:
 [![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=develop)](https://travis-ci.org/VertebrateResequencing/wr)
 [![Coverage Status](https://coveralls.io/repos/github/VertebrateResequencing/wr/badge.svg?branch=develop)](https://coveralls.io/github/VertebrateResequencing/wr?branch=develop)
 
@@ -24,14 +24,16 @@ Furthermore, wr has best-in-class support for OpenStack, providing incredibly
 easy deployment and auto-scaling without you having to know anything about
 OpenStack. And it has built-in support for mounting S3-like object stores,
 providing an easy way of running commands against remote files whilst enjoying
-[ultra high performance](https://github.com/VertebrateResequencing/muxfys).
+[high performance](https://github.com/VertebrateResequencing/muxfys).
 
-***DO NOT USE YET!***
+***Current Status***
 
-wr is in early beta, with some significant features unimplemented, and the
-possibility of significant bugs. However, for simple usage, for example easily
-running your own manually-specified commands in an OpenStack environment, it is
-probably safe to use.
+wr is still being actively developed, with some significant features
+unimplemented, and some likelihood of encountering bugs.
+
+However, for simple usage, for example easily running your own
+manually-specified commands in an OpenStack environment, it is probably safe to
+use (it is being used in production by multiple groups at the Sanger Institute).
 
 So if you want to be adventurous and provide feedback...
 
@@ -128,6 +130,39 @@ An alternative way of interacting with wr is to use it's REST API, also
 documented on the
 [wiki](https://github.com/VertebrateResequencing/wr/wiki/REST-API)
 
+Performance considerations
+--------------------------
+For the most part, you should be able to throw as many jobs at wr as you like,
+running on as many compute nodes as you have available, and trust that wr will
+cope. There are no performance-related parameters to fiddle with: fast mode is
+always on!
+
+However you should be aware that wr's performance will typically be limited by
+that of the disk you configure wr's database to be stored on (by default it is
+stored in your home directory), since to ensure that workflows don't break and
+recovery is possible after crashes or power outages, every time you add jobs to
+wr, before the add completes it must wait for the new jobs to be persisted to
+disk in the database.
+
+This means that in extreme edge cases, eg. you're trying to run thousands of
+jobs in parallel, each of which completes in milliseconds, each of which want to
+add new jobs to the system, you could become limited by disk performance if
+you're using old or slow hardware.
+
+You're unlikely to see any performance degradation even in extreme edge cases
+if using an SSD and a modern disk controller. Even an NFS mount could give more
+than acceptable performance.
+
+But an old spinning disk or an old disk controller (eg. limited to 100MB/s)
+could cause things to slow to a crawl in this edge case. "High performance" disk
+systems like Lustre should also be avoided, since these tend to have incredibly
+bad performance when dealing with many tiny reads and writes to small files.
+
+If this is the only hardware you have available to you, you can minimise the
+impact of disk performance by reorganising your workflow such that you add all
+your jobs in a single `wr add` call, instead of calling `wr add` many times
+with subsets of those jobs.
+
 Implemented so far
 ------------------
 * Adding manually generated commands to the manager's queue.
@@ -150,32 +185,12 @@ Not yet implemented
 -------------------
 * While the help mentions workflows, nothing workflow-related has been
   implemented (though you can manually build a workflow by specifying command
-  dependencies).
+  dependencies). Common Workflow Language (CWL) compatibility is planned.
 * Get a complete listing of all commands with a given id via the webpage.
 * Checkpointing for long running commands.
-* Security (anyone with an account on your machine can use your
-  manager).
+* Security (someone could hack to use your manager).
 * Re-run button in web interface for successfully completed commands.
 * Ability to alter expected memory and time or change env-vars of commands.
-
-Background
-----------
-
-wr is aimed at replacing [VRPipe](https://github.com/VertebrateResequencing/vr-pipe/)
-which has the following problems:
-
-* It's difficult to install due to the large set of CPAN dependencies.
-* It's very slow due to the use of Moose.
-* It's very slow due to the use of DBIx::Class.
-* It doesn't scale well due to the current way it uses MySQL.
-
-It's written in Go because:
-
-* It's basically as easy to write as Perl.
-* It has built-in packages equivalent to most of the critical CPAN modules.
-* It has better interfaces and function signatures than Moose.
-* It is faster, both due to compilation and re-factoring database usage.
-* It is easier to install: distribute a statically-linked compiled binary.
 
 Example .ssh/config
 -------------------
