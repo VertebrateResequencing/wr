@@ -141,8 +141,8 @@ However you should be aware that wr's performance will typically be limited by
 that of the disk you configure wr's database to be stored on (by default it is
 stored in your home directory), since to ensure that workflows don't break and
 recovery is possible after crashes or power outages, every time you add jobs to
-wr, before the add completes it must wait for the new jobs to be persisted to
-disk in the database.
+wr, and every time you finish running a job, before the operation completes it
+must wait for the job state to be persisted to disk in the database.
 
 This means that in extreme edge cases, eg. you're trying to run thousands of
 jobs in parallel, each of which completes in milliseconds, each of which want to
@@ -156,12 +156,12 @@ than acceptable performance.
 But an old spinning disk or an old disk controller (eg. limited to 100MB/s)
 could cause things to slow to a crawl in this edge case. "High performance" disk
 systems like Lustre should also be avoided, since these tend to have incredibly
-bad performance when dealing with many tiny reads and writes to small files.
+bad performance when dealing with many tiny writes to small files.
 
-If this is the only hardware you have available to you, you can minimise the
-impact of disk performance by reorganising your workflow such that you add all
-your jobs in a single `wr add` call, instead of calling `wr add` many times
-with subsets of those jobs.
+If this is the only hardware you have available to you, you can half the impact
+of disk performance by reorganising your workflow such that you add all your
+jobs in a single `wr add` call, instead of calling `wr add` many times with
+subsets of those jobs.
 
 Implemented so far
 ------------------
