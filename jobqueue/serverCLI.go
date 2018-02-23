@@ -40,9 +40,9 @@ import (
 func (s *Server) handleRequest(m *mangos.Message) error {
 	dec := codec.NewDecoderBytes(m.Body, s.ch)
 	cr := &clientRequest{}
-	err := dec.Decode(cr)
-	if err != nil {
-		return err
+	errd := dec.Decode(cr)
+	if errd != nil {
+		return errd
 	}
 
 	var sr *serverResponse
@@ -172,7 +172,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							for {
 								select {
 								case <-ticker.C:
-									item, err := s.q.Reserve(cr.SchedulerGroup)
+									itemr, err := s.q.Reserve(cr.SchedulerGroup)
 									if err != nil {
 										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 											continue
@@ -186,7 +186,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 										return
 									}
 									ticker.Stop()
-									itemerrch <- &itemErr{item: item}
+									itemerrch <- &itemErr{item: itemr}
 									return
 								case <-stop:
 									ticker.Stop()
@@ -270,7 +270,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 				if !killCalled {
 					// else, update the job's ttr
-					err = s.q.Touch(item.Key)
+					err := s.q.Touch(item.Key)
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
@@ -352,7 +352,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 				if job.UntilBuried <= 0 {
 					job.Unlock()
-					err = s.q.Bury(item.Key)
+					err := s.q.Bury(item.Key)
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
@@ -362,7 +362,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 				} else {
 					job.Unlock()
-					err = s.q.Release(item.Key)
+					err := s.q.Release(item.Key)
 					if err != nil {
 						srerr = ErrInternalError
 						qerr = err.Error()
@@ -382,7 +382,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Lock()
 				job.FailReason = cr.Job.FailReason
 				job.Unlock()
-				err = s.q.Bury(item.Key)
+				err := s.q.Bury(item.Key)
 				if err != nil {
 					srerr = ErrInternalError
 					qerr = err.Error()
@@ -516,9 +516,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	}
 
 	// send reply to client
-	err = s.reply(m, sr) // *** log failure to reply?
-
-	return err
+	return s.reply(m, sr) // *** log failure to reply?
 }
 
 // logTimings will log the average took after 1000 calls to this message with

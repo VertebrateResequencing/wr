@@ -219,13 +219,13 @@ func stopdaemon(pid int, source string) bool {
 // sAddr gets a nice manager address to report in logs, preferring hostname,
 // falling back on the ip address if that wasn't set
 func sAddr(s *jobqueue.ServerInfo) string {
-	addr := s.Host
-	if addr == "localhost" {
-		addr = s.Addr
+	saddr := s.Host
+	if saddr == "localhost" {
+		saddr = s.Addr
 	} else {
-		addr += ":" + s.Port
+		saddr += ":" + s.Port
 	}
-	return addr
+	return saddr
 }
 
 // connect gives you a client connected to a queue that shouldn't be used; use

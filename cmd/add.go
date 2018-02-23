@@ -266,9 +266,9 @@ machine was started.`,
 		if cmdMem == "" {
 			jd.Memory = 0
 		} else {
-			mb, err := bytefmt.ToMegabytes(cmdMem)
-			if err != nil {
-				die("--memory was not specified correctly: %s", err)
+			mb, errf := bytefmt.ToMegabytes(cmdMem)
+			if errf != nil {
+				die("--memory was not specified correctly: %s", errf)
 			}
 			jd.Memory = int(mb)
 		}
@@ -410,9 +410,9 @@ machine was started.`,
 				defaultedRepG = true
 			}
 
-			job, err := jvj.Convert(jd)
-			if err != nil {
-				die("line %d had a problem: %s\n", lineNum, err)
+			job, errf := jvj.Convert(jd)
+			if errf != nil {
+				die("line %d had a problem: %s\n", lineNum, errf)
 			}
 
 			jobs = append(jobs, job)

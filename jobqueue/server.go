@@ -1312,8 +1312,8 @@ func (s *Server) scheduleRunners(group string) {
 				problem = false
 				s.sgcmutex.Lock()
 				for {
-					item, err := s.q.Reserve(group)
-					if err != nil {
+					item, errr := s.q.Reserve(group)
+					if errr != nil {
 						problem = true
 						break
 					}

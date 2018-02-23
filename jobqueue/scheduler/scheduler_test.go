@@ -435,14 +435,14 @@ func TestOpenstack(t *testing.T) {
 	host, _ := os.Hostname()
 
 	Convey("You can get a new openstack scheduler", t, func() {
-		tmpdir, err := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
-		if err != nil {
-			log.Fatal(err)
+		tmpdir, errt := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
+		if errt != nil {
+			log.Fatal(errt)
 		}
 		defer os.RemoveAll(tmpdir)
 		config.SavePath = filepath.Join(tmpdir, "os_resources")
-		s, err := New("openstack", config)
-		So(err, ShouldBeNil)
+		s, errn := New("openstack", config)
+		So(errn, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()
 		oss := s.impl.(*opst)
@@ -547,8 +547,8 @@ func TestOpenstack(t *testing.T) {
 		// we need to not actually run the real scheduling tests if we're not
 		// running in openstack, because the scheduler will try to ssh to
 		// the servers it spawns
-		_, err = exec.LookPath("nova")
-		if err == nil && oss.provider.InCloud() {
+		_, errl := exec.LookPath("nova")
+		if errl == nil && oss.provider.InCloud() {
 			Convey("The canCount during and after spawning is correct", func() {
 				// *** these tests are only going to work if no external process
 				// changes resource usage before we finish...
@@ -618,7 +618,7 @@ func TestOpenstack(t *testing.T) {
 					count := 130
 					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
 					cmd := "sleep 10 && (echo default > " + oFile + ") || true"
-					err = s.Schedule(cmd, possibleReq, count)
+					err := s.Schedule(cmd, possibleReq, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 
@@ -644,7 +644,7 @@ func TestOpenstack(t *testing.T) {
 
 					// at least one of the cmds should have run on the local
 					// machine
-					_, err := os.Stat(oFile)
+					_, err = os.Stat(oFile)
 					So(err, ShouldBeNil)
 				})
 
@@ -657,7 +657,7 @@ func TestOpenstack(t *testing.T) {
 					newCount := 3
 					eta := 120
 					cmd := "sleep 10"
-					err = s.Schedule(cmd, newReq, newCount)
+					err := s.Schedule(cmd, newReq, newCount)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
@@ -670,7 +670,7 @@ func TestOpenstack(t *testing.T) {
 					newCount := 3
 					eta := 120
 					cmd := "sleep 10"
-					err = s.Schedule(cmd, newReq, newCount)
+					err := s.Schedule(cmd, newReq, newCount)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
@@ -695,7 +695,7 @@ func TestOpenstack(t *testing.T) {
 						newCount := 3
 						eta := 120
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
-						err = s.Schedule(cmd, newReq, newCount)
+						err := s.Schedule(cmd, newReq, newCount)
 						So(err, ShouldBeNil)
 						So(s.Busy(), ShouldBeTrue)
 
@@ -734,7 +734,7 @@ func TestOpenstack(t *testing.T) {
 						So(foundServers, ShouldEqual, 0)
 
 						// none of the cmds should have run on the local machine
-						_, err := os.Stat(oFile)
+						_, err = os.Stat(oFile)
 						So(err, ShouldNotBeNil)
 						So(os.IsNotExist(err), ShouldBeTrue)
 					})

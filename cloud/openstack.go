@@ -253,9 +253,9 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	defaultGroupExists := false
 	foundGroup := false
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		groupList, err := secgroups.ExtractSecurityGroups(page)
-		if err != nil {
-			return false, err
+		groupList, errf := secgroups.ExtractSecurityGroups(page)
+		if errf != nil {
+			return false, errf
 		}
 
 		for _, g := range groupList {
@@ -370,9 +370,9 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	var routerID string
 	pager = routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		routerList, err := routers.ExtractRouters(page)
-		if err != nil {
-			return false, err
+		routerList, errf := routers.ExtractRouters(page)
+		if errf != nil {
+			return false, errf
 		}
 		routerID = routerList[0].ID
 		// *** check it's valid? could we end up with more than 1 router?
@@ -493,9 +493,9 @@ func (p *openstackp) getQuota() (*Quota, error) {
 	p.cacheFlavors()
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		serverList, err := servers.ExtractServers(page)
-		if err != nil {
-			return false, err
+		serverList, errf := servers.ExtractServers(page)
+		if errf != nil {
+			return false, errf
 		}
 
 		for _, server := range serverList {
@@ -522,9 +522,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	var imageID string
 	var imageDisk int
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		imageList, err := images.ExtractImages(page)
-		if err != nil {
-			return false, err
+		imageList, errf := images.ExtractImages(page)
+		if errf != nil {
+			return false, errf
 		}
 
 		for _, i := range imageList {
@@ -630,10 +630,10 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		for {
 			select {
 			case <-ticker.C:
-				current, err := servers.Get(p.computeClient, server.ID).Extract()
-				if err != nil {
+				current, errf := servers.Get(p.computeClient, server.ID).Extract()
+				if errf != nil {
 					ticker.Stop()
-					waitForActive <- err
+					waitForActive <- errf
 					return
 				}
 				if current.Status == "ACTIVE" {
@@ -689,36 +689,35 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// first, because without an IP it's useless
 	if externalIP {
 		// give it a floating ip
-		var floatingIP string
-		floatingIP, err = p.getAvailableFloatingIP()
-		if err != nil {
+		floatingIP, errf := p.getAvailableFloatingIP()
+		if errf != nil {
 			p.destroyServer(serverID)
-			return serverID, serverIP, serverName, adminPass, err
+			return serverID, serverIP, serverName, adminPass, errf
 		}
 
 		// associate floating ip with server *** we have a race condition
 		// between finding/creating free floating IP above, and using it here
-		err = floatingips.AssociateInstance(p.computeClient, serverID, floatingips.AssociateOpts{
+		errf = floatingips.AssociateInstance(p.computeClient, serverID, floatingips.AssociateOpts{
 			FloatingIP: floatingIP,
 		}).ExtractErr()
-		if err != nil {
+		if errf != nil {
 			p.destroyServer(serverID)
-			return serverID, serverIP, serverName, adminPass, err
+			return serverID, serverIP, serverName, adminPass, errf
 		}
 
 		serverIP = floatingIP
 	} else {
 		// find its auto-assigned internal ip *** there must be a better way of
 		// doing this...
-		allNetworkAddressPages, err := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
-		if err != nil {
+		allNetworkAddressPages, errf := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
+		if errf != nil {
 			p.destroyServer(serverID)
-			return serverID, serverIP, serverName, adminPass, err
+			return serverID, serverIP, serverName, adminPass, errf
 		}
-		allNetworkAddresses, err := servers.ExtractNetworkAddresses(allNetworkAddressPages)
-		if err != nil {
+		allNetworkAddresses, errf := servers.ExtractNetworkAddresses(allNetworkAddressPages)
+		if errf != nil {
 			p.destroyServer(serverID)
-			return serverID, serverIP, serverName, adminPass, err
+			return serverID, serverIP, serverName, adminPass, errf
 		}
 		for _, address := range allNetworkAddresses {
 			if address.Version == 4 {

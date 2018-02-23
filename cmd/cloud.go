@@ -241,20 +241,20 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, err := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
-			if err != nil {
+			flavor, errf := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
+			if errf != nil {
 				provider.TearDown()
-				die("failed to launch a server in %s: %s", providerName, err)
+				die("failed to launch a server in %s: %s", providerName, errf)
 			}
-			server, err = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
-			if err != nil {
+			server, errf = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
+			if errf != nil {
 				provider.TearDown()
-				die("failed to launch a server in %s: %s", providerName, err)
+				die("failed to launch a server in %s: %s", providerName, errf)
 			}
-			err = server.WaitUntilReady(cloudConfigFiles, postCreation)
-			if err != nil {
+			errf = server.WaitUntilReady(cloudConfigFiles, postCreation)
+			if errf != nil {
 				provider.TearDown()
-				die("failed to launch a server in %s: %s", providerName, err)
+				die("failed to launch a server in %s: %s", providerName, errf)
 			}
 		}
 
@@ -338,14 +338,14 @@ and accessible.`,
 			if jq != nil {
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
-					if _, err := os.Stat(config.ManagerDbFile); !os.IsNotExist(err) {
+					if _, errf := os.Stat(config.ManagerDbFile); !os.IsNotExist(errf) {
 						// move aside the local database so that if the manager is
 						// started locally, the database will be restored from S3
 						// and have the history of what was run in the cloud
-						if err = os.Rename(config.ManagerDbFile, config.ManagerDbFile+".old"); err == nil {
+						if errf = os.Rename(config.ManagerDbFile, config.ManagerDbFile+".old"); err == nil {
 							syncMsg = "; the local database will be updated from S3 if manager started locally"
 						} else {
-							warn("could not rename the local database; if the manager is started locally, it will not be updated with the latest changes in S3! %s", err)
+							warn("could not rename the local database; if the manager is started locally, it will not be updated with the latest changes in S3! %s", errf)
 						}
 					}
 				} else {
@@ -355,9 +355,9 @@ and accessible.`,
 					// is "fine"; though some db writes may occur, the user
 					// obviously doesn't care about them. On recovery we won't
 					// break any pipelines.
-					err := jq.BackupDB(config.ManagerDbFile)
-					if err != nil {
-						msg := "there was an error trying to sync the remote database: " + err.Error()
+					errf := jq.BackupDB(config.ManagerDbFile)
+					if errf != nil {
+						msg := "there was an error trying to sync the remote database: " + errf.Error()
 						if forceTearDown {
 							warn(msg + noManagerForcedMsg)
 						} else {
@@ -470,16 +470,16 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		dbBk = config.ManagerDbBkFile
 	} else if config.IsProduction() {
 		// copy over our database
-		if _, err := os.Stat(config.ManagerDbFile); err == nil {
-			if err = server.UploadFile(config.ManagerDbFile, filepath.Join("./.wr_"+config.Deployment, "db")); err == nil {
+		if _, errf := os.Stat(config.ManagerDbFile); errf == nil {
+			if errf = server.UploadFile(config.ManagerDbFile, filepath.Join("./.wr_"+config.Deployment, "db")); errf == nil {
 				info("copied local database to remote server")
 			} else if !wrMayHaveStarted {
 				provider.TearDown()
-				die("failed to upload local database to the server at %s: %s", server.IP, err)
+				die("failed to upload local database to the server at %s: %s", server.IP, errf)
 			}
-		} else if !os.IsNotExist(err) {
+		} else if !os.IsNotExist(errf) {
 			provider.TearDown()
-			die("failed to access the local database: %s", err)
+			die("failed to access the local database: %s", errf)
 		}
 	}
 	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\n", mp, wp, dbBk), wrConfigFileName); err != nil {
@@ -516,8 +516,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
-		response, _, err := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
-		if err != nil && response == "started\n" {
+		response, _, errf := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
+		if errf != nil && response == "started\n" {
 			alreadyStarted = true
 		}
 	}

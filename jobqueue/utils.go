@@ -456,9 +456,9 @@ func removeAllExcept(path string, exceptions []string) error {
 // removeWithExceptions is the recursive part of removeAllExcept's
 // implementation that does the real work of deleting stuff.
 func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
-	entries, err := ioutil.ReadDir(path)
-	if err != nil {
-		return err
+	entries, errr := ioutil.ReadDir(path)
+	if errr != nil {
+		return errr
 	}
 	for _, entry := range entries {
 		abs := filepath.Join(path, entry.Name())
@@ -475,16 +475,16 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 		}
 
 		if checkDirs[abs] {
-			err = removeWithExceptions(abs, keepDirs, checkDirs)
+			err := removeWithExceptions(abs, keepDirs, checkDirs)
 			if err != nil {
 				return err
 			}
 		} else {
-			err = os.RemoveAll(abs)
+			err := os.RemoveAll(abs)
 			if err != nil {
 				return err
 			}
 		}
 	}
-	return err
+	return nil
 }

@@ -277,10 +277,10 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 		}
 	}()
 	go func() {
-		session, err := sshClient.NewSession()
-		if err != nil {
-			s.debug("ssh to existing server %s failed: %s\n", s.ID, err)
-			done <- fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
+		session, errf := sshClient.NewSession()
+		if errf != nil {
+			s.debug("ssh to existing server %s failed: %s\n", s.ID, errf)
+			done <- fmt.Errorf("cloud SSHSession() failed: %s", errf.Error())
 			return
 		}
 		worked <- true
@@ -339,7 +339,7 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		var e bytes.Buffer
 		session.Stdout = &o
 		session.Stderr = &e
-		err := session.Run(cmd)
+		errf := session.Run(cmd)
 		finished <- true
 		if o.Len() > 0 {
 			outCh <- o.String()
@@ -351,8 +351,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		} else {
 			errCh <- ""
 		}
-		if err != nil {
-			done <- fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, err.Error())
+		if errf != nil {
+			done <- fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, errf.Error())
 		} else {
 			done <- nil
 		}

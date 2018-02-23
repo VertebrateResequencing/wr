@@ -325,7 +325,7 @@ func TestQueue(t *testing.T) {
 						So(checkChanged(SubQueueDelay, SubQueueReady, 1), ShouldBeTrue)
 
 						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
-							item1, err := queue.Reserve()
+							item1, err = queue.Reserve()
 							So(err, ShouldBeNil)
 							So(item1, ShouldNotBeNil)
 							So(item1.Key, ShouldEqual, "key_0")
@@ -344,7 +344,7 @@ func TestQueue(t *testing.T) {
 						})
 
 						Convey("Once reserved and released, the delay can be altered", func() {
-							item1, err := queue.Reserve()
+							item1, err = queue.Reserve()
 							So(err, ShouldBeNil)
 							So(item1, ShouldNotBeNil)
 							So(item1.Key, ShouldEqual, "key_0")
@@ -452,7 +452,7 @@ func TestQueue(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(checkChanged(SubQueueBury, SubQueueRemoved, 1), ShouldBeTrue)
 
-						stats := queue.Stats()
+						stats = queue.Stats()
 						So(stats.Items, ShouldEqual, 9)
 						So(stats.Delayed, ShouldEqual, 7)
 						So(stats.Ready, ShouldEqual, 0)
@@ -580,7 +580,7 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("Touching doesn't mess with the correct queue order", func() {
-					queue := New("new queue")
+					queue = New("new queue")
 					defer queue.Destroy()
 					queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond)
 					queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond)

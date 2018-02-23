@@ -222,45 +222,45 @@ func initDB(dbFile string, dbBkFile string, deployment string) (*db, string, err
 
 	// ensure our buckets are in place
 	err = boltdb.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketJobsLive)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsLive, err)
+		_, errf := tx.CreateBucketIfNotExists(bucketJobsLive)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobsLive, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketJobsComplete)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsComplete, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobsComplete)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobsComplete, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketRTK)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRTK, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketRTK)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRTK, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketDTK)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketDTK, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketRDTK)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRDTK, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRDTK, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketEnvs)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketEnvs, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketEnvs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketEnvs, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketStdO)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdO, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketStdO)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketStdO, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketStdE)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdE, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketStdE)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketStdE, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketJobMBs)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobMBs, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobMBs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobMBs, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketJobSecs)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobSecs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, errf)
 		}
 		return nil
 	})
@@ -527,15 +527,15 @@ func (db *db) archiveJob(key string, job *Job) error {
 		b.Delete(key)
 
 		b = tx.Bucket(bucketJobsComplete)
-		err := b.Put(key, encoded)
-		if err != nil {
-			return err
+		errf := b.Put(key, encoded)
+		if errf != nil {
+			return errf
 		}
 
 		b = tx.Bucket(bucketJobMBs)
-		err = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
-		if err != nil {
-			return err
+		errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+		if errf != nil {
+			return errf
 		}
 		b = tx.Bucket(bucketJobSecs)
 		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
@@ -671,9 +671,9 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 					if len(encoded) > 0 {
 						dec := codec.NewDecoderBytes(encoded, db.ch)
 						job := &Job{}
-						err := dec.Decode(job)
-						if err != nil {
-							return err
+						errf := dec.Decode(job)
+						if errf != nil {
+							return errf
 						}
 
 						// since we're going to add this job, we also need to

@@ -606,9 +606,9 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// convert to real Job structs with default values filled in
 	var inputJobs []*Job
 	for _, jvj := range jvjs {
-		job, err := jvj.Convert(jd)
-		if err != nil {
-			return nil, http.StatusBadRequest, fmt.Errorf("There was a problem interpreting your job: %s", err)
+		job, errf := jvj.Convert(jd)
+		if errf != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("There was a problem interpreting your job: %s", errf)
 		}
 		inputJobs = append(inputJobs, job)
 	}

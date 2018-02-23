@@ -179,8 +179,8 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 			for {
 				req := jstatusReq{}
-				err := conn.ReadJSON(&req)
-				if err != nil { // probably the browser was refreshed, breaking conn
+				errr := conn.ReadJSON(&req)
+				if errr != nil { // probably the browser was refreshed, breaking conn
 					break
 				}
 
@@ -245,7 +245,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							for _, job := range jobs {
 								status := jobToStatus(job)
 								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
-								err = conn.WriteJSON(status)
+								err := conn.WriteJSON(status)
 								if err != nil {
 									failed = true
 									break
@@ -324,7 +324,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					if errstr == "" && len(jobs) == 1 {
 						status := jobToStatus(jobs[0])
 						writeMutex.Lock()
-						err = conn.WriteJSON(status)
+						err := conn.WriteJSON(status)
 						writeMutex.Unlock()
 						if err != nil {
 							break

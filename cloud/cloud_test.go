@@ -373,23 +373,23 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
-					flavor, err := p.CheapestServerFlavor(1, 50, "^!!!!!!!!!!!!!!$")
+					flavor2, err := p.CheapestServerFlavor(1, 50, "^!!!!!!!!!!!!!!$")
 					So(err, ShouldNotBeNil)
-					So(flavor, ShouldBeNil)
+					So(flavor2, ShouldBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
 
-					flavor, err = p.CheapestServerFlavor(1, 50, "^!!!!(")
+					flavor2, err = p.CheapestServerFlavor(1, 50, "^!!!!(")
 					So(err, ShouldNotBeNil)
-					So(flavor, ShouldBeNil)
+					So(flavor2, ShouldBeNil)
 					perr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrBadRegex)
 
-					flavor, err = p.CheapestServerFlavor(1, 50, ".*$")
+					flavor2, err = p.CheapestServerFlavor(1, 50, ".*$")
 					So(err, ShouldBeNil)
-					So(flavor, ShouldNotBeNil)
+					So(flavor2, ShouldNotBeNil)
 				})
 
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
@@ -404,7 +404,7 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {
-					err = p.TearDown()
+					err := p.TearDown()
 					So(err, ShouldBeNil)
 
 					// *** should really use openstack API to confirm everything is

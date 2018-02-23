@@ -392,7 +392,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
-	if fi, err := os.Stat(job.Cwd); err != nil || !fi.Mode().IsDir() {
+	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
 		c.Bury(job, nil, FailReasonCwd)
 		return fmt.Errorf("working directory [%s] does not exist", job.Cwd)
 	}
@@ -506,8 +506,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 				stateMutex.Unlock()
 
-				kc, err := c.Touch(job)
-				if err != nil {
+				kc, errf := c.Touch(job)
+				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
 					continue
@@ -520,9 +520,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 					return
 				}
 			case <-memTicker.C:
-				mem, err := currentMemory(job.Pid)
+				mem, errf := currentMemory(job.Pid)
 				stateMutex.Lock()
-				if err == nil && mem > peakmem {
+				if errf == nil && mem > peakmem {
 					peakmem = mem
 
 					if peakmem > job.Requirements.RAM {
@@ -652,8 +652,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 				return
 			case <-ticker2.C:
 				if !killCalled {
-					_, err := c.Touch(job)
-					if err != nil {
+					_, errf := c.Touch(job)
+					if errf != nil {
 						return
 					}
 				}

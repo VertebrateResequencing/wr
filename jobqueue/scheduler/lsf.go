@@ -107,7 +107,7 @@ func (s *lsf) initialize(config interface{}) error {
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bqueues -l]: %s", err)}
 	}
-	if err := bqcmd.Start(); err != nil {
+	if err = bqcmd.Start(); err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bqueues -l]: %s", err)}
 	}
 	bqScanner := bufio.NewScanner(bqout)
@@ -456,8 +456,8 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 				select {
 				case <-ticker.C:
 					bjcmd := exec.Command("bjobs", "-w", matches[1]) // #nosec
-					bjout, err := bjcmd.CombinedOutput()
-					if err != nil {
+					bjout, errf := bjcmd.CombinedOutput()
+					if errf != nil {
 						continue
 					}
 					if len(bjout) > 46 {
@@ -623,7 +623,7 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 		}
 	}
 
-	if err := bjScanner.Err(); err != nil {
+	if err = bjScanner.Err(); err != nil {
 		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to read everything from [bjobs -w]: %s", err)}
 	}
 	err = bjcmd.Wait()

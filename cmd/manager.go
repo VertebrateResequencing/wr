@@ -443,8 +443,8 @@ func startJQ(sayStarted bool, postCreation []byte) {
 	}
 
 	// log to file that we started
-	addr := sAddr(server.ServerInfo)
-	log.Printf("wr manager started on %s\n", addr)
+	saddr := sAddr(server.ServerInfo)
+	log.Printf("wr manager started on %s\n", saddr)
 	if msg != "" {
 		log.Printf("wr manager : %s\n", msg)
 	}
@@ -455,13 +455,13 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		jqerr, ok := err.(jobqueue.Error)
 		switch {
 		case ok && jqerr.Err == jobqueue.ErrClosedTerm:
-			log.Printf("wr manager on %s gracefully stopped (received SIGTERM)\n", addr)
+			log.Printf("wr manager on %s gracefully stopped (received SIGTERM)\n", saddr)
 		case ok && jqerr.Err == jobqueue.ErrClosedInt:
-			log.Printf("wr manager on %s gracefully stopped (received SIGINT)\n", addr)
+			log.Printf("wr manager on %s gracefully stopped (received SIGINT)\n", saddr)
 		case ok && jqerr.Err == jobqueue.ErrClosedStop:
-			log.Printf("wr manager on %s gracefully stopped (following a drain)\n", addr)
+			log.Printf("wr manager on %s gracefully stopped (following a drain)\n", saddr)
 		default:
-			log.Printf("wr manager on %s exited unexpectedly: %s\n", addr, err)
+			log.Printf("wr manager on %s exited unexpectedly: %s\n", saddr, err)
 		}
 	}
 }
