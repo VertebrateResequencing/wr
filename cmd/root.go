@@ -28,9 +28,13 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/inconshreveable/log15"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
+
+// appLogger is used for logging events in our commands
+var appLogger = log15.New()
 
 // these variables are accessible by all subcommands.
 var deployment string
@@ -72,6 +76,9 @@ func Execute() {
 }
 
 func init() {
+	// set up logging to stderr
+	appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, log15.StderrHandler))
+
 	// global flags
 	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(), "use production or development config")
 
@@ -103,19 +110,19 @@ func cloudResourceName(username string) string {
 	return "wr-" + config.Deployment + "-" + username
 }
 
-// info is a convenience to print a msg to STDOUT.
+// info is a convenience to log a message at the Info level.
 func info(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stdout, "info: %s\n", fmt.Sprintf(msg, a...)) // #nosec
+	appLogger.Info(fmt.Sprintf(msg, a...))
 }
 
-// warn is a convenience to print a msg to STDERR.
+// warn is a convenience to log a message at the Warn level.
 func warn(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "warning: %s\n", fmt.Sprintf(msg, a...)) // #nosec
+	appLogger.Warn(fmt.Sprintf(msg, a...))
 }
 
-// die is a convenience to print an error to STDERR and exit indicating error.
+// die is a convenience to log a message at the Error level and exit non zero.
 func die(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(msg, a...)) // #nosec
+	appLogger.Error(fmt.Sprintf(msg, a...))
 	os.Exit(1)
 }
 

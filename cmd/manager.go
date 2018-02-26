@@ -21,8 +21,6 @@ package cmd
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -33,7 +31,9 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
+	"github.com/sb10/l15h"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
@@ -118,7 +118,7 @@ var managerStartCmd = &cobra.Command{
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
-			startJQ(true, postCreation)
+			startJQ(postCreation)
 		} else {
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
@@ -132,7 +132,7 @@ var managerStartCmd = &cobra.Command{
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer context.Release()
-				startJQ(false, postCreation)
+				startJQ(postCreation)
 			}
 		}
 	},
@@ -363,15 +363,22 @@ func logStarted(s *jobqueue.ServerInfo) {
 	info("wr's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
 }
 
-func startJQ(sayStarted bool, postCreation []byte) {
+func startJQ(postCreation []byte) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	// change the app logger to log to both STDERR and our configured log file
+	fh, err := log15.FileHandler(config.ManagerLogFile, log15.LogfmtFormat())
+	if err != nil {
+		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
+	} else {
+		l15h.AddHandler(appLogger, fh)
+	}
 
 	// we will spawn runners, which means we need to know the path to ourselves
 	// in case we're not in the user's $PATH
 	exe, err := osext.Executable()
 	if err != nil {
-		log.Printf("wr manager failed to start : %s\n", err)
-		os.Exit(1)
+		die("wr manager failed to start : %s\n", err)
 	}
 
 	var schedulerConfig interface{}
@@ -420,48 +427,30 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		CIDR:            serverCIDR,
 	})
 
-	if sayStarted && err == nil {
-		logStarted(server.ServerInfo)
-	}
-
-	// start logging to configured file
-	logfile, errlog := os.OpenFile(config.ManagerLogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
-	if errlog != nil {
-		warn("could not log to %s, will log to STDOUT: %v", config.ManagerLogFile, errlog)
-	} else {
-		defer logfile.Close()
-		log.SetOutput(logfile)
-	}
-
-	// log to file failure to Serve
-	if err != nil {
-		if msg != "" {
-			log.Printf("wr manager : %s\n", msg)
-		}
-		log.Printf("wr manager failed to start : %s\n", err)
-		os.Exit(1)
-	}
-
-	// log to file that we started
-	saddr := sAddr(server.ServerInfo)
-	log.Printf("wr manager started on %s\n", saddr)
 	if msg != "" {
-		log.Printf("wr manager : %s\n", msg)
+		info("wr manager : %s", msg)
 	}
+
+	if err != nil {
+		die("wr manager failed to start : %s", err)
+	}
+
+	logStarted(server.ServerInfo)
 
 	// block forever while the jobqueue does its work
 	err = server.Block()
 	if err != nil {
+		saddr := sAddr(server.ServerInfo)
 		jqerr, ok := err.(jobqueue.Error)
 		switch {
 		case ok && jqerr.Err == jobqueue.ErrClosedTerm:
-			log.Printf("wr manager on %s gracefully stopped (received SIGTERM)\n", saddr)
+			info("wr manager on %s gracefully stopped (received SIGTERM)", saddr)
 		case ok && jqerr.Err == jobqueue.ErrClosedInt:
-			log.Printf("wr manager on %s gracefully stopped (received SIGINT)\n", saddr)
+			info("wr manager on %s gracefully stopped (received SIGINT)", saddr)
 		case ok && jqerr.Err == jobqueue.ErrClosedStop:
-			log.Printf("wr manager on %s gracefully stopped (following a drain)\n", saddr)
+			info("wr manager on %s gracefully stopped (following a drain)", saddr)
 		default:
-			log.Printf("wr manager on %s exited unexpectedly: %s\n", saddr, err)
+			warn("wr manager on %s exited unexpectedly: %s", saddr, err)
 		}
 	}
 }
