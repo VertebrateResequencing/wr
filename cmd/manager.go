@@ -54,10 +54,9 @@ The wr manager works in the background, doing all the work of ensuring your
 commands get run successfully.
 
 It maintains both a temporary queue of the commands you want to run, and a
-permanent history of commands you've run in the past, along with a simple
-key/val database that can be used to store result metadata associated with
-output files. As commands are added to the queue, it makes sure to spawn
-sufficient 'wr runner' agents to get them all run.
+permanent history of commands you've run in the past. As commands are added to
+the queue, it makes sure to spawn sufficient 'wr runner' agents to get them all
+run.
 
 You'll need to start this daemon with the 'start' sub-command before you can
 achieve anything useful with the other wr commands. If the background
@@ -67,11 +66,13 @@ stalled until you run the 'start' sub-command again.
 If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
-If using the openstack scheduler, note that you must be running on an openstack
+If using the OpenStack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
 cloud, so that resources created are only accessible to you. Instead you can use
-'wr cloud deploy -p openstack' to create an openstack server on which wr manager
-will be started in openstack mode for you.`,
+'wr cloud deploy -p openstack' to create an OpenStack server on which wr manager
+will be started in OpenStack mode for you. See 'wr cloud deploy -h' for the
+details of which environment variables you need to use the OpenStack
+scheduler.`,
 }
 
 // start sub-command starts the daemon

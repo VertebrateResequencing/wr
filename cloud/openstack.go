@@ -66,8 +66,14 @@ const initialServerSpawnTimeout = 20 * time.Minute
 var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 
 // openstackEnvs contains the environment variable names we need to connect to
-// OpenStack.
-var openstackEnvs = [...]string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"}
+// OpenStack. These are only the required ones for all intalls; other env vars
+// are required but it varies which ones. Gophercloud also considers:
+// OS_USERID, OS_TENANT_ID, OS_TENANT_NAME, OS_DOMAIN_ID, OS_DOMAIN_NAME,
+// OS_PROJECT_ID, OS_PROJECT_NAME (with *PROJECT* overriding *TENANT*, and only
+// one of the *DOMAIN* variables being allowed to be set). We also use
+// OS_POOL_NAME to determine the name of the network to get floating IPs from.
+var openstackReqEnvs = [...]string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME"}
+var openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
 
 // openstackp is our implementer of provideri
 type openstackp struct {
@@ -87,11 +93,17 @@ type openstackp struct {
 	spawnFailed       bool
 	spawnTimes        ewma.MovingAverage
 	spawnTimesVolume  ewma.MovingAverage
+	tenantID          string
 }
 
-// requiredEnv returns envs.
+// requiredEnv returns envs that are definitely requried.
 func (p *openstackp) requiredEnv() []string {
-	return openstackEnvs[:]
+	return openstackReqEnvs[:]
+}
+
+// maybedEnv returns envs that might be required.
+func (p *openstackp) maybeEnv() []string {
+	return openstackMaybeEnvs[:]
 }
 
 // initialize uses our required environment variables to authenticate with
@@ -102,6 +114,7 @@ func (p *openstackp) initialize() error {
 	if err != nil {
 		return err
 	}
+	p.tenantID = opts.TenantID
 	opts.AllowReauth = true
 	provider, err := openstack.AuthenticatedClient(opts)
 	if err != nil {
@@ -477,7 +490,7 @@ func (p *openstackp) flavors() map[string]Flavor {
 // getQuota achieves the aims of GetQuota().
 func (p *openstackp) getQuota() (*Quota, error) {
 	// query our quota
-	q, err := quotasets.Get(p.computeClient, os.Getenv("OS_TENANT_ID")).Extract()
+	q, err := quotasets.Get(p.computeClient, p.tenantID).Extract()
 	if err != nil {
 		return nil, err
 	}

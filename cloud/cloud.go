@@ -170,6 +170,8 @@ type Quota struct {
 type provideri interface {
 	// return the environment variables required to function
 	requiredEnv() []string
+	// return the environment variables that might be required to function
+	maybeEnv() []string
 	// do any initial config set up such as authentication
 	initialize() error
 	// achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
@@ -230,6 +232,41 @@ func RequiredEnv(providerName string) ([]string, error) {
 		return nil, Error{providerName, "RequiredEnv", ErrBadProvider}
 	}
 	return p.impl.requiredEnv(), nil
+}
+
+// MaybeEnv returns the environment variables that may be needed by the given
+// provider. If one of these is actually needed but not provided, errors may
+// appear from New() or later in subsequent attempted method usage.
+func MaybeEnv(providerName string) ([]string, error) {
+	var p *Provider
+	switch providerName {
+	case "openstack":
+		p = &Provider{impl: new(openstackp)}
+	default:
+		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
+	}
+	return p.impl.maybeEnv(), nil
+}
+
+// AllEnv returns the environment variables that RequiredEnv() and MaybeEnv()
+// would return.
+func AllEnv(providerName string) ([]string, error) {
+	var p *Provider
+	switch providerName {
+	case "openstack":
+		p = &Provider{impl: new(openstackp)}
+	default:
+		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
+	}
+
+	var all []string
+	for _, env := range p.impl.requiredEnv() {
+		all = append(all, env)
+	}
+	for _, env := range p.impl.maybeEnv() {
+		all = append(all, env)
+	}
+	return all, nil
 }
 
 // New creates a new Provider to interact with the given cloud provider.

@@ -130,10 +130,22 @@ must be installed, and /etc/fuse.conf should already have user_allow_other set
 or at least be present and commented out (wr will enable it).
 
 The openstack provider needs these environment variables to be set:
-OS_TENANT_ID, OS_AUTH_URL, OS_PASSWORD, OS_REGION_NAME, OS_USERNAME
-You can get these values by logging in to your OpenStack dashboard web interface
-and navigating to Compute -> Access & Security. From there click the 'API
-Access' tab and then click the 'Download Openstack RC File' button.
+OS_AUTH_URL, OS_USERNAME, OS_PASSWORD and OS_REGION_NAME.
+You will need additional environment variables, but these depend on the version
+of OpenStack you're using. Older installs may need:
+OS_TENANT_ID, OS_TENANT_NAME
+Newer installs may need:
+OS_PROJECT_ID, OS_PROJECT_NAME, and one of OS_DOMAIN_ID or OS_DOMAIN_NAME
+Depending on the install, one of OS_TENANT_ID and OS_PROJECT_ID is required. You
+might also need OS_USERID.
+You can get the necessary values by logging in to your OpenStack dashboard web
+interface and looking for the 'Download Openstack RC File' button. For older
+installs this is in the Compute -> Access & Security, 'API Access' tab.
+Finally, you may need to add to that RC file OS_POOL_NAME to define the name
+of the network to get floating IPs from (for older installs this defaults to
+"nova").
+If you're concerned about security, you can immediately 'unset OS_PASSWORD'
+after doing a deploy. (You'll need to set it again before doing a teardown.)
 
 Note that when specifying the OpenStack environment variable 'OS_AUTH_URL', it
 must work from within an OpenStack server running your chosen OS image. This is
@@ -522,13 +534,17 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 	}
 	if !alreadyStarted {
-		// create a file containing the required env vars for this provider, so
-		// that we can source it later
-		envvars, _ := cloud.RequiredEnv(providerName)
+		// create a file containing all the env vars for this provider, so that
+		// we can source it later
+		envvars, _ := cloud.AllEnv(providerName)
 		envvarExports := ""
-		for _, envvar := range envvars {
+		for _, env := range envvars {
+			val := os.Getenv(env)
+			if val == "" {
+				continue
+			}
 			// *** this is bash-like only; is that a problem?
-			envvarExports += fmt.Sprintf("export %s=\"%s\"\n", envvar, os.Getenv(envvar))
+			envvarExports += fmt.Sprintf("export %s=\"%s\"\n", env, val)
 		}
 		err = server.CreateFile(envvarExports, wrEnvFileName)
 		if err != nil {
@@ -585,7 +601,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// expected, and we don't get here.
 			m = -1
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername())
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), wrEnvFileName)
 
 		if cloudDebug {
 			mCmd += " --cloud_debug"
