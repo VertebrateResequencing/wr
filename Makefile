@@ -19,9 +19,11 @@ endif
 	@glide -q install
 	@echo installed latest dependencies
 
+build: export CGO_ENABLED = 0
 build: vendor
 	go build -tags netgo ${LDFLAGS}
 
+install: export CGO_ENABLED = 0
 install: vendor
 	@rm -f ${GOPATH}/bin/wr
 	@go install -tags netgo ${LDFLAGS}
