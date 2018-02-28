@@ -27,7 +27,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/inconshreveable/log15"
+	"github.com/ricochet2200/go-disk-usage/du"
+	"github.com/shirou/gopsutil/mem"
 )
+
+const gb = uint64(1.07374182e9) // for byte to GB conversion
 
 var username string
 var userid int
@@ -136,4 +142,38 @@ func TildaToHome(path string) string {
 		path = filepath.Join(home, path)
 	}
 	return path
+}
+
+// ProcMeminfoMBs uses gopsutil (amd64 freebsd, linux, windows, darwin, openbds
+// only!) to find the total number of MBs of memory physically installed on the
+// current system.
+func ProcMeminfoMBs() (int, error) {
+	v, err := mem.VirtualMemory()
+	if err != nil {
+		return 0, err
+	}
+
+	// convert bytes to MB
+	return int((v.Total / 1024) / 1024), err
+}
+
+// DiskSize returns the size of the disk (mounted at the given directory, "."
+// for current) in GB.
+func DiskSize() int {
+	usage := du.NewDiskUsage(".")
+	return int(usage.Size() / gb)
+}
+
+// LogPanic is for use in a go routines, deferred at the start of them, to
+// figure out what is causing runtime panics. If the die bool is true, the
+// program exits, otherwise it continues, after logging the error message and
+// stack trace. Desc string should be used to describe briefly what the
+// goroutine you call this in does.
+func LogPanic(logger log15.Logger, desc string, die bool) {
+	if err := recover(); err != nil {
+		logger.Crit(desc+" panic", "err", err)
+		if die {
+			os.Exit(1)
+		}
+	}
 }

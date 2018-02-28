@@ -40,6 +40,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	bolt "github.com/coreos/bbolt"
 	"github.com/hashicorp/golang-lru"
+	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
 )
 
@@ -109,6 +110,7 @@ type db struct {
 	slowBackups        bool // just for testing purposes
 	sync.RWMutex
 	updatingAfterJobExit int
+	log15.Logger
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -121,7 +123,7 @@ type db struct {
 //
 // In development we delete any existing db and force a fresh start. Backups
 // are also not carried out, so dbBkFile is ignored.
-func initDB(dbFile string, dbBkFile string, deployment string) (*db, string, error) {
+func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logger) (*db, string, error) {
 	var backupsEnabled bool
 	bkPath := dbBkFile
 	var fs *muxfys.MuxFys
@@ -282,6 +284,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (*db, string, err
 		backupPath:         bkPath,
 		backupNotification: make(chan bool),
 		backupWait:         minimumTimeBetweenBackups,
+		Logger:             logger.New(),
 	}
 	if fs != nil {
 		dbstruct.backupMount = fs
@@ -783,6 +786,8 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	jec := job.Exitcode
 	job.RUnlock()
 	go func() {
+		defer internal.LogPanic(db.Logger, "updateJobAfterExit", true)
+
 		db.Lock()
 		db.updatingAfterJobExit++
 		db.Unlock()
@@ -1083,6 +1088,8 @@ func (db *db) backgroundBackup() {
 	db.backingUp = true
 	slowBackups := db.slowBackups
 	go func(last time.Time, wait time.Duration, doNotWait bool) {
+		defer internal.LogPanic(db.Logger, "backgroundBackup", true)
+
 		if !doNotWait {
 			now := time.Now()
 			if !last.IsZero() && last.Add(wait).After(now) {

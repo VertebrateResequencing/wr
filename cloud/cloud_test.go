@@ -29,8 +29,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+var testLogger = log15.New()
+
+func init() {
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+}
 
 func TestUtility(t *testing.T) {
 	Convey("nameToHostName works", t, func() {
@@ -77,7 +84,7 @@ func TestOpenStack(t *testing.T) {
 		})
 
 		Convey("You can get a new OpenStack Provider", t, func() {
-			p, err := New("openstack", resourceName, crfileprefix)
+			p, err := New("openstack", resourceName, crfileprefix, testLogger)
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 

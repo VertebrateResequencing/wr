@@ -78,10 +78,13 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/inconshreveable/log15"
 	"github.com/satori/go.uuid"
 )
 
@@ -131,6 +134,8 @@ const touchStampFormat = "200601021504.05"
 // hostNameRegex is used by nameToHostName() to make strings valid hostnames.
 var hostNameRegex = regexp.MustCompile(`[^a-z0-9\-]+`)
 
+const openstackName = "openstack"
+
 // Error records an error and the operation and provider caused it.
 type Error struct {
 	Provider string // the provider's Name
@@ -173,7 +178,7 @@ type provideri interface {
 	// return the environment variables that might be required to function
 	maybeEnv() []string
 	// do any initial config set up such as authentication
-	initialize() error
+	initialize(logger log15.Logger) error
 	// achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
 	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error
 	// achieve the aims of InCloud()
@@ -201,9 +206,9 @@ type Provider struct {
 	resources    *Resources
 	inCloud      bool
 	madeHeadNode bool
-	Debug        bool
 	servers      map[string]*Server // by name
 	sync.RWMutex
+	log15.Logger
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
@@ -226,7 +231,7 @@ type DeployConfig struct {
 func RequiredEnv(providerName string) ([]string, error) {
 	var p *Provider
 	switch providerName {
-	case "openstack":
+	case openstackName:
 		p = &Provider{impl: new(openstackp)}
 	default:
 		return nil, Error{providerName, "RequiredEnv", ErrBadProvider}
@@ -240,7 +245,7 @@ func RequiredEnv(providerName string) ([]string, error) {
 func MaybeEnv(providerName string) ([]string, error) {
 	var p *Provider
 	switch providerName {
-	case "openstack":
+	case openstackName:
 		p = &Provider{impl: new(openstackp)}
 	default:
 		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
@@ -253,19 +258,15 @@ func MaybeEnv(providerName string) ([]string, error) {
 func AllEnv(providerName string) ([]string, error) {
 	var p *Provider
 	switch providerName {
-	case "openstack":
+	case openstackName:
 		p = &Provider{impl: new(openstackp)}
 	default:
 		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
 	}
 
 	var all []string
-	for _, env := range p.impl.requiredEnv() {
-		all = append(all, env)
-	}
-	for _, env := range p.impl.maybeEnv() {
-		all = append(all, env)
-	}
+	all = append(all, p.impl.requiredEnv()...)
+	all = append(all, p.impl.maybeEnv()...)
 	return all, nil
 }
 
@@ -273,13 +274,18 @@ func AllEnv(providerName string) ([]string, error) {
 // Possible names so far are "openstack" ("aws" is planned). You must provide a
 // resource name that will be used to name any created cloud resources. You must
 // also provide a file path prefix to save details of created resources to (the
-// actual file created will be suffixed with your resourceName). Note that the
-// file could contain created private key details, so should be kept accessible
-// only by you.
-func New(name string, resourceName string, savePath string) (*Provider, error) {
+// actual file created will be suffixed with your resourceName).
+//
+// Note that the file could contain created private key details, so should be
+// kept accessible only by you.
+//
+// Providing a logger allows for debug messages to be logged somewhere, along
+// with any "harmless" or unreturnable errors. If not supplied, we use a default
+// logger that discards all log messages.
+func New(name string, resourceName string, savePath string, logger ...log15.Logger) (*Provider, error) {
 	var p *Provider
 	switch name {
-	case "openstack":
+	case openstackName:
 		p = &Provider{impl: new(openstackp)}
 	default:
 		return nil, Error{name, "New", ErrBadProvider}
@@ -287,6 +293,15 @@ func New(name string, resourceName string, savePath string) (*Provider, error) {
 
 	p.Name = name
 	p.savePath = savePath + "." + resourceName
+
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
+	} else {
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
+	p.Logger = l
 
 	// load any resources we previously saved, or get an empty set to work
 	// with
@@ -311,7 +326,7 @@ func New(name string, resourceName string, savePath string) (*Provider, error) {
 		return nil, Error{name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
 	}
 
-	err = p.impl.initialize()
+	err = p.impl.initialize(l)
 	if err != nil {
 		return nil, err
 	}
@@ -395,7 +410,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 	if regex != "" {
 		r, err = regexp.Compile(regex)
 		if err != nil {
-			return nil, Error{"openstack", "cheapestServerFlavor", ErrBadRegex}
+			return nil, Error{"cloud", "cheapestServerFlavor", ErrBadRegex}
 		}
 	}
 
@@ -423,7 +438,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 	}
 
 	if fr.ID == "" {
-		return nil, Error{"openstack", "cheapestServerFlavor", ErrNoFlavor}
+		return nil, Error{"cloud", "cheapestServerFlavor", ErrNoFlavor}
 	}
 
 	return &fr, nil
@@ -449,13 +464,15 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 // chosen OS image. If you call Spawn() while running on a cloud server, then
 // the newly spawned server will be in the same network and security group as
 // the current server. If you get an err, you will want to call server.Destroy()
-// as this is not done for you. NB: the server will likely not be ready to use
-// yet, having not completed its boot up; call server.WaitUntilReady() before
-// trying to use the server for anything.
+// as this is not done for you.
+//
+// NB: the server will likely not be ready to use yet, having not completed its
+// boot up; call server.WaitUntilReady() before trying to use the server for
+// anything.
 func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool) (*Server, error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
-		return nil, Error{"openstack", "Spawn", ErrBadFlavor}
+		return nil, Error{"cloud", "Spawn", ErrBadFlavor}
 	}
 
 	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP)
@@ -477,7 +494,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		TTD:          ttd,
 		provider:     p,
 		cancelRunCmd: make(map[int]chan bool),
-		debugMode:    p.Debug,
+		logger:       p.Logger.New("server", serverID),
 	}
 
 	p.Lock()
@@ -655,6 +672,30 @@ func (p *Provider) HeadNode() *Server {
 	return nil
 }
 
+// LocalhostServer returns a Server object with details of the host we are
+// currently running on. No cloud API calls are made to construct this.
+func (p *Provider) LocalhostServer(os string, postCreationScript []byte) (*Server, error) {
+	maxRAM, err := internal.ProcMeminfoMBs()
+	if err != nil {
+		return nil, err
+	}
+	diskSize := internal.DiskSize()
+	return &Server{
+		IP:     "127.0.0.1",
+		OS:     os,
+		Script: postCreationScript,
+		Flavor: Flavor{
+			RAM:   maxRAM,
+			Cores: runtime.NumCPU(),
+			Disk:  diskSize,
+		},
+		Disk:         diskSize,
+		provider:     p,
+		cancelRunCmd: make(map[int]chan bool),
+		logger:       p.Logger.New("server", "localhost"),
+	}, nil
+}
+
 // PrivateKey returns a PEM format string of the private key that was created
 // by Deploy() (on its first invocation with the same arguments to New()).
 func (p *Provider) PrivateKey() string {
@@ -723,6 +764,7 @@ func (p *Provider) loadResources(resourceName string) (*Resources, error) {
 	for _, server := range resources.Servers {
 		server.provider = p
 		server.cancelRunCmd = make(map[int]chan bool)
+		server.logger = p.Logger.New("server", server.ID)
 	}
 	return resources, nil
 }

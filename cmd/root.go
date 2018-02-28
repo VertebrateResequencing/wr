@@ -80,14 +80,14 @@ func init() {
 	appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, log15.StderrHandler))
 
 	// global flags
-	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(), "use production or development config")
+	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(appLogger), "use production or development config")
 
 	cobra.OnInitialize(initConfig)
 }
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	config = internal.ConfigLoad(deployment, false)
+	config = internal.ConfigLoad(deployment, false, appLogger)
 	addr = config.ManagerHost + ":" + config.ManagerPort
 }
 

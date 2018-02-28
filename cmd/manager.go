@@ -43,6 +43,7 @@ var foreground bool
 var scheduler string
 var localUsername string
 var backupPath string
+var managerDebug bool
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -338,7 +339,7 @@ func init() {
 	managerCmd.AddCommand(managerBackupCmd)
 
 	// flags specific to these sub-commands
-	defaultConfig := internal.DefaultConfig()
+	defaultConfig := internal.DefaultConfig(appLogger)
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
@@ -354,7 +355,7 @@ func init() {
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
-	managerStartCmd.Flags().BoolVar(&cloudDebug, "cloud_debug", false, "for cloud schedulers, include extra debugging information in the logs")
+	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
@@ -367,12 +368,21 @@ func logStarted(s *jobqueue.ServerInfo) {
 func startJQ(postCreation []byte) {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	// change the app logger to log to both STDERR and our configured log file
+	// change the app logger to log to both STDERR and our configured log file;
+	// we also create a new logger for internal use by the server later
+	serverLogger := log15.New()
 	fh, err := log15.FileHandler(config.ManagerLogFile, log15.LogfmtFormat())
 	if err != nil {
 		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
 	} else {
 		l15h.AddHandler(appLogger, fh)
+
+		// have the server logger output to file, levelled with caller info
+		logLevel := log15.LvlWarn
+		if managerDebug {
+			logLevel = log15.LvlDebug
+		}
+		serverLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
 	}
 
 	// we will spawn runners, which means we need to know the path to ourselves
@@ -409,7 +419,6 @@ func startJQ(postCreation []byte) {
 			GatewayIP:            cloudGatewayIP,
 			CIDR:                 cloudCIDR,
 			DNSNameServers:       strings.Split(cloudDNS, ","),
-			Debug:                cloudDebug,
 		}
 		serverCIDR = cloudCIDR
 	}
@@ -426,6 +435,7 @@ func startJQ(postCreation []byte) {
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
+		Logger:          serverLogger,
 	})
 
 	if msg != "" {

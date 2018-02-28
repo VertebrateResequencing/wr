@@ -21,12 +21,12 @@ package jobqueue
 // This file contains the web interface code of the server.
 
 import (
-	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 )
@@ -166,7 +166,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, ok := webSocket(w, r)
 		if !ok {
-			log.Println("failed to set up websocket at", r.Host)
+			s.Error("Failed to set up websocket", "Host", r.Host)
 			return
 		}
 
@@ -175,7 +175,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 		// go routine to read client requests and respond to them
 		go func(conn *websocket.Conn) {
 			// log panics and die
-			defer s.logPanic("jobqueue websocket client handling", true)
+			defer internal.LogPanic(s.Logger, "jobqueue websocket client handling", true)
 
 			for {
 				req := jstatusReq{}
@@ -339,7 +339,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 		// go routines to push changes to the client
 		go func(conn *websocket.Conn) {
 			// log panics and die
-			defer s.logPanic("jobqueue websocket status updating", true)
+			defer internal.LogPanic(s.Logger, "jobqueue websocket status updating", true)
 
 			statusReceiver := s.statusCaster.Join()
 			for status := range statusReceiver.In {
@@ -354,7 +354,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 		}(conn)
 
 		go func(conn *websocket.Conn) {
-			defer s.logPanic("jobqueue websocket bad server updating", true)
+			defer internal.LogPanic(s.Logger, "jobqueue websocket bad server updating", true)
 			badserverReceiver := s.badServerCaster.Join()
 			for server := range badserverReceiver.In {
 				writeMutex.Lock()
@@ -368,7 +368,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 		}(conn)
 
 		go func(conn *websocket.Conn) {
-			defer s.logPanic("jobqueue websocket scheduler issue updating", true)
+			defer internal.LogPanic(s.Logger, "jobqueue websocket scheduler issue updating", true)
 			schedIssueReceiver := s.schedCaster.Join()
 			for si := range schedIssueReceiver.In {
 				writeMutex.Lock()

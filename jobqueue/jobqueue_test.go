@@ -40,6 +40,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/inconshreveable/log15"
 	"github.com/sevlyar/go-daemon"
 	"github.com/shirou/gopsutil/process"
 	. "github.com/smartystreets/goconvey/convey"
@@ -55,7 +56,11 @@ var rtimeout int
 var maxmins int
 var envVars = os.Environ()
 
+var testLogger = log15.New()
+
 func init() {
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
@@ -81,7 +86,7 @@ func TestJobqueue(t *testing.T) {
 
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
-	config := internal.ConfigLoad("development", true)
+	config := internal.ConfigLoad("development", true, testLogger)
 	managerDBBkFile := config.ManagerDbFile + "_bk" // not config.ManagerDbBkFile in case it is an s3 url
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
@@ -91,6 +96,7 @@ func TestJobqueue(t *testing.T) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    managerDBBkFile,
 		Deployment:      config.Deployment,
+		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
 
@@ -3224,7 +3230,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
 		var server *Server
 		var errs error
-		config := internal.ConfigLoad("development", true)
+		config := internal.ConfigLoad("development", true, testLogger)
 		addr := "localhost:" + config.ManagerPort
 
 		runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
@@ -3263,6 +3269,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			DBFileBackup: config.ManagerDbBkFile,
 			Deployment:   config.Deployment,
 			RunnerCmd:    runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			Logger:       testLogger,
 		}
 
 		Convey("You can connect with an OpenStack scheduler", t, func() {
@@ -3502,7 +3509,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
-	config := internal.ConfigLoad("development", true)
+	config := internal.ConfigLoad("development", true, testLogger)
 	addr := "localhost:" + config.ManagerPort
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
@@ -3512,6 +3519,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
+		Logger:          testLogger,
 	}
 
 	Convey("You can bring up a server configured with an S3 db backup", t, func() {
@@ -3779,7 +3787,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		return
 	}
 
-	config := internal.ConfigLoad("development", true)
+	config := internal.ConfigLoad("development", true, testLogger)
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
@@ -3788,6 +3796,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
+		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
 
@@ -4049,7 +4058,6 @@ func runner() {
 
 	// uncomment and fill out log path to debug "exit status 1" outputs when
 	// running the test:
-	// logfile, errlog := os.OpenFile("/tmp/wrrunnerlog", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	// logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
 	// if errlog == nil {
 	// 	defer logfile.Close()
@@ -4060,7 +4068,7 @@ func runner() {
 		log.Fatal("schedgrp missing")
 	}
 
-	config := internal.ConfigLoad(rdeployment, true)
+	config := internal.ConfigLoad(rdeployment, true, testLogger)
 	addr := rserver
 
 	timeout := 6 * time.Second
@@ -4076,6 +4084,7 @@ func runner() {
 	}
 	defer jq.Disconnect()
 
+	clean := true
 	for {
 		job, err := jq.ReserveScheduled(rtimeoutd, schedgrp)
 		if err != nil {
@@ -4093,7 +4102,9 @@ func runner() {
 			if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal {
 				break
 			} else {
-				log.Fatalf("execute err: %s\n", err)
+				log.Printf("execute err: %s\n", err) // make this a Fatalf if you want to see these in the test output
+				clean = false
+				break
 			}
 		} else {
 			jq.Archive(job, nil)
@@ -4101,6 +4112,8 @@ func runner() {
 	}
 
 	// if everything ran cleanly, create a tmpfile in our tmp dir
-	tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "ok")
-	tmpfile.Close()
+	if clean {
+		tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "ok")
+		tmpfile.Close()
+	}
 }

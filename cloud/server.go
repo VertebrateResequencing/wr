@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +32,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/inconshreveable/log15"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -64,7 +64,6 @@ type Server struct {
 	cancelDestruction chan bool
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
-	debugMode         bool
 	destroyed         bool
 	goneBad           bool
 	location          *time.Location
@@ -76,12 +75,7 @@ type Server struct {
 	usedCores         int
 	usedDisk          int
 	usedRAM           int
-}
-
-func (s *Server) debug(msg string, a ...interface{}) {
-	if s.debugMode {
-		log.Printf(msg, a...)
-	}
+	logger            log15.Logger // (not embedded to make gob happy)
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -93,13 +87,11 @@ func (s *Server) Allocate(cores, ramMB, diskGB int) {
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
-	s.debug("server %s Allocate(%d, %d, %d), used now (%d, %d, %d)\n", s.ID, cores, ramMB, diskGB, s.usedCores, s.usedRAM, s.usedDisk)
+	s.logger.Debug("allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
-		s.debug("server %s Allocate(), on deathrow, will cancel...\n", s.ID)
 		s.cancelDestruction <- true
-		s.debug("server %s Allocate(), on deathrow, cancelled\n", s.ID)
 	}
 }
 
@@ -110,17 +102,19 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	s.usedCores -= cores
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
-	s.debug("server %s Release(%d, %d, %d), used now (%d, %d, %d)\n", s.ID, cores, ramMB, diskGB, s.usedCores, s.usedRAM, s.usedDisk)
+	s.logger.Debug("release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
 	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
-		s.debug("server %s Release(), will initiate countdown\n", s.ID)
+		s.logger.Debug("idle")
 		go func() {
+			defer internal.LogPanic(s.logger, "server release", false)
+
 			s.mutex.Lock()
 			if s.onDeathrow {
 				s.mutex.Unlock()
-				s.debug("server %s Release(), already on death row\n", s.ID)
+				s.logger.Debug("already on deathrow")
 				return
 			}
 			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
@@ -128,23 +122,22 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 			s.mutex.Unlock()
 
 			timeToDie := time.After(s.TTD)
-			s.debug("server %s Release(), will die at %s\n", s.ID, time.Now().Add(s.TTD))
+			s.logger.Debug("entering deathrow", "death", time.Now().Add(s.TTD))
 			for {
 				select {
 				case <-s.cancelDestruction:
 					s.mutex.Lock()
 					s.onDeathrow = false
 					s.mutex.Unlock()
-					s.debug("server %s Release(), destruction cancelled\n", s.ID)
+					s.logger.Debug("cancelled deathrow")
 					return
 				case <-timeToDie:
 					// destroy the server
 					s.mutex.Lock()
 					s.onDeathrow = false
 					s.mutex.Unlock()
-					s.debug("server %s Release(), destruction going ahead...\n", s.ID)
 					err := s.Destroy()
-					s.debug("server %s Release(), destroyed, error = %s\n", s.ID, err)
+					s.logger.Debug("died on deathdrow", "err", err)
 					return
 				}
 			}
@@ -187,14 +180,14 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 	defer s.mutex.Unlock()
 	if s.sshclient == nil {
 		if s.provider.PrivateKey() == "" {
-			log.Printf("resource file %s did not contain the ssh key\n", s.provider.savePath)
+			s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
 			return nil, errors.New("missing ssh key")
 		}
 
 		// parse private key and make config
 		signer, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
 		if err != nil {
-			log.Printf("failure to parse the private key: %s\n", err)
+			s.logger.Error("failed to parse private key", "path", s.provider.savePath, "err", err)
 			return nil, err
 		}
 		sshConfig := &ssh.ClientConfig{
@@ -256,7 +249,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 func (s *Server) SSHSession() (*ssh.Session, error) {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		s.debug("ssh to existing server %s could not be established: %s\n", s.ID, err)
+		s.logger.Debug("ssh could not be established", "err", err)
 		return nil, fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
 	}
 
@@ -270,16 +263,17 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 	go func() {
 		select {
 		case <-time.After(5 * time.Second):
-			s.debug("ssh to existing server %s timed out\n", s.ID)
+			s.logger.Debug("ssh timed out")
 			done <- fmt.Errorf("cloud SSHSession() timed out")
 		case <-worked:
 			return
 		}
 	}()
 	go func() {
+		defer internal.LogPanic(s.logger, "server sshsession", false)
 		session, errf := sshClient.NewSession()
 		if errf != nil {
-			s.debug("ssh to existing server %s failed: %s\n", s.ID, errf)
+			s.logger.Debug("ssh failed", "err", errf)
 			done <- fmt.Errorf("cloud SSHSession() failed: %s", errf.Error())
 			return
 		}
@@ -331,6 +325,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		s.mutex.Unlock()
 	}()
 	go func() {
+		defer internal.LogPanic(s.logger, "server runcmd", false)
+
 		// run the command, returning stdout
 		if background {
 			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
@@ -619,15 +615,12 @@ func (s *Server) Destroy() error {
 	defer s.mutex.Unlock()
 
 	if s.destroyed {
-		s.debug("server %s Destroy(), already destroyed\n", s.ID)
 		return nil
 	}
 
 	// if the server has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
-		s.debug("server %s Destroy(), cancelling auto-destruction...\n", s.ID)
 		s.cancelDestruction <- true
-		s.debug("server %s Destroy(), cancelled auto-destruction\n", s.ID)
 	}
 
 	// if the user is in the middle of RunCmd(), have those return an error now
@@ -644,7 +637,7 @@ func (s *Server) Destroy() error {
 	}
 
 	err := s.provider.DestroyServer(s.ID)
-	s.debug("server %s Destroy() called DestroyServer() and got err %s\n", s.ID, err)
+	s.logger.Debug("destroyed", "err", err)
 	if err != nil {
 		// check if the server exists
 		ok, _ := s.provider.CheckServer(s.ID)

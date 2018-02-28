@@ -31,6 +31,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -39,9 +40,12 @@ func TestREST(t *testing.T) {
 		return
 	}
 
+	testLogger := log15.New()
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
-	config := internal.ConfigLoad("development", true)
+	config := internal.ConfigLoad("development", true, testLogger)
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
@@ -50,6 +54,7 @@ func TestREST(t *testing.T) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbFile + "_bk",
 		Deployment:      config.Deployment,
+		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
 	baseURL := "http://localhost:" + config.ManagerWeb

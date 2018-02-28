@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -31,7 +32,9 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
+	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
 )
 
@@ -188,6 +191,14 @@ most likely to succeed if you use an IP address instead of a host name.`,
 			die("could not get the path to wr: %s", err)
 		}
 
+		// for debug purposes, set up logging to STDERR
+		cloudLogger := log15.New()
+		logLevel := log15.LvlWarn
+		if cloudDebug {
+			logLevel = log15.LvlDebug
+		}
+		cloudLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+
 		// get all necessary cloud resources in place
 		mp, err := strconv.Atoi(config.ManagerPort)
 		if err != nil {
@@ -197,7 +208,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		if err != nil {
 			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
 		}
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), cloudLogger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -273,7 +284,7 @@ most likely to succeed if you use an IP address instead of a host name.`,
 		// ssh to the server, copy over our exe, and start running wr manager
 		// there
 		info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
-		bootstrapOnRemote(provider, server, exe, mp, wp, usingExistingServer)
+		bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer)
 
 		// rather than daemonize and use a go ssh forwarding library or
 		// implement myself using the net package, since I couldn't get them
@@ -345,6 +356,7 @@ and accessible.`,
 		// try and stop the remote manager
 		noManagerMsg := "; deploy first or use --force option"
 		noManagerForcedMsg := "; tearing down anyway - you may lose changes if not backing up the database to S3!"
+		serverHadProblems := false
 		if fmRunning {
 			jq := connect(1 * time.Second)
 			if jq != nil {
@@ -386,6 +398,7 @@ and accessible.`,
 					msg := "there was an error trying to shut down the remote wr manager"
 					if forceTearDown {
 						warn(msg + noManagerForcedMsg)
+						serverHadProblems = true
 					} else {
 						die(msg)
 					}
@@ -394,6 +407,7 @@ and accessible.`,
 				msg := "the remote wr manager could not be connected to in order to shut it down"
 				if forceTearDown {
 					warn(msg + noManagerForcedMsg)
+					serverHadProblems = true
 				} else {
 					die(msg + noManagerMsg)
 				}
@@ -401,6 +415,7 @@ and accessible.`,
 		} else {
 			if forceTearDown {
 				warn("the deploy port forwarding is not running, so the remote manager could not be stopped" + noManagerForcedMsg)
+				serverHadProblems = true
 			} else {
 				die("the deploy port forwarding is not running, so can't safely teardown" + noManagerMsg)
 			}
@@ -411,7 +426,31 @@ and accessible.`,
 		// shutdown message doing things this way, but ok?...
 		headNode := provider.HeadNode()
 		if headNode != nil && headNode.Alive() {
-			headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), config.ManagerLogFile+"."+providerName)
+			cloudLogFilePath := config.ManagerLogFile + "." + providerName
+			errf := headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
+
+			// display any crit lines in that log file
+			if errf == nil {
+				f, errf := os.Open(cloudLogFilePath)
+				if errf == nil {
+					explained := false
+					scanner := bufio.NewScanner(f)
+					for scanner.Scan() {
+						line := scanner.Text()
+						if strings.Contains(line, "lvl=crit") {
+							if !explained {
+								warn("looks like the manager on the remote server suffered critical errors:")
+								explained = true
+							}
+							fmt.Println(line)
+						}
+					}
+
+					if serverHadProblems {
+						info("the remote manager log has been saved to %s", cloudLogFilePath)
+					}
+				}
+			}
 		}
 
 		// teardown cloud resources we created
@@ -445,7 +484,7 @@ func init() {
 	cloudCmd.AddCommand(cloudTearDownCmd)
 
 	// flags specific to these sub-commands
-	defaultConfig := internal.DefaultConfig()
+	defaultConfig := internal.DefaultConfig(appLogger)
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", defaultConfig.CloudOS, "prefix of name, or ID, of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", defaultConfig.CloudUser, "username needed to log in to the OS image specified by --os")
@@ -465,7 +504,7 @@ func init() {
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 }
 
-func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, wrMayHaveStarted bool) {
+func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool) {
 	// upload ourselves to /tmp
 	remoteExe := filepath.Join(cloudBinDir, "wr")
 	err := server.UploadFile(exe, remoteExe)
@@ -601,21 +640,48 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// expected, and we don't get here.
 			m = -1
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), wrEnvFileName)
-
+		debugStr := ""
 		if cloudDebug {
-			mCmd += " --cloud_debug"
+			debugStr = " --debug"
 		}
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s'%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), debugStr, wrEnvFileName)
 
 		_, _, err = server.RunCmd(mCmd, false)
 		if err != nil {
+			warn("failed to start wr manager on the remote server: %s", err)
+
 			// copy over any manager logs that got created locally (ignore
 			// errors, and overwrite any existing file)
-			server.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), config.ManagerLogFile+"."+providerName)
+			cloudLogFilePath := config.ManagerLogFile + "." + providerName
+			errf := server.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
 
-			// now teardown and die
+			// display any non-info lines in that log file
+			if errf == nil {
+				f, errf := os.Open(cloudLogFilePath)
+				if errf == nil {
+					explained := false
+					scanner := bufio.NewScanner(f)
+					for scanner.Scan() {
+						line := scanner.Text()
+						if !strings.Contains(line, "lvl=info") {
+							if !explained {
+								warn("wr manager on the remote server said:")
+								explained = true
+							}
+							fmt.Println(line)
+						}
+					}
+				}
+			}
+
+			warn("To debug further you can try to ssh to this server using `ssh -i %s %s@%s` and see if you can run `%s`, seeing what appears in the logs there in %s", keyPath, osUsername, server.IP, mCmd, "~/.wr_"+config.Deployment+"/log")
+
+			// now teardown and die, once the user confirms
+			warn("Once you're done debugging, hit return to teardown")
+			var response string
+			fmt.Scanln(&response)
 			provider.TearDown()
-			die("failed to start wr manager on the remote server: %s", err)
+			die("toredown following failure to start the manager remotely")
 		}
 
 		// wait a few seconds for the manager to start listening on its ports

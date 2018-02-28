@@ -23,16 +23,15 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
-	"fmt"
-	"log"
 	"math"
 	"os/exec"
 	"runtime"
 	"sync"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/shirou/gopsutil/mem"
+	"github.com/inconshreveable/log15"
 )
 
 const (
@@ -90,7 +89,7 @@ type local struct {
 	cancelRunCmdFunc cancelCmdRunner
 	autoProcessing   bool
 	stopAuto         chan bool
-	debugMode        bool
+	log15.Logger
 }
 
 // ConfigLocal represents the configuration options required by the local
@@ -114,11 +113,13 @@ type job struct {
 
 // initialize finds out about the local machine. Compatible with amd64 archs
 // only!
-func (s *local) initialize(config interface{}) error {
+func (s *local) initialize(config interface{}, logger log15.Logger) error {
 	s.config = config.(*ConfigLocal)
+	s.Logger = logger.New("scheduler", "local")
+
 	s.maxCores = runtime.NumCPU()
 	var err error
-	s.maxRAM, err = s.procMeminfoMBs()
+	s.maxRAM, err = internal.ProcMeminfoMBs()
 	if err != nil {
 		return err
 	}
@@ -139,19 +140,6 @@ func (s *local) initialize(config interface{}) error {
 	}
 
 	return err
-}
-
-// procMeminfoMBs uses gopsutil (amd64 freebsd, linux, windows, darwin, openbds
-// only!) to find the total number of MBs of memory physically installed on the
-// current system.
-func (s *local) procMeminfoMBs() (int, error) {
-	v, err := mem.VirtualMemory()
-	if err != nil {
-		return 0, err
-	}
-
-	// convert bytes to MB
-	return int((v.Total / 1024) / 1024), err
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
@@ -250,7 +238,7 @@ func (s *local) processQueue() error {
 		count = j.count
 
 		running := s.running[key]
-		s.debug("processQueue() needs %d [%s] running, currently %d\n", count, cmd, running)
+		s.Debug("processQueue running", "needs", count, "current", running, "cmd", cmd)
 		if count < running {
 			// "running" things may not actually be running the cmd yet, so tell
 			// extraneous ones to cancel and not start running
@@ -265,7 +253,7 @@ func (s *local) processQueue() error {
 
 		// now see if there's remaining capacity to run the job
 		canCount = s.canCountFunc(req)
-		s.debug("processQueue() can run %d of these commands\n", canCount)
+		s.Debug("processQueue canCount", "can", canCount)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -285,13 +273,15 @@ func (s *local) processQueue() error {
 	}
 
 	// start running what we can
-	s.debug("processQueue() will call runCmdFunc %d times\n", canCount)
+	s.Debug("processQueue runCmdFunc", "count", canCount)
 	for i := 0; i < canCount; i++ {
 		s.ram += req.RAM
 		s.cores += req.Cores
 		s.running[key]++
 
 		go func() {
+			defer internal.LogPanic(s.Logger, "runCmd", true)
+
 			err := s.runCmdFunc(cmd, req)
 			s.mutex.Lock()
 			s.ram -= req.RAM
@@ -312,7 +302,7 @@ func (s *local) processQueue() error {
 			} else if err.Error() != standinNotNeeded {
 				// users are notified of relevant errors during runCmd; here we
 				// just debug log everything
-				s.debug("jobqueue scheduler runCmd error: %s\n", err)
+				s.Debug("runCmd error", "err", err)
 			}
 			s.mutex.Unlock()
 			if stopAuto {
@@ -353,7 +343,7 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	err := ec.Start()
 	if err != nil {
-		fmt.Println(err) // *** log this properly somewhere...
+		s.Error("runCmd start", "cmd", cmd, "err", err)
 		return err
 	}
 
@@ -366,7 +356,7 @@ func (s *local) runCmd(cmd string, req *Requirements) error {
 
 	err = ec.Wait()
 	if err != nil {
-		fmt.Println(err) // *** log this properly somewhere...
+		s.Error("runCmd wait", "cmd", cmd, "err", err)
 	}
 
 	s.mutex.Lock()
@@ -401,6 +391,8 @@ func (s *local) startAutoProcessing() {
 
 	s.stopAuto = make(chan bool)
 	go func() {
+		defer internal.LogPanic(s.Logger, "auto processQueue", false)
+
 		ticker := time.NewTicker(s.stateUpdateFreq)
 		for {
 			select {
@@ -465,10 +457,4 @@ func (s *local) cleanup() {
 	defer s.mutex.Unlock()
 	s.cleaned = true
 	s.queue.Destroy()
-}
-
-func (s *local) debug(msg string, a ...interface{}) {
-	if s.debugMode {
-		log.Printf(msg, a...)
-	}
 }

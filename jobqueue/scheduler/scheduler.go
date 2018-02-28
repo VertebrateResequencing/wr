@@ -48,7 +48,9 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/dgryski/go-farm"
+	"github.com/inconshreveable/log15"
 )
 
 const (
@@ -140,15 +142,15 @@ type BadServerCallBack func(server *cloud.Server)
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize(config interface{}) error                     // do any initial set up to be able to use the job scheduler
-	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
-	busy() bool                                              // achieve the aims of Busy()
-	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
-	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
-	hostToID(host string) string                             // achieve the aims of HostToID()
-	setMessageCallBack(MessageCallBack)                      // achieve the aims of SetMessageCallBack()
-	setBadServerCallBack(BadServerCallBack)                  // achieve the aims of SetBadServerCallBack()
-	cleanup()                                                // do any clean up once you've finished using the job scheduler
+	initialize(config interface{}, logger log15.Logger) error // do any initial set up to be able to use the job scheduler
+	schedule(cmd string, req *Requirements, count int) error  // achieve the aims of Schedule()
+	busy() bool                                               // achieve the aims of Busy()
+	reserveTimeout() int                                      // achieve the aims of ReserveTimeout()
+	maxQueueTime(req *Requirements) time.Duration             // achieve the aims of MaxQueueTime()
+	hostToID(host string) string                              // achieve the aims of HostToID()
+	setMessageCallBack(MessageCallBack)                       // achieve the aims of SetMessageCallBack()
+	setBadServerCallBack(BadServerCallBack)                   // achieve the aims of SetBadServerCallBack()
+	cleanup()                                                 // do any clean up once you've finished using the job scheduler
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -158,13 +160,18 @@ type Scheduler struct {
 	Name    string
 	limiter map[string]int
 	sync.Mutex
+	log15.Logger
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
 // Possible names so far are "lsf", "local" and "openstack". You must also
 // provide a config struct appropriate for your chosen scheduler, eg. for the
 // local scheduler you will provide a ConfigLocal.
-func New(name string, config interface{}) (*Scheduler, error) {
+//
+// Providing a logger allows for debug messages to be logged somewhere, along
+// with any "harmless" or unreturnable errors. If not supplied, we use a default
+// logger that discards all log messages.
+func New(name string, config interface{}, logger ...log15.Logger) (*Scheduler, error) {
 	var s *Scheduler
 	switch name {
 	case "lsf":
@@ -177,9 +184,18 @@ func New(name string, config interface{}) (*Scheduler, error) {
 		return nil, Error{name, "New", ErrBadScheduler}
 	}
 
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
+	} else {
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
+	s.Logger = l
+
 	s.Name = name
 	s.limiter = make(map[string]int)
-	err := s.impl.initialize(config)
+	err := s.impl.initialize(config, l)
 
 	return s, err
 }
@@ -230,7 +246,13 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {
 		if newcount != count {
-			go s.Schedule(cmd, req, newcount)
+			go func() {
+				defer internal.LogPanic(s.Logger, "schedule recall", true)
+				errf := s.Schedule(cmd, req, newcount)
+				if errf != nil {
+					s.Error("schedule recall", "err", err)
+				}
+			}()
 		}
 		delete(s.limiter, cmd)
 	}

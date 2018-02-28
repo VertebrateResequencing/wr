@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
@@ -49,6 +50,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
 	"github.com/hashicorp/go-multierror"
+	"github.com/inconshreveable/log15"
 	"github.com/jpillora/backoff"
 	"golang.org/x/crypto/ssh"
 )
@@ -94,9 +96,10 @@ type openstackp struct {
 	spawnTimes        ewma.MovingAverage
 	spawnTimesVolume  ewma.MovingAverage
 	tenantID          string
+	log15.Logger
 }
 
-// requiredEnv returns envs that are definitely requried.
+// requiredEnv returns envs that are definitely required.
 func (p *openstackp) requiredEnv() []string {
 	return openstackReqEnvs[:]
 }
@@ -108,7 +111,9 @@ func (p *openstackp) maybeEnv() []string {
 
 // initialize uses our required environment variables to authenticate with
 // OpenStack and create some clients we will use in the other methods.
-func (p *openstackp) initialize() error {
+func (p *openstackp) initialize(logger log15.Logger) error {
+	p.Logger = logger.New("cloud", "openstack")
+
 	// authenticate
 	opts, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
@@ -625,6 +630,8 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	// doesn't always work, so we roll our own
 	waitForActive := make(chan error)
 	go func() {
+		defer internal.LogPanic(p.Logger, "spawn", false)
+
 		var timeoutS float64
 		if createdVolume {
 			timeoutS = p.spawnTimesVolume.Value() * 4

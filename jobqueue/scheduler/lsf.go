@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/inconshreveable/log15"
 )
 
 // lsf is our implementer of scheduleri
@@ -45,6 +46,7 @@ type lsf struct {
 	queues             map[string]map[string]int
 	sortedqs           map[int][]string
 	sortedqKeys        []int
+	log15.Logger
 }
 
 // ConfigLSF represents the configuration options required by the LSF scheduler.
@@ -59,8 +61,9 @@ type ConfigLSF struct {
 }
 
 // initialize finds out about lsf's hosts and queues
-func (s *lsf) initialize(config interface{}) error {
+func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	s.config = config.(*ConfigLSF)
+	s.Logger = logger.New("scheduler", "lsf")
 
 	// set up what should be global vars, but we don't really want these taking
 	// up space if the user never uses LSF
@@ -450,6 +453,8 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	if matches := s.bsubRegex.FindStringSubmatch(string(bsubout)); len(matches) == 2 {
 		ready := make(chan bool, 1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "lsf scheduling", true)
+
 			limit := time.After(10 * time.Second)
 			ticker := time.NewTicker(100 * time.Millisecond)
 			for {

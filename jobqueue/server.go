@@ -24,12 +24,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -42,6 +40,7 @@ import (
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
+	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
 )
 
@@ -208,6 +207,7 @@ type Server struct {
 	timings         map[string]*timingAvg
 	tmutex          sync.Mutex
 	ssmutex         sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
+	log15.Logger
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -263,22 +263,57 @@ type ServerConfig struct {
 	// in which case it will do its best to pick correctly. (This is only a
 	// possible issue if you have multiple network interfaces.)
 	CIDR string
+
+	// Logger is a logger object that will be used to log uncaught errors and
+	// debug statements. "Uncought" errors are all errors generated during
+	// operation that either shouldn't affect the success of operations, and can
+	// be ignored (logged at the Warn level, and which is why the errors are not
+	// returned by the methods generating them), or errors that could not be
+	// returned (logged at the Error level, eg. generated during a go routine,
+	// such as errors by the server handling a particular client request).
+	// We attempt to recover from panics during server operation and log these
+	// at the Crit level.
+	//
+	// If your logger is levelled and set to the debug level, you will also get
+	// information tracking the inner workings of the server.
+	//
+	// If this is unset, nothing is logged (defaults to a logger using a
+	// log15.DiscardHandler()).
+	Logger log15.Logger
 }
 
 // Serve is for use by a server executable and makes it start listening on
 // localhost at the configured port for Connect()ions from clients, and then
-// handles those clients. It returns a *Server that you will typically call
-// Block() on to block until until your executable receives a SIGINT or SIGTERM,
-// or you call Stop(), at which point the queues will be safely closed (you'd
-// probably just exit at that point). The possible errors from Serve() will be
-// related to not being able to start up at the supplied address; errors
-// encountered while dealing with clients are logged but otherwise ignored. If
-// it creates a db file or recreates one from backup, it will say what it did in
-// the returned msg string. It also spawns your runner clients as needed,
-// running them via the configured job scheduler, using the configured shell. It
-// determines the command line to execute for your runner client from the
-// configured RunnerCmd string you supplied.
+// handles those clients.
+//
+// It returns a *Server that you will typically call Block() on to block until
+// until your executable receives a SIGINT or SIGTERM, or you call Stop(), at
+// which point the queues will be safely closed (you'd probably just exit at
+// that point).
+//
+// The possible errors from Serve() will be related to not being able to start
+// up at the supplied address; errors encountered while dealing with clients are
+// logged but otherwise ignored. If it creates a db file or recreates one from
+// backup, it will say what it did in the returned msg string.
+//
+// It also spawns your runner clients as needed, running them via the configured
+// job scheduler, using the configured shell. It determines the command line to
+// execute for your runner client from the configured RunnerCmd string you
+// supplied.
 func Serve(config ServerConfig) (s *Server, msg string, err error) {
+	// if a logger was configured we will log debug statements and "harmless"
+	// errors not worth returning (or not possible to return), along with
+	// panics. Otherwise we create a default logger that discards all log
+	// attempts.
+	serverLogger := config.Logger
+	if serverLogger == nil {
+		serverLogger = log15.New()
+		serverLogger.SetHandler(log15.DiscardHandler())
+	} else {
+		serverLogger = serverLogger.New()
+	}
+	defer internal.LogPanic(serverLogger, "jobqueue serve", true)
+
 	// for security purposes we need to know who will be allowed to access us
 	// in the future
 	owner, err := internal.Username()
@@ -349,13 +384,13 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	// we will spawn runner clients via the requested job scheduler
-	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig)
+	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig, serverLogger)
 	if err != nil {
 		return s, msg, err
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment)
+	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
 	if err != nil {
 		return s, msg, err
 	}
@@ -381,6 +416,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		schedCaster:     bcast.NewGroup(),
 		schedIssues:     make(map[string]*schedulerIssue),
 		timings:         make(map[string]*timingAvg),
+		Logger:          serverLogger,
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
@@ -411,7 +447,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	s.stopServing = stopServing
 	go func() {
 		// log panics and die
-		defer s.logPanic("jobqueue serving", true)
+		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
 
 		for {
 			select {
@@ -425,7 +461,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 					inShutdown := s.killRunners
 					s.krmutex.RUnlock()
 					if !inShutdown && rerr != mangos.ErrRecvTimeout {
-						log.Println(rerr)
+						s.Error("Server socket Receive error", "err", rerr)
 					}
 					continue
 				}
@@ -433,7 +469,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 				// parse the request, do the desired work and respond to the client
 				go func() {
 					// log panics and continue
-					defer s.logPanic("jobqueue server client handling", false)
+					defer internal.LogPanic(s.Logger, "jobqueue server client handling", false)
 
 					herr := s.handleRequest(m)
 					if ServerLogClientErrors && herr != nil {
@@ -441,7 +477,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 						inShutdown := s.killRunners
 						s.krmutex.RUnlock()
 						if !inShutdown {
-							log.Println(herr)
+							s.Error("Server handle client request error", "err", herr)
 						}
 					}
 				}()
@@ -449,7 +485,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		}
 	}()
 	go func() {
-		defer s.logPanic("jobqueue signal handling", true)
+		defer internal.LogPanic(s.Logger, "jobqueue signal handling", true)
 		select {
 		case sig := <-sigs:
 			s.shutdown()
@@ -473,7 +509,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	ready := make(chan bool)
 	go func() {
 		// log panics and die
-		defer s.logPanic("jobqueue web server", true)
+		defer internal.LogPanic(s.Logger, "jobqueue web server", true)
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", webInterfaceStatic)
@@ -609,6 +645,8 @@ func (s *Server) Drain() error {
 	s.drain = true
 	s.ServerInfo.Mode = ServerModeDrain
 	go func() {
+		defer internal.LogPanic(s.Logger, "jobqueue drain", true)
+
 		ticker := time.NewTicker(1 * time.Second)
 	TICKS:
 		for range ticker.C {
@@ -687,6 +725,8 @@ func (s *Server) createQueue() {
 	// package will only call this once at a time, so we don't need to worry
 	// about locking across the whole function.
 	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+		defer internal.LogPanic(s.Logger, "jobqueue ready added callback", true)
+
 		s.ssmutex.RLock()
 		if s.drain || !s.up {
 			s.ssmutex.RUnlock()
@@ -800,7 +840,10 @@ func (s *Server) createQueue() {
 			for group := range s.sgroupcounts {
 				if _, needed := groups[group]; !needed && !stillRunning[group] {
 					s.sgroupcounts[group] = 0
-					go s.clearSchedulerGroup(group)
+					go func(group string) {
+						defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
+						s.clearSchedulerGroup(group)
+					}(group)
 				}
 			}
 			for group := range s.sgrouptrigs {
@@ -837,7 +880,10 @@ func (s *Server) createQueue() {
 				}
 
 				s.sgcmutex.Unlock()
-				go s.scheduleRunners(group)
+				go func(group string) {
+					defer internal.LogPanic(s.Logger, "jobqueue schedule runners", true)
+					s.scheduleRunners(group)
+				}(group)
 			}
 
 			// in the event that the runners we spawn can't reach us
@@ -855,6 +901,8 @@ func (s *Server) createQueue() {
 				s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
 
 				go func() {
+					defer internal.LogPanic(s.Logger, "jobqueue rac checking", true)
+
 					<-s.racCheckTimer.C
 					s.racmutex.Lock()
 					s.racChecking = false
@@ -1336,10 +1384,11 @@ func (s *Server) scheduleRunners(group string) {
 			if problem {
 				// log the error *** and inform (by email) the user about this
 				// problem if it's persistent, once per hour (day?)
-				log.Println(err)
+				s.Warn("Server scheduling runners error", "err", err)
 
 				// retry the schedule in a while
 				go func() {
+					defer internal.LogPanic(s.Logger, "jobqueue schedule runners retry", true)
 					<-time.After(1 * time.Minute)
 					s.scheduleRunners(group)
 				}()
@@ -1478,19 +1527,4 @@ func (s *Server) shutdown() {
 	s.krmutex.Lock()
 	s.killRunners = false
 	s.krmutex.Unlock()
-}
-
-// logPanic is for (ideally temporary) use in a go routine, deferred at the
-// start of it, to figure out what is causing runtime panics that are killing
-// the server. If the die bool is true, the program exits, otherwise it
-// continues, after logging the error message and stack trace (to whatever
-// log.SetOutput is set to). Desc string should be used to describe briefly what
-// the goroutine you call this in does.
-func (s *Server) logPanic(desc string, die bool) {
-	if err := recover(); err != nil {
-		log.Printf("internal error in %s: %s\n%s\n", desc, err, debug.Stack())
-		if die {
-			os.Exit(1)
-		}
-	}
 }

@@ -33,17 +33,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 var maxCPU = runtime.NumCPU()
 var otherReqs = make(map[string]string)
 
+var testLogger = log15.New()
+
+func init() {
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+}
+
 func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", &ConfigLocal{"bash", 1 * time.Second})
+		s, err := New("local", &ConfigLocal{"bash", 1 * time.Second}, testLogger)
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -238,7 +245,7 @@ func TestLSF(t *testing.T) {
 	}
 	if err != nil {
 		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err := New("lsf", &ConfigLSF{"development", "bash"})
+			_, err := New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
 			So(err, ShouldNotBeNil)
 		})
 		return
@@ -246,7 +253,7 @@ func TestLSF(t *testing.T) {
 
 	host, _ := os.Hostname()
 	Convey("You can get a new lsf scheduler", t, func() {
-		s, err := New("lsf", &ConfigLSF{"development", "bash"})
+		s, err := New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -423,7 +430,7 @@ func TestOpenstack(t *testing.T) {
 	}
 	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
-			_, err := New("openstack", config)
+			_, err := New("openstack", config, testLogger)
 			So(err, ShouldNotBeNil)
 		})
 		return
@@ -441,7 +448,7 @@ func TestOpenstack(t *testing.T) {
 		}
 		defer os.RemoveAll(tmpdir)
 		config.SavePath = filepath.Join(tmpdir, "os_resources")
-		s, errn := New("openstack", config)
+		s, errn := New("openstack", config, testLogger)
 		So(errn, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()

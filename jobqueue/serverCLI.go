@@ -23,10 +23,10 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
@@ -169,6 +169,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						itemerrch := make(chan *itemErr, 1)
 						ticker := time.NewTicker(ServerReserveTicker)
 						go func() {
+							defer internal.LogPanic(s.Logger, "reserve", true)
+
 							for {
 								select {
 								case <-ticker.C:
@@ -311,6 +313,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					key := job.key()
 					job.State = JobStateComplete
 					job.FailReason = ""
+					sgroup := job.schedulerGroup
+					rgroup := job.RepGroup
 					job.Unlock()
 					err := s.db.archiveJob(key, job)
 					if err != nil {
@@ -323,11 +327,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							qerr = err.Error()
 						} else {
 							s.rpl.Lock()
-							if m, exists := s.rpl.lookup[job.RepGroup]; exists {
+							if m, exists := s.rpl.lookup[rgroup]; exists {
 								delete(m, key)
 							}
 							s.rpl.Unlock()
-							go s.decrementGroupCount(job.schedulerGroup)
+							go func(group string) {
+								defer internal.LogPanic(s.Logger, "jarchive", true)
+								s.decrementGroupCount(group)
+							}(sgroup)
 						}
 					}
 				}
@@ -533,7 +540,7 @@ func (s *Server) logTimings(desc string, took time.Duration) {
 	avg := s.timings[desc].store(took.Seconds())
 	s.tmutex.Unlock()
 	if avg > 0 {
-		log.Printf("timing for %s: %f\n", desc, avg)
+		s.Info("timing", "desc", desc, "avg", avg)
 	}
 }
 
