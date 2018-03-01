@@ -77,6 +77,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			s.ssmutex.RUnlock()
 			sr = &serverResponse{SInfo: si}
 		case "backup":
+			s.Debug("backup requested")
 			// make an io.Writer that writes to a byte slice, so we can return
 			// the db as that
 			var b bytes.Buffer
@@ -88,6 +89,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sr = &serverResponse{DB: b.Bytes()}
 			}
 		case "drain":
+			s.Debug("drain requested")
 			err := s.Drain()
 			if err != nil {
 				srerr = ErrInternalError
@@ -96,6 +98,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sr = &serverResponse{SStats: s.GetServerStats()}
 			}
 		case "shutdown":
+			s.Debug("shutdown requested")
 			err := s.Stop()
 			if err != nil {
 				srerr = ErrInternalError
@@ -120,6 +123,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							srerr = thisSrerr
 							qerr = err.Error()
 						} else {
+							s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
 							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
 						}
 					}
@@ -217,6 +221,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sjob.EndTime = tnil
 					sjob.PeakRAM = 0
 					sjob.Exitcode = -1
+					sgroup := sjob.schedulerGroup
 					sjob.Unlock()
 
 					s.q.SetDelay(item.Key, ClientReleaseDelay)
@@ -225,6 +230,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					// we don't want taking up memory here) for the client
 					job := s.itemToJob(item, false, true)
 					sr = &serverResponse{Job: job}
+					s.Debug("reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
 				}
 			} // else we'll return nothing, as if there were no jobs in the queue
 		case "jstart":
@@ -331,6 +337,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 								delete(m, key)
 							}
 							s.rpl.Unlock()
+							s.Debug("completed job", "cmd", job.Cmd, "schedGrp", sgroup)
 							go func(group string) {
 								defer internal.LogPanic(s.Logger, "jarchive", true)
 								s.decrementGroupCount(group)
@@ -358,6 +365,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					job.updateRecsAfterFailure()
 				}
 				if job.UntilBuried <= 0 {
+					sgroup := job.schedulerGroup
 					job.Unlock()
 					err := s.q.Bury(item.Key)
 					if err != nil {
@@ -366,8 +374,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					} else {
 						s.decrementGroupCount(job.getSchedulerGroup())
 						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+						s.Debug("buried job", "cmd", job.Cmd, "schedGrp", sgroup)
 					}
 				} else {
+					sgroup := job.schedulerGroup
 					job.Unlock()
 					err := s.q.Release(item.Key)
 					if err != nil {
@@ -376,6 +386,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					} else {
 						s.decrementGroupCount(job.getSchedulerGroup())
 						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+						s.Debug("released job", "cmd", job.Cmd, "schedGrp", sgroup)
 					}
 				}
 			}
@@ -388,6 +399,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.updateAfterExit(cr.JobEndState)
 				job.Lock()
 				job.FailReason = cr.Job.FailReason
+				sgroup := job.schedulerGroup
 				job.Unlock()
 				err := s.q.Bury(item.Key)
 				if err != nil {
@@ -396,6 +408,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				} else {
 					s.decrementGroupCount(job.getSchedulerGroup())
 					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+					s.Debug("buried job", "cmd", job.Cmd, "schedGrp", sgroup)
 				}
 			}
 		case "jkick":
@@ -416,6 +429,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						job := item.Data.(*Job)
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
+						s.Debug("unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
 						job.Unlock()
 						kicked++
 					}
@@ -448,6 +462,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
 					}
 				}
+				s.Debug("deleted jobs", "count", deleted)
 				sr = &serverResponse{Existed: deleted}
 			}
 		case "jkill":
@@ -468,6 +483,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						killable++
 					}
 				}
+				s.Debug("killed jobs", "count", killable)
 				sr = &serverResponse{Existed: killable}
 			}
 		case "getbc":
