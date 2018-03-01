@@ -151,8 +151,12 @@ If you're concerned about security, you can immediately 'unset OS_PASSWORD'
 after doing a deploy. (You'll need to set it again before doing a teardown.)
 
 Note that when specifying the OpenStack environment variable 'OS_AUTH_URL', it
-must work from within an OpenStack server running your chosen OS image. This is
-most likely to succeed if you use an IP address instead of a host name.`,
+must work from within an OpenStack server running your chosen OS image. For
+http:// urls, this is most likely to succeed if you use an IP address instead of
+a domain name. For https:// urls you'll need a domain name, and will have to
+ask your administrator for the appropriate --network_dns settings (or clouddns
+config option) to use; the DNS must be able to resolve the domain name from
+within OpenStack.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if providerName == "" {
 			die("--provider is required")
