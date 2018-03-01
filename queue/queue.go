@@ -564,7 +564,9 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 	var changedFrom SubQueue
 	var addedReady bool
+	item.mutex.Lock()
 	item.Data = data
+	item.mutex.Unlock()
 	if len(deps) == 1 {
 		// check if dependencies actually changed
 		oldDeps := make(map[string]bool)
@@ -600,9 +602,12 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 			// if we now have unresolved dependencies and we're not in dependent
 			// state, switch to dependent queue
-			if item.state != ItemStateDependent {
+			item.mutex.RLock()
+			iState := item.state
+			item.mutex.RUnlock()
+			if iState != ItemStateDependent {
 				pushToDep := true
-				switch item.state {
+				switch iState {
 				case ItemStateDelay:
 					queue.delayQueue.remove(item)
 					item.switchDelayDependent()
@@ -633,25 +638,37 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		}
 	}
 
+	item.mutex.Lock()
 	if item.delay != delay {
 		item.delay = delay
 		if item.state == ItemStateDelay {
+			item.mutex.Unlock()
 			item.restart()
 			queue.delayQueue.update(item)
+		} else {
+			item.mutex.Unlock()
 		}
 	} else if item.priority != priority || item.ReserveGroup != reserveGroup || addedReady {
 		item.priority = priority
 		oldGroup := item.ReserveGroup
 		item.ReserveGroup = reserveGroup
 		if item.state == ItemStateReady {
+			item.mutex.Unlock()
 			queue.readyQueue.update(item, oldGroup)
+		} else {
+			item.mutex.Unlock()
 		}
 	} else if item.ttr != ttr {
 		item.ttr = ttr
 		if item.state == ItemStateRun {
+			item.mutex.Unlock()
 			item.touch()
 			queue.runQueue.update(item)
+		} else {
+			item.mutex.Unlock()
 		}
+	} else {
+		item.mutex.Unlock()
 	}
 
 	if addedReady {
@@ -683,9 +700,11 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) error {
 		return Error{queue.Name, "SetDelay", key, ErrNotFound}
 	}
 
+	item.mutex.Lock()
 	if item.delay != delay {
 		item.delay = delay
 		if item.state == ItemStateDelay {
+			item.mutex.Unlock()
 			item.restart()
 			queue.delayQueue.update(item)
 			queue.mutex.Unlock()
@@ -693,6 +712,7 @@ func (queue *Queue) SetDelay(key string, delay time.Duration) error {
 			return nil
 		}
 	}
+	item.mutex.Unlock()
 	queue.mutex.Unlock()
 	return nil
 }
@@ -711,12 +731,18 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) error {
 		return Error{queue.Name, "SetReserveGroup", key, ErrNotFound}
 	}
 
+	item.mutex.Lock()
 	oldGroup := item.ReserveGroup
 	if oldGroup != newGroup {
 		item.ReserveGroup = newGroup
 		if item.state == ItemStateReady {
+			item.mutex.Unlock()
 			queue.readyQueue.update(item, oldGroup)
+		} else {
+			item.mutex.Unlock()
 		}
+	} else {
+		item.mutex.Unlock()
 	}
 	queue.mutex.Unlock()
 	return nil
