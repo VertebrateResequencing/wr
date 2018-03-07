@@ -219,7 +219,10 @@ func (s *local) processQueue() error {
 	var toRelease []string
 	defer func() {
 		for _, key := range toRelease {
-			s.queue.Release(key)
+			errr := s.queue.Release(key)
+			if errr != nil {
+				s.Warn("processQueue item release failed", "err", errr)
+			}
 		}
 	}()
 	for {
@@ -294,7 +297,10 @@ func (s *local) processQueue() error {
 			if err == nil {
 				j.count--
 				if j.count <= 0 {
-					s.queue.Remove(key)
+					errr := s.queue.Remove(key)
+					if errr != nil {
+						s.Warn("processQueue item removal failed", "err", errr)
+					}
 					if s.queue.Stats().Items == 0 {
 						stopAuto = true
 					}
@@ -308,7 +314,10 @@ func (s *local) processQueue() error {
 			if stopAuto {
 				s.stopAutoProcessing()
 			}
-			s.processQueue()
+			err = s.processQueue()
+			if err != nil {
+				s.Error("processQueue recall failed", "err", err)
+			}
 		}()
 	}
 
@@ -397,7 +406,10 @@ func (s *local) startAutoProcessing() {
 		for {
 			select {
 			case <-ticker.C:
-				s.processQueue()
+				err := s.processQueue()
+				if err != nil {
+					s.Error("Auomated processQueue call failed", "err", err)
+				}
 				continue
 			case <-s.stopAuto:
 				ticker.Stop()
@@ -456,5 +468,8 @@ func (s *local) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.cleaned = true
-	s.queue.Destroy()
+	err := s.queue.Destroy()
+	if err != nil {
+		s.Warn("local schedular cleanup failed", "err", err)
+	}
 }

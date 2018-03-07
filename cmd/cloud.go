@@ -233,6 +233,7 @@ within OpenStack.`,
 		fwPidPath := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
 		var server *cloud.Server
 		usingExistingServer := false
+		alreadyUp := false
 		servers := provider.Servers()
 		for _, thisServer := range servers {
 			if thisServer.Alive() {
@@ -243,25 +244,43 @@ within OpenStack.`,
 				// see if this server is already running wr manager by trying
 				// to re-establish our port forwarding, which may have failed
 				// due to temporary networking issues
-				startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
-				startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
+				err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
+				if err != nil {
+					warn("could not reestablish port forwarding to server %s, port %s", server.IP, mp)
+				}
+				err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
+				if err != nil {
+					warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
+				}
 				jq = connect(2 * time.Second)
 				if jq != nil {
 					info("reconnected to existing wr manager on %s", sAddr(jq.ServerInfo))
-					info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
+					alreadyUp = true
+				} else {
+					// clean up any existing or partially failed forwarding
+					pid, running := checkProcess(fmPidPath)
+					if running {
+						errk := killProcess(pid)
+						if errk != nil {
+							warn("failed to kill ssh forwarder pid %d", pid)
+						}
+					}
+					errr := os.Remove(fmPidPath)
+					if errr != nil && !os.IsNotExist(errr) {
+						warn("failed to remove forwarder pid file %s: %s", fmPidPath, errr)
+					}
+					pid, running = checkProcess(fwPidPath)
+					if running {
+						errk := killProcess(pid)
+						if errk != nil {
+							warn("failed to kill ssh forwarder pid %d", pid)
+						}
+					}
+					errr = os.Remove(fwPidPath)
+					if errr != nil && !os.IsNotExist(errr) {
+						warn("failed to remove forwarder pid file %s: %s", fwPidPath, errr)
+					}
 				}
-
-				// clean up any existing or partially failed forwarding
-				pid, running := checkProcess(fmPidPath)
-				if running {
-					killProcess(pid)
-				}
-				os.Remove(fmPidPath)
-				pid, running = checkProcess(fwPidPath)
-				if running {
-					killProcess(pid)
-				}
-				os.Remove(fwPidPath)
 
 				break
 			}
@@ -270,51 +289,54 @@ within OpenStack.`,
 			info("please wait while a server is spawned on %s...", providerName)
 			flavor, errf := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
 			if errf != nil {
-				provider.TearDown()
+				teardown(provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
 			}
 			server, errf = provider.Spawn(osPrefix, osUsername, flavor.ID, osDisk, 0*time.Second, true)
 			if errf != nil {
-				provider.TearDown()
+				teardown(provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
 			}
 			errf = server.WaitUntilReady(cloudConfigFiles, postCreation)
 			if errf != nil {
-				provider.TearDown()
+				teardown(provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
 			}
 		}
 
 		// ssh to the server, copy over our exe, and start running wr manager
 		// there
-		info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
-		bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer)
+		if !alreadyUp {
+			info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
+			bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer)
 
-		// rather than daemonize and use a go ssh forwarding library or
-		// implement myself using the net package, since I couldn't get them
-		// to work reliably and completely, we'll just spawn ssh -L in the
-		// background and keep note of the pids so we can kill them during
-		// teardown
-		err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
-		if err != nil {
-			provider.TearDown()
-			die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
-		}
-		err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
-		if err != nil {
-			provider.TearDown()
-			die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
+			// rather than daemonize and use a go ssh forwarding library or
+			// implement myself using the net package, since I couldn't get them
+			// to work reliably and completely, we'll just spawn ssh -L in the
+			// background and keep note of the pids so we can kill them during
+			// teardown
+			err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
+			if err != nil {
+				teardown(provider)
+				die("failed to set up port forwarding to %s:%d: %s", server.IP, mp, err)
+			}
+			err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
+			if err != nil {
+				teardown(provider)
+				die("failed to set up port forwarding to %s:%d: %s", server.IP, wp, err)
+			}
+
+			// check that we can now connect to the remote manager
+			jq = connect(40 * time.Second)
+			if jq == nil {
+				teardown(provider)
+				die("could not talk to wr manager on server at %s after 40s", server.IP)
+			}
+
+			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
 		}
 
-		// check that we can now connect to the remote manager
-		jq = connect(40 * time.Second)
-		if jq == nil {
-			provider.TearDown()
-			die("could not talk to wr manager on server at %s after 40s", server.IP)
-		}
-
-		info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
-		info("Should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
+		info("should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
 		info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 	},
 }
@@ -462,21 +484,30 @@ and accessible.`,
 		if err != nil {
 			die("failed to delete the cloud resources previously created: %s", err)
 		}
-		os.Remove(filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key"))
+		err = os.Remove(filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key"))
+		if err != nil {
+			warn("failed to delete the cloud resources file: %s", err)
+		}
 		info("deleted all cloud resources previously created")
 
 		// kill the ssh forwarders
 		if fmRunning {
 			err = killProcess(fmPid)
 			if err == nil {
-				os.Remove(fmPidFile)
+				err = os.Remove(fmPidFile)
+				if err != nil && !os.IsNotExist(err) {
+					warn("failed to remove the forwarder pid file %s: %s", fmPidFile, err)
+				}
 			}
 		}
 		fwPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
 		if fwPid, fwRunning := checkProcess(fwPidFile); fwRunning {
 			err = killProcess(fwPid)
 			if err == nil {
-				os.Remove(fwPidFile)
+				err = os.Remove(fwPidFile)
+				if err != nil && !os.IsNotExist(err) {
+					warn("failed to remove the forwarder pid file %s: %s", fwPidFile, err)
+				}
 			}
 		}
 	},
@@ -513,7 +544,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	remoteExe := filepath.Join(cloudBinDir, "wr")
 	err := server.UploadFile(exe, remoteExe)
 	if err != nil && !wrMayHaveStarted {
-		provider.TearDown()
+		teardown(provider)
 		die("failed to upload wr to the server at %s: %s", server.IP, err)
 	}
 
@@ -529,21 +560,21 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			if errf = server.UploadFile(config.ManagerDbFile, filepath.Join("./.wr_"+config.Deployment, "db")); errf == nil {
 				info("copied local database to remote server")
 			} else if !wrMayHaveStarted {
-				provider.TearDown()
+				teardown(provider)
 				die("failed to upload local database to the server at %s: %s", server.IP, errf)
 			}
 		} else if !os.IsNotExist(errf) {
-			provider.TearDown()
+			teardown(provider)
 			die("failed to access the local database: %s", errf)
 		}
 	}
 	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\n", mp, wp, dbBk), wrConfigFileName); err != nil {
-		provider.TearDown()
+		teardown(provider)
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
 
 	if _, _, err = server.RunCmd("chmod u+x "+remoteExe, false); err != nil && !wrMayHaveStarted {
-		provider.TearDown()
+		teardown(provider)
 		die("failed to make remote wr executable: %s", err)
 	}
 
@@ -552,27 +583,33 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+"."+cRN)
 	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+"."+cRN)
 	if err = server.UploadFile(localResourceFile, remoteResourceFile); err != nil && !wrMayHaveStarted {
-		provider.TearDown()
+		teardown(provider)
 		die("failed to upload wr cloud resources file to the server at %s: %s", server.IP, err)
 	}
 	localKeyFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
 	if err = ioutil.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600); err != nil {
-		provider.TearDown()
+		teardown(provider)
 		die("failed to create key file %s: %s", localKeyFile, err)
 	}
 	remoteKeyFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".key")
 	if err = server.UploadFile(localKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
-		provider.TearDown()
+		teardown(provider)
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}
-	server.RunCmd("chmod 600 "+remoteResourceFile, false)
-	server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	_, _, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
+	if err != nil {
+		warn("failed to chmod 600 %s: %s", remoteResourceFile, err)
+	}
+	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	if err != nil {
+		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
+	}
 
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
 		response, _, errf := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
-		if errf != nil && response == "started\n" {
+		if errf == nil && response == "started\n" {
 			alreadyStarted = true
 		}
 	}
@@ -591,10 +628,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 		err = server.CreateFile(envvarExports, wrEnvFileName)
 		if err != nil {
-			provider.TearDown()
+			teardown(provider)
 			die("failed to create our environment variables file on the server at %s: %s", server.IP, err)
 		}
-		server.RunCmd("chmod 600 "+wrEnvFileName, false)
+		_, _, err = server.RunCmd("chmod 600 "+wrEnvFileName, false)
+		if err != nil {
+			warn("failed to chmod 600 %s: %s", wrEnvFileName, err)
+		}
 
 		var postCreationArg string
 		if postCreationScript != "" {
@@ -603,7 +643,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			remoteScriptFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".script")
 			err = server.UploadFile(postCreationScript, remoteScriptFile)
 			if err != nil && !wrMayHaveStarted {
-				provider.TearDown()
+				teardown(provider)
 				die("failed to upload wr cloud script file to the server at %s: %s", server.IP, err)
 			}
 
@@ -684,7 +724,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			warn("Once you're done debugging, hit return to teardown")
 			var response string
 			fmt.Scanln(&response)
-			provider.TearDown()
+			teardown(provider)
 			die("toredown following failure to start the manager remotely")
 		}
 
@@ -745,4 +785,11 @@ func killProcess(pid int) error {
 		return err
 	}
 	return process.Signal(syscall.Signal(9))
+}
+
+func teardown(p *cloud.Provider) {
+	err := p.TearDown()
+	if err != nil {
+		warn("teardown failed: %s", err)
+	}
 }

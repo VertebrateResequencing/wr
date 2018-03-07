@@ -550,7 +550,10 @@ SENTINEL:
 			_, _, fileErr := s.RunCmd("file "+sentinelFilePath, false)
 			if fileErr == nil {
 				ticker.Stop()
-				s.RunCmd("sudo rm "+sentinelFilePath, false)
+				_, _, rmErr := s.RunCmd("sudo rm "+sentinelFilePath, false)
+				if rmErr != nil {
+					s.logger.Warn("failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
+				}
 				break SENTINEL
 			}
 			continue SENTINEL
@@ -592,7 +595,10 @@ SENTINEL:
 			return err
 		}
 
-		s.RunCmd("rm "+pcsPath, false)
+		_, _, rmErr := s.RunCmd("rm "+pcsPath, false)
+		if rmErr != nil {
+			s.logger.Warn("failed to remove post creation script", "path", pcsPath, "err", rmErr)
+		}
 
 		s.Script = postCreationScript[0]
 
@@ -732,8 +738,8 @@ func (p *Provider) saveResources() error {
 	if err != nil {
 		return err
 	}
+	defer internal.LogClose(p.Logger, file, "resource file", "path", p.savePath)
 
-	defer file.Close()
 	encoder := gob.NewEncoder(file)
 	p.RLock()
 	defer p.RUnlock()
@@ -752,8 +758,8 @@ func (p *Provider) loadResources(resourceName string) (*Resources, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer internal.LogClose(p.Logger, file, "resource file", "path", p.savePath)
 
-	defer file.Close()
 	decoder := gob.NewDecoder(file)
 	err = decoder.Decode(resources)
 	if err != nil {

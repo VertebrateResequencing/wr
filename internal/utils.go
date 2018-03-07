@@ -21,6 +21,7 @@ package internal
 // this file has general utility functions
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,6 +163,17 @@ func ProcMeminfoMBs() (int, error) {
 func DiskSize() int {
 	usage := du.NewDiskUsage(".")
 	return int(usage.Size() / gb)
+}
+
+// LogClose is for use to Close() an object during a defer when you don't care
+// if the Close() returns an error, but do want non-EOF errors logged. Extra
+// args are passed as additional context for the logger.
+func LogClose(logger log15.Logger, obj io.Closer, msg string, extra ...interface{}) {
+	err := obj.Close()
+	if err != nil && err.Error() != "EOF" {
+		extra = append(extra, "err", err)
+		logger.Warn("failed to close "+msg, extra...)
+	}
 }
 
 // LogPanic is for use in a go routines, deferred at the start of them, to

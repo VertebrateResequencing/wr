@@ -133,7 +133,12 @@ var managerStartCmd = &cobra.Command{
 				logStarted(jq.ServerInfo)
 			} else {
 				// daemonized child, that will run until signalled to stop
-				defer context.Release()
+				defer func() {
+					err := context.Release()
+					if err != nil {
+						warn("daemon release failed: %s", err)
+					}
+				}()
 				startJQ(postCreation)
 			}
 		}
@@ -189,10 +194,17 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// real pid; though it may actually be running on a remote host and we
 		// managed to connect to it via ssh port forwarding; compare the server
 		// ip to our own
-		myAddr := jobqueue.CurrentIP("") + ":" + config.ManagerPort
+		currentIP, err := jobqueue.CurrentIP("")
+		if err != nil {
+			warn("Could not get current IP: %s", err)
+		}
+		myAddr := currentIP + ":" + config.ManagerPort
 		sAddr := jq.ServerInfo.Addr
 		if myAddr == sAddr {
-			jq.Disconnect()
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
 			stopped = stopdaemon(jq.ServerInfo.PID, "the manager itself")
 		} else {
 			// use the client command to stop it
@@ -257,7 +269,10 @@ down will be lost.`,
 			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
 
-		jq.Disconnect()
+		err = jq.Disconnect()
+		if err != nil {
+			warn("Disconnecting from the server failed: %s", err)
+		}
 	},
 }
 
@@ -314,7 +329,12 @@ somewhere.)`,
 		if err != nil {
 			die("%s", err)
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		err = jq.BackupDB(backupPath)
 		if err != nil {

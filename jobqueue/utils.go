@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/dgryski/go-farm"
+	multierror "github.com/hashicorp/go-multierror"
 )
 
 // AppName gets used in certain places like naming the base directory of created
@@ -56,7 +57,7 @@ var ellipses = []byte("[...]\n")
 // The cidr argument can be an empty string, but if set to the CIDR of the
 // machine's primary network, it helps us be sure of getting the correct IP
 // address (for when there are multiple network interfaces on the machine).
-func CurrentIP(cidr string) string {
+func CurrentIP(cidr string) (string, error) {
 	var ipNet *net.IPNet
 	if cidr != "" {
 		_, ipn, err := net.ParseCIDR(cidr)
@@ -73,7 +74,8 @@ func CurrentIP(cidr string) string {
 
 		// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
 		// cross-linux&MacOS solution that works reliably...
-		out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
+		var out []byte
+		out, err = exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
 		var ip string
 		if err != nil {
 			ip = string(out)
@@ -89,12 +91,13 @@ func CurrentIP(cidr string) string {
 			}
 		}
 
-		// if the above fails, fall back on manually going through all our network
-		// interfaces
+		// if the above fails, fall back on manually going through all our
+		// network interfaces
 		if ip == "" {
-			addrs, err := net.InterfaceAddrs()
+			var addrs []net.Addr
+			addrs, err = net.InterfaceAddrs()
 			if err != nil {
-				return ""
+				return "", err
 			}
 			for _, address := range addrs {
 				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
@@ -113,22 +116,24 @@ func CurrentIP(cidr string) string {
 			}
 		}
 
-		return ip
+		return ip, nil
 	}
 
-	defer conn.Close()
+	defer func() {
+		err = conn.Close()
+	}()
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	ip := localAddr.IP
 
 	// paranoid confirmation this ip is in our CIDR
 	if ipNet != nil {
 		if ipNet.Contains(ip) {
-			return ip.String()
+			return ip.String(), err
 		}
 	} else {
-		return ip.String()
+		return ip.String(), err
 	}
-	return ""
+	return "", err
 }
 
 // byteKey calculates a unique key that describes a byte slice.
@@ -144,21 +149,32 @@ func copyFile(source string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		errc := in.Close()
+		if errc != nil {
+			if err == nil {
+				err = errc
+			} else {
+				err = fmt.Errorf("%s (and closing source failed: %s)", err.Error(), errc)
+			}
+		}
+	}()
 	out, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		errc := out.Close()
+		if errc != nil {
+			if err == nil {
+				err = errc
+			} else {
+				err = fmt.Errorf("%s (and closing dest failed: %s)", err.Error(), errc)
+			}
+		}
+	}()
 	_, err = io.Copy(out, in)
-	cerr := out.Close()
-	if err != nil {
-		return err
-	}
-	if cerr != nil {
-		return cerr
-	}
-	return nil
+	return err
 }
 
 // compress uses zlib to compress stuff, for transferring big stuff like
@@ -199,11 +215,21 @@ func decompress(compressed []byte) ([]byte, error) {
 // get the current memory usage of a pid, relying on modern linux /proc/*/smaps
 // (based on http://stackoverflow.com/a/31881979/675083).
 func currentMemory(pid int) (int, error) {
+	var err error
 	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
+	defer func() {
+		errc := f.Close()
+		if errc != nil {
+			if err == nil {
+				err = errc
+			} else {
+				err = fmt.Errorf("%s (and closing smaps failed: %s)", err.Error(), errc)
+			}
+		}
+	}()
 
 	kb := uint64(0)
 	r := bufio.NewScanner(f)
@@ -211,21 +237,21 @@ func currentMemory(pid int) (int, error) {
 		line := r.Bytes()
 		if bytes.HasPrefix(line, pss) {
 			var size uint64
-			_, err := fmt.Sscanf(string(line[4:]), "%d", &size)
+			_, err = fmt.Sscanf(string(line[4:]), "%d", &size)
 			if err != nil {
 				return 0, err
 			}
 			kb += size
 		}
 	}
-	if err := r.Err(); err != nil {
+	if err = r.Err(); err != nil {
 		return 0, err
 	}
 
 	// convert kB to MB
 	mem := int(kb / 1024)
 
-	return mem, nil
+	return mem, err
 }
 
 // this prefixSuffixSaver-related code is taken from os/exec, since they are not
@@ -295,30 +321,46 @@ func minInt(a, b int) int {
 // terminated lines (to mostly eliminate progress bars), intended for use with
 // stdout/err streaming input, outputting to a prefixSuffixSaver. Because you
 // must finish reading from the input before continuing, it returns a channel
-// that you should wait to receive something from.
-func stdFilter(std io.Reader, out io.Writer) chan bool {
+// that you should wait to receive an error from (nil if everything workd).
+func stdFilter(std io.Reader, out io.Writer) chan error {
 	reader := bufio.NewReader(std)
-	done := make(chan bool)
+	done := make(chan error)
 	go func() {
+		var merr *multierror.Error
 		for {
 			p, err := reader.ReadBytes('\n')
 
 			lines := bytes.Split(p, cr)
-			out.Write(lines[0]) // #nosec
+			_, errw := out.Write(lines[0])
+			if errw != nil {
+				merr = multierror.Append(merr, errw)
+			}
 			if len(lines) > 2 {
-				out.Write(lf) // #nosec
-				if len(lines) > 3 {
-					out.Write(ellipses) // #nosec
+				_, errw = out.Write(lf)
+				if errw != nil {
+					merr = multierror.Append(merr, errw)
 				}
-				out.Write(lines[len(lines)-2]) // #nosec
-				out.Write(lf)                  // #nosec
+				if len(lines) > 3 {
+					_, errw = out.Write(ellipses)
+					if errw != nil {
+						merr = multierror.Append(merr, errw)
+					}
+				}
+				_, errw = out.Write(lines[len(lines)-2])
+				if errw != nil {
+					merr = multierror.Append(merr, errw)
+				}
+				_, errw = out.Write(lf)
+				if errw != nil {
+					merr = multierror.Append(merr, errw)
+				}
 			}
 
 			if err != nil {
 				break
 			}
 		}
-		done <- true
+		done <- merr.ErrorOrNil()
 	}()
 	return done
 }
@@ -357,7 +399,16 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dirs = append([]string{baseDir, AppName + "_cwd"}, dirs...)
 	dir := filepath.Join(dirs...)
 	holdFile := filepath.Join(dir, ".hold")
-	defer os.Remove(holdFile)
+	defer func() {
+		errr := os.Remove(holdFile)
+		if errr != nil {
+			if err == nil {
+				err = errr
+			} else {
+				err = fmt.Errorf("%s (and removing the hold file failed: %s)", err.Error(), errr)
+			}
+		}
+	}()
 	tries := 0
 	for {
 		err = os.MkdirAll(dir, os.ModePerm)
@@ -415,8 +466,14 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 // rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
 // stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
 // doesn't exist.
-func rmEmptyDirs(leafDir, baseDir string) {
-	os.Remove(leafDir) // #nosec - ok if this fails
+func rmEmptyDirs(leafDir, baseDir string) error {
+	err := os.Remove(leafDir)
+	if err != nil && !os.IsNotExist(err) {
+		if strings.Contains(err.Error(), "directory not empty") { //*** not sure where this string comes; probably not cross platform!
+			return nil
+		}
+		return err
+	}
 	current := leafDir
 	parent := filepath.Dir(current)
 	for ; parent != baseDir; parent = filepath.Dir(current) {
@@ -429,6 +486,7 @@ func rmEmptyDirs(leafDir, baseDir string) {
 		}
 		current = parent
 	}
+	return nil
 }
 
 // removeAllExcept deletes the contents of a given directory (absolute path),

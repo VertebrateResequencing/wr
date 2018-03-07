@@ -108,10 +108,15 @@ func TestJobqueue(t *testing.T) {
 	standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
 	Convey("CurrentIP() works", t, func() {
-		ip := CurrentIP("")
+		ip, err := CurrentIP("")
+		So(err, ShouldBeNil)
 		So(ip, ShouldNotBeBlank)
-		So(CurrentIP("9.9.9.9/24"), ShouldBeBlank)
-		So(CurrentIP(ip+"/16"), ShouldEqual, ip)
+		ip, err = CurrentIP("9.9.9.9/24")
+		So(err, ShouldBeNil)
+		So(ip, ShouldBeBlank)
+		ip, err = CurrentIP(ip + "/16")
+		So(err, ShouldBeNil)
+		So(ip, ShouldEqual, ip)
 	})
 
 	// these tests need the server running in it's own pid so we can test signal

@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 )
@@ -97,7 +98,12 @@ very many (tens of thousands+) commands.`,
 		if err != nil {
 			die("%s", err)
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		var jobs []*jobqueue.Job
 		showextra := true
@@ -119,7 +125,7 @@ very many (tens of thousands+) commands.`,
 				if err != nil {
 					die("could not open file '%s': %s", cmdFileStatus, err)
 				}
-				defer reader.(*os.File).Close()
+				defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFileStatus)
 			}
 			scanner := bufio.NewScanner(reader)
 			var jes []*jobqueue.JobEssence

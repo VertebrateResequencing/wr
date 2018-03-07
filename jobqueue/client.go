@@ -163,7 +163,10 @@ func Connect(addr string, timeout time.Duration) (*Client, error) {
 	// works with a Ping()
 	si, err := c.Ping(timeout)
 	if err != nil {
-		sock.Close()
+		errc := sock.Close()
+		if errc != nil {
+			return c, errc
+		}
 		msg := ErrNoServer
 		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
 			msg = ErrWrongUser
@@ -177,8 +180,8 @@ func Connect(addr string, timeout time.Duration) (*Client, error) {
 
 // Disconnect closes the connection to the jobqueue server. It is CRITICAL that
 // you call Disconnect() before calling Connect() again in the same process.
-func (c *Client) Disconnect() {
-	c.sock.Close()
+func (c *Client) Disconnect() error {
+	return c.sock.Close()
 }
 
 // Ping tells you if your connection to the server is working, returning static
@@ -393,8 +396,12 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
 	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
-		c.Bury(job, nil, FailReasonCwd)
-		return fmt.Errorf("working directory [%s] does not exist", job.Cwd)
+		errb := c.Bury(job, nil, FailReasonCwd)
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+		return fmt.Errorf("working directory [%s] does not exist%s", job.Cwd, extra)
 	}
 	var actualCwd, tmpDir string
 	if job.CwdMatters {
@@ -404,7 +411,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.key())
 		if err != nil {
 			buryErr := fmt.Errorf("could not create working directory: %s", err)
-			c.Bury(job, nil, FailReasonCwd, buryErr)
+			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
+			if errb != nil {
+				buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
+			}
 			return buryErr
 		}
 		cmd.Dir = actualCwd
@@ -422,10 +432,15 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		if err != nil {
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %s", err)
-			c.Bury(job, nil, FailReasonMount, buryErr)
+			errb := c.Bury(job, nil, FailReasonMount, buryErr)
+			if errb != nil {
+				buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
+			}
 			return buryErr
 		}
 	}
+
+	var myerr error
 
 	// and we'll run it with the environment variables that were present when
 	// the command was first added to the queue (or if none, current env vars,
@@ -433,14 +448,30 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// to update a job with new env vars
 	env, err := job.Env()
 	if err != nil {
-		c.Bury(job, nil, FailReasonEnv)
-		job.Unmount(true)
-		return fmt.Errorf("failed to extract environment variables for job [%s]: %s", job.key(), err)
+		errb := c.Bury(job, nil, FailReasonEnv)
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+		_, erru := job.Unmount(true)
+		if erru != nil {
+			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
+		}
+		return fmt.Errorf("failed to extract environment variables for job [%s]: %s%s", job.key(), err, extra)
 	}
 	if tmpDir != "" {
 		// (this works fine even if tmpDir has a space in one of the dir names)
 		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
-		defer os.RemoveAll(tmpDir)
+		defer func() {
+			errr := os.RemoveAll(tmpDir)
+			if errr != nil {
+				if myerr == nil {
+					myerr = errr
+				} else {
+					myerr = fmt.Errorf("%s (and removing the tmpdir failed: %s)", myerr.Error(), errr)
+				}
+			}
+		}()
 
 		if job.ChangeHome {
 			env = envOverride(env, []string{"HOME=" + actualCwd})
@@ -460,9 +491,16 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Start()
 	if err != nil {
 		// some obscure internal error about setting things up
-		c.Release(job, nil, FailReasonStart)
-		job.Unmount(true)
-		return fmt.Errorf("could not start command [%s]: %s", jc, err)
+		errr := c.Release(job, nil, FailReasonStart)
+		extra := ""
+		if errr != nil {
+			extra = fmt.Sprintf(" (and releasing the job failed: %s)", errr)
+		}
+		_, erru := job.Unmount(true)
+		if erru != nil {
+			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
+		}
+		return fmt.Errorf("could not start command [%s]: %s%s", jc, err, extra)
 	}
 
 	// update the server that we've started the job
@@ -470,10 +508,20 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if err != nil {
 		// if we can't access the server, may as well bail out now - kill the
 		// command (and don't bother trying to Release(); it will auto-Release)
-		cmd.Process.Kill()
-		job.TriggerBehaviours(false)
-		job.Unmount(true)
-		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s", job.Cmd, err)
+		errk := cmd.Process.Kill()
+		extra := ""
+		if errk != nil {
+			extra = fmt.Sprintf(" (and killing the cmd failed: %s)", errk)
+		}
+		errt := job.TriggerBehaviours(false)
+		if errt != nil {
+			extra += fmt.Sprintf(" (and triggering behaviours failed: %s)", errt)
+		}
+		_, erru := job.Unmount(true)
+		if erru != nil {
+			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
+		}
+		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s%s", job.Cmd, err, extra)
 	}
 
 	// update peak mem used by command, touch job and check if we use too much
@@ -485,13 +533,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 	ranoutTime := false
 	signalled := false
 	killCalled := false
+	var killErr error
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
 		for {
 			select {
 			case <-sigs:
-				cmd.Process.Kill()
+				killErr = cmd.Process.Kill()
 				stateMutex.Lock()
 				signalled = true
 				stateMutex.Unlock()
@@ -513,7 +562,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 					continue
 				}
 				if kc {
-					cmd.Process.Kill()
+					killErr = cmd.Process.Kill()
 					stateMutex.Lock()
 					killCalled = true
 					stateMutex.Unlock()
@@ -528,7 +577,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 					if peakmem > job.Requirements.RAM {
 						// we don't allow things to use too much memory, or we
 						// could screw up the machine we're running on
-						cmd.Process.Kill()
+						killErr = cmd.Process.Kill()
 						ranoutMem = true
 						stateMutex.Unlock()
 						return
@@ -542,8 +591,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}()
 
 	// wait for the command to exit
-	<-stderrWait
-	<-stdoutWait
+	errsew := <-stderrWait
+	errsow := <-stdoutWait
 	err = cmd.Wait()
 	ticker.Stop()
 	memTicker.Stop()
@@ -577,7 +626,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// get the exit code and figure out what to do with the Job
 	var exitcode int
-	var myerr error
 	dobury := false
 	dorelease := false
 	doarchive := false
@@ -651,7 +699,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-sigs:
 				return
 			case <-ticker2.C:
-				if !killCalled {
+				if !killCalled && !ranoutMem && !signalled {
 					_, errf := c.Touch(job)
 					if errf != nil {
 						return
@@ -662,6 +710,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			}
 		}
 	}()
+
+	if killErr != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; killing the cmd also failed: %s", myerr.Error(), killErr.Error())
+		} else {
+			myerr = killErr
+		}
+	}
 
 	// run behaviours
 	berr := job.TriggerBehaviours(myerr == nil)
@@ -709,6 +765,17 @@ func (c *Client) Execute(job *Job, shell string) error {
 		finalStdErr = append(finalStdErr, berr.Error()...)
 	}
 
+	if errsew != nil {
+		finalStdErr = append(finalStdErr, "\n\nSTDERR handling problems:\n"...)
+		finalStdErr = append(finalStdErr, errsew.Error()...)
+	}
+
+	finalStdOut := bytes.TrimSpace(stdout.Bytes())
+	if errsow != nil {
+		finalStdOut = append(finalStdOut, "\n\nSTDOUT handling problems:\n"...)
+		finalStdOut = append(finalStdOut, errsow.Error()...)
+	}
+
 	// though we may have had some problem, we always try and update our job end
 	// state, and we try many times to avoid having to repeat jobs unnecessarily
 	// (we keep retying for ~12+ hrs, giving plenty of time for issues to be
@@ -721,7 +788,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Exitcode: exitcode,
 		PeakRAM:  peakmem,
 		CPUtime:  cmd.ProcessState.SystemTime(),
-		Stdout:   bytes.TrimSpace(stdout.Bytes()),
+		Stdout:   finalStdOut,
 		Stderr:   finalStdErr,
 		Exited:   true,
 	}
@@ -743,8 +810,12 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	if !worked {
-		job.TriggerBehaviours(false)
-		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s", job.Cmd, err)
+		errt := job.TriggerBehaviours(false)
+		extra := ""
+		if errt != nil {
+			extra = fmt.Sprintf(" (and triggering behaviours failed: %s)", errt)
+		}
+		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s%s", job.Cmd, err, extra)
 	}
 
 	return myerr
@@ -764,7 +835,10 @@ func (c *Client) Started(job *Job, pid int) error {
 		host = "localhost"
 	}
 	job.Host = host
-	job.HostIP = CurrentIP("")
+	job.HostIP, err = CurrentIP("")
+	if err != nil {
+		return err
+	}
 	job.Pid = pid
 	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
 	job.StartTime = time.Now() // ditto
@@ -1072,6 +1146,9 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 func (c *Client) CompressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	enc.Encode(&envStr{envars})
+	err := enc.Encode(&envStr{envars})
+	if err != nil {
+		return nil, err
+	}
 	return compress(encoded)
 }

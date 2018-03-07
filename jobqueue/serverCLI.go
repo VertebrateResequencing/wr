@@ -224,7 +224,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sgroup := sjob.schedulerGroup
 					sjob.Unlock()
 
-					s.q.SetDelay(item.Key, ClientReleaseDelay)
+					errd := s.q.SetDelay(item.Key, ClientReleaseDelay)
+					if errd != nil {
+						s.Warn("reserve queue SetDelay failed", "err", errd)
+					}
 
 					// make a copy of the job with some extra stuff filled in (that
 					// we don't want taking up memory here) for the client
@@ -522,7 +525,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	// on error, just send the error back to client and return a more detailed
 	// error for logging
 	if srerr != "" {
-		s.reply(m, &serverResponse{Err: srerr})
+		errr := s.reply(m, &serverResponse{Err: srerr})
+		if errr != nil {
+			s.Warn("reply to client failed", "err", errr)
+		}
 		if qerr == "" {
 			qerr = srerr
 		}

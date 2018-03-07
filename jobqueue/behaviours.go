@@ -167,7 +167,10 @@ func (b *Behaviour) String() string {
 	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	encoder.SetEscapeHTML(false)
-	encoder.Encode(bvjm)
+	err := encoder.Encode(bvjm)
+	if err != nil {
+		panic(fmt.Sprintf("Encoding a bvjm failed: %s", err))
+	}
 
 	return strings.TrimSpace(buffer.String())
 }
@@ -244,9 +247,7 @@ func (b *Behaviour) cleanup(j *Job, all bool) error {
 	}
 
 	// delete any empty parent directories up to Cwd
-	rmEmptyDirs(workSpace, j.Cwd)
-
-	return nil
+	return rmEmptyDirs(workSpace, j.Cwd)
 }
 
 // run simply runs the given command from Job's actual cwd.
@@ -341,7 +342,10 @@ func (bs Behaviours) String() string {
 	buffer := &bytes.Buffer{}
 	encoder := json.NewEncoder(buffer)
 	encoder.SetEscapeHTML(false)
-	encoder.Encode(bvjm)
+	err := encoder.Encode(bvjm)
+	if err != nil {
+		panic(fmt.Sprintf("Encoding a bvjm failed: %s", err))
+	}
 
 	return strings.TrimSpace(buffer.String())
 }

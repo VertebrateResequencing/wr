@@ -39,8 +39,10 @@ import (
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
 	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
+	logext "github.com/inconshreveable/log15/ext"
 	"github.com/ugorji/go/codec"
 )
 
@@ -197,6 +199,8 @@ type Server struct {
 	racCheckTimer   *time.Timer
 	racChecking     bool
 	racCheckReady   int
+	wsmutex         sync.Mutex
+	wsconns         map[string]*websocket.Conn
 	bsmutex         sync.RWMutex
 	badServers      map[string]*cloud.Server
 	simutex         sync.RWMutex
@@ -371,7 +375,10 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	ip := CurrentIP(config.CIDR)
+	ip, err := CurrentIP(config.CIDR)
+	if err != nil {
+		serverLogger.Error("getting current IP failed", "err", err)
+	}
 	if ip == "" {
 		return s, msg, Error{"Serve", "", ErrNoHost}
 	}
@@ -410,6 +417,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		sgrouptrigs:     make(map[string]int),
 		sgtr:            make(map[string]*scheduler.Requirements),
 		rc:              config.RunnerCmd,
+		wsconns:         make(map[string]*websocket.Conn),
 		statusCaster:    bcast.NewGroup(),
 		badServerCaster: bcast.NewGroup(),
 		badServers:      make(map[string]*cloud.Server),
@@ -512,13 +520,18 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		defer internal.LogPanic(s.Logger, "jobqueue web server", true)
 
 		mux := http.NewServeMux()
-		mux.HandleFunc("/", webInterfaceStatic)
+		mux.HandleFunc("/", webInterfaceStatic(s))
 		mux.HandleFunc("/status_ws", webInterfaceStatusWS(s))
 		mux.HandleFunc(restJobsEndpoint, restJobs(s))
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
-		go srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+		go func() {
+			errs := srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+			if errs != nil && errs != http.ErrServerClosed {
+				s.Error("server web interface had problems", "err", errs)
+			}
+		}()
 		s.httpServer = srv
 
 		go s.statusCaster.Broadcasting(0)
@@ -661,7 +674,10 @@ func (s *Server) Drain() error {
 			// Stop() to wait for the runner clients to exit so the
 			// job scheduler will be nice and clean
 			s.scheduler.Cleanup()
-			s.Stop(true)
+			err := s.Stop(true)
+			if err != nil {
+				s.Error("server drain stop failed", "err", err)
+			}
 			break
 		}
 	}()
@@ -805,7 +821,10 @@ func (s *Server) createQueue() {
 					job.setScheduledRunner(false)
 				}
 				if s.rc != "" {
-					q.SetReserveGroup(job.key(), schedulerGroup)
+					errs := q.SetReserveGroup(job.key(), schedulerGroup)
+					if errs != nil {
+						s.Warn("readycallback queue setreservegroup failed", "err", errs)
+					}
 				}
 			}
 
@@ -1372,7 +1391,10 @@ func (s *Server) scheduleRunners(group string) {
 					job.Lock()
 					job.FailReason = FailReasonResource
 					job.Unlock()
-					s.q.Bury(item.Key)
+					errb := s.q.Bury(item.Key)
+					if errb != nil {
+						s.Warn("scheduleRunners failed to bury an item", "err", errb)
+					}
 					s.sgroupcounts[group]--
 				}
 				s.sgcmutex.Unlock()
@@ -1452,7 +1474,10 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
-		s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		if err != nil {
+			s.Warn("clearSchedulerGroup failed", "err", err)
+		}
 	}
 }
 
@@ -1473,6 +1498,35 @@ func (s *Server) getBadServers() []*badServer {
 	}
 	s.bsmutex.RUnlock()
 	return bs
+}
+
+// storeWebSocketConnection stores a connection and returns a unique identifier
+// so that it can be later closed with closeWebSocketConnection(unique) or
+// during Server shutdown.
+func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
+	s.wsmutex.Lock()
+	defer s.wsmutex.Unlock()
+	unique := logext.RandId(8)
+	s.wsconns[unique] = conn
+	return unique
+}
+
+// closeWebSocketConnection closes the connection that was stored with
+// storeWebSocketConnection() and that returned the given unique string.
+// Closing it this way means that during Server shutdown we won't try and close
+// it again.
+func (s *Server) closeWebSocketConnection(unique string) {
+	s.wsmutex.Lock()
+	defer s.wsmutex.Unlock()
+	conn, found := s.wsconns[unique]
+	if !found {
+		return
+	}
+	err := conn.Close()
+	if err != nil {
+		s.Warn("websocket close failed", "err", err)
+	}
+	delete(s.wsconns, unique)
 }
 
 // shutdown stops listening to client connections, close all queues and
@@ -1496,10 +1550,39 @@ func (s *Server) shutdown() {
 	s.stopServing <- true
 
 	s.Lock()
-	s.sock.Close()
-	s.db.close()
+	err := s.sock.Close()
+	if err != nil {
+		s.Warn("server shutdown socket close failed", "err", err)
+	}
+
+	err = s.db.close()
+	if err != nil {
+		s.Warn("server shutdown database close failed", "err", err)
+	}
+
+	// stop the scheduler
 	s.scheduler.Cleanup()
-	s.httpServer.Shutdown(context.Background())
+
+	// graceful shutdown of all websocket-related goroutines and connections
+	s.statusCaster.Close()
+	s.badServerCaster.Close()
+	s.schedCaster.Close()
+	s.wsmutex.Lock()
+	for unique, conn := range s.wsconns {
+		errc := conn.Close()
+		if errc != nil {
+			s.Warn("server shutdown failed to close a websocket", "err", errc)
+		}
+		delete(s.wsconns, unique)
+	}
+	s.wsmutex.Unlock()
+
+	// graceful shutdown of http server
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	err = s.httpServer.Shutdown(ctx)
+	if err != nil {
+		s.Warn("server shutdown of web interface failed", "err", err)
+	}
 
 	// wait until the ports are really no longer being listened to (which isn't
 	// the same as them being available to be reconnected to, but this is the
@@ -1507,12 +1590,18 @@ func (s *Server) shutdown() {
 	for {
 		conn, _ := net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.Port), 10*time.Millisecond)
 		if conn != nil {
-			conn.Close()
+			errc := conn.Close()
+			if errc != nil {
+				s.Warn("server shutdown port close failed", "port", s.ServerInfo.WebPort, "err", errc)
+			}
 			continue
 		}
 		conn, _ = net.DialTimeout("tcp", net.JoinHostPort("", s.ServerInfo.WebPort), 10*time.Millisecond)
 		if conn != nil {
-			conn.Close()
+			errc := conn.Close()
+			if errc != nil {
+				s.Warn("server shutdown port close failed", "port", s.ServerInfo.WebPort, "err", errc)
+			}
 			continue
 		}
 		break
@@ -1521,7 +1610,10 @@ func (s *Server) shutdown() {
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this
-	s.q.Destroy()
+	err = s.q.Destroy()
+	if err != nil {
+		s.Warn("server shutdown queue destruction failed", "err", err)
+	}
 	s.q = nil
 
 	s.krmutex.Lock()

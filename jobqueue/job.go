@@ -400,12 +400,18 @@ func (j *Job) Mount() error {
 		for _, mt := range mc.Targets {
 			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
 			if err != nil {
-				j.Unmount()
+				_, erru := j.Unmount()
+				if erru != nil {
+					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				}
 				return err
 			}
 			accessor, err := muxfys.NewS3Accessor(accessorConfig)
 			if err != nil {
-				j.Unmount()
+				_, erru := j.Unmount()
+				if erru != nil {
+					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				}
 				return err
 			}
 
@@ -424,8 +430,12 @@ func (j *Job) Mount() error {
 		}
 
 		if len(rcs) == 0 {
-			j.Unmount()
-			return fmt.Errorf("No Targets specified")
+			err := fmt.Errorf("No Targets specified")
+			_, erru := j.Unmount()
+			if erru != nil {
+				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+			}
+			return err
 		}
 
 		retries := 10
@@ -458,13 +468,19 @@ func (j *Job) Mount() error {
 
 		fs, err := muxfys.New(cfg)
 		if err != nil {
-			j.Unmount()
+			_, erru := j.Unmount()
+			if erru != nil {
+				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+			}
 			return err
 		}
 
 		err = fs.Mount(rcs...)
 		if err != nil {
-			j.Unmount()
+			_, erru := j.Unmount()
+			if erru != nil {
+				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+			}
 			return err
 		}
 
@@ -480,8 +496,15 @@ func (j *Job) Mount() error {
 		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 		go func() {
 			<-deathSignals
+			var merr *multierror.Error
 			for _, fs := range j.mountedFS {
-				fs.Unmount(true)
+				erru := fs.Unmount(true)
+				if erru != nil {
+					merr = multierror.Append(merr, erru)
+				}
+			}
+			if len(merr.Errors) > 0 {
+				panic(merr)
 			}
 		}()
 	}
@@ -532,9 +555,9 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	if j.ActualCwd != "" {
 		for _, mc := range j.MountConfigs {
 			if mc.Mount == "" {
-				rmEmptyDirs(j.ActualCwd, j.Cwd)
+				err = rmEmptyDirs(j.ActualCwd, j.Cwd)
 			} else if !filepath.IsAbs(mc.Mount) {
-				rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
+				err = rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
 			}
 		}
 	}

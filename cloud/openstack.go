@@ -433,10 +433,10 @@ func (p *openstackp) inCloud() bool {
 	inCloud := false
 	if err == nil {
 		pager := servers.List(p.computeClient, servers.ListOpts{})
-		pager.EachPage(func(page pagination.Page) (bool, error) {
-			serverList, err := servers.ExtractServers(page)
-			if err != nil {
-				return false, err
+		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+			serverList, errf := servers.ExtractServers(page)
+			if errf != nil {
+				return false, errf
 			}
 
 			for _, server := range serverList {
@@ -481,6 +481,10 @@ func (p *openstackp) inCloud() bool {
 
 			return true, nil
 		})
+
+		if err != nil {
+			p.Warn("paging through servers failed", "err", err)
+		}
 	}
 
 	return inCloud
@@ -488,7 +492,10 @@ func (p *openstackp) inCloud() bool {
 
 // flavors returns all our flavors.
 func (p *openstackp) flavors() map[string]Flavor {
-	p.cacheFlavors()
+	err := p.cacheFlavors()
+	if err != nil {
+		p.Warn("failed to cache available flavors", "err", err)
+	}
 	return p.fmap
 }
 
@@ -508,7 +515,10 @@ func (p *openstackp) getQuota() (*Quota, error) {
 
 	// query all servers to figure out what we've used of our quota
 	// (*** gophercloud currently doesn't implement getting this properly)
-	p.cacheFlavors()
+	err = p.cacheFlavors()
+	if err != nil {
+		p.Warn("failed to cache available flavors", "err", err)
+	}
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, errf := servers.ExtractServers(page)
@@ -711,7 +721,10 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		// give it a floating ip
 		floatingIP, errf := p.getAvailableFloatingIP()
 		if errf != nil {
-			p.destroyServer(serverID)
+			errd := p.destroyServer(serverID)
+			if errd != nil {
+				p.Warn("server destruction after no IP failed", "server", serverID, "err", errd)
+			}
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 
@@ -721,7 +734,10 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			FloatingIP: floatingIP,
 		}).ExtractErr()
 		if errf != nil {
-			p.destroyServer(serverID)
+			errd := p.destroyServer(serverID)
+			if errd != nil {
+				p.Warn("server destruction after not associating IP failed", "server", serverID, "err", errd)
+			}
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 
@@ -731,12 +747,18 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		// doing this...
 		allNetworkAddressPages, errf := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
 		if errf != nil {
-			p.destroyServer(serverID)
+			errd := p.destroyServer(serverID)
+			if errd != nil {
+				p.Warn("server destruction after not finding networks failed", "server", serverID, "err", errd)
+			}
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 		allNetworkAddresses, errf := servers.ExtractNetworkAddresses(allNetworkAddressPages)
 		if errf != nil {
-			p.destroyServer(serverID)
+			errd := p.destroyServer(serverID)
+			if errd != nil {
+				p.Warn("server destruction after not getting network address failed", "server", serverID, "err", errd)
+			}
 			return serverID, serverIP, serverName, adminPass, errf
 		}
 		for _, address := range allNetworkAddresses {
@@ -779,7 +801,10 @@ func (p *openstackp) destroyServer(serverID string) error {
 	// delete the router and network later; the following returns
 	// an error of "Resource not found" as soon as the server
 	// is not there anymore; we don't care about any others
-	servers.WaitForStatus(p.computeClient, serverID, "xxxx", 60)
+	errs := servers.WaitForStatus(p.computeClient, serverID, "xxxx", 60)
+	if errs.Error() != "Resource not found" {
+		p.Warn("server destruction ended on a strange status?", "server", serverID, "err", errs)
+	}
 	return err
 }
 
@@ -800,7 +825,11 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		for _, server := range serverList {
 			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
-				p.destroyServer(server.ID) // ignore errors, just try to delete others
+				errd := p.destroyServer(server.ID)
+				if errd != nil {
+					// ignore errors, just try to delete others
+					p.Warn("server destruction durin teardown failed", "server", server.ID, "err", errd)
+				}
 			}
 		}
 

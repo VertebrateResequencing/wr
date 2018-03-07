@@ -927,8 +927,11 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		// handle Spawn() or upload-of-exe errors now, by destroying the server
 		// and noting we failed
 		if err != nil {
-			server.Destroy()
 			logger.Debug("server failed ready", "err", err)
+			errd := server.Destroy()
+			if errd != nil {
+				logger.Debug("server also failed to destroy", "err", errd)
+			}
 			standinServer.failed(fmt.Sprintf("New server failed to spawn correctly: %s", err))
 			s.mutex.Unlock()
 			s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
@@ -1154,7 +1157,10 @@ func (s *opst) cleanup() {
 	// prevent any further scheduling and queue processing, and destroy the
 	// queue
 	s.cleaned = true
-	s.queue.Destroy()
+	err := s.queue.Destroy()
+	if err != nil {
+		s.Warn("cleanup queue destruction failed", "err", err)
+	}
 
 	// cancel all standins
 	for _, standinServer := range s.standins {
@@ -1182,10 +1188,16 @@ func (s *opst) cleanup() {
 		if sid == "localhost" {
 			continue
 		}
-		server.Destroy()
+		errd := server.Destroy()
+		if errd != nil {
+			s.Warn("cleanup server destruction failed", "server", server.ID, "err", errd)
+		}
 		delete(s.servers, sid)
 	}
 
 	// teardown any cloud resources created
-	s.provider.TearDown()
+	err = s.provider.TearDown()
+	if err != nil {
+		s.Warn("cleanup teardown failed", "err", err)
+	}
 }

@@ -67,7 +67,12 @@ complete.`,
 		if err != nil {
 			die("%s", err)
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
@@ -118,14 +123,27 @@ complete.`,
 
 			// see if we have enough time left to run this
 			if time.Now().Add(job.Requirements.Time).After(endTime) {
-				jq.Release(job, nil, job.FailReason)
+				err = jq.Release(job, nil, "not enough time to run")
+				if err != nil {
+					// oh well?
+					warn("job release after running out of time failed: %s", err)
+				}
 				exitReason = "we're about to hit our maximum time limit"
 				break
 			}
 
 			// actually run the cmd
 			if len(envOverrides) > 0 {
-				job.EnvAddOverride(envOverrides)
+				err = job.EnvAddOverride(envOverrides)
+				if err != nil {
+					err = jq.Release(job, nil, "failed to add env var overrides")
+					if err != nil {
+						// oh well?
+						warn("job release after envaddoverride fail: %s", err)
+					}
+					exitReason = "EnvAddOverride failed"
+					break
+				}
 			}
 			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {

@@ -390,12 +390,15 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 // restJobs lets you do CRUD on jobs in the "cmds" queue.
 func restJobs(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
+		err := r.ParseForm()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+			return
+		}
 
 		// carry out a different action based on the HTTP Verb
 		var jobs []*Job
 		var status int
-		var err error
 		switch r.Method {
 		case http.MethodGet:
 			jobs, status, err = restJobsStatus(r, s)
@@ -422,7 +425,10 @@ func restJobs(s *Server) http.HandlerFunc {
 		w.WriteHeader(status)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
-		encoder.Encode(jstati)
+		erre := encoder.Encode(jstati)
+		if erre != nil {
+			s.Warn("restJobs failed to encode job statuses", "err", erre)
+		}
 	}
 }
 
@@ -666,7 +672,10 @@ func restWarnings(s *Server) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		encoder := json.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
-		encoder.Encode(sis)
+		erre := encoder.Encode(sis)
+		if erre != nil {
+			s.Warn("restWarnings failed to encode scheduler issues", "err", erre)
+		}
 	}
 }
 
@@ -675,7 +684,11 @@ func restWarnings(s *Server) http.HandlerFunc {
 // confirm as bad and have terminated if it still exists.
 func restBadServers(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
+		err := r.ParseForm()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+			return
+		}
 
 		// carry out a different action based on the HTTP Verb
 		switch r.Method {
@@ -688,7 +701,10 @@ func restBadServers(s *Server) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			encoder := json.NewEncoder(w)
 			encoder.SetEscapeHTML(false)
-			encoder.Encode(servers)
+			erre := encoder.Encode(servers)
+			if erre != nil {
+				s.Warn("restBadServers failed to encode servers", "err", erre)
+			}
 			return
 		case http.MethodDelete:
 			serverID := r.Form.Get("id")
@@ -705,7 +721,11 @@ func restBadServers(s *Server) http.HandlerFunc {
 				return
 			}
 			if server.IsBad() {
-				server.Destroy()
+				err := server.Destroy()
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Server was bad but could not be destroyed: %s", err), http.StatusNotModified)
+					return
+				}
 			}
 			w.WriteHeader(http.StatusOK)
 			return
@@ -759,6 +779,9 @@ func urlStringToStruct(value string, v interface{}) error {
 func compressEnv(envars []string) ([]byte, error) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, new(codec.BincHandle))
-	enc.Encode(&envStr{envars})
+	err := enc.Encode(&envStr{envars})
+	if err != nil {
+		return nil, err
+	}
 	return compress(encoded)
 }

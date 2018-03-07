@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/bytefmt"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 )
@@ -334,7 +335,7 @@ machine was started.`,
 			if err != nil {
 				die("could not open file '%s': %s", cmdFile, err)
 			}
-			defer reader.(*os.File).Close()
+			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
 		}
 
 		// we'll default to pwd if the manager is on the same host as us, or if
@@ -351,7 +352,11 @@ machine was started.`,
 		var pwd string
 		var remoteWarning bool
 		var envVars []string
-		if jobqueue.CurrentIP("")+":"+config.ManagerPort == jq.ServerInfo.Addr {
+		currentIP, err := jobqueue.CurrentIP("")
+		if err != nil {
+			warn("Could not get current IP: %s", err)
+		}
+		if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
 			pwd = wd
 			envVars = os.Environ()
 		} else if cmdCwdMatters {
@@ -360,7 +365,12 @@ machine was started.`,
 			pwd = "/tmp"
 			remoteWarning = true
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards

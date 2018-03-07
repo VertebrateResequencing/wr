@@ -586,7 +586,10 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 
 		if len(toKill) > 1 {
 			killcmd := exec.Command("bkill", toKill...) // #nosec
-			killcmd.Run()
+			errk := killcmd.Run()
+			if errk != nil {
+				s.Warn("checkCmd bkill failed", "err", errk)
+			}
 		}
 	} else {
 		cb := func(matches []string) {
@@ -598,12 +601,12 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 	return count, err
 }
 
+type bjobsCB func(matches []string)
+
 // parseBjobs runs bjobs, filters on a job name prefix, excludes exited jobs and
 // gives matches to
 // `^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(jobPrefix\S+)` to your
 // callback for each bjobs output line.
-type bjobsCB func(matches []string)
-
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	bjcmd := exec.Command(s.config.Shell, "-c", "bjobs -w") // #nosec
 	bjout, err := bjcmd.StdoutPipe()
@@ -656,9 +659,15 @@ func (s *lsf) cleanup() {
 	cb := func(matches []string) {
 		toKill = append(toKill, matches[1])
 	}
-	s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb) // *** throwing away error
+	err := s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
+	if err != nil {
+		s.Error("cleaup parse bjobs failed", "err", err)
+	}
 	if len(toKill) > 1 {
 		killcmd := exec.Command("bkill", toKill...) // #nosec
-		killcmd.Run()
+		err = killcmd.Run()
+		if err != nil {
+			s.Warn("cleanup bkill failed", "err", err)
+		}
 	}
 }

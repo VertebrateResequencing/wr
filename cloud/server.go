@@ -290,14 +290,14 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 }
 
 // RunCmd runs the given command on the server, optionally in the background.
-// You get the command's STDOUT and STDERR as a strings.
+// You get the command's STDOUT and STDERR as strings.
 func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
 	// create a session
 	session, err := s.SSHSession()
 	if err != nil {
 		return stdout, stderr, err
 	}
-	defer session.Close()
+	defer internal.LogClose(s.logger, session, "runcmd ssh session", "cmd", cmd)
 
 	// if the sever is destroyed while running, arrange to immediately return an
 	// error
@@ -372,7 +372,7 @@ func (s *Server) UploadFile(source string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer internal.LogClose(s.logger, client, "upload file client session", "source", source, "dest", dest)
 
 	// create all parent dirs of dest
 	err = s.MkDir(dest)
@@ -385,7 +385,7 @@ func (s *Server) UploadFile(source string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
+	defer internal.LogClose(s.logger, sourceFile, "upload file source", "source", source, "dest", dest)
 
 	destFile, err := client.Create(dest)
 	if err != nil {
@@ -499,7 +499,7 @@ func (s *Server) CreateFile(content string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer internal.LogClose(s.logger, client, "create file client session")
 
 	// create all parent dirs of dest
 	err = s.MkDir(dest)
@@ -530,14 +530,14 @@ func (s *Server) DownloadFile(source string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer internal.LogClose(s.logger, client, "download file client session", "source", source, "dest", dest)
 
 	// open source, create dest
 	sourceFile, err := client.Open(source)
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
+	defer internal.LogClose(s.logger, sourceFile, "download file source", "source", source, "dest", dest)
 
 	destFile, err := os.Create(dest)
 	if err != nil {
@@ -684,7 +684,10 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 		if err != nil {
 			return false
 		}
-		session.Close()
+		errc := session.Close()
+		if errc != nil {
+			s.logger.Warn("alive check ssh session did not close", "err", errc)
+		}
 	}
 
 	return true
