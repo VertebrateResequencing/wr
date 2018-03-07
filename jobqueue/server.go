@@ -172,16 +172,18 @@ type schedulerIssue struct {
 
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
-	ServerInfo   *ServerInfo
-	allowedUsers map[string]bool
-	sock         mangos.Socket
-	ch           codec.Handle
-	db           *db
-	done         chan error
-	stop         chan bool
-	up           bool
-	drain        bool
-	blocking     bool
+	ServerInfo         *ServerInfo
+	allowedUsers       map[string]bool
+	sock               mangos.Socket
+	ch                 codec.Handle
+	db                 *db
+	done               chan error
+	stopSigHandling    chan bool
+	stopClientHandling chan bool
+	wg                 *sync.WaitGroup
+	up                 bool
+	drain              bool
+	blocking           bool
 	sync.Mutex
 	q               *queue.Queue
 	rpl             *rgToKeys
@@ -207,7 +209,6 @@ type Server struct {
 	schedIssues     map[string]*schedulerIssue
 	krmutex         sync.RWMutex
 	killRunners     bool
-	stopServing     chan bool
 	timings         map[string]*timingAvg
 	tmutex          sync.Mutex
 	ssmutex         sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
@@ -367,11 +368,18 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	// serving will happen in a goroutine that will stop on SIGINT or SIGTERM,
-	// of if something is sent on the quit channel
+	// or if something is sent on the stopSigHandling channel. The done channel
+	// is used to report back to a user that called Block() when and why we
+	// stopped serving. stopClientHandling is used to stop client handling at
+	// the right moment during the shutdown process. To know when all the
+	// goroutines we start actually finish, the shutdown process will check a
+	// waitgroup as well.
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	stop := make(chan bool, 1)
+	stopSigHandling := make(chan bool, 1)
+	stopClientHandling := make(chan bool)
 	done := make(chan error, 1)
+	wg := &sync.WaitGroup{}
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
@@ -403,28 +411,30 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 
 	s = &Server{
-		ServerInfo:      &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
-		allowedUsers:    allowedUsersMap,
-		sock:            sock,
-		ch:              new(codec.BincHandle),
-		rpl:             &rgToKeys{lookup: make(map[string]map[string]bool)},
-		db:              db,
-		stop:            stop,
-		done:            done,
-		up:              true,
-		scheduler:       sch,
-		sgroupcounts:    make(map[string]int),
-		sgrouptrigs:     make(map[string]int),
-		sgtr:            make(map[string]*scheduler.Requirements),
-		rc:              config.RunnerCmd,
-		wsconns:         make(map[string]*websocket.Conn),
-		statusCaster:    bcast.NewGroup(),
-		badServerCaster: bcast.NewGroup(),
-		badServers:      make(map[string]*cloud.Server),
-		schedCaster:     bcast.NewGroup(),
-		schedIssues:     make(map[string]*schedulerIssue),
-		timings:         make(map[string]*timingAvg),
-		Logger:          serverLogger,
+		ServerInfo:         &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		allowedUsers:       allowedUsersMap,
+		sock:               sock,
+		ch:                 new(codec.BincHandle),
+		rpl:                &rgToKeys{lookup: make(map[string]map[string]bool)},
+		db:                 db,
+		stopSigHandling:    stopSigHandling,
+		stopClientHandling: stopClientHandling,
+		done:               done,
+		wg:                 wg,
+		up:                 true,
+		scheduler:          sch,
+		sgroupcounts:       make(map[string]int),
+		sgrouptrigs:        make(map[string]int),
+		sgtr:               make(map[string]*scheduler.Requirements),
+		rc:                 config.RunnerCmd,
+		wsconns:            make(map[string]*websocket.Conn),
+		statusCaster:       bcast.NewGroup(),
+		badServerCaster:    bcast.NewGroup(),
+		badServers:         make(map[string]*cloud.Server),
+		schedCaster:        bcast.NewGroup(),
+		schedIssues:        make(map[string]*schedulerIssue),
+		timings:            make(map[string]*timingAvg),
+		Logger:             serverLogger,
 	}
 
 	// if we're restarting from a state where there were incomplete jobs, we
@@ -450,16 +460,16 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		}
 	}
 
-	// set up responding to command-line clients and signals
-	stopServing := make(chan bool, 1)
-	s.stopServing = stopServing
+	// set up responding to command-line clients
+	wg.Add(1)
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
+		defer wg.Done()
 
 		for {
 			select {
-			case <-stopServing:
+			case <-stopClientHandling: // s.shutdown() sends this
 				return
 			default:
 				// receive a clientRequest from a client
@@ -475,9 +485,11 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 				}
 
 				// parse the request, do the desired work and respond to the client
+				wg.Add(1)
 				go func() {
 					// log panics and continue
 					defer internal.LogPanic(s.Logger, "jobqueue server client handling", false)
+					defer wg.Done()
 
 					herr := s.handleRequest(m)
 					if ServerLogClientErrors && herr != nil {
@@ -492,32 +504,40 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			}
 		}
 	}()
+
+	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
+	// waitgroup here since we call shutdown, which waits on the group)
 	go func() {
-		defer internal.LogPanic(s.Logger, "jobqueue signal handling", true)
-		select {
-		case sig := <-sigs:
-			s.shutdown()
-			var serr error
-			switch sig {
-			case os.Interrupt:
-				serr = Error{"Serve", "", ErrClosedInt}
-			case syscall.SIGTERM:
-				serr = Error{"Serve", "", ErrClosedTerm}
+		// log panics and die
+		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
+
+		for {
+			select {
+			case sig := <-sigs:
+				var reason string
+				switch sig {
+				case os.Interrupt:
+					reason = ErrClosedInt
+				case syscall.SIGTERM:
+					reason = ErrClosedTerm
+				}
+				signal.Stop(sigs)
+				s.shutdown(reason, true, false)
+				return
+			case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
+				signal.Stop(sigs)
+				return
 			}
-			signal.Stop(sigs)
-			done <- serr
-		case <-stop:
-			s.shutdown()
-			signal.Stop(sigs)
-			done <- Error{"Serve", "", ErrClosedStop}
 		}
 	}()
 
 	// set up the web interface
 	ready := make(chan bool)
+	wg.Add(1)
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(s.Logger, "jobqueue web server", true)
+		defer wg.Done()
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", webInterfaceStatic(s))
@@ -526,7 +546,9 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			errs := srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
 			if errs != nil && errs != http.ErrServerClosed {
 				s.Error("server web interface had problems", "err", errs)
@@ -534,9 +556,21 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		}()
 		s.httpServer = srv
 
-		go s.statusCaster.Broadcasting(0)
-		go s.badServerCaster.Broadcasting(0)
-		go s.schedCaster.Broadcasting(0)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.statusCaster.Broadcasting(0)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.badServerCaster.Broadcasting(0)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.schedCaster.Broadcasting(0)
+		}()
 
 		badServerCB := func(server *cloud.Server) {
 			s.bsmutex.Lock()
@@ -604,43 +638,14 @@ func (s *Server) Block() error {
 	s.ssmutex.Lock()
 	s.blocking = true
 	s.ssmutex.Unlock()
-	err := <-s.done
-	s.ssmutex.Lock()
-	s.up = false
-	s.blocking = false
-	s.ssmutex.Unlock()
-	return err
+	return <-s.done
 }
 
 // Stop will cause a graceful shut down of the server. Supplying an optional
 // bool of true will cause Stop() to wait until all runners have exited and
 // the server is truly down before returning.
-func (s *Server) Stop(wait ...bool) error {
-	s.ssmutex.Lock()
-	var err error
-	if s.up {
-		s.stop <- true // results in shutdown()
-		if !s.blocking {
-			s.up = false
-			s.ssmutex.Unlock()
-			err = <-s.done
-		} else {
-			s.ssmutex.Unlock()
-		}
-
-		if len(wait) == 1 && wait[0] {
-			ticker := time.NewTicker(100 * time.Millisecond)
-			for range ticker.C {
-				if !s.HasRunners() {
-					ticker.Stop()
-					break
-				}
-			}
-		}
-	} else {
-		s.ssmutex.Unlock()
-	}
-	return err
+func (s *Server) Stop(wait ...bool) {
+	s.shutdown(ErrClosedStop, len(wait) == 1 && wait[0], true)
 }
 
 // Drain will stop the server spawning new runners and stop Reserve*() from
@@ -673,11 +678,7 @@ func (s *Server) Drain() error {
 			// now that we think nothing should be running, get
 			// Stop() to wait for the runner clients to exit so the
 			// job scheduler will be nice and clean
-			s.scheduler.Cleanup()
-			err := s.Stop(true)
-			if err != nil {
-				s.Error("server drain stop failed", "err", err)
-			}
+			s.Stop(true)
 			break
 		}
 	}()
@@ -859,8 +860,10 @@ func (s *Server) createQueue() {
 			for group := range s.sgroupcounts {
 				if _, needed := groups[group]; !needed && !stillRunning[group] {
 					s.sgroupcounts[group] = 0
+					s.wg.Add(1)
 					go func(group string) {
 						defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
+						defer s.wg.Done()
 						s.clearSchedulerGroup(group)
 					}(group)
 				}
@@ -899,8 +902,10 @@ func (s *Server) createQueue() {
 				}
 
 				s.sgcmutex.Unlock()
+				s.wg.Add(1)
 				go func(group string) {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners", true)
+					defer s.wg.Done()
 					s.scheduleRunners(group)
 				}(group)
 			}
@@ -919,10 +924,18 @@ func (s *Server) createQueue() {
 			} else {
 				s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
 
+				s.wg.Add(1)
 				go func() {
 					defer internal.LogPanic(s.Logger, "jobqueue rac checking", true)
+					defer s.wg.Done()
 
-					<-s.racCheckTimer.C
+					select {
+					case <-s.racCheckTimer.C:
+						break
+					case <-s.stopClientHandling:
+						return
+					}
+
 					s.racmutex.Lock()
 					s.racChecking = false
 					stats := q.Stats()
@@ -1409,9 +1422,18 @@ func (s *Server) scheduleRunners(group string) {
 				s.Warn("Server scheduling runners error", "err", err)
 
 				// retry the schedule in a while
+				s.wg.Add(1)
 				go func() {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners retry", true)
-					<-time.After(1 * time.Minute)
+					defer s.wg.Done()
+
+					select {
+					case <-time.After(ServerCheckRunnerTime):
+						break
+					case <-s.stopClientHandling:
+						return
+					}
+
 					s.scheduleRunners(group)
 				}()
 				return
@@ -1532,11 +1554,24 @@ func (s *Server) closeWebSocketConnection(unique string) {
 // shutdown stops listening to client connections, close all queues and
 // persists them to disk.
 //
+// Does nothing if already shutdown.
+//
 // For now it also kills all currently running jobs so that their runners don't
 // stay alive uselessly. *** This adds 15s to our shutdown time...
-func (s *Server) shutdown() {
-	// change touch to always return a kill signal
+func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 	s.ssmutex.Lock()
+
+	if !s.up {
+		s.ssmutex.Unlock()
+		return
+	}
+
+	if stopSigHandling {
+		close(s.stopSigHandling)
+	}
+
+	// change touch to always return a kill signal
+	s.up = false
 	s.drain = true
 	s.ServerInfo.Mode = ServerModeDrain
 	s.ssmutex.Unlock()
@@ -1547,17 +1582,16 @@ func (s *Server) shutdown() {
 		// wait until everything must have attempted a touch
 		<-time.After(ClientTouchInterval)
 	}
-	s.stopServing <- true
 
-	s.Lock()
-	err := s.sock.Close()
-	if err != nil {
-		s.Warn("server shutdown socket close failed", "err", err)
-	}
-
-	err = s.db.close()
-	if err != nil {
-		s.Warn("server shutdown database close failed", "err", err)
+	// wait for the runners to actually die
+	if wait {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		for range ticker.C {
+			if !s.HasRunners() {
+				ticker.Stop()
+				break
+			}
+		}
 	}
 
 	// stop the scheduler
@@ -1578,11 +1612,28 @@ func (s *Server) shutdown() {
 	s.wsmutex.Unlock()
 
 	// graceful shutdown of http server
-	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
-	err = s.httpServer.Shutdown(ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := s.httpServer.Shutdown(ctx)
 	if err != nil {
 		s.Warn("server shutdown of web interface failed", "err", err)
 	}
+	cancel()
+
+	// close our command line interface
+	close(s.stopClientHandling)
+	err = s.sock.Close()
+	if err != nil {
+		s.Warn("server shutdown socket close failed", "err", err)
+	}
+
+	// close the database
+	err = s.db.close()
+	if err != nil {
+		s.Warn("server shutdown database close failed", "err", err)
+	}
+
+	// wait for our goroutines to finish
+	s.wg.Wait()
 
 	// wait until the ports are really no longer being listened to (which isn't
 	// the same as them being available to be reconnected to, but this is the
@@ -1606,7 +1657,6 @@ func (s *Server) shutdown() {
 		}
 		break
 	}
-	s.Unlock()
 
 	// clean up our queues and empty everything out to be garbage collected,
 	// in case the same process calls Serve() again after this
@@ -1619,4 +1669,14 @@ func (s *Server) shutdown() {
 	s.krmutex.Lock()
 	s.killRunners = false
 	s.krmutex.Unlock()
+
+	s.ssmutex.Lock()
+	s.drain = false
+	wasBlocking := s.blocking
+	s.blocking = false
+	s.ssmutex.Unlock()
+
+	if wasBlocking {
+		s.done <- Error{"Serve", "", reason}
+	}
 }

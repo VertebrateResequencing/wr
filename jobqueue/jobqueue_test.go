@@ -2365,7 +2365,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job2, ShouldBeNil)
 
-				<-time.After(2 * time.Second)
+				<-time.After(3 * time.Second)
 
 				_, err = jq.Ping(10 * time.Millisecond)
 				So(err, ShouldNotBeNil)

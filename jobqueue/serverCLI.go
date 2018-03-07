@@ -61,9 +61,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	if cr.User == "" || !s.allowedUsers[cr.User] {
 		srerr = ErrWrongUser
 		qerr = fmt.Sprintf("User %s denied access (only %s allowed)", cr.User, s.ServerInfo.AllowedUsers)
-	} else if s.q == nil || !up {
-		// the server just got shutdown, we shouldn't really end up here?... Can
-		// we even respond??
+	} else if s.q == nil || (!up && !drain) {
+		// the server just got shutdown
 		srerr = ErrClosedStop
 		qerr = "The server has been stopped"
 	} else {
@@ -99,11 +98,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "shutdown":
 			s.Debug("shutdown requested")
-			err := s.Stop()
-			if err != nil {
-				srerr = ErrInternalError
-				qerr = err.Error()
-			}
+			s.Stop(true)
 		case "add":
 			// add jobs to the queue, and along side keep the environment variables
 			// they're supposed to execute under.
