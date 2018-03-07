@@ -109,6 +109,7 @@ type job struct {
 	cmd   string
 	req   *Requirements
 	count int
+	sync.RWMutex
 }
 
 // initialize finds out about the local machine. Compatible with amd64 archs
@@ -169,14 +170,20 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 	// add to the queue
 	key := jobName(cmd, "n/a", false)
-	data := &job{cmd, req, count}
+	data := &job{
+		cmd:   cmd,
+		req:   req,
+		count: count,
+	}
 	s.mutex.Lock()
 	item, err := s.queue.Add(key, "", data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
 			// update the job's count (only)
 			j := item.Data.(*job)
+			j.Lock()
 			j.count = count
+			j.Unlock()
 		} else {
 			s.mutex.Unlock()
 			return err
@@ -236,9 +243,11 @@ func (s *local) processQueue() error {
 		key = item.Key
 		toRelease = append(toRelease, key)
 		j = item.Data.(*job)
+		j.RLock()
 		cmd = j.cmd
 		req = j.req
 		count = j.count
+		j.RUnlock()
 
 		running := s.running[key]
 		s.Debug("processQueue running", "needs", count, "current", running, "cmd", cmd)
@@ -295,11 +304,17 @@ func (s *local) processQueue() error {
 			}
 			var stopAuto bool
 			if err == nil {
+				j.Lock()
 				j.count--
-				if j.count <= 0 {
+				jCount := j.count
+				j.Unlock()
+				if jCount <= 0 {
 					errr := s.queue.Remove(key)
 					if errr != nil {
-						s.Warn("processQueue item removal failed", "err", errr)
+						// warn unless we've already removed this key
+						if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+							s.Warn("processQueue item removal failed", "err", errr)
+						}
 					}
 					if s.queue.Stats().Items == 0 {
 						stopAuto = true
