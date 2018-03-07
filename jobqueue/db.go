@@ -96,6 +96,7 @@ type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 type db struct {
 	backingUp          bool
 	backupFinal        bool
+	backupStopWait     chan bool
 	backupLast         time.Time
 	backupMount        *muxfys.MuxFys
 	backupNotification chan bool
@@ -292,6 +293,7 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		backupPath:         bkPath,
 		backupNotification: make(chan bool),
 		backupWait:         minimumTimeBetweenBackups,
+		backupStopWait:     make(chan bool),
 		wg:                 &sync.WaitGroup{},
 		Logger:             l,
 	}
@@ -1111,6 +1113,7 @@ func (db *db) close() error {
 		// transactions to complete
 		if db.backingUp {
 			db.backupFinal = true
+			close(db.backupStopWait)
 			db.Unlock()
 			<-db.backupNotification
 			db.wg.Wait()
@@ -1166,7 +1169,12 @@ func (db *db) backgroundBackup() {
 			if !last.IsZero() && last.Add(wait).After(now) {
 				// wait before doing another backup, so we don't slow down new
 				// db accessses all the time
-				<-time.After(last.Add(wait).Sub(now))
+				select {
+				case <-time.After(last.Add(wait).Sub(now)):
+					break
+				case <-db.backupStopWait:
+					break
+				}
 			}
 		}
 
@@ -1181,7 +1189,6 @@ func (db *db) backgroundBackup() {
 		err := db.bolt.View(func(tx *bolt.Tx) error {
 			return tx.CopyFile(tmpBackupPath, dbFilePermission)
 		})
-		// *** currently not logging the error message anywhere...
 
 		if slowBackups {
 			<-time.After(100 * time.Millisecond)
@@ -1215,6 +1222,7 @@ func (db *db) backgroundBackup() {
 			// close() has been called, don't do any more backups and tell
 			// close() we finished our backup
 			db.backupFinal = false
+			db.backupStopWait = make(chan bool)
 			db.Unlock()
 			db.backupNotification <- true
 			return
