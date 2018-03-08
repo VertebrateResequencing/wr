@@ -401,7 +401,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	holdFile := filepath.Join(dir, ".hold")
 	defer func() {
 		errr := os.Remove(holdFile)
-		if errr != nil {
+		if errr != nil && !os.IsNotExist(errr) {
 			if err == nil {
 				err = errr
 			} else {
