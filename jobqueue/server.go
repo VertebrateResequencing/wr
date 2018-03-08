@@ -824,7 +824,12 @@ func (s *Server) createQueue() {
 				if s.rc != "" {
 					errs := q.SetReserveGroup(job.key(), schedulerGroup)
 					if errs != nil {
-						s.Warn("readycallback queue setreservegroup failed", "err", errs)
+						// we could be trying to set the reserve group after the
+						// job has already completed, if they complete
+						// ~instantly
+						if qerr, ok := errs.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+							s.Warn("readycallback queue setreservegroup failed", "err", errs)
+						}
 					}
 				}
 			}
