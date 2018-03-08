@@ -70,11 +70,18 @@ are by default found in ~/.wr_[deployment]/log.
 
 If using the OpenStack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
-cloud, so that resources created are only accessible to you. Instead you can use
-'wr cloud deploy -p openstack' to create an OpenStack server on which wr manager
-will be started in OpenStack mode for you. See 'wr cloud deploy -h' for the
-details of which environment variables you need to use the OpenStack
-scheduler.`,
+cloud, so that resources created will not conflict with anyone else in your
+tenant (project) also running wr.
+Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
+on which wr manager will be started in OpenStack mode for you. See 'wr cloud
+deploy -h' for the details of which environment variables you need to use the
+OpenStack scheduler.
+If you want to start multiple managers up in different OpenStack networks that
+you've created yourself, note that --local_username will need to be globally
+unique, since it is used to name the private key that will be created in
+OpenStack, and if a key with that name already exists, the manager will not be
+able to create a new one (or get the existing one), and so will not function
+fully.`,
 }
 
 // start sub-command starts the daemon
