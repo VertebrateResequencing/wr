@@ -406,7 +406,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				So(response.StatusCode, ShouldEqual, http.StatusOK)
+				So(response.StatusCode, ShouldEqual, http.StatusNotModified) // because the fake server doesn't actually exist
 
 				server.bsmutex.RLock()
 				So(len(server.badServers), ShouldEqual, 0)
