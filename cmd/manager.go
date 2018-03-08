@@ -43,6 +43,7 @@ var foreground bool
 var scheduler string
 var localUsername string
 var backupPath string
+var managerTimeoutSeconds int
 var managerDebug bool
 
 // managerCmd represents the manager command
@@ -126,9 +127,9 @@ var managerStartCmd = &cobra.Command{
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
-				jq := connect(10 * time.Second)
+				jq := connect(time.Duration(managerTimeoutSeconds) * time.Second)
 				if jq == nil {
-					die("wr manager failed to start on port %s after 10s", config.ManagerPort)
+					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
 				logStarted(jq.ServerInfo)
 			} else {
@@ -362,6 +363,7 @@ func init() {
 	defaultConfig := internal.DefaultConfig(appLogger)
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
+	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
