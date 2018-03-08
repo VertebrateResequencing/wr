@@ -138,15 +138,17 @@ You will need additional environment variables, but these depend on the version
 of OpenStack you're using. Older installs may need:
 OS_TENANT_ID, OS_TENANT_NAME
 Newer installs may need:
-OS_PROJECT_ID, OS_PROJECT_NAME, and one of OS_DOMAIN_ID or OS_DOMAIN_NAME
+OS_PROJECT_ID, OS_PROJECT_NAME, and one of OS_DOMAIN_ID (aka
+OS_PROJECT_DOMAIN_ID) or OS_DOMAIN_NAME (aka OS_USER_DOMAIN_NAME)
 Depending on the install, one of OS_TENANT_ID and OS_PROJECT_ID is required. You
 might also need OS_USERID.
 You can get the necessary values by logging in to your OpenStack dashboard web
 interface and looking for the 'Download Openstack RC File' button. For older
-installs this is in the Compute -> Access & Security, 'API Access' tab.
+installs this is in the Compute -> Access & Security, 'API Access' tab. For
+newer installs it is under Project -> API Access.
 Finally, you may need to add to that RC file OS_POOL_NAME to define the name
 of the network to get floating IPs from (for older installs this defaults to
-"nova").
+"nova", for newer ones it defaults to "public").
 If you're concerned about security, you can immediately 'unset OS_PASSWORD'
 after doing a deploy. (You'll need to set it again before doing a teardown.)
 

@@ -75,7 +75,7 @@ var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 // one of the *DOMAIN* variables being allowed to be set). We also use
 // OS_POOL_NAME to determine the name of the network to get floating IPs from.
 var openstackReqEnvs = [...]string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME"}
-var openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
+var openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
 
 // openstackp is our implementer of provideri
 type openstackp struct {
@@ -114,6 +114,33 @@ func (p *openstackp) maybeEnv() []string {
 func (p *openstackp) initialize(logger log15.Logger) error {
 	p.Logger = logger.New("cloud", "openstack")
 
+	// gophercloud uses non-standard env var names, so convert if necessary
+	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_PROJECT_DOMAIN_ID") != "" {
+		err := os.Setenv("OS_DOMAIN_ID", os.Getenv("OS_PROJECT_DOMAIN_ID"))
+		if err != nil {
+			return err
+		}
+	}
+
+	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_DOMAIN_NAME") == "" && os.Getenv("OS_USER_DOMAIN_NAME") != "" {
+		err := os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
+		if err != nil {
+			return err
+		}
+	}
+
+	// we use a non-standard env var to find the default network from which to
+	// get floating IPs from, which defaults depending on age of OpenStack
+	// installation
+	p.poolName = os.Getenv("OS_POOL_NAME")
+	if p.poolName == "" {
+		if os.Getenv("OS_TENANT_ID") != "" {
+			p.poolName = "nova"
+		} else {
+			p.poolName = "public"
+		}
+	}
+
 	// authenticate
 	opts, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
@@ -143,12 +170,7 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 		return err
 	}
 
-	// we need to know the network pool name *** does this have to be a user
-	// input/config option? Or can it be discovered?
-	p.poolName = os.Getenv("OS_POOL_NAME") // I made this one up, so we'll default to nova
-	if p.poolName == "" {
-		p.poolName = "nova"
-	}
+	// get the external network id
 	p.externalNetworkID, err = networks.IDFromName(p.networkClient, p.poolName)
 	if err != nil {
 		return err
@@ -507,7 +529,7 @@ func (p *openstackp) getQuota() (*Quota, error) {
 		return nil, err
 	}
 	quota := &Quota{
-		MaxRAM:       q.Ram,
+		MaxRAM:       q.RAM,
 		MaxCores:     q.Cores,
 		MaxInstances: q.Instances,
 		// MaxVolume:    q.Volume, //*** https://github.com/gophercloud/gophercloud/issues/234#issuecomment-273666521 : no support for getting volume quotas...
