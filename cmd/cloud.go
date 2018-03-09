@@ -32,6 +32,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/fatih/color"
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
 	"github.com/sb10/l15h"
@@ -693,9 +694,12 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), managerTimeoutSeconds, debugStr, wrEnvFileName)
 
-		_, _, err = server.RunCmd(mCmd, false)
+		_, e, err := server.RunCmd(mCmd, false)
 		if err != nil {
-			warn("failed to start wr manager on the remote server: %s", err)
+			warn("failed to start wr manager on the remote server")
+			if len(e) > 0 {
+				color.Red(e)
+			}
 
 			// copy over any manager logs that got created locally (ignore
 			// errors, and overwrite any existing file)
@@ -712,16 +716,23 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 						line := scanner.Text()
 						if !strings.Contains(line, "lvl=info") {
 							if !explained {
+								fmt.Println("")
 								warn("wr manager on the remote server said:")
 								explained = true
 							}
-							fmt.Println(line)
+							color.Red(line)
 						}
+					}
+					if explained {
+						fmt.Println("")
 					}
 				}
 			}
 
-			warn("To debug further you can try to ssh to this server using `ssh -i %s %s@%s` and see if you can run `%s`, seeing what appears in the logs there in %s", keyPath, osUsername, server.IP, mCmd, "~/.wr_"+config.Deployment+"/log")
+			warn("To debug further you can try to ssh to this server using:")
+			color.Magenta("ssh -i %s %s@%s", keyPath, osUsername, server.IP)
+			fmt.Printf("and see if you can run (checking %s afterwards):\n", "~/.wr_"+config.Deployment+"/log")
+			color.Magenta(mCmd)
 
 			// now teardown and die, once the user confirms
 			warn("Once you're done debugging, hit return to teardown")

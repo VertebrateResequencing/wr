@@ -1,5 +1,5 @@
-hash: 62f4477d8dd4918ce333a409be781861d3822cbe6230723ef01f98abf889d874
-updated: 2018-03-08T09:24:09.496302011Z
+hash: 8a8d1702f6511158c36d9c896cf0bd402b627d8e4ba2378d34aba6ae468eb80b
+updated: 2018-03-09T17:01:33.053383894Z
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -11,6 +11,8 @@ imports:
   version: 48ea1b39c25fc1bab3506fbc712ecbaa842c4d2d
 - name: github.com/dgryski/go-farm
   version: 2de33835d10275975374b37b2dcfd22c9020a1f5
+- name: github.com/fatih/color
+  version: 507f6050b8568533fb3f5504de8e5205fa62a114
 - name: github.com/go-ini/ini
   version: a76e4b8c9ac73023bb88120b228cc33ebf4fc3b2
 - name: github.com/go-mangos/mangos
