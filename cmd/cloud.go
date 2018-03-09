@@ -717,7 +717,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 						if !strings.Contains(line, "lvl=info") {
 							if !explained {
 								fmt.Println("")
-								warn("wr manager on the remote server said:")
+								warn("remote manager logs:")
 								explained = true
 							}
 							color.Red(line)
