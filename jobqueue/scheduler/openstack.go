@@ -927,7 +927,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		// handle Spawn() or upload-of-exe errors now, by destroying the server
 		// and noting we failed
 		if err != nil {
-			logger.Debug("server failed ready", "err", err)
+			logger.Warn("server failed ready", "err", err)
 			errd := server.Destroy()
 			if errd != nil {
 				logger.Debug("server also failed to destroy", "err", errd)
@@ -965,7 +965,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				server.GoneBad(err.Error())
 				s.notifyBadServer(server)
 			}
-			logger.Debug("server went bad", "err", err)
+			logger.Warn("server went bad", "err", err)
 			return err
 		}
 	}
