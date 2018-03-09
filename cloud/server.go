@@ -52,7 +52,7 @@ type Flavor struct {
 type Server struct {
 	AdminPass         string
 	Disk              int // GB of available disk space
-	Flavor            Flavor
+	Flavor            *Flavor
 	ID                string
 	IP                string // ip address that you could SSH to
 	IsHeadNode        bool
@@ -87,7 +87,7 @@ func (s *Server) Allocate(cores, ramMB, diskGB int) {
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
-	s.logger.Debug("allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+	s.logger.Debug("server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
@@ -102,19 +102,19 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	s.usedCores -= cores
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
-	s.logger.Debug("release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
 	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
-		s.logger.Debug("idle")
+		s.logger.Debug("server idle")
 		go func() {
 			defer internal.LogPanic(s.logger, "server release", false)
 
 			s.mutex.Lock()
 			if s.onDeathrow {
 				s.mutex.Unlock()
-				s.logger.Debug("already on deathrow")
+				s.logger.Debug("server already on deathrow")
 				return
 			}
 			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
@@ -122,14 +122,14 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 			s.mutex.Unlock()
 
 			timeToDie := time.After(s.TTD)
-			s.logger.Debug("entering deathrow", "death", time.Now().Add(s.TTD))
+			s.logger.Debug("server entering deathrow", "death", time.Now().Add(s.TTD))
 			for {
 				select {
 				case <-s.cancelDestruction:
 					s.mutex.Lock()
 					s.onDeathrow = false
 					s.mutex.Unlock()
-					s.logger.Debug("cancelled deathrow")
+					s.logger.Debug("server cancelled deathrow")
 					return
 				case <-timeToDie:
 					// destroy the server
@@ -137,7 +137,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 					s.onDeathrow = false
 					s.mutex.Unlock()
 					err := s.Destroy()
-					s.logger.Debug("died on deathdrow", "err", err)
+					s.logger.Debug("server died on deathdrow", "err", err)
 					return
 				}
 			}
@@ -249,7 +249,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 func (s *Server) SSHSession() (*ssh.Session, error) {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		s.logger.Debug("ssh could not be established", "err", err)
+		s.logger.Debug("server ssh could not be established", "err", err)
 		return nil, fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
 	}
 
@@ -263,7 +263,7 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 	go func() {
 		select {
 		case <-time.After(5 * time.Second):
-			s.logger.Debug("ssh timed out")
+			s.logger.Debug("server ssh timed out")
 			done <- fmt.Errorf("cloud SSHSession() timed out")
 		case <-worked:
 			return
@@ -273,7 +273,7 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 		defer internal.LogPanic(s.logger, "server sshsession", false)
 		session, errf := sshClient.NewSession()
 		if errf != nil {
-			s.logger.Debug("ssh failed", "err", errf)
+			s.logger.Debug("server ssh failed", "err", errf)
 			done <- fmt.Errorf("cloud SSHSession() failed: %s", errf.Error())
 			return
 		}
@@ -637,7 +637,7 @@ func (s *Server) Destroy() error {
 	}
 
 	err := s.provider.DestroyServer(s.ID)
-	s.logger.Debug("destroyed", "err", err)
+	s.logger.Debug("server destroyed", "err", err)
 	if err != nil {
 		// check if the server exists
 		ok, _ := s.provider.CheckServer(s.ID)

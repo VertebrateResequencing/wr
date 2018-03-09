@@ -453,7 +453,6 @@ func TestOpenstack(t *testing.T) {
 		So(s, ShouldNotBeNil)
 		defer s.Cleanup()
 		oss := s.impl.(*opst)
-		//oss.debugMode = true
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
@@ -468,69 +467,123 @@ func TestOpenstack(t *testing.T) {
 			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
 				flavor, err := oss.determineFlavor(possibleReq)
 				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2000")
-				So(flavor.RAM, ShouldEqual, 1024)
-				So(flavor.Disk, ShouldEqual, 8)
-				So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2000") // we now ignore the 20GB disk requirement
+				if os.Getenv("OS_TENANT_ID") != "" {
+					// author's pre-pike install
+					So(flavor.ID, ShouldEqual, "2000")
+					So(flavor.RAM, ShouldEqual, 1024)
+					So(flavor.Disk, ShouldEqual, 8)
+					So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2001")
-				So(flavor.RAM, ShouldEqual, 4096)
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2000") // we now ignore the 20GB disk requirement
 
-				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2001")
-				So(flavor.RAM, ShouldEqual, 4096)
-				So(flavor.Disk, ShouldEqual, 12)
-				So(flavor.Cores, ShouldEqual, 2)
+					flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2001")
+					So(flavor.RAM, ShouldEqual, 4096)
 
-				flavor, err = oss.determineFlavor(&Requirements{5000, 1 * time.Minute, 1, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2002")
-				So(flavor.RAM, ShouldEqual, 16384)
-				So(flavor.Disk, ShouldEqual, 20)
-				So(flavor.Cores, ShouldEqual, 4)
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2001")
+					So(flavor.RAM, ShouldEqual, 4096)
+					So(flavor.Disk, ShouldEqual, 12)
+					So(flavor.Cores, ShouldEqual, 2)
 
-				flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2003")
-				So(flavor.RAM, ShouldEqual, 65536)
-				So(flavor.Disk, ShouldEqual, 20)
-				So(flavor.Cores, ShouldEqual, 8)
+					flavor, err = oss.determineFlavor(&Requirements{5000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2002")
+					So(flavor.RAM, ShouldEqual, 16384)
+					So(flavor.Disk, ShouldEqual, 20)
+					So(flavor.Cores, ShouldEqual, 4)
 
-				flavor, err = oss.determineFlavor(&Requirements{66000, 1 * time.Minute, 1, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2004")
-				So(flavor.RAM, ShouldEqual, 122880)
-				So(flavor.Disk, ShouldEqual, 128)
-				So(flavor.Cores, ShouldEqual, 16)
+					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2003")
+					So(flavor.RAM, ShouldEqual, 65536)
+					So(flavor.Disk, ShouldEqual, 20)
+					So(flavor.Cores, ShouldEqual, 8)
 
-				flavor, err = oss.determineFlavor(&Requirements{261000, 1 * time.Minute, 1, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2005")
-				So(flavor.RAM, ShouldEqual, 262144)
-				So(flavor.Disk, ShouldEqual, 128)
-				So(flavor.Cores, ShouldEqual, 52)
+					flavor, err = oss.determineFlavor(&Requirements{66000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2004")
+					So(flavor.RAM, ShouldEqual, 122880)
+					So(flavor.Disk, ShouldEqual, 128)
+					So(flavor.Cores, ShouldEqual, 16)
 
-				flavor, err = oss.determineFlavor(&Requirements{263000, 1 * time.Minute, 1, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2006")
-				So(flavor.RAM, ShouldEqual, 496640)
-				So(flavor.Disk, ShouldEqual, 128)
-				So(flavor.Cores, ShouldEqual, 56)
+					flavor, err = oss.determineFlavor(&Requirements{261000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2005")
+					So(flavor.RAM, ShouldEqual, 262144)
+					So(flavor.Disk, ShouldEqual, 128)
+					So(flavor.Cores, ShouldEqual, 52)
 
-				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2002")
+					flavor, err = oss.determineFlavor(&Requirements{263000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2006")
+					So(flavor.RAM, ShouldEqual, 496640)
+					So(flavor.Disk, ShouldEqual, 128)
+					So(flavor.Cores, ShouldEqual, 56)
 
-				flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, otherReqs})
-				So(err, ShouldBeNil)
-				So(flavor.ID, ShouldEqual, "2003")
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2002")
+
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2003")
+				} else {
+					// author's pike install
+					So(flavor.ID, ShouldEqual, "2000")
+					So(flavor.RAM, ShouldEqual, 9100)
+					So(flavor.Disk, ShouldEqual, 16)
+					So(flavor.Cores, ShouldEqual, 1)
+
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2000")
+
+					flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2000")
+
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2001")
+					So(flavor.RAM, ShouldEqual, 18200)
+					So(flavor.Disk, ShouldEqual, 32)
+					So(flavor.Cores, ShouldEqual, 2)
+
+					flavor, err = oss.determineFlavor(&Requirements{30000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2002")
+					So(flavor.RAM, ShouldEqual, 36400)
+					So(flavor.Disk, ShouldEqual, 64)
+					So(flavor.Cores, ShouldEqual, 4)
+
+					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2003")
+					So(flavor.RAM, ShouldEqual, 72800)
+					So(flavor.Disk, ShouldEqual, 129)
+					So(flavor.Cores, ShouldEqual, 8)
+
+					flavor, err = oss.determineFlavor(&Requirements{120000, 1 * time.Minute, 1, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2004")
+					So(flavor.RAM, ShouldEqual, 145600)
+					So(flavor.Disk, ShouldEqual, 258)
+					So(flavor.Cores, ShouldEqual, 16)
+
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2002")
+
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, otherReqs})
+					So(err, ShouldBeNil)
+					So(flavor.ID, ShouldEqual, "2003")
+				}
 			})
 
 			Convey("MaxQueueTime() always returns 'infinite'", func() {
@@ -554,8 +607,13 @@ func TestOpenstack(t *testing.T) {
 		// we need to not actually run the real scheduling tests if we're not
 		// running in openstack, because the scheduler will try to ssh to
 		// the servers it spawns
-		_, errl := exec.LookPath("nova")
-		if errl == nil && oss.provider.InCloud() {
+		var novaCmd string
+		if _, errl := exec.LookPath("openstack"); errl == nil {
+			novaCmd = "openstack server"
+		} else if _, errl := exec.LookPath("nova"); errl == nil {
+			novaCmd = "nova"
+		}
+		if novaCmd != "" && oss.provider.InCloud() {
 			Convey("The canCount during and after spawning is correct", func() {
 				// *** these tests are only going to work if no external process
 				// changes resource usage before we finish...
@@ -565,7 +623,7 @@ func TestOpenstack(t *testing.T) {
 				r := oss.reqForSpawn(possibleReq)
 				for _, server := range oss.servers {
 					if server.Flavor.RAM >= r.RAM {
-						r.RAM = server.Flavor.RAM + 1
+						r.RAM = server.Flavor.RAM + 1000
 					}
 				}
 				numServers := len(oss.servers)
@@ -580,7 +638,7 @@ func TestOpenstack(t *testing.T) {
 					i := 0
 					for {
 						i++
-						err := oss.runCmd("sleep 1", testReq)
+						err := oss.runCmd("sleep 4", testReq)
 						if err == nil || i == 3 {
 							done <- true
 							break
@@ -588,7 +646,7 @@ func TestOpenstack(t *testing.T) {
 					}
 				}()
 
-				<-time.After(900 * time.Millisecond)
+				<-time.After(3000 * time.Millisecond)
 
 				So(len(oss.servers)+len(oss.standins), ShouldEqual, numServers+1)
 				So(oss.canCount(testReq), ShouldEqual, can-1)
@@ -619,40 +677,40 @@ func TestOpenstack(t *testing.T) {
 				oReqs := make(map[string]string)
 
 				Convey("Run jobs with no inputs/outputs", func() {
-					// on authors setup, running the test from a 2 cpu cloud
-					// instance, the following count is sufficient to test
-					// spawning instances over the quota in the test environment
-					count := 130
+					// on authors setup, the following count is sufficient to
+					// test spawning instances over the quota in the test
+					// environment if we reserve 54 cores per job
+					count := 10
 					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
-					cmd := "sleep 10 && (echo default > " + oFile + ") || true"
-					err := s.Schedule(cmd, possibleReq, count)
+					cmd := "sleep 10"
+					thisReq := &Requirements{100, 1 * time.Minute, 54, 1, oReqs}
+					err := s.Schedule(cmd, thisReq, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 
 					spawnedCh := make(chan int)
 					go func() {
-						<-time.After(time.Duration(int(eta/2)) * time.Second)
-						spawnedCh <- novaCountServers(rName, "")
+						<-time.After(20 * time.Second)
+						spawnedCh <- novaCountServers(novaCmd, rName, "")
 					}()
 
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 					spawned := <-spawnedCh
 					close(spawnedCh)
-					So(spawned, ShouldBeBetweenOrEqual, 4, count)
+					fmt.Printf("\nspawned: %d\n", spawned)
+					So(spawned, ShouldBeBetweenOrEqual, 2, count)
 
-					foundServers := novaCountServers(rName, "")
+					foundServers := novaCountServers(novaCmd, rName, "")
 					So(foundServers, ShouldBeBetweenOrEqual, 1, int(eta/10)) // (assuming a ~10s spawn time)
 
 					// after the last run, they are all auto-destroyed
 					<-time.After(20 * time.Second)
 
-					foundServers = novaCountServers(rName, "")
+					foundServers = novaCountServers(novaCmd, rName, "")
 					So(foundServers, ShouldEqual, 0)
 
-					// at least one of the cmds should have run on the local
-					// machine
-					_, err = os.Stat(oFile)
-					So(err, ShouldBeNil)
+					// *** not really confirming that the cmds actually ran on
+					// the spawned servers
 				})
 
 				// *** we really need to mock OpenStack instead of setting
@@ -684,7 +742,7 @@ func TestOpenstack(t *testing.T) {
 
 					<-time.After(20 * time.Second)
 
-					foundServers := novaCountServers(rName, "")
+					foundServers := novaCountServers(novaCmd, rName, "")
 					So(foundServers, ShouldEqual, 0)
 
 					debugCounter = 0
@@ -692,8 +750,8 @@ func TestOpenstack(t *testing.T) {
 				})
 
 				// *** test if we have a Centos 7 image to use...
-				if osPrefix != "Centos 7 (2016-09-06)" {
-					oReqs["cloud_os"] = "Centos 7 (2016-09-06)"
+				if osPrefix != "Centos 7" {
+					oReqs["cloud_os"] = "Centos 7"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
@@ -715,7 +773,7 @@ func TestOpenstack(t *testing.T) {
 								select {
 								case <-ticker.C:
 									ssync.Lock()
-									spawned = novaCountServers(rName, oReqs["cloud_os"])
+									spawned = novaCountServers(novaCmd, rName, oReqs["cloud_os"])
 									if spawned > 0 {
 										ticker.Stop()
 										ssync.Unlock()
@@ -737,7 +795,7 @@ func TestOpenstack(t *testing.T) {
 
 						<-time.After(20 * time.Second)
 
-						foundServers := novaCountServers(rName, "")
+						foundServers := novaCountServers(novaCmd, rName, "")
 						So(foundServers, ShouldEqual, 0)
 
 						// none of the cmds should have run on the local machine
@@ -770,7 +828,7 @@ func TestOpenstack(t *testing.T) {
 								for {
 									select {
 									case <-ticker.C:
-										spawned := novaCountServers(rName, oReqs["cloud_os"])
+										spawned := novaCountServers(novaCmd, rName, oReqs["cloud_os"])
 										if spawned > maxSpawned {
 											maxSpawned = spawned
 										}
@@ -804,7 +862,7 @@ func TestOpenstack(t *testing.T) {
 			// wait a while for any remaining jobs to finish
 			So(waitToFinish(s, 60, 1000), ShouldBeTrue)
 		} else {
-			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova installed", func() {})
+			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova or openstack installed", func() {})
 		}
 	})
 }
@@ -851,9 +909,9 @@ func waitToFinish(s *Scheduler, maxS int, interval int) bool {
 	return answer
 }
 
-func novaCountServers(rName, osPrefix string) int {
+func novaCountServers(novaCmd string, rName, osPrefix string) int {
 	if osPrefix == "" {
-		cmd := exec.Command("bash", "-c", "nova list | grep -c "+rName)
+		cmd := exec.Command("bash", "-c", novaCmd+" list | grep -c "+rName)
 		out, err := cmd.Output()
 		if err == nil {
 			count, err := strconv.Atoi(strings.TrimSpace(string(out)))
@@ -862,13 +920,13 @@ func novaCountServers(rName, osPrefix string) int {
 			}
 		}
 	} else {
-		cmd := exec.Command("bash", "-c", "nova list | grep "+rName)
+		cmd := exec.Command("bash", "-c", novaCmd+" list | grep "+rName)
 		out, err := cmd.Output()
 		if err == nil {
 			r := regexp.MustCompile(rName + "-\\S+")
 			count := 0
 			for _, name := range r.FindAll(out, -1) {
-				showCmd := exec.Command("bash", "-c", "nova show "+string(name)+" | grep image")
+				showCmd := exec.Command("bash", "-c", novaCmd+" show "+string(name)+" | grep image")
 				showOut, err := showCmd.Output()
 				if err == nil {
 					if strings.Contains(string(showOut), osPrefix) {

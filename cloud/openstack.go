@@ -31,6 +31,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -82,10 +83,13 @@ type openstackp struct {
 	computeClient     *gophercloud.ServiceClient
 	errorBackoff      *backoff.Backoff
 	externalNetworkID string
-	fmap              map[string]Flavor
+	fmap              map[string]*Flavor
+	fmapMutex         sync.RWMutex
+	lastFlavorCache   time.Time
+	imap              map[string]*images.Image
+	imapMutex         sync.RWMutex
 	hasDefaultGroup   bool
 	ipNet             *net.IPNet
-	lastFlavorCache   time.Time
 	networkClient     *gophercloud.ServiceClient
 	networkName       string
 	networkUUID       string
@@ -177,8 +181,15 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	}
 
 	// get the details of all the possible server flavors
-	p.fmap = make(map[string]Flavor)
+	p.fmap = make(map[string]*Flavor)
 	err = p.cacheFlavors()
+	if err != nil {
+		return err
+	}
+
+	// get the details of all active images
+	p.imap = make(map[string]*images.Image)
+	err = p.cacheImages()
 	if err != nil {
 		return err
 	}
@@ -202,31 +213,113 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	return err
 }
 
-// cacheFlavors retrieves the current list of flavors from OpenStack at most
-// once every 30mins, and caches them in p. Old no-longer existent flavors are
-// kept forever, so we can still see what resources old instances are using.
+// cacheFlavors retrieves the current list of flavors from OpenStack and caches
+// them in p. Old no-longer existent flavors are kept forever, so we can still
+// see what resources old instances are using.
 func (p *openstackp) cacheFlavors() error {
-	if len(p.fmap) == 0 || time.Since(p.lastFlavorCache) > 30*time.Minute {
-		pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
-		err := pager.EachPage(func(page pagination.Page) (bool, error) {
-			flavorList, err := flavors.ExtractFlavors(page)
-			if err != nil {
-				return false, err
-			}
-
-			for _, f := range flavorList {
-				p.fmap[f.ID] = Flavor{
-					ID:    f.ID,
-					Name:  f.Name,
-					Cores: f.VCPUs,
-					RAM:   f.RAM,
-					Disk:  f.Disk,
-				}
-			}
-			return true, nil
-		})
+	p.fmapMutex.Lock()
+	defer func() {
 		p.lastFlavorCache = time.Now()
-		return err
+		p.fmapMutex.Unlock()
+	}()
+
+	pager := flavors.ListDetail(p.computeClient, flavors.ListOpts{})
+	return pager.EachPage(func(page pagination.Page) (bool, error) {
+		flavorList, err := flavors.ExtractFlavors(page)
+		if err != nil {
+			return false, err
+		}
+
+		for _, f := range flavorList {
+			p.fmap[f.ID] = &Flavor{
+				ID:    f.ID,
+				Name:  f.Name,
+				Cores: f.VCPUs,
+				RAM:   f.RAM,
+				Disk:  f.Disk,
+			}
+		}
+		return true, nil
+	})
+}
+
+// getFlavor retrieves the desired flavor by id from the cache. If it's not in
+// the cache, will call cacheFlavors() to get any newly added flavors. If still
+// not in the cache, returns nil and an error.
+func (p *openstackp) getFlavor(flavorID string) (*Flavor, error) {
+	p.fmapMutex.RLock()
+	flavor, found := p.fmap[flavorID]
+	p.fmapMutex.RUnlock()
+	if !found {
+		err := p.cacheFlavors()
+		if err != nil {
+			return nil, err
+		}
+
+		p.fmapMutex.RLock()
+		flavor, found = p.fmap[flavorID]
+		p.fmapMutex.RUnlock()
+		if !found {
+			return nil, errors.New("invalid flavor ID: " + flavorID)
+		}
+	}
+	return flavor, nil
+}
+
+// cacheImages retrieves the current list of images from OpenStack and caches
+// them in p. Old no-longer existent images are kept forever, so we can still
+// see what images old instances are using.
+func (p *openstackp) cacheImages() error {
+	p.imapMutex.Lock()
+	defer p.imapMutex.Unlock()
+	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
+	return pager.EachPage(func(page pagination.Page) (bool, error) {
+		imageList, errf := images.ExtractImages(page)
+		if errf != nil {
+			return false, errf
+		}
+
+		for _, i := range imageList {
+			if i.Progress == 100 {
+				thisI := i // copy before storing ref
+				p.imap[i.ID] = &thisI
+			}
+		}
+
+		return true, nil
+	})
+}
+
+// getImage retrieves the desired image by name or id prefix from the cache. If
+// it's not in the cache, will call cacheImages() to get any newly added images.
+// If still not in the cache, returns nil and an error.
+func (p *openstackp) getImage(prefix string) (*images.Image, error) {
+	image := p.getImageFromCache(prefix)
+	if image != nil {
+		return image, nil
+	}
+
+	err := p.cacheImages()
+	if err != nil {
+		return nil, err
+	}
+
+	image = p.getImageFromCache(prefix)
+	if image != nil {
+		return image, nil
+	}
+
+	return nil, errors.New("no OS image with prefix [" + prefix + "] was found")
+}
+
+// getImageFromCache is used by getImage(); don't call this directly.
+func (p *openstackp) getImageFromCache(prefix string) *images.Image {
+	p.imapMutex.RLock()
+	defer p.imapMutex.RUnlock()
+	for _, i := range p.imap {
+		if strings.HasPrefix(i.Name, prefix) || strings.HasPrefix(i.ID, prefix) {
+			return i
+		}
 	}
 	return nil
 }
@@ -513,12 +606,20 @@ func (p *openstackp) inCloud() bool {
 }
 
 // flavors returns all our flavors.
-func (p *openstackp) flavors() map[string]Flavor {
-	err := p.cacheFlavors()
-	if err != nil {
-		p.Warn("failed to cache available flavors", "err", err)
+func (p *openstackp) flavors() map[string]*Flavor {
+	// update the cached flavors at most once every half hour
+	p.fmapMutex.RLock()
+	if time.Since(p.lastFlavorCache) > 30*time.Minute {
+		p.fmapMutex.RUnlock()
+		err := p.cacheFlavors()
+		if err != nil {
+			p.Warn("failed to cache available flavors", "err", err)
+		}
+		p.fmapMutex.RLock()
 	}
-	return p.fmap
+	fmap := p.fmap
+	p.fmapMutex.RUnlock()
+	return fmap
 }
 
 // getQuota achieves the aims of GetQuota().
@@ -550,8 +651,11 @@ func (p *openstackp) getQuota() (*Quota, error) {
 
 		for _, server := range serverList {
 			quota.UsedInstances++
-			f, found := p.fmap[server.Flavor["id"].(string)]
-			if found { // should always be found...
+			f, errf := p.getFlavor(server.Flavor["id"].(string))
+			if errf != nil {
+				return false, errf
+			}
+			if f != nil { // should always be found...
 				quota.UsedCores += f.Cores
 				quota.UsedRAM += f.RAM
 			}
@@ -566,43 +670,21 @@ func (p *openstackp) getQuota() (*Quota, error) {
 
 // spawn achieves the aims of Spawn()
 func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error) {
-	// get available images, pick the one that matches desired OS
-	// *** rackspace API lets you filter on eg. os_distro=ubuntu and os_version=12.04; can we do the same here?
-	pager := images.ListDetail(p.computeClient, images.ListOpts{Status: "ACTIVE"})
-	var imageID string
-	var imageDisk int
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		imageList, errf := images.ExtractImages(page)
-		if errf != nil {
-			return false, errf
-		}
-
-		for _, i := range imageList {
-			if i.Progress == 100 && (strings.HasPrefix(i.Name, osPrefix) || strings.HasPrefix(i.ID, osPrefix)) {
-				imageID = i.ID
-				imageDisk = i.MinDisk
-				return false, nil
-			}
-		}
-
-		return true, nil
-	})
+	// get the image that matches desired OS
+	image, err := p.getImage(osPrefix)
 	if err != nil {
 		return serverID, serverIP, serverName, adminPass, err
 	}
-	if imageID == "" {
-		return serverID, serverIP, serverName, adminPass, errors.New("no OS image with prefix [" + osPrefix + "] was found")
-	}
 
-	flavor, found := p.fmap[flavorID]
-	if !found {
-		return serverID, serverIP, serverName, adminPass, errors.New("invalid flavor ID: " + flavorID)
+	flavor, err := p.getFlavor(flavorID)
+	if err != nil {
+		return serverID, serverIP, serverName, adminPass, err
 	}
 
 	// if the OS image itself specifies a minimum disk size and it's higher than
 	// requested disk, increase our requested disk
-	if imageDisk > diskGB {
-		diskGB = imageDisk
+	if image.MinDisk > diskGB {
+		diskGB = image.MinDisk
 	}
 
 	// if we previously had a problem spawning a server, wait before attempting
@@ -624,7 +706,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	createOpts := servers.CreateOpts{
 		Name:           serverName,
 		FlavorRef:      flavorID,
-		ImageRef:       imageID,
+		ImageRef:       image.ID,
 		SecurityGroups: secGroups,
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
 		UserData:       sentinelInitScript,
@@ -636,7 +718,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				CreateOptsBuilder: createOpts,
 				BlockDevice: []bootfromvolume.BlockDevice{
 					{
-						UUID:                imageID,
+						UUID:                image.ID,
 						SourceType:          bootfromvolume.SourceImage,
 						DeleteOnTermination: true,
 						DestinationType:     bootfromvolume.DestinationVolume,

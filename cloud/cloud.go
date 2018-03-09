@@ -186,7 +186,7 @@ type provideri interface {
 	// achieve the aims of GetQuota()
 	getQuota() (*Quota, error)
 	// return a map of all server flavors, with their flavor ids as keys
-	flavors() map[string]Flavor
+	flavors() map[string]*Flavor
 	// achieve the aims of Spawn(), creating sentinelFilePath once the new server is ready to use.
 	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error)
 	// achieve the aims of CheckServer()
@@ -414,7 +414,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 		}
 	}
 
-	var fr Flavor
+	var fr *Flavor
 	for _, f := range p.impl.flavors() {
 		if regex != "" {
 			if !r.MatchString(f.Name) {
@@ -423,7 +423,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 		}
 
 		if f.Cores >= cores && f.RAM >= ramMB {
-			if fr.ID == "" {
+			if fr == nil {
 				fr = f
 			} else if f.Cores < fr.Cores {
 				fr = f
@@ -437,11 +437,11 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 		}
 	}
 
-	if fr.ID == "" {
+	if fr == nil {
 		return nil, Error{"cloud", "cheapestServerFlavor", ErrNoFlavor}
 	}
 
-	return &fr, nil
+	return fr, nil
 }
 
 // Spawn creates a new server using an OS image with a name or ID prefixed with
@@ -547,9 +547,11 @@ SENTINEL:
 	for {
 		select {
 		case <-ticker.C:
-			_, _, fileErr := s.RunCmd("file "+sentinelFilePath, false)
-			if fileErr == nil {
+			o, e, fileErr := s.RunCmd("file "+sentinelFilePath, false)
+			if fileErr == nil && !strings.Contains(o, "No such file") && !strings.Contains(e, "No such file") {
 				ticker.Stop()
+				// *** o contains "empty"; test for that instead? Does file
+				// behave the same way on all linux variants?
 				_, _, rmErr := s.RunCmd("sudo rm "+sentinelFilePath, false)
 				if rmErr != nil {
 					s.logger.Warn("failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
@@ -690,7 +692,7 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte) (*Serve
 		IP:     "127.0.0.1",
 		OS:     os,
 		Script: postCreationScript,
-		Flavor: Flavor{
+		Flavor: &Flavor{
 			RAM:   maxRAM,
 			Cores: runtime.NumCPU(),
 			Disk:  diskSize,
