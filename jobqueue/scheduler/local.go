@@ -59,8 +59,10 @@ type canCounter func(req *Requirements) (canCount int)
 type stateUpdater func()
 
 // cmdRunners are functions used by processQueue() to actually run cmds.
-// (Their reason for being is the same as for canCounters.)
-type cmdRunner func(cmd string, req *Requirements) error
+// (Their reason for being is the same as for canCounters.) The reservedCh
+// should be sent true as soon as resources have been reserved to run the cmd,
+// or sent false if something went wrong before that.
+type cmdRunner func(cmd string, req *Requirements, reservedCh chan bool) error
 
 // cancelCmdRunner are functions used by processQueue() to cancel the running
 // of cmdRunners that started but didn't really start to run the cmd. You give
@@ -89,6 +91,8 @@ type local struct {
 	cancelRunCmdFunc cancelCmdRunner
 	autoProcessing   bool
 	stopAuto         chan bool
+	processing       bool
+	recall           bool
 	log15.Logger
 }
 
@@ -217,6 +221,12 @@ func (s *local) processQueue() error {
 	if s.cleaned {
 		return nil
 	}
+
+	if s.processing {
+		s.recall = true
+		return nil
+	}
+
 	var key, cmd string
 	var req *Requirements
 	var count, canCount int
@@ -265,7 +275,7 @@ func (s *local) processQueue() error {
 
 		// now see if there's remaining capacity to run the job
 		canCount = s.canCountFunc(req)
-		s.Debug("processQueue canCount", "can", canCount)
+		s.Debug("processQueue canCount", "can", canCount, "running", running, "should", shouldCount)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
@@ -286,6 +296,7 @@ func (s *local) processQueue() error {
 
 	// start running what we can
 	s.Debug("processQueue runCmdFunc", "count", canCount)
+	reserved := make(chan bool, canCount)
 	for i := 0; i < canCount; i++ {
 		s.ram += req.RAM
 		s.cores += req.Cores
@@ -294,7 +305,7 @@ func (s *local) processQueue() error {
 		go func() {
 			defer internal.LogPanic(s.Logger, "runCmd", true)
 
-			err := s.runCmdFunc(cmd, req)
+			err := s.runCmdFunc(cmd, req, reserved)
 			s.mutex.Lock()
 			s.ram -= req.RAM
 			s.cores -= req.Cores
@@ -336,6 +347,30 @@ func (s *local) processQueue() error {
 		}()
 	}
 
+	// before allowing this function to be called again, wait for all the above
+	// runCmdFuncs to at least get as far as reserving their resources, so
+	// subsequent calls to canCountFunc will be accurate
+	s.processing = true
+	go func() {
+		for i := 0; i < canCount; i++ {
+			<-reserved
+		}
+
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		s.processing = false
+		recall := s.recall
+		s.recall = false
+		if recall {
+			go func() {
+				errp := s.processQueue()
+				if errp != nil {
+					s.Warn("processQueue recall failed", "err", errp)
+				}
+			}()
+		}
+	}()
+
 	// the item will now be released, so on the next call to this method we'll
 	// try to run the remainder
 	return nil
@@ -363,16 +398,18 @@ func (s *local) canCount(req *Requirements) int {
 // NB: we only return an error if we can't start the cmd, not if the command
 // fails (schedule() only guarantees that the cmds are run count times, not that
 // they run /successful/ that many times).
-func (s *local) runCmd(cmd string, req *Requirements) error {
+func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	err := ec.Start()
 	if err != nil {
 		s.Error("runCmd start", "cmd", cmd, "err", err)
+		reservedCh <- false
 		return err
 	}
 
 	s.mutex.Lock()
 	s.rcount++
+	reservedCh <- true
 	s.mutex.Unlock()
 
 	//*** set up monitoring of RAM and time usage and kill if >> than

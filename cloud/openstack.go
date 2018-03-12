@@ -669,7 +669,7 @@ func (p *openstackp) getQuota() (*Quota, error) {
 }
 
 // spawn achieves the aims of Spawn()
-func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error) {
+func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error) {
 	// get the image that matches desired OS
 	image, err := p.getImage(osPrefix)
 	if err != nil {
@@ -735,6 +735,8 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			KeyName:           resources.ResourceName,
 		}).Extract()
 	}
+
+	usingQuotaCh <- true
 
 	if err != nil {
 		return serverID, serverIP, serverName, adminPass, err

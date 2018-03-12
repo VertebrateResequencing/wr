@@ -187,8 +187,11 @@ type provideri interface {
 	getQuota() (*Quota, error)
 	// return a map of all server flavors, with their flavor ids as keys
 	flavors() map[string]*Flavor
-	// achieve the aims of Spawn(), creating sentinelFilePath once the new server is ready to use.
-	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error)
+	// achieve the aims of Spawn(). Must send on the supplied usingQuotaCh as
+	// soon as the new server has been requested and is counted as using up
+	// quota (or the request fails), then create sentinelFilePath once the new
+	// server is in powered up (but not necessarily fully booted up).
+	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error)
 	// achieve the aims of CheckServer()
 	checkServer(serverID string) (bool, error)
 	// achieve the aims of DestroyServer()
@@ -444,6 +447,11 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 	return fr, nil
 }
 
+// SpawnUsingQuotaCallback is the callback function you supply to Spawn() that
+// will be called as soon as the request for the new server has been issued and
+// is counted as using up quota (but before it has powered up).
+type SpawnUsingQuotaCallback func()
+
 // Spawn creates a new server using an OS image with a name or ID prefixed with
 // the given os name or ID, with the given flavor ID (that you could get from
 // CheapestServerFlavor().ID) and at least the given amount of disk space
@@ -458,6 +466,11 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 // If you need an external IP so that you can ssh to the server externally,
 // supply true as the last argument.
 //
+// You can supply an optinoal callback function that will be called as soon as
+// the new server request has gone out (and so is using up your quota), but
+// before the new server has powered up (which is when Spawn() will return the
+// new server details).
+//
 // Returns a *Server so you can s.Destroy it later, find out its ip address so
 // you can ssh to it, and get its admin password in case you need to sudo on the
 // server. You will need to know the username that you can log in with on your
@@ -469,13 +482,21 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 // NB: the server will likely not be ready to use yet, having not completed its
 // boot up; call server.WaitUntilReady() before trying to use the server for
 // anything.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool) (*Server, error) {
+func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool, usingQuotaCB ...SpawnUsingQuotaCallback) (*Server, error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
 		return nil, Error{"cloud", "Spawn", ErrBadFlavor}
 	}
 
-	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP)
+	usingQuota := make(chan bool)
+	go func() {
+		<-usingQuota
+		close(usingQuota)
+		if len(usingQuotaCB) == 1 {
+			usingQuotaCB[0]()
+		}
+	}()
+	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP, usingQuota)
 
 	maxDisk := f.Disk
 	if diskGB > maxDisk {

@@ -638,7 +638,11 @@ func TestOpenstack(t *testing.T) {
 					i := 0
 					for {
 						i++
-						err := oss.runCmd("sleep 4", testReq)
+						reserved := make(chan bool)
+						go func() {
+							<-reserved
+						}()
+						err := oss.runCmd("sleep 4", testReq, reserved)
 						if err == nil || i == 3 {
 							done <- true
 							break
@@ -697,7 +701,6 @@ func TestOpenstack(t *testing.T) {
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
 					spawned := <-spawnedCh
 					close(spawnedCh)
-					fmt.Printf("\nspawned: %d\n", spawned)
 					So(spawned, ShouldBeBetweenOrEqual, 2, count)
 
 					foundServers := novaCountServers(novaCmd, rName, "")

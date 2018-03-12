@@ -655,7 +655,7 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 // not if the command fails (schedule() only guarantees that the cmds are run
 // count times, not that they are /successful/ that many times). New servers are
 // created sequentially to avoid overloading OpenStack's sub-systems.
-func (s *opst) runCmd(cmd string, req *Requirements) error {
+func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
 	// look through space on existing servers to see if we can run cmd on one
 	// of them
 	var osPrefix string
@@ -690,6 +690,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 	if s.cleaned {
 		s.mutex.Unlock()
+		reservedCh <- false
 		return nil
 	}
 	logger.Debug("runCmd", "servers", len(s.servers), "standins", len(s.standins))
@@ -717,6 +718,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 				server, err = standinServer.waitForServer()
 				if err != nil || server == nil {
 					logger.Debug("giving up on standin", "err", err)
+					reservedCh <- false
 					return err
 				}
 				s.mutex.Lock()
@@ -738,6 +740,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			if numServers >= s.quotaMaxInstances {
 				s.mutex.Unlock()
 				logger.Debug("over quota", "servers", numServers, "max", s.quotaMaxInstances)
+				reservedCh <- false
 				return errors.New("over quota")
 			}
 		}
@@ -746,6 +749,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		if err != nil {
 			s.mutex.Unlock()
 			s.notifyMessage(fmt.Sprintf("OpenStack: Was unable to determine a server flavor to use for requirements %s: %s", req.Stringify(), err))
+			reservedCh <- false
 			return err
 		}
 		volumeAffected := req.Disk > flavor.Disk
@@ -758,6 +762,7 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 		if volumeAffected {
 			s.reservedVolume += req.Disk
 		}
+		reservedCh <- true
 
 		u, _ := uuid.NewV4()
 		standinID := u.String()
@@ -817,38 +822,34 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 			s.mutex.Lock()
 		}
 
-		// just before actually spawning, drop our reserved values down or
-		// we'll end up double-counting resource usage in canCount(), since that
-		// takes in to account resources used by an in-progress spawn. It's ok
-		// to do this a little early since that just means we underestimate our
-		// resource usage and may try to spawn when we can't, instead of
-		// overestimating and not trying to spawn when we could
-		s.reservedInstances--
-		s.reservedCores -= flavor.Cores
-		s.reservedRAM -= flavor.RAM
-		if volumeAffected {
-			s.reservedVolume -= req.Disk
+		// unlock before spawning, since we don't want to block here waiting for
+		// that to complete
+		s.mutex.Unlock()
+
+		// immediately after the spawn request goes through (and so presumably is
+		// using up quota), but before the new server powers up, drop our
+		// reserved values down or we'll end up double-counting resource usage
+		// in canCount(), since that takes in to account resources used by an
+		// in-progress spawn.
+		usingQuotaCB := func() {
+			s.mutex.Lock()
+			s.reservedInstances--
+			s.reservedCores -= flavor.Cores
+			s.reservedRAM -= flavor.RAM
+			if volumeAffected {
+				s.reservedVolume -= req.Disk
+			}
+			s.mutex.Unlock()
 		}
 
-		// unlock just after we issue the spawn request, since we don't want to
-		// block here waiting for that to complete
-		unlocked := make(chan bool)
-		go func() {
-			<-time.After(10 * time.Millisecond)
-			s.mutex.Unlock()
-			unlocked <- true
-		}()
-
 		// spawn
-		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false)
+		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, usingQuotaCB)
 		serverID := "failed"
 		if server != nil {
 			serverID = server.ID
 		}
 		logger = logger.New("server", serverID)
 		logger.Debug("spawned")
-
-		<-unlocked // in case the spawn call takes less than 10ms
 
 		// spawn completed; if we have standins that are waiting to spawn, tell
 		// one of them to go ahead
@@ -942,6 +943,8 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 
 		s.servers[server.ID] = server
 		standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
+	} else {
+		reservedCh <- true
 	}
 
 	s.mutex.Unlock()
@@ -950,7 +953,11 @@ func (s *opst) runCmd(cmd string, req *Requirements) error {
 	var err error
 	if server.IP == "127.0.0.1" {
 		logger.Debug("running command locally", "cmd", cmd)
-		err = s.local.runCmd(cmd, req)
+		reserved := make(chan bool)
+		go func() {
+			<-reserved
+		}()
+		err = s.local.runCmd(cmd, req, reserved)
 	} else {
 		logger.Debug("running command remotely", "cmd", cmd)
 		_, _, err = server.RunCmd(cmd, false)
