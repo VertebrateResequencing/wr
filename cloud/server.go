@@ -137,7 +137,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 					s.onDeathrow = false
 					s.mutex.Unlock()
 					err := s.Destroy()
-					s.logger.Debug("server died on deathdrow", "err", err)
+					s.logger.Debug("server died on deathrow", "err", err)
 					return
 				}
 			}
