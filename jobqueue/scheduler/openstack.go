@@ -482,6 +482,9 @@ func (s *opst) determineFlavor(req *Requirements) (*cloud.Flavor, error) {
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources.
 func (s *opst) canCount(req *Requirements) int {
+	s.resourceMutex.RLock()
+	defer s.resourceMutex.RUnlock()
+
 	// we don't do any actual checking of current resources on the machines, but
 	// instead rely on our simple tracking based on how many cores and RAM
 	// prior cmds were /supposed/ to use. This could be bad for misbehaving cmds
@@ -756,6 +759,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 		// because spawning can take a while, we record that we're going to use
 		// up some of our quota and unlock so other things can proceed
+		s.resourceMutex.Lock()
 		s.reservedInstances++
 		s.reservedCores += flavor.Cores
 		s.reservedRAM += flavor.RAM
@@ -763,6 +767,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			s.reservedVolume += req.Disk
 		}
 		reservedCh <- true
+		s.resourceMutex.Unlock()
 
 		u, _ := uuid.NewV4()
 		standinID := u.String()
@@ -793,11 +798,11 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			}()
 			err = <-done
 			if err != nil {
-				s.mutex.Lock()
+				s.resourceMutex.Lock()
 				s.reservedInstances--
 				s.reservedCores -= flavor.Cores
 				s.reservedRAM -= flavor.RAM
-				s.mutex.Unlock()
+				s.resourceMutex.Unlock()
 				return err
 			}
 			s.mutex.Lock()
@@ -832,14 +837,14 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		// in canCount(), since that takes in to account resources used by an
 		// in-progress spawn.
 		usingQuotaCB := func() {
-			s.mutex.Lock()
+			s.resourceMutex.Lock()
 			s.reservedInstances--
 			s.reservedCores -= flavor.Cores
 			s.reservedRAM -= flavor.RAM
 			if volumeAffected {
 				s.reservedVolume -= req.Disk
 			}
-			s.mutex.Unlock()
+			s.resourceMutex.Unlock()
 		}
 
 		// spawn

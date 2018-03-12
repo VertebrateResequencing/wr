@@ -80,6 +80,7 @@ type local struct {
 	cores            int
 	rcount           int
 	mutex            sync.Mutex
+	resourceMutex    sync.RWMutex
 	queue            *queue.Queue
 	running          map[string]int
 	cleaned          bool
@@ -298,21 +299,23 @@ func (s *local) processQueue() error {
 	s.Debug("processQueue runCmdFunc", "count", canCount)
 	reserved := make(chan bool, canCount)
 	for i := 0; i < canCount; i++ {
-		s.ram += req.RAM
-		s.cores += req.Cores
 		s.running[key]++
 
 		go func() {
 			defer internal.LogPanic(s.Logger, "runCmd", true)
 
 			err := s.runCmdFunc(cmd, req, reserved)
+
 			s.mutex.Lock()
+			s.resourceMutex.Lock()
 			s.ram -= req.RAM
 			s.cores -= req.Cores
+			s.resourceMutex.Unlock()
 			s.running[key]--
 			if s.running[key] <= 0 {
 				delete(s.running, key)
 			}
+
 			var stopAuto bool
 			if err == nil {
 				j.Lock()
@@ -379,6 +382,9 @@ func (s *local) processQueue() error {
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources.
 func (s *local) canCount(req *Requirements) int {
+	s.resourceMutex.RLock()
+	defer s.resourceMutex.RUnlock()
+
 	// we don't do any actual checking of current resources on the machine, but
 	// instead rely on our simple tracking based on how many cores and RAM prior
 	// cmds were /supposed/ to use. This could be bad for misbehaving cmds that
@@ -409,8 +415,13 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) erro
 
 	s.mutex.Lock()
 	s.rcount++
-	reservedCh <- true
 	s.mutex.Unlock()
+
+	s.resourceMutex.Lock()
+	s.ram += req.RAM
+	s.cores += req.Cores
+	reservedCh <- true
+	s.resourceMutex.Unlock()
 
 	//*** set up monitoring of RAM and time usage and kill if >> than
 	// req.RAM or req.Time

@@ -652,7 +652,9 @@ func TestOpenstack(t *testing.T) {
 
 				<-time.After(3000 * time.Millisecond)
 
+				oss.mutex.Lock()
 				So(len(oss.servers)+len(oss.standins), ShouldEqual, numServers+1)
+				oss.mutex.Unlock()
 				So(oss.canCount(testReq), ShouldEqual, can-1)
 
 				<-done
