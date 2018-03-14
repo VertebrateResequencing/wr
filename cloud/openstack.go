@@ -909,7 +909,7 @@ func (p *openstackp) destroyServer(serverID string) error {
 	// is not there anymore; we don't care about any others
 	errs := servers.WaitForStatus(p.computeClient, serverID, "xxxx", 60)
 	if errs.Error() != "Resource not found" {
-		p.Warn("server destruction ended on a strange status?", "server", serverID, "err", errs)
+		p.Warn("server destruction failed", "server", serverID, "err", errs)
 	}
 	return err
 }
