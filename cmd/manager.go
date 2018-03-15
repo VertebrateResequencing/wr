@@ -395,7 +395,12 @@ func logStarted(s *jobqueue.ServerInfo) {
 }
 
 func startJQ(postCreation []byte) {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	if runtime.NumCPU() == 1 {
+		// we might lock up with only 1 proc if we mount
+		runtime.GOMAXPROCS(2)
+	} else {
+		runtime.GOMAXPROCS(runtime.NumCPU())
+	}
 
 	// change the app logger to log to both STDERR and our configured log file;
 	// we also create a new logger for internal use by the server later

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -53,6 +54,11 @@ runner stops picking up new commands and exits instead; max_time does not cause
 the runner to kill itself if the cmd it is running takes longer than max_time to
 complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if runtime.NumCPU() == 1 {
+			// we might lock up with only 1 proc if we mount
+			runtime.GOMAXPROCS(2)
+		}
+
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
 		if timeoutint < (reserveint + 5) {

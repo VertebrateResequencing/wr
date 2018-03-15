@@ -3494,6 +3494,11 @@ func TestJobqueueWithMounts(t *testing.T) {
 		return
 	}
 
+	if runtime.NumCPU() == 1 {
+		// we lock up with only 1 proc
+		runtime.GOMAXPROCS(2)
+	}
+
 	// for these tests to work, JOBQUEUE_REMOTES3_PATH must be the bucket name
 	// and path to an S3 directory set up as per TestS3RemoteIntegration in
 	// github.com/VertebrateResequencing/muxfys/s3_test.go. You must also have
