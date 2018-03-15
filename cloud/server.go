@@ -64,6 +64,7 @@ type Server struct {
 	cancelDestruction chan bool
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
+	created           bool // to distinguish instances we discovered or spawned
 	destroyed         bool
 	goneBad           bool
 	location          *time.Location
@@ -201,9 +202,9 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 
 		// dial in to the server, allowing certain errors that indicate that the
 		// network or server isn't really ready for ssh yet; wait for up to
-		// 5mins for success
+		// 5mins for success, if we had only just created this server
 		hostAndPort := s.IP + ":22"
-		s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
+		s.sshclient, err = sshDial(hostAndPort, sshConfig)
 		if err != nil {
 			limit := time.After(sshTimeOut)
 			ticker := time.NewTicker(1 * time.Second)
@@ -212,8 +213,8 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 			for {
 				select {
 				case <-ticker.C:
-					s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
-					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
+					s.sshclient, err = sshDial(hostAndPort, sshConfig)
+					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
 						continue DIAL
 					}
 
@@ -223,7 +224,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 					// brings up sshd and starts rejecting connections before
 					// the centos user gets added)
 					ticks++
-					if err == nil || ticks == 45 {
+					if err == nil || ticks == 9 || !s.created {
 						ticker.Stop()
 						break DIAL
 					} else {
@@ -241,6 +242,25 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 		}
 	}
 	return s.sshclient, nil
+}
+
+// sshDial calls ssh.Dial() and enforces the config's timeout, which ssh.Dial()
+// doesn't always seem to obey.
+func sshDial(addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+	clientCh := make(chan *ssh.Client, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		sshClient, err := ssh.Dial("tcp", addr, sshConfig)
+		clientCh <- sshClient
+		errCh <- err
+	}()
+	deadline := time.After(sshConfig.Timeout + 1*time.Second)
+	select {
+	case err := <-errCh:
+		return <-clientCh, err
+	case <-deadline:
+		return nil, fmt.Errorf("connection could not be established")
+	}
 }
 
 // SSHSession returns an ssh.Session object that could be used to do things via

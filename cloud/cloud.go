@@ -516,6 +516,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		provider:     p,
 		cancelRunCmd: make(map[int]chan bool),
 		logger:       p.Logger.New("server", serverID),
+		created:      true,
 	}
 
 	p.Lock()

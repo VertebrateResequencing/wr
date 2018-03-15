@@ -458,25 +458,29 @@ and accessible.`,
 			cloudLogFilePath := config.ManagerLogFile + "." + providerName
 			errf := headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
 
-			// display any crit lines in that log file
-			if errf == nil {
-				f, errf := os.Open(cloudLogFilePath)
+			if errf != nil {
+				warn("could not download the remote log file: %s", errf)
+			} else {
+				// display any crit lines in that log file
 				if errf == nil {
-					explained := false
-					scanner := bufio.NewScanner(f)
-					for scanner.Scan() {
-						line := scanner.Text()
-						if strings.Contains(line, "lvl=crit") {
-							if !explained {
-								warn("looks like the manager on the remote server suffered critical errors:")
-								explained = true
+					f, errf := os.Open(cloudLogFilePath)
+					if errf == nil {
+						explained := false
+						scanner := bufio.NewScanner(f)
+						for scanner.Scan() {
+							line := scanner.Text()
+							if strings.Contains(line, "lvl=crit") {
+								if !explained {
+									warn("looks like the manager on the remote server suffered critical errors:")
+									explained = true
+								}
+								fmt.Println(line)
 							}
-							fmt.Println(line)
 						}
-					}
 
-					if serverHadProblems {
-						info("the remote manager log has been saved to %s", cloudLogFilePath)
+						if serverHadProblems {
+							info("the remote manager log has been saved to %s", cloudLogFilePath)
+						}
 					}
 				}
 			}
