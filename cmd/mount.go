@@ -175,7 +175,7 @@ don't intend to write to a mount, just leave this parameter out. Note that when
 not cached, only serial writes are possible.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// set up logging
-		logLevel := log15.LvlError
+		logLevel := log15.LvlWarn
 		if mountVerbose {
 			logLevel = log15.LvlInfo
 		}
