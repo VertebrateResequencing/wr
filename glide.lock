@@ -1,5 +1,5 @@
-hash: 8a8d1702f6511158c36d9c896cf0bd402b627d8e4ba2378d34aba6ae468eb80b
-updated: 2018-03-09T17:01:33.053383894Z
+hash: caa503d5fd90fbe7a55e6b9f8923c6848b9a990d73a88917f528517fd8c78251
+updated: 2018-03-17T20:04:51.52893205Z
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -14,9 +14,9 @@ imports:
 - name: github.com/fatih/color
   version: 507f6050b8568533fb3f5504de8e5205fa62a114
 - name: github.com/go-ini/ini
-  version: a76e4b8c9ac73023bb88120b228cc33ebf4fc3b2
+  version: 6ecc596bd756a16c6e93e4ef9225ecdb9f54ed2c
 - name: github.com/go-mangos/mangos
-  version: 5632b913bd57e2b65b79e0a3d75fed6fd1217bee
+  version: 8a564bf1c583c37fde04ea2cf8e48e8bfa661733
   subpackages:
   - protocol/rep
   - protocol/req
@@ -82,11 +82,11 @@ imports:
 - name: github.com/kr/fs
   version: 2788f0dbd16903de03cb8186e5c7d97b69ad387b
 - name: github.com/mattn/go-colorable
-  version: 7dc3415be66d7cc68bf0182f35c8d31f8d2ad8a7
+  version: efa589957cd060542a26d2dd7832fd6a6c6c3ade
 - name: github.com/mattn/go-isatty
   version: 6ca4dbf54d38eea1a992b3c722a76a5d1c4cb25c
 - name: github.com/minio/minio-go
-  version: 01327a047be34d23deb4292b36b1656f0adc9adc
+  version: 8c7c1ba13da6c92f3434b8ad09fabf99d28b93b6
   subpackages:
   - pkg/credentials
   - pkg/encrypt
@@ -97,9 +97,9 @@ imports:
 - name: github.com/mitchellh/go-homedir
   version: b8bc1bf767474819792c23f32d8286a45736f1c6
 - name: github.com/pkg/errors
-  version: 30136e27e2ac8d167177e8a583aa4c3fea5be833
+  version: 816c9085562cd7ee03e7f8188a1cfd942858cded
 - name: github.com/pkg/sftp
-  version: edb4b7f1fcdc83792050e0e4d273a2a163c5c983
+  version: 49488377fa2f14143ba3067cf7555f60f6c7b550
 - name: github.com/ricochet2200/go-disk-usage
   version: f0d1b743428fc09792f93233d9412f89f88fa2ab
   subpackages:
@@ -111,7 +111,7 @@ imports:
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: 5776ff9c7c5d063d574ef53d740f75c68b448e53
+  version: 6b5767f15eb041f7260435c544a2af72f2f8a422
   subpackages:
   - cpu
   - host
@@ -132,12 +132,14 @@ imports:
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: e36fece8ceb53d66dd714aa7c922423ba6ce2c07
+  version: 6f2f531121820caa7950f59bc31892c969cd1a14
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: 85f98707c97e11569271e4d9b3d397e079c4f4d0
+  version: 374053ea96cb300f8671b8d3b07edeeb06e203b4
   subpackages:
+  - argon2
+  - blake2b
   - curve25519
   - ed25519
   - ed25519/internal/edwards25519
@@ -145,17 +147,17 @@ imports:
   - poly1305
   - ssh
 - name: golang.org/x/net
-  version: 07e8617a6db2368fa55d4616f371ee1b1403c817
+  version: 24dd3780ca4f75fed9f321890729414a4b5d3f13
   subpackages:
   - idna
   - lex/httplex
 - name: golang.org/x/sys
-  version: 349b81fb5c64ec1734eb6ee148df25459ea48517
+  version: 2f1e207ee39ff70f3433e49c6eb52677a515e3b5
   subpackages:
   - unix
   - windows
 - name: golang.org/x/text
-  version: b7ef84aaf62aa3e70962625c80a571ae7c17cb40
+  version: 8c34f848e18c4bd34d02db7f19a0ed1a0a8f5852
   subpackages:
   - secure/bidirule
   - transform
@@ -165,7 +167,7 @@ imports:
   version: 7f97868eec74b32b0982dd158a51a446d1da7eb5
 testImports:
 - name: github.com/gopherjs/gopherjs
-  version: df18d38287ab2ed3138d564e7c8cbe4d5a249d87
+  version: 82b322028c96512b15077093b16a5f1c7ea897ac
   subpackages:
   - js
 - name: github.com/jtolds/gls
