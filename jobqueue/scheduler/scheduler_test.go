@@ -535,14 +535,14 @@ func TestOpenstack(t *testing.T) {
 					So(flavor.ID, ShouldEqual, "2003")
 				} else {
 					// author's pike install
-					So(flavor.ID, ShouldEqual, "2000")
-					So(flavor.RAM, ShouldEqual, 9100)
-					So(flavor.Disk, ShouldEqual, 16)
+					So(flavor.ID, ShouldEqual, "ffeffb4c-4a23-494d-ab3b-6cad2b3c7ff3")
+					So(flavor.RAM, ShouldEqual, 128)
+					So(flavor.Disk, ShouldEqual, 0)
 					So(flavor.Cores, ShouldEqual, 1)
 
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
 					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2000")
+					So(flavor.ID, ShouldEqual, "ffeffb4c-4a23-494d-ab3b-6cad2b3c7ff3")
 
 					flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
 					So(err, ShouldBeNil)
@@ -695,12 +695,29 @@ func TestOpenstack(t *testing.T) {
 					So(s.Busy(), ShouldBeTrue)
 
 					spawnedCh := make(chan int)
+					stopCh := make(chan bool)
 					go func() {
+						max := 0
+						ticker := time.NewTicker(5 * time.Second)
+						for {
+							select {
+							case <-ticker.C:
+								count := novaCountServers(novaCmd, rName, "")
+								if count > max {
+									max = count
+								}
+								continue
+							case <-stopCh:
+								ticker.Stop()
+								spawnedCh <- max
+								return
+							}
+						}
 						<-time.After(20 * time.Second)
-						spawnedCh <- novaCountServers(novaCmd, rName, "")
 					}()
 
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+					stopCh <- true
 					spawned := <-spawnedCh
 					close(spawnedCh)
 					So(spawned, ShouldBeBetweenOrEqual, 2, count)
