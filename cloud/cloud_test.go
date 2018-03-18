@@ -412,14 +412,14 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, flavor.Disk+10, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 
 					stdout, _, err := server.RunCmd("df -h .", false)
 					So(err, ShouldBeNil)
-					So(stdout, ShouldContainSubstring, "30G")
+					So(stdout, ShouldContainSubstring, fmt.Sprintf("%dG", flavor.Disk+10))
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {
