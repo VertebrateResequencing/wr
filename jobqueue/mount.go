@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -141,7 +141,11 @@ func (mcs MountConfigs) String() string {
 	if len(mcs) == 0 {
 		return ""
 	}
-	b, _ := json.Marshal(mcs)
+	b, err := json.Marshal(mcs)
+	if err != nil {
+		// *** throwing away this error...
+		return ""
+	}
 	return string(b)
 }
 

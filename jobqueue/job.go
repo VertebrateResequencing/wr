@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,11 +22,6 @@ package jobqueue
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/muxfys"
-	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/satori/go.uuid"
-	"github.com/ugorji/go/codec"
 	"math"
 	"os"
 	"os/signal"
@@ -35,6 +30,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/hashicorp/go-multierror"
+	"github.com/satori/go.uuid"
+	"github.com/ugorji/go/codec"
 )
 
 // JobState is how we describe the possible job states.
@@ -226,8 +228,6 @@ type Job struct {
 	// when retrieving jobs with a limit, this tells you how many jobs were
 	// excluded.
 	Similar int
-	// name of the queue the Job was added to.
-	Queue string
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -249,7 +249,8 @@ type Job struct {
 
 // WallTime returns the time the job took to run if it ran to completion, or the
 // time taken so far if it is currently running.
-func (j *Job) WallTime() (d time.Duration) {
+func (j *Job) WallTime() time.Duration {
+	var d time.Duration
 	if !j.StartTime.IsZero() {
 		if j.EndTime.IsZero() || j.State == JobStateReserved {
 			d = time.Since(j.StartTime)
@@ -257,7 +258,7 @@ func (j *Job) WallTime() (d time.Duration) {
 			d = j.EndTime.Sub(j.StartTime)
 		}
 	}
-	return
+	return d
 }
 
 // Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are
@@ -266,52 +267,77 @@ func (j *Job) WallTime() (d time.Duration) {
 // If no environment variables were passed in when the job was Add()ed to the
 // queue, returns current environment variables instead. In both cases, alters
 // the return value to apply any overrides stored in job.EnvOverride.
-func (j *Job) Env() (env []string, err error) {
-	overrideEs := &envStr{}
-	if len(j.EnvOverride) > 0 {
-		decompressed, derr := decompress(j.EnvOverride)
-		if derr != nil {
-			err = derr
-			return
-		}
-		ch := new(codec.BincHandle)
-		dec := codec.NewDecoderBytes([]byte(decompressed), ch)
-		err = dec.Decode(overrideEs)
-		if err != nil {
-			return
-		}
+func (j *Job) Env() ([]string, error) {
+	overrideEs, err := j.envCurrentOverrides()
+	if err != nil {
+		return nil, err
 	}
 
 	if len(j.EnvC) == 0 {
-		env = os.Environ()
-		if len(overrideEs.Environ) > 0 {
-			env = envOverride(env, overrideEs.Environ)
+		env := os.Environ()
+		if len(overrideEs) > 0 {
+			env = envOverride(env, overrideEs)
 		}
-		return
+		return env, err
 	}
 
 	decompressed, err := decompress(j.EnvC)
 	if err != nil {
-		return
+		return nil, err
 	}
 	ch := new(codec.BincHandle)
-	dec := codec.NewDecoderBytes([]byte(decompressed), ch)
+	dec := codec.NewDecoderBytes(decompressed, ch)
 	es := &envStr{}
 	err = dec.Decode(es)
 	if err != nil {
-		return
+		return nil, err
 	}
-	env = es.Environ
+	env := es.Environ
 
 	if len(env) == 0 {
 		env = os.Environ()
 	}
 
-	if len(overrideEs.Environ) > 0 {
-		env = envOverride(env, overrideEs.Environ)
+	if len(overrideEs) > 0 {
+		env = envOverride(env, overrideEs)
 	}
 
-	return
+	return env, err
+}
+
+// envCurrentOverrides decompresses and decodes any existing EnvOverride.
+func (j *Job) envCurrentOverrides() ([]string, error) {
+	if len(j.EnvOverride) > 0 {
+		decompressed, err := decompress(j.EnvOverride)
+		if err != nil {
+			return nil, err
+		}
+		ch := new(codec.BincHandle)
+		dec := codec.NewDecoderBytes(decompressed, ch)
+		overrideEs := &envStr{}
+		err = dec.Decode(overrideEs)
+		if err != nil {
+			return nil, err
+		}
+		return overrideEs.Environ, err
+	}
+	return nil, nil
+}
+
+// EnvAddOverride adds additional overrides to the jobs existing overrides (if
+// any). These will then get used to determine the final value of Env(). NB:
+// This does not do any updates to a job on the server if called from a client,
+// but is suitable for altering a job's environment prior to calling
+// Client.Execute().
+func (j *Job) EnvAddOverride(env []string) error {
+	current, err := j.envCurrentOverrides()
+	if err != nil {
+		return err
+	}
+
+	j.EnvOverride, err = compressEnv(envOverride(current, env))
+
+	return err
 }
 
 // StdOut returns the decompressed job.StdOutC, which is the head and tail of
@@ -319,16 +345,15 @@ func (j *Job) Env() (env []string, err error) {
 // nothing to STDOUT, you will get an empty string. Note that StdOutC is only
 // populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
 // but failed.
-func (j *Job) StdOut() (stdout string, err error) {
+func (j *Job) StdOut() (string, error) {
 	if len(j.StdOutC) == 0 {
-		return
+		return "", nil
 	}
 	decomp, err := decompress(j.StdOutC)
 	if err != nil {
-		return
+		return "", err
 	}
-	stdout = string(decomp)
-	return
+	return string(decomp), err
 }
 
 // StdErr returns the decompressed job.StdErrC, which is the head and tail of
@@ -336,16 +361,15 @@ func (j *Job) StdOut() (stdout string, err error) {
 // nothing to STDERR, you will get an empty string. Note that StdErrC is only
 // populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
 // but failed.
-func (j *Job) StdErr() (stderr string, err error) {
+func (j *Job) StdErr() (string, error) {
 	if len(j.StdErrC) == 0 {
-		return
+		return "", nil
 	}
 	decomp, err := decompress(j.StdErrC)
 	if err != nil {
-		return
+		return "", err
 	}
-	stderr = string(decomp)
-	return
+	return string(decomp), err
 }
 
 // TriggerBehaviours triggers this Job's Behaviours based on if its Cmd got
@@ -376,12 +400,18 @@ func (j *Job) Mount() error {
 		for _, mt := range mc.Targets {
 			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
 			if err != nil {
-				j.Unmount()
+				_, erru := j.Unmount()
+				if erru != nil {
+					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				}
 				return err
 			}
 			accessor, err := muxfys.NewS3Accessor(accessorConfig)
 			if err != nil {
-				j.Unmount()
+				_, erru := j.Unmount()
+				if erru != nil {
+					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+				}
 				return err
 			}
 
@@ -400,8 +430,12 @@ func (j *Job) Mount() error {
 		}
 
 		if len(rcs) == 0 {
-			j.Unmount()
-			return fmt.Errorf("No Targets specified")
+			err := fmt.Errorf("No Targets specified")
+			_, erru := j.Unmount()
+			if erru != nil {
+				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+			}
+			return err
 		}
 
 		retries := 10
@@ -434,13 +468,19 @@ func (j *Job) Mount() error {
 
 		fs, err := muxfys.New(cfg)
 		if err != nil {
-			j.Unmount()
+			_, erru := j.Unmount()
+			if erru != nil {
+				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+			}
 			return err
 		}
 
 		err = fs.Mount(rcs...)
 		if err != nil {
-			j.Unmount()
+			_, erru := j.Unmount()
+			if erru != nil {
+				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
+			}
 			return err
 		}
 
@@ -455,12 +495,16 @@ func (j *Job) Mount() error {
 		deathSignals := make(chan os.Signal, 2)
 		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 		go func() {
-			select {
-			case <-deathSignals:
-				for _, fs := range j.mountedFS {
-					fs.Unmount(true)
+			<-deathSignals
+			var merr *multierror.Error
+			for _, fs := range j.mountedFS {
+				erru := fs.Unmount(true)
+				if erru != nil {
+					merr = multierror.Append(merr, erru)
 				}
-				return
+			}
+			if len(merr.Errors) > 0 {
+				panic(merr)
 			}
 		}()
 	}
@@ -469,25 +513,28 @@ func (j *Job) Mount() error {
 }
 
 // Unmount unmounts any remote filesystems that were previously mounted with
-// Mount(). Returns nil if Mount() had not been called or there were no
-// MountConfigs. Note that for cached writable mounts, created files will only
-// begin to upload once Unmount() is called, so this may take some time to
-// return. Supply true to disable uploading of files (eg. if you're unmounting
-// following an error). If uploading, error could contain the string "failed to
-// upload", which you may want to check for. On success, triggers the deletion
-// of any empty directories between the mount point(s) and Cwd if not CwdMatters
-// and the mount point was (within) ActualCwd.
+// Mount(), returning a string of any log messages generated during the mount.
+// Returns nil error if Mount() had not been called or there were no
+// MountConfigs.
+//
+// Note that for cached writable mounts, created files will only begin to upload
+// once Unmount() is called, so this may take some time to return. Supply true
+// to disable uploading of files (eg. if you're unmounting following an error).
+// If uploading, error could contain the string "failed to upload", which you
+// may want to check for. On success, triggers the deletion of any empty
+// directories between the mount point(s) and Cwd if not CwdMatters and the
+// mount point was (within) ActualCwd.
 func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	var doNotUpload bool
 	if len(stopUploads) == 1 {
 		doNotUpload = stopUploads[0]
 	}
-	var errors []string
+	var merr *multierror.Error
 	var allLogs []string
 	for _, fs := range j.mountedFS {
 		uerr := fs.Unmount(doNotUpload)
-		if err != nil {
-			errors = append(errors, uerr.Error())
+		if uerr != nil {
+			merr = multierror.Append(merr, uerr)
 		}
 		theseLogs := fs.Logs()
 		if len(theseLogs) > 0 {
@@ -499,23 +546,41 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 		logs = strings.TrimSpace(strings.Join(allLogs, ""))
 	}
 
-	if len(errors) > 0 {
-		err = fmt.Errorf("Unmount failure(s): %s", errors)
-		return
+	err = merr.ErrorOrNil()
+	if err != nil {
+		return logs, fmt.Errorf("Unmount failure(s): %s", err.Error())
 	}
 
 	// delete any empty dirs
 	if j.ActualCwd != "" {
 		for _, mc := range j.MountConfigs {
 			if mc.Mount == "" {
-				rmEmptyDirs(j.ActualCwd, j.Cwd)
+				err = rmEmptyDirs(j.ActualCwd, j.Cwd)
 			} else if !filepath.IsAbs(mc.Mount) {
-				rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
+				err = rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
 			}
 		}
 	}
 
-	return
+	return logs, err
+}
+
+// updateAfterExit sets some properties on the job, only if the supplied
+// JobEndState indicates the job exited.
+func (j *Job) updateAfterExit(jes *JobEndState) {
+	if jes == nil || !jes.Exited {
+		return
+	}
+	j.Lock()
+	j.Exited = true
+	j.Exitcode = jes.Exitcode
+	j.PeakRAM = jes.PeakRAM
+	j.CPUtime = jes.CPUtime
+	j.EndTime = time.Now()
+	if jes.Cwd != "" {
+		j.ActualCwd = jes.Cwd
+	}
+	j.Unlock()
 }
 
 // updateRecsAfterFailure checks the FailReason and bumps RAM or Time as

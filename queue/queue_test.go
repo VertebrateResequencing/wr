@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,12 +20,13 @@ package queue
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"math/rand"
 	"sort"
 	"sync"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 type changedStruct struct {
@@ -324,7 +325,7 @@ func TestQueue(t *testing.T) {
 						So(checkChanged(SubQueueDelay, SubQueueReady, 1), ShouldBeTrue)
 
 						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
-							item1, err := queue.Reserve()
+							item1, err = queue.Reserve()
 							So(err, ShouldBeNil)
 							So(item1, ShouldNotBeNil)
 							So(item1.Key, ShouldEqual, "key_0")
@@ -343,7 +344,7 @@ func TestQueue(t *testing.T) {
 						})
 
 						Convey("Once reserved and released, the delay can be altered", func() {
-							item1, err := queue.Reserve()
+							item1, err = queue.Reserve()
 							So(err, ShouldBeNil)
 							So(item1, ShouldNotBeNil)
 							So(item1.Key, ShouldEqual, "key_0")
@@ -451,7 +452,7 @@ func TestQueue(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(checkChanged(SubQueueBury, SubQueueRemoved, 1), ShouldBeTrue)
 
-						stats := queue.Stats()
+						stats = queue.Stats()
 						So(stats.Items, ShouldEqual, 9)
 						So(stats.Delayed, ShouldEqual, 7)
 						So(stats.Ready, ShouldEqual, 0)
@@ -579,7 +580,7 @@ func TestQueue(t *testing.T) {
 				})
 
 				Convey("Touching doesn't mess with the correct queue order", func() {
-					queue := New("new queue")
+					queue = New("new queue")
 					defer queue.Destroy()
 					queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond)
 					queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond)
@@ -887,11 +888,9 @@ func TestQueue(t *testing.T) {
 		type testdata struct {
 			ID int
 		}
-		var dataids []int
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
-			dataids = append(dataids, dataid)
 			_, err := queue.Add(key, "", &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second)
 			So(err, ShouldBeNil)
 		}
@@ -1343,6 +1342,48 @@ func TestQueue(t *testing.T) {
 			depTestFunc(queue)
 		})
 	})
+
+	Convey("When you add items to the queue over time, slow readyAddedCallbacks only get called once at a time", t, func() {
+		queue := New("myqueue")
+		defer queue.Destroy()
+
+		var callBackLock sync.RWMutex
+		var added []int
+		queue.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+			callBackLock.Lock()
+			defer callBackLock.Unlock()
+			added = append(added, len(allitemdata))
+			time.Sleep(50 * time.Millisecond)
+		})
+
+		for i := 0; i < 10; i++ {
+			key := fmt.Sprintf("key_%d", i)
+			_, err := queue.Add(key, "", "data", 0, 0*time.Millisecond, 10*time.Millisecond)
+			So(err, ShouldBeNil)
+			if i == 0 {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 10)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 10)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+
+		callBackLock.RLock()
+		So(len(added), ShouldEqual, 1)
+		So(added[0], ShouldEqual, 1)
+		callBackLock.RUnlock()
+
+		<-time.After(100 * time.Millisecond)
+
+		callBackLock.RLock()
+		So(len(added), ShouldEqual, 2)
+		So(added[1], ShouldEqual, 10)
+		callBackLock.RUnlock()
+	})
 }
 
 func depTestFunc(queue *Queue) {
@@ -1356,6 +1397,7 @@ func depTestFunc(queue *Queue) {
 
 	Convey("Once parent items are removed, dependent items become ready", func() {
 		item, err := queue.Get("key_4")
+		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_1")
@@ -1373,6 +1415,7 @@ func depTestFunc(queue *Queue) {
 		So(stats.Dependant, ShouldEqual, 4)
 
 		item, err = queue.Get("key_6")
+		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_3")
@@ -1407,6 +1450,7 @@ func depTestFunc(queue *Queue) {
 		So(stats.Dependant, ShouldEqual, 3)
 
 		item, err = queue.Get("key_5")
+		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_2")
@@ -1421,8 +1465,10 @@ func depTestFunc(queue *Queue) {
 		So(stats.Dependant, ShouldEqual, 2)
 
 		item7, err := queue.Get("key_7")
+		So(err, ShouldBeNil)
 		So(item7.Stats().State, ShouldEqual, ItemStateDependent)
 		item8, err := queue.Get("key_8")
+		So(err, ShouldBeNil)
 		So(item8.Stats().State, ShouldEqual, ItemStateDependent)
 
 		err = queue.Remove("key_5")

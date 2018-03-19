@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,14 +22,19 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/sevlyar/go-daemon"
-	"github.com/spf13/cobra"
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/inconshreveable/log15"
+	"github.com/sevlyar/go-daemon"
+	"github.com/spf13/cobra"
 )
+
+// appLogger is used for logging events in our commands
+var appLogger = log15.New()
 
 // these variables are accessible by all subcommands.
 var deployment string
@@ -53,22 +58,12 @@ Initially, you start the management system, which maintains a queue of the
 commands you want to run:
 $ wr manager start
 
-Then you either directly add commands you want to run to the queue:
+Then you add commands you want to run to the queue:
 $ wr add
-
-Or you define a workflow that works out the commands for you:
-Create a workflow with:                           $ wr create
-Define a datasource with:                         $ wr datasource
-Set up an instance of workflow + datasource with: $ wr setup
-[create, datasource and setup commands are not yet implemented; just use add for
-now]
 
 At this point your commands should be running, and you can monitor their
 progress with:
-$ wr status
-
-Finally, you can find your output files with:
-$ wr outputs`,
+$ wr status`,
 }
 
 // Execute adds all child commands to the root command and sets flags
@@ -81,15 +76,18 @@ func Execute() {
 }
 
 func init() {
+	// set up logging to stderr
+	appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, log15.StderrHandler))
+
 	// global flags
-	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(), "use production or development config")
+	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(appLogger), "use production or development config")
 
 	cobra.OnInitialize(initConfig)
 }
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	config = internal.ConfigLoad(deployment, false)
+	config = internal.ConfigLoad(deployment, false, appLogger)
 	addr = config.ManagerHost + ":" + config.ManagerPort
 }
 
@@ -112,19 +110,19 @@ func cloudResourceName(username string) string {
 	return "wr-" + config.Deployment + "-" + username
 }
 
-// info is a convenience to print a msg to STDOUT.
+// info is a convenience to log a message at the Info level.
 func info(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stdout, "info: %s\n", fmt.Sprintf(msg, a...))
+	appLogger.Info(fmt.Sprintf(msg, a...))
 }
 
-// warn is a convenience to print a msg to STDERR.
+// warn is a convenience to log a message at the Warn level.
 func warn(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "warning: %s\n", fmt.Sprintf(msg, a...))
+	appLogger.Warn(fmt.Sprintf(msg, a...))
 }
 
-// die is a convenience to print an error to STDERR and exit indicating error.
+// die is a convenience to log a message at the Error level and exit non zero.
 func die(msg string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(msg, a...))
+	appLogger.Error(fmt.Sprintf(msg, a...))
 	os.Exit(1)
 }
 
@@ -149,7 +147,7 @@ func createWorkingDir() {
 // the child is forced to run from /). Supplying extraArgs can override earlier
 // args (to eg. re-specify an option with a relative path with an absolute
 // path).
-func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Process, context *daemon.Context) {
+func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *daemon.Context) {
 	args := os.Args
 	hadDeployment := false
 	for _, arg := range args {
@@ -163,11 +161,9 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Proces
 		args = append(args, config.Deployment)
 	}
 
-	for _, extra := range extraArgs {
-		args = append(args, extra)
-	}
+	args = append(args, extraArgs...)
 
-	context = &daemon.Context{
+	context := &daemon.Context{
 		PidFileName: pidFile,
 		PidFilePerm: 0644,
 		WorkDir:     "/",
@@ -175,20 +171,19 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (child *os.Proces
 		Umask:       umask,
 	}
 
-	var err error
-	child, err = context.Reborn()
+	child, err := context.Reborn()
 	if err != nil {
 		die("failed to daemonize: %s", err)
 	}
-	return
+	return child, context
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
 // checking it really exited
-func stopdaemon(pid int, source string, name string) bool {
+func stopdaemon(pid int, source string) bool {
 	err := syscall.Kill(pid, syscall.SIGTERM)
 	if err != nil {
-		warn("wr %s is running with pid %d according to %s, but failed to send it SIGTERM: %s", name, pid, source, err)
+		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
 		return false
 	}
 
@@ -222,7 +217,7 @@ func stopdaemon(pid int, source string, name string) bool {
 	// if it didn't stop, offer to force kill it? That's a bit dangerous...
 	// just warn for now
 	if !ok {
-		warn("wr %s, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", name, pid, source, giveupseconds)
+		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM", pid, source, giveupseconds)
 	}
 
 	return ok
@@ -230,21 +225,21 @@ func stopdaemon(pid int, source string, name string) bool {
 
 // sAddr gets a nice manager address to report in logs, preferring hostname,
 // falling back on the ip address if that wasn't set
-func sAddr(s *jobqueue.ServerInfo) (addr string) {
-	addr = s.Host
-	if addr == "localhost" {
-		addr = s.Addr
+func sAddr(s *jobqueue.ServerInfo) string {
+	saddr := s.Host
+	if saddr == "localhost" {
+		saddr = s.Addr
 	} else {
-		addr += ":" + s.Port
+		saddr += ":" + s.Port
 	}
-	return
+	return saddr
 }
 
 // connect gives you a client connected to a queue that shouldn't be used; use
 // the client just for calling non-queue-specific methods such as getting
 // server status or shutting it down etc.
 func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, "test_queue", wait)
+	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, wait)
 	if jqerr == nil {
 		return jq
 	}

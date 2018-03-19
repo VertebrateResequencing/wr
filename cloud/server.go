@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -24,16 +24,17 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/inconshreveable/log15"
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 )
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
@@ -49,38 +50,33 @@ type Flavor struct {
 // Server provides details of the server that Spawn() created for you, and some
 // methods that let you keep track of how you use that server.
 type Server struct {
-	ID                string
-	Name              string // ought to correspond to the hostname
-	IP                string // ip address that you could SSH to
-	OS                string // the name of the Operating System image
-	UserName          string // the username needed to log in to the server
-	Script            []byte // the content of a start-up script run on the server
 	AdminPass         string
-	Flavor            Flavor
-	Disk              int           // GB of available disk space
-	TTD               time.Duration // amount of idle time allowed before destruction
+	Disk              int // GB of available disk space
+	Flavor            *Flavor
+	ID                string
+	IP                string // ip address that you could SSH to
 	IsHeadNode        bool
-	usedRAM           int
-	usedCores         int
-	usedDisk          int
-	onDeathrow        bool
-	mutex             sync.RWMutex
+	Name              string        // ought to correspond to the hostname
+	OS                string        // the name of the Operating System image
+	Script            []byte        // the content of a start-up script run on the server
+	TTD               time.Duration // amount of idle time allowed before destruction
+	UserName          string        // the username needed to log in to the server
 	cancelDestruction chan bool
-	cancelRunCmd      map[int]chan bool
 	cancelID          int
+	cancelRunCmd      map[int]chan bool
+	created           bool // to distinguish instances we discovered or spawned
 	destroyed         bool
+	goneBad           bool
+	location          *time.Location
+	mutex             sync.RWMutex
+	onDeathrow        bool
+	permanentProblem  string
 	provider          *Provider
 	sshclient         *ssh.Client
-	location          *time.Location
-	goneBad           bool
-	permanentProblem  string
-	debugMode         bool
-}
-
-func (s *Server) debug(msg string, a ...interface{}) {
-	if s.debugMode {
-		log.Printf(msg, a...)
-	}
+	usedCores         int
+	usedDisk          int
+	usedRAM           int
+	logger            log15.Logger // (not embedded to make gob happy)
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -92,13 +88,11 @@ func (s *Server) Allocate(cores, ramMB, diskGB int) {
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
-	s.debug("server %s Allocate(%d, %d, %d), used now (%d, %d, %d)\n", s.ID, cores, ramMB, diskGB, s.usedCores, s.usedRAM, s.usedDisk)
+	s.logger.Debug("server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
-		s.debug("server %s Allocate(), on deathrow, will cancel...\n", s.ID)
 		s.cancelDestruction <- true
-		s.debug("server %s Allocate(), on deathrow, cancelled\n", s.ID)
 	}
 }
 
@@ -109,17 +103,19 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 	s.usedCores -= cores
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
-	s.debug("server %s Release(%d, %d, %d), used now (%d, %d, %d)\n", s.ID, cores, ramMB, diskGB, s.usedCores, s.usedRAM, s.usedDisk)
+	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
 	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
-		s.debug("server %s Release(), will initiate countdown\n", s.ID)
+		s.logger.Debug("server idle")
 		go func() {
+			defer internal.LogPanic(s.logger, "server release", false)
+
 			s.mutex.Lock()
 			if s.onDeathrow {
 				s.mutex.Unlock()
-				s.debug("server %s Release(), already on death row\n", s.ID)
+				s.logger.Debug("server already on deathrow")
 				return
 			}
 			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
@@ -127,23 +123,22 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 			s.mutex.Unlock()
 
 			timeToDie := time.After(s.TTD)
-			s.debug("server %s Release(), will die at %s\n", s.ID, time.Now().Add(s.TTD))
+			s.logger.Debug("server entering deathrow", "death", time.Now().Add(s.TTD))
 			for {
 				select {
 				case <-s.cancelDestruction:
 					s.mutex.Lock()
 					s.onDeathrow = false
 					s.mutex.Unlock()
-					s.debug("server %s Release(), destruction cancelled\n", s.ID)
+					s.logger.Debug("server cancelled deathrow")
 					return
 				case <-timeToDie:
 					// destroy the server
 					s.mutex.Lock()
 					s.onDeathrow = false
 					s.mutex.Unlock()
-					s.debug("server %s Release(), destruction going ahead...\n", s.ID)
 					err := s.Destroy()
-					s.debug("server %s Release(), destroyed, error = %s\n", s.ID, err)
+					s.logger.Debug("server died on deathrow", "err", err)
 					return
 				}
 			}
@@ -186,14 +181,14 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 	defer s.mutex.Unlock()
 	if s.sshclient == nil {
 		if s.provider.PrivateKey() == "" {
-			log.Printf("resource file %s did not contain the ssh key\n", s.provider.savePath)
+			s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
 			return nil, errors.New("missing ssh key")
 		}
 
 		// parse private key and make config
 		signer, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
 		if err != nil {
-			log.Printf("failure to parse the private key: %s\n", err)
+			s.logger.Error("failed to parse private key", "path", s.provider.savePath, "err", err)
 			return nil, err
 		}
 		sshConfig := &ssh.ClientConfig{
@@ -207,9 +202,9 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 
 		// dial in to the server, allowing certain errors that indicate that the
 		// network or server isn't really ready for ssh yet; wait for up to
-		// 5mins for success
+		// 5mins for success, if we had only just created this server
 		hostAndPort := s.IP + ":22"
-		s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
+		s.sshclient, err = sshDial(hostAndPort, sshConfig)
 		if err != nil {
 			limit := time.After(sshTimeOut)
 			ticker := time.NewTicker(1 * time.Second)
@@ -218,8 +213,8 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 			for {
 				select {
 				case <-ticker.C:
-					s.sshclient, err = ssh.Dial("tcp", hostAndPort, sshConfig)
-					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused")) {
+					s.sshclient, err = sshDial(hostAndPort, sshConfig)
+					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
 						continue DIAL
 					}
 
@@ -229,7 +224,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 					// brings up sshd and starts rejecting connections before
 					// the centos user gets added)
 					ticks++
-					if err == nil || ticks == 45 {
+					if err == nil || ticks == 9 || !s.created {
 						ticker.Stop()
 						break DIAL
 					} else {
@@ -249,13 +244,32 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 	return s.sshclient, nil
 }
 
+// sshDial calls ssh.Dial() and enforces the config's timeout, which ssh.Dial()
+// doesn't always seem to obey.
+func sshDial(addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+	clientCh := make(chan *ssh.Client, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		sshClient, err := ssh.Dial("tcp", addr, sshConfig)
+		clientCh <- sshClient
+		errCh <- err
+	}()
+	deadline := time.After(sshConfig.Timeout + 1*time.Second)
+	select {
+	case err := <-errCh:
+		return <-clientCh, err
+	case <-deadline:
+		return nil, fmt.Errorf("connection could not be established")
+	}
+}
+
 // SSHSession returns an ssh.Session object that could be used to do things via
 // ssh on the server. Will time out and return an error if the session can't be
 // created within 5s.
 func (s *Server) SSHSession() (*ssh.Session, error) {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		s.debug("ssh to existing server %s could not be established: %s\n", s.ID, err)
+		s.logger.Debug("server ssh could not be established", "err", err)
 		return nil, fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
 	}
 
@@ -269,17 +283,18 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 	go func() {
 		select {
 		case <-time.After(5 * time.Second):
-			s.debug("ssh to existing server %s timed out\n", s.ID)
+			s.logger.Debug("server ssh timed out")
 			done <- fmt.Errorf("cloud SSHSession() timed out")
 		case <-worked:
 			return
 		}
 	}()
 	go func() {
-		session, err := sshClient.NewSession()
-		if err != nil {
-			s.debug("ssh to existing server %s failed: %s\n", s.ID, err)
-			done <- fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
+		defer internal.LogPanic(s.logger, "server sshsession", false)
+		session, errf := sshClient.NewSession()
+		if errf != nil {
+			s.logger.Debug("server ssh failed", "err", errf)
+			done <- fmt.Errorf("cloud SSHSession() failed: %s", errf.Error())
 			return
 		}
 		worked <- true
@@ -295,14 +310,14 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 }
 
 // RunCmd runs the given command on the server, optionally in the background.
-// You get the command's STDOUT and STDERR as a strings.
+// You get the command's STDOUT and STDERR as strings.
 func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
 	// create a session
 	session, err := s.SSHSession()
 	if err != nil {
-		return
+		return stdout, stderr, err
 	}
-	defer session.Close()
+	defer internal.LogClose(s.logger, session, "runcmd ssh session", "cmd", cmd)
 
 	// if the sever is destroyed while running, arrange to immediately return an
 	// error
@@ -318,6 +333,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	go func() {
 		select {
 		case <-cancelCh:
+			outCh <- ""
+			errCh <- ""
 			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
 		case <-finished:
 			// end select
@@ -328,6 +345,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		s.mutex.Unlock()
 	}()
 	go func() {
+		defer internal.LogPanic(s.logger, "server runcmd", false)
+
 		// run the command, returning stdout
 		if background {
 			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
@@ -336,7 +355,7 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		var e bytes.Buffer
 		session.Stdout = &o
 		session.Stderr = &e
-		err = session.Run(cmd)
+		errf := session.Run(cmd)
 		finished <- true
 		if o.Len() > 0 {
 			outCh <- o.String()
@@ -348,8 +367,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 		} else {
 			errCh <- ""
 		}
-		if err != nil {
-			done <- fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, err.Error())
+		if errf != nil {
+			done <- fmt.Errorf("cloud RunCmd(%s) failed: %s", cmd, errf.Error())
 		} else {
 			done <- nil
 		}
@@ -357,47 +376,45 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	s.mutex.Unlock()
 
 	err = <-done
-	if err == nil {
-		stdout = <-outCh
-		stderr = <-errCh
-	}
-	return
+	stdout = <-outCh
+	stderr = <-errCh
+	return stdout, stderr, err
 }
 
 // UploadFile uploads a local file to the given location on the server.
-func (s *Server) UploadFile(source string, dest string) (err error) {
+func (s *Server) UploadFile(source string, dest string) error {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		return
+		return err
 	}
-	defer client.Close()
+	defer internal.LogClose(s.logger, client, "upload file client session", "source", source, "dest", dest)
 
 	// create all parent dirs of dest
 	err = s.MkDir(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// open source, create dest
 	sourceFile, err := os.Open(source)
 	if err != nil {
-		return
+		return err
 	}
-	defer sourceFile.Close()
+	defer internal.LogClose(s.logger, sourceFile, "upload file source", "source", source, "dest", dest)
 
 	destFile, err := client.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
-	return
+	return err
 }
 
 // CopyOver uploads the given local files to the corresponding locations on the
@@ -412,10 +429,10 @@ func (s *Server) UploadFile(source string, dest string) (err error) {
 // If a specified local path does not exist, it is silently ignored, allowing
 // the specification of multiple possible config files when you might only have
 // one. The mtimes of the files are retained.
-func (s *Server) CopyOver(files string) (err error) {
+func (s *Server) CopyOver(files string) error {
 	timezone, err := s.GetTimeZone()
 	if err != nil {
-		return
+		return err
 	}
 
 	for _, path := range strings.Split(files, ",") {
@@ -445,7 +462,7 @@ func (s *Server) CopyOver(files string) (err error) {
 
 		err = s.UploadFile(localPath, remotePath)
 		if err != nil {
-			return
+			return err
 		}
 
 		// if these are config files we likely need to make them user-only read,
@@ -453,7 +470,7 @@ func (s *Server) CopyOver(files string) (err error) {
 		// read? This is a single user server and I'm the only one using it...
 		_, _, err = s.RunCmd("chmod 600 "+remotePath, false)
 		if err != nil {
-			return
+			return err
 		}
 
 		// sometimes the mtime of the file matters, so we try and set that on
@@ -461,110 +478,110 @@ func (s *Server) CopyOver(files string) (err error) {
 		timestamp := info.ModTime().UTC().In(timezone).Format(touchStampFormat)
 		_, _, err = s.RunCmd(fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
 		if err != nil {
-			return
+			return err
 		}
 	}
-	return
+	return err
 }
 
 // GetTimeZone gets the server's time zone as a fixed time.Location in the fake
 // timezone 'SER'; you should only rely on the offset to convert times.
-func (s *Server) GetTimeZone() (location *time.Location, err error) {
+func (s *Server) GetTimeZone() (*time.Location, error) {
 	if s.location != nil {
 		return s.location, nil
 	}
 
 	serverDate, _, err := s.RunCmd(`date +%z`, false)
 	if err != nil {
-		return
+		return nil, err
 	}
 	serverDate = strings.TrimSpace(serverDate)
 
 	t, err := time.Parse("-0700", serverDate)
 	if err != nil {
-		return
+		return nil, err
 	}
 	_, offset := t.Zone()
 
-	location = time.FixedZone("SER", offset)
+	location := time.FixedZone("SER", offset)
 	s.location = location
-	return
+	return location, err
 }
 
 // CreateFile creates a new file with the given content on the server.
-func (s *Server) CreateFile(content string, dest string) (err error) {
+func (s *Server) CreateFile(content string, dest string) error {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		return
+		return err
 	}
-	defer client.Close()
+	defer internal.LogClose(s.logger, client, "create file client session")
 
 	// create all parent dirs of dest
 	err = s.MkDir(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// create dest
 	destFile, err := client.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// write the content
 	_, err = io.WriteString(destFile, content)
-	return
+	return err
 }
 
 // DownloadFile downloads a file from the server and stores it locally. The
 // directory for your local file must already exist.
-func (s *Server) DownloadFile(source string, dest string) (err error) {
+func (s *Server) DownloadFile(source string, dest string) error {
 	sshClient, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		return
+		return err
 	}
-	defer client.Close()
+	defer internal.LogClose(s.logger, client, "download file client session", "source", source, "dest", dest)
 
 	// open source, create dest
 	sourceFile, err := client.Open(source)
 	if err != nil {
-		return
+		return err
 	}
-	defer sourceFile.Close()
+	defer internal.LogClose(s.logger, sourceFile, "download file source", "source", source, "dest", dest)
 
 	destFile, err := os.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
-	return
+	return err
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.
-func (s *Server) MkDir(dest string) (err error) {
+func (s *Server) MkDir(dest string) error {
 	//*** it would be nice to do this with client.Mkdir, but that doesn't do
 	// the equivalent of mkdir -p, and errors out if dirs already exist... for
 	// now it's easier to just call mkdir
 	dir := filepath.Dir(dest)
 	if dir != "." {
-		_, _, err = s.RunCmd("mkdir -p "+dir, false)
+		_, _, err := s.RunCmd("mkdir -p "+dir, false)
 		if err != nil {
-			return
+			return err
 		}
 	}
-	return
+	return nil
 }
 
 // GoneBad lets you mark a server as having something wrong with it, so you can
@@ -618,15 +635,12 @@ func (s *Server) Destroy() error {
 	defer s.mutex.Unlock()
 
 	if s.destroyed {
-		s.debug("server %s Destroy(), already destroyed\n", s.ID)
 		return nil
 	}
 
 	// if the server has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
-		s.debug("server %s Destroy(), cancelling auto-destruction...\n", s.ID)
 		s.cancelDestruction <- true
-		s.debug("server %s Destroy(), cancelled auto-destruction\n", s.ID)
 	}
 
 	// if the user is in the middle of RunCmd(), have those return an error now
@@ -643,15 +657,19 @@ func (s *Server) Destroy() error {
 	}
 
 	err := s.provider.DestroyServer(s.ID)
-	s.debug("server %s Destroy() called DestroyServer() and got err %s\n", s.ID, err)
+	s.logger.Debug("server destroyed", "err", err)
 	if err != nil {
+		// check if the server exists
 		ok, _ := s.provider.CheckServer(s.ID)
 		if ok {
 			return err
 		}
+		// if not, assume there's no Server and ignore this error (which may
+		// just be along the lines of "the server doesn't exist")
+		return nil
 	}
 
-	return nil
+	return err
 }
 
 // Destroyed tells you if a server was destroyed using Destroy() or the
@@ -686,7 +704,10 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 		if err != nil {
 			return false
 		}
-		session.Close()
+		errc := session.Close()
+		if errc != nil {
+			s.logger.Warn("alive check ssh session did not close", "err", errc)
+		}
 	}
 
 	return true

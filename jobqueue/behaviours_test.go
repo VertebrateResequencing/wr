@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -21,12 +21,13 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestBehaviours(t *testing.T) {
@@ -55,23 +56,24 @@ func TestBehaviours(t *testing.T) {
 		job2 := &Job{Cwd: cwd}
 
 		Convey("Individual Behaviour can be nicely stringified", func() {
-			So(fmt.Sprintf("%s", b1), ShouldEqual, `{"on_exit":[{"cleanup_all":true}]}`)
-			So(fmt.Sprintf("%s", b2), ShouldEqual, `{"on_success":[{"cleanup_all":true}]}`)
-			So(fmt.Sprintf("%s", b3), ShouldEqual, `{"on_failure":[{"cleanup_all":true}]}`)
-			So(fmt.Sprintf("%s", b4), ShouldEqual, `{"on_success":[{"run":"touch ../../foo && true"}]}`)
-			So(fmt.Sprintf("%s", b5), ShouldEqual, `{"on_success":[{"run":"touch foo"}]}`)
-			So(fmt.Sprintf("%s", b6), ShouldEqual, `{"on_success":[{"run":"!invalid!"}]}`)
-			So(fmt.Sprintf("%s", b7), ShouldEqual, `{"on_success":[{"copy_to_manager":["a.file","b.file"]}]}`)
-			So(fmt.Sprintf("%s", b8), ShouldEqual, `{"on_success":[{"copy_to_manager":["!invalid!"]}]}`)
-			So(fmt.Sprintf("%s", b9), ShouldEqual, `{"on_failure|success":[{"cleanup":true}]}`)
-			So(fmt.Sprintf("%s", b10), ShouldEqual, "{}")
+			So(fmt.Sprintf("test Sprintf %s", b1), ShouldEqual, `test Sprintf {"on_exit":[{"cleanup_all":true}]}`)
+			So(b1.String(), ShouldEqual, `{"on_exit":[{"cleanup_all":true}]}`)
+			So(b2.String(), ShouldEqual, `{"on_success":[{"cleanup_all":true}]}`)
+			So(b3.String(), ShouldEqual, `{"on_failure":[{"cleanup_all":true}]}`)
+			So(b4.String(), ShouldEqual, `{"on_success":[{"run":"touch ../../foo && true"}]}`)
+			So(b5.String(), ShouldEqual, `{"on_success":[{"run":"touch foo"}]}`)
+			So(b6.String(), ShouldEqual, `{"on_success":[{"run":"!invalid!"}]}`)
+			So(b7.String(), ShouldEqual, `{"on_success":[{"copy_to_manager":["a.file","b.file"]}]}`)
+			So(b8.String(), ShouldEqual, `{"on_success":[{"copy_to_manager":["!invalid!"]}]}`)
+			So(b9.String(), ShouldEqual, `{"on_failure|success":[{"cleanup":true}]}`)
+			So(b10.String(), ShouldEqual, "{}")
 
 			Convey("Behaviours can be nicely stringified", func() {
 				bs := Behaviours{b1, b4}
-				So(fmt.Sprintf("%s", bs), ShouldEqual, `{"on_success":[{"run":"touch ../../foo && true"}],"on_exit":[{"cleanup_all":true}]}`)
+				So(bs.String(), ShouldEqual, `{"on_success":[{"run":"touch ../../foo && true"}],"on_exit":[{"cleanup_all":true}]}`)
 
 				bs = Behaviours{}
-				So(fmt.Sprintf("%s", bs), ShouldBeEmpty)
+				So(bs.String(), ShouldBeEmpty)
 			})
 		})
 

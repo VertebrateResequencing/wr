@@ -5,6 +5,65 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.11.0] - 2018-03-19
+### Added
+- OpenStack scheduler now supports recent versions of OpenStack ("Pike").
+- Significant performance increases when working on 1000s of ~instant complete
+  jobs. See new "Performance considerations" section of README.md.
+- Both cloud and LSF jobs can successfully call `wr add` to add more jobs to the
+  queue in dynamic workflows.
+- `wr status` shows the status of jobs in dependent state.
+- `wr manager start` now takes a --timeout option (also passed through from `wr
+  cloud deploy`) so that you can start when eg. your OpenStack system is being
+  very slow to authenticate.
+
+### Changed
+- `wr cloud deploy` and `teardown` now display errors that occur with the
+  manager. Manager problems during deploy now wait for you to debug before
+  tearing everything down.
+- wr commands now output INFO etc. lines in a new format to STDERR instead of
+  STDOUT.
+- Improved logging of all kinds of errors and potential issues.
+- `wr manager` --cloud_debug renamed --debug, which now also shows non-cloud
+  debug messages.
+- Cloud post creation scripts can now rely on config files having been copied
+  over before they are run.
+- `wr cloud deploy --os` prefix can be of the image's id as well as name.
+- There is now a 30s gap between sequential automated database backups.
+- Improved efficiency of interactions between runner and manager: fewer smaller
+  calls to increase performance and scaling.
+- JobQueue Server now has a single hard-coded queue for jobs, for performance
+  increase.
+- Default timeouts for interactions with the manager have been increased.
+- Cloud deployments now delete the transferred environment file after the
+  manager starts, for improved security.
+- Backwards incompatible changes to many API methods to support the new logging.
+
+### Fixed
+- Wrong quota remaining after failed OpenStack server spawns.
+- Makefile now works with GOPATH unset, and correctly builds a static executable
+  if CGO_ENABLED is unset.
+- File read errors when using uncached S3 mounts.
+- `wr add --cwd_matters` no longer ignored when running remotely with a
+  defaulted --cwd.
+- Data races in various places.
+- `wr manager` can now be started with the OpenStack scheduler on an OpenStack
+  server with any character in its name.
+- Performance reversion when dealing with many ~instant complete jobs.
+- Schedulers no longer request unnecessary jobs be run when jobs are completing
+  too quickly. OpenStack scheduler does a better job of keeping track of how
+  many servers it can and should create.
+- `wr cloud deploy -h` help text now correctly specifies what OpenStack
+  environment variables are required.
+- `wr cloud deploy` now reconnects to an existing remote manager properly.
+- New servers that a created by the cloud scheduler now actually wait for the
+  new servers to be fully ready before trying to run commands on them.
+- Outstanding database operations are allowed to complete, and everything else
+  cleans up more completely before manager shutdown.
+- OpenStack scheduler and `wr cloud deploy` no longer get stuck indefinitely
+  waiting for SSH to a server to work, timing out instead.
+
+
 ## [0.10.0] - 2017-10-27
 ### Added
 - New REST API. See https://github.com/VertebrateResequencing/wr/wiki/REST-API
@@ -30,7 +89,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   come back to life automatically once the (eg. connectivity) issue is resolved.
 - Cloud deployments create security groups with "ALL ICMP" enabled.
 - OpenStack scheduler regularly checks for changes to available flavors, instead
-  of only getting a list at start-up. 
+  of only getting a list at start-up.
 - `wr mount --mounts` and similar for `add` can now take a profile name.
 - Status of jobs now includes the IP address of the server the job ran on, and
   for cloud deployments, the server ID.

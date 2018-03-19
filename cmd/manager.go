@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,21 +20,22 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/kardianos/osext"
-	"github.com/sevlyar/go-daemon"
-	"github.com/spf13/cobra"
 	"io/ioutil"
-	"log"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/inconshreveable/log15"
+	"github.com/kardianos/osext"
+	"github.com/sb10/l15h"
+	"github.com/sevlyar/go-daemon"
+	"github.com/spf13/cobra"
 )
 
 // options for this cmd
@@ -42,6 +43,8 @@ var foreground bool
 var scheduler string
 var localUsername string
 var backupPath string
+var managerTimeoutSeconds int
+var managerDebug bool
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -53,10 +56,9 @@ The wr manager works in the background, doing all the work of ensuring your
 commands get run successfully.
 
 It maintains both a temporary queue of the commands you want to run, and a
-permanent history of commands you've run in the past, along with a simple
-key/val database that can be used to store result metadata associated with
-output files. As commands are added to the queue, it makes sure to spawn
-sufficient 'wr runner' agents to get them all run.
+permanent history of commands you've run in the past. As commands are added to
+the queue, it makes sure to spawn sufficient 'wr runner' agents to get them all
+run.
 
 You'll need to start this daemon with the 'start' sub-command before you can
 achieve anything useful with the other wr commands. If the background
@@ -66,11 +68,20 @@ stalled until you run the 'start' sub-command again.
 If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
-If using the openstack scheduler, note that you must be running on an openstack
+If using the OpenStack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
-cloud, so that resources created are only accessible to you. Instead you can use
-'wr cloud deploy -p openstack' to create an openstack server on which wr manager
-will be started in openstack mode for you.`,
+cloud, so that resources created will not conflict with anyone else in your
+tenant (project) also running wr.
+Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
+on which wr manager will be started in OpenStack mode for you. See 'wr cloud
+deploy -h' for the details of which environment variables you need to use the
+OpenStack scheduler.
+If you want to start multiple managers up in different OpenStack networks that
+you've created yourself, note that --local_username will need to be globally
+unique, since it is used to name the private key that will be created in
+OpenStack, and if a key with that name already exists, the manager will not be
+able to create a new one (or get the existing one), and so will not function
+fully.`,
 }
 
 // start sub-command starts the daemon
@@ -88,12 +99,7 @@ var managerStartCmd = &cobra.Command{
 		// most obvious case of failure to start
 		jq := connect(1 * time.Second)
 		if jq != nil {
-			sstats, err := jq.ServerStats()
-			var pid int
-			if err == nil {
-				pid = sstats.ServerInfo.PID
-			}
-			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, pid)
+			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, jq.ServerInfo.PID)
 		}
 
 		var postCreation []byte
@@ -122,25 +128,26 @@ var managerStartCmd = &cobra.Command{
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
-			startJQ(true, postCreation)
+			startJQ(postCreation)
 		} else {
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
-				jq := connect(10 * time.Second)
+				jq := connect(time.Duration(managerTimeoutSeconds) * time.Second)
 				if jq == nil {
-					die("wr manager failed to start on port %s after 10s", config.ManagerPort)
+					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
-				sstats, err := jq.ServerStats()
-				if err != nil {
-					die("wr manager started but doesn't seem to be functional: %s", err)
-				}
-				logStarted(sstats.ServerInfo)
+				logStarted(jq.ServerInfo)
 			} else {
 				// daemonized child, that will run until signalled to stop
-				defer context.Release()
-				startJQ(false, postCreation)
+				defer func() {
+					err := context.Release()
+					if err != nil {
+						warn("daemon release failed: %s", err)
+					}
+				}()
+				startJQ(postCreation)
 			}
 		}
 	},
@@ -162,7 +169,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
 		var stopped bool
 		if err == nil {
-			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile, "manager")
+			stopped = stopdaemon(pid, "pid file "+config.ManagerPidFile)
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
@@ -191,21 +198,22 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			}
 		}
 
-		// we managed to connect to the daemon; get it's real pid and try to
-		// stop it again
-		sstats, err := jq.ServerStats()
+		// we managed to connect to the daemon; try to stop it again using its
+		// real pid; though it may actually be running on a remote host and we
+		// managed to connect to it via ssh port forwarding; compare the server
+		// ip to our own
+		currentIP, err := jobqueue.CurrentIP("")
 		if err != nil {
-			die("even though I was able to connect to the manager, it failed to tell me its true pid; giving up trying to stop it")
+			warn("Could not get current IP: %s", err)
 		}
-
-		// though it may actually be running on a remote host and we managed to
-		// connect to it via ssh port forwarding; compare the server ip to our
-		// own
-		myAddr := jobqueue.CurrentIP("") + ":" + config.ManagerPort
-		sAddr := sstats.ServerInfo.Addr
+		myAddr := currentIP + ":" + config.ManagerPort
+		sAddr := jq.ServerInfo.Addr
 		if myAddr == sAddr {
-			jq.Disconnect()
-			stopped = stopdaemon(sstats.ServerInfo.PID, "the manager itself", "manager")
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+			stopped = stopdaemon(jq.ServerInfo.PID, "the manager itself")
 		} else {
 			// use the client command to stop it
 			stopped = jq.ShutdownServer()
@@ -215,7 +223,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			if stopped {
 				jq = connect(1 * time.Second)
 				if jq != nil {
-					warn("I requested shut down of the remote manager at %s, but it still up!", sAddr)
+					warn("I requested shut down of the remote manager at %s, but it's still up!", sAddr)
 					stopped = false
 				}
 			}
@@ -224,7 +232,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
 		} else {
-			info("I've tried everything; giving up trying to stop the manager at %s", sAddr)
+			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
 	},
 }
@@ -269,7 +277,10 @@ down will be lost.`,
 			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
 		}
 
-		jq.Disconnect()
+		err = jq.Disconnect()
+		if err != nil {
+			warn("Disconnecting from the server failed: %s", err)
+		}
 	},
 }
 
@@ -322,11 +333,16 @@ somewhere.)`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		err = jq.BackupDB(backupPath)
 		if err != nil {
@@ -339,12 +355,7 @@ somewhere.)`,
 // distinguish between the server being in a normal 'started' state or the
 // 'drain' state.
 func reportLiveStatus(jq *jobqueue.Client) {
-	sstats, err := jq.ServerStats()
-	if err != nil {
-		die("even though I was able to connect to the manager, it wasn't able to tell me about itself: %s", err)
-	}
-	mode := sstats.ServerInfo.Mode
-	fmt.Println(mode)
+	fmt.Println(jq.ServerInfo.Mode)
 }
 
 func init() {
@@ -356,9 +367,10 @@ func init() {
 	managerCmd.AddCommand(managerBackupCmd)
 
 	// flags specific to these sub-commands
-	defaultConfig := internal.DefaultConfig()
+	defaultConfig := internal.DefaultConfig(appLogger)
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
+	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
@@ -372,7 +384,7 @@ func init() {
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
-	managerStartCmd.Flags().BoolVar(&cloudDebug, "cloud_debug", false, "for cloud schedulers, include extra debugging information in the logs")
+	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
@@ -382,15 +394,36 @@ func logStarted(s *jobqueue.ServerInfo) {
 	info("wr's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
 }
 
-func startJQ(sayStarted bool, postCreation []byte) {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+func startJQ(postCreation []byte) {
+	if runtime.NumCPU() == 1 {
+		// we might lock up with only 1 proc if we mount
+		runtime.GOMAXPROCS(2)
+	} else {
+		runtime.GOMAXPROCS(runtime.NumCPU())
+	}
+
+	// change the app logger to log to both STDERR and our configured log file;
+	// we also create a new logger for internal use by the server later
+	serverLogger := log15.New()
+	fh, err := log15.FileHandler(config.ManagerLogFile, log15.LogfmtFormat())
+	if err != nil {
+		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
+	} else {
+		l15h.AddHandler(appLogger, fh)
+
+		// have the server logger output to file, levelled with caller info
+		logLevel := log15.LvlWarn
+		if managerDebug {
+			logLevel = log15.LvlDebug
+		}
+		serverLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
+	}
 
 	// we will spawn runners, which means we need to know the path to ourselves
 	// in case we're not in the user's $PATH
 	exe, err := osext.Executable()
 	if err != nil {
-		log.Printf("wr manager failed to start : %s\n", err)
-		os.Exit(1)
+		die("wr manager failed to start : %s\n", err)
 	}
 
 	var schedulerConfig interface{}
@@ -420,7 +453,6 @@ func startJQ(sayStarted bool, postCreation []byte) {
 			GatewayIP:            cloudGatewayIP,
 			CIDR:                 cloudCIDR,
 			DNSNameServers:       strings.Split(cloudDNS, ","),
-			Debug:                cloudDebug,
 		}
 		serverCIDR = cloudCIDR
 	}
@@ -432,55 +464,38 @@ func startJQ(sayStarted bool, postCreation []byte) {
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
-		RunnerCmd:       exe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
+		Logger:          serverLogger,
 	})
 
-	if sayStarted && err == nil {
-		logStarted(server.ServerInfo)
-	}
-
-	// start logging to configured file
-	logfile, errlog := os.OpenFile(config.ManagerLogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if errlog != nil {
-		warn("could not log to %s, will log to STDOUT: %v", config.ManagerLogFile, errlog)
-	} else {
-		defer logfile.Close()
-		log.SetOutput(logfile)
-	}
-
-	// log to file failure to Serve
-	if err != nil {
-		if msg != "" {
-			log.Printf("wr manager : %s\n", msg)
-		}
-		log.Printf("wr manager failed to start : %s\n", err)
-		os.Exit(1)
-	}
-
-	// log to file that we started
-	addr := sAddr(server.ServerInfo)
-	log.Printf("wr manager started on %s\n", addr)
 	if msg != "" {
-		log.Printf("wr manager : %s\n", msg)
+		info("wr manager : %s", msg)
 	}
+
+	if err != nil {
+		die("wr manager failed to start : %s", err)
+	}
+
+	logStarted(server.ServerInfo)
 
 	// block forever while the jobqueue does its work
 	err = server.Block()
 	if err != nil {
+		saddr := sAddr(server.ServerInfo)
 		jqerr, ok := err.(jobqueue.Error)
 		switch {
 		case ok && jqerr.Err == jobqueue.ErrClosedTerm:
-			log.Printf("wr manager on %s gracefully stopped (received SIGTERM)\n", addr)
+			info("wr manager on %s gracefully stopped (received SIGTERM)", saddr)
 		case ok && jqerr.Err == jobqueue.ErrClosedInt:
-			log.Printf("wr manager on %s gracefully stopped (received SIGINT)\n", addr)
+			info("wr manager on %s gracefully stopped (received SIGINT)", saddr)
 		case ok && jqerr.Err == jobqueue.ErrClosedStop:
-			log.Printf("wr manager on %s gracefully stopped (following a drain)\n", addr)
+			info("wr manager on %s gracefully stopped (following a drain)", saddr)
 		default:
-			log.Printf("wr manager on %s exited unexpectedly: %s\n", addr, err)
+			warn("wr manager on %s exited unexpectedly: %s", saddr, err)
 		}
 	}
 }

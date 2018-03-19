@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -26,7 +26,6 @@ import (
 	"bytes"
 	"compress/zlib"
 	"fmt"
-	"github.com/dgryski/go-farm"
 	"io"
 	"io/ioutil"
 	"net"
@@ -35,6 +34,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/dgryski/go-farm"
+	multierror "github.com/hashicorp/go-multierror"
 )
 
 // AppName gets used in certain places like naming the base directory of created
@@ -55,7 +57,7 @@ var ellipses = []byte("[...]\n")
 // The cidr argument can be an empty string, but if set to the CIDR of the
 // machine's primary network, it helps us be sure of getting the correct IP
 // address (for when there are multiple network interfaces on the machine).
-func CurrentIP(cidr string) (ip string) {
+func CurrentIP(cidr string) (string, error) {
 	var ipNet *net.IPNet
 	if cidr != "" {
 		_, ipn, err := net.ParseCIDR(cidr)
@@ -67,65 +69,71 @@ func CurrentIP(cidr string) (ip string) {
 	}
 
 	conn, err := net.Dial("udp", "8.8.8.8:80") // doesn't actually connect, dest doesn't need to exist
-	if err == nil {
-		defer conn.Close()
-		localAddr := conn.LocalAddr().(*net.UDPAddr)
-		ip := localAddr.IP
+	if err != nil {
+		// fall-back on the old method we had...
 
-		// paranoid confirmation this ip is in our CIDR
-		if ipNet != nil {
-			if ipNet.Contains(ip) {
-				return ip.String()
-			}
-		} else {
-			return ip.String()
-		}
-	}
-
-	// fall-back on the old method we had...
-
-	// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
-	// cross-linux&MacOS solution that works reliably...
-	out, err := exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output()
-	if err == nil {
-		ip = string(out)
-
-		// paranoid confirmation this ip is in our CIDR
-		if ip != "" && ipNet != nil {
-			pip := net.ParseIP(ip)
-			if pip != nil {
-				if !ipNet.Contains(pip) {
-					ip = ""
-				}
-			}
-		}
-	}
-
-	// if the above fails, fall back on manually going through all our network
-	// interfaces
-	if ip == "" {
-		addrs, err := net.InterfaceAddrs()
+		// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
+		// cross-linux&MacOS solution that works reliably...
+		var out []byte
+		out, err = exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
+		var ip string
 		if err != nil {
-			return
-		}
-		for _, address := range addrs {
-			if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
-				if thisIPNet.IP.To4() != nil {
-					if ipNet != nil {
-						if ipNet.Contains(thisIPNet.IP) {
-							ip = thisIPNet.IP.String()
-							break
-						}
-					} else {
-						ip = thisIPNet.IP.String()
-						break
+			ip = string(out)
+
+			// paranoid confirmation this ip is in our CIDR
+			if ip != "" && ipNet != nil {
+				pip := net.ParseIP(ip)
+				if pip != nil {
+					if !ipNet.Contains(pip) {
+						ip = ""
 					}
 				}
 			}
 		}
+
+		// if the above fails, fall back on manually going through all our
+		// network interfaces
+		if ip == "" {
+			var addrs []net.Addr
+			addrs, err = net.InterfaceAddrs()
+			if err != nil {
+				return "", err
+			}
+			for _, address := range addrs {
+				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
+					if thisIPNet.IP.To4() != nil {
+						if ipNet != nil {
+							if ipNet.Contains(thisIPNet.IP) {
+								ip = thisIPNet.IP.String()
+								break
+							}
+						} else {
+							ip = thisIPNet.IP.String()
+							break
+						}
+					}
+				}
+			}
+		}
+
+		return ip, nil
 	}
 
-	return
+	defer func() {
+		err = conn.Close()
+	}()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	ip := localAddr.IP
+
+	// paranoid confirmation this ip is in our CIDR
+	if ipNet != nil {
+		if ipNet.Contains(ip) {
+			return ip.String(), err
+		}
+	} else {
+		return ip.String(), err
+	}
+	return "", err
 }
 
 // byteKey calculates a unique key that describes a byte slice.
@@ -136,61 +144,92 @@ func byteKey(b []byte) string {
 
 // copy a file *** should be updated to handle source being on a different
 // machine or in an S3-style object store.
-func copyFile(source string, dest string) (err error) {
+func copyFile(source string, dest string) error {
 	in, err := os.Open(source)
 	if err != nil {
-		return
+		return err
 	}
-	defer in.Close()
+	defer func() {
+		errc := in.Close()
+		if errc != nil {
+			if err == nil {
+				err = errc
+			} else {
+				err = fmt.Errorf("%s (and closing source failed: %s)", err.Error(), errc)
+			}
+		}
+	}()
 	out, err := os.Create(dest)
 	if err != nil {
-		return
+		return err
 	}
-	defer out.Close()
+	defer func() {
+		errc := out.Close()
+		if errc != nil {
+			if err == nil {
+				err = errc
+			} else {
+				err = fmt.Errorf("%s (and closing dest failed: %s)", err.Error(), errc)
+			}
+		}
+	}()
 	_, err = io.Copy(out, in)
-	cerr := out.Close()
-	if err != nil {
-		return
-	}
-	if cerr != nil {
-		err = cerr
-		return
-	}
-	return
+	return err
 }
 
 // compress uses zlib to compress stuff, for transferring big stuff like
 // stdout, stderr and environment variables over the network, and for storing
 // of same on disk.
-func compress(data []byte) []byte {
+func compress(data []byte) ([]byte, error) {
 	var compressed bytes.Buffer
-	w, _ := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
-	w.Write(data)
-	w.Close()
-	return compressed.Bytes()
+	w, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	_, err = w.Write(data)
+	if err != nil {
+		return nil, err
+	}
+	err = w.Close()
+	if err != nil {
+		return nil, err
+	}
+	return compressed.Bytes(), nil
 }
 
 // decompress uses zlib to decompress stuff compressed by compress().
-func decompress(compressed []byte) (data []byte, err error) {
+func decompress(compressed []byte) ([]byte, error) {
 	b := bytes.NewReader(compressed)
 	r, err := zlib.NewReader(b)
 	if err != nil {
-		return
+		return nil, err
 	}
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(r)
-	data = buf.Bytes()
-	return
+	_, err = buf.ReadFrom(r)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), err
 }
 
 // get the current memory usage of a pid, relying on modern linux /proc/*/smaps
 // (based on http://stackoverflow.com/a/31881979/675083).
 func currentMemory(pid int) (int, error) {
+	var err error
 	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
+	defer func() {
+		errc := f.Close()
+		if errc != nil {
+			if err == nil {
+				err = errc
+			} else {
+				err = fmt.Errorf("%s (and closing smaps failed: %s)", err.Error(), errc)
+			}
+		}
+	}()
 
 	kb := uint64(0)
 	r := bufio.NewScanner(f)
@@ -198,21 +237,21 @@ func currentMemory(pid int) (int, error) {
 		line := r.Bytes()
 		if bytes.HasPrefix(line, pss) {
 			var size uint64
-			_, err := fmt.Sscanf(string(line[4:]), "%d", &size)
+			_, err = fmt.Sscanf(string(line[4:]), "%d", &size)
 			if err != nil {
 				return 0, err
 			}
 			kb += size
 		}
 	}
-	if err := r.Err(); err != nil {
+	if err = r.Err(); err != nil {
 		return 0, err
 	}
 
 	// convert kB to MB
 	mem := int(kb / 1024)
 
-	return mem, nil
+	return mem, err
 }
 
 // this prefixSuffixSaver-related code is taken from os/exec, since they are not
@@ -227,7 +266,7 @@ type prefixSuffixSaver struct {
 	skipped   int64
 }
 
-func (w *prefixSuffixSaver) Write(p []byte) (n int, err error) {
+func (w *prefixSuffixSaver) Write(p []byte) (int, error) {
 	lenp := len(p)
 	p = w.fill(&w.prefix, p)
 	if overage := len(p) - w.N; overage > 0 {
@@ -246,7 +285,7 @@ func (w *prefixSuffixSaver) Write(p []byte) (n int, err error) {
 	}
 	return lenp, nil
 }
-func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) (pRemain []byte) {
+func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) []byte {
 	if remain := w.N - len(*dst); remain > 0 {
 		add := minInt(len(p), remain)
 		*dst = append(*dst, p[:add]...)
@@ -282,44 +321,60 @@ func minInt(a, b int) int {
 // terminated lines (to mostly eliminate progress bars), intended for use with
 // stdout/err streaming input, outputting to a prefixSuffixSaver. Because you
 // must finish reading from the input before continuing, it returns a channel
-// that you should wait to receive something from.
-func stdFilter(std io.Reader, out io.Writer) chan bool {
+// that you should wait to receive an error from (nil if everything workd).
+func stdFilter(std io.Reader, out io.Writer) chan error {
 	reader := bufio.NewReader(std)
-	done := make(chan bool)
+	done := make(chan error)
 	go func() {
+		var merr *multierror.Error
 		for {
 			p, err := reader.ReadBytes('\n')
 
 			lines := bytes.Split(p, cr)
-			out.Write(lines[0])
+			_, errw := out.Write(lines[0])
+			if errw != nil {
+				merr = multierror.Append(merr, errw)
+			}
 			if len(lines) > 2 {
-				out.Write(lf)
-				if len(lines) > 3 {
-					out.Write(ellipses)
+				_, errw = out.Write(lf)
+				if errw != nil {
+					merr = multierror.Append(merr, errw)
 				}
-				out.Write(lines[len(lines)-2])
-				out.Write(lf)
+				if len(lines) > 3 {
+					_, errw = out.Write(ellipses)
+					if errw != nil {
+						merr = multierror.Append(merr, errw)
+					}
+				}
+				_, errw = out.Write(lines[len(lines)-2])
+				if errw != nil {
+					merr = multierror.Append(merr, errw)
+				}
+				_, errw = out.Write(lf)
+				if errw != nil {
+					merr = multierror.Append(merr, errw)
+				}
 			}
 
 			if err != nil {
 				break
 			}
 		}
-		done <- true
+		done <- merr.ErrorOrNil()
 	}()
 	return done
 }
 
 // envOverride deals with values you get from os.Environ, overriding one set
-// with values from another.
-func envOverride(orig []string, over []string) (env []string) {
+// with values from another. Returns the new slice of environment variables.
+func envOverride(orig []string, over []string) []string {
 	override := make(map[string]string)
 	for _, envvar := range over {
 		pair := strings.Split(envvar, "=")
 		override[pair[0]] = envvar
 	}
 
-	env = orig
+	env := orig
 	for i, envvar := range env {
 		pair := strings.Split(envvar, "=")
 		if replace, do := override[pair[0]]; do {
@@ -331,7 +386,7 @@ func envOverride(orig []string, over []string) (env []string) {
 	for _, envvar := range override {
 		env = append(env, envvar)
 	}
-	return
+	return env
 }
 
 // mkHashedDir uses tohash (which should be a 32 char long string from
@@ -344,7 +399,16 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dirs = append([]string{baseDir, AppName + "_cwd"}, dirs...)
 	dir := filepath.Join(dirs...)
 	holdFile := filepath.Join(dir, ".hold")
-	defer os.Remove(holdFile)
+	defer func() {
+		errr := os.Remove(holdFile)
+		if errr != nil && !os.IsNotExist(errr) {
+			if err == nil {
+				err = errr
+			} else {
+				err = fmt.Errorf("%s (and removing the hold file failed: %s)", err.Error(), errr)
+			}
+		}
+	}()
 	tries := 0
 	for {
 		err = os.MkdirAll(dir, os.ModePerm)
@@ -355,22 +419,25 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 				// rmEmptyDirs on the same baseDir and so conflicting with us
 				continue
 			}
-			return
+			return cwd, tmpDir, err
 		}
 
 		// and drop a temp file in here so rmEmptyDirs will not immediately
 		// remove these dirs
 		tries = 0
 		var f *os.File
-		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0666)
+		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0600)
 		if err != nil {
 			tries++
 			if tries <= 3 {
 				continue
 			}
-			return
+			return cwd, tmpDir, err
 		}
-		f.Close()
+		err = f.Close()
+		if err != nil {
+			return cwd, tmpDir, err
+		}
 
 		break
 	}
@@ -383,25 +450,30 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	// the same working directory
 	dir, err = ioutil.TempDir(dir, leaf)
 	if err != nil {
-		return
+		return cwd, tmpDir, err
 	}
 
 	cwd = filepath.Join(dir, "cwd")
 	err = os.Mkdir(cwd, os.ModePerm)
 	if err != nil {
-		return
+		return cwd, tmpDir, err
 	}
 
 	tmpDir = filepath.Join(dir, "tmp")
-	err = os.Mkdir(tmpDir, os.ModePerm)
-	return
+	return cwd, tmpDir, os.Mkdir(tmpDir, os.ModePerm)
 }
 
 // rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
 // stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
 // doesn't exist.
-func rmEmptyDirs(leafDir, baseDir string) {
-	os.Remove(leafDir)
+func rmEmptyDirs(leafDir, baseDir string) error {
+	err := os.Remove(leafDir)
+	if err != nil && !os.IsNotExist(err) {
+		if strings.Contains(err.Error(), "directory not empty") { //*** not sure where this string comes; probably not cross platform!
+			return nil
+		}
+		return err
+	}
 	current := leafDir
 	parent := filepath.Dir(current)
 	for ; parent != baseDir; parent = filepath.Dir(current) {
@@ -414,6 +486,7 @@ func rmEmptyDirs(leafDir, baseDir string) {
 		}
 		current = parent
 	}
+	return nil
 }
 
 // removeAllExcept deletes the contents of a given directory (absolute path),
@@ -441,9 +514,9 @@ func removeAllExcept(path string, exceptions []string) error {
 // removeWithExceptions is the recursive part of removeAllExcept's
 // implementation that does the real work of deleting stuff.
 func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
-	entries, err := ioutil.ReadDir(path)
-	if err != nil {
-		return err
+	entries, errr := ioutil.ReadDir(path)
+	if errr != nil {
+		return errr
 	}
 	for _, entry := range entries {
 		abs := filepath.Join(path, entry.Name())
@@ -460,12 +533,12 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 		}
 
 		if checkDirs[abs] {
-			err = removeWithExceptions(abs, keepDirs, checkDirs)
+			err := removeWithExceptions(abs, keepDirs, checkDirs)
 			if err != nil {
 				return err
 			}
 		} else {
-			err = os.RemoveAll(abs)
+			err := os.RemoveAll(abs)
 			if err != nil {
 				return err
 			}

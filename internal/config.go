@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -21,12 +21,13 @@ package internal
 // this file implements the config system used by the cmd package
 
 import (
-	"fmt"
-	"github.com/jinzhu/configor"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/inconshreveable/log15"
+	"github.com/jinzhu/configor"
 )
 
 const (
@@ -92,10 +93,10 @@ Settings found in no file can be set with the environment variable
 WR_<setting name in caps>, eg.
 export WR_MANAGER_PORT="11301"
 */
-func ConfigLoad(deployment string, useparentdir bool) Config {
+func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Config {
 	pwd, err := os.Getwd()
 	if err != nil {
-		fmt.Println(err)
+		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
@@ -105,10 +106,18 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 
 	// if deployment not set on the command line
 	if deployment != Development && deployment != Production {
-		deployment = DefaultDeployment()
+		deployment = DefaultDeployment(logger)
 	}
-	os.Setenv("CONFIGOR_ENV", deployment)
-	os.Setenv("CONFIGOR_ENV_PREFIX", "WR")
+	err = os.Setenv("CONFIGOR_ENV", deployment)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	err = os.Setenv("CONFIGOR_ENV_PREFIX", "WR")
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
 	ConfigDeploymentBasename := ".wr_config." + deployment + ".yml"
 
 	// read the config files. We have to check file existence before passing
@@ -136,7 +145,11 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	}
 
 	config := Config{}
-	configor.Load(&config, configFiles...)
+	err = configor.Load(&config, configFiles...)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
 	config.Deployment = deployment
 
 	// convert the possible ~/ in Manager_dir to abs path to user's home
@@ -146,7 +159,7 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	// create the manager dir now, or else we're doomed to failure
 	err = os.MkdirAll(config.ManagerDir, 0700)
 	if err != nil {
-		fmt.Println(err)
+		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
@@ -168,10 +181,10 @@ func ConfigLoad(deployment string, useparentdir bool) Config {
 	// if not explicitly set, calculate ports that no one else would be
 	// assigned by us (and hope no other software is using it...)
 	if config.ManagerPort == "" {
-		config.ManagerPort = calculatePort(config.Deployment, "cli")
+		config.ManagerPort = calculatePort(config.Deployment, "cli", logger)
 	}
 	if config.ManagerWeb == "" {
-		config.ManagerWeb = calculatePort(config.Deployment, "webi")
+		config.ManagerWeb = calculatePort(config.Deployment, "webi", logger)
 	}
 
 	return config
@@ -188,14 +201,15 @@ func (c Config) IsDevelopment() bool {
 }
 
 // DefaultDeployment works out the default deployment.
-func DefaultDeployment() (deployment string) {
+func DefaultDeployment(logger log15.Logger) string {
 	pwd, err := os.Getwd()
 	if err != nil {
-		fmt.Println(err)
+		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
 	// if we're in the git repository
+	var deployment string
 	if _, err := os.Stat(filepath.Join(pwd, "jobqueue", "server.go")); err == nil {
 		// force development
 		deployment = Development
@@ -210,30 +224,30 @@ func DefaultDeployment() (deployment string) {
 			}
 		}
 	}
-	return
+	return deployment
 }
 
 // DefaultConfig works out the default config for when we need to be able to
 // report the default before we know what deployment the user has actually
 // chosen, ie. before we have a final config.
-func DefaultConfig() Config {
-	return ConfigLoad(DefaultDeployment(), false)
+func DefaultConfig(logger log15.Logger) Config {
+	return ConfigLoad(DefaultDeployment(logger), false, logger)
 }
 
 // DefaultServer works out the default server (we need this to be able to report
 // this default before we know what deployment the user has actually chosen, ie.
 // before we have a final config).
-func DefaultServer() (server string) {
-	config := DefaultConfig()
+func DefaultServer(logger log15.Logger) (server string) {
+	config := DefaultConfig(logger)
 	return config.ManagerHost + ":" + config.ManagerPort
 }
 
 // Calculate a port number that will be unique to this user, deployment and
 // ptype ("cli" or "webi").
-func calculatePort(deployment string, ptype string) (port string) {
+func calculatePort(deployment string, ptype string, logger log15.Logger) (port string) {
 	uid, err := Userid()
 	if err != nil {
-		fmt.Println(err)
+		logger.Error(err.Error())
 		os.Exit(1)
 	}
 
@@ -244,7 +258,7 @@ func calculatePort(deployment string, ptype string) (port string) {
 
 	// maximum port number is 65535
 	if pn+3 > 65535 {
-		fmt.Println("Could not calculate a suitable unique port number for you, since your user id is so large; please manually set your manager_port and manager_web config options.")
+		logger.Error("Could not calculate a suitable unique port number for you, since your user id is so large; please manually set your manager_port and manager_web config options.")
 		os.Exit(1)
 	}
 

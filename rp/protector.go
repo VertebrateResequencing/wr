@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,9 +22,10 @@ package rp
 // the Protector.
 
 import (
-	"github.com/satori/go.uuid"
 	"sync"
 	"time"
+
+	"github.com/satori/go.uuid"
 )
 
 // Protector struct is used to Protect a particular resource by granting tokens
@@ -106,8 +107,9 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	}
 
 	// create a request object
+	u, _ := uuid.NewV4()
 	r := &request{
-		id:        Receipt(uuid.NewV4().String()),
+		id:        Receipt(u.String()),
 		grantedCh: make(chan bool, 1),
 		cancelCh:  make(chan bool, 1),
 		releaseCh: make(chan bool, 1),
@@ -194,9 +196,9 @@ func (p *Protector) Granted(receipt Receipt) (granted, keepChecking bool) {
 		if !granted {
 			keepChecking = !r.finished()
 		}
-		return
+		return granted, keepChecking
 	}
-	return
+	return granted, keepChecking
 }
 
 // Touch for a request (identified by the given receipt) prevents it timing out

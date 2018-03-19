@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -50,7 +50,7 @@ Server
         WebPort:         "12346",
         SchedulerName:   "local",
         SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
-        RunnerCmd:       selfExe + " runner -q %s -s '%s' --deployment %s --server '%s' -r %d -m %d",
+        RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
         DBFile:          "/home/username/.wr_production/boltdb",
         DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
         Deployment:      "production",
@@ -84,7 +84,7 @@ An example client, one for adding commands to the job queue:
         Dependencies: deps,
     })
 
-    jq, err := jobqueue.Connect("localhost:12345", "cmds", 30 * time.Second)
+    jq, err := jobqueue.Connect("localhost:12345", 30 * time.Second)
     inserts, dups, err := jq.Add(jobs, os.Environ())
 */
 package jobqueue

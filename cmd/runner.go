@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,18 +20,19 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
 )
 
 // options for this cmd
-var queuename string
 var schedgrp string
 var reserveint int
 var rserver string
@@ -53,8 +54,9 @@ runner stops picking up new commands and exits instead; max_time does not cause
 the runner to kill itself if the cmd it is running takes longer than max_time to
 complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if queuename == "" {
-			die("--queue is required")
+		if runtime.NumCPU() == 1 {
+			// we might lock up with only 1 proc if we mount
+			runtime.GOMAXPROCS(2)
 		}
 
 		// the server receive timeout must be greater than the time we'll wait
@@ -67,19 +69,25 @@ complete.`,
 
 		jobqueue.AppName = "wr"
 
-		jq, err := jobqueue.Connect(rserver, queuename, timeout)
+		jq, err := jobqueue.Connect(rserver, timeout)
 		if err != nil {
 			die("%s", err)
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
-		// in case any job we execute has a Cmd that calls `wr add`, we alter
-		// the environment to make that call work
+		// in case any job we execute has a Cmd that calls `wr add`, we will
+		// override their environment to make that call work
+		var envOverrides []string
 		if rserver != "" {
 			hostPort := strings.Split(rserver, ":")
 			if len(hostPort) == 2 {
-				os.Setenv("WR_MANAGERHOST", hostPort[0])
-				os.Setenv("WR_MANAGERPORT", hostPort[1])
+				envOverrides = append(envOverrides, "WR_MANAGERHOST="+hostPort[0])
+				envOverrides = append(envOverrides, "WR_MANAGERPORT="+hostPort[1])
 			}
 
 			// add our own wr exe to the path in case its not there
@@ -88,7 +96,7 @@ complete.`,
 				die("%s", err)
 			}
 			exePath := filepath.Dir(exe)
-			os.Setenv("PATH", os.Getenv("PATH")+":"+exePath)
+			envOverrides = append(envOverrides, "PATH="+os.Getenv("PATH")+":"+exePath)
 		}
 
 		// we'll stop the below loop before using up too much time
@@ -102,7 +110,7 @@ complete.`,
 		// loop, reserving and running commands from the queue, until there
 		// aren't any more commands in the queue
 		numrun := 0
-		exitReason := fmt.Sprintf("there are no more commands in queue '%s' in scheduler group '%s'", queuename, schedgrp)
+		exitReason := fmt.Sprintf("there are no more commands in scheduler group '%s'", schedgrp)
 		for {
 			var job *jobqueue.Job
 			var err error
@@ -121,12 +129,28 @@ complete.`,
 
 			// see if we have enough time left to run this
 			if time.Now().Add(job.Requirements.Time).After(endTime) {
-				jq.Release(job, job.FailReason)
+				err = jq.Release(job, nil, "not enough time to run")
+				if err != nil {
+					// oh well?
+					warn("job release after running out of time failed: %s", err)
+				}
 				exitReason = "we're about to hit our maximum time limit"
 				break
 			}
 
 			// actually run the cmd
+			if len(envOverrides) > 0 {
+				err = job.EnvAddOverride(envOverrides)
+				if err != nil {
+					err = jq.Release(job, nil, "failed to add env var overrides")
+					if err != nil {
+						// oh well?
+						warn("job release after envaddoverride fail: %s", err)
+					}
+					exitReason = "EnvAddOverride failed"
+					break
+				}
+			}
 			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {
 				warn("%s", err)
@@ -149,10 +173,9 @@ func init() {
 	RootCmd.AddCommand(runnerCmd)
 
 	// flags specific to this sub-command
-	runnerCmd.Flags().StringVarP(&queuename, "queue", "q", "cmds", "specify the queue to pull commands from")
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
 	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
-	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 1, "how long (seconds) to wait for there to be a command in the queue, before exiting")
+	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 2, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
-	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(), "ip:port of wr manager")
+	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(appLogger), "ip:port of wr manager")
 }

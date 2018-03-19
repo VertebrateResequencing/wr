@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,9 +20,10 @@ package queue
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestReadyQueue(t *testing.T) {
@@ -152,9 +153,9 @@ func TestReadyQueue(t *testing.T) {
 
 			So(queue.len("group2"), ShouldEqual, 5)
 			for i := 0; i < 5; i++ {
-				item := queue.pop("group2")
-				So(item, ShouldHaveSameTypeAs, exampleItem)
-				So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i+5))
+				itemp := queue.pop("group2")
+				So(itemp, ShouldHaveSameTypeAs, exampleItem)
+				So(itemp.Key, ShouldEqual, fmt.Sprintf("key_%d", i+5))
 			}
 			So(queue.len("group2"), ShouldEqual, 0)
 

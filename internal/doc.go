@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -23,8 +23,11 @@ It also implements the the config system used by the cmd package (see
 config.go).
 
     import "github.com/VertebrateResequencing/wr/internal"
+    import "github.com/inconshreveable/log15"
     deployment := internal.DefaultDeployment()
-    config := internal.ConfigLoad(deployment, false)
+    logger := log15.New()
+    logger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+    config := internal.ConfigLoad(deployment, false, logger)
     port := config.ManagerPort
 */
 package internal

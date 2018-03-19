@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,15 +22,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/VertebrateResequencing/wr/internal"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/inconshreveable/log15"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestREST(t *testing.T) {
@@ -38,9 +40,12 @@ func TestREST(t *testing.T) {
 		return
 	}
 
+	testLogger := log15.New()
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
-	config := internal.ConfigLoad("development", true)
+	config := internal.ConfigLoad("development", true, testLogger)
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
@@ -49,6 +54,7 @@ func TestREST(t *testing.T) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbFile + "_bk",
 		Deployment:      config.Deployment,
+		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
 	baseURL := "http://localhost:" + config.ManagerWeb
@@ -186,7 +192,7 @@ func TestREST(t *testing.T) {
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
-				jq, err := Connect(addr, "cmds", clientConnectTime)
+				jq, err := Connect(addr, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq.Disconnect()
 
@@ -400,7 +406,7 @@ func TestREST(t *testing.T) {
 				So(err, ShouldBeNil)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				So(response.StatusCode, ShouldEqual, http.StatusOK)
+				So(response.StatusCode, ShouldEqual, http.StatusNotModified) // because the fake server doesn't actually exist
 
 				server.bsmutex.RLock()
 				So(len(server.badServers), ShouldEqual, 0)

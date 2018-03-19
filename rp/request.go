@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,7 +22,6 @@ package rp
 
 import (
 	"sync"
-	"time"
 )
 
 // Receipt is the unique id of a request
@@ -31,18 +30,18 @@ type Receipt string
 // request struct describes a request for tokens tied to a particular resource
 // protector.
 type request struct {
-	id          Receipt
-	owner       string
-	numTokens   int
-	grantedCh   chan bool
-	cancelCh    chan bool
-	releaseCh   chan bool
-	touchCh     chan bool
-	autoRelease time.Duration
-	waiting     bool
-	active      bool
-	done        bool
-	mu          sync.RWMutex
+	id Receipt
+	// owner       string
+	numTokens int
+	grantedCh chan bool
+	cancelCh  chan bool
+	releaseCh chan bool
+	touchCh   chan bool
+	// autoRelease time.Duration
+	waiting bool
+	active  bool
+	done    bool
+	mu      sync.RWMutex
 }
 
 // waitUntilGranted blocks until the Protector that created us sends on our

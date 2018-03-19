@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -26,11 +26,6 @@ package jobqueue
 import (
 	"bytes"
 	"fmt"
-	"github.com/VertebrateResequencing/muxfys"
-	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/boltdb/bolt"
-	"github.com/hashicorp/golang-lru"
-	"github.com/ugorji/go/codec"
 	"io"
 	"math"
 	"os"
@@ -40,12 +35,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/wr/internal"
+	bolt "github.com/coreos/bbolt"
+	"github.com/hashicorp/golang-lru"
+	"github.com/inconshreveable/log15"
+	"github.com/ugorji/go/codec"
 )
 
 const (
-	dbDelimiter          = "_::_"
-	jobStatWindowPercent = float32(5)
-	dbFilePermission     = 0600
+	dbDelimiter               = "_::_"
+	jobStatWindowPercent      = float32(5)
+	dbFilePermission          = 0600
+	minimumTimeBetweenBackups = 30 * time.Second
 )
 
 var (
@@ -83,10 +86,7 @@ func (s sobsd) Swap(i, j int) {
 }
 func (s sobsd) Less(i, j int) bool {
 	cmp := bytes.Compare(s[i][0], s[j][0])
-	if cmp == -1 {
-		return true
-	}
-	return false
+	return cmp == -1
 }
 
 // sobsdStorer is the kind of function that stores the contents of a sobsd in
@@ -94,20 +94,25 @@ func (s sobsd) Less(i, j int) bool {
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
-	bolt                 *bolt.DB
-	envcache             *lru.ARCCache
-	ch                   codec.Handle
-	updatingAfterJobExit int
-	backupsEnabled       bool
-	backupPath           string
-	backupMount          *muxfys.MuxFys
-	backingUp            bool
-	backupQueued         bool
-	backupFinal          bool
-	backupNotification   chan bool
-	slowBackups          bool // just for testing purposes
-	closed               bool
+	backingUp          bool
+	backupFinal        bool
+	backupStopWait     chan bool
+	backupLast         time.Time
+	backupMount        *muxfys.MuxFys
+	backupNotification chan bool
+	backupPath         string
+	backupQueued       bool
+	backupWait         time.Duration
+	backupsEnabled     bool
+	bolt               *bolt.DB
+	ch                 codec.Handle
+	closed             bool
+	envcache           *lru.ARCCache
+	slowBackups        bool // just for testing purposes
 	sync.RWMutex
+	updatingAfterJobExit int
+	wg                   *sync.WaitGroup
+	log15.Logger
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -120,7 +125,9 @@ type db struct {
 //
 // In development we delete any existing db and force a fresh start. Backups
 // are also not carried out, so dbBkFile is ignored.
-func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, msg string, err error) {
+func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logger) (*db, string, error) {
+	l := logger.New()
+
 	var backupsEnabled bool
 	bkPath := dbBkFile
 	var fs *muxfys.MuxFys
@@ -143,15 +150,13 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 			mnt := filepath.Join(filepath.Dir(dbFile), ".db_bk_mount", path)
 			bkPath = filepath.Join(mnt, base)
 
-			var accessorConfig *muxfys.S3Config
-			accessorConfig, err = muxfys.S3ConfigFromEnvironment(profile, path)
+			accessorConfig, err := muxfys.S3ConfigFromEnvironment(profile, path)
 			if err != nil {
-				return
+				return nil, "", err
 			}
-			var accessor *muxfys.S3Accessor
-			accessor, err = muxfys.NewS3Accessor(accessorConfig)
+			accessor, err := muxfys.NewS3Accessor(accessorConfig)
 			if err != nil {
-				return
+				return nil, "", err
 			}
 			remoteConfig := &muxfys.RemoteConfig{
 				Accessor: accessor,
@@ -163,22 +168,30 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 			}
 			fs, err = muxfys.New(cfg)
 			if err != nil {
-				return
+				return nil, "", err
 			}
 			err = fs.Mount(remoteConfig)
 			if err != nil {
-				return
+				return nil, "", err
 			}
 			fs.UnmountOnDeath()
 		}
 	}
 
 	if wipeDevDBOnInit && deployment == internal.Development {
-		os.Remove(dbFile)
-		os.Remove(bkPath)
+		errr := os.Remove(dbFile)
+		if errr != nil && !os.IsNotExist(errr) {
+			l.Warn("Failed to remove database file", "path", dbFile, "err", errr)
+		}
+		errr = os.Remove(bkPath)
+		if errr != nil && !os.IsNotExist(errr) {
+			l.Warn("Failed to remove database backup file", "path", bkPath, "err", errr)
+		}
 	}
 
 	var boltdb *bolt.DB
+	var msg string
+	var err error
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(bkPath); os.IsNotExist(err) {
 			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
@@ -186,7 +199,7 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		} else {
 			err = copyFile(bkPath, dbFile)
 			if err != nil {
-				return
+				return nil, msg, err
 			}
 			boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
@@ -202,11 +215,11 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, err)
 					err = os.Remove(dbFile)
 					if err != nil {
-						return
+						return nil, msg, err
 					}
 					err = copyFile(bkPath, dbFile)
 					if err != nil {
-						return
+						return nil, msg, err
 					}
 					boltdb, err = bolt.Open(dbFile, dbFilePermission, nil)
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file was: %s)", dbFile, dbBkFile, origerr)
@@ -215,75 +228,80 @@ func initDB(dbFile string, dbBkFile string, deployment string) (dbstruct *db, ms
 		}
 	}
 	if err != nil {
-		return
+		return nil, msg, err
 	}
 
 	// ensure our buckets are in place
 	err = boltdb.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketJobsLive)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsLive, err)
+		_, errf := tx.CreateBucketIfNotExists(bucketJobsLive)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobsLive, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketJobsComplete)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsComplete, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobsComplete)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobsComplete, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketRTK)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRTK, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketRTK)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRTK, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketDTK)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketDTK, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketRDTK)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRDTK, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRDTK, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketEnvs)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketEnvs, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketEnvs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketEnvs, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketStdO)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdO, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketStdO)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketStdO, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketStdE)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdE, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketStdE)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketStdE, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketJobMBs)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobMBs, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobMBs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobMBs, errf)
 		}
-		_, err = tx.CreateBucketIfNotExists(bucketJobSecs)
-		if err != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, err)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobSecs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, errf)
 		}
 		return nil
 	})
 	if err != nil {
-		return
+		return nil, msg, err
 	}
 
 	// we will cache frequently used things to avoid actual db (disk) access
 	envcache, err := lru.NewARC(12) // we don't expect that many different ENVs to be in use at once
 	if err != nil {
-		return
+		return nil, msg, err
 	}
 
-	dbstruct = &db{
+	dbstruct := &db{
 		bolt:               boltdb,
 		envcache:           envcache,
 		ch:                 new(codec.BincHandle),
 		backupsEnabled:     backupsEnabled,
 		backupPath:         bkPath,
 		backupNotification: make(chan bool),
+		backupWait:         minimumTimeBetweenBackups,
+		backupStopWait:     make(chan bool),
+		wg:                 &sync.WaitGroup{},
+		Logger:             l,
 	}
 	if fs != nil {
 		dbstruct.backupMount = fs
 	}
-	return
+
+	return dbstruct, msg, err
 }
 
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
@@ -323,7 +341,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			var added bool
 			added, err = db.checkIfAdded(keyStr)
 			if err != nil {
-				return
+				return jobsToQueue, jobsToUpdate, alreadyAdded, err
 			}
 			if added {
 				alreadyAdded++
@@ -352,9 +370,11 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		var encoded []byte
 		enc := codec.NewEncoderBytes(&encoded, db.ch)
+		job.RLock()
 		err = enc.Encode(job)
+		job.RUnlock()
 		if err != nil {
-			return
+			return jobsToQueue, jobsToUpdate, alreadyAdded, err
 		}
 		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 	}
@@ -375,9 +395,11 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 				key := []byte(job.key())
 				var encoded []byte
 				enc := codec.NewEncoderBytes(&encoded, db.ch)
+				job.RLock()
 				err = enc.Encode(job)
+				job.RUnlock()
 				if err != nil {
-					return
+					return jobsToQueue, jobsToUpdate, alreadyAdded, err
 				}
 				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 			}
@@ -401,26 +423,34 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		}
 		errors := make(chan error, numStores)
 
+		db.wg.Add(1)
 		go func() {
+			defer db.wg.Done()
 			sort.Sort(rgLookups)
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
 		}()
 
 		if len(dgLookups) > 0 {
+			db.wg.Add(1)
 			go func() {
+				defer db.wg.Done()
 				sort.Sort(dgLookups)
 				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
 			}()
 		}
 
 		if len(rdgLookups) > 0 {
+			db.wg.Add(1)
 			go func() {
+				defer db.wg.Done()
 				sort.Sort(rdgLookups)
 				errors <- db.storeBatched(bucketRDTK, rdgLookups, db.storeLookups)
 			}()
 		}
 
+		db.wg.Add(1)
 		go func() {
+			defer db.wg.Done()
 			sort.Sort(encodedJobs)
 			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
 		}()
@@ -451,34 +481,35 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		db.backgroundBackup()
 	}
 
-	return
+	return jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
 // generateLookupKey creates a lookup key understood by the retrieval methods,
 // concatenating prefix with a delimiter and the job key.
 func (db *db) generateLookupKey(prefix string, jobKey []byte) []byte {
 	key := append([]byte(prefix), []byte(dbDelimiter)...)
-	key = append(key, jobKey...)
-	return key
+	return append(key, jobKey...)
 }
 
 // checkIfLive tells you if a job with the given key is currently in the live
 // bucket.
-func (db *db) checkIfLive(key string) (isLive bool, err error) {
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) checkIfLive(key string) (bool, error) {
+	var isLive bool
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		if newJobBucket.Get([]byte(key)) != nil {
 			isLive = true
 		}
 		return nil
 	})
-	return
+	return isLive, err
 }
 
 // checkIfAdded tells you if a job with the given key is currently in the
 // complete bucket or the live bucket.
-func (db *db) checkIfAdded(key string) (isInDB bool, err error) {
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) checkIfAdded(key string) (bool, error) {
+	var isInDB bool
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		if newJobBucket.Get([]byte(key)) != nil || completeJobBucket.Get([]byte(key)) != nil {
@@ -486,33 +517,65 @@ func (db *db) checkIfAdded(key string) (isInDB bool, err error) {
 		}
 		return nil
 	})
-	return
+	return isInDB, err
 }
 
 // archiveJob deletes a job from the live bucket, and adds a new version of it
-// (with different properties) to the complete bucket. The key you supply must
-// be the key of the job you supply, or bad things will happen - no checking is
-// done! A backgroundBackup() is triggered afterwards.
-func (db *db) archiveJob(key string, job *Job) (err error) {
+// (with different properties) to the complete bucket.
+//
+// Also does what updateJobAfterExit does, except for the storage of any new
+// stdout/err.
+//
+// The key you supply must be the key of the job you supply, or bad things will
+// happen - no checking is done! A backgroundBackup() is triggered afterwards.
+func (db *db) archiveJob(key string, job *Job) error {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
-	err = enc.Encode(job)
+	job.RLock()
+	err := enc.Encode(job)
+	job.RUnlock()
 	if err != nil {
-		return
+		return err
 	}
 
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		bo := tx.Bucket(bucketStdO)
+		be := tx.Bucket(bucketStdE)
+		key := []byte(key)
+		errf := bo.Delete(key)
+		if errf != nil {
+			return errf
+		}
+		errf = be.Delete(key)
+		if errf != nil {
+			return errf
+		}
+
 		b := tx.Bucket(bucketJobsLive)
-		b.Delete([]byte(key))
+		errf = b.Delete(key)
+		if errf != nil {
+			return errf
+		}
 
 		b = tx.Bucket(bucketJobsComplete)
-		err := b.Put([]byte(key), encoded)
-		return err
+		errf = b.Put(key, encoded)
+		if errf != nil {
+			return errf
+		}
+
+		b = tx.Bucket(bucketJobMBs)
+		errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+		if errf != nil {
+			return errf
+		}
+		b = tx.Bucket(bucketJobSecs)
+		secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
+		return b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
 	})
 
 	db.backgroundBackup()
 
-	return
+	return err
 }
 
 // deleteLiveJob remove a job from the live bucket, for use when jobs were
@@ -528,37 +591,38 @@ func (db *db) deleteLiveJob(key string) {
 // stored with storeNewJobs() but not yet archived with archiveJob(). Note that
 // any state changes to the Jobs that may have occurred will be lost: you get
 // back the Jobs exactly as they were when you put them in with storeNewJobs().
-func (db *db) recoverIncompleteJobs() (jobs []*Job, err error) {
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) recoverIncompleteJobs() ([]*Job, error) {
+	var jobs []*Job
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsLive)
-		b.ForEach(func(_, encoded []byte) error {
+		return b.ForEach(func(_, encoded []byte) error {
 			if encoded != nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
-				err = dec.Decode(job)
-				if err != nil {
-					return err
+				errf := dec.Decode(job)
+				if errf != nil {
+					return errf
 				}
 				jobs = append(jobs, job)
 			}
 			return nil
 		})
-		return nil
 	})
-	return
+	return jobs, err
 }
 
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
 // jobs bucket (ie. those that have gone through the queue and been Remove()d).
-func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool) (jobs []*Job, err error) {
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
+	var jobs []*Job
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsComplete)
 		for _, key := range keys {
 			encoded := b.Get([]byte(key))
 			if encoded != nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
-				err = dec.Decode(job)
+				err := dec.Decode(job)
 				if err == nil {
 					jobs = append(jobs, job)
 				}
@@ -566,15 +630,16 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string, getstd bool, getenv bool
 		}
 		return nil
 	})
-	return
+	return jobs, err
 }
 
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the
 // completed jobs bucket (ie. those that have gone through the queue and been
 // Archive()d), but not those that are also currently live (ie. are being
 // re-run).
-func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err error) {
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
+	var jobs []*Job
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
 		completeJobBucket := tx.Bucket(bucketJobsComplete)
 		lookupBucket := tx.Bucket(bucketRTK).Cursor()
@@ -585,7 +650,7 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err 
 			if len(encoded) > 0 && newJobBucket.Get(key) == nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
-				err = dec.Decode(job)
+				err := dec.Decode(job)
 				if err != nil {
 					return err
 				}
@@ -594,7 +659,7 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) (jobs []*Job, err 
 		}
 		return nil
 	})
-	return
+	return jobs, err
 }
 
 // retrieveDependentJobs gets previously stored jobs that had a dependency on
@@ -636,9 +701,9 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 					if len(encoded) > 0 {
 						dec := codec.NewDecoderBytes(encoded, db.ch)
 						job := &Job{}
-						err = dec.Decode(job)
-						if err != nil {
-							return err
+						errf := dec.Decode(job)
+						if errf != nil {
+							return errf
 						}
 
 						// since we're going to add this job, we also need to
@@ -675,31 +740,18 @@ func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[st
 		}
 		return nil
 	})
-	return
+	return jobsToQueue, jobsToUpdate, err
 }
 
-// retrieveIncompleteJobKeysByDepGroup gets jobs with the given RepGroup from
+// retrieveIncompleteJobKeysByDepGroup gets jobs with the given DepGroup from
 // the live bucket (ie. those that have been added to the queue and not yet
 // Archive()d - even if they've been added and archived in the past).
-func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) (jobKeys []string, err error) {
-	return db.retrieveIncompleteJobsKeysByGroup(depgroup, bucketDTK)
-}
-
-// retrieveIncompleteJobKeysByDepGroupDependency gets jobs that had a dependency
-// on jobs with the given RepGroup from the live bucket (ie. those that have
-// been added to the queue and not yet Archive()d - even if they've been added
-// and archived in the past).
-func (db *db) retrieveIncompleteJobKeysByDepGroupDependency(depgroup string) (jobKeys []string, err error) {
-	return db.retrieveIncompleteJobsKeysByGroup(depgroup, bucketRDTK)
-}
-
-// retrieveIncompleteJobsKeysByGroup gets job keys with the given group (using
-// the lookup from the given bucket) from the live jobs bucket.
-func (db *db) retrieveIncompleteJobsKeysByGroup(group string, bucket []byte) (jobKeys []string, err error) {
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, error) {
+	var jobKeys []string
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		newJobBucket := tx.Bucket(bucketJobsLive)
-		lookupBucket := tx.Bucket(bucket).Cursor()
-		prefix := []byte(group + dbDelimiter)
+		lookupBucket := tx.Bucket(bucketDTK).Cursor()
+		prefix := []byte(depgroup + dbDelimiter)
 		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 			key := bytes.TrimPrefix(k, prefix)
 			if newJobBucket.Get(key) != nil {
@@ -708,49 +760,56 @@ func (db *db) retrieveIncompleteJobsKeysByGroup(group string, bucket []byte) (jo
 		}
 		return nil
 	})
-	return
+	return jobKeys, err
 }
 
 // storeEnv stores a clientRequest.Env in db unless cached, which means it must
 // already be there. Returns a key by which the stored Env can be retrieved.
-func (db *db) storeEnv(env []byte) (envkey string, err error) {
-	envkey = byteKey(env)
+func (db *db) storeEnv(env []byte) (string, error) {
+	envkey := byteKey(env)
 	if !db.envcache.Contains(envkey) {
-		err = db.store(bucketEnvs, envkey, env)
+		err := db.store(bucketEnvs, envkey, env)
 		if err != nil {
-			return
+			return envkey, err
 		}
 		db.envcache.Add(envkey, env)
 	}
-	return
+	return envkey, nil
 }
 
 // retrieveEnv gets a value from the db that was stored with storeEnv(). The
 // value may come from the cache, avoiding db access.
-func (db *db) retrieveEnv(envkey string) (envc []byte) {
+func (db *db) retrieveEnv(envkey string) []byte {
 	cached, got := db.envcache.Get(envkey)
 	if got {
-		envc = cached.([]byte)
-	} else {
-		envc = db.retrieve(bucketEnvs, envkey)
-		db.envcache.Add(envkey, envc)
+		return cached.([]byte)
 	}
-	return
+
+	envc := db.retrieve(bucketEnvs, envkey)
+	db.envcache.Add(envkey, envc)
+	return envc
 }
 
 // updateJobAfterExit stores the Job's peak RAM usage and wall time against the
 // Job's ReqGroup, allowing recommendedReqGroup*(ReqGroup) to work. It also
-// updates the stdout/err associated with a job. We don't want to store these in
-// the job, since that would waste a lot of the queue's memory; we store in db
-// instead, and only retrieve when a client needs to see these. To stop the db
-// file becoming enormous, we only store these if the cmd failed (or if
-// forceStorage is true: used when the job got buried) and also delete these
-// from db when the cmd completes successfully. By doing the deletion upfront,
-// we also ensure we have the latest std, which may be nil even on cmd failure.
-// Since it is not critical to the running of jobs and workflows that this works
-// 100% of the time, we ignore errors and write to bolt in a goroutine, giving
-// us a significant speed boost.
+// updates the stdout/err associated with a job.
+//
+// We don't want to store these in the job, since that would waste a lot of the
+// queue's memory; we store in db instead, and only retrieve when a client needs
+// to see these. To stop the db file becoming enormous, we only store these if
+// the cmd failed (or if forceStorage is true: used when the job got buried) and
+// also delete these from db when the cmd completes successfully.
+//
+// By doing the deletion upfront, we also ensure we have the latest std, which
+// may be nil even on cmd failure. Since it is not critical to the running of
+// jobs and workflows that this works 100% of the time, we ignore errors and
+// write to bolt in a goroutine, giving us a significant speed boost.
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorage bool) {
+	db.RLock()
+	defer db.RUnlock()
+	if db.closed {
+		return
+	}
 	jobkey := job.key()
 	job.RLock()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
@@ -758,40 +817,50 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	jpm := job.PeakRAM
 	jec := job.Exitcode
 	job.RUnlock()
+	db.wg.Add(1)
 	go func() {
+		defer internal.LogPanic(db.Logger, "updateJobAfterExit", true)
+		defer db.wg.Done()
+
 		db.Lock()
 		db.updatingAfterJobExit++
 		db.Unlock()
-		db.bolt.Batch(func(tx *bolt.Tx) error {
+		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			bo := tx.Bucket(bucketStdO)
 			be := tx.Bucket(bucketStdE)
 			key := []byte(jobkey)
-			bo.Delete(key)
-			be.Delete(key)
+			errf := bo.Delete(key)
+			if errf != nil {
+				return errf
+			}
+			errf = be.Delete(key)
+			if errf != nil {
+				return errf
+			}
 
-			var err error
 			if jec != 0 || forceStorage {
 				if len(stdo) > 0 {
-					err = bo.Put(key, stdo)
+					errf = bo.Put(key, stdo)
 				}
 				if len(stde) > 0 {
-					err = be.Put(key, stde)
+					errf = be.Put(key, stde)
 				}
 			}
-			if err != nil {
-				return err
+			if errf != nil {
+				return errf
 			}
 
 			b := tx.Bucket(bucketJobMBs)
-			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpm)), []byte(strconv.Itoa(jpm)))
-			if err != nil {
-				return err
+			errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpm)), []byte(strconv.Itoa(jpm)))
+			if errf != nil {
+				return errf
 			}
 			b = tx.Bucket(bucketJobSecs)
-			err = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
-
-			return err
+			return b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
 		})
+		if err != nil {
+			db.Error("Database operation updateJobAfterExit failed", "err", err)
+		}
 		db.Lock()
 		db.updatingAfterJobExit--
 		db.Unlock()
@@ -814,7 +883,7 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 		<-time.After(10 * time.Millisecond)
 	}
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		bo := tx.Bucket(bucketStdO)
 		be := tx.Bucket(bucketStdE)
 		key := []byte(jobkey)
@@ -830,7 +899,12 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 		}
 		return nil
 	})
-	return
+	if err != nil {
+		// impossible, but to keep the linter happy and incase things change in
+		// the future
+		db.Error("Database retrieve failed", "err", err)
+	}
+	return stdo, stde
 }
 
 // recommendedReqGroupMemory returns the 95th percentile peak memory usage of
@@ -839,9 +913,8 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 // very close to the maximum value, returns the maximum value instead. In either
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
-func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
-	mbs, err = db.recommendedReqGroupStat(bucketJobMBs, reqGroup, RecMBRound)
-	return
+func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
+	return db.recommendedReqGroupStat(bucketJobMBs, reqGroup, RecMBRound)
 }
 
 // recommendReqGroupTime returns the 95th percentile wall time taken of all jobs
@@ -850,17 +923,17 @@ func (db *db) recommendedReqGroupMemory(reqGroup string) (mbs int, err error) {
 // close to the maximum value, returns the maximum value instead. In either
 // case, the true value is rounded up to the nearest 30mins (but returned in
 // seconds). Returns 0 if there are no prior values.
-func (db *db) recommendedReqGroupTime(reqGroup string) (seconds int, err error) {
-	seconds, err = db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
-	return
+func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
+	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
 }
 
 // recommendedReqGroupStat is the implementation for the other recommend*()
 // methods.
-func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundAmount int) (recommendation int, err error) {
+func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundAmount int) (int, error) {
 	prefix := []byte(reqGroup)
 	max := 0
-	err = db.bolt.View(func(tx *bolt.Tx) error {
+	var recommendation int
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(statBucket).Cursor()
 
 		// we seek over the bucket, and to avoid having to do it twice (first to
@@ -887,12 +960,12 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		return nil
 	})
 	if err != nil {
-		return
+		return 0, err
 	}
 
 	if recommendation == 0 {
 		if max == 0 {
-			return
+			return recommendation, err
 		}
 		recommendation = max
 	}
@@ -905,23 +978,24 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		recommendation = int(math.Ceil(float64(recommendation)/float64(roundAmount))) * roundAmount
 	}
 
-	return
+	return recommendation, err
 }
 
 // store does a basic set of a key/val in a given bucket
-func (db *db) store(bucket []byte, key string, val []byte) (err error) {
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+func (db *db) store(bucket []byte, key string, val []byte) error {
+	err := db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
 		err := b.Put([]byte(key), val)
 		return err
 	})
-	return
+	return err
 }
 
 // retrieve does a basic get of a key from a given bucket. An error isn't
 // possible here.
-func (db *db) retrieve(bucket []byte, key string) (val []byte) {
-	db.bolt.View(func(tx *bolt.Tx) error {
+func (db *db) retrieve(bucket []byte, key string) []byte {
+	var val []byte
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
 		v := b.Get([]byte(key))
 		if v != nil {
@@ -930,22 +1004,33 @@ func (db *db) retrieve(bucket []byte, key string) (val []byte) {
 		}
 		return nil
 	})
-	return
+	if err != nil {
+		// impossible, but to keep the linter happy and incase things change in
+		// the future
+		db.Error("Database retrieve failed", "err", err)
+	}
+	return val
 }
 
 // remove does a basic delete of a key from a given bucket. We don't care about
 // errors here.
 func (db *db) remove(bucket []byte, key string) {
-	go db.bolt.Batch(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucket)
-		b.Delete([]byte(key))
-		return nil
-	})
+	db.wg.Add(1)
+	go func() {
+		defer db.wg.Done()
+		err := db.bolt.Batch(func(tx *bolt.Tx) error {
+			b := tx.Bucket(bucket)
+			return b.Delete([]byte(key))
+		})
+		if err != nil {
+			db.Error("Database remove failed", "err", err)
+		}
+	}()
 }
 
 // storeBatched stores items in the db in batches for efficiency. bucket is the
 // name of the bucket to store in.
-func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) (err error) {
+func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error {
 	// we want to add in batches of size data/10, minimum 1000, rounded to
 	// the nearest 1000
 	num := len(data)
@@ -962,48 +1047,47 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) (err e
 
 	// based on https://github.com/boltdb/bolt/issues/337#issue-64861745
 	if num < batchSize {
-		err = storer(bucket, data)
-		return
+		return storer(bucket, data)
 	}
 
 	batches := num / batchSize
 	offset := num - (num % batchSize)
 
 	for i := 0; i < batches; i++ {
-		err = storer(bucket, data[i*batchSize:(i+1)*batchSize])
+		err := storer(bucket, data[i*batchSize:(i+1)*batchSize])
 		if err != nil {
-			return
+			return err
 		}
 	}
 
 	if offset != 0 {
-		err = storer(bucket, data[offset:])
+		err := storer(bucket, data[offset:])
 		if err != nil {
-			return
+			return err
 		}
 	}
-	return
+	return nil
 }
 
 // storeLookups is a sobsdStorer for storing Job.[somevalue]->Job.Key() lookups
 // in the db.
-func (db *db) storeLookups(bucket []byte, lookups sobsd) (err error) {
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+func (db *db) storeLookups(bucket []byte, lookups sobsd) error {
+	err := db.bolt.Batch(func(tx *bolt.Tx) error {
 		lookup := tx.Bucket(bucket)
 		for _, doublet := range lookups {
-			err = lookup.Put(doublet[0], nil)
+			err := lookup.Put(doublet[0], nil)
 			if err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	return
+	return err
 }
 
 // storeEncodedJobs is a sobsdStorer for storing Jobs in the db.
-func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) (err error) {
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) error {
+	err := db.bolt.Batch(func(tx *bolt.Tx) error {
 		bjobs := tx.Bucket(bucket)
 		for _, doublet := range encodes {
 			err := bjobs.Put(doublet[0], doublet[1])
@@ -1013,37 +1097,55 @@ func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) (err error) {
 		}
 		return nil
 	})
-	return
+	return err
 }
 
 // close shuts down the db, should be used prior to exiting. Ensures any
 // ongoing backgroundBackup() completes first (but does not wait for backup() to
 // complete).
-func (db *db) close() {
+func (db *db) close() error {
 	db.Lock()
 	defer db.Unlock()
 	if !db.closed {
 		db.closed = true
 
-		// before actually closing, wait for any ongoing backup to complete
+		// before actually closing, wait for any go routines doing database
+		// transactions to complete
 		if db.backingUp {
 			db.backupFinal = true
+			close(db.backupStopWait)
 			db.Unlock()
 			<-db.backupNotification
+			db.wg.Wait()
+			db.Lock()
+		} else {
+			db.Unlock()
+			db.wg.Wait()
 			db.Lock()
 		}
 
-		db.bolt.Close()
+		err := db.bolt.Close()
 		if db.backupMount != nil {
-			db.backupMount.Unmount()
+			erru := db.backupMount.Unmount()
+			if erru != nil {
+				if err == nil {
+					err = erru
+				} else {
+					err = fmt.Errorf("%s (and unmounting backup failed: %s)", err.Error(), erru)
+				}
+			}
 		}
+		return err
 	}
+	return nil
 }
 
 // backgroundBackup backs up the database to a file (the location given during
 // initDB()) in a goroutine, doing one backup at a time and queueing a further
 // backup if any other backup requests come in while a backup is running. Any
-// errors are silently ignored.
+// errors are silently ignored. Spaces out sequential backups so that there is a
+// gap of max(30s, [time taken to complete previous backup]) seconds between
+// them.
 func (db *db) backgroundBackup() {
 	db.Lock()
 	defer db.Unlock()
@@ -1057,38 +1159,70 @@ func (db *db) backgroundBackup() {
 
 	db.backingUp = true
 	slowBackups := db.slowBackups
-	go func() {
+	db.wg.Add(1)
+	go func(last time.Time, wait time.Duration, doNotWait bool) {
+		defer internal.LogPanic(db.Logger, "backgroundBackup", true)
+		defer db.wg.Done()
+
+		if !doNotWait {
+			now := time.Now()
+			if !last.IsZero() && last.Add(wait).After(now) {
+				// wait before doing another backup, so we don't slow down new
+				// db accessses all the time
+				select {
+				case <-time.After(last.Add(wait).Sub(now)):
+					break
+				case <-db.backupStopWait:
+					break
+				}
+			}
+		}
+
 		if slowBackups {
 			// just for testing purposes
 			<-time.After(100 * time.Millisecond)
 		}
 
 		// create the new backup file with temp name
+		start := time.Now()
 		tmpBackupPath := db.backupPath + ".tmp"
 		err := db.bolt.View(func(tx *bolt.Tx) error {
 			return tx.CopyFile(tmpBackupPath, dbFilePermission)
 		})
-		// *** currently not logging the error message anywhere...
 
 		if slowBackups {
 			<-time.After(100 * time.Millisecond)
 		}
 
 		if err != nil {
+			db.Error("Database backup failed", "err", err)
+
 			// if it failed, delete any partial file that got made
-			os.Remove(tmpBackupPath)
+			errr := os.Remove(tmpBackupPath)
+			if errr != nil && !os.IsNotExist(errr) {
+				db.Warn("Removing bad database backup file failed", "path", tmpBackupPath, "err", errr)
+			}
 		} else {
 			// backup succeeded, move it over any old backup
-			os.Rename(tmpBackupPath, db.backupPath)
+			errr := os.Rename(tmpBackupPath, db.backupPath)
+			if errr != nil {
+				db.Warn("Renaming new database backup file failed", "source", tmpBackupPath, "dest", db.backupPath, "err", errr)
+			}
 		}
 
 		db.Lock()
 		db.backingUp = false
+		db.backupLast = time.Now()
+		duration := time.Since(start)
+		if duration > minimumTimeBetweenBackups {
+			db.backupWait = duration
+		}
 
 		if db.backupFinal {
 			// close() has been called, don't do any more backups and tell
 			// close() we finished our backup
 			db.backupFinal = false
+			db.backupStopWait = make(chan bool)
 			db.Unlock()
 			db.backupNotification <- true
 			return
@@ -1101,7 +1235,7 @@ func (db *db) backgroundBackup() {
 		} else {
 			db.Unlock()
 		}
-	}()
+	}(db.backupLast, db.backupWait, db.backupFinal)
 }
 
 // backup backs up the database to the given writer. Can be called at the same

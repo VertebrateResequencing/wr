@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -40,14 +40,17 @@ must add a case for it to New() and rebuild.
 package scheduler
 
 import (
-	"crypto/md5"
+	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
-	"github.com/VertebrateResequencing/wr/cloud"
-	"github.com/dgryski/go-farm"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/dgryski/go-farm"
+	"github.com/inconshreveable/log15"
 )
 
 const (
@@ -107,7 +110,7 @@ func (req *Requirements) Stringify() string {
 		// now convert it all in to an md5sum, to avoid any problems with some
 		// key values having line returns etc. *** we might like to use
 		// byteKey() from jobqueue package instead, but that isn't exported...
-		other = fmt.Sprintf(":%x", md5.Sum([]byte(other)))
+		other = fmt.Sprintf(":%x", md5.Sum([]byte(other))) // #nosec
 	}
 
 	return fmt.Sprintf("%d:%.0f:%d:%d%s", req.RAM, req.Time.Minutes(), req.Cores, req.Disk, other)
@@ -139,15 +142,15 @@ type BadServerCallBack func(server *cloud.Server)
 // this interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize(config interface{}) error                     // do any initial set up to be able to use the job scheduler
-	schedule(cmd string, req *Requirements, count int) error // achieve the aims of Schedule()
-	busy() bool                                              // achieve the aims of Busy()
-	reserveTimeout() int                                     // achieve the aims of ReserveTimeout()
-	maxQueueTime(req *Requirements) time.Duration            // achieve the aims of MaxQueueTime()
-	hostToID(host string) string                             // achieve the aims of HostToID()
-	setMessageCallBack(MessageCallBack)                      // achieve the aims of SetMessageCallBack()
-	setBadServerCallBack(BadServerCallBack)                  // achieve the aims of SetBadServerCallBack()
-	cleanup()                                                // do any clean up once you've finished using the job scheduler
+	initialize(config interface{}, logger log15.Logger) error // do any initial set up to be able to use the job scheduler
+	schedule(cmd string, req *Requirements, count int) error  // achieve the aims of Schedule()
+	busy() bool                                               // achieve the aims of Busy()
+	reserveTimeout() int                                      // achieve the aims of ReserveTimeout()
+	maxQueueTime(req *Requirements) time.Duration             // achieve the aims of MaxQueueTime()
+	hostToID(host string) string                              // achieve the aims of HostToID()
+	setMessageCallBack(MessageCallBack)                       // achieve the aims of SetMessageCallBack()
+	setBadServerCallBack(BadServerCallBack)                   // achieve the aims of SetBadServerCallBack()
+	cleanup()                                                 // do any clean up once you've finished using the job scheduler
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -157,13 +160,19 @@ type Scheduler struct {
 	Name    string
 	limiter map[string]int
 	sync.Mutex
+	log15.Logger
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
 // Possible names so far are "lsf", "local" and "openstack". You must also
 // provide a config struct appropriate for your chosen scheduler, eg. for the
 // local scheduler you will provide a ConfigLocal.
-func New(name string, config interface{}) (s *Scheduler, err error) {
+//
+// Providing a logger allows for debug messages to be logged somewhere, along
+// with any "harmless" or unreturnable errors. If not supplied, we use a default
+// logger that discards all log messages.
+func New(name string, config interface{}, logger ...log15.Logger) (*Scheduler, error) {
+	var s *Scheduler
 	switch name {
 	case "lsf":
 		s = &Scheduler{impl: new(lsf)}
@@ -171,17 +180,24 @@ func New(name string, config interface{}) (s *Scheduler, err error) {
 		s = &Scheduler{impl: new(local)}
 	case "openstack":
 		s = &Scheduler{impl: new(opst)}
+	default:
+		return nil, Error{name, "New", ErrBadScheduler}
 	}
 
-	if s == nil {
-		err = Error{name, "New", ErrBadScheduler}
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
 	} else {
-		s.Name = name
-		s.limiter = make(map[string]int)
-		err = s.impl.initialize(config)
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
 	}
+	s.Logger = l
 
-	return
+	s.Name = name
+	s.limiter = make(map[string]int)
+	err := s.impl.initialize(config, l)
+
+	return s, err
 }
 
 // SetMessageCallBack sets the function that will be called when a scheduler has
@@ -230,7 +246,13 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {
 		if newcount != count {
-			go s.Schedule(cmd, req, newcount)
+			go func() {
+				defer internal.LogPanic(s.Logger, "schedule recall", true)
+				errf := s.Schedule(cmd, req, newcount)
+				if errf != nil {
+					s.Error("schedule recall", "err", err)
+				}
+			}()
 		}
 		delete(s.limiter, cmd)
 	}
@@ -277,9 +299,9 @@ func (s *Scheduler) Cleanup() {
 // jobName could be useful to a scheduleri implementer if it needs a constant-
 // width (length 36) string unique to the cmd and deployment, and optionally
 // suffixed with a random string (length 9, total length 45).
-func jobName(cmd string, deployment string, unique bool) (name string) {
+func jobName(cmd string, deployment string, unique bool) string {
 	l, h := farm.Hash128([]byte(cmd))
-	name = fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
+	name := fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
 
 	if unique {
 		// based on http://stackoverflow.com/a/31832326/675083
@@ -299,5 +321,5 @@ func jobName(cmd string, deployment string, unique bool) (name string) {
 		name += "_" + string(b)
 	}
 
-	return
+	return name
 }

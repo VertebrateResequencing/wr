@@ -2,10 +2,8 @@ package: github.com/VertebrateResequencing/wr
 import:
 - package: code.cloudfoundry.org/bytefmt
 - package: github.com/VertebrateResequencing/muxfys
-  version: ^2.0.0
+  version: ^3.0.0
 - package: github.com/VividCortex/ewma
-  version: master
-- package: github.com/boltdb/bolt
   version: master
 - package: github.com/dgryski/go-farm
 - package: github.com/go-mangos/mangos
@@ -60,6 +58,11 @@ import:
   - ssh
 - package: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
+- package: github.com/coreos/bbolt
+  version: ^1.3.1-coreos.6
+- package: github.com/fatih/color
+  version: ^1.6.0
+- package: github.com/hashicorp/go-multierror
 testImport:
 - package: github.com/smartystreets/goconvey
   version: master

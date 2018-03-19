@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2017, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -19,9 +19,10 @@
 package rp
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestRP(t *testing.T) {
@@ -286,7 +287,7 @@ func TestRP(t *testing.T) {
 		})
 
 		Convey("Releasing Request()s immediately with no delay time lets you request continuously with no delay", func() {
-			rp := New("irods", 0*time.Second, maxSimultaneous, releaseTimeout)
+			rp = New("irods", 0*time.Second, maxSimultaneous, releaseTimeout)
 			So(rp, ShouldNotBeNil)
 
 			grantedCh := make(chan time.Time, maxSimultaneous)

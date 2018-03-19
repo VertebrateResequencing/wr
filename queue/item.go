@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016, 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
 // https://github.com/diegobernardes/ttlcache
@@ -109,9 +109,9 @@ func (item *Item) Stats() *ItemStats {
 	age := time.Since(item.creation)
 	var remaining time.Duration
 	if item.state == ItemStateDelay {
-		remaining = item.readyAt.Sub(time.Now())
+		remaining = time.Until(item.readyAt)
 	} else if item.state == ItemStateRun {
-		remaining = item.releaseAt.Sub(time.Now())
+		remaining = time.Until(item.releaseAt)
 	} else {
 		remaining = time.Duration(0) * time.Second
 	}

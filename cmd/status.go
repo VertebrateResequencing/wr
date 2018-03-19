@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -21,12 +21,14 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/spf13/cobra"
 )
 
 const shortTimeFormat = "06/1/2-15:04:05"
@@ -92,11 +94,16 @@ very many (tens of thousands+) commands.`,
 			defaultMounts = mountParseJSON(cmdMounts)
 		}
 
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}
-		defer jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		var jobs []*jobqueue.Job
 		showextra := true
@@ -118,7 +125,7 @@ very many (tens of thousands+) commands.`,
 				if err != nil {
 					die("could not open file '%s': %s", cmdFileStatus, err)
 				}
-				defer reader.(*os.File).Close()
+				defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFileStatus)
 			}
 			scanner := bufio.NewScanner(reader)
 			var jes []*jobqueue.JobEssence
@@ -165,7 +172,7 @@ very many (tens of thousands+) commands.`,
 		}
 
 		if quietMode {
-			var d, re, b, ru, l, c int
+			var d, re, b, ru, l, c, dep int
 			for _, job := range jobs {
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -180,9 +187,11 @@ very many (tens of thousands+) commands.`,
 					l += 1 + job.Similar
 				case jobqueue.JobStateComplete:
 					c += 1 + job.Similar
+				case jobqueue.JobStateDependent:
+					dep += 1 + job.Similar
 				}
 			}
-			fmt.Printf("complete: %d\nrunning: %d\nready: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, l, d, b)
+			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, dep, l, d, b)
 		} else {
 			// print out status information for each job
 			for _, job := range jobs {
@@ -209,6 +218,8 @@ very many (tens of thousands+) commands.`,
 					fmt.Printf("Status: delayed following a temporary problem, will become ready soon (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
+				case jobqueue.JobStateDependent:
+					fmt.Println("Status: dependent on other jobs")
 				case jobqueue.JobStateBuried:
 					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
@@ -313,5 +324,5 @@ func init() {
 	statusCmd.Flags().BoolVarP(&quietMode, "quiet", "q", false, "minimal verbosity: just display status counts")
 	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "number of commands that share the same properties to display; 0 displays all")
 
-	statusCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
+	statusCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

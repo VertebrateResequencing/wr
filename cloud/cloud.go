@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -51,7 +51,7 @@ than 1 process at a time.
     // spawn a server
     flavor := provider.CheapestServerFlavor(1, 1024, "")
     server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, true)
-    server.WaitUntilReady()
+    server.WaitUntilReady("~/.s3cfg")
 
     // simplistic way of making the most of the server by running as many
     // commands as possible:
@@ -76,12 +76,16 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"github.com/satori/go.uuid"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/inconshreveable/log15"
+	"github.com/satori/go.uuid"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -127,6 +131,11 @@ const defaultCIDR = "192.168.0.0/18"
 // touchStampFormat is the time format expected by `touch -t`.
 const touchStampFormat = "200601021504.05"
 
+// hostNameRegex is used by nameToHostName() to make strings valid hostnames.
+var hostNameRegex = regexp.MustCompile(`[^a-z0-9\-]+`)
+
+const openstackName = "openstack"
+
 // Error records an error and the operation and provider caused it.
 type Error struct {
 	Provider string // the provider's Name
@@ -164,16 +173,31 @@ type Quota struct {
 
 // provideri must be satisfied to add support for a particular cloud provider.
 type provideri interface {
-	requiredEnv() []string                                                                                                                           // return the environment variables required to function
-	initialize() error                                                                                                                               // do any initial config set up such as authentication
-	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error                                         // achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	inCloud() bool                                                                                                                                   // achieve the aims of InCloud()
-	getQuota() (*Quota, error)                                                                                                                       // achieve the aims of GetQuota()
-	flavors() map[string]Flavor                                                                                                                      // return a map of all server flavors, with their flavor ids as keys
-	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool) (serverID, serverIP, serverName, adminPass string, err error) // achieve the aims of Spawn(), creating sentinelFilePath once the new server is ready to use.
-	checkServer(serverID string) (working bool, err error)                                                                                           // achieve the aims of CheckServer()
-	destroyServer(serverID string) error                                                                                                             // achieve the aims of DestroyServer()
-	tearDown(resources *Resources) error                                                                                                             // achieve the aims of TearDown()
+	// return the environment variables required to function
+	requiredEnv() []string
+	// return the environment variables that might be required to function
+	maybeEnv() []string
+	// do any initial config set up such as authentication
+	initialize(logger log15.Logger) error
+	// achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
+	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error
+	// achieve the aims of InCloud()
+	inCloud() bool
+	// achieve the aims of GetQuota()
+	getQuota() (*Quota, error)
+	// return a map of all server flavors, with their flavor ids as keys
+	flavors() map[string]*Flavor
+	// achieve the aims of Spawn(). Must send on the supplied usingQuotaCh as
+	// soon as the new server has been requested and is counted as using up
+	// quota (or the request fails), then create sentinelFilePath once the new
+	// server is in powered up (but not necessarily fully booted up).
+	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error)
+	// achieve the aims of CheckServer()
+	checkServer(serverID string) (bool, error)
+	// achieve the aims of DestroyServer()
+	destroyServer(serverID string) error
+	// achieve the aims of TearDown()
+	tearDown(resources *Resources) error
 }
 
 // Provider gives you access to all of the methods you'll need to interact with
@@ -185,9 +209,9 @@ type Provider struct {
 	resources    *Resources
 	inCloud      bool
 	madeHeadNode bool
-	Debug        bool
 	servers      map[string]*Server // by name
 	sync.RWMutex
+	log15.Logger
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
@@ -207,73 +231,111 @@ type DeployConfig struct {
 
 // RequiredEnv returns the environment variables that are needed by the given
 // provider before New() will work for it. See New() for possible providerNames.
-func RequiredEnv(providerName string) (vars []string, err error) {
+func RequiredEnv(providerName string) ([]string, error) {
 	var p *Provider
 	switch providerName {
-	case "openstack":
+	case openstackName:
 		p = &Provider{impl: new(openstackp)}
-	case "aws":
-		//p = &Provider{impl: new(aws)}
+	default:
+		return nil, Error{providerName, "RequiredEnv", ErrBadProvider}
+	}
+	return p.impl.requiredEnv(), nil
+}
+
+// MaybeEnv returns the environment variables that may be needed by the given
+// provider. If one of these is actually needed but not provided, errors may
+// appear from New() or later in subsequent attempted method usage.
+func MaybeEnv(providerName string) ([]string, error) {
+	var p *Provider
+	switch providerName {
+	case openstackName:
+		p = &Provider{impl: new(openstackp)}
+	default:
+		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
+	}
+	return p.impl.maybeEnv(), nil
+}
+
+// AllEnv returns the environment variables that RequiredEnv() and MaybeEnv()
+// would return.
+func AllEnv(providerName string) ([]string, error) {
+	var p *Provider
+	switch providerName {
+	case openstackName:
+		p = &Provider{impl: new(openstackp)}
+	default:
+		return nil, Error{providerName, "MaybeEnv", ErrBadProvider}
 	}
 
-	if p == nil {
-		err = Error{providerName, "RequiredEnv", ErrBadProvider}
-	} else {
-		vars = p.impl.requiredEnv()
-	}
-	return
+	var all []string
+	all = append(all, p.impl.requiredEnv()...)
+	all = append(all, p.impl.maybeEnv()...)
+	return all, nil
 }
 
 // New creates a new Provider to interact with the given cloud provider.
 // Possible names so far are "openstack" ("aws" is planned). You must provide a
 // resource name that will be used to name any created cloud resources. You must
 // also provide a file path prefix to save details of created resources to (the
-// actual file created will be suffixed with your resourceName). Note that the
-// file could contain created private key details, so should be kept accessible
-// only by you.
-func New(name string, resourceName string, savePath string) (p *Provider, err error) {
+// actual file created will be suffixed with your resourceName).
+//
+// Note that the file could contain created private key details, so should be
+// kept accessible only by you.
+//
+// Providing a logger allows for debug messages to be logged somewhere, along
+// with any "harmless" or unreturnable errors. If not supplied, we use a default
+// logger that discards all log messages.
+func New(name string, resourceName string, savePath string, logger ...log15.Logger) (*Provider, error) {
+	var p *Provider
 	switch name {
-	case "openstack":
+	case openstackName:
 		p = &Provider{impl: new(openstackp)}
-	case "aws":
-		//p = &Provider{impl: new(aws)}
+	default:
+		return nil, Error{name, "New", ErrBadProvider}
 	}
 
-	if p == nil {
-		err = Error{name, "New", ErrBadProvider}
+	p.Name = name
+	p.savePath = savePath + "." + resourceName
+
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
 	} else {
-		p.Name = name
-		p.savePath = savePath + "." + resourceName
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
+	p.Logger = l
 
-		// load any resources we previously saved, or get an empty set to work
-		// with
-		p.resources, err = p.loadResources(resourceName)
-		if err != nil {
-			return
-		}
-
-		p.servers = make(map[string]*Server)
-		for _, server := range p.resources.Servers {
-			p.servers[server.Name] = server
-		}
-
-		var missingEnv []string
-		for _, envKey := range p.impl.requiredEnv() {
-			if os.Getenv(envKey) == "" {
-				missingEnv = append(missingEnv, envKey)
-			}
-		}
-		if len(missingEnv) > 0 {
-			err = Error{name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
-		} else {
-			err = p.impl.initialize()
-			if err == nil {
-				p.inCloud = p.impl.inCloud()
-			}
-		}
+	// load any resources we previously saved, or get an empty set to work
+	// with
+	var err error
+	p.resources, err = p.loadResources(resourceName)
+	if err != nil {
+		return nil, err
 	}
 
-	return
+	p.servers = make(map[string]*Server)
+	for _, server := range p.resources.Servers {
+		p.servers[server.Name] = server
+	}
+
+	var missingEnv []string
+	for _, envKey := range p.impl.requiredEnv() {
+		if os.Getenv(envKey) == "" {
+			missingEnv = append(missingEnv, envKey)
+		}
+	}
+	if len(missingEnv) > 0 {
+		return nil, Error{name, "New", ErrMissingEnv + strings.Join(missingEnv, ", ")}
+	}
+
+	err = p.impl.initialize(l)
+	if err != nil {
+		return nil, err
+	}
+
+	p.inCloud = p.impl.inCloud()
+	return p, nil
 }
 
 // Deploy triggers the creation of required cloud resources such as networks,
@@ -287,7 +349,7 @@ func New(name string, resourceName string, savePath string) (p *Provider, err er
 // TearDown() can work if you call it in a different session to when you
 // Deploy()ed, and so that PrivateKey() can work if you call it in a different
 // session to the Deploy() call that actually created the ssh key.)
-func (p *Provider) Deploy(config *DeployConfig) (err error) {
+func (p *Provider) Deploy(config *DeployConfig) error {
 	gatewayIP := config.GatewayIP
 	if gatewayIP == "" {
 		gatewayIP = defaultGateWayIP
@@ -304,9 +366,9 @@ func (p *Provider) Deploy(config *DeployConfig) (err error) {
 	// impl.deploy should overwrite any existing values in p.resources with
 	// updated values, but should leave other things - such as an existing
 	// PrivateKey when we have not just made a new one - alone
-	err = p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr, dnsNameServers)
+	err := p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr, dnsNameServers)
 	if err != nil {
-		return
+		return err
 	}
 
 	// save updated resources to disk
@@ -318,7 +380,7 @@ func (p *Provider) Deploy(config *DeployConfig) (err error) {
 		p.madeHeadNode = true
 	}
 
-	return
+	return err
 }
 
 // InCloud tells you if your process is currently running on a cloud server
@@ -330,7 +392,7 @@ func (p *Provider) InCloud() bool {
 
 // GetQuota returns details of the maximum resources the user can request, and
 // the current resources used.
-func (p *Provider) GetQuota() (quota *Quota, err error) {
+func (p *Provider) GetQuota() (*Quota, error) {
 	return p.impl.getQuota()
 }
 
@@ -343,18 +405,19 @@ func (p *Provider) GetQuota() (quota *Quota, err error) {
 // during Spawn() you will request a certain amount of disk space, and if that
 // is larger than the flavor's root disk a larger volume will be created
 // automatically.
-func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flavor, err error) {
+func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor, error) {
 	// from all available flavours, pick the one that has the lowest ram, disk
 	// and cpus that meet our minimums, and also matches the regex
 	var r *regexp.Regexp
+	var err error
 	if regex != "" {
 		r, err = regexp.Compile(regex)
 		if err != nil {
-			err = Error{"openstack", "cheapestServerFlavor", ErrBadRegex}
-			return
+			return nil, Error{"cloud", "cheapestServerFlavor", ErrBadRegex}
 		}
 	}
 
+	var fr *Flavor
 	for _, f := range p.impl.flavors() {
 		if regex != "" {
 			if !r.MatchString(f.Name) {
@@ -363,7 +426,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 		}
 
 		if f.Cores >= cores && f.RAM >= ramMB {
-			if fr.ID == "" {
+			if fr == nil {
 				fr = f
 			} else if f.Cores < fr.Cores {
 				fr = f
@@ -377,15 +440,20 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 		}
 	}
 
-	if err == nil && fr.ID == "" {
-		err = Error{"openstack", "cheapestServerFlavor", ErrNoFlavor}
+	if fr == nil {
+		return nil, Error{"cloud", "cheapestServerFlavor", ErrNoFlavor}
 	}
 
-	return
+	return fr, nil
 }
 
-// Spawn creates a new server using an OS image with a name prefixed with the
-// given os name, with the given flavor ID (that you could get from
+// SpawnUsingQuotaCallback is the callback function you supply to Spawn() that
+// will be called as soon as the request for the new server has been issued and
+// is counted as using up quota (but before it has powered up).
+type SpawnUsingQuotaCallback func()
+
+// Spawn creates a new server using an OS image with a name or ID prefixed with
+// the given os name or ID, with the given flavor ID (that you could get from
 // CheapestServerFlavor().ID) and at least the given amount of disk space
 // (creating a temporary volume of the required size if the flavor's root disk
 // is too small).
@@ -398,30 +466,44 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (fr Flav
 // If you need an external IP so that you can ssh to the server externally,
 // supply true as the last argument.
 //
+// You can supply an optinoal callback function that will be called as soon as
+// the new server request has gone out (and so is using up your quota), but
+// before the new server has powered up (which is when Spawn() will return the
+// new server details).
+//
 // Returns a *Server so you can s.Destroy it later, find out its ip address so
 // you can ssh to it, and get its admin password in case you need to sudo on the
 // server. You will need to know the username that you can log in with on your
 // chosen OS image. If you call Spawn() while running on a cloud server, then
 // the newly spawned server will be in the same network and security group as
 // the current server. If you get an err, you will want to call server.Destroy()
-// as this is not done for you. NB: the server will likely not be ready to use
-// yet, having not completed its boot up; call server.WaitUntilReady() before
-// trying to use the server for anything.
-func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool) (server *Server, err error) {
+// as this is not done for you.
+//
+// NB: the server will likely not be ready to use yet, having not completed its
+// boot up; call server.WaitUntilReady() before trying to use the server for
+// anything.
+func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool, usingQuotaCB ...SpawnUsingQuotaCallback) (*Server, error) {
 	f, found := p.impl.flavors()[flavorID]
 	if !found {
-		err = Error{"openstack", "Spawn", ErrBadFlavor}
-		return
+		return nil, Error{"cloud", "Spawn", ErrBadFlavor}
 	}
 
-	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP)
+	usingQuota := make(chan bool)
+	go func() {
+		<-usingQuota
+		close(usingQuota)
+		if len(usingQuotaCB) == 1 {
+			usingQuotaCB[0]()
+		}
+	}()
+	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP, usingQuota)
 
 	maxDisk := f.Disk
 	if diskGB > maxDisk {
 		maxDisk = diskGB
 	}
 
-	server = &Server{
+	server := &Server{
 		ID:           serverID,
 		Name:         serverName,
 		IP:           serverIP,
@@ -433,7 +515,8 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		TTD:          ttd,
 		provider:     p,
 		cancelRunCmd: make(map[int]chan bool),
-		debugMode:    p.Debug,
+		logger:       p.Logger.New("server", serverID),
+		created:      true,
 	}
 
 	p.Lock()
@@ -454,7 +537,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		p.Unlock()
 	}
 
-	return
+	return server, err
 }
 
 // WaitUntilReady waits for the server to become fully ready: the boot process
@@ -462,14 +545,20 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // because you may not want or be able to ssh to your server, and so that you
 // can Spawn() another server while waiting for this one to become ready. If you
 // get an err, you will want to call server.Destroy() as this is not done for
-// you. postCreationScript is the optional []byte content of a script that will
-// be run on the server (as the user supplied to Spawn()) once it is ready, and
-// it will complete before this function returns; empty slice means do nothing.
-func (s *Server) WaitUntilReady(postCreationScript ...[]byte) (err error) {
+// you.
+//
+// files is a string in the format taken by the CopyOver() method; if supplied
+// non-blank it will CopyOver the specified files (after the server is ready,
+// before any postCreationScript is run).
+//
+// postCreationScript is the optional []byte content of a script that will be
+// run on the server (as the user supplied to Spawn()) once it is ready, and it
+// will complete before this function returns; empty slice means do nothing.
+func (s *Server) WaitUntilReady(files string, postCreationScript ...[]byte) error {
 	// wait for ssh to come up
-	_, err = s.SSHClient()
+	_, err := s.SSHClient()
 	if err != nil {
-		return
+		return err
 	}
 
 	// wait for sentinelFilePath to exist, indicating that the server is
@@ -480,17 +569,29 @@ SENTINEL:
 	for {
 		select {
 		case <-ticker.C:
-			_, _, fileErr := s.RunCmd("file "+sentinelFilePath, false)
-			if fileErr == nil {
+			o, e, fileErr := s.RunCmd("file "+sentinelFilePath, false)
+			if fileErr == nil && !strings.Contains(o, "No such file") && !strings.Contains(e, "No such file") {
 				ticker.Stop()
-				s.RunCmd("sudo rm "+sentinelFilePath, false)
+				// *** o contains "empty"; test for that instead? Does file
+				// behave the same way on all linux variants?
+				_, _, rmErr := s.RunCmd("sudo rm "+sentinelFilePath, false)
+				if rmErr != nil {
+					s.logger.Warn("failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
+				}
 				break SENTINEL
 			}
 			continue SENTINEL
 		case <-limit:
 			ticker.Stop()
-			err = errors.New("cloud server never became ready to use")
-			return
+			return errors.New("cloud server never became ready to use")
+		}
+	}
+
+	// copy over any desired files
+	if files != "" {
+		err = s.CopyOver(files)
+		if err != nil {
+			return fmt.Errorf("cloud server files failed to upload: %s", err)
 		}
 	}
 
@@ -499,14 +600,12 @@ SENTINEL:
 		pcsPath := "/tmp/.postCreationScript"
 		err = s.CreateFile(string(postCreationScript[0]), pcsPath)
 		if err != nil {
-			err = fmt.Errorf("cloud server start up script failed to upload: %s", err)
-			return
+			return fmt.Errorf("cloud server start up script failed to upload: %s", err)
 		}
 
 		_, _, err = s.RunCmd("chmod u+x "+pcsPath, false)
 		if err != nil {
-			err = fmt.Errorf("cloud server start up script could not be made executable: %s", err)
-			return
+			return fmt.Errorf("cloud server start up script could not be made executable: %s", err)
 		}
 
 		// *** currently we have no timeout on this, probably want one...
@@ -517,10 +616,13 @@ SENTINEL:
 			if len(stderr) > 0 {
 				err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
 			}
-			return
+			return err
 		}
 
-		s.RunCmd("rm "+pcsPath, false)
+		_, _, rmErr := s.RunCmd("rm "+pcsPath, false)
+		if rmErr != nil {
+			s.logger.Warn("failed to remove post creation script", "path", pcsPath, "err", rmErr)
+		}
 
 		s.Script = postCreationScript[0]
 
@@ -529,7 +631,7 @@ SENTINEL:
 		s.sshclient = nil
 	}
 
-	return
+	return nil
 }
 
 // CheckServer asks the provider if the status of the given server (id retrieved
@@ -551,21 +653,22 @@ func (p *Provider) CheckServer(serverID string) (working bool, err error) {
 		}
 	}
 
-	return
+	return working, err
 }
 
 // DestroyServer destroys a server given its id, that you would have gotten from
 // the ID property of Spawn()'s return value.
-func (p *Provider) DestroyServer(serverID string) (err error) {
-	err = p.impl.destroyServer(serverID)
-	if err == nil {
-		// update resources and save to disk
-		p.Lock()
-		delete(p.resources.Servers, serverID)
-		p.Unlock()
-		err = p.saveResources()
+func (p *Provider) DestroyServer(serverID string) error {
+	err := p.impl.destroyServer(serverID)
+	if err != nil {
+		return err
 	}
-	return
+
+	// update resources and save to disk
+	p.Lock()
+	delete(p.resources.Servers, serverID)
+	p.Unlock()
+	return p.saveResources()
 }
 
 // Servers returns a mapping of serverID => *Server for all servers that were
@@ -599,6 +702,30 @@ func (p *Provider) HeadNode() *Server {
 	return nil
 }
 
+// LocalhostServer returns a Server object with details of the host we are
+// currently running on. No cloud API calls are made to construct this.
+func (p *Provider) LocalhostServer(os string, postCreationScript []byte) (*Server, error) {
+	maxRAM, err := internal.ProcMeminfoMBs()
+	if err != nil {
+		return nil, err
+	}
+	diskSize := internal.DiskSize()
+	return &Server{
+		IP:     "127.0.0.1",
+		OS:     os,
+		Script: postCreationScript,
+		Flavor: &Flavor{
+			RAM:   maxRAM,
+			Cores: runtime.NumCPU(),
+			Disk:  diskSize,
+		},
+		Disk:         diskSize,
+		provider:     p,
+		cancelRunCmd: make(map[int]chan bool),
+		logger:       p.Logger.New("server", "localhost"),
+	}, nil
+}
+
 // PrivateKey returns a PEM format string of the private key that was created
 // by Deploy() (on its first invocation with the same arguments to New()).
 func (p *Provider) PrivateKey() string {
@@ -612,12 +739,12 @@ func (p *Provider) PrivateKey() string {
 // prefixed with the resourceName given to the initial New() call. If currently
 // running on a cloud server, however, it will not delete anything needed by
 // this server, including the resource file that contains the private key.
-func (p *Provider) TearDown() (err error) {
+func (p *Provider) TearDown() error {
 	p.RLock()
 	defer p.RUnlock()
-	err = p.impl.tearDown(p.resources)
+	err := p.impl.tearDown(p.resources)
 	if err != nil {
-		return
+		return err
 	}
 
 	// delete our savePath unless our resources still contains the private key,
@@ -625,57 +752,69 @@ func (p *Provider) TearDown() (err error) {
 	if p.resources.PrivateKey == "" {
 		err = p.deleteResourceFile()
 	}
-	return
+	return err
 }
 
 // saveResources saves our resources to our savePath, overwriting any existing
 // content. This is not thread safe!
-func (p *Provider) saveResources() (err error) {
+func (p *Provider) saveResources() error {
 	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err == nil {
-		defer file.Close()
-		encoder := gob.NewEncoder(file)
-		p.RLock()
-		defer p.RUnlock()
-		encoder.Encode(p.resources)
+	if err != nil {
+		return err
 	}
-	return
+	defer internal.LogClose(p.Logger, file, "resource file", "path", p.savePath)
+
+	encoder := gob.NewEncoder(file)
+	p.RLock()
+	defer p.RUnlock()
+	return encoder.Encode(p.resources)
 }
 
 // loadResources loads our resources from our savePath, or returns an empty
 // set of resources if savePath doesn't exist.
-func (p *Provider) loadResources(resourceName string) (resources *Resources, err error) {
-	resources = &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]*Server)}
+func (p *Provider) loadResources(resourceName string) (*Resources, error) {
+	resources := &Resources{ResourceName: resourceName, Details: make(map[string]string), Servers: make(map[string]*Server)}
 	if _, serr := os.Stat(p.savePath); os.IsNotExist(serr) {
-		return
+		return resources, nil
 	}
 
 	file, err := os.Open(p.savePath)
-	if err == nil {
-		defer file.Close()
-		decoder := gob.NewDecoder(file)
-		err = decoder.Decode(resources)
+	if err != nil {
+		return nil, err
+	}
+	defer internal.LogClose(p.Logger, file, "resource file", "path", p.savePath)
 
-		if err == nil {
-			// add in the ref to ourselves to each of our servers
-			for _, server := range resources.Servers {
-				server.provider = p
-				server.cancelRunCmd = make(map[int]chan bool)
-			}
-		}
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(resources)
+	if err != nil {
+		return nil, err
 	}
 
-	return
+	// add in the ref to ourselves to each of our servers
+	for _, server := range resources.Servers {
+		server.provider = p
+		server.cancelRunCmd = make(map[int]chan bool)
+		server.logger = p.Logger.New("server", server.ID)
+	}
+	return resources, nil
 }
 
 // deleteResourceFile deletes our savePath.
-func (p *Provider) deleteResourceFile() (err error) {
-	err = os.Remove(p.savePath)
-	return
+func (p *Provider) deleteResourceFile() error {
+	return os.Remove(p.savePath)
 }
 
 // uniqueResourceName takes the given prefix and appends a unique string to it
 // (a uuid).
-func uniqueResourceName(prefix string) (unique string) {
-	return prefix + "-" + uuid.NewV4().String()
+func uniqueResourceName(prefix string) string {
+	u, _ := uuid.NewV4() // this used to return no error, and now I don't want to change my own method signature...
+	return prefix + "-" + u.String()
+}
+
+// nameToHostName makes the given name compatible with being a hostname in the
+// same way that OpenStack horizon does: convert to lower case and convert non
+// [a-z1-9\-] characters to - characters.
+func nameToHostName(name string) string {
+	hostname := strings.ToLower(name)
+	return hostNameRegex.ReplaceAllString(hostname, "-")
 }

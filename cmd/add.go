@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,14 +20,16 @@ package cmd
 
 import (
 	"bufio"
-	"code.cloudfoundry.org/bytefmt"
 	"encoding/json"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"strings"
 	"time"
+
+	"code.cloudfoundry.org/bytefmt"
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/spf13/cobra"
 )
 
 // options for this cmd
@@ -260,13 +262,14 @@ machine was started.`,
 		if jd.RepGrp == "" {
 			jd.RepGrp = "manually_added"
 		}
+
 		var err error
 		if cmdMem == "" {
 			jd.Memory = 0
 		} else {
-			mb, err := bytefmt.ToMegabytes(cmdMem)
-			if err != nil {
-				die("--memory was not specified correctly: %s", err)
+			mb, errf := bytefmt.ToMegabytes(cmdMem)
+			if errf != nil {
+				die("--memory was not specified correctly: %s", errf)
 			}
 			jd.Memory = int(mb)
 		}
@@ -332,34 +335,42 @@ machine was started.`,
 			if err != nil {
 				die("could not open file '%s': %s", cmdFile, err)
 			}
-			defer reader.(*os.File).Close()
+			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
 		}
 
-		// we'll default to pwd if the manager is on the same host as us, /tmp
-		// otherwise
+		// we'll default to pwd if the manager is on the same host as us, or if
+		// cwd matters, /tmp otherwise
 		timeout := time.Duration(timeoutint) * time.Second
-		jq, err := jobqueue.Connect(addr, "cmds", timeout)
+		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
 		}
-		sstats, err := jq.ServerStats()
+		wd, err := os.Getwd()
 		if err != nil {
-			die("even though I was able to connect to the manager, it failed to tell me its location")
+			die("%s", err)
 		}
 		var pwd string
 		var remoteWarning bool
 		var envVars []string
-		if jobqueue.CurrentIP("")+":"+config.ManagerPort == sstats.ServerInfo.Addr {
-			pwd, err = os.Getwd()
-			if err != nil {
-				die("%s", err)
-			}
+		currentIP, err := jobqueue.CurrentIP("")
+		if err != nil {
+			warn("Could not get current IP: %s", err)
+		}
+		if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
+			pwd = wd
 			envVars = os.Environ()
+		} else if cmdCwdMatters {
+			pwd = wd
 		} else {
 			pwd = "/tmp"
 			remoteWarning = true
 		}
-		jq.Disconnect()
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
@@ -409,20 +420,13 @@ machine was started.`,
 				defaultedRepG = true
 			}
 
-			job, err := jvj.Convert(jd)
-			if err != nil {
-				die("line %d had a problem: %s\n", lineNum, err)
+			job, errf := jvj.Convert(jd)
+			if errf != nil {
+				die("line %d had a problem: %s\n", lineNum, errf)
 			}
 
 			jobs = append(jobs, job)
 		}
-
-		// connect to the server
-		jq, err = jobqueue.Connect(addr, "cmds", timeout)
-		if err != nil {
-			die("%s", err)
-		}
-		defer jq.Disconnect()
 
 		// add the jobs to the queue
 		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
@@ -470,7 +474,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 
-	addCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
+	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
 // convert cmd,cwd columns in to Dependency.

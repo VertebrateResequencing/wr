@@ -1,4 +1,4 @@
-// Copyright © 2016-2017 Genome Research Limited
+// Copyright © 2016-2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,17 +20,33 @@ package cloud
 
 import (
 	"fmt"
-	. "github.com/smartystreets/goconvey/convey"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inconshreveable/log15"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
-const crfile = "cloud.resources"
+var testLogger = log15.New()
+
+func init() {
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+}
+
+func TestUtility(t *testing.T) {
+	Convey("nameToHostName works", t, func() {
+		So(nameToHostName("test-123-one"), ShouldEqual, "test-123-one")
+		So(nameToHostName("teSt-123-one"), ShouldEqual, "test-123-one")
+		So(nameToHostName("test_123-one"), ShouldEqual, "test-123-one")
+		So(nameToHostName("test_123*ONE"), ShouldEqual, "test-123-one")
+	})
+}
 
 func TestOpenStack(t *testing.T) {
 	osPrefix := os.Getenv("OS_OS_PREFIX")
@@ -52,11 +68,23 @@ func TestOpenStack(t *testing.T) {
 		Convey("You can find out the required environment variables for providers before creating instances with New()", t, func() {
 			vars, err := RequiredEnv("openstack")
 			So(err, ShouldBeNil)
-			So(vars, ShouldResemble, []string{"OS_TENANT_ID", "OS_AUTH_URL", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERNAME"})
+			So(vars, ShouldResemble, []string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME"})
+		})
+
+		Convey("You can find out the possibly required environment variables for providers as well", t, func() {
+			vars, err := MaybeEnv("openstack")
+			So(err, ShouldBeNil)
+			So(vars, ShouldResemble, []string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"})
+		})
+
+		Convey("And you can get all the env vars in one go", t, func() {
+			vars, err := AllEnv("openstack")
+			So(err, ShouldBeNil)
+			So(vars, ShouldResemble, []string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"})
 		})
 
 		Convey("You can get a new OpenStack Provider", t, func() {
-			p, err := New("openstack", resourceName, crfileprefix)
+			p, err := New("openstack", resourceName, crfileprefix, testLogger)
 			So(err, ShouldBeNil)
 			So(p, ShouldNotBeNil)
 
@@ -176,7 +204,7 @@ func TestOpenStack(t *testing.T) {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					defer server.Destroy()
-					err = server.WaitUntilReady([]byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
@@ -212,14 +240,14 @@ func TestOpenStack(t *testing.T) {
 						err = server.MkDir("/tmp/foo/bar")
 						So(err, ShouldBeNil)
 
-						stdout, stderr, err = server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
+						stdout, _, err = server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "")
 
 						err = server.CreateFile("my content", "/tmp/foo/bar/a/b/file")
 						So(err, ShouldBeNil)
 
-						stdout, stderr, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
+						stdout, _, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "my content")
 
@@ -278,12 +306,34 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					err = server.WaitUntilReady([]byte("#!/bin/bash\nfalse"))
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\nfalse"))
 					So(err, ShouldNotBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
 					server.Destroy()
+				})
+
+				Convey("Spawning with a start up script that relies on an unsupplied file returns an error", func() {
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\ncat /tmp/foo"))
+					So(err, ShouldNotBeNil)
+					ok := server.Alive(true)
+					So(ok, ShouldBeTrue)
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
+					server.Destroy()
+
+					Convey("But supplying the file makes it work", func() {
+						server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+						So(err, ShouldBeNil)
+						_, filename, _, _ := runtime.Caller(0)
+						err = server.WaitUntilReady(filename+":/tmp/foo", []byte("#!/bin/bash\ncat /tmp/foo"))
+						So(err, ShouldBeNil)
+						ok := server.Alive(true)
+						So(ok, ShouldBeTrue)
+						server.Destroy()
+					})
 				})
 
 				Convey("You can Spawn a server with a time to destruction", func() {
@@ -342,36 +392,38 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Convey("You can't get a server flavor when your regex is bad, but can when it is good", func() {
-					flavor, err := p.CheapestServerFlavor(1, 50, "^!!!!!!!!!!!!!!$")
+					flavor2, err := p.CheapestServerFlavor(1, 50, "^!!!!!!!!!!!!!!$")
 					So(err, ShouldNotBeNil)
+					So(flavor2, ShouldBeNil)
 					perr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrNoFlavor)
 
-					flavor, err = p.CheapestServerFlavor(1, 50, "^!!!!(")
+					flavor2, err = p.CheapestServerFlavor(1, 50, "^!!!!(")
 					So(err, ShouldNotBeNil)
+					So(flavor2, ShouldBeNil)
 					perr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(perr.Err, ShouldEqual, ErrBadRegex)
 
-					flavor, err = p.CheapestServerFlavor(1, 50, ".*$")
+					flavor2, err = p.CheapestServerFlavor(1, 50, ".*$")
 					So(err, ShouldBeNil)
-					So(flavor, ShouldNotBeNil)
+					So(flavor2, ShouldNotBeNil)
 				})
 
 				Convey("You can Spawn a server with additional disk space over the default for the desired image", func() {
-					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 30, 0*time.Second, true)
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, flavor.Disk+10, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 
 					stdout, _, err := server.RunCmd("df -h .", false)
 					So(err, ShouldBeNil)
-					So(stdout, ShouldContainSubstring, "30G")
+					So(stdout, ShouldContainSubstring, fmt.Sprintf("%dG", flavor.Disk+10))
 				})
 
 				Convey("TearDown deletes all the resources that deploy made", func() {
-					err = p.TearDown()
+					err := p.TearDown()
 					So(err, ShouldBeNil)
 
 					// *** should really use openstack API to confirm everything is
