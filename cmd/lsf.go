@@ -1,4 +1,4 @@
-// Copyright © 2017 Genome Research Limited
+// Copyright © 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,15 +22,16 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/VertebrateResequencing/wr/jobqueue"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/jobqueue"
+	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/spf13/cobra"
 )
 
 // options for this cmd
@@ -153,7 +154,7 @@ var lsfBsubCmd = &cobra.Command{
 		}
 
 		// connect to the server
-		jq, err := jobqueue.Connect(addr, "cmds", 10*time.Second)
+		jq, err := jobqueue.Connect(addr, 10*time.Second)
 		if err != nil {
 			die(err.Error())
 		}
