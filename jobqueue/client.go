@@ -416,7 +416,16 @@ func (c *Client) Execute(job *Job, shell string) error {
 		host = "localhost"
 	}
 	if job.BsubMode != "" {
-		parent := filepath.Dir(cmd.Dir)
+		jobCwd := job.Cwd
+		if jobCwd == "" {
+			jobCwd = "."
+		}
+		absJobCwd, err := filepath.Abs(jobCwd)
+		if err != nil {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("failed to make cmd dir absolute: %s", err)
+		}
+		parent := filepath.Dir(absJobCwd)
 
 		// create bsub and bjobs symlinks in a sister dir of job.Cwd
 		prependPath = filepath.Join(parent, lsfEmulationDir)
@@ -427,19 +436,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		wr, err := os.Executable()
 		if err != nil {
-			c.Bury(job, nil, fmt.Sprintf("could not get path to wr: %s", err))
+			c.Bury(job, nil, FailReasonCwd)
 			return fmt.Errorf("could not get path to wr: %s", err)
 		}
 		bsub := filepath.Join(prependPath, "bsub")
 		bjobs := filepath.Join(prependPath, "bjobs")
 		err = os.Symlink(wr, bsub)
 		if err != nil && !os.IsExist(err) {
-			c.Bury(job, nil, fmt.Sprintf("could not create bsub symlink: %s", err))
+			c.Bury(job, nil, FailReasonCwd)
 			return fmt.Errorf("could not create bsub symlink: %s", err)
 		}
 		err = os.Symlink(wr, bjobs)
 		if err != nil && !os.IsExist(err) {
-			c.Bury(job, nil, fmt.Sprintf("could not create bjobs symlink: %s", err))
+			c.Bury(job, nil, FailReasonCwd)
 			return fmt.Errorf("could not create bjobs symlink: %s", err)
 		}
 
@@ -576,6 +585,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		env = envOverride(env, []string{
 			"WR_BSUB_CONFIG=" + string(jobJSON),
+			"LSF_SERVERDIR=/dev/null",
+			"LSF_LIBDIR=/dev/null",
+			"LSF_ENVDIR=/dev/null",
+			"LSF_BINDIR=" + prependPath,
 		})
 	}
 	cmd.Env = env
