@@ -245,6 +245,7 @@ machine was started.`,
 		jd := &jobqueue.JobDefaults{
 			RepGrp:      cmdRepGroup,
 			ReqGrp:      reqGroup,
+			Cwd:         cmdCwd,
 			CwdMatters:  cmdCwdMatters,
 			ChangeHome:  cmdChangeHome,
 			CPUs:        cmdCPUs,
@@ -338,32 +339,10 @@ machine was started.`,
 			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
 		}
 
-		// we'll default to pwd if the manager is on the same host as us, or if
-		// cwd matters, /tmp otherwise
 		timeout := time.Duration(timeoutint) * time.Second
 		jq, err := jobqueue.Connect(addr, timeout)
 		if err != nil {
 			die("%s", err)
-		}
-		wd, err := os.Getwd()
-		if err != nil {
-			die("%s", err)
-		}
-		var pwd string
-		var remoteWarning bool
-		var envVars []string
-		currentIP, err := jobqueue.CurrentIP("")
-		if err != nil {
-			warn("Could not get current IP: %s", err)
-		}
-		if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
-			pwd = wd
-			envVars = os.Environ()
-		} else if cmdCwdMatters {
-			pwd = wd
-		} else {
-			pwd = "/tmp"
-			remoteWarning = true
 		}
 		defer func() {
 			err = jq.Disconnect()
@@ -371,6 +350,31 @@ machine was started.`,
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
+
+		// we'll default to pwd if the manager is on the same host as us, or if
+		// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
+		var pwd string
+		var remoteWarning bool
+		var envVars []string
+		if cmdCwd == "" {
+			wd, err := os.Getwd()
+			if err != nil {
+				die("%s", err)
+			}
+			currentIP, err := jobqueue.CurrentIP("")
+			if err != nil {
+				warn("Could not get current IP: %s", err)
+			}
+			if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
+				pwd = wd
+				envVars = os.Environ()
+			} else if cmdCwdMatters {
+				pwd = wd
+			} else {
+				pwd = "/tmp"
+				remoteWarning = true
+			}
+		}
 
 		// for network efficiency, read in all commands and create a big slice
 		// of Jobs and Add() them in one go afterwards
