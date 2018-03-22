@@ -949,10 +949,22 @@ func (p *openstackp) tearDown(resources *Resources) error {
 		// delete router
 		if id := resources.Details["router"]; id != "" {
 			if subnetid := resources.Details["subnet"]; subnetid != "" {
-				// remove the interface from our router first
-				_, err := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
-				if err != nil {
-					merr = multierror.Append(merr, err)
+				// remove the interface from our router first, retrying for a
+				// few seconds on failure, since destroyed servers may not have
+				// fully terminated yet
+				tries := 0
+				for {
+					_, errr := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+					if errr != nil {
+						tries++
+						if tries >= 10 {
+							merr = multierror.Append(merr, errr)
+							break
+						}
+						<-time.After(1 * time.Second)
+						continue
+					}
+					break
 				}
 			}
 			err := routers.Delete(p.networkClient, id).ExtractErr()
