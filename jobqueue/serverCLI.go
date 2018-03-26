@@ -608,6 +608,16 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 	return item, job, ""
 }
 
+func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobState {
+	state := itemsStateToJobState[itemState]
+	if state == "" {
+		state = JobStateUnknown
+	} else if state == JobStateReserved && lost {
+		state = JobStateLost
+	}
+	return state
+}
+
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
@@ -616,12 +626,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 
 	stats := item.Stats()
 
-	state := itemsStateToJobState[stats.State]
-	if state == "" {
-		state = JobStateUnknown
-	} else if state == JobStateReserved && sjob.Lost {
-		state = JobStateLost
-	}
+	state := s.itemStateToJobState(stats.State, sjob.Lost)
 
 	// we're going to fill in some properties of the Job and return
 	// it to client, but don't want those properties set here for
