@@ -1399,7 +1399,10 @@ func (s *Server) scheduleRunners(group string) {
 				for {
 					item, errr := s.q.Reserve(group)
 					if errr != nil {
-						problem = true
+						if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNothingReady {
+							s.Warn("scheduleRunners failed to reserve an item", "group", group, "err", errr)
+							problem = true
+						}
 						break
 					}
 					if item == nil {
