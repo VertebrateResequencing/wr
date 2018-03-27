@@ -622,7 +622,7 @@ func (p *kubernetesp) DestroyServer(serverID string) error {
 }
 
 //Checks a given pod exists. If it does, return the status
-func (p *kubernetesp) CheckServer(serverID string) (working bool, err error) {
+func (p *kubernetesp) checkServer(serverID string) (working bool, err error) {
 	pod, err := p.podClient.Get(serverID, metav1.GetOptions{})
 	if err != nil {
 		return false, err
