@@ -457,7 +457,7 @@ func (p *kubernetesp) flavors() map[string]*Flavor {
 // Pods don't really map to servers. Lots of awful hackery incoming.
 // I'm sorry in advance
 // Spawn a new pod that contains a runner. Return the name.
-func (p *kubernetesp) spawn(osName string, osUser string, flavorID string, diskGB int, ttd time.Duration, externalIP bool, usingQuotaCB ...SpawnUsingQuotaCallback) (*Server, error) {
+func (p *kubernetesp) spawn(resources *Resources, osPrefix string, flavorID string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -516,7 +516,7 @@ func (p *kubernetesp) spawn(osName string, osUser string, flavorID string, diskG
 		},
 	}
 	//Create pod
-	pod, err := p.podClient.Create(pod)
+	pod, err = p.podClient.Create(pod)
 	if err != nil {
 		p.Logger.Error("Failed to create pod", "err", err)
 	}
@@ -595,14 +595,15 @@ func (p *kubernetesp) spawn(osName string, osUser string, flavorID string, diskG
 		fmt.Printf("StdErr: %v\n", stdErr)
 		panic(fmt.Errorf("Error executing remote command: %v", err))
 	}
-	return &Server{
-		Name: pod.ObjectMeta.Name,
-		ID:   string(pod.ObjectMeta.UID),
-	}, nil
+	serverID = string(pod.ObjectMeta.UID)
+	serverIP = "null" // maybe set to pod ip / node ip later if required
+	serverName = pod.ObjectMeta.Name
+	adminPass = "null"
+	return
 }
 
 //Deletes the namespace created for wr.
-func (p *kubernetesp) TearDown() error {
+func (p *kubernetesp) tearDown(resources *Resources) error {
 	err := p.namespaceClient.Delete(p.newNamespace, &metav1.DeleteOptions{})
 	if err != nil {
 		p.Logger.Error("Deleting namespace", "err", err, "namespace", p.newNamespace)
@@ -612,7 +613,7 @@ func (p *kubernetesp) TearDown() error {
 }
 
 //Deletes the given pod, doesn't check it exists first.
-func (p *kubernetesp) DestroyServer(serverID string) error {
+func (p *kubernetesp) destroyServer(serverID string) error {
 	err := p.podClient.Delete(serverID, &metav1.DeleteOptions{})
 	if err != nil {
 		p.Logger.Error("Deleting pod", "err", err, "pod", serverID)
