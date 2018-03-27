@@ -604,6 +604,19 @@ func TestOpenstack(t *testing.T) {
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
 
+		if os.Getenv("OS_TENANT_ID") == "" {
+			Convey("Schedule() gives impossible error when reqs don't fit in the requested flavor", func() {
+				other := make(map[string]string)
+				other["cloud_flavor"] = "o1.tiny"
+				brokenReq := &Requirements{2000, 1 * time.Minute, 1, 1, other}
+				err := s.Schedule("foo", brokenReq, 1)
+				So(err, ShouldNotBeNil)
+				serr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(serr.Err, ShouldEqual, ErrImpossible)
+			})
+		}
+
 		// we need to not actually run the real scheduling tests if we're not
 		// running in openstack, because the scheduler will try to ssh to
 		// the servers it spawns
@@ -682,6 +695,47 @@ func TestOpenstack(t *testing.T) {
 				oFile := filepath.Join(tmpdir, "out")
 				oReqs := make(map[string]string)
 
+				if flavorRegex == `^m.*$` && os.Getenv("OS_TENANT_ID") == "" {
+					Convey("Run a job on a specific flavor", func() {
+						cmd := "sleep 10"
+						other := make(map[string]string)
+						other["cloud_flavor"] = "o1.small"
+						thisReq := &Requirements{100, 1 * time.Minute, 1, 1, other}
+						err := s.Schedule(cmd, thisReq, 1)
+						So(err, ShouldBeNil)
+						So(s.Busy(), ShouldBeTrue)
+
+						spawnedCh := make(chan int)
+						stopCh := make(chan bool)
+						go func() {
+							max := 0
+							ticker := time.NewTicker(5 * time.Second)
+							for {
+								select {
+								case <-ticker.C:
+									novaCount := novaCountServers(novaCmd, rName, "", "o1.small")
+									if novaCount > max {
+										max = novaCount
+									}
+									continue
+								case <-stopCh:
+									ticker.Stop()
+									spawnedCh <- max
+									return
+								}
+							}
+						}()
+
+						So(waitToFinish(s, 120, 1000), ShouldBeTrue)
+						stopCh <- true
+						spawned := <-spawnedCh
+						close(spawnedCh)
+						So(spawned, ShouldEqual, 1)
+					})
+				} else {
+					SkipConvey("Skipping author's flavor test", func() {})
+				}
+
 				Convey("Run jobs with no inputs/outputs", func() {
 					// on authors setup, the following count is sufficient to
 					// test spawning instances over the quota in the test
@@ -702,9 +756,9 @@ func TestOpenstack(t *testing.T) {
 						for {
 							select {
 							case <-ticker.C:
-								count := novaCountServers(novaCmd, rName, "")
-								if count > max {
-									max = count
+								novaCount := novaCountServers(novaCmd, rName, "")
+								if novaCount > max {
+									max = novaCount
 								}
 								continue
 							case <-stopCh:
@@ -713,7 +767,6 @@ func TestOpenstack(t *testing.T) {
 								return
 							}
 						}
-						<-time.After(20 * time.Second)
 					}()
 
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
@@ -931,9 +984,13 @@ func waitToFinish(s *Scheduler, maxS int, interval int) bool {
 	return answer
 }
 
-func novaCountServers(novaCmd string, rName, osPrefix string) int {
+func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) int {
+	var extra string
+	if len(flavor) == 1 {
+		extra = "--flavor " + flavor[0] + " "
+	}
 	if osPrefix == "" {
-		cmd := exec.Command("bash", "-c", novaCmd+" list | grep -c "+rName)
+		cmd := exec.Command("bash", "-c", novaCmd+" list "+extra+"| grep -c "+rName)
 		out, err := cmd.Output()
 		if err == nil {
 			count, err := strconv.Atoi(strings.TrimSpace(string(out)))
@@ -942,7 +999,7 @@ func novaCountServers(novaCmd string, rName, osPrefix string) int {
 			}
 		}
 	} else {
-		cmd := exec.Command("bash", "-c", novaCmd+" list | grep "+rName)
+		cmd := exec.Command("bash", "-c", novaCmd+" list "+extra+"| grep "+rName)
 		out, err := cmd.Output()
 		if err == nil {
 			r := regexp.MustCompile(rName + "-\\S+")

@@ -211,7 +211,15 @@ very many (tens of thousands+) commands.`,
 				if len(job.Behaviours) > 0 {
 					behaviours = fmt.Sprintf("Behaviours: %s\n", job.Behaviours)
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, behaviours, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
+				var other string
+				if len(job.Requirements.Other) > 0 {
+					var others []string
+					for key, val := range job.Requirements.Other {
+						others = append(others, key+":"+val)
+					}
+					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
+				}
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, behaviours, other, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:

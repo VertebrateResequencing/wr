@@ -79,6 +79,13 @@ type Server struct {
 	logger            log15.Logger // (not embedded to make gob happy)
 }
 
+// Matches tells you if in principle a Server has the given os, script and
+// flavor. Useful before calling HasSpaceFor, since if you don't match these
+// things you can't use the Server regardless of how empty it is.
+func (s *Server) Matches(os string, script []byte, flavor *Flavor) bool {
+	return s.OS == os && bytes.Equal(s.Script, script) && (flavor == nil || flavor.ID == s.Flavor.ID)
+}
+
 // Allocate records that the given resources have now been used up on this
 // server.
 func (s *Server) Allocate(cores, ramMB, diskGB int) {

@@ -96,7 +96,7 @@ var (
 	ErrMissingEnv      = "missing environment variables: "
 	ErrBadResourceName = "your resource name prefix contains disallowed characters"
 	ErrNoFlavor        = "no server flavor can meet your resource requirements"
-	ErrBadFlavor       = "no server flavor with that id exists"
+	ErrBadFlavor       = "no server flavor with that id/name exists"
 	ErrBadRegex        = "your flavor regular expression was not valid"
 )
 
@@ -413,7 +413,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 	if regex != "" {
 		r, err = regexp.Compile(regex)
 		if err != nil {
-			return nil, Error{"cloud", "cheapestServerFlavor", ErrBadRegex}
+			return nil, Error{"cloud", "CheapestServerFlavor", ErrBadRegex}
 		}
 	}
 
@@ -441,7 +441,29 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 	}
 
 	if fr == nil {
-		return nil, Error{"cloud", "cheapestServerFlavor", ErrNoFlavor}
+		return nil, Error{"cloud", "CheapestServerFlavor", ErrNoFlavor}
+	}
+
+	return fr, nil
+}
+
+// GetServerFlavor returns the flavor with the given ID or name. If no flavor
+// exactly matches you will get an error matching ErrBadFlavor.
+func (p *Provider) GetServerFlavor(idOrName string) (*Flavor, error) {
+	flavors := p.impl.flavors()
+	fr, existed := flavors[idOrName]
+
+	if !existed {
+		for _, f := range flavors {
+			if f.Name == idOrName {
+				fr = f
+				break
+			}
+		}
+	}
+
+	if fr == nil {
+		return nil, Error{"cloud", "GetServerFlavor", ErrBadFlavor}
 	}
 
 	return fr, nil

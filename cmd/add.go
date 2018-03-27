@@ -56,8 +56,9 @@ var cmdEnv string
 var cmdReRun bool
 var cmdOsPrefix string
 var cmdOsUsername string
-var cmdPostCreationScript string
 var cmdOsRAM int
+var cmdPostCreationScript string
+var cmdFlavor string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -73,7 +74,7 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_username cloud_ram cloud_script env
+cloud_os cloud_username cloud_ram cloud_script cloud_flavor env
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -225,7 +226,10 @@ deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
 "CentOS 7", "cloud_username" to "centos", "cloud_ram" to 4096, and
 "cloud_script" to "~/my_centos_post_creation_script.sh", then this command will
-run on a cloud node running CentOS (with at least 4GB ram).
+run on a cloud node running CentOS (with at least 4GB ram). If you set
+"cloud_flavor" then the command will only run on a server with that exact
+flavor (normally the cheapest flavor is chosen for you based on the command's
+resource requirements).
 
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
@@ -258,6 +262,7 @@ machine was started.`,
 			CloudUser:   cmdOsUsername,
 			CloudScript: cmdPostCreationScript,
 			CloudOSRam:  cmdOsRAM,
+			CloudFlavor: cmdFlavor,
 		}
 
 		if jd.RepGrp == "" {
@@ -357,13 +362,13 @@ machine was started.`,
 		var remoteWarning bool
 		var envVars []string
 		if cmdCwd == "" {
-			wd, err := os.Getwd()
-			if err != nil {
-				die("%s", err)
+			wd, errg := os.Getwd()
+			if errg != nil {
+				die("%s", errg)
 			}
-			currentIP, err := jobqueue.CurrentIP("")
-			if err != nil {
-				warn("Could not get current IP: %s", err)
+			currentIP, errc := jobqueue.CurrentIP("")
+			if errc != nil {
+				warn("Could not get current IP: %s", errc)
 			}
 			if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
 				pwd = wd
@@ -474,6 +479,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
 	addCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
 	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")

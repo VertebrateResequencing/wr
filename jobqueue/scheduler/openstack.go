@@ -211,6 +211,11 @@ func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, scri
 	}
 }
 
+// matches is like cloud.Server.Matches()
+func (s *standin) matches(os string, script []byte, flavor *cloud.Flavor) bool {
+	return s.os == os && bytes.Equal(s.script, script) && (flavor == nil || flavor.ID == s.flavor.ID)
+}
+
 // allocate is like cloud.Server.Allocate()
 func (s *standin) allocate(req *Requirements) {
 	s.mutex.Lock()
@@ -455,16 +460,37 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met,
-// based on our quota and the available server flavours.
+// based on our quota and the available server flavours. Also based on the
+// specific flavor the user has specified, if any.
 func (s *opst) reqCheck(req *Requirements) error {
+	reqForSpawn := s.reqForSpawn(req)
+
 	// check if possible vs quota
-	if req.RAM > s.quotaMaxRAM || req.Cores > s.quotaMaxCores || req.Disk > s.quotaMaxVolume {
+	if reqForSpawn.RAM > s.quotaMaxRAM || reqForSpawn.Cores > s.quotaMaxCores || reqForSpawn.Disk > s.quotaMaxVolume {
+		s.Warn("Requested resources are greater than max quota", "quotaCores", s.quotaMaxCores, "requiredCores", reqForSpawn.Cores, "quotaRAM", s.quotaMaxRAM, "requiredRAM", reqForSpawn.RAM, "quotaDisk", s.quotaMaxVolume, "requiredDisk", reqForSpawn.Disk)
+		s.notifyMessage(fmt.Sprintf("OpenStack: not enough quota for the job needing %d cores, %d RAM and %d Disk", reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk))
 		return Error{"openstack", "schedule", ErrImpossible}
 	}
 
-	// check if possible vs flavors
-	_, err := s.determineFlavor(req)
-	return err
+	if name, defined := req.Other["cloud_flavor"]; defined {
+		requestedFlavor, err := s.getFlavor(name)
+		if err != nil {
+			return err
+		}
+
+		// check that the user hasn't requested a flavor that isn't actually big
+		// enough to run their job
+		if requestedFlavor.Cores < reqForSpawn.Cores || requestedFlavor.RAM < reqForSpawn.RAM {
+			s.Warn("Requested flavor is too small for the job", "flavor", requestedFlavor.Name, "flavorCores", requestedFlavor.Cores, "requiredCores", reqForSpawn.Cores, "flavorRAM", requestedFlavor.RAM, "requiredRAM", reqForSpawn.RAM)
+			s.notifyMessage(fmt.Sprintf("OpenStack: requested flavor %s is too small for the job needing %d cores and %d RAM", requestedFlavor.Name, reqForSpawn.Cores, reqForSpawn.RAM))
+			return Error{"openstack", "schedule", ErrImpossible}
+		}
+	} else {
+		// check if possible vs flavors
+		_, err := s.determineFlavor(req)
+		return err
+	}
+	return nil
 }
 
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
@@ -479,11 +505,55 @@ func (s *opst) determineFlavor(req *Requirements) (*cloud.Flavor, error) {
 	return flavor, err
 }
 
+// getFlavor returns a flavor with the given name or id. Returns an error
+// if no matching flavor exists.
+func (s *opst) getFlavor(name string) (*cloud.Flavor, error) {
+	flavor, err := s.provider.GetServerFlavor(name)
+	if err != nil {
+		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
+			err = Error{"openstack", "getFlavorByName", ErrBadFlavor}
+		}
+	}
+	return flavor, err
+}
+
+// serverReqs checks the given req's Other details to see if a particular kind
+// of server has been requested. If not specified, the returned os defaults to
+// the configured OSPrefix, script defaults to PostCreationScript, and flavor
+// will be nil.
+func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, flavor *cloud.Flavor, err error) {
+	if val, defined := req.Other["cloud_os"]; defined {
+		osPrefix = val
+	} else {
+		osPrefix = s.config.OSPrefix
+	}
+
+	if val, defined := req.Other["cloud_script"]; defined {
+		osScript = []byte(val)
+	} else {
+		osScript = s.config.PostCreationScript
+	}
+
+	if name, defined := req.Other["cloud_flavor"]; defined {
+		flavor, err = s.getFlavor(name)
+	}
+
+	return osPrefix, osScript, flavor, err
+}
+
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources.
 func (s *opst) canCount(req *Requirements) int {
 	s.resourceMutex.RLock()
 	defer s.resourceMutex.RUnlock()
+
+	requestedOS, requestedScript, requestedFlavor, err := s.serverReqs(req)
+	if err != nil {
+		s.Warn("Failed to determine server requirements", "err", err)
+		return 0
+	}
+
+	reqForSpawn := s.reqForSpawn(req)
 
 	// we don't do any actual checking of current resources on the machines, but
 	// instead rely on our simple tracking based on how many cores and RAM
@@ -503,19 +573,22 @@ func (s *opst) canCount(req *Requirements) int {
 	// by one in to the first bin that has room for it.”
 	var canCount int
 	for _, server := range s.servers {
-		if !server.IsBad() {
+		if !server.IsBad() && server.Matches(requestedOS, requestedScript, requestedFlavor) {
 			space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
 			canCount += space
 		}
 	}
 
-	// now we get the smallest server type that can run our job, and calculate
-	// how many we could spawn before exceeding our quota
-	reqForSpawn := s.reqForSpawn(req)
-	flavor, err := s.determineFlavor(reqForSpawn)
-	if err != nil {
-		s.Warn("Failed to determine a server flavor", "err", err)
-		return canCount
+	// if a specific flavor was not requested, get the smallest server type that
+	// can run our job, so we can subsequently calculate how many we could spawn
+	// before exceeding our quota
+	flavor := requestedFlavor
+	if flavor == nil {
+		flavor, err = s.determineFlavor(reqForSpawn)
+		if err != nil {
+			s.Warn("Failed to determine a server flavor", "err", err)
+			return canCount
+		}
 	}
 
 	quota, err := s.provider.GetQuota() // this includes resources used by currently spawning servers
@@ -590,22 +663,22 @@ func (s *opst) canCount(req *Requirements) int {
 	}
 
 	// finally, calculate how many reqs we can get running on that many servers
-	perServer := flavor.Cores / reqForSpawn.Cores
+	perServer := flavor.Cores / req.Cores
 	if perServer > 1 {
 		var n int
-		if reqForSpawn.RAM > 0 {
-			n = flavor.RAM / reqForSpawn.RAM
+		if req.RAM > 0 {
+			n = flavor.RAM / req.RAM
 			if n < perServer {
 				perServer = n
 			}
 		}
-		if reqForSpawn.Disk > 0 {
+		if req.Disk > 0 {
 			if checkVolume {
 				// we'll be creating volumes to exactly match required disk
 				// space
 				n = 1
 			} else {
-				n = flavor.Disk / reqForSpawn.Disk
+				n = flavor.Disk / req.Disk
 			}
 			if n < perServer {
 				perServer = n
@@ -641,7 +714,7 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 		disk = s.config.OSDisk
 	}
 
-	if req.RAM < osRAM {
+	if req.RAM < osRAM || req.Disk < disk {
 		reqForSpawn = &Requirements{
 			RAM:   osRAM,
 			Time:  req.Time,
@@ -659,28 +732,25 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 // count times, not that they are /successful/ that many times). New servers are
 // created sequentially to avoid overloading OpenStack's sub-systems.
 func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
-	// look through space on existing servers to see if we can run cmd on one
-	// of them
-	var osPrefix string
-	if val, defined := req.Other["cloud_os"]; defined {
-		osPrefix = val
-	} else {
-		osPrefix = s.config.OSPrefix
-	}
-
-	var osScript []byte
-	if val, defined := req.Other["cloud_script"]; defined {
-		osScript = []byte(val)
-	} else {
-		osScript = s.config.PostCreationScript
-	}
-
 	// since we can have many simultaneous calls to this method running at once,
 	// we make a new logger with a unique "call" context key to keep track of
 	// which runCmd call is doing what
 	logger := s.Logger.New("call", logext.RandId(8))
 
+	requestedOS, requestedScript, requestedFlavor, err := s.serverReqs(req)
+	if err != nil {
+		return err
+	}
+	if requestedFlavor != nil {
+		logger.Debug("using requested flavor", "flavor", requestedFlavor.Name)
+	}
+
 	s.mutex.Lock()
+	if s.cleaned {
+		s.mutex.Unlock()
+		reservedCh <- false
+		return nil
+	}
 
 	// *** we need a better way for our test script to prove the bugs that rely
 	// on debugEffect, that doesn't affect non-testing code. Probably have to
@@ -691,15 +761,13 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		thisDebugCount = debugCounter
 	}
 
-	if s.cleaned {
-		s.mutex.Unlock()
-		reservedCh <- false
-		return nil
-	}
 	logger.Debug("runCmd", "servers", len(s.servers), "standins", len(s.standins))
+
+	// look through space on existing servers to see if we can run cmd on one
+	// of them
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
-		if !thisServer.IsBad() && thisServer.OS == osPrefix && bytes.Equal(thisServer.Script, osScript) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedFlavor) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
 			logger = logger.New("server", sid)
@@ -711,18 +779,18 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	// else see if there will be space on a soon-to-be-spawned server
 	if server == nil {
 		for _, standinServer := range s.standins {
-			if standinServer.os == osPrefix && bytes.Equal(standinServer.script, osScript) && standinServer.hasSpaceFor(req) > 0 {
+			if standinServer.matches(requestedOS, requestedScript, requestedFlavor) && standinServer.hasSpaceFor(req) > 0 {
 				s.recordStandin(standinServer, cmd)
 				standinServer.allocate(req)
 				s.mutex.Unlock()
 				logger = logger.New("standin", standinServer.id)
 				logger.Debug("using existing standin")
-				var err error
-				server, err = standinServer.waitForServer()
-				if err != nil || server == nil {
-					logger.Debug("giving up on standin", "err", err)
+				var errw error
+				server, errw = standinServer.waitForServer()
+				if errw != nil || server == nil {
+					logger.Debug("giving up on standin", "err", errw)
 					reservedCh <- false
-					return err
+					return errw
 				}
 				s.mutex.Lock()
 				logger = logger.New("server", server.ID)
@@ -748,12 +816,16 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			}
 		}
 
-		flavor, err := s.determineFlavor(s.reqForSpawn(req))
-		if err != nil {
-			s.mutex.Unlock()
-			s.notifyMessage(fmt.Sprintf("OpenStack: Was unable to determine a server flavor to use for requirements %s: %s", req.Stringify(), err))
-			reservedCh <- false
-			return err
+		flavor := requestedFlavor
+		if flavor == nil {
+			var errd error
+			flavor, errd = s.determineFlavor(s.reqForSpawn(req))
+			if errd != nil {
+				s.mutex.Unlock()
+				s.notifyMessage(fmt.Sprintf("OpenStack: Was unable to determine a server flavor to use for requirements %s: %s", req.Stringify(), errd))
+				reservedCh <- false
+				return errd
+			}
 		}
 		volumeAffected := req.Disk > flavor.Disk
 
@@ -771,7 +843,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 		u, _ := uuid.NewV4()
 		standinID := u.String()
-		standinServer := newStandin(standinID, flavor, req.Disk, osPrefix, osScript, s.Logger)
+		standinServer := newStandin(standinID, flavor, req.Disk, requestedOS, requestedScript, s.Logger)
 		standinServer.allocate(req)
 		s.recordStandin(standinServer, cmd)
 		logger = logger.New("standin", standinID)
@@ -848,7 +920,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		}
 
 		// spawn
-		server, err = s.provider.Spawn(osPrefix, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, usingQuotaCB)
+		server, err = s.provider.Spawn(requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, usingQuotaCB)
 		serverID := "failed"
 		if server != nil {
 			serverID = server.ID
@@ -882,7 +954,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		if err == nil {
 			// wait until boot is finished, ssh is ready, and osScript has
 			// completed
-			err = server.WaitUntilReady(s.config.ConfigFiles, osScript)
+			err = server.WaitUntilReady(s.config.ConfigFiles, requestedScript)
 
 			if err == nil {
 				// check that the exe of the cmd we're supposed to run exists on the
@@ -955,7 +1027,6 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	s.mutex.Unlock()
 
 	// now we have a server, ssh over and run the cmd on it
-	var err error
 	if server.IP == "127.0.0.1" {
 		logger.Debug("running command locally", "cmd", cmd)
 		reserved := make(chan bool)

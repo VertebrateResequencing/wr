@@ -67,6 +67,7 @@ const (
 var (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
+	ErrBadFlavor    = "unknown server flavor"
 )
 
 // Error records an error and the operation and scheduler that caused it.

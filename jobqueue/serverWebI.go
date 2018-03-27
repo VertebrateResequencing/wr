@@ -81,6 +81,7 @@ type jstatus struct {
 	ExpectedTime float64
 	// RequestedDisk is in Gigabytes.
 	RequestedDisk int
+	OtherRequests []string
 	Cores         int
 	PeakRAM       int
 	Exited        bool
@@ -445,6 +446,10 @@ func jobToStatus(job *Job) jstatus {
 	if state == JobStateRunning && job.Lost {
 		state = JobStateLost
 	}
+	var ot []string
+	for key, val := range job.Requirements.Other {
+		ot = append(ot, key+":"+val)
+	}
 	return jstatus{
 		Key:           job.key(),
 		RepGroup:      job.RepGroup,
@@ -460,6 +465,7 @@ func jobToStatus(job *Job) jstatus {
 		ExpectedRAM:   job.Requirements.RAM,
 		ExpectedTime:  job.Requirements.Time.Seconds(),
 		RequestedDisk: job.Requirements.Disk,
+		OtherRequests: ot,
 		Cores:         job.Requirements.Cores,
 		PeakRAM:       job.PeakRAM,
 		Exited:        job.Exited,

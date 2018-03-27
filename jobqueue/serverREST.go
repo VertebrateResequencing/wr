@@ -76,6 +76,7 @@ type JobViaJSON struct {
 	CloudUser   string            `json:"cloud_username"`
 	CloudScript string            `json:"cloud_script"`
 	CloudOSRam  *int              `json:"cloud_ram"`
+	CloudFlavor string            `json:"cloud_flavor"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -108,6 +109,7 @@ type JobDefaults struct {
 	MountConfigs MountConfigs
 	CloudOS      string
 	CloudUser    string
+	CloudFlavor  string
 	// CloudScript is the local path to a script.
 	CloudScript string
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
@@ -348,6 +350,11 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else if jd.CloudUser != "" {
 		other["cloud_user"] = jd.CloudUser
 	}
+	if jvj.CloudFlavor != "" {
+		other["cloud_flavor"] = jvj.CloudFlavor
+	} else if jd.CloudFlavor != "" {
+		other["cloud_flavor"] = jd.CloudFlavor
+	}
 	var cloudScriptPath string
 	if jvj.CloudScript != "" {
 		cloudScriptPath = jvj.CloudScript
@@ -533,6 +540,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		CloudOS:     r.Form.Get("cloud_os"),
 		CloudUser:   r.Form.Get("cloud_username"),
 		CloudScript: r.Form.Get("cloud_script"),
+		CloudFlavor: r.Form.Get("cloud_flavor"),
 		CloudOSRam:  urlStringToInt(r.Form.Get("cloud_ram")),
 	}
 	if r.Form.Get("cwd_matters") == restFormTrue {

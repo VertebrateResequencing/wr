@@ -275,6 +275,43 @@ func TestREST(t *testing.T) {
 			})
 		})
 
+		Convey("You can POST to add a job with a cloud_flavor to the queue", func() {
+			var inputJobs []*JobViaJSON
+			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", CloudFlavor: "o1.tiny"})
+			jsonValue, err := json.Marshal(inputJobs)
+			So(err, ShouldBeNil)
+
+			response, err := http.Post(jobsEndPoint+"/", "application/json", bytes.NewBuffer(jsonValue))
+			So(err, ShouldBeNil)
+			responseData, err := ioutil.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+			var jstati []jstatus
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldBeNil)
+			So(len(jstati), ShouldEqual, 1)
+
+			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+			So(jstati[0].State, ShouldEqual, "ready")
+			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
+			So(jstati[0].RepGroup, ShouldEqual, "rp1")
+			other := []string{"cloud_flavor:o1.tiny"}
+			So(jstati[0].OtherRequests, ShouldResemble, other)
+
+			Convey("You can GET the job and the cloud_flavor is still there", func() {
+				response, err := http.Get(jobsEndPoint + "/rp1?state=ready")
+				So(err, ShouldBeNil)
+				responseData, err := ioutil.ReadAll(response.Body)
+				So(err, ShouldBeNil)
+
+				var jstati []jstatus
+				err = json.Unmarshal(responseData, &jstati)
+				So(err, ShouldBeNil)
+				So(len(jstati), ShouldEqual, 1)
+				So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+				So(jstati[0].OtherRequests, ShouldResemble, other)
+			})
+		})
+
 		Convey("You must supply certain properties when adding jobs", func() {
 			inputJobs := []*JobViaJSON{{RepGrp: "foo"}}
 			jsonValue, err := json.Marshal(inputJobs)
