@@ -218,12 +218,12 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 								{
 									Name:          "wr-manager",
 									Protocol:      apiv1.ProtocolTCP,
-									ContainerPort: 1021,
+									ContainerPort: int32(requiredPorts[0]),
 								},
 								{
 									Name:          "wr-web",
 									Protocol:      apiv1.ProtocolTCP,
-									ContainerPort: 1022,
+									ContainerPort: int32(requiredPorts[1]),
 								},
 							},
 							Command: []string{
@@ -287,9 +287,9 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 			Ports: []apiv1.ServicePort{
 				{
 					Name: "wr-manager",
-					Port: 1021,
+					Port: int32(requiredPorts[0]),
 					TargetPort: intstr.IntOrString{
-						IntVal: 1021,
+						IntVal: int32(requiredPorts[0]),
 					},
 				},
 			},
