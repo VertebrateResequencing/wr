@@ -80,6 +80,8 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 
 func int32Ptr(i int32) *int32 { return &i }
 
+func boolPtr(b bool) *bool { return &b }
+
 // Adds file to tar.Writer
 func addFile(tw *tar.Writer, fpath string, dest string) error {
 	file, err := os.Open(fpath)
@@ -239,6 +241,9 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 									Name:      "wr-temp",
 									MountPath: "/wr-tmp",
 								},
+							},
+							SecurityContext: &apiv1.SecurityContext{
+								Privileged: boolPtr(true),
 							},
 						},
 					},
@@ -495,6 +500,9 @@ func (p *kubernetesp) spawn(resources *Resources, osPrefix string, flavorID stri
 							Name:      "wr-temp",
 							MountPath: "/wr-tmp",
 						},
+					},
+					SecurityContext: &apiv1.SecurityContext{
+						Privileged: boolPtr(true),
 					},
 				},
 			},
