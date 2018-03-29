@@ -2328,6 +2328,38 @@ func TestJobqueue(t *testing.T) {
 			info2, err := os.Stat(managerDBBkFile)
 			So(err, ShouldBeNil)
 			So(info2.Size(), ShouldEqual, 28672)
+
+			Convey("You can restart the server with that existing job, delete it, and it stays deleted when restoring from backup", func() {
+				wipeDevDBOnInit = false
+				defer func() {
+					wipeDevDBOnInit = true
+				}()
+				errr := os.Remove(config.ManagerDbFile)
+				So(errr, ShouldBeNil)
+				server, _, errs = Serve(serverConfig)
+				So(errs, ShouldBeNil)
+				jq, err = Connect(addr, clientConnectTime)
+				So(err, ShouldBeNil)
+				job, err := jq.Reserve(15 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldNotBeNil)
+				errb := jq.Bury(job, nil, "")
+				So(errb, ShouldBeNil)
+				deleted, err := jq.Delete([]*JobEssence{{JobKey: job.key()}})
+				server.Stop(true)
+				So(deleted, ShouldEqual, 1)
+				So(err, ShouldBeNil)
+
+				errr = os.Remove(config.ManagerDbFile)
+				So(errr, ShouldBeNil)
+				server, _, errs = Serve(serverConfig)
+				So(errs, ShouldBeNil)
+				jq, err = Connect(addr, clientConnectTime)
+				So(err, ShouldBeNil)
+				job, err = jq.Reserve(15 * time.Millisecond)
+				So(err, ShouldBeNil)
+				So(job, ShouldBeNil)
+			})
 		})
 
 		Convey("You can connect and add a non-instant job", func() {
