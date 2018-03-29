@@ -303,9 +303,11 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 							err = s.q.Remove(key)
 							if err != nil {
+								s.Warn("failed to remove job", "cmd", job.Cmd, "err", err)
 								continue
 							}
 							s.db.deleteLiveJob(key)
+							s.Debug("removed job", "cmd", job.Cmd)
 							toDelete = append(toDelete, key)
 							if job.State == JobStateReady {
 								s.decrementGroupCount(job.schedulerGroup)
