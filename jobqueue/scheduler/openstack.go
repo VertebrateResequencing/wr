@@ -299,13 +299,13 @@ func (s *standin) failed(msg string) bool {
 		s.mutex.Unlock()
 	}
 	if alreadyFailed || !waitingToSpawn {
-		s.Debug("already failed or not waiting to spawn")
+		s.Debug("standin already failed or not waiting to spawn", "msg", msg)
 		return false
 	}
 	s.mutex.Lock()
 	s.alreadyFailed = true
 	s.mutex.Unlock()
-	s.Debug("failed")
+	s.Debug(msg)
 	return true
 }
 
@@ -316,7 +316,7 @@ func (s *standin) failed(msg string) bool {
 func (s *standin) worked(server *cloud.Server) {
 	s.mutex.RLock()
 	server.Allocate(s.usedCores, s.usedRAM, s.usedDisk)
-	s.Debug("worked", "server", server.ID, "cores", s.usedCores, "ram", s.usedRAM, "disk", s.usedDisk)
+	s.Debug("standin worked", "server", server.ID, "cores", s.usedCores, "ram", s.usedRAM, "disk", s.usedDisk)
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
 		s.endWait <- server
