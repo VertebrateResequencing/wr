@@ -55,6 +55,9 @@ type Config struct {
 	ManagerDbBkFile  string `default:"db_bk"`
 	ManagerUmask     int    `default:"007"`
 	ManagerScheduler string `default:"local"`
+	ManagerCAFile    string `default:"ca.pem"`
+	ManagerCertFile  string `default:"cert.pem"`
+	ManagerKeyFile   string `default:"key.pem"`
 	RunnerExecShell  string `default:"bash"`
 	Deployment       string `default:"production"`
 	CloudFlavor      string `default:""`
@@ -176,6 +179,15 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	}
 	if !IsRemote(config.ManagerDbBkFile) && !filepath.IsAbs(config.ManagerDbBkFile) {
 		config.ManagerDbBkFile = filepath.Join(config.ManagerDir, config.ManagerDbBkFile)
+	}
+	if !filepath.IsAbs(config.ManagerCAFile) {
+		config.ManagerCAFile = filepath.Join(config.ManagerDir, config.ManagerCAFile)
+	}
+	if !filepath.IsAbs(config.ManagerCertFile) {
+		config.ManagerCertFile = filepath.Join(config.ManagerDir, config.ManagerCertFile)
+	}
+	if !filepath.IsAbs(config.ManagerKeyFile) {
+		config.ManagerKeyFile = filepath.Join(config.ManagerDir, config.ManagerKeyFile)
 	}
 
 	// if not explicitly set, calculate ports that no one else would be

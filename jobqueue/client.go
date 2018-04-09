@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -36,7 +37,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
-	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/go-mangos/mangos/transport/tlstcp"
 	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
 )
@@ -116,7 +117,7 @@ type envStr struct {
 // Connect creates a connection to the jobqueue server. Timeout determines how
 // long to wait for a response from the server, not only while connecting, but
 // for all subsequent interactions with it using the returned Client.
-func Connect(addr string, timeout time.Duration) (*Client, error) {
+func Connect(addr, certFile, keyFile string, timeout time.Duration) (*Client, error) {
 	// a server is only allowed to be accessed by a particular user, so we get
 	// our username here. NB: *** this is not real security, since someone could
 	// just recompile with the following line altered to a hardcoded username
@@ -141,15 +142,21 @@ func Connect(addr string, timeout time.Duration) (*Client, error) {
 		return nil, err
 	}
 
-	sock.AddTransport(tcp.NewTransport())
-
-	err = sock.Dial("tcp://" + addr)
+	sock.AddTransport(tlstcp.NewTransport())
+	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
+		return nil, err
+	}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+	tlsConfig.InsecureSkipVerify = true
+	dialOpts := make(map[string]interface{})
+	dialOpts[mangos.OptionTLSConfig] = tlsConfig
+	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
 		return nil, err
 	}
 
 	// clients identify themselves (only for the purpose of calling methods that
-	// require the client has previously used Require()) with a UUID; v4 is used
+	// require the client has previously used Reserve()) with a UUID; v4 is used
 	// since speed doesn't matter: a typical client executable will only
 	// Connect() once; on the other hand, we avoid any possible problem with
 	// running on machines with low time resolution

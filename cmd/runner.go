@@ -69,7 +69,7 @@ complete.`,
 
 		jobqueue.AppName = "wr"
 
-		jq, err := jobqueue.Connect(rserver, timeout)
+		jq, err := jobqueue.Connect(rserver, certFile, keyFile, timeout)
 		if err != nil {
 			die("%s", err)
 		}

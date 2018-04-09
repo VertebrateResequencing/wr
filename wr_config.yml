@@ -107,7 +107,7 @@ managerlogfile: "log"
 # managerdbfile: Where should wr manager store its database file?
 # This defaults to a file named "db" in managerdir.
 #
-# You can set this to an absolute path to ignore managerdir.  If doing this, be
+# You can set this to an absolute path to ignore managerdir. If doing this, be
 # certain to set a different value in your production and development config
 # files.
 #
@@ -143,6 +143,25 @@ managerdbfile: "db"
 # before replacing the file at the path you specified, so peaking to 2x disk
 # usage.
 managerdbbkfile: "db_bk"
+
+# managercertfile: Where is the certificate PEM file the manager should use?
+# This defaults to a file named "cert.pem" in managerdir.
+#
+# You can set this to an absolute path to ignore managerdir.
+#
+# If the file does not exist, a certificate will be generated for you. This file
+# is used along with managerkeyfile to secure access to the web interface using
+# TLS. A generated certificate will result in a security warning in your
+# browser that you will have to allow an exception for.
+managercertfile: "cert.pem"
+
+# managerkeyfile: Where is the key PEM file the manager should use?
+# This defaults to a file named "key.pem" in managerdir.
+#
+# You can set this to an absolute path to ignore managerdir.
+#
+# If the file does not exist, a key will be generated for you.
+managerkeyfile: "key.pem"
 
 # managerumask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).

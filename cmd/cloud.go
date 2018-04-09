@@ -340,7 +340,7 @@ within OpenStack.`,
 		}
 
 		info("should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
-		info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
+		info("wr's web interface can be reached locally at https://localhost:%s", jq.ServerInfo.WebPort)
 	},
 }
 

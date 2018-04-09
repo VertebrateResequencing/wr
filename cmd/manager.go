@@ -333,7 +333,7 @@ somewhere.)`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, timeout)
+		jq, err := jobqueue.Connect(addr, certFile, keyFile, timeout)
 		if err != nil {
 			die("%s", err)
 		}
@@ -391,7 +391,7 @@ func init() {
 
 func logStarted(s *jobqueue.ServerInfo) {
 	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
-	info("wr's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
+	info("wr's web interface can be reached at https://%s:%s", s.Host, s.WebPort)
 }
 
 func startJQ(postCreation []byte) {
@@ -467,6 +467,9 @@ func startJQ(postCreation []byte) {
 		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
+		CAFile:          config.ManagerCAFile,
+		CertFile:        config.ManagerCertFile,
+		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
 		Logger:          serverLogger,

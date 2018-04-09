@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -38,11 +39,12 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
-	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/go-mangos/mangos/transport/tlstcp"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
+	"github.com/kabukky/httpscerts"
 	"github.com/ugorji/go/codec"
 )
 
@@ -258,6 +260,21 @@ type ServerConfig struct {
 	// Absolute path to where the database file should be backed up to.
 	DBFileBackup string
 
+	// Absolute path to where CA PEM file is that will be used for
+	// securing access to the web interface. If the given file does not exist,
+	// a certificate will be generated for you at this path.
+	CAFile string
+
+	// Absolute path to where certificate PEM file is that will be used for
+	// securing access to the web interface. If the given file does not exist,
+	// a certificate will be generated for you at this path.
+	CertFile string
+
+	// Absolute path to where key PEM file is that will be used for securing
+	// access to the web interface. If the given file does not exist, a
+	// key will be generated for you at this path.
+	KeyFile string
+
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
 	Deployment string
@@ -319,6 +336,25 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 	defer internal.LogPanic(serverLogger, "jobqueue serve", true)
 
+	// check if the cert files are available
+	httpAddr := "0.0.0.0:" + config.WebPort
+	caFile := config.CAFile
+	certFile := config.CertFile
+	keyFile := config.KeyFile
+	err = httpscerts.Check(certFile, keyFile)
+	var certMsg string
+	if err != nil {
+		// if not, generate our own
+		// err = httpscerts.Generate(certFile, keyFile, httpAddr)
+		err = internal.GenerateCerts(caFile, certFile, keyFile)
+		if err != nil {
+			serverLogger.Error("GenerateCerts failed", "err", err)
+			return s, msg, err
+		}
+		certMsg = "created a new key and certificate for TLS"
+		msg = certMsg
+	}
+
 	// for security purposes we need to know who will be allowed to access us
 	// in the future
 	owner, err := internal.Username()
@@ -361,9 +397,16 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		return s, msg, err
 	}
 
-	sock.AddTransport(tcp.NewTransport())
-
-	if err = sock.Listen("tcp://0.0.0.0:" + config.Port); err != nil {
+	// have mangos listen using TLS over TCP
+	sock.AddTransport(tlstcp.NewTransport())
+	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return s, msg, err
+	}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+	listenOpts := make(map[string]interface{})
+	listenOpts[mangos.OptionTLSConfig] = tlsConfig
+	if err = sock.ListenOptions("tls+tcp://0.0.0.0:"+config.Port, listenOpts); err != nil {
 		return s, msg, err
 	}
 
@@ -406,6 +449,13 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 
 	// we need to persist stuff to disk, and we do so using boltdb
 	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
+	if certMsg != "" {
+		if msg == "" {
+			msg = certMsg
+		} else {
+			msg = certMsg + ". " + msg
+		}
+	}
 	if err != nil {
 		return s, msg, err
 	}
@@ -545,11 +595,11 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux.HandleFunc(restJobsEndpoint, restJobs(s))
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
-		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
+		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs := srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && errs != http.ErrServerClosed {
 				s.Error("server web interface had problems", "err", errs)
 			}

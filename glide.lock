@@ -1,5 +1,5 @@
-hash: caa503d5fd90fbe7a55e6b9f8923c6848b9a990d73a88917f528517fd8c78251
-updated: 2018-04-06T16:52:42.43691933+01:00
+hash: ff65a696dc0197f1a4cbefead7d5db5e38a78dcbc76eef762dc641565a3f3051
+updated: 2018-04-09T10:10:45.081996124+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -77,6 +77,8 @@ imports:
   version: ec34f328956f53dfbd06e9f5306e37e6943443c3
 - name: github.com/jpillora/backoff
   version: 8eab2debe79d12b7bd3d10653910df25fa9552ba
+- name: github.com/kabukky/httpscerts
+  version: 617593d7dcb39c9ed617bb62c5e2056244d02184
 - name: github.com/kardianos/osext
   version: ae77be60afb1dcacde03767a8c37337fad28ac14
 - name: github.com/kr/fs

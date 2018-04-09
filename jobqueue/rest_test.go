@@ -53,11 +53,13 @@ func TestREST(t *testing.T) {
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbFile + "_bk",
+		CertFile:        config.ManagerCertFile,
+		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
-	baseURL := "http://localhost:" + config.ManagerWeb
+	baseURL := "https://localhost:" + config.ManagerWeb
 	jobsEndPoint := baseURL + "/rest/v1/jobs"
 	warningsEndPoint := baseURL + "/rest/v1/warnings/"
 	serversEndPoint := baseURL + "/rest/v1/servers/"
@@ -192,7 +194,7 @@ func TestREST(t *testing.T) {
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
-				jq, err := Connect(addr, clientConnectTime)
+				jq, err := Connect(addr, config.ManagerCertFile, config.ManagerKeyFile, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq.Disconnect()
 

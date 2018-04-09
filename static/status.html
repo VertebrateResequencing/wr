@@ -631,7 +631,7 @@
                 if (window.WebSocket === undefined) {
                     self.statuserror.push("Your browser does not support WebSockets");
                 } else {
-                    self.ws = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws");
+                    self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws");
                     self.ws.onopen = function() {
                         self.ws.send(JSON.stringify({ Request: "current" }));
                     };
