@@ -333,7 +333,7 @@ somewhere.)`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, certFile, keyFile, timeout)
+		jq, err := jobqueue.Connect(addr, caFile, timeout)
 		if err != nil {
 			die("%s", err)
 		}

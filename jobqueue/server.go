@@ -23,8 +23,10 @@ package jobqueue
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -44,7 +46,6 @@ import (
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
-	"github.com/kabukky/httpscerts"
 	"github.com/ugorji/go/codec"
 )
 
@@ -341,7 +342,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	caFile := config.CAFile
 	certFile := config.CertFile
 	keyFile := config.KeyFile
-	err = httpscerts.Check(certFile, keyFile)
+	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string
 	if err != nil {
 		// if not, generate our own
@@ -405,6 +406,12 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
 	listenOpts := make(map[string]interface{})
+	caCert, err := ioutil.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
 	listenOpts[mangos.OptionTLSConfig] = tlsConfig
 	if err = sock.ListenOptions("tls+tcp://0.0.0.0:"+config.Port, listenOpts); err != nil {
 		return s, msg, err

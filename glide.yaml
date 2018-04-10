@@ -63,7 +63,6 @@ import:
 - package: github.com/fatih/color
   version: ^1.6.0
 - package: github.com/hashicorp/go-multierror
-- package: github.com/kabukky/httpscerts
 testImport:
 - package: github.com/smartystreets/goconvey
   version: master

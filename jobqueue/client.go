@@ -23,6 +23,7 @@ package jobqueue
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -114,10 +115,17 @@ type envStr struct {
 	Environ []string
 }
 
-// Connect creates a connection to the jobqueue server. Timeout determines how
-// long to wait for a response from the server, not only while connecting, but
-// for all subsequent interactions with it using the returned Client.
-func Connect(addr, certFile, keyFile string, timeout time.Duration) (*Client, error) {
+// Connect creates a connection to the jobqueue server.
+//
+// caFile is a path to the PEM encoded CA certificate that was used to sign the
+// server's certificate. If set as a blank string, or if the file doesn't exist,
+// the server's certificate will be trusted based on the CAs installed in the
+// normal location on the system.
+//
+// Timeout determines how long to wait for a response from the server, not only
+// while connecting, but for all subsequent interactions with it using the
+// returned Client.
+func Connect(addr, caFile string, timeout time.Duration) (*Client, error) {
 	// a server is only allowed to be accessed by a particular user, so we get
 	// our username here. NB: *** this is not real security, since someone could
 	// just recompile with the following line altered to a hardcoded username
@@ -143,12 +151,15 @@ func Connect(addr, certFile, keyFile string, timeout time.Duration) (*Client, er
 	}
 
 	sock.AddTransport(tlstcp.NewTransport())
-	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, err
+	tlsConfig := &tls.Config{}
+	caCert, err := ioutil.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
 	}
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
 	tlsConfig.InsecureSkipVerify = true
+
 	dialOpts := make(map[string]interface{})
 	dialOpts[mangos.OptionTLSConfig] = tlsConfig
 	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {

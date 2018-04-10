@@ -194,7 +194,7 @@ func TestREST(t *testing.T) {
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
-				jq, err := Connect(addr, config.ManagerCertFile, config.ManagerKeyFile, clientConnectTime)
+				jq, err := Connect(addr, config.ManagerCAFile, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq.Disconnect()
 

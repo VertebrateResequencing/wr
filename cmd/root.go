@@ -43,8 +43,6 @@ var config internal.Config
 // these are shared by some of the subcommands.
 var addr string
 var caFile string
-var certFile string
-var keyFile string
 var timeoutint int
 var cmdCwd string
 
@@ -93,8 +91,6 @@ func initConfig() {
 	config = internal.ConfigLoad(deployment, false, appLogger)
 	addr = config.ManagerHost + ":" + config.ManagerPort
 	caFile = config.ManagerCAFile
-	certFile = config.ManagerCertFile
-	keyFile = config.ManagerKeyFile
 }
 
 // realUsername returns the username of the current user.
@@ -245,7 +241,7 @@ func sAddr(s *jobqueue.ServerInfo) string {
 // the client just for calling non-queue-specific methods such as getting
 // server status or shutting it down etc.
 func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, certFile, keyFile, wait)
+	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, caFile, wait)
 	if jqerr == nil {
 		return jq
 	}
