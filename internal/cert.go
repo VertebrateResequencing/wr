@@ -1,17 +1,8 @@
 // Copyright © 2018 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
-// This file was based heavily on github.com/go-mangos/mangos/test/certs.go
-// Copyright 2015 The Mangos Authors, Licensed under the Apache License,
-// Version 2.0 (the "License"); with these notes:
-// "you may not use file except in compliance with the License.
-// You may obtain a copy of the license at
-// http://www.apache.org/licenses/LICENSE-2.0
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES O R CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License."
+// This file was based on https://ericchiang.github.io/post/go-tls/ Copyright
+// © 2015 Eric Chiang.
 //
 //  This file is part of wr.
 //
