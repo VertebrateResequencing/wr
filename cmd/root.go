@@ -22,6 +22,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"syscall"
 	"time"
@@ -91,6 +92,16 @@ func initConfig() {
 	config = internal.ConfigLoad(deployment, false, appLogger)
 	addr = config.ManagerHost + ":" + config.ManagerPort
 	caFile = config.ManagerCAFile
+}
+
+// token reads and returns the token from the file created when the manager
+// starts.
+func token() ([]byte, error) {
+	token, err := ioutil.ReadFile(config.ManagerTokenFile)
+	if err != nil {
+		return nil, err
+	}
+	return token, nil
 }
 
 // realUsername returns the username of the current user.
@@ -237,13 +248,18 @@ func sAddr(s *jobqueue.ServerInfo) string {
 	return saddr
 }
 
-// connect gives you a client connected to a queue that shouldn't be used; use
-// the client just for calling non-queue-specific methods such as getting
-// server status or shutting it down etc.
-func connect(wait time.Duration) *jobqueue.Client {
-	jq, jqerr := jobqueue.Connect("localhost:"+config.ManagerPort, caFile, wait)
-	if jqerr == nil {
-		return jq
+// connect gives you a connected client. Dies on error. Dies if there is no
+// token file. Does not die or report any kind of error if an optional bool is
+// supplied true.
+func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
+	token, err := token()
+	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+		die("could not read token file; has the manager been started? [%s]", err)
 	}
-	return nil
+
+	jq, err := jobqueue.Connect("localhost:"+config.ManagerPort, caFile, token, wait)
+	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
+		die("%s", err)
+	}
+	return jq
 }

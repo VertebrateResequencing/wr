@@ -21,6 +21,7 @@ package cmd
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -97,7 +98,7 @@ var managerStartCmd = &cobra.Command{
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
 		// most obvious case of failure to start
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq != nil {
 			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, jq.ServerInfo.PID)
 		}
@@ -173,7 +174,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
-			jq := connect(1 * time.Second)
+			jq := connect(1*time.Second, true)
 			if jq == nil {
 				die("wr manager does not seem to be running on port %s", config.ManagerPort)
 			}
@@ -182,17 +183,21 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		var jq *jobqueue.Client
 		if stopped {
 			// we'll do a quick test to confirm the daemon is down
-			jq = connect(1 * time.Second)
+			jq = connect(1*time.Second, true)
 			if jq != nil {
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
+				err = os.Remove(config.ManagerTokenFile)
+				if err != nil {
+					warn("failed to remove token file: %s", err)
+				}
 				return
 			}
 		} else {
 			// we failed to SIGTERM the pid in the pid file, let's take some
 			// time to confirm the daemon is really up
-			jq = connect(5 * time.Second)
+			jq = connect(5*time.Second, true)
 			if jq == nil {
 				die("according to the pid file %s, wr manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.ManagerPidFile, config.ManagerPort, pid)
 			}
@@ -221,7 +226,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			// since I don't trust using a client connection to shut down the
 			// server, double check I can no longer connect
 			if stopped {
-				jq = connect(1 * time.Second)
+				jq = connect(1*time.Second, true)
 				if jq != nil {
 					warn("I requested shut down of the remote manager at %s, but it's still up!", sAddr)
 					stopped = false
@@ -231,6 +236,10 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
+			err = os.Remove(config.ManagerTokenFile)
+			if err != nil {
+				warn("failed to remove token file: %s", err)
+			}
 		} else {
 			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
@@ -258,7 +267,7 @@ changes to the database between calling drain and the manager finally shutting
 down will be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first try and connect
-		jq := connect(5 * time.Second)
+		jq := connect(5*time.Second, true)
 		if jq == nil {
 			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.ManagerPort)
 		}
@@ -304,7 +313,7 @@ var managerStatusCmd = &cobra.Command{
 		}
 
 		// no pid file, so it's supposed to be down; confirm
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq == nil {
 			fmt.Println("stopped")
 		} else {
@@ -333,18 +342,15 @@ somewhere.)`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, caFile, timeout)
-		if err != nil {
-			die("%s", err)
-		}
+		jq := connect(timeout)
 		defer func() {
-			err = jq.Disconnect()
+			err := jq.Disconnect()
 			if err != nil {
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
 
-		err = jq.BackupDB(backupPath)
+		err := jq.BackupDB(backupPath)
 		if err != nil {
 			die("%s", err)
 		}
@@ -458,8 +464,7 @@ func startJQ(postCreation []byte) {
 	}
 
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
-		AllowedUsers:    []string{localUsername},
+	server, msg, _, err := jobqueue.Serve(jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
@@ -467,6 +472,7 @@ func startJQ(postCreation []byte) {
 		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
+		TokenFile:       config.ManagerTokenFile,
 		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
 		KeyFile:         config.ManagerKeyFile,

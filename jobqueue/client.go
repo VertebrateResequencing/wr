@@ -35,7 +35,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tlstcp"
@@ -94,7 +93,7 @@ type clientRequest struct {
 	SchedulerGroup string
 	State          JobState
 	Timeout        time.Duration
-	User           string
+	Token          []byte
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -106,7 +105,7 @@ type Client struct {
 	sock        mangos.Socket
 	sync.Mutex
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
-	user       string
+	token      []byte
 	ServerInfo *ServerInfo
 }
 
@@ -122,20 +121,13 @@ type envStr struct {
 // the server's certificate will be trusted based on the CAs installed in the
 // normal location on the system.
 //
+// token is the authentication token that Serve() returned when the server was
+// started.
+//
 // Timeout determines how long to wait for a response from the server, not only
 // while connecting, but for all subsequent interactions with it using the
 // returned Client.
-func Connect(addr, caFile string, timeout time.Duration) (*Client, error) {
-	// a server is only allowed to be accessed by a particular user, so we get
-	// our username here. NB: *** this is not real security, since someone could
-	// just recompile with the following line altered to a hardcoded username
-	// value; it is only intended to prevent accidental use of someone else's
-	// server
-	user, err := internal.Username()
-	if err != nil {
-		return nil, err
-	}
-
+func Connect(addr, caFile string, token []byte, timeout time.Duration) (*Client, error) {
 	sock, err := req.NewSocket()
 	if err != nil {
 		return nil, err
@@ -175,7 +167,7 @@ func Connect(addr, caFile string, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{sock: sock, ch: new(codec.BincHandle), user: user, clientid: u}
+	c := &Client{sock: sock, ch: new(codec.BincHandle), token: token, clientid: u}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
@@ -186,8 +178,8 @@ func Connect(addr, caFile string, timeout time.Duration) (*Client, error) {
 			return c, errc
 		}
 		msg := ErrNoServer
-		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
-			msg = ErrWrongUser
+		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongToken {
+			msg = ErrWrongToken
 		}
 		return nil, Error{"Connect", "", msg}
 	}
@@ -203,7 +195,9 @@ func (c *Client) Disconnect() error {
 }
 
 // Ping tells you if your connection to the server is working, returning static
-// information about the server. If err is nil, it works.
+// information about the server. If err is nil, it works. This is the only
+// command that interacts with the server that works if a blank or invalid
+// token had been supplied to Connect().
 func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 	resp, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
 	if err != nil {
@@ -1123,7 +1117,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	// encode and send the request
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	cr.User = c.user
+	cr.Token = c.token
 	cr.ClientID = c.clientid
 	err := enc.Encode(cr)
 	if err != nil {

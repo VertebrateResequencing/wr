@@ -69,7 +69,11 @@ complete.`,
 
 		jobqueue.AppName = "wr"
 
-		jq, err := jobqueue.Connect(rserver, caFile, timeout)
+		token, err := token()
+		if err != nil {
+			die("%s", err)
+		}
+		jq, err := jobqueue.Connect(rserver, caFile, token, timeout)
 		if err != nil {
 			die("%s", err)
 		}

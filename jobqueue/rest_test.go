@@ -72,9 +72,10 @@ func TestREST(t *testing.T) {
 	clientConnectTime := 1500 * time.Millisecond
 
 	var server *Server
+	var token []byte
 	var err error
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, err = Serve(serverConfig)
+		server, _, token, err = Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		Convey("Initial GET queries return nothing", func() {
@@ -194,7 +195,7 @@ func TestREST(t *testing.T) {
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
-				jq, err := Connect(addr, config.ManagerCAFile, clientConnectTime)
+				jq, err := Connect(addr, config.ManagerCAFile, token, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq.Disconnect()
 

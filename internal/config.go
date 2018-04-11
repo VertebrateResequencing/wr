@@ -53,6 +53,7 @@ type Config struct {
 	ManagerLogFile   string `default:"log"`
 	ManagerDbFile    string `default:"db"`
 	ManagerDbBkFile  string `default:"db_bk"`
+	ManagerTokenFile string `default:"client.token"`
 	ManagerUmask     int    `default:"007"`
 	ManagerScheduler string `default:"local"`
 	ManagerCAFile    string `default:"ca.pem"`
@@ -188,6 +189,9 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	}
 	if !filepath.IsAbs(config.ManagerKeyFile) {
 		config.ManagerKeyFile = filepath.Join(config.ManagerDir, config.ManagerKeyFile)
+	}
+	if !filepath.IsAbs(config.ManagerTokenFile) {
+		config.ManagerTokenFile = filepath.Join(config.ManagerDir, config.ManagerTokenFile)
 	}
 
 	// if not explicitly set, calculate ports that no one else would be

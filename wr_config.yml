@@ -144,6 +144,21 @@ managerdbfile: "db"
 # usage.
 managerdbbkfile: "db_bk"
 
+# managertokenfile: Where should the manager store the authentication token?
+# This defaults to a file named "client.token" in managerdir.
+#
+# You can set this to an absolute path to ignore managerdir. It should be on a
+# shared disk (or copied, which cloud schedulers do for you) so that clients
+# running on any machine in your cluster are able to read the file.
+#
+# When the manager starts it returns an authentication token that must be
+# supplied when interacting with the manager via the web interface or REST API.
+# The token is also stored in this file, which the CLI commands will read in
+# order to get the token. The file will only be readable by the person who
+# starts the manager, and so in this way the manager will only be usable by that
+# person (or anyone they choose to share the token with).
+managertokenfile: "client.token"
+
 # managercertfile: Where is the certificate PEM file the manager should use?
 # This defaults to a file named "cert.pem" in managerdir.
 #
@@ -152,7 +167,13 @@ managerdbbkfile: "db_bk"
 # If the file does not exist, a certificate will be generated for you. This file
 # is used along with managerkeyfile to secure access to the web interface using
 # TLS. A generated certificate will result in a security warning in your
-# browser that you will have to allow an exception for.
+# browser when using the web interface that you will have to allow an exception
+# for.
+# It will also create managercafile (see below), which can be used by other
+# clients to establish trust in this certificate.
+#
+# The generated certificate is valid for 1 year. After that you'll need to
+# delete it and have wr generate a new one the next time you start the manager.
 managercertfile: "cert.pem"
 
 # managerkeyfile: Where is the key PEM file the manager should use?
@@ -160,8 +181,21 @@ managercertfile: "cert.pem"
 #
 # You can set this to an absolute path to ignore managerdir.
 #
-# If the file does not exist, a key will be generated for you.
+# If the file does not exist, a key will be generated for you; see notes for
+# managercertfile.
 managerkeyfile: "key.pem"
+
+# managercafile: Where should the generated CA PEM file be stored?
+# This defaults to a file named "ca.pem" in managerdir.
+#
+# You can set this to an absolute path to ignore managerdir.
+#
+# If managercertfile and managerkeyfile are generated because they don't exist,
+# this file will also be created (silently overwritting any existing file). It
+# contains the certificate for a CA that was used to sign managercertfile. This
+# ca.pem can then be passed to clients to establish trust in managercertfile,
+# eg. `curl --cacert ~/.wr_production/ca.pem [...]`.
+managercafile: "ca.pem"
 
 # managerumask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).

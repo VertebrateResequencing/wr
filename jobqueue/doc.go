@@ -53,6 +53,8 @@ Server
         RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
         DBFile:          "/home/username/.wr_production/boltdb",
         DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
+		TokenFile:       "/home/username/.wr_production/client.token",
+		CAFile:          "/home/username/.wr_production/ca.pem",
         CertFile:        "/home/username/.wr_production/cert.pem",
         KeyFile:         "/home/username/.wr_production/key.pem",
         Deployment:      "production",
