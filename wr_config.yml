@@ -164,11 +164,11 @@ managertokenfile: "client.token"
 #
 # You can set this to an absolute path to ignore managerdir.
 #
-# If the file does not exist, a certificate will be generated for you. This file
-# is used along with managerkeyfile to secure access to the web interface using
-# TLS. A generated certificate will result in a security warning in your
-# browser when using the web interface that you will have to allow an exception
-# for.
+# If this file or managerkeyfile do not exist, a certificate will be generated
+# for you. This file is used along with managerkeyfile to secure access to the
+# web interface using TLS. A generated certificate will result in a security
+# warning in your browser when using the web interface that you will have to
+# allow an exception for.
 # It will also create managercafile (see below), which can be used by other
 # clients to establish trust in this certificate.
 #
@@ -181,8 +181,8 @@ managercertfile: "cert.pem"
 #
 # You can set this to an absolute path to ignore managerdir.
 #
-# If the file does not exist, a key will be generated for you; see notes for
-# managercertfile.
+# If this file or managercertfile do not exist, a key will be generated for you;
+# see notes for managercertfile.
 managerkeyfile: "key.pem"
 
 # managercafile: Where should the generated CA PEM file be stored?
