@@ -353,7 +353,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	var certMsg string
 	if err != nil {
 		// if not, generate our own
-		// err = httpscerts.Generate(certFile, keyFile, httpAddr)
 		err = internal.GenerateCerts(caFile, certFile, keyFile)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
