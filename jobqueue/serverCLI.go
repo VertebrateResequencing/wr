@@ -54,7 +54,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	s.ssmutex.RUnlock()
 
 	// check that the client making the request has the expected token
-	if (len(cr.Token) != 44 || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
+	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
 		srerr = ErrWrongToken
 		qerr = "Client presented the wrong token"
 	} else if s.q == nil || (!up && !drain) {

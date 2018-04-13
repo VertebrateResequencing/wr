@@ -92,10 +92,10 @@ func TestJobqueueUtils(t *testing.T) {
 	Convey("generateToken() and tokenMatches() work", t, func() {
 		token, err := generateToken()
 		So(err, ShouldBeNil)
-		So(len(token), ShouldEqual, 43)
+		So(len(token), ShouldEqual, tokenLength)
 		token2, err := generateToken()
 		So(err, ShouldBeNil)
-		So(len(token2), ShouldEqual, 43)
+		So(len(token2), ShouldEqual, tokenLength)
 		So(token, ShouldNotEqual, token2)
 		So(tokenMatches(token, token2), ShouldBeFalse)
 		So(tokenMatches(token, token), ShouldBeTrue)

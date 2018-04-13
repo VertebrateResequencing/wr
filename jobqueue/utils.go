@@ -49,6 +49,9 @@ var AppName = "jobqueue"
 // mkHashedLevels is the number of directory levels we create in mkHashedDirs
 const mkHashedLevels = 4
 
+// tokenLength is the fixed size of our authentication token
+const tokenLength = 43
+
 var pss = []byte("Pss:")
 
 // cr, lf and ellipses get used by stdFilter()
@@ -148,7 +151,7 @@ func generateToken() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	token := make([]byte, 43)
+	token := make([]byte, tokenLength)
 	base64.URLEncoding.WithPadding(base64.NoPadding).Encode(token, b)
 	return token, err
 }
