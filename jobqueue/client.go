@@ -150,6 +150,9 @@ func Connect(addr, caFile string, token []byte, timeout time.Duration) (*Client,
 		certPool.AppendCertsFromPEM(caCert)
 		tlsConfig.RootCAs = certPool
 	}
+	// *** for unknown reason https://github.com/go-mangos/mangos/issues/312 the
+	// above usage of caCert doesn't work, so for now we insecurely skip
+	// verification:
 	tlsConfig.InsecureSkipVerify = true
 
 	dialOpts := make(map[string]interface{})
