@@ -185,7 +185,7 @@ within OpenStack.`,
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file); we can't proxy if a manager is already up
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq != nil {
 			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 		}
@@ -255,7 +255,7 @@ within OpenStack.`,
 				if err != nil {
 					warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
 				}
-				jq = connect(2 * time.Second)
+				jq = connect(2*time.Second, true)
 				if jq != nil {
 					info("reconnected to existing wr manager on %s", sAddr(jq.ServerInfo))
 					alreadyUp = true
@@ -330,7 +330,7 @@ within OpenStack.`,
 			}
 
 			// check that we can now connect to the remote manager
-			jq = connect(40 * time.Second)
+			jq = connect(40*time.Second, true)
 			if jq == nil {
 				teardown(provider)
 				die("could not talk to wr manager on server at %s after 40s", server.IP)
@@ -496,6 +496,11 @@ and accessible.`,
 			warn("failed to delete the cloud resources file: %s", err)
 		}
 		info("deleted all cloud resources previously created")
+
+		err = os.Remove(config.ManagerTokenFile)
+		if err != nil {
+			warn("failed to delete the token file: %s", err)
+		}
 
 		// kill the ssh forwarders
 		if fmRunning {
@@ -748,6 +753,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 
 		// wait a few seconds for the manager to start listening on its ports
 		<-time.After(3 * time.Second)
+	}
+
+	remoteTokenFile := filepath.Join("./.wr_"+config.Deployment, "client.token")
+	err = server.DownloadFile(remoteTokenFile, config.ManagerTokenFile)
+	if err != nil {
+		teardown(provider)
+		die("could not make a local copy of the authentication token: %s", err)
 	}
 }
 
