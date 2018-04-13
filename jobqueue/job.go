@@ -208,6 +208,9 @@ type Job struct {
 	// to read, call job.Env() instead, to get the environment variables as a
 	// []string, where each string is like "key=value".
 	EnvC []byte
+	// Since EnvC isn't always populated on job retrieval, this lets job.Env()
+	// distinguish between no EnvC and merely not requested.
+	EnvCRetrieved bool
 	// if set (using output of CompressEnv()), they will be returned in the
 	// results of job.Env().
 	EnvOverride []byte
@@ -273,7 +276,7 @@ func (j *Job) Env() ([]string, error) {
 		return nil, err
 	}
 
-	if len(j.EnvC) == 0 {
+	if j.EnvCRetrieved && len(j.EnvC) == 0 {
 		env := os.Environ()
 		if len(overrideEs) > 0 {
 			env = envOverride(env, overrideEs)

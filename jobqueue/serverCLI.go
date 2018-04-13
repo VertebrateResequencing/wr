@@ -681,6 +681,7 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)
+		job.EnvCRetrieved = true
 	}
 }
 

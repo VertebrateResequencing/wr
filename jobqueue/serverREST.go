@@ -491,7 +491,7 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 		getStd = true
 	}
 	if r.Form.Get("env") == restFormTrue {
-		// getEnv = true // *** currently disabled for security purposes
+		getEnv = true
 	}
 	if r.Form.Get("limit") != "" {
 		limit, err = strconv.Atoi(r.Form.Get("limit"))
