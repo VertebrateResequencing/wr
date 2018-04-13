@@ -112,6 +112,11 @@ func webInterfaceStatic(s *Server) http.HandlerFunc {
 		path := r.URL.Path
 		if path == "/" || path == "/status" {
 			path = "/status.html"
+
+			ok := s.httpAuthorized(w, r)
+			if !ok {
+				return
+			}
 		}
 
 		// during development, to avoid having to rebuild and restart manager on
@@ -170,6 +175,11 @@ func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 // webpage
 func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
 		conn, ok := webSocket(w, r)
 		if !ok {
 			s.Error("Failed to set up websocket", "Host", r.Host)

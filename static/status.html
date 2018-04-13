@@ -556,6 +556,7 @@
             // viewmodel for displaying status
             function StatusViewModel() {
                 var self = this;
+                self.token = getParameterByName("token");
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
                 self.badservers = ko.observableArray();
@@ -631,7 +632,7 @@
                 if (window.WebSocket === undefined) {
                     self.statuserror.push("Your browser does not support WebSockets");
                 } else {
-                    self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws");
+                    self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws?token=" + self.token);
                     self.ws.onopen = function() {
                         self.ws.send(JSON.stringify({ Request: "current" }));
                     };

@@ -135,11 +135,33 @@ var managerStartCmd = &cobra.Command{
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
-				jq := connect(time.Duration(managerTimeoutSeconds) * time.Second)
+				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
+				limit := time.After(mTimeout)
+				ticker := time.NewTicker(50 * time.Millisecond)
+			WAITTOKEN:
+				for {
+					select {
+					case <-ticker.C:
+						_, err := os.Stat(config.ManagerTokenFile)
+						if err == nil {
+							ticker.Stop()
+							break WAITTOKEN
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						break WAITTOKEN
+					}
+				}
+				jq := connect(mTimeout)
 				if jq == nil {
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
-				logStarted(jq.ServerInfo)
+				token, err := token()
+				if err != nil {
+					warn("token could not be read! [%s]", err)
+				}
+				logStarted(jq.ServerInfo, token)
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer func() {
@@ -395,9 +417,9 @@ func init() {
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
 
-func logStarted(s *jobqueue.ServerInfo) {
+func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
-	info("wr's web interface can be reached at https://%s:%s", s.Host, s.WebPort)
+	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
 }
 
 func startJQ(postCreation []byte) {
@@ -464,7 +486,7 @@ func startJQ(postCreation []byte) {
 	}
 
 	// start the jobqueue server
-	server, msg, _, err := jobqueue.Serve(jobqueue.ServerConfig{
+	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
@@ -489,7 +511,7 @@ func startJQ(postCreation []byte) {
 		die("wr manager failed to start : %s", err)
 	}
 
-	logStarted(server.ServerInfo)
+	logStarted(server.ServerInfo, token)
 
 	// block forever while the jobqueue does its work
 	err = server.Block()
