@@ -573,7 +573,11 @@ func (s *Server) DownloadFile(source string, dest string) error {
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
-	return err
+	if err != nil {
+		return err
+	}
+
+	return os.Chmod(dest, 0600)
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.
