@@ -198,6 +198,17 @@ within OpenStack.`,
 			die("could not get the path to wr: %s", err)
 		}
 
+		// later we will copy our server cert and key to the cloud "head node";
+		// if we don't have any, generate them now
+		err = internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
+		if err != nil {
+			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile)
+			if err != nil {
+				die("could not generate certs: %s", err)
+			}
+			info("created a new key and certificate for TLS")
+		}
+
 		// for debug purposes, set up logging to STDERR
 		cloudLogger := log15.New()
 		logLevel := log15.LvlWarn
@@ -340,7 +351,11 @@ within OpenStack.`,
 		}
 
 		info("should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
-		info("wr's web interface can be reached locally at https://localhost:%s", jq.ServerInfo.WebPort)
+		token, err := token()
+		if err != nil {
+			warn("token could not be read! [%s]", err)
+		}
+		info("wr's web interface can be reached locally at https://localhost:%s/?token=%s", jq.ServerInfo.WebPort, string(token))
 	},
 }
 
@@ -616,6 +631,38 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
 	if err != nil {
 		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
+	}
+
+	// copy over our ca, cert and key files
+	remoteCertFile := filepath.Join("./.wr_"+config.Deployment, "cert.pem")
+	if err = server.UploadFile(config.ManagerCertFile, remoteCertFile); err != nil && !wrMayHaveStarted {
+		teardown(provider)
+		die("failed to upload wr manager certificate file to the server at %s: %s", server.IP, err)
+	}
+	remoteKeyFile = filepath.Join("./.wr_"+config.Deployment, "key.pem")
+	if err = server.UploadFile(config.ManagerKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
+		teardown(provider)
+		die("failed to upload wr manager key file to the server at %s: %s", server.IP, err)
+	}
+	_, _, err = server.RunCmd("chmod 600 "+remoteCertFile, false)
+	if err != nil {
+		warn("failed to chmod 600 %s: %s", remoteCertFile, err)
+	}
+	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	if err != nil {
+		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
+	}
+	_, err = os.Stat(config.ManagerCAFile)
+	if err == nil {
+		remoteCAFile := filepath.Join("./.wr_"+config.Deployment, "ca.pem")
+		if err = server.UploadFile(config.ManagerCAFile, remoteCAFile); err != nil && !wrMayHaveStarted {
+			teardown(provider)
+			die("failed to upload wr manager CA file to the server at %s: %s", server.IP, err)
+		}
+		_, _, err = server.RunCmd("chmod 600 "+remoteCAFile, false)
+		if err != nil {
+			warn("failed to chmod 600 %s: %s", remoteCAFile, err)
+		}
 	}
 
 	// start up the manager
