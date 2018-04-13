@@ -1,5 +1,5 @@
 hash: caa503d5fd90fbe7a55e6b9f8923c6848b9a990d73a88917f528517fd8c78251
-updated: 2018-04-06T16:52:42.43691933+01:00
+updated: 2018-04-13T13:11:28.096181715+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -14,9 +14,9 @@ imports:
 - name: github.com/fatih/color
   version: 507f6050b8568533fb3f5504de8e5205fa62a114
 - name: github.com/go-ini/ini
-  version: 5e9692864e22d02ac79e2fa499cffb00520b4fea
+  version: ace140f73450505f33e8b8418216792275ae82a7
 - name: github.com/go-mangos/mangos
-  version: 8a564bf1c583c37fde04ea2cf8e48e8bfa661733
+  version: d99fcacf432eddb854ef80587abee023e23c5263
   subpackages:
   - protocol/rep
   - protocol/req
@@ -86,11 +86,10 @@ imports:
 - name: github.com/mattn/go-isatty
   version: 6ca4dbf54d38eea1a992b3c722a76a5d1c4cb25c
 - name: github.com/minio/minio-go
-  version: c3a247e4c75a5c8514ba79cc421a17be0ac1a8fb
+  version: 3d2d02921f0510e9d1f66ef77a265b8dddd36992
   subpackages:
   - pkg/credentials
   - pkg/encrypt
-  - pkg/policy
   - pkg/s3signer
   - pkg/s3utils
   - pkg/set
@@ -122,21 +121,21 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: 4dab30cb33e6633c33c787106bafbfbfdde7842d
+  version: 615425954c3b0d9485a7027d4d451fdcdfdee84e
 - name: github.com/spf13/pflag
-  version: 1ce0cc6db4029d97571db82f85092fccedb572ce
+  version: 583c0c0531f06d5278b7d917446061adc344b5cd
 - name: github.com/StackExchange/wmi
-  version: 5d049714c4a64225c3c79a7cf7d02f7fb5b96338
+  version: cdffdb33acae0e14efff2628f9bae377b597840e
 - name: github.com/ugorji/go
-  version: 02537d3a3e32ef636a53519265d211bd208ca488
+  version: f3cacc17c85ecb7f1b6a9e373ee85d1480919868
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: dbb2c1c94f09e10893b980a19db92ff1d3d8bb21
+  version: 08617a55cece7c5b3372698905aafcdf89732849
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: b2aa35443fbc700ab74c586ae79b81c171851023
+  version: d6449816ce06963d9d136eee5a56fca5b0616e7e
   subpackages:
   - argon2
   - blake2b
@@ -147,7 +146,7 @@ imports:
   - poly1305
   - ssh
 - name: golang.org/x/net
-  version: b3c676e531a6dc479fa1b35ac961c13f5e2b4d2e
+  version: 61147c48b25b599e5b561d2e9c4f3e1ef489ca41
   subpackages:
   - idna
   - lex/httplex
@@ -157,7 +156,7 @@ imports:
   - unix
   - windows
 - name: golang.org/x/text
-  version: 2cb43934f0eece38629746959acc633cba083fe4
+  version: 7922cc490dd5a7dbaa7fd5d6196b49db59ac042f
   subpackages:
   - secure/bidirule
   - transform
@@ -167,7 +166,7 @@ imports:
   version: 5420a8b6744d3b0345ab293f6fcba19c978f1183
 testImports:
 - name: github.com/gopherjs/gopherjs
-  version: 82b322028c96512b15077093b16a5f1c7ea897ac
+  version: 558a9132744c22476178edf3126fd35a9754f565
   subpackages:
   - js
 - name: github.com/jtolds/gls
