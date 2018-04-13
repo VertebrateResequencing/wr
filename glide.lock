@@ -1,5 +1,5 @@
 hash: caa503d5fd90fbe7a55e6b9f8923c6848b9a990d73a88917f528517fd8c78251
-updated: 2018-04-10T13:26:03.304567226+01:00
+updated: 2018-04-13T13:11:28.096181715+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -14,9 +14,9 @@ imports:
 - name: github.com/fatih/color
   version: 507f6050b8568533fb3f5504de8e5205fa62a114
 - name: github.com/go-ini/ini
-  version: 5e9692864e22d02ac79e2fa499cffb00520b4fea
+  version: ace140f73450505f33e8b8418216792275ae82a7
 - name: github.com/go-mangos/mangos
-  version: 8a564bf1c583c37fde04ea2cf8e48e8bfa661733
+  version: d99fcacf432eddb854ef80587abee023e23c5263
   subpackages:
   - protocol/rep
   - protocol/req
@@ -122,21 +122,21 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: cd30c2a7e91a1d63fd9a0027accf18a681e9d50b
+  version: 615425954c3b0d9485a7027d4d451fdcdfdee84e
 - name: github.com/spf13/pflag
-  version: 1ce0cc6db4029d97571db82f85092fccedb572ce
+  version: 583c0c0531f06d5278b7d917446061adc344b5cd
 - name: github.com/StackExchange/wmi
-  version: 5d049714c4a64225c3c79a7cf7d02f7fb5b96338
+  version: cdffdb33acae0e14efff2628f9bae377b597840e
 - name: github.com/ugorji/go
   version: f3cacc17c85ecb7f1b6a9e373ee85d1480919868
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: dbb2c1c94f09e10893b980a19db92ff1d3d8bb21
+  version: 08617a55cece7c5b3372698905aafcdf89732849
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: beb2a9779c3b677077c41673505f150149fce895
+  version: d6449816ce06963d9d136eee5a56fca5b0616e7e
   subpackages:
   - argon2
   - blake2b
@@ -157,7 +157,7 @@ imports:
   - unix
   - windows
 - name: golang.org/x/text
-  version: 367d765ae293e2b5781a597dd9d433117e82fc51
+  version: 7922cc490dd5a7dbaa7fd5d6196b49db59ac042f
   subpackages:
   - secure/bidirule
   - transform
@@ -167,7 +167,7 @@ imports:
   version: 5420a8b6744d3b0345ab293f6fcba19c978f1183
 testImports:
 - name: github.com/gopherjs/gopherjs
-  version: 827bd480590f537dd1c934ce76fac24ea7ce9cae
+  version: 558a9132744c22476178edf3126fd35a9754f565
   subpackages:
   - js
 - name: github.com/jtolds/gls
