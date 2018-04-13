@@ -387,7 +387,7 @@ and accessible.`,
 		noManagerForcedMsg := "; tearing down anyway - you may lose changes if not backing up the database to S3!"
 		serverHadProblems := false
 		if fmRunning {
-			jq := connect(1 * time.Second)
+			jq := connect(1*time.Second, true)
 			if jq != nil {
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
