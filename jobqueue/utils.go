@@ -140,7 +140,7 @@ func CurrentIP(cidr string) (string, error) {
 }
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
-// encoded string 44 bytes long. Used by the server to create a token passed to
+// encoded string 43 bytes long. Used by the server to create a token passed to
 // to the caller for subsequent client authentication.
 func generateToken() ([]byte, error) {
 	b := make([]byte, 32)
@@ -148,8 +148,8 @@ func generateToken() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	token := make([]byte, 44)
-	base64.URLEncoding.Encode(token, b)
+	token := make([]byte, 43)
+	base64.URLEncoding.WithPadding(base64.NoPadding).Encode(token, b)
 	return token, err
 }
 
