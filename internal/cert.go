@@ -53,7 +53,7 @@ func CheckCerts(serverPemFile string, serverKeyFile string) error {
 // GenerateCerts creates a CA certificate which is used to sign a created server
 // certificate which will have a corresponding key, all saved as PEM files
 // (overwritting any existing files).
-func GenerateCerts(caFile, serverPemFile, serverKeyFile string) error {
+func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string) error {
 	// key for root CA
 	rootKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -61,7 +61,7 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile string) error {
 	}
 
 	// cert for root CA, self-signed
-	rootCertTmpl, err := certTemplate()
+	rootCertTmpl, err := certTemplate(domain)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile string) error {
 	}
 
 	// cert for server, signed by root CA
-	servCertTmpl, err := certTemplate()
+	servCertTmpl, err := certTemplate(domain)
 	if err != nil {
 		return err
 	}
@@ -103,8 +103,8 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile string) error {
 }
 
 // certTemplate creates a certificate template with a random serial number,
-// valid from now until validFor.
-func certTemplate() (*x509.Certificate, error) {
+// valid from now until validFor. It will be valid for supplied domain.
+func certTemplate(domain string) (*x509.Certificate, error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
@@ -118,7 +118,7 @@ func certTemplate() (*x509.Certificate, error) {
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(validFor),
 		IPAddresses:           []net.IP{net.ParseIP("0.0.0.0"), net.ParseIP("127.0.0.1")},
-		DNSNames:              []string{"localhost"},
+		DNSNames:              []string{domain},
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

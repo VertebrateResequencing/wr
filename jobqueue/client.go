@@ -124,13 +124,16 @@ type envStr struct {
 // the server's certificate will be trusted based on the CAs installed in the
 // normal location on the system.
 //
+// certDomain is a domain that the server's certificate is supposed to be valid
+// for.
+//
 // token is the authentication token that Serve() returned when the server was
 // started.
 //
 // Timeout determines how long to wait for a response from the server, not only
 // while connecting, but for all subsequent interactions with it using the
 // returned Client.
-func Connect(addr, caFile string, token []byte, timeout time.Duration) (*Client, error) {
+func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
 	sock, err := req.NewSocket()
 	if err != nil {
 		return nil, err
@@ -146,14 +149,13 @@ func Connect(addr, caFile string, token []byte, timeout time.Duration) (*Client,
 	}
 
 	sock.AddTransport(tlstcp.NewTransport())
-	tlsConfig := &tls.Config{}
+	tlsConfig := &tls.Config{ServerName: certDomain}
 	caCert, err := ioutil.ReadFile(caFile)
 	if err == nil {
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(caCert)
 		tlsConfig.RootCAs = certPool
 	}
-	tlsConfig.ServerName = "localhost"
 
 	dialOpts := make(map[string]interface{})
 	dialOpts[mangos.OptionTLSConfig] = tlsConfig

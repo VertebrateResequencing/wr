@@ -73,7 +73,7 @@ complete.`,
 		if err != nil {
 			die("%s", err)
 		}
-		jq, err := jobqueue.Connect(rserver, caFile, token, timeout)
+		jq, err := jobqueue.Connect(rserver, caFile, config.ManagerCertDomain, token, timeout)
 		if err != nil {
 			die("%s", err)
 		}

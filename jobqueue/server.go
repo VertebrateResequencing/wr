@@ -275,6 +275,17 @@ type ServerConfig struct {
 	// key will be generated for you at this path.
 	KeyFile string
 
+	// Domain that a generated CertFile should be valid for. If not supplied,
+	// defaults to "localhost".
+	//
+	// When using your own CertFile, this should be set to a domain that the
+	// certifcate is valid for, as when the server spawns clients, those clients
+	// will validate the server's certifcate based on this domain. For the web
+	// interface and REST API, it is up to you to ensure that your DNS has an
+	// entry for this domain that points to the IP address of the machine
+	// running your server.
+	CertDomain string
+
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
 	Deployment string
@@ -349,11 +360,15 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	caFile := config.CAFile
 	certFile := config.CertFile
 	keyFile := config.KeyFile
+	certDomain := config.CertDomain
+	if certDomain == "" {
+		certDomain = "localhost"
+	}
 	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string
 	if err != nil {
 		// if not, generate our own
-		err = internal.GenerateCerts(caFile, certFile, keyFile)
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
 			return s, msg, token, err
@@ -444,13 +459,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		return s, msg, token, Error{"Serve", "", ErrNoHost}
 	}
 
-	// to be friendly we also record the hostname, but it's possible this isn't
-	// defined, hence we don't rely on it for anything important
-	host, err := os.Hostname()
-	if err != nil {
-		host = "localhost"
-	}
-
 	// we will spawn runner clients via the requested job scheduler
 	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig, serverLogger)
 	if err != nil {
@@ -471,7 +479,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	s = &Server{
-		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
 		token:              token,
 		sock:               sock,
 		ch:                 new(codec.BincHandle),

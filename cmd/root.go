@@ -257,7 +257,7 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 		die("could not read token file; has the manager been started? [%s]", err)
 	}
 
-	jq, err := jobqueue.Connect("localhost:"+config.ManagerPort, caFile, token, wait)
+	jq, err := jobqueue.Connect("localhost:"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
 	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
 		die("%s", err)
 	}

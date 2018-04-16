@@ -202,7 +202,7 @@ within OpenStack.`,
 		// if we don't have any, generate them now
 		err = internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
 		if err != nil {
-			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile)
+			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile, config.ManagerCertDomain)
 			if err != nil {
 				die("could not generate certs: %s", err)
 			}
@@ -355,7 +355,7 @@ within OpenStack.`,
 		if err != nil {
 			warn("token could not be read! [%s]", err)
 		}
-		info("wr's web interface can be reached locally at https://localhost:%s/?token=%s", jq.ServerInfo.WebPort, string(token))
+		info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, string(token))
 	},
 }
 

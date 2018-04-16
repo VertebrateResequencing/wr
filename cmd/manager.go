@@ -519,6 +519,7 @@ func startJQ(postCreation []byte) {
 		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
 		KeyFile:         config.ManagerKeyFile,
+		CertDomain:      config.ManagerCertDomain,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
 		Logger:          serverLogger,
