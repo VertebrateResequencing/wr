@@ -462,7 +462,28 @@ func startJQ(postCreation []byte) {
 	case "lsf":
 		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	case "openstack":
-		mport, _ := strconv.Atoi(config.ManagerPort)
+		mport, err := strconv.Atoi(config.ManagerPort)
+		if err != nil {
+			die("wr manager failed to start : %s\n", err)
+		}
+
+		// include our ca.pem and client.token files in cloudConfigFiles, so
+		// that they will be copied to all servers that get created.
+		if config.ManagerCAFile != "" {
+			copyOver := config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem"
+			if cloudConfigFiles == "" {
+				cloudConfigFiles = copyOver
+			} else {
+				cloudConfigFiles += "," + copyOver
+			}
+		}
+		copyOver := config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token"
+		if cloudConfigFiles == "" {
+			cloudConfigFiles = copyOver
+		} else {
+			cloudConfigFiles += "," + copyOver
+		}
+
 		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:         cloudResourceName(localUsername),
 			SavePath:             filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
