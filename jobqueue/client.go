@@ -116,6 +116,9 @@ type envStr struct {
 
 // Connect creates a connection to the jobqueue server.
 //
+// addr is the host or IP of the machine running the server, suffixed with a
+// colon and the port it is listening on, eg localhost:1234
+//
 // caFile is a path to the PEM encoded CA certificate that was used to sign the
 // server's certificate. If set as a blank string, or if the file doesn't exist,
 // the server's certificate will be trusted based on the CAs installed in the
