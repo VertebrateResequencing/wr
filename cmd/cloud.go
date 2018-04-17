@@ -577,8 +577,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	// create a config file on the remote to have the remote wr work on the same
-	// ports that we'd use locally, and have it use an S3 db backup location if
-	// configured
+	// ports that we'd use locally, use the right domain, and have it use an S3
+	// db backup location if configured
 	dbBk := "db_bk"
 	if internal.IsRemote(config.ManagerDbBkFile) {
 		dbBk = config.ManagerDbBkFile
@@ -596,7 +596,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			die("failed to access the local database: %s", errf)
 		}
 	}
-	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\n", mp, wp, dbBk), wrConfigFileName); err != nil {
+	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\n", mp, wp, dbBk, config.ManagerCertDomain), wrConfigFileName); err != nil {
 		teardown(provider)
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}

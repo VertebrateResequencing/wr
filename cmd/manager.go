@@ -469,20 +469,24 @@ func startJQ(postCreation []byte) {
 
 		// include our ca.pem and client.token files in cloudConfigFiles, so
 		// that they will be copied to all servers that get created.
-		if config.ManagerCAFile != "" {
-			copyOver := config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem"
-			if cloudConfigFiles == "" {
-				cloudConfigFiles = copyOver
-			} else {
-				cloudConfigFiles += "," + copyOver
-			}
-		}
 		copyOver := config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token"
 		if cloudConfigFiles == "" {
 			cloudConfigFiles = copyOver
 		} else {
 			cloudConfigFiles += "," + copyOver
 		}
+		if config.ManagerCAFile != "" {
+			cloudConfigFiles += "," + config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem"
+		}
+
+		// also create and copy over a config file with the domain option set so
+		// runners will work.
+		runnerConfigFile := filepath.Join(config.ManagerDir, "cloud_resources.runner_config")
+		err = ioutil.WriteFile(runnerConfigFile, []byte(fmt.Sprintf("managercertdomain: \"%s\"\n", config.ManagerCertDomain)), 0600)
+		if err != nil {
+			die("wr manager failed to start : %s\n", err)
+		}
+		cloudConfigFiles += "," + runnerConfigFile + ":~/" + wrConfigFileName
 
 		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:         cloudResourceName(localUsername),

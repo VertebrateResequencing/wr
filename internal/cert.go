@@ -51,9 +51,22 @@ func CheckCerts(serverPemFile string, serverKeyFile string) error {
 }
 
 // GenerateCerts creates a CA certificate which is used to sign a created server
-// certificate which will have a corresponding key, all saved as PEM files
-// (overwritting any existing files).
+// certificate which will have a corresponding key, all saved as PEM files. An
+// error is generated if any of the files already exist.
 func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string) error {
+	_, err := os.Stat(caFile)
+	if err == nil {
+		return fmt.Errorf("ca cert [%s] already exists", caFile)
+	}
+	_, err = os.Stat(serverPemFile)
+	if err == nil {
+		return fmt.Errorf("server cert [%s] already exists", serverPemFile)
+	}
+	_, err = os.Stat(serverKeyFile)
+	if err == nil {
+		return fmt.Errorf("server key [%s] already exists", serverKeyFile)
+	}
+
 	// key for root CA
 	rootKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
