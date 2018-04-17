@@ -63,6 +63,7 @@ var osRAM int
 var osDisk int
 var flavorRegex string
 var postCreationScript string
+var postDeploymentScript string
 var cloudGatewayIP string
 var cloudCIDR string
 var cloudDNS string
@@ -105,6 +106,14 @@ normally associates your current environment variables and working directory
 with the cmds you want to run, with a remote deployment the working directory
 defaults to /tmp, and commands will be run with the non-login environment
 variables of the server the command is run on.
+
+The --on_success optional value is the path to some executable that you want to
+run locally after the deployment is successful. The executable will be run with
+the environment variable WR_MANAGER_IP set to the IP address of the cloud server
+that wr manager was started on. Your executable might be, for example, a bash
+script that uses infoblox to have your wrmanagerdomain point to WR_MANAGER_IP,
+if you're using your own server TLS certificate and want to be able to access
+wr's REST API using the appropriate domain.
 
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created cloud server before any commands run on them. You
@@ -356,6 +365,15 @@ within OpenStack.`,
 			warn("token could not be read! [%s]", err)
 		}
 		info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, string(token))
+
+		if postDeploymentScript != "" {
+			cmd := exec.Command(postDeploymentScript)
+			cmd.Env = append(os.Environ(), "WR_MANAGER_IP="+server.IP)
+			err = cmd.Run()
+			if err != nil {
+				warn("--on_success executable [%s] failed: %s", postDeploymentScript, err)
+			}
+		}
 	},
 }
 
@@ -554,6 +572,7 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().StringVarP(&postDeploymentScript, "on_success", "x", defaultConfig.DeploySuccessScript, "path to a script to run locally after a successful deployment")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", defaultConfig.CloudGateway, "gateway IP for the created subnet")

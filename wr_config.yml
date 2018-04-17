@@ -416,3 +416,15 @@ clouddisk: 1
 #
 # If you specify files that don't exist locally, they are silently ignored.
 cloudconfigfiles: "~/.s3cfg,~/.aws/credentials,~/.aws/config"
+
+# deploysuccessscript: What script should run locally after cloud deploy?
+# If unset, nothing is run. It is overridden by the --on_sucess option to
+# `wr cloud deploy`.
+# Note, this is the absolute path to an executable.
+#
+# After you run `wr cloud deploy`, if it succeeds, the executable you supply
+# here will run with the environment variable WR_MANAGER_IP set to the IP
+# address of the cloud server that is now running wr manager. Your executable
+# might update your local DNS entries so that you can access wr's REST API
+# using a fixed domain that your TLS certificate is valid for.
+# deploysuccessscript: ""
