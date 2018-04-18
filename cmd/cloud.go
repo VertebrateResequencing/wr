@@ -22,6 +22,8 @@ import (
 	"bufio"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +34,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	infoblox "github.com/fanatic/go-infoblox"
 	"github.com/fatih/color"
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
@@ -69,6 +72,7 @@ var cloudCIDR string
 var cloudDNS string
 var cloudConfigFiles string
 var forceTearDown bool
+var setDomainIP bool
 var cloudDebug bool
 
 // cloudCmd represents the cloud command
@@ -107,14 +111,6 @@ with the cmds you want to run, with a remote deployment the working directory
 defaults to /tmp, and commands will be run with the non-login environment
 variables of the server the command is run on.
 
-The --on_success optional value is the path to some executable that you want to
-run locally after the deployment is successful. The executable will be run with
-the environment variable WR_MANAGER_IP set to the IP address of the cloud server
-that wr manager was started on. Your executable might be, for example, a bash
-script that uses infoblox to have your wrmanagerdomain point to WR_MANAGER_IP,
-if you're using your own server TLS certificate and want to be able to access
-wr's REST API using the appropriate domain.
-
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created cloud server before any commands run on them. You
 might install some software for example. Note that the script is run as the user
@@ -133,6 +129,21 @@ Local paths that don't exist are silently ignored.
 This option is important if you want to be able to queue up commands that rely
 on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
 contain your credentials for connecting to your s3 bucket(s).
+
+The --on_success optional value is the path to some executable that you want to
+run locally after the deployment is successful. The executable will be run with
+the environment variables WR_MANAGERIP and WR_MANAGERCERTDOMAIN set to the IP
+address of the cloud server that wr manager was started on and the domain you
+configured as valid for your own TLS certificate respectively. Your executable
+might be, for example, a bash script that updates your local DNS entries.
+
+The --set_domain_ip option is an alternative to --on_success if your DNS is
+managaged with infoblox. You will need the environment variables INFOBLOX_HOST,
+INFOBLOX_USER and INFOBLOX_PASS set for this option to work. After a successful
+deployment infoblox will be used to first delete all A records for your
+configured WR_MANAGERCERTDOMAIN (which can't be localhost), and then create an
+A record for WR_MANAGERCERTDOMAIN that points to the IP address of the cloud
+server that wr manager was started on.
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
@@ -367,11 +378,18 @@ within OpenStack.`,
 		info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, string(token))
 
 		if postDeploymentScript != "" {
-			cmd := exec.Command(postDeploymentScript)
-			cmd.Env = append(os.Environ(), "WR_MANAGER_IP="+server.IP)
+			cmd := exec.Command(postDeploymentScript) // #nosec
+			cmd.Env = append(os.Environ(), "WR_MANAGERIP="+server.IP, "WR_MANAGERCERTDOMAIN="+jq.ServerInfo.Host)
 			err = cmd.Run()
 			if err != nil {
 				warn("--on_success executable [%s] failed: %s", postDeploymentScript, err)
+			}
+		}
+
+		if setDomainIP {
+			err = infobloxSetDomainIP(jq.ServerInfo.Host, server.IP)
+			if err != nil {
+				warn("failed to set domain IP: %s", err)
 			}
 		}
 	},
@@ -580,6 +598,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to use in the created subnet")
 	cloudDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
 	cloudDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
+	cloudDeployCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
@@ -769,7 +788,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), managerTimeoutSeconds, debugStr, wrEnvFileName)
 
-		_, e, err := server.RunCmd(mCmd, false)
+		var e string
+		_, e, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			warn("failed to start wr manager on the remote server")
 			if len(e) > 0 {
@@ -888,4 +908,56 @@ func teardown(p *cloud.Provider) {
 	if err != nil {
 		warn("teardown failed: %s", err)
 	}
+}
+
+func infobloxSetDomainIP(domain, ip string) error {
+	if domain == "localhost" {
+		return fmt.Errorf("can't set domain IP when domain is configured as localhost")
+	}
+
+	// turn off logging built in to go-infoblox
+	log.SetFlags(0)
+	log.SetOutput(ioutil.Discard)
+
+	// check env vars are defined
+	host := os.Getenv("INFOBLOX_HOST")
+	if host == "" {
+		return fmt.Errorf("INFOBLOX_HOST env var not set")
+	}
+	user := os.Getenv("INFOBLOX_USER")
+	if user == "" {
+		return fmt.Errorf("INFOBLOX_USER env var not set")
+	}
+	password := os.Getenv("INFOBLOX_PASS")
+	if password == "" {
+		return fmt.Errorf("INFOBLOX_PASS env var not set")
+	}
+
+	// create infoblox client
+	ib := infoblox.NewClient("https://"+host+"/", user, password, true, false)
+
+	// delete any existing entries first
+	objs, err := ib.FindRecordA(domain)
+	if err != nil {
+		return fmt.Errorf("finding A records failed: %s", err)
+	}
+
+	for _, obj := range objs {
+		err = ib.NetworkObject(obj.Ref).Delete(nil)
+		if err != nil {
+			return fmt.Errorf("delete of A record failed: %s", err)
+		}
+	}
+
+	// now add an A record for domain pointing to ip
+	d := url.Values{}
+	d.Set("ipv4addr", ip)
+	d.Set("name", domain)
+	_, err = ib.RecordA().Create(d, nil, nil)
+	if err != nil {
+		return fmt.Errorf("create of A record failed: %s", err)
+	}
+
+	info("set IP of %s to %s", domain, ip)
+	return nil
 }

@@ -175,6 +175,11 @@ managertokenfile: "client.token"
 #
 # The generated certificate is valid for 1 year. After that you'll need to
 # delete it and have wr generate a new one the next time you start the manager.
+#
+# If you're using your own certificate and key, you should note that for cloud
+# deployments these are copied to the cloud server for use by the manager there;
+# you may wish to create a certificate and key dedicated to wr, incase access to
+# your cloud is compromised.
 managercertfile: "cert.pem"
 
 # managerkeyfile: Where is the key PEM file the manager should use?
@@ -218,6 +223,23 @@ managercafile: "ca.pem"
 # If using your own managercertfile, you will need to specify a domain that your
 # certifcate is valid for.
 managercertdomain: "localhost"
+
+# managersetdomainip: Should your domain's IP be set after the manager starts?
+# This defaults to false, meaning nothing is attempted. It is overridden by the
+# --set_domain_ip option to `wr manager start` and `wr cloud deploy`.
+#
+# Making this option true will result in infoblox being used to first delete all
+# A records for managercertdomain, then create an A record for managercertdomain
+# that points to the IP address of the server that the manager was started on.
+#
+# The above will happen only after a successful `wr manager start` or
+# `wr cloud deploy`, and is an easy alternative to the deploysuccessscript
+# option for the later.
+#
+# Requires the environment variables INFOBLOX_HOST, INFOBLOX_USER and
+# INFOBLOX_PASS to be set. Your infoblox account will need permission to alter A
+# records for managercertdomain.
+# managersetdomainip: false
 
 # managerumask: What umask should be used when wr manager creates files?
 # This defaults to 007 (user+group read+writable, no access to others).
@@ -423,8 +445,8 @@ cloudconfigfiles: "~/.s3cfg,~/.aws/credentials,~/.aws/config"
 # Note, this is the absolute path to an executable.
 #
 # After you run `wr cloud deploy`, if it succeeds, the executable you supply
-# here will run with the environment variable WR_MANAGER_IP set to the IP
-# address of the cloud server that is now running wr manager. Your executable
-# might update your local DNS entries so that you can access wr's REST API
-# using a fixed domain that your TLS certificate is valid for.
+# here will run with the environment variables WR_MANAGERIP and
+# WR_MANAGERCERTDOMAIN set. Your executable might update your local DNS entries
+# so that you can access wr's REST API using the domain that your TLS
+# certificate is valid for.
 # deploysuccessscript: ""

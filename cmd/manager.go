@@ -72,7 +72,8 @@ are by default found in ~/.wr_[deployment]/log.
 If using the OpenStack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
 cloud, so that resources created will not conflict with anyone else in your
-tenant (project) also running wr.
+tenant (project) also running wr. Your server's security group must also allow
+the ports that wr will use (see wr's config file).
 Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
 on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
@@ -412,6 +413,7 @@ func init() {
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
+	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
@@ -420,6 +422,17 @@ func init() {
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
 	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
+
+	if setDomainIP {
+		ip, err := jobqueue.CurrentIP("")
+		if err != nil {
+			warn("could not get IP address of localhost: %s", err)
+		}
+		err = infobloxSetDomainIP(s.Host, ip)
+		if err != nil {
+			warn("failed to set domain IP: %s", err)
+		}
+	}
 }
 
 func startJQ(postCreation []byte) {
@@ -462,9 +475,9 @@ func startJQ(postCreation []byte) {
 	case "lsf":
 		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	case "openstack":
-		mport, err := strconv.Atoi(config.ManagerPort)
-		if err != nil {
-			die("wr manager failed to start : %s\n", err)
+		mport, errf := strconv.Atoi(config.ManagerPort)
+		if errf != nil {
+			die("wr manager failed to start : %s\n", errf)
 		}
 
 		// include our ca.pem and client.token files in cloudConfigFiles, so
@@ -482,9 +495,9 @@ func startJQ(postCreation []byte) {
 		// also create and copy over a config file with the domain option set so
 		// runners will work.
 		runnerConfigFile := filepath.Join(config.ManagerDir, "cloud_resources.runner_config")
-		err = ioutil.WriteFile(runnerConfigFile, []byte(fmt.Sprintf("managercertdomain: \"%s\"\n", config.ManagerCertDomain)), 0600)
-		if err != nil {
-			die("wr manager failed to start : %s\n", err)
+		errf = ioutil.WriteFile(runnerConfigFile, []byte(fmt.Sprintf("managercertdomain: \"%s\"\n", config.ManagerCertDomain)), 0600)
+		if errf != nil {
+			die("wr manager failed to start : %s\n", errf)
 		}
 		cloudConfigFiles += "," + runnerConfigFile + ":~/" + wrConfigFileName
 

@@ -183,8 +183,8 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 			return c, errc
 		}
 		msg := ErrNoServer
-		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongToken {
-			msg = ErrWrongToken
+		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrPermissionDenied {
+			msg = ErrPermissionDenied
 		}
 		return nil, Error{"Connect", "", msg}
 	}

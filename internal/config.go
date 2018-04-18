@@ -60,6 +60,7 @@ type Config struct {
 	ManagerCertFile     string `default:"cert.pem"`
 	ManagerKeyFile      string `default:"key.pem"`
 	ManagerCertDomain   string `default:"localhost"`
+	ManagerSetDomainIP  bool   `default:"false"`
 	RunnerExecShell     string `default:"bash"`
 	Deployment          string `default:"production"`
 	CloudFlavor         string `default:""`

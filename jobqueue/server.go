@@ -53,23 +53,23 @@ import (
 // cast and check if it's a certain type of error. ServerMode* constants are
 // used to report on the status of the server, found inside ServerInfo.
 const (
-	ErrInternalError  = "internal error"
-	ErrUnknownCommand = "unknown command"
-	ErrBadRequest     = "bad request (missing arguments?)"
-	ErrBadJob         = "bad job (not in queue or correct sub-queue)"
-	ErrMissingJob     = "corresponding job not found"
-	ErrUnknown        = "unknown error"
-	ErrClosedInt      = "queues closed due to SIGINT"
-	ErrClosedTerm     = "queues closed due to SIGTERM"
-	ErrClosedStop     = "queues closed due to manual Stop()"
-	ErrQueueClosed    = "queue closed"
-	ErrNoHost         = "could not determine the non-loopback ip address of this host"
-	ErrNoServer       = "could not reach the server"
-	ErrMustReserve    = "you must Reserve() a Job before passing it to other methods"
-	ErrDBError        = "failed to use database"
-	ErrWrongToken     = "bad token: permission denied"
-	ServerModeNormal  = "started"
-	ServerModeDrain   = "draining"
+	ErrInternalError    = "internal error"
+	ErrUnknownCommand   = "unknown command"
+	ErrBadRequest       = "bad request (missing arguments?)"
+	ErrBadJob           = "bad job (not in queue or correct sub-queue)"
+	ErrMissingJob       = "corresponding job not found"
+	ErrUnknown          = "unknown error"
+	ErrClosedInt        = "queues closed due to SIGINT"
+	ErrClosedTerm       = "queues closed due to SIGTERM"
+	ErrClosedStop       = "queues closed due to manual Stop()"
+	ErrQueueClosed      = "queue closed"
+	ErrNoHost           = "could not determine the non-loopback ip address of this host"
+	ErrNoServer         = "could not reach the server"
+	ErrMustReserve      = "you must Reserve() a Job before passing it to other methods"
+	ErrDBError          = "failed to use database"
+	ErrPermissionDenied = "bad token: permission denied"
+	ServerModeNormal    = "started"
+	ServerModeDrain     = "draining"
 )
 
 // these global variables are primarily exported for testing purposes; you
@@ -255,7 +255,7 @@ type ServerConfig struct {
 
 	// Absolute path to where the server will store the authorization token
 	// needed by clients to communicate with the server. Storing it in a file
-	// could make using any CLI clients more convienient. The file will be
+	// could make using any CLI clients more convenient. The file will be
 	// read-only by the user starting the server. The default of empty string
 	// means the token is not saved to disk.
 	TokenFile string

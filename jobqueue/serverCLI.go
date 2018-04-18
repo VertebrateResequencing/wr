@@ -55,7 +55,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 	// check that the client making the request has the expected token
 	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
-		srerr = ErrWrongToken
+		srerr = ErrPermissionDenied
 		qerr = "Client presented the wrong token"
 	} else if s.q == nil || (!up && !drain) {
 		// the server just got shutdown
