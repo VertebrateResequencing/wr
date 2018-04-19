@@ -77,7 +77,7 @@ type opst struct {
 
 // ConfigOpenStack represents the configuration options required by the
 // OpenStack scheduler. All are required with no usable defaults, unless
-// otherwise noted.
+// otherwise noted. This struct implements the CloudConfig interface.
 type ConfigOpenStack struct {
 	// ResourceName is the resource name prefix used to name any resources (such
 	// as keys, security groups and servers) that need to be created.
@@ -166,6 +166,16 @@ type ConfigOpenStack struct {
 	// DNSNameServers is a slice of DNS IP addresses to use for lookups on the
 	// created subnet. It defaults to Google's: []string{"8.8.4.4", "8.8.8.8"}
 	DNSNameServers []string
+}
+
+// AddConfigFile takes a value as per the ConfigFiles property, and appends it
+// to the existing ConfigFiles value (or sets it if unset).
+func (c *ConfigOpenStack) AddConfigFile(configFile string) {
+	if c.ConfigFiles == "" {
+		c.ConfigFiles = configFile
+	} else {
+		c.ConfigFiles += "," + configFile
+	}
 }
 
 // standin describes a server that we're in the middle of spawning (or intend to

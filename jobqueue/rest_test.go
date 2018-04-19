@@ -54,6 +54,7 @@ func TestREST(t *testing.T) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbFile + "_bk",
 		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
@@ -63,6 +64,8 @@ func TestREST(t *testing.T) {
 	jobsEndPoint := baseURL + "/rest/v1/jobs"
 	warningsEndPoint := baseURL + "/rest/v1/warnings/"
 	serversEndPoint := baseURL + "/rest/v1/servers/"
+
+	setDomainIP(config.ManagerCertDomain)
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond

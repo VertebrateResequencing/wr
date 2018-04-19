@@ -22,8 +22,6 @@ import (
 	"bufio"
 	"fmt"
 	"io/ioutil"
-	"log"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +32,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
-	infoblox "github.com/fanatic/go-infoblox"
 	"github.com/fatih/color"
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
@@ -387,9 +384,11 @@ within OpenStack.`,
 		}
 
 		if setDomainIP {
-			err = infobloxSetDomainIP(jq.ServerInfo.Host, server.IP)
+			err = internal.InfobloxSetDomainIP(jq.ServerInfo.Host, server.IP)
 			if err != nil {
 				warn("failed to set domain IP: %s", err)
+			} else {
+				info("set IP of %s to %s", jq.ServerInfo.Host, server.IP)
 			}
 		}
 	},
@@ -908,56 +907,4 @@ func teardown(p *cloud.Provider) {
 	if err != nil {
 		warn("teardown failed: %s", err)
 	}
-}
-
-func infobloxSetDomainIP(domain, ip string) error {
-	if domain == "localhost" {
-		return fmt.Errorf("can't set domain IP when domain is configured as localhost")
-	}
-
-	// turn off logging built in to go-infoblox
-	log.SetFlags(0)
-	log.SetOutput(ioutil.Discard)
-
-	// check env vars are defined
-	host := os.Getenv("INFOBLOX_HOST")
-	if host == "" {
-		return fmt.Errorf("INFOBLOX_HOST env var not set")
-	}
-	user := os.Getenv("INFOBLOX_USER")
-	if user == "" {
-		return fmt.Errorf("INFOBLOX_USER env var not set")
-	}
-	password := os.Getenv("INFOBLOX_PASS")
-	if password == "" {
-		return fmt.Errorf("INFOBLOX_PASS env var not set")
-	}
-
-	// create infoblox client
-	ib := infoblox.NewClient("https://"+host+"/", user, password, true, false)
-
-	// delete any existing entries first
-	objs, err := ib.FindRecordA(domain)
-	if err != nil {
-		return fmt.Errorf("finding A records failed: %s", err)
-	}
-
-	for _, obj := range objs {
-		err = ib.NetworkObject(obj.Ref).Delete(nil)
-		if err != nil {
-			return fmt.Errorf("delete of A record failed: %s", err)
-		}
-	}
-
-	// now add an A record for domain pointing to ip
-	d := url.Values{}
-	d.Set("ipv4addr", ip)
-	d.Set("name", domain)
-	_, err = ib.RecordA().Create(d, nil, nil)
-	if err != nil {
-		return fmt.Errorf("create of A record failed: %s", err)
-	}
-
-	info("set IP of %s to %s", domain, ip)
-	return nil
 }

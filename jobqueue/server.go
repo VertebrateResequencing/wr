@@ -236,13 +236,14 @@ type ServerConfig struct {
 	SchedulerConfig interface{}
 
 	// The command line needed to bring up a jobqueue runner client, which
-	// should contain 5 %s parts which will be replaced with the scheduler
-	// group, deployment ip:host address of the server, reservation time out and
+	// should contain 6 %s parts which will be replaced with the scheduler
+	// group, deployment, ip:host address of the server, domain name that the
+	// server's certificate should be valid for, reservation time out and
 	// maximum number of minutes allowed, eg. "my_jobqueue_runner_client --group
-	// '%s' --deployment %s --server '%s' --reserve_timeout %d --max_mins %d".
-	// If you supply an empty string (the default), runner clients will not be
-	// spawned; for any work to be done you will have to run your runner client
-	// yourself manually.
+	// '%s' --deployment %s --server '%s' --domain %s --reserve_timeout %d
+	// --max_mins %d". If you supply an empty string (the default), runner
+	// clients will not be spawned; for any work to be done you will have to run
+	// your runner client yourself manually.
 	RunnerCmd string
 
 	// Absolute path to where the database file should be saved. The database is
@@ -355,6 +356,12 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 	defer internal.LogPanic(serverLogger, "jobqueue serve", true)
 
+	// generate a secure token for clients to authenticate with
+	token, err = generateToken()
+	if err != nil {
+		return s, msg, token, err
+	}
+
 	// check if the cert files are available
 	httpAddr := "0.0.0.0:" + config.WebPort
 	caFile := config.CAFile
@@ -375,20 +382,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		}
 		certMsg = "created a new key and certificate for TLS"
 		msg = certMsg
-	}
-
-	// generate a secure token for clients to authenticate with
-	token, err = generateToken()
-	if err != nil {
-		return s, msg, token, err
-	}
-
-	// and store it on disk
-	if config.TokenFile != "" {
-		err = ioutil.WriteFile(config.TokenFile, token, 0600)
-		if err != nil {
-			return s, msg, token, err
-		}
 	}
 
 	sock, err := rep.NewSocket()
@@ -695,6 +688,14 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		ready <- true
 	}()
 	<-ready
+
+	// store token on disk
+	if config.TokenFile != "" {
+		err = ioutil.WriteFile(config.TokenFile, token, 0600)
+		if err != nil {
+			return s, msg, token, err
+		}
+	}
 
 	return s, msg, token, err
 }
@@ -1447,7 +1448,7 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {

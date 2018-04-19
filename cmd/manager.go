@@ -127,6 +127,13 @@ var managerStartCmd = &cobra.Command{
 			}
 		}
 
+		// delete any old token file, so that we later know when the manager has
+		// created a new one
+		err := os.Remove(config.ManagerTokenFile)
+		if err != nil && !os.IsNotExist(err) {
+			die("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
+		}
+
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
@@ -137,23 +144,7 @@ var managerStartCmd = &cobra.Command{
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
-				limit := time.After(mTimeout)
-				ticker := time.NewTicker(50 * time.Millisecond)
-			WAITTOKEN:
-				for {
-					select {
-					case <-ticker.C:
-						_, err := os.Stat(config.ManagerTokenFile)
-						if err == nil {
-							ticker.Stop()
-							break WAITTOKEN
-						}
-						continue
-					case <-limit:
-						ticker.Stop()
-						break WAITTOKEN
-					}
-				}
+				internal.WaitForFile(config.ManagerTokenFile, mTimeout)
 				jq := connect(mTimeout)
 				if jq == nil {
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
@@ -428,9 +419,11 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 		if err != nil {
 			warn("could not get IP address of localhost: %s", err)
 		}
-		err = infobloxSetDomainIP(s.Host, ip)
+		err = internal.InfobloxSetDomainIP(s.Host, ip)
 		if err != nil {
 			warn("failed to set domain IP: %s", err)
+		} else {
+			info("set IP of %s to %s", s.Host, ip)
 		}
 	}
 }
@@ -480,27 +473,6 @@ func startJQ(postCreation []byte) {
 			die("wr manager failed to start : %s\n", errf)
 		}
 
-		// include our ca.pem and client.token files in cloudConfigFiles, so
-		// that they will be copied to all servers that get created.
-		copyOver := config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token"
-		if cloudConfigFiles == "" {
-			cloudConfigFiles = copyOver
-		} else {
-			cloudConfigFiles += "," + copyOver
-		}
-		if config.ManagerCAFile != "" {
-			cloudConfigFiles += "," + config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem"
-		}
-
-		// also create and copy over a config file with the domain option set so
-		// runners will work.
-		runnerConfigFile := filepath.Join(config.ManagerDir, "cloud_resources.runner_config")
-		errf = ioutil.WriteFile(runnerConfigFile, []byte(fmt.Sprintf("managercertdomain: \"%s\"\n", config.ManagerCertDomain)), 0600)
-		if errf != nil {
-			die("wr manager failed to start : %s\n", errf)
-		}
-		cloudConfigFiles += "," + runnerConfigFile + ":~/" + wrConfigFileName
-
 		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:         cloudResourceName(localUsername),
 			SavePath:             filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
@@ -523,13 +495,23 @@ func startJQ(postCreation []byte) {
 		serverCIDR = cloudCIDR
 	}
 
+	if cloudConfig, ok := schedulerConfig.(jqs.CloudConfig); ok {
+		// this is a cloud scheduler, so include our ca.pem and client.token
+		// files in ConfigFiles, so that they will be copied to all servers
+		// that get created.
+		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
+		if config.ManagerCAFile != "" {
+			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
+		}
+	}
+
 	// start the jobqueue server
 	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
-		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		TokenFile:       config.ManagerTokenFile,

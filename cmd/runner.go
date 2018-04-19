@@ -36,6 +36,7 @@ import (
 var schedgrp string
 var reserveint int
 var rserver string
+var rdomain string
 var maxtime int
 
 // runnerCmd represents the runner command
@@ -73,7 +74,7 @@ complete.`,
 		if err != nil {
 			die("%s", err)
 		}
-		jq, err := jobqueue.Connect(rserver, caFile, config.ManagerCertDomain, token, timeout)
+		jq, err := jobqueue.Connect(rserver, caFile, rdomain, token, timeout)
 		if err != nil {
 			die("%s", err)
 		}
@@ -93,6 +94,7 @@ complete.`,
 				envOverrides = append(envOverrides, "WR_MANAGERHOST="+hostPort[0])
 				envOverrides = append(envOverrides, "WR_MANAGERPORT="+hostPort[1])
 			}
+			envOverrides = append(envOverrides, "WR_MANAGERCERTDOMAIN="+rdomain)
 
 			// add our own wr exe to the path in case its not there
 			exe, err := osext.Executable()
@@ -182,4 +184,5 @@ func init() {
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 2, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(appLogger), "ip:port of wr manager")
+	runnerCmd.Flags().StringVar(&rdomain, "domain", internal.DefaultConfig(appLogger).ManagerCertDomain, "domain the manager's cert is valid for")
 }

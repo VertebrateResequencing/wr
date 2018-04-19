@@ -52,6 +52,7 @@ var schedgrp string
 var runnermodetmpdir string
 var rdeployment string
 var rserver string
+var rdomain string
 var rtimeout int
 var maxmins int
 var envVars = os.Environ()
@@ -66,6 +67,7 @@ func init() {
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
+	flag.StringVar(&rdomain, "rdomain", "", "domain for runnermode")
 	flag.IntVar(&rtimeout, "rtimeout", 1, "reserve timeout for runnermode")
 	flag.IntVar(&maxmins, "maxmins", 0, "maximum mins allowed for  runnermode")
 	flag.StringVar(&runnermodetmpdir, "tmpdir", "", "tmp dir for runnermode")
@@ -128,11 +130,14 @@ func TestJobqueue(t *testing.T) {
 		TokenFile:       config.ManagerTokenFile,
 		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
+
+	setDomainIP(config.ManagerCertDomain)
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -200,24 +205,7 @@ func TestJobqueue(t *testing.T) {
 		defer syscall.Kill(child.Pid, syscall.SIGTERM)
 
 		mTimeout := 10 * time.Second
-		limit := time.After(mTimeout)
-		ticker := time.NewTicker(50 * time.Millisecond)
-	WAITTOKEN:
-		for {
-			select {
-			case <-ticker.C:
-				_, err := os.Stat(config.ManagerTokenFile)
-				if err == nil {
-					ticker.Stop()
-					break WAITTOKEN
-				}
-				continue
-			case <-limit:
-				ticker.Stop()
-				break WAITTOKEN
-			}
-		}
-
+		internal.WaitForFile(config.ManagerTokenFile, mTimeout)
 		token, err := ioutil.ReadFile(config.ManagerTokenFile)
 		So(err, ShouldBeNil)
 		So(token, ShouldNotBeNil)
@@ -333,7 +321,7 @@ func TestJobqueue(t *testing.T) {
 		server, _, token, errs = Serve(serverConfig)
 		So(errs, ShouldBeNil)
 
-		server.rc = `echo %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
+		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -2542,7 +2530,7 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
 		server, _, token, errs = Serve(runningConfig)
 		So(errs, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
@@ -3204,7 +3192,7 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
 		server, _, token, errs = Serve(runningConfig)
 		So(errs, ShouldBeNil)
 
@@ -3320,6 +3308,8 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		config := internal.ConfigLoad("development", true, testLogger)
 		addr := "localhost:" + config.ManagerPort
 
+		setDomainIP(config.ManagerCertDomain)
+
 		runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
 		if err != nil {
 			log.Fatal(err)
@@ -3336,31 +3326,38 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		}
 
 		resourceName := "wr-testing-" + localUser
+		cloudConfig := &jqs.ConfigOpenStack{
+			ResourceName:         resourceName,
+			OSPrefix:             osPrefix,
+			OSUser:               osUser,
+			OSRAM:                2048,
+			FlavorRegex:          flavorRegex,
+			ServerPorts:          []int{22},
+			ServerKeepTime:       15 * time.Second,
+			StateUpdateFrequency: 1 * time.Second,
+			Shell:                "bash",
+			MaxInstances:         -1,
+		}
+		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
+		if config.ManagerCAFile != "" {
+			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
+		}
+
 		osConfig := ServerConfig{
-			Port:          config.ManagerPort,
-			WebPort:       config.ManagerWeb,
-			SchedulerName: "openstack",
-			SchedulerConfig: &jqs.ConfigOpenStack{
-				ResourceName:         resourceName,
-				OSPrefix:             osPrefix,
-				OSUser:               osUser,
-				OSRAM:                2048,
-				FlavorRegex:          flavorRegex,
-				ServerPorts:          []int{22},
-				ServerKeepTime:       15 * time.Second,
-				StateUpdateFrequency: 1 * time.Second,
-				Shell:                "bash",
-				MaxInstances:         -1,
-			},
-			DBFile:       config.ManagerDbFile,
-			DBFileBackup: config.ManagerDbBkFile,
-			TokenFile:    config.ManagerTokenFile,
-			CAFile:       config.ManagerCAFile,
-			CertFile:     config.ManagerCertFile,
-			KeyFile:      config.ManagerKeyFile,
-			Deployment:   config.Deployment,
-			RunnerCmd:    runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
-			Logger:       testLogger,
+			Port:            config.ManagerPort,
+			WebPort:         config.ManagerWeb,
+			SchedulerName:   "openstack",
+			SchedulerConfig: cloudConfig,
+			DBFile:          config.ManagerDbFile,
+			DBFileBackup:    config.ManagerDbBkFile,
+			TokenFile:       config.ManagerTokenFile,
+			CAFile:          config.ManagerCAFile,
+			CertFile:        config.ManagerCertFile,
+			CertDomain:      config.ManagerCertDomain,
+			KeyFile:         config.ManagerKeyFile,
+			Deployment:      config.Deployment,
+			RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			Logger:          testLogger,
 		}
 
 		Convey("You can connect with an OpenStack scheduler", t, func() {
@@ -3617,6 +3614,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		TokenFile:       config.ManagerTokenFile,
 		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
@@ -3898,6 +3896,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		TokenFile:       config.ManagerTokenFile,
 		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
@@ -4173,7 +4172,6 @@ func runner() {
 	}
 
 	config := internal.ConfigLoad(rdeployment, true, testLogger)
-	addr := rserver
 
 	token, err := ioutil.ReadFile(config.ManagerTokenFile)
 	if err != nil {
@@ -4186,7 +4184,7 @@ func runner() {
 	//  runner client it would be used to end the below for loop before hitting
 	//  this limit)
 
-	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, timeout)
+	jq, err := Connect(rserver, config.ManagerCAFile, rdomain, token, timeout)
 
 	if err != nil {
 		log.Fatalf("connect err: %s\n", err)
@@ -4224,5 +4222,14 @@ func runner() {
 	if clean {
 		tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "ok")
 		tmpfile.Close()
+	}
+}
+
+// setDomainIP is an author-only func to ensure that domain points to localhost
+func setDomainIP(domain string) {
+	host, _ := os.Hostname()
+	if host == "vr-2-2-02" {
+		ip, _ := CurrentIP("")
+		internal.InfobloxSetDomainIP(domain, ip)
 	}
 }
