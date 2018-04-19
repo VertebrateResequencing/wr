@@ -21,14 +21,22 @@ package cloud
 // This file contains a provideri implementation for Kubernetes
 
 import (
+	"os/signal"
+
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
+
 	"archive/tar"
+	"net/url"
 	//"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,15 +61,38 @@ import (
 )
 
 type kubernetesp struct {
-	clusterConfig     *rest.Config
 	clientset         *kubernetes.Clientset
+	clusterConfig     *rest.Config
+	RESTClient        rest.Interface
 	namespaceClient   typedv1.NamespaceInterface
 	deploymentsClient typedappsv1beta1.DeploymentInterface
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
+	PortForwarder     portForwarder
+	StopChannel       chan struct{}
+	ReadyChannel      chan struct{}
+	cmdOut, cmdErr    io.Writer
 	kubeconfig        *string
 	newNamespace      string
 	log15.Logger
+}
+
+type portForwarder interface {
+	ForwardPorts(method string, url *url.URL, requiredPorts []string) error
+}
+
+func (p *kubernetesp) ForwardPorts(method string, url *url.URL, requiredPorts []string) error {
+	fmt.Println("In ForwardPorts")
+	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
+	if err != nil {
+		return err
+	}
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
+	fw, err := portforward.New(dialer, requiredPorts, p.StopChannel, p.ReadyChannel, p.cmdOut, p.cmdErr)
+	if err != nil {
+		return err
+	}
+	return fw.ForwardPorts()
 }
 
 // Writer provides a method for writing output (from stderr)
@@ -114,11 +145,14 @@ func makeTar(files []string, destDir string, writer io.Writer) error {
 	tarWriter := tar.NewWriter(writer)
 	defer tarWriter.Close()
 	//Add each file to the tarball
+	fmt.Println(len(files))
 	for i := range files {
+		fmt.Printf("Adding file %v \n", files[i])
 		if err := addFile(tarWriter, path.Clean(files[i]), destDir); err != nil {
 			panic(err)
 		}
 	}
+	fmt.Println("Done adding files to tar")
 	return nil
 }
 
@@ -147,8 +181,11 @@ func (p *kubernetesp) initialize(logger log15.Logger) error {
 		p.Logger.Error("Create authenticated clientset", "err", err)
 		return err
 	}
-	//Create a unique namespace
+	//Create REST client
+	p.RESTClient = p.clientset.CoreV1().RESTClient()
+	//Create namespace client
 	p.namespaceClient = p.clientset.CoreV1().Namespaces()
+	//Create a unique namespace
 	p.newNamespace = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 	//Retry if namespace taken
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -177,6 +214,14 @@ func (p *kubernetesp) initialize(logger log15.Logger) error {
 
 	//Create client for pods
 	p.podClient = p.clientset.CoreV1().Pods(p.newNamespace)
+
+	//Create portforwarder
+	//p.PortForwarder =
+
+	//Make channels for port forwarding
+	p.StopChannel = make(chan struct{}, 1)
+	p.ReadyChannel = make(chan struct{})
+	fmt.Println("Created channels")
 
 	return nil
 }
@@ -229,17 +274,31 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 								},
 							},
 							Command: []string{
-								"/wr-tmp/wr",
+								"/wr-tmp/wr-linux",
 							},
 							Args: []string{
 								"manager",
 								"start",
 								"-f",
+								"--deployment",
+								"development",
+								"--local_username",
+								"tb15",
 							},
 							VolumeMounts: []apiv1.VolumeMount{
 								{
 									Name:      "wr-temp",
 									MountPath: "/wr-tmp",
+								},
+							},
+							Env: []apiv1.EnvVar{
+								{
+									Name:  "WR_MANAGERPORT",
+									Value: strconv.Itoa(requiredPorts[0]),
+								},
+								{
+									Name:  "WR_MANAGERWEB",
+									Value: strconv.Itoa(requiredPorts[1]),
 								},
 							},
 							SecurityContext: &apiv1.SecurityContext{
@@ -288,7 +347,7 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 			Selector: map[string]string{
 				"app": "wr-manager",
 			},
-			ClusterIP: "none",
+			ClusterIP: "None",
 			Ports: []apiv1.ServicePort{
 				{
 					Name: "wr-manager",
@@ -346,7 +405,7 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 	//avoid deadlock by using goroutine
 	go func() {
 		defer writer.Close()
-		tarErr := makeTar([]string{dir + "/wr-linux"}, "/wr-tmp/", writer)
+		tarErr := makeTar([]string{dir + "/.wr_config.yml", dir + "/wr-linux"}, "/wr-tmp/", writer)
 		if tarErr != nil {
 			p.Logger.Error("Error writing tar", "err", tarErr)
 			panic(tarErr)
@@ -364,7 +423,7 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 
 	//Make a request to the APIServer for an 'attach'.
 	//Open Stdin and Stderr for use by the client
-	execRequest := p.clientset.CoreV1().RESTClient().Post().
+	execRequest := p.RESTClient.Post().
 		Resource("pods").
 		Name(pod.ObjectMeta.Name).
 		Namespace(pod.ObjectMeta.Namespace).
@@ -402,13 +461,15 @@ func (p *kubernetesp) deploy(resources *Resources, requiredPorts []int, gatewayI
 		fmt.Printf("StdErr: %v\n", stdErr)
 		return fmt.Errorf("Error executing remote command: %v", err)
 	}
+	fmt.Println("Sleeping for 15s") // wait for container to be running
+	time.Sleep(15 * time.Second)
 
-	return nil
+	return p.portForward(pod.ObjectMeta.Name, requiredPorts)
 }
 
 // No required env variables
 func (p *kubernetesp) requiredEnv() []string {
-	return []string{""}
+	return []string{}
 }
 
 // No required env variables
@@ -542,7 +603,7 @@ func (p *kubernetesp) spawn(resources *Resources, osPrefix string, flavorID stri
 	//avoid deadlock on the writer by using goroutine
 	go func() {
 		defer writer.Close()
-		tarErr := makeTar([]string{dir + "/wr-linux"}, "/wr-tmp/", writer)
+		tarErr := makeTar([]string{dir + "/wr-linux", dir + "/.wr_config.yml"}, "/wr-tmp/", writer)
 		if tarErr != nil {
 			p.Logger.Error("Error writing tar", "err", tarErr)
 			panic(tarErr)
@@ -565,7 +626,7 @@ func (p *kubernetesp) spawn(resources *Resources, osPrefix string, flavorID stri
 
 	//Make a request to the APIServer for an 'attach'.
 	//Open Stdin and Stderr for use by the client
-	execRequest := p.clientset.CoreV1().RESTClient().Post().
+	execRequest := p.RESTClient.Post().
 		Resource("pods").
 		Name(pod.ObjectMeta.Name).
 		Namespace(pod.ObjectMeta.Namespace).
@@ -650,4 +711,48 @@ func (p *kubernetesp) checkServer(serverID string) (working bool, err error) {
 	default:
 		return false, nil
 	}
+}
+
+// Sets up port forwarding to the manager that is running inside the cluster
+func (p *kubernetesp) portForward(podName string, requiredPorts []int) error {
+	fmt.Println(podName)
+	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
+	if err != nil {
+		p.Logger.Error("Getting pod for port forward", "err", err, "pod", podName)
+		return err
+	}
+	fmt.Println(pod)
+	if pod.Status.Phase != apiv1.PodRunning {
+		p.Logger.Error("unable to forward port because pod is not running.", "status", pod.Status.Phase, "pod", podName)
+		return fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
+	}
+
+	signals := make(chan os.Signal, 1)   // channel to receive interrupt
+	signal.Notify(signals, os.Interrupt) // Notify on interrupt
+	defer signal.Stop(signals)           // stop relaying signals to signals
+
+	// Avoid deadlock using goroutine
+	go func() {
+		<-signals
+		if p.StopChannel != nil {
+			close(p.StopChannel)
+		}
+	}()
+
+	req := p.RESTClient.Post().
+		Resource("pods").
+		Namespace(p.newNamespace).
+		Name(pod.Name).
+		SubResource("portforward")
+
+	//convert ports from []int to []string
+	ports := make([]string, 2)
+	for i, port := range requiredPorts {
+		ports[i] = strconv.Itoa(port)
+	}
+	fmt.Println(ports)
+	fmt.Println("returning at end of portForward")
+
+	return p.ForwardPorts("POST", req.URL(), ports)
+
 }
