@@ -1563,7 +1563,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 		if err != nil {
 			s.Warn("clearSchedulerGroup failed", "err", err)
 		}
