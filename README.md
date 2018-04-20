@@ -110,6 +110,12 @@ Right now, with the limited functionality available, you will run something like
 
 (It isn't necessary to stop the manager; you can just leave it running forever.)
 
+Note that for viewing the web interface, your browser will raise a security
+warning, since by default wr will generate and use its own self-signed
+certificate. So the first time you view it you will need to allow an exception.
+See the [wiki](https://github.com/VertebrateResequencing/wr/wiki/Security) for
+more details regarding security.
+
 For usage on OpenStack, while you can bring up your own OpenStack server, ssh
 there and run `wr manager start -s openstack [options]` as normal it's easier
 to:
