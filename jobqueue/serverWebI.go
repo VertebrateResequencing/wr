@@ -97,9 +97,9 @@ type jstatus struct {
 	Ended         int64
 	StdErr        string
 	StdOut        string
-	// Env        []string //*** not sending Env until we have https implemented
-	Attempts uint32
-	Similar  int
+	Env           []string
+	Attempts      uint32
+	Similar       int
 }
 
 // webInterfaceStatic is a http handler for our static documents in static.go
@@ -112,6 +112,11 @@ func webInterfaceStatic(s *Server) http.HandlerFunc {
 		path := r.URL.Path
 		if path == "/" || path == "/status" {
 			path = "/status.html"
+
+			ok := s.httpAuthorized(w, r)
+			if !ok {
+				return
+			}
 		}
 
 		// during development, to avoid having to rebuild and restart manager on
@@ -170,6 +175,11 @@ func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 // webpage
 func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
 		conn, ok := webSocket(w, r)
 		if !ok {
 			s.Error("Failed to set up websocket", "Host", r.Host)
@@ -436,7 +446,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 func jobToStatus(job *Job) jstatus {
 	stderr, _ := job.StdErr()
 	stdout, _ := job.StdOut()
-	// env, _ := job.Env()
+	env, _ := job.Env()
 	var cwdLeaf string
 	job.RLock()
 	defer job.RUnlock()
@@ -485,7 +495,7 @@ func jobToStatus(job *Job) jstatus {
 		Similar:       job.Similar,
 		StdErr:        stderr,
 		StdOut:        stdout,
-		// Env:           env,
+		Env:           env,
 	}
 }
 

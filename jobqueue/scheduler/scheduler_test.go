@@ -535,14 +535,14 @@ func TestOpenstack(t *testing.T) {
 					So(flavor.ID, ShouldEqual, "2003")
 				} else {
 					// author's pike install
-					So(flavor.ID, ShouldEqual, "ffeffb4c-4a23-494d-ab3b-6cad2b3c7ff3")
-					So(flavor.RAM, ShouldEqual, 128)
-					So(flavor.Disk, ShouldEqual, 0)
+					So(flavor.ID, ShouldEqual, "2000")
+					So(flavor.RAM, ShouldEqual, 9100)
+					So(flavor.Disk, ShouldEqual, 16)
 					So(flavor.Cores, ShouldEqual, 1)
 
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
 					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "ffeffb4c-4a23-494d-ab3b-6cad2b3c7ff3")
+					So(flavor.ID, ShouldEqual, "2000")
 
 					flavor, err = oss.determineFlavor(oss.reqForSpawn(possibleReq))
 					So(err, ShouldBeNil)

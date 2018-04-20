@@ -52,6 +52,7 @@ var schedgrp string
 var runnermodetmpdir string
 var rdeployment string
 var rserver string
+var rdomain string
 var rtimeout int
 var maxmins int
 var envVars = os.Environ()
@@ -66,10 +67,41 @@ func init() {
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
+	flag.StringVar(&rdomain, "rdomain", "", "domain for runnermode")
 	flag.IntVar(&rtimeout, "rtimeout", 1, "reserve timeout for runnermode")
 	flag.IntVar(&maxmins, "maxmins", 0, "maximum mins allowed for  runnermode")
 	flag.StringVar(&runnermodetmpdir, "tmpdir", "", "tmp dir for runnermode")
 	ServerLogClientErrors = false
+}
+
+func TestJobqueueUtils(t *testing.T) {
+	if runnermode {
+		return
+	}
+
+	Convey("CurrentIP() works", t, func() {
+		ip, err := CurrentIP("")
+		So(err, ShouldBeNil)
+		So(ip, ShouldNotBeBlank)
+		ip, err = CurrentIP("9.9.9.9/24")
+		So(err, ShouldBeNil)
+		So(ip, ShouldBeBlank)
+		ip, err = CurrentIP(ip + "/16")
+		So(err, ShouldBeNil)
+		So(ip, ShouldEqual, ip)
+	})
+
+	Convey("generateToken() and tokenMatches() work", t, func() {
+		token, err := generateToken()
+		So(err, ShouldBeNil)
+		So(len(token), ShouldEqual, tokenLength)
+		token2, err := generateToken()
+		So(err, ShouldBeNil)
+		So(len(token2), ShouldEqual, tokenLength)
+		So(token, ShouldNotEqual, token2)
+		So(tokenMatches(token, token2), ShouldBeFalse)
+		So(tokenMatches(token, token), ShouldBeTrue)
+	})
 }
 
 func TestJobqueue(t *testing.T) {
@@ -95,10 +127,17 @@ func TestJobqueue(t *testing.T) {
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    managerDBBkFile,
+		TokenFile:       config.ManagerTokenFile,
+		CAFile:          config.ManagerCAFile,
+		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
+		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
 	}
 	addr := "localhost:" + config.ManagerPort
+
+	setDomainIP(config.ManagerCertDomain)
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -107,18 +146,6 @@ func TestJobqueue(t *testing.T) {
 
 	standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
-	Convey("CurrentIP() works", t, func() {
-		ip, err := CurrentIP("")
-		So(err, ShouldBeNil)
-		So(ip, ShouldNotBeBlank)
-		ip, err = CurrentIP("9.9.9.9/24")
-		So(err, ShouldBeNil)
-		So(ip, ShouldBeBlank)
-		ip, err = CurrentIP(ip + "/16")
-		So(err, ShouldBeNil)
-		So(ip, ShouldEqual, ip)
-	})
-
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client; to get the server in its own pid we need to
 	// "fork", and that means these must be the first tests to run or else we
@@ -126,6 +153,9 @@ func TestJobqueue(t *testing.T) {
 	Convey("Once a jobqueue server is up as a daemon", t, func() {
 		ServerItemTTR = 200 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
+
+		errr := os.Remove(config.ManagerTokenFile)
+		So(errr == nil || os.IsNotExist(errr), ShouldBeTrue)
 
 		context := &daemon.Context{
 			PidFileName: config.ManagerPidFile,
@@ -148,7 +178,7 @@ func TestJobqueue(t *testing.T) {
 			// 	log.SetOutput(logfile)
 			// }
 
-			server, msg, err := Serve(serverConfig)
+			server, msg, _, err := Serve(serverConfig)
 			if err != nil {
 				log.Fatalf("test daemon failed to start: %s\n", err)
 			}
@@ -173,7 +203,13 @@ func TestJobqueue(t *testing.T) {
 		}
 		// parent; wait a while for our child to bring up the server
 		defer syscall.Kill(child.Pid, syscall.SIGTERM)
-		jq, err := Connect(addr, 10*time.Second)
+
+		mTimeout := 10 * time.Second
+		internal.WaitForFile(config.ManagerTokenFile, mTimeout)
+		token, err := ioutil.ReadFile(config.ManagerTokenFile)
+		So(err, ShouldBeNil)
+		So(token, ShouldNotBeNil)
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, 10*time.Second)
 		So(err, ShouldBeNil)
 		defer jq.Disconnect()
 
@@ -233,7 +269,7 @@ func TestJobqueue(t *testing.T) {
 				So(<-j1worked, ShouldBeTrue)
 				So(<-j2worked, ShouldBeTrue)
 
-				jq2, err := Connect(addr, clientConnectTime)
+				jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq2.Disconnect()
 				job, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
@@ -271,9 +307,10 @@ func TestJobqueue(t *testing.T) {
 	ClientTouchInterval = 500 * time.Millisecond
 
 	var server *Server
+	var token []byte
 	var errs error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
-		_, err := Connect(addr, clientConnectTime)
+		_, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
 		So(ok, ShouldBeTrue)
@@ -281,13 +318,13 @@ func TestJobqueue(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, errs = Serve(serverConfig)
+		server, _, token, errs = Serve(serverConfig)
 		So(errs, ShouldBeNil)
 
-		server.rc = `echo %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
+		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -429,7 +466,7 @@ func TestJobqueue(t *testing.T) {
 									ticks++
 									if ticks == 2 {
 										jobs = append(jobs, &Job{Cmd: "new", Cwd: "/fake/cwd", ReqGroup: "add_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 5 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
-										gojq, _ := Connect(addr, clientConnectTime)
+										gojq, _ := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 										defer gojq.Disconnect()
 										gojq.Add(jobs, envVars, true)
 									}
@@ -587,23 +624,23 @@ func TestJobqueue(t *testing.T) {
 				syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
-				_, err := Connect(addr, clientConnectTime)
+				_, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
 
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 				jq.Disconnect()
 
 				syscall.Kill(os.Getpid(), syscall.SIGINT)
 				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
-				_, err = Connect(addr, clientConnectTime)
+				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok = err.(Error)
 				So(ok, ShouldBeTrue)
@@ -634,14 +671,14 @@ func TestJobqueue(t *testing.T) {
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 200 * time.Millisecond
 		ClientTouchInterval = 50 * time.Millisecond
-		server, _, errs = Serve(serverConfig)
+		server, _, token, errs = Serve(serverConfig)
 		So(errs, ShouldBeNil)
 
 		Convey("You can connect, and add some real jobs", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
-			jq2, err := Connect(addr, clientConnectTime)
+			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq2.Disconnect()
 
@@ -1399,7 +1436,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("After connecting and adding some jobs under one RepGroup", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -1495,7 +1532,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("After connecting and adding some jobs under some RepGroups", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -1729,7 +1766,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("After connecting you can add some jobs with DepGroups", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2126,7 +2163,7 @@ func TestJobqueue(t *testing.T) {
 		defer func() {
 			forceBackups = false
 		}()
-		server, _, errs = Serve(serverConfig)
+		server, _, token, errs = Serve(serverConfig)
 		So(errs, ShouldBeNil)
 		_, err := os.Stat(config.ManagerDbFile)
 		So(err, ShouldBeNil)
@@ -2134,7 +2171,7 @@ func TestJobqueue(t *testing.T) {
 		So(err, ShouldNotBeNil)
 
 		Convey("You can connect, and add 2 jobs, which creates a db backup", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2185,9 +2222,9 @@ func TestJobqueue(t *testing.T) {
 				So(info3.Size(), ShouldEqual, 32768)
 
 				server.Stop(true)
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err := jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2200,9 +2237,9 @@ func TestJobqueue(t *testing.T) {
 				defer func() {
 					wipeDevDBOnInit = true
 				}()
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2220,9 +2257,9 @@ func TestJobqueue(t *testing.T) {
 				defer func() {
 					wipeDevDBOnInit = true
 				}()
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2236,7 +2273,7 @@ func TestJobqueue(t *testing.T) {
 				_, err = os.Stat(managerDBBkFile)
 				So(err, ShouldBeNil)
 
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
 
 				info, err = os.Stat(config.ManagerDbFile)
@@ -2246,7 +2283,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 32768)
 
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2260,7 +2297,7 @@ func TestJobqueue(t *testing.T) {
 				f.Sync()
 				f.Close()
 
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
 
 				info, err = os.Stat(config.ManagerDbFile)
@@ -2270,7 +2307,7 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 32768)
 
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -2290,10 +2327,10 @@ func TestJobqueue(t *testing.T) {
 
 				server.Stop(true)
 				wipeDevDBOnInit = false
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.Reserve(50 * time.Millisecond)
@@ -2309,7 +2346,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, add a job, then immediately shutdown, and the db backup still completes", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2336,9 +2373,9 @@ func TestJobqueue(t *testing.T) {
 				}()
 				errr := os.Remove(config.ManagerDbFile)
 				So(errr, ShouldBeNil)
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 				job, err := jq.Reserve(15 * time.Millisecond)
 				So(err, ShouldBeNil)
@@ -2352,9 +2389,9 @@ func TestJobqueue(t *testing.T) {
 
 				errr = os.Remove(config.ManagerDbFile)
 				So(errr, ShouldBeNil)
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 				job, err = jq.Reserve(15 * time.Millisecond)
 				So(err, ShouldBeNil)
@@ -2363,7 +2400,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect and add a non-instant job", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2403,10 +2440,10 @@ func TestJobqueue(t *testing.T) {
 				So(err, ShouldNotBeNil)
 
 				wipeDevDBOnInit = false
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
@@ -2448,10 +2485,10 @@ func TestJobqueue(t *testing.T) {
 				jq.Disconnect() // user must always Disconnect before connecting again!
 
 				wipeDevDBOnInit = false
-				server, _, errs = Serve(serverConfig)
+				server, _, token, errs = Serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
@@ -2493,14 +2530,14 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
-		server, _, errs = Serve(runningConfig)
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		server, _, token, errs = Serve(runningConfig)
 		So(errs, ShouldBeNil)
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
 
 		Convey("You can connect, and add a job that you can kill while it's running", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2578,7 +2615,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, and add some real jobs", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2653,7 +2690,7 @@ func TestJobqueue(t *testing.T) {
 		})
 
 		Convey("You can connect, and add a job that buries with no retries", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2774,7 +2811,7 @@ func TestJobqueue(t *testing.T) {
 
 		if maxCPU > 2 {
 			Convey("You can connect and add jobs in alternating scheduler groups and they don't pend", func() {
-				jq, err := Connect(addr, clientConnectTime)
+				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 				defer jq.Disconnect()
 
@@ -2846,7 +2883,7 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -2971,12 +3008,12 @@ func TestJobqueue(t *testing.T) {
 				lsfConfig.SchedulerName = "lsf"
 				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing"}
 				server.Stop(true)
-				server, _, errs = Serve(lsfConfig)
+				server, _, token, errs = Serve(lsfConfig)
 				So(errs, ShouldBeNil)
 			}
 
 			clientConnectTime = 20 * time.Second // it takes a long time with -race to add 10000 jobs...
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3155,12 +3192,12 @@ func TestJobqueue(t *testing.T) {
 		}
 
 		runningConfig := serverConfig
-		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
-		server, _, errs = Serve(runningConfig)
+		runningConfig.RunnerCmd = runnerCmd + " --runnermode --runnerfail --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir
+		server, _, token, errs = Serve(runningConfig)
 		So(errs, ShouldBeNil)
 
 		Convey("You can connect, and add a job", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3266,9 +3303,12 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	host, _ := os.Hostname()
 	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
 		var server *Server
+		var token []byte
 		var errs error
 		config := internal.ConfigLoad("development", true, testLogger)
 		addr := "localhost:" + config.ManagerPort
+
+		setDomainIP(config.ManagerCertDomain)
 
 		runnertmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")
 		if err != nil {
@@ -3286,35 +3326,46 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		}
 
 		resourceName := "wr-testing-" + localUser
+		cloudConfig := &jqs.ConfigOpenStack{
+			ResourceName:         resourceName,
+			OSPrefix:             osPrefix,
+			OSUser:               osUser,
+			OSRAM:                2048,
+			FlavorRegex:          flavorRegex,
+			ServerPorts:          []int{22},
+			ServerKeepTime:       15 * time.Second,
+			StateUpdateFrequency: 1 * time.Second,
+			Shell:                "bash",
+			MaxInstances:         -1,
+		}
+		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
+		if config.ManagerCAFile != "" {
+			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
+		}
+
 		osConfig := ServerConfig{
-			Port:          config.ManagerPort,
-			WebPort:       config.ManagerWeb,
-			SchedulerName: "openstack",
-			SchedulerConfig: &jqs.ConfigOpenStack{
-				ResourceName:         resourceName,
-				OSPrefix:             osPrefix,
-				OSUser:               osUser,
-				OSRAM:                2048,
-				FlavorRegex:          flavorRegex,
-				ServerPorts:          []int{22},
-				ServerKeepTime:       15 * time.Second,
-				StateUpdateFrequency: 1 * time.Second,
-				Shell:                "bash",
-				MaxInstances:         -1,
-			},
-			DBFile:       config.ManagerDbFile,
-			DBFileBackup: config.ManagerDbBkFile,
-			Deployment:   config.Deployment,
-			RunnerCmd:    runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
-			Logger:       testLogger,
+			Port:            config.ManagerPort,
+			WebPort:         config.ManagerWeb,
+			SchedulerName:   "openstack",
+			SchedulerConfig: cloudConfig,
+			DBFile:          config.ManagerDbFile,
+			DBFileBackup:    config.ManagerDbBkFile,
+			TokenFile:       config.ManagerTokenFile,
+			CAFile:          config.ManagerCAFile,
+			CertFile:        config.ManagerCertFile,
+			CertDomain:      config.ManagerCertDomain,
+			KeyFile:         config.ManagerKeyFile,
+			Deployment:      config.Deployment,
+			RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			Logger:          testLogger,
 		}
 
 		Convey("You can connect with an OpenStack scheduler", t, func() {
-			server, _, errs = Serve(osConfig)
+			server, _, token, errs = Serve(osConfig)
 			So(errs, ShouldBeNil)
 			defer server.Stop(true)
 
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3560,6 +3611,11 @@ func TestJobqueueWithMounts(t *testing.T) {
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
+		TokenFile:       config.ManagerTokenFile,
+		CAFile:          config.ManagerCAFile,
+		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
+		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
 	}
@@ -3573,7 +3629,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		defer func() {
 			forceBackups = false
 		}()
-		server, _, errs := Serve(s3ServerConfig)
+		server, _, token, errs := Serve(s3ServerConfig)
 		So(errs, ShouldBeNil)
 
 		defer func() {
@@ -3617,7 +3673,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 		So(err, ShouldNotBeNil)
 
 		Convey("You can connect and add a job, which creates a db backup", func() {
-			jq, err := Connect(addr, clientConnectTime)
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
@@ -3647,10 +3703,10 @@ func TestJobqueueWithMounts(t *testing.T) {
 				defer func() {
 					wipeDevDBOnInit = true
 				}()
-				server, _, errs = Serve(s3ServerConfig)
+				server, _, token, errs = Serve(s3ServerConfig)
 				So(errs, ShouldBeNil)
 				defer server.Stop(true)
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -3664,7 +3720,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				_, err = os.Stat(localBkPath)
 				So(err, ShouldNotBeNil)
 
-				server, _, errs = Serve(s3ServerConfig)
+				server, _, token, errs = Serve(s3ServerConfig)
 				So(errs, ShouldBeNil)
 				defer server.Stop(true)
 
@@ -3675,7 +3731,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(info2.Size(), ShouldEqual, 28672)
 
-				jq, err = Connect(addr, clientConnectTime)
+				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
 
 				jobsByRepGroup, err = jq.GetByRepGroup("manually_added", 0, "", false, false)
@@ -3696,12 +3752,12 @@ func TestJobqueueWithMounts(t *testing.T) {
 		}
 		defer os.RemoveAll(cwd)
 
-		server, _, err := Serve(serverConfig)
+		server, _, token, err := Serve(serverConfig)
 		So(err, ShouldBeNil)
 
 		standardReqs := &jqs.Requirements{RAM: 10, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
-		jq, err := Connect(addr, clientConnectTime)
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
 		defer jq.Disconnect()
 
@@ -3837,6 +3893,11 @@ func TestJobqueueSpeed(t *testing.T) {
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
+		TokenFile:       config.ManagerTokenFile,
+		CAFile:          config.ManagerCAFile,
+		CertFile:        config.ManagerCertFile,
+		CertDomain:      config.ManagerCertDomain,
+		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
 		Logger:          testLogger,
 	}
@@ -3848,13 +3909,13 @@ func TestJobqueueSpeed(t *testing.T) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 		n := 50000
 
-		server, _, err := Serve(serverConfig)
+		server, _, token, err := Serve(serverConfig)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		clientConnectTime := 10 * time.Second
-		jq, err := Connect(addr, clientConnectTime)
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -3882,7 +3943,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		for i := 1; i <= o; i++ {
 			go func(i int) {
 				start := time.After(time.Until(beginat))
-				gjq, err := Connect(addr, clientConnectTime)
+				gjq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -4111,7 +4172,11 @@ func runner() {
 	}
 
 	config := internal.ConfigLoad(rdeployment, true, testLogger)
-	addr := rserver
+
+	token, err := ioutil.ReadFile(config.ManagerTokenFile)
+	if err != nil {
+		log.Fatalf("token read err: %s\n", err)
+	}
 
 	timeout := 6 * time.Second
 	rtimeoutd := time.Duration(rtimeout) * time.Second
@@ -4119,7 +4184,7 @@ func runner() {
 	//  runner client it would be used to end the below for loop before hitting
 	//  this limit)
 
-	jq, err := Connect(addr, timeout)
+	jq, err := Connect(rserver, config.ManagerCAFile, rdomain, token, timeout)
 
 	if err != nil {
 		log.Fatalf("connect err: %s\n", err)
@@ -4157,5 +4222,14 @@ func runner() {
 	if clean {
 		tmpfile, _ := ioutil.TempFile(runnermodetmpdir, "ok")
 		tmpfile.Close()
+	}
+}
+
+// setDomainIP is an author-only func to ensure that domain points to localhost
+func setDomainIP(domain string) {
+	host, _ := os.Hostname()
+	if host == "vr-2-2-02" {
+		ip, _ := CurrentIP("")
+		internal.InfobloxSetDomainIP(domain, ip)
 	}
 }

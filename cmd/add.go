@@ -345,10 +345,7 @@ machine was started.`,
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
-		jq, err := jobqueue.Connect(addr, timeout)
-		if err != nil {
-			die("%s", err)
-		}
+		jq := connect(timeout)
 		defer func() {
 			err = jq.Disconnect()
 			if err != nil {

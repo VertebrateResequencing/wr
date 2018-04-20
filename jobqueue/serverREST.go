@@ -43,6 +43,7 @@ const (
 	restWarningsEndpoint   = "/rest/v1/warnings/"
 	restBadServersEndpoint = "/rest/v1/servers/"
 	restFormTrue           = "true"
+	bearerSchema           = "Bearer "
 )
 
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
@@ -394,18 +395,53 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}, nil
 }
 
-// restJobs lets you do CRUD on jobs in the "cmds" queue.
+// httpAuthorized checks for parameter 'token' and for Authorization header for
+// Bearer token; if not supplied, or the token is wrong, writes out an error to
+// w, otherwise returns true.
+func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+		return false
+	}
+
+	// try token parameter
+	token := r.Form.Get("token")
+	if token == "" {
+		// try auth header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			return false
+		}
+
+		if !strings.HasPrefix(authHeader, bearerSchema) {
+			http.Error(w, "Authorization requires Bearer scheme", http.StatusUnauthorized)
+			return false
+		}
+
+		token = authHeader[len(bearerSchema):]
+	}
+
+	if !tokenMatches([]byte(token), s.token) {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// restJobs lets you do CRUD on jobs in the queue.
 func restJobs(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := r.ParseForm()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+		ok := s.httpAuthorized(w, r)
+		if !ok {
 			return
 		}
 
 		// carry out a different action based on the HTTP Verb
 		var jobs []*Job
 		var status int
+		var err error
 		switch r.Method {
 		case http.MethodGet:
 			jobs, status, err = restJobsStatus(r, s)
@@ -439,7 +475,7 @@ func restJobs(s *Server) http.HandlerFunc {
 	}
 }
 
-// restJobsStatus gets the status of the requested jobs in the given queue. The
+// restJobsStatus gets the status of the requested jobs in the queue. The
 // request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are std, env (which can take a "true" value), limit
 // (a number) and state (one of delayed|ready|reserved|running|lost|buried|
@@ -455,7 +491,7 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 		getStd = true
 	}
 	if r.Form.Get("env") == restFormTrue {
-		// getEnv = true // *** currently disabled for security purposes
+		getEnv = true
 	}
 	if r.Form.Get("limit") != "" {
 		limit, err = strconv.Atoi(r.Form.Get("limit"))
@@ -660,6 +696,11 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 // (deletes) them.
 func restWarnings(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
 		// carry out a different action based on the HTTP Verb
 		sis := []*schedulerIssue{}
 		switch r.Method {
@@ -687,14 +728,13 @@ func restWarnings(s *Server) http.HandlerFunc {
 	}
 }
 
-// restJobs lets you do CRUD on cloud servers that have gone bad. The DELETE
-// verb has a required 'id' parameter, being the ID of a server you wish to
-// confirm as bad and have terminated if it still exists.
+// restBadServers lets you do CRUD on cloud servers that have gone bad. The
+// DELETE verb has a required 'id' parameter, being the ID of a server you wish
+// to confirm as bad and have terminated if it still exists.
 func restBadServers(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := r.ParseForm()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+		ok := s.httpAuthorized(w, r)
+		if !ok {
 			return
 		}
 

@@ -207,4 +207,4 @@ web interface port that wr tells you about.)
     ProxyCommand nc -X 5 -x localhost:20002 %h %p
 
 You'll then be able to access the website at
-http://login.internal.myserver.org:11302 or perhaps http://localhost:11302
+https://login.internal.myserver.org:11302 or perhaps https://localhost:11302

@@ -22,7 +22,6 @@ package jobqueue
 
 import (
 	"bytes"
-	"fmt"
 	"sync"
 	"time"
 
@@ -54,13 +53,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	drain := s.drain
 	s.ssmutex.RUnlock()
 
-	// check that the client making the request has the expected username; NB:
-	// *** this is not real security, since the client could just lie about its
-	// username! Right now this is intended to stop accidental use of someone
-	// else's jobqueue server
-	if cr.User == "" || !s.allowedUsers[cr.User] {
-		srerr = ErrWrongUser
-		qerr = fmt.Sprintf("User %s denied access (only %s allowed)", cr.User, s.ServerInfo.AllowedUsers)
+	// check that the client making the request has the expected token
+	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
+		srerr = ErrPermissionDenied
+		qerr = "Client presented the wrong token"
 	} else if s.q == nil || (!up && !drain) {
 		// the server just got shutdown
 		srerr = ErrClosedStop
@@ -685,6 +681,7 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)
+		job.EnvCRetrieved = true
 	}
 }
 

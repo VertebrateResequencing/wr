@@ -378,14 +378,12 @@
                                         </dl>
                                     <!-- /ko -->
 
-                                    <!--
                                     <dl>
                                         <dt>Env</dt>
                                         <dd>
                                             <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
                                         </dd>
                                     </dl>
-                                    -->
 
                                     <!-- ko if: Cwd -->
                                         <dl>
@@ -546,7 +544,7 @@
             <hr>
 
             <footer id="footer">
-                <small>&copy; 2016, 2017 Genome Research Limited.</small>
+                <small>&copy; 2016-2018 Genome Research Limited.</small>
             </footer>
         </div>
 
@@ -556,6 +554,7 @@
             // viewmodel for displaying status
             function StatusViewModel() {
                 var self = this;
+                self.token = getParameterByName("token");
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
                 self.badservers = ko.observableArray();
@@ -631,7 +630,7 @@
                 if (window.WebSocket === undefined) {
                     self.statuserror.push("Your browser does not support WebSockets");
                 } else {
-                    self.ws = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws");
+                    self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws?token=" + self.token);
                     self.ws.onopen = function() {
                         self.ws.send(JSON.stringify({ Request: "current" }));
                     };

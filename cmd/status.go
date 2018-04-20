@@ -94,10 +94,8 @@ very many (tens of thousands+) commands.`,
 			defaultMounts = mountParseJSON(cmdMounts)
 		}
 
-		jq, err := jobqueue.Connect(addr, timeout)
-		if err != nil {
-			die("%s", err)
-		}
+		jq := connect(timeout)
+		var err error
 		defer func() {
 			err = jq.Disconnect()
 			if err != nil {

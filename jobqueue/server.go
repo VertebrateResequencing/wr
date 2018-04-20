@@ -22,8 +22,11 @@ package jobqueue
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -38,7 +41,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/rep"
-	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/go-mangos/mangos/transport/tlstcp"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
@@ -50,23 +53,23 @@ import (
 // cast and check if it's a certain type of error. ServerMode* constants are
 // used to report on the status of the server, found inside ServerInfo.
 const (
-	ErrInternalError  = "internal error"
-	ErrUnknownCommand = "unknown command"
-	ErrBadRequest     = "bad request (missing arguments?)"
-	ErrBadJob         = "bad job (not in queue or correct sub-queue)"
-	ErrMissingJob     = "corresponding job not found"
-	ErrUnknown        = "unknown error"
-	ErrClosedInt      = "queues closed due to SIGINT"
-	ErrClosedTerm     = "queues closed due to SIGTERM"
-	ErrClosedStop     = "queues closed due to manual Stop()"
-	ErrQueueClosed    = "queue closed"
-	ErrNoHost         = "could not determine the non-loopback ip address of this host"
-	ErrNoServer       = "could not reach the server"
-	ErrMustReserve    = "you must Reserve() a Job before passing it to other methods"
-	ErrDBError        = "failed to use database"
-	ErrWrongUser      = "you did not start this server: permission denied"
-	ServerModeNormal  = "started"
-	ServerModeDrain   = "draining"
+	ErrInternalError    = "internal error"
+	ErrUnknownCommand   = "unknown command"
+	ErrBadRequest       = "bad request (missing arguments?)"
+	ErrBadJob           = "bad job (not in queue or correct sub-queue)"
+	ErrMissingJob       = "corresponding job not found"
+	ErrUnknown          = "unknown error"
+	ErrClosedInt        = "queues closed due to SIGINT"
+	ErrClosedTerm       = "queues closed due to SIGTERM"
+	ErrClosedStop       = "queues closed due to manual Stop()"
+	ErrQueueClosed      = "queue closed"
+	ErrNoHost           = "could not determine the non-loopback ip address of this host"
+	ErrNoServer         = "could not reach the server"
+	ErrMustReserve      = "you must Reserve() a Job before passing it to other methods"
+	ErrDBError          = "failed to use database"
+	ErrPermissionDenied = "bad token: permission denied"
+	ServerModeNormal    = "started"
+	ServerModeDrain     = "draining"
 )
 
 // these global variables are primarily exported for testing purposes; you
@@ -114,15 +117,14 @@ type serverResponse struct {
 
 // ServerInfo holds basic addressing info about the server.
 type ServerInfo struct {
-	AllowedUsers []string // usernames that are allowed to use the server
-	Addr         string   // ip:port
-	Host         string   // hostname
-	Port         string   // port
-	WebPort      string   // port of the web interface
-	PID          int      // process id of server
-	Deployment   string   // deployment the server is running under
-	Scheduler    string   // the name of the scheduler that jobs are being submitted to
-	Mode         string   // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
+	Addr       string // ip:port
+	Host       string // hostname
+	Port       string // port
+	WebPort    string // port of the web interface
+	PID        int    // process id of server
+	Deployment string // deployment the server is running under
+	Scheduler  string // the name of the scheduler that jobs are being submitted to
+	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
 }
 
 // ServerStats holds information about the jobqueue server for sending to
@@ -173,7 +175,7 @@ type schedulerIssue struct {
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo         *ServerInfo
-	allowedUsers       map[string]bool
+	token              []byte
 	sock               mangos.Socket
 	ch                 codec.Handle
 	db                 *db
@@ -218,13 +220,6 @@ type Server struct {
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
 // fields are required with no working default unless otherwise noted.
 type ServerConfig struct {
-	// AllowedUsers are the usernames that will be allowed access to
-	// the user interfaces that will connect to the server. (In cloud situations
-	// this isn't necessarily just the username of the account that starts the
-	// server, though that user is always allowed access, regardless of this
-	// value.)
-	AllowedUsers []string
-
 	// Port for client-server communication.
 	Port string
 
@@ -241,13 +236,14 @@ type ServerConfig struct {
 	SchedulerConfig interface{}
 
 	// The command line needed to bring up a jobqueue runner client, which
-	// should contain 5 %s parts which will be replaced with the scheduler
-	// group, deployment ip:host address of the server, reservation time out and
+	// should contain 6 %s parts which will be replaced with the scheduler
+	// group, deployment, ip:host address of the server, domain name that the
+	// server's certificate should be valid for, reservation time out and
 	// maximum number of minutes allowed, eg. "my_jobqueue_runner_client --group
-	// '%s' --deployment %s --server '%s' --reserve_timeout %d --max_mins %d".
-	// If you supply an empty string (the default), runner clients will not be
-	// spawned; for any work to be done you will have to run your runner client
-	// yourself manually.
+	// '%s' --deployment %s --server '%s' --domain %s --reserve_timeout %d
+	// --max_mins %d". If you supply an empty string (the default), runner
+	// clients will not be spawned; for any work to be done you will have to run
+	// your runner client yourself manually.
 	RunnerCmd string
 
 	// Absolute path to where the database file should be saved. The database is
@@ -257,6 +253,39 @@ type ServerConfig struct {
 
 	// Absolute path to where the database file should be backed up to.
 	DBFileBackup string
+
+	// Absolute path to where the server will store the authorization token
+	// needed by clients to communicate with the server. Storing it in a file
+	// could make using any CLI clients more convenient. The file will be
+	// read-only by the user starting the server. The default of empty string
+	// means the token is not saved to disk.
+	TokenFile string
+
+	// Absolute path to where CA PEM file is that will be used for
+	// securing access to the web interface. If the given file does not exist,
+	// a certificate will be generated for you at this path.
+	CAFile string
+
+	// Absolute path to where certificate PEM file is that will be used for
+	// securing access to the web interface. If the given file does not exist,
+	// a certificate will be generated for you at this path.
+	CertFile string
+
+	// Absolute path to where key PEM file is that will be used for securing
+	// access to the web interface. If the given file does not exist, a
+	// key will be generated for you at this path.
+	KeyFile string
+
+	// Domain that a generated CertFile should be valid for. If not supplied,
+	// defaults to "localhost".
+	//
+	// When using your own CertFile, this should be set to a domain that the
+	// certifcate is valid for, as when the server spawns clients, those clients
+	// will validate the server's certifcate based on this domain. For the web
+	// interface and REST API, it is up to you to ensure that your DNS has an
+	// entry for this domain that points to the IP address of the machine
+	// running your server.
+	CertDomain string
 
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
@@ -296,16 +325,24 @@ type ServerConfig struct {
 // which point the queues will be safely closed (you'd probably just exit at
 // that point).
 //
+// If it creates a db file or recreates one from backup, and if it creates TLS
+// certificates, it will say what it did in the returned msg string.
+//
+// The returned token must be provided by any client to authenticate. The server
+// is a single user system, so there is only 1 token kept for its entire
+// lifetime. If config.TokenFile has been set, the token will also be written to
+// that file, potentially making it easier for any CLI clients to authenticate
+// with this returned Server.
+//
 // The possible errors from Serve() will be related to not being able to start
 // up at the supplied address; errors encountered while dealing with clients are
-// logged but otherwise ignored. If it creates a db file or recreates one from
-// backup, it will say what it did in the returned msg string.
+// logged but otherwise ignored.
 //
 // It also spawns your runner clients as needed, running them via the configured
 // job scheduler, using the configured shell. It determines the command line to
 // execute for your runner client from the configured RunnerCmd string you
 // supplied.
-func Serve(config ServerConfig) (s *Server, msg string, err error) {
+func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error) {
 	// if a logger was configured we will log debug statements and "harmless"
 	// errors not worth returning (or not possible to return), along with
 	// panics. Otherwise we create a default logger that discards all log
@@ -319,26 +356,37 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}
 	defer internal.LogPanic(serverLogger, "jobqueue serve", true)
 
-	// for security purposes we need to know who will be allowed to access us
-	// in the future
-	owner, err := internal.Username()
+	// generate a secure token for clients to authenticate with
+	token, err = generateToken()
 	if err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
-	var allowedUsers []string
-	allowedUsersMap := make(map[string]bool)
-	for _, user := range config.AllowedUsers {
-		allowedUsersMap[user] = true
-		allowedUsers = append(allowedUsers, user)
+
+	// check if the cert files are available
+	httpAddr := "0.0.0.0:" + config.WebPort
+	caFile := config.CAFile
+	certFile := config.CertFile
+	keyFile := config.KeyFile
+	certDomain := config.CertDomain
+	if certDomain == "" {
+		certDomain = "localhost"
 	}
-	if _, exists := allowedUsersMap[owner]; !exists {
-		allowedUsersMap[owner] = true
-		allowedUsers = append(allowedUsers, owner)
+	err = internal.CheckCerts(certFile, keyFile)
+	var certMsg string
+	if err != nil {
+		// if not, generate our own
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
+		if err != nil {
+			serverLogger.Error("GenerateCerts failed", "err", err)
+			return s, msg, token, err
+		}
+		certMsg = "created a new key and certificate for TLS"
+		msg = certMsg
 	}
 
 	sock, err := rep.NewSocket()
 	if err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
 
 	// we open ourselves up to possible denial-of-service attack if a client
@@ -346,25 +394,38 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	// forever when it legitimately wants to Add() a ton of jobs
 	// unlimited Recv() length
 	if err = sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
 
 	// we use raw mode, allowing us to respond to multiple clients in
 	// parallel
 	if err = sock.SetOption(mangos.OptionRaw, true); err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
 
 	// we'll wait ServerInterruptTime to recv from clients before trying again,
 	// allowing us to check if signals have been passed
 	if err = sock.SetOption(mangos.OptionRecvDeadline, ServerInterruptTime); err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
 
-	sock.AddTransport(tcp.NewTransport())
-
-	if err = sock.Listen("tcp://0.0.0.0:" + config.Port); err != nil {
-		return s, msg, err
+	// have mangos listen using TLS over TCP
+	sock.AddTransport(tlstcp.NewTransport())
+	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return s, msg, token, err
+	}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+	listenOpts := make(map[string]interface{})
+	caCert, err := ioutil.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
+	listenOpts[mangos.OptionTLSConfig] = tlsConfig
+	if err = sock.ListenOptions("tls+tcp://0.0.0.0:"+config.Port, listenOpts); err != nil {
+		return s, msg, token, err
 	}
 
 	// serving will happen in a goroutine that will stop on SIGINT or SIGTERM,
@@ -388,31 +449,31 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		serverLogger.Error("getting current IP failed", "err", err)
 	}
 	if ip == "" {
-		return s, msg, Error{"Serve", "", ErrNoHost}
-	}
-
-	// to be friendly we also record the hostname, but it's possible this isn't
-	// defined, hence we don't rely on it for anything important
-	host, err := os.Hostname()
-	if err != nil {
-		host = "localhost"
+		return s, msg, token, Error{"Serve", "", ErrNoHost}
 	}
 
 	// we will spawn runner clients via the requested job scheduler
 	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig, serverLogger)
 	if err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
 	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
+	if certMsg != "" {
+		if msg == "" {
+			msg = certMsg
+		} else {
+			msg = certMsg + ". " + msg
+		}
+	}
 	if err != nil {
-		return s, msg, err
+		return s, msg, token, err
 	}
 
 	s = &Server{
-		ServerInfo:         &ServerInfo{AllowedUsers: allowedUsers, Addr: ip + ":" + config.Port, Host: host, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
-		allowedUsers:       allowedUsersMap,
+		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		token:              token,
 		sock:               sock,
 		ch:                 new(codec.BincHandle),
 		rpl:                &rgToKeys{lookup: make(map[string]map[string]bool)},
@@ -442,7 +503,7 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	s.createQueue()
 	priorJobs, err := db.recoverIncompleteJobs()
 	if err != nil {
-		return nil, msg, err
+		return nil, msg, token, err
 	}
 	if len(priorJobs) > 0 {
 		var itemdefs []*queue.ItemDef
@@ -450,13 +511,13 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 			var deps []string
 			deps, err = job.Dependencies.incompleteJobKeys(s.db)
 			if err != nil {
-				return nil, msg, err
+				return nil, msg, token, err
 			}
 			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 		_, _, err = s.enqueueItems(itemdefs)
 		if err != nil {
-			return nil, msg, err
+			return nil, msg, token, err
 		}
 	}
 
@@ -545,11 +606,11 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 		mux.HandleFunc(restJobsEndpoint, restJobs(s))
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
-		srv := &http.Server{Addr: "0.0.0.0:" + config.WebPort, Handler: mux}
+		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs := srv.ListenAndServe() // *** should use ListenAndServeTLS, which needs certs (http package has cert creation)...
+			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && errs != http.ErrServerClosed {
 				s.Error("server web interface had problems", "err", errs)
 			}
@@ -628,7 +689,15 @@ func Serve(config ServerConfig) (s *Server, msg string, err error) {
 	}()
 	<-ready
 
-	return s, msg, err
+	// store token on disk
+	if config.TokenFile != "" {
+		err = ioutil.WriteFile(config.TokenFile, token, 0600)
+		if err != nil {
+			return s, msg, token, err
+		}
+	}
+
+	return s, msg, token, err
 }
 
 // Block makes you block while the server does the job of serving clients. This
@@ -1079,16 +1148,6 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			job.schedulerGroup = job.Requirements.Stringify()
 		}
 		job.Unlock()
-
-		// in cloud deployments we may bring up a server running an operating
-		// system with a different username, which we must allow access to
-		// ourselves
-		if user, set := job.Requirements.Other["cloud_user"]; set {
-			if _, allowed := s.allowedUsers[user]; !allowed {
-				s.allowedUsers[user] = true
-				s.ServerInfo.AllowedUsers = append(s.ServerInfo.AllowedUsers, user)
-			}
-		}
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -1389,7 +1448,7 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {

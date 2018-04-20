@@ -45,30 +45,37 @@ const (
 
 // Config holds the configuration options for jobqueue server and client
 type Config struct {
-	ManagerPort      string `default:""`
-	ManagerWeb       string `default:""`
-	ManagerHost      string `default:"localhost"`
-	ManagerDir       string `default:"~/.wr"`
-	ManagerPidFile   string `default:"pid"`
-	ManagerLogFile   string `default:"log"`
-	ManagerDbFile    string `default:"db"`
-	ManagerDbBkFile  string `default:"db_bk"`
-	ManagerUmask     int    `default:"007"`
-	ManagerScheduler string `default:"local"`
-	RunnerExecShell  string `default:"bash"`
-	Deployment       string `default:"production"`
-	CloudFlavor      string `default:""`
-	CloudKeepAlive   int    `default:"120"`
-	CloudServers     int    `default:"-1"`
-	CloudCIDR        string `default:"192.168.0.0/18"`
-	CloudGateway     string `default:"192.168.0.1"`
-	CloudDNS         string `default:"8.8.4.4,8.8.8.8"`
-	CloudOS          string `default:"Ubuntu Xenial"`
-	CloudUser        string `default:"ubuntu"`
-	CloudRAM         int    `default:"2048"`
-	CloudDisk        int    `default:"1"`
-	CloudScript      string `default:""`
-	CloudConfigFiles string `default:"~/.s3cfg,~/.aws/credentials,~/.aws/config"`
+	ManagerPort         string `default:""`
+	ManagerWeb          string `default:""`
+	ManagerHost         string `default:"localhost"`
+	ManagerDir          string `default:"~/.wr"`
+	ManagerPidFile      string `default:"pid"`
+	ManagerLogFile      string `default:"log"`
+	ManagerDbFile       string `default:"db"`
+	ManagerDbBkFile     string `default:"db_bk"`
+	ManagerTokenFile    string `default:"client.token"`
+	ManagerUmask        int    `default:"007"`
+	ManagerScheduler    string `default:"local"`
+	ManagerCAFile       string `default:"ca.pem"`
+	ManagerCertFile     string `default:"cert.pem"`
+	ManagerKeyFile      string `default:"key.pem"`
+	ManagerCertDomain   string `default:"localhost"`
+	ManagerSetDomainIP  bool   `default:"false"`
+	RunnerExecShell     string `default:"bash"`
+	Deployment          string `default:"production"`
+	CloudFlavor         string `default:""`
+	CloudKeepAlive      int    `default:"120"`
+	CloudServers        int    `default:"-1"`
+	CloudCIDR           string `default:"192.168.0.0/18"`
+	CloudGateway        string `default:"192.168.0.1"`
+	CloudDNS            string `default:"8.8.4.4,8.8.8.8"`
+	CloudOS             string `default:"Ubuntu Xenial"`
+	CloudUser           string `default:"ubuntu"`
+	CloudRAM            int    `default:"2048"`
+	CloudDisk           int    `default:"1"`
+	CloudScript         string `default:""`
+	CloudConfigFiles    string `default:"~/.s3cfg,~/.aws/credentials,~/.aws/config"`
+	DeploySuccessScript string `default:""`
 }
 
 /*
@@ -176,6 +183,18 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	}
 	if !IsRemote(config.ManagerDbBkFile) && !filepath.IsAbs(config.ManagerDbBkFile) {
 		config.ManagerDbBkFile = filepath.Join(config.ManagerDir, config.ManagerDbBkFile)
+	}
+	if !filepath.IsAbs(config.ManagerCAFile) {
+		config.ManagerCAFile = filepath.Join(config.ManagerDir, config.ManagerCAFile)
+	}
+	if !filepath.IsAbs(config.ManagerCertFile) {
+		config.ManagerCertFile = filepath.Join(config.ManagerDir, config.ManagerCertFile)
+	}
+	if !filepath.IsAbs(config.ManagerKeyFile) {
+		config.ManagerKeyFile = filepath.Join(config.ManagerDir, config.ManagerKeyFile)
+	}
+	if !filepath.IsAbs(config.ManagerTokenFile) {
+		config.ManagerTokenFile = filepath.Join(config.ManagerDir, config.ManagerTokenFile)
 	}
 
 	// if not explicitly set, calculate ports that no one else would be

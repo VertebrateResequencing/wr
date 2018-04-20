@@ -1,5 +1,5 @@
-hash: caa503d5fd90fbe7a55e6b9f8923c6848b9a990d73a88917f528517fd8c78251
-updated: 2018-04-13T13:11:28.096181715+01:00
+hash: e2203d54798631b547a000a0aaebf4722f85fed3f9074270d6182ab2c6390e4e
+updated: 2018-04-18T11:03:01.29486676+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -11,6 +11,8 @@ imports:
   version: 48ea1b39c25fc1bab3506fbc712ecbaa842c4d2d
 - name: github.com/dgryski/go-farm
   version: 2de33835d10275975374b37b2dcfd22c9020a1f5
+- name: github.com/fanatic/go-infoblox
+  version: ece4e23a370d0bbac46d17f386f73d0d124a8d97
 - name: github.com/fatih/color
   version: 507f6050b8568533fb3f5504de8e5205fa62a114
 - name: github.com/go-ini/ini
@@ -21,6 +23,7 @@ imports:
   - protocol/rep
   - protocol/req
   - transport/tcp
+  - transport/tlstcp
 - name: github.com/go-ole/go-ole
   version: a1ec82a652ebc7e784d7df887cfb31061aeabbcc
   subpackages:
@@ -150,6 +153,7 @@ imports:
   subpackages:
   - idna
   - lex/httplex
+  - publicsuffix
 - name: golang.org/x/sys
   version: 3b87a42e500a6dc65dae1a55d0b641295971163e
   subpackages:
