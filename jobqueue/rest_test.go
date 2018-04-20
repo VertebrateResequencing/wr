@@ -20,6 +20,8 @@ package jobqueue
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -53,6 +55,7 @@ func TestREST(t *testing.T) {
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbFile + "_bk",
+		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
 		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
@@ -83,8 +86,16 @@ func TestREST(t *testing.T) {
 
 		bearer := "Bearer " + string(token)
 
+		tlsConfig := &tls.Config{ServerName: config.ManagerCertDomain}
+		caCert, err := ioutil.ReadFile(config.ManagerCAFile)
+		if err == nil {
+			certPool := x509.NewCertPool()
+			certPool.AppendCertsFromPEM(caCert)
+			tlsConfig.RootCAs = certPool
+		}
 		var noProxyTransport http.RoundTripper = &http.Transport{
-			Proxy: nil,
+			Proxy:           nil,
+			TLSClientConfig: tlsConfig,
 		}
 
 		client := &http.Client{Transport: noProxyTransport}
