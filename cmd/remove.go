@@ -40,14 +40,13 @@ Specify one of the flags -f, -l, -i or -a to choose which commands you want to
 remove. Amongst those, only currently incomplete, non-running jobs will be
 affected.
 
-The file to provide -f is in the format cmd\tcwd\tmounts, with the last 2
-columns optional.
+The file to provide -f is in the format taken by "wr add".
 
 In -f and -l mode you must provide the cwd the commands were set to run in, if
 CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
-JSON that was used when the command was added, if any. You can do this by using
-the -c and --mounts options, or in -f mode your file can specify the cwd and
-mounts, in case it's different for each command.`,
+options that was used when the command was added, if any. You can do this by
+using the -c and --mounts/--mounts_json options in -l mode, or by providing the
+same file you gave to "wr add" in -f mode.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		set := countGetJobArgs()
 		if set > 1 {
@@ -91,7 +90,8 @@ func init() {
 	removeCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to remove")
 	removeCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to remove")
 	removeCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	removeCmd.Flags().StringVar(&cmdMounts, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use")
+	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	killCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
 
 	removeCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }

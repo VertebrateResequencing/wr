@@ -51,7 +51,6 @@ var cmdGroupDeps string
 var cmdOnFailure string
 var cmdOnSuccess string
 var cmdOnExit string
-var cmdMounts string
 var cmdEnv string
 var cmdReRun bool
 var cmdOsPrefix string
@@ -246,106 +245,9 @@ machine was started.`,
 			die("--file is required")
 		}
 
-		jd := &jobqueue.JobDefaults{
-			RepGrp:      cmdRepGroup,
-			ReqGrp:      reqGroup,
-			Cwd:         cmdCwd,
-			CwdMatters:  cmdCwdMatters,
-			ChangeHome:  cmdChangeHome,
-			CPUs:        cmdCPUs,
-			Disk:        cmdDisk,
-			Override:    cmdOvr,
-			Priority:    cmdPri,
-			Retries:     cmdRet,
-			Env:         cmdEnv,
-			CloudOS:     cmdOsPrefix,
-			CloudUser:   cmdOsUsername,
-			CloudScript: cmdPostCreationScript,
-			CloudOSRam:  cmdOsRAM,
-			CloudFlavor: cmdFlavor,
-		}
-
-		if jd.RepGrp == "" {
-			jd.RepGrp = "manually_added"
-		}
-
-		var err error
-		if cmdMem == "" {
-			jd.Memory = 0
-		} else {
-			mb, errf := bytefmt.ToMegabytes(cmdMem)
-			if errf != nil {
-				die("--memory was not specified correctly: %s", errf)
-			}
-			jd.Memory = int(mb)
-		}
-		if cmdTime == "" {
-			jd.Time = 0 * time.Second
-		} else {
-			jd.Time, err = time.ParseDuration(cmdTime)
-			if err != nil {
-				die("--time was not specified correctly: %s", err)
-			}
-		}
-
-		if cmdDepGroups != "" {
-			jd.DepGroups = strings.Split(cmdDepGroups, ",")
-		}
-
-		if cmdCmdDeps != "" {
-			cols := strings.Split(cmdCmdDeps, ",")
-			if len(cols)%2 != 0 {
-				die("--cmd_deps must have an even number of comma-separated entries")
-			}
-			jd.Deps = colsToDeps(cols)
-		}
-		if cmdGroupDeps != "" {
-			jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
-		}
-
-		if cmdOnFailure != "" {
-			var bjs jobqueue.BehavioursViaJSON
-			err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
-			if err != nil {
-				die("bad --on_failure: %s", err)
-			}
-			jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
-		}
-		if cmdOnSuccess != "" {
-			var bjs jobqueue.BehavioursViaJSON
-			err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
-			if err != nil {
-				die("bad --on_success: %s", err)
-			}
-			jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
-		}
-		if cmdOnExit != "" {
-			var bjs jobqueue.BehavioursViaJSON
-			err = json.Unmarshal([]byte(cmdOnExit), &bjs)
-			if err != nil {
-				die("bad --on_exit: %s", err)
-			}
-			jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
-		}
-
-		if mountJSON != "" || mountSimple != "" {
-			jd.MountConfigs = mountParse(mountJSON, mountSimple)
-		}
-
-		// open file or set up to read from STDIN
-		var reader io.Reader
-		if cmdFile == "-" {
-			reader = os.Stdin
-		} else {
-			reader, err = os.Open(cmdFile)
-			if err != nil {
-				die("could not open file '%s': %s", cmdFile, err)
-			}
-			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
-		}
-
 		timeout := time.Duration(timeoutint) * time.Second
 		jq := connect(timeout)
+		var err error
 		defer func() {
 			err = jq.Disconnect()
 			if err != nil {
@@ -353,85 +255,11 @@ machine was started.`,
 			}
 		}()
 
-		// we'll default to pwd if the manager is on the same host as us, or if
-		// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
-		var pwd string
-		var remoteWarning bool
+		jobs, isLocal, defaultedRepG := parseCmdFile(jq)
+
 		var envVars []string
-		if cmdCwd == "" {
-			wd, errg := os.Getwd()
-			if errg != nil {
-				die("%s", errg)
-			}
-			currentIP, errc := jobqueue.CurrentIP("")
-			if errc != nil {
-				warn("Could not get current IP: %s", errc)
-			}
-			if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
-				pwd = wd
-				envVars = os.Environ()
-			} else if cmdCwdMatters {
-				pwd = wd
-			} else {
-				pwd = "/tmp"
-				remoteWarning = true
-			}
-		}
-
-		// for network efficiency, read in all commands and create a big slice
-		// of Jobs and Add() them in one go afterwards
-		var jobs []*jobqueue.Job
-		scanner := bufio.NewScanner(reader)
-		defaultedRepG := false
-		lineNum := 0
-		for scanner.Scan() {
-			lineNum++
-			cols := strings.Split(scanner.Text(), "\t")
-			colsn := len(cols)
-			if colsn < 1 || cols[0] == "" {
-				continue
-			}
-			if colsn > 2 {
-				die("line %d has too many columns; check `wr add -h`", lineNum)
-			}
-
-			// determine all the options for this command
-			var jvj *jobqueue.JobViaJSON
-			var jsonErr error
-			if colsn == 2 {
-				jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
-				if jsonErr == nil {
-					jvj.Cmd = cols[0]
-				}
-			} else {
-				if strings.HasPrefix(cols[0], "{") {
-					jsonErr = json.Unmarshal([]byte(cols[0]), &jvj)
-				} else {
-					jvj = &jobqueue.JobViaJSON{Cmd: cols[0]}
-				}
-			}
-
-			if jsonErr != nil {
-				die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
-			}
-
-			if jvj.Cwd == "" && jd.Cwd == "" {
-				if remoteWarning {
-					warn("command working directories defaulting to /tmp since the manager is running remotely")
-				}
-				jd.Cwd = pwd
-			}
-
-			if jvj.RepGrp == "" {
-				defaultedRepG = true
-			}
-
-			job, errf := jvj.Convert(jd)
-			if errf != nil {
-				die("line %d had a problem: %s\n", lineNum, errf)
-			}
-
-			jobs = append(jobs, job)
+		if isLocal {
+			envVars = os.Environ()
 		}
 
 		// add the jobs to the queue
@@ -498,4 +326,191 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
 	return
+}
+
+// parseCmdFile reads the given cmd file to get desired jobs, modified by
+// defaults specified in other command line args. Returns job slice, bool for if
+// the manager is on the same host as us, and bool for if any job defaulted to
+// the default repgrp.
+func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
+	jd := &jobqueue.JobDefaults{
+		RepGrp:      cmdRepGroup,
+		ReqGrp:      reqGroup,
+		Cwd:         cmdCwd,
+		CwdMatters:  cmdCwdMatters,
+		ChangeHome:  cmdChangeHome,
+		CPUs:        cmdCPUs,
+		Disk:        cmdDisk,
+		Override:    cmdOvr,
+		Priority:    cmdPri,
+		Retries:     cmdRet,
+		Env:         cmdEnv,
+		CloudOS:     cmdOsPrefix,
+		CloudUser:   cmdOsUsername,
+		CloudScript: cmdPostCreationScript,
+		CloudOSRam:  cmdOsRAM,
+		CloudFlavor: cmdFlavor,
+	}
+
+	if jd.RepGrp == "" {
+		jd.RepGrp = "manually_added"
+	}
+
+	var err error
+	if cmdMem == "" {
+		jd.Memory = 0
+	} else {
+		mb, errf := bytefmt.ToMegabytes(cmdMem)
+		if errf != nil {
+			die("--memory was not specified correctly: %s", errf)
+		}
+		jd.Memory = int(mb)
+	}
+	if cmdTime == "" {
+		jd.Time = 0 * time.Second
+	} else {
+		jd.Time, err = time.ParseDuration(cmdTime)
+		if err != nil {
+			die("--time was not specified correctly: %s", err)
+		}
+	}
+
+	if cmdDepGroups != "" {
+		jd.DepGroups = strings.Split(cmdDepGroups, ",")
+	}
+
+	if cmdCmdDeps != "" {
+		cols := strings.Split(cmdCmdDeps, ",")
+		if len(cols)%2 != 0 {
+			die("--cmd_deps must have an even number of comma-separated entries")
+		}
+		jd.Deps = colsToDeps(cols)
+	}
+	if cmdGroupDeps != "" {
+		jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
+	}
+
+	if cmdOnFailure != "" {
+		var bjs jobqueue.BehavioursViaJSON
+		err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
+		if err != nil {
+			die("bad --on_failure: %s", err)
+		}
+		jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
+	}
+	if cmdOnSuccess != "" {
+		var bjs jobqueue.BehavioursViaJSON
+		err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
+		if err != nil {
+			die("bad --on_success: %s", err)
+		}
+		jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
+	}
+	if cmdOnExit != "" {
+		var bjs jobqueue.BehavioursViaJSON
+		err = json.Unmarshal([]byte(cmdOnExit), &bjs)
+		if err != nil {
+			die("bad --on_exit: %s", err)
+		}
+		jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
+	}
+
+	if mountJSON != "" || mountSimple != "" {
+		jd.MountConfigs = mountParse(mountJSON, mountSimple)
+	}
+
+	// open file or set up to read from STDIN
+	var reader io.Reader
+	if cmdFile == "-" {
+		reader = os.Stdin
+	} else {
+		reader, err = os.Open(cmdFile)
+		if err != nil {
+			die("could not open file '%s': %s", cmdFile, err)
+		}
+		defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
+	}
+
+	// we'll default to pwd if the manager is on the same host as us, or if
+	// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
+	var pwd string
+	var remoteWarning bool
+	var isLocal bool
+	if cmdCwd == "" {
+		wd, errg := os.Getwd()
+		if errg != nil {
+			die("%s", errg)
+		}
+		currentIP, errc := jobqueue.CurrentIP("")
+		if errc != nil {
+			warn("Could not get current IP: %s", errc)
+		}
+		if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
+			pwd = wd
+			isLocal = true
+		} else if cmdCwdMatters {
+			pwd = wd
+		} else {
+			pwd = "/tmp"
+			remoteWarning = true
+		}
+	}
+
+	// for network efficiency, read in all commands and create a big slice
+	// of Jobs and Add() them in one go afterwards
+	var jobs []*jobqueue.Job
+	scanner := bufio.NewScanner(reader)
+	defaultedRepG := false
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		cols := strings.Split(scanner.Text(), "\t")
+		colsn := len(cols)
+		if colsn < 1 || cols[0] == "" {
+			continue
+		}
+		if colsn > 2 {
+			die("line %d has too many columns; check `wr add -h`", lineNum)
+		}
+
+		// determine all the options for this command
+		var jvj *jobqueue.JobViaJSON
+		var jsonErr error
+		if colsn == 2 {
+			jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
+			if jsonErr == nil {
+				jvj.Cmd = cols[0]
+			}
+		} else {
+			if strings.HasPrefix(cols[0], "{") {
+				jsonErr = json.Unmarshal([]byte(cols[0]), &jvj)
+			} else {
+				jvj = &jobqueue.JobViaJSON{Cmd: cols[0]}
+			}
+		}
+
+		if jsonErr != nil {
+			die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
+		}
+
+		if jvj.Cwd == "" && jd.Cwd == "" {
+			if remoteWarning {
+				warn("command working directories defaulting to /tmp since the manager is running remotely")
+			}
+			jd.Cwd = pwd
+		}
+
+		if jvj.RepGrp == "" {
+			defaultedRepG = true
+		}
+
+		job, errf := jvj.Convert(jd)
+		if errf != nil {
+			die("line %d had a problem: %s\n", lineNum, errf)
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, isLocal, defaultedRepG
 }

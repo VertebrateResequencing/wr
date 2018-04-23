@@ -19,14 +19,10 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 )
@@ -54,14 +50,13 @@ Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
 
-The file to provide -f is in the format cmd\tcwd\tmounts, with the last 2
-columns optional.
+The file to provide -f is in the format taken by "wr add".
 
 In -f and -l mode you must provide the cwd the commands were set to run in, if
 CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
-JSON that was used when the command was added, if any. You can do this by using
-the -c and --mounts options, or in -f mode your file can specify the cwd and
-mounts, in case it's different for each command.
+options that was used when the command was added, if any. You can do this by
+using the -c and --mounts/--mounts_json options in -l mode, or by providing the
+same file you gave to "wr add" in -f mode.
 
 By default, commands with the same state, reason for failure and exitcode are
 grouped together and only a random 1 of them is displayed (and you are told how
@@ -246,7 +241,8 @@ func init() {
 	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	statusCmd.Flags().StringVar(&cmdMounts, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use")
+	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	killCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "except in -f mode, also show the environment variables the command(s) ran with")
@@ -276,10 +272,6 @@ func countGetJobArgs() int {
 func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
 	var jobs []*jobqueue.Job
 	var err error
-	var defaultMounts jobqueue.MountConfigs
-	if cmdMounts != "" {
-		defaultMounts = mountParseJSON(cmdMounts)
-	}
 
 	switch {
 	case all:
@@ -289,50 +281,22 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		// get all jobs with this identifier (repgroup)
 		jobs, err = jq.GetByRepGroup(cmdIDStatus, statusLimit, cmdState, showStd, showEnv)
 	case cmdFileStatus != "":
-		// get jobs that have the supplied commands. We support a
-		// cmd\tcwd\tmounts format file
-		var reader io.Reader
-		if cmdFileStatus == "-" {
-			reader = os.Stdin
-		} else {
-			reader, err = os.Open(cmdFileStatus)
-			if err != nil {
-				die("could not open file '%s': %s", cmdFileStatus, err)
-			}
-			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFileStatus)
-		}
-		scanner := bufio.NewScanner(reader)
-		var jes []*jobqueue.JobEssence
-		desired := 0
-		for scanner.Scan() {
-			cols := strings.Split(scanner.Text(), "\t")
-			colsn := len(cols)
-			if colsn < 1 || cols[0] == "" {
-				continue
-			}
-			var cwd string
-			if colsn < 2 || cols[1] == "" {
-				cwd = cmdCwd
-			} else {
-				cwd = cols[1]
-			}
+		// parse the supplied commands
+		parsedJobs, _, _ := parseCmdFile(jq)
 
-			var mounts jobqueue.MountConfigs
-			if colsn < 3 || cols[2] == "" {
-				mounts = defaultMounts
-			} else {
-				mounts = mountParseJSON(cols[2])
-			}
-
-			jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd, MountConfigs: mounts})
-			desired++
-		}
+		// round-trip via the server to get those that actually exist in
+		// the queue
+		jes := jobsToJobEssenses(parsedJobs)
 		jobs, err = jq.GetByEssences(jes)
-		if len(jobs) < desired {
-			warn("%d/%d cmds were not found", desired-len(jobs), desired)
+		if len(jobs) < len(parsedJobs) {
+			warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
 		}
 	default:
 		// get job that has the supplied command
+		var defaultMounts jobqueue.MountConfigs
+		if mountJSON != "" || mountSimple != "" {
+			defaultMounts = mountParse(mountJSON, mountSimple)
+		}
 		var job *jobqueue.Job
 		job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
 		if job != nil {
