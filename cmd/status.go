@@ -70,16 +70,7 @@ are displayed. A limit of 0 turns off grouping and shows all your desired
 commands individually, but you could hit a timeout if retrieving the details of
 very many (tens of thousands+) commands.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		set := 0
-		if cmdFileStatus != "" {
-			set++
-		}
-		if cmdIDStatus != "" {
-			set++
-		}
-		if cmdLine != "" {
-			set++
-		}
+		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i and -l are mutually exclusive; only specify one of them")
 		}
@@ -88,11 +79,6 @@ very many (tens of thousands+) commands.`,
 			cmdState = jobqueue.JobStateBuried
 		}
 		timeout := time.Duration(timeoutint) * time.Second
-
-		var defaultMounts jobqueue.MountConfigs
-		if cmdMounts != "" {
-			defaultMounts = mountParseJSON(cmdMounts)
-		}
 
 		jq := connect(timeout)
 		var err error
@@ -103,71 +89,8 @@ very many (tens of thousands+) commands.`,
 			}
 		}()
 
-		var jobs []*jobqueue.Job
-		showextra := true
-		switch {
-		case set == 0:
-			// get incomplete jobs
-			jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
-		case cmdIDStatus != "":
-			// get all jobs with this identifier (repgroup)
-			jobs, err = jq.GetByRepGroup(cmdIDStatus, statusLimit, cmdState, showStd, showEnv)
-		case cmdFileStatus != "":
-			// get jobs that have the supplied commands. We support a cmd\tcwd
-			// format file
-			var reader io.Reader
-			if cmdFileStatus == "-" {
-				reader = os.Stdin
-			} else {
-				reader, err = os.Open(cmdFileStatus)
-				if err != nil {
-					die("could not open file '%s': %s", cmdFileStatus, err)
-				}
-				defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFileStatus)
-			}
-			scanner := bufio.NewScanner(reader)
-			var jes []*jobqueue.JobEssence
-			desired := 0
-			for scanner.Scan() {
-				cols := strings.Split(scanner.Text(), "\t")
-				colsn := len(cols)
-				if colsn < 1 || cols[0] == "" {
-					continue
-				}
-				var cwd string
-				if colsn < 2 || cols[1] == "" {
-					cwd = cmdCwd
-				} else {
-					cwd = cols[1]
-				}
-
-				var mounts jobqueue.MountConfigs
-				if colsn < 3 || cols[2] == "" {
-					mounts = defaultMounts
-				} else {
-					mounts = mountParseJSON(cols[2])
-				}
-
-				jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd, MountConfigs: mounts})
-				desired++
-			}
-			jobs, err = jq.GetByEssences(jes)
-			if len(jobs) < desired {
-				warn("%d/%d cmds were not found", desired-len(jobs), desired)
-			}
-			showextra = false
-		default:
-			// get job that has the supplied command
-			var job *jobqueue.Job
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
-			if job != nil {
-				jobs = append(jobs, job)
-			}
-		}
-
-		if err != nil {
-			die("failed to get jobs corresponding to your settings: %s", err)
-		}
+		jobs := getJobs(jq, cmdState, set == 0, statusLimit, showStd, showEnv)
+		showextra := cmdFileStatus == ""
 
 		if quietMode {
 			var d, re, b, ru, l, c, dep int
@@ -227,7 +150,7 @@ very many (tens of thousands+) commands.`,
 				case jobqueue.JobStateDependent:
 					fmt.Println("Status: dependent on other jobs")
 				case jobqueue.JobStateBuried:
-					fmt.Printf("Status: buried - you need to fix the problem and then `wr kick` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
+					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateLost:
@@ -331,4 +254,95 @@ func init() {
 	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "number of commands that share the same properties to display; 0 displays all")
 
 	statusCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+}
+
+func countGetJobArgs() int {
+	set := 0
+	if cmdFileStatus != "" {
+		set++
+	}
+	if cmdIDStatus != "" {
+		set++
+	}
+	if cmdLine != "" {
+		set++
+	}
+	if cmdAll {
+		set++
+	}
+	return set
+}
+
+func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLimit int, showStd, showEnv bool) []*jobqueue.Job {
+	var jobs []*jobqueue.Job
+	var err error
+	var defaultMounts jobqueue.MountConfigs
+	if cmdMounts != "" {
+		defaultMounts = mountParseJSON(cmdMounts)
+	}
+
+	switch {
+	case all:
+		// get all jobs
+		jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
+	case cmdIDStatus != "":
+		// get all jobs with this identifier (repgroup)
+		jobs, err = jq.GetByRepGroup(cmdIDStatus, statusLimit, cmdState, showStd, showEnv)
+	case cmdFileStatus != "":
+		// get jobs that have the supplied commands. We support a
+		// cmd\tcwd\tmounts format file
+		var reader io.Reader
+		if cmdFileStatus == "-" {
+			reader = os.Stdin
+		} else {
+			reader, err = os.Open(cmdFileStatus)
+			if err != nil {
+				die("could not open file '%s': %s", cmdFileStatus, err)
+			}
+			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFileStatus)
+		}
+		scanner := bufio.NewScanner(reader)
+		var jes []*jobqueue.JobEssence
+		desired := 0
+		for scanner.Scan() {
+			cols := strings.Split(scanner.Text(), "\t")
+			colsn := len(cols)
+			if colsn < 1 || cols[0] == "" {
+				continue
+			}
+			var cwd string
+			if colsn < 2 || cols[1] == "" {
+				cwd = cmdCwd
+			} else {
+				cwd = cols[1]
+			}
+
+			var mounts jobqueue.MountConfigs
+			if colsn < 3 || cols[2] == "" {
+				mounts = defaultMounts
+			} else {
+				mounts = mountParseJSON(cols[2])
+			}
+
+			jes = append(jes, &jobqueue.JobEssence{Cmd: cols[0], Cwd: cwd, MountConfigs: mounts})
+			desired++
+		}
+		jobs, err = jq.GetByEssences(jes)
+		if len(jobs) < desired {
+			warn("%d/%d cmds were not found", desired-len(jobs), desired)
+		}
+	default:
+		// get job that has the supplied command
+		var job *jobqueue.Job
+		job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
+		if job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	if err != nil {
+		die("failed to get jobs corresponding to your settings: %s", err)
+	}
+
+	return jobs
 }

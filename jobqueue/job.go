@@ -46,7 +46,8 @@ type JobState string
 // "deleted" states are for the benefit of the web interface (jstateCount).
 // "lost" is also a "fake" state indicating the job was running and we lost
 // contact with it; it may be dead. "unknown" is an error case that shouldn't
-// happen.
+// happen. "deletable" is a meta state that can be used when filtering jobs to
+// mean !(running|complete).
 const (
 	JobStateNew       JobState = "new"
 	JobStateDelayed   JobState = "delayed"
@@ -58,6 +59,7 @@ const (
 	JobStateDependent JobState = "dependent"
 	JobStateComplete  JobState = "complete"
 	JobStateDeleted   JobState = "deleted"
+	JobStateDeletable JobState = "deletable"
 	JobStateUnknown   JobState = "unknown"
 )
 
@@ -566,6 +568,12 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	}
 
 	return logs, err
+}
+
+// ToEssense converts a Job to its matching JobEssense, taking less space and
+// being required as input for certain methods.
+func (j *Job) ToEssense() *JobEssence {
+	return &JobEssence{JobKey: j.key()}
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied

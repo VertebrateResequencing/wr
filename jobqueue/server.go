@@ -1384,7 +1384,11 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 			if state == JobStateRunning {
 				state = JobStateReserved
 			}
-			if jState != state {
+			if state == JobStateDeletable {
+				if jState == JobStateRunning || jState == JobStateComplete {
+					continue
+				}
+			} else if jState != state {
 				continue
 			}
 		}
