@@ -257,10 +257,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			item, job, srerr = s.getij(cr)
 			if srerr == "" {
 				// if kill has been called for this job, just return KillCalled
-				job.Lock()
+				job.RLock()
 				killCalled := job.killCalled
 				lost := job.Lost
-				job.Unlock()
+				job.RUnlock()
 
 				if !killCalled {
 					// also just return killCalled if server has been set to
@@ -431,14 +431,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sr = &serverResponse{Existed: kicked}
 			}
 		case "jdel":
-			// remove the jobs from the bury queue and the live bucket
+			// remove the jobs from the bury/delay/dependent/ready queue and the
+			// live bucket
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
 				deleted := 0
 				for _, jobkey := range cr.Keys {
 					item, err := s.q.Get(jobkey)
-					if err != nil || item.Stats().State != queue.ItemStateBury {
+					iState := item.Stats().State
+					if err != nil || iState == queue.ItemStateRun {
 						continue
 					}
 
