@@ -69,6 +69,10 @@ import:
   - client
   - api/types
 - package: github.com/carbocation/runningvariance
+- package: k8s.io/api
+- package: k8s.io/client-go
+  version: ~7.0.0
+- package: k8s.io/apimachinery
 testImport:
 - package: github.com/smartystreets/goconvey
   version: master
