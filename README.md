@@ -194,7 +194,6 @@ Not yet implemented
   dependencies). Common Workflow Language (CWL) compatibility is planned.
 * Get a complete listing of all commands with a given id via the webpage.
 * Checkpointing for long running commands.
-* Security (someone could hack to use your manager).
 * Re-run button in web interface for successfully completed commands.
 * Ability to alter expected memory and time or change env-vars of commands.
 
