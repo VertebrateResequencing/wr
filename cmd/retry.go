@@ -88,16 +88,8 @@ func init() {
 	retryCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to retry")
 	retryCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to retry")
 	retryCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
-	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
-	killCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	retryCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
+	retryCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
 
 	retryCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
-}
-
-func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
-	var jes []*jobqueue.JobEssence
-	for _, job := range jobs {
-		jes = append(jes, job.ToEssense())
-	}
-	return jes
 }
