@@ -558,6 +558,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 			select {
 			case <-sigs:
 				killErr = cmd.Process.Kill()
+				errReader.Close()
+				outReader.Close()
 				stateMutex.Lock()
 				signalled = true
 				stateMutex.Unlock()
@@ -573,17 +575,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 				stateMutex.Unlock()
 
 				kc, errf := c.Touch(job)
-				if errf != nil {
-					// we may have lost contact with the manager; this is OK. We
-					// will keep trying to touch until it works
-					continue
-				}
 				if kc {
 					killErr = cmd.Process.Kill()
+					errReader.Close()
+					outReader.Close()
 					stateMutex.Lock()
 					killCalled = true
 					stateMutex.Unlock()
 					return
+				}
+				if errf != nil {
+					// we may have lost contact with the manager; this is OK. We
+					// will keep trying to touch until it works
+					continue
 				}
 			case <-memTicker.C:
 				mem, errf := currentMemory(job.Pid)
@@ -1016,10 +1020,10 @@ func (c *Client) Kick(jes []*JobEssence) (int, error) {
 	return resp.Existed, err
 }
 
-// Delete removes previously Bury()'d jobs from the queue completely. For use
-// when jobs were created incorrectly/ by accident, or they can never be fixed.
-// It returns a count of jobs that it actually removed. Errors will only be
-// related to not being able to contact the server.
+// Delete removes incomplete, not currently running jobs from the queue
+// completely. For use when jobs were created incorrectly/ by accident, or they
+// can never be fixed. It returns a count of jobs that it actually removed.
+// Errors will only be related to not being able to contact the server.
 func (c *Client) Delete(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
