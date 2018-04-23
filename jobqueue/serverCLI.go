@@ -437,26 +437,44 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				deleted := 0
-				for _, jobkey := range cr.Keys {
-					item, err := s.q.Get(jobkey)
-					iState := item.Stats().State
-					if err != nil || iState == queue.ItemStateRun {
-						continue
+				keys := cr.Keys
+				for {
+					var skippedDeps []string
+					removedJobs := false
+					for _, jobkey := range keys {
+						item, err := s.q.Get(jobkey)
+						iState := item.Stats().State
+						if err != nil || iState == queue.ItemStateRun {
+							continue
+						}
+
+						// we can't allow the removal of jobs that have
+						// dependencies, as *queue would regard that as satisfying
+						// the dependency and downstream jobs would start
+						hasDeps, err := s.q.HasDependents(jobkey)
+						if err != nil || hasDeps {
+							if hasDeps {
+								skippedDeps = append(skippedDeps, jobkey)
+							}
+							continue
+						}
+
+						err = s.q.Remove(jobkey)
+						if err == nil {
+							deleted++
+							removedJobs = true
+							s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
+						}
 					}
 
-					// we can't allow the removal of jobs that have dependencies, as
-					// *queue would regard that as satisfying the dependency and
-					// downstream jobs would start
-					hasDeps, err := s.q.HasDependents(jobkey)
-					if err != nil || hasDeps {
+					// if we removed at least 1 job, and skipped any due to
+					// deps, repeat and see if we can remove everything desired
+					// by going down the dependency tree
+					if len(skippedDeps) > 0 && removedJobs {
+						keys = skippedDeps
 						continue
 					}
-
-					err = s.q.Remove(jobkey)
-					if err == nil {
-						deleted++
-						s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
-					}
+					break
 				}
 				s.Debug("deleted jobs", "count", deleted)
 				sr = &serverResponse{Existed: deleted}
