@@ -558,11 +558,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 			select {
 			case <-sigs:
 				killErr = cmd.Process.Kill()
-				errReader.Close()
-				outReader.Close()
 				stateMutex.Lock()
 				signalled = true
 				stateMutex.Unlock()
+				errReader.Close()
+				outReader.Close()
 				return
 			case <-ticker.C:
 				stateMutex.Lock()
@@ -577,11 +577,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 				kc, errf := c.Touch(job)
 				if kc {
 					killErr = cmd.Process.Kill()
-					errReader.Close()
-					outReader.Close()
 					stateMutex.Lock()
 					killCalled = true
 					stateMutex.Unlock()
+					errReader.Close()
+					outReader.Close()
 					return
 				}
 				if errf != nil {

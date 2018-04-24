@@ -820,6 +820,7 @@ func TestJobqueue(t *testing.T) {
 					<-time.After(60 * time.Millisecond)
 					job, err = jq.Reserve(5 * time.Millisecond)
 					So(err, ShouldBeNil)
+					So(job, ShouldNotBeNil)
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
 					So(job.State, ShouldEqual, JobStateReserved)
 					So(job.Attempts, ShouldEqual, 1)
@@ -898,7 +899,7 @@ func TestJobqueue(t *testing.T) {
 				})
 			})
 
-			Convey("Jobs can be deleted, but only once buried, and you can only bury once reserved", func() {
+			Convey("Jobs can be deleted in any state except running", func() {
 				for _, added := range jobs {
 					job, err := jq.GetByEssence(&JobEssence{Cmd: added.Cmd}, false, false)
 					So(err, ShouldBeNil)
@@ -907,41 +908,13 @@ func TestJobqueue(t *testing.T) {
 
 					deleted, err := jq.Delete([]*JobEssence{{Cmd: added.Cmd}})
 					So(err, ShouldBeNil)
-					So(deleted, ShouldEqual, 0)
-
-					err = jq.Bury(job, nil, "test bury")
-					So(err, ShouldNotBeNil)
-					jqerr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
-					So(jqerr.Err, ShouldEqual, ErrBadJob)
-
-					job, err = jq.Reserve(5 * time.Millisecond)
-					So(err, ShouldBeNil)
-					So(job.Cmd, ShouldEqual, added.Cmd)
-					So(job.State, ShouldEqual, JobStateReserved)
-
-					deleted, err = jq.Delete([]*JobEssence{{Cmd: added.Cmd}})
-					So(err, ShouldBeNil)
-					So(deleted, ShouldEqual, 0)
-
-					err = jq.Bury(job, nil, "test bury")
-					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, JobStateBuried)
-					So(job.FailReason, ShouldEqual, "test bury")
-
-					job2, err := jq2.GetByEssence(&JobEssence{Cmd: added.Cmd}, false, false)
-					So(err, ShouldBeNil)
-					So(job2, ShouldNotBeNil)
-					So(job2.State, ShouldEqual, JobStateBuried)
-					So(job2.FailReason, ShouldEqual, "test bury")
-
-					deleted, err = jq.Delete([]*JobEssence{{Cmd: added.Cmd}})
-					So(err, ShouldBeNil)
 					So(deleted, ShouldEqual, 1)
 
 					job, err = jq.GetByEssence(&JobEssence{Cmd: added.Cmd}, false, false)
 					So(err, ShouldBeNil)
 					So(job, ShouldBeNil)
+
+					//*** add tests to show this doesn't work if running...
 				}
 				job, err := jq.Reserve(5 * time.Millisecond)
 				So(err, ShouldBeNil)
