@@ -276,7 +276,7 @@ func AllEnv(providerName string) ([]string, error) {
 }
 
 // New creates a new Provider to interact with the given cloud provider.
-// Possible names so far are "openstack", "kubernetes" ("aws" is planned). You must provide a
+// Possible names so far are "openstack" ("aws" is planned). You must provide a
 // resource name that will be used to name any created cloud resources. You must
 // also provide a file path prefix to save details of created resources to (the
 // actual file created will be suffixed with your resourceName).
@@ -292,8 +292,6 @@ func New(name string, resourceName string, savePath string, logger ...log15.Logg
 	switch name {
 	case openstackName:
 		p = &Provider{impl: new(openstackp)}
-	case kubernetesName:
-		p = &Provider{impl: new(kubernetesp)}
 	default:
 		return nil, Error{name, "New", ErrBadProvider}
 	}
