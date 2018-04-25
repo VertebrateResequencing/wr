@@ -103,28 +103,47 @@ func (p *kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		l.SetHandler(log15.DiscardHandler())
 	}
 	p.Logger = l
-	var kubeconfig *string
-	//Obtain cluster authentication information from users home directory, or fall back to user input.
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
-	flag.Parse()
 
-	var err error
-	clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-	if err != nil {
-		p.Logger.Error("Build cluster configuration from ~/.kube", "err", err)
-		panic(err)
+	//Determine if in cluster.
+	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+
+	switch {
+	case len(host) == 0 || len(port) == 0:
+		clusterConfig, err := rest.InClusterConfig()
+		if err != nil {
+			panic(err.Error())
+		}
+		// creates the clientset
+		clientset, err := kubernetes.NewForConfig(clusterConfig)
+		if err != nil {
+			panic(err.Error())
+		}
+		return clientset, clusterConfig, nil
+
+	default:
+		var kubeconfig *string
+		//Obtain cluster authentication information from users home directory, or fall back to user input.
+		if home := homedir.HomeDir(); home != "" {
+			kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+		} else {
+			kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+		}
+		flag.Parse()
+
+		var err error
+		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+		if err != nil {
+			p.Logger.Error("Build cluster configuration from ~/.kube", "err", err)
+			panic(err)
+		}
+		//Create authenticated clientset
+		clientset, err := kubernetes.NewForConfig(clusterConfig)
+		if err != nil {
+			p.Logger.Error("Create authenticated clientset", "err", err)
+			panic(err)
+		}
+		return clientset, clusterConfig, nil
 	}
-	//Create authenticated clientset
-	clientset, err := kubernetes.NewForConfig(clusterConfig)
-	if err != nil {
-		p.Logger.Error("Create authenticated clientset", "err", err)
-		panic(err)
-	}
-	return clientset, clusterConfig, nil
 }
 
 // initialise uses the passed clientset to
