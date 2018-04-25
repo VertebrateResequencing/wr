@@ -40,6 +40,8 @@ import (
 	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/remotecommand"
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
@@ -56,6 +58,21 @@ type ResourceRequest struct {
 	Cores   int
 	Disk    int
 	Ram     int
+}
+
+type CmdOptions struct {
+	StreamOptions
+
+	Command []string
+}
+
+type StreamOptions struct {
+	PodName       string
+	ContainerName string
+	Stdin         bool
+	In            io.Reader
+	Out           io.Writer
+	Err           io.Writer
 }
 
 type filePair struct {
@@ -125,8 +142,41 @@ func makeTar(files []filePair, writer io.Writer) error {
 	return nil
 }
 
-//TODO: Implement
-func (s *Pod) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
+// Attaches to a running container, pipes stdIn to the command running on that container.
+func (p *kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
+	//Make a request to the APIServer for an 'attach'.
+	//Open Stdin and Stderr for use by the client
+	execRequest := p.RESTClient.Post().
+		Resource("pods").
+		Name(opts.PodName).
+		Namespace(p.newNamespaceName).
+		SubResource("attach")
+	execRequest.VersionedParams(&apiv1.PodExecOptions{
+		Container: opts.ContainerName,
+		Stdin:     opts.Stdin,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       false,
+	}, scheme.ParameterCodec)
+
+	//Create an executor to send commands / receive output.
+	//SPDY Allows multiplexed bidirectional streams to and from  the pod
+	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
+	if err != nil {
+		panic(fmt.Errorf("Error creating SPDYExecutor: %v", err))
+	}
+	//Execute the command, with Std(in,out,err) pointing to the
+	//above readers and writers
+	err = exec.Stream(remotecommand.StreamOptions{
+		Stdin:  opts.In,
+		Stdout: opts.Out,
+		Stderr: opts.Err,
+		Tty:    false,
+	})
+	if err != nil {
+		fmt.Printf("StdErr: %v\n", opts.Err)
+		panic(fmt.Errorf("Error executing remote command: %v", err))
+	}
 	return "", "", nil
 }
 
