@@ -412,13 +412,15 @@ func (p *kubernetesp) maybeEnv() []string {
 	return []string{""}
 }
 
-// Check if we are in a pod.
+// Check if we are in a WR pod.
 // As we control the hostname, just check if
-// the hostname contains 'wr'
-func (p *kubernetesp) inCloud() bool {
+// the hostname contains 'wr' in addition to the
+// standard environment variables.
+func (p *kubernetesp) inWRPod() bool {
 	hostname, err := os.Hostname()
+	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	inCloud := false
-	if err == nil {
+	if err == nil && len(host) != 0 && len(port) != 0 {
 		if strings.Contains(hostname, "wr") {
 			inCloud = true
 		}
