@@ -92,9 +92,17 @@ func (p *kubernetesp) createNewNamespace(name string) error {
 	return nil
 }
 
-//Authenticate with cluster, return clientset.
-func (p *kubernetesp) Authenticate(logger log15.Logger) (kubernetes.Interface, *rest.Config, error) {
-	p.Logger = logger.New("cluster", "kubernetes")
+// Authenticate with cluster, return clientset.
+// Optionally supply a logger
+func (p *kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
+	} else {
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
+	p.Logger = l
 	var kubeconfig *string
 	//Obtain cluster authentication information from users home directory, or fall back to user input.
 	if home := homedir.HomeDir(); home != "" {
