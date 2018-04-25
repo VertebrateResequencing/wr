@@ -25,15 +25,18 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"code.cloudfoundry.org/bytefmt"
+	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/ugorji/go/codec"
 )
@@ -42,6 +45,7 @@ const (
 	restJobsEndpoint       = "/rest/v1/jobs/"
 	restWarningsEndpoint   = "/rest/v1/warnings/"
 	restBadServersEndpoint = "/rest/v1/servers/"
+	restFileUploadEndpoint = "/rest/v1/upload/"
 	restFormTrue           = "true"
 	bearerSchema           = "Bearer "
 )
@@ -363,6 +367,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		cloudScriptPath = jd.CloudScript
 	}
 	if cloudScriptPath != "" {
+		cloudScriptPath = internal.TildaToHome(cloudScriptPath)
 		postCreation, err := ioutil.ReadFile(cloudScriptPath)
 		if err != nil {
 			return nil, fmt.Errorf("cloud_script [%s] could not be read: %s", cloudScriptPath, err)
@@ -780,6 +785,63 @@ func restBadServers(s *Server) http.HandlerFunc {
 		default:
 			http.Error(w, "Only GET and DELETE are supported", http.StatusBadRequest)
 			return
+		}
+	}
+}
+
+// restFileUpload lets you upload files from a client to the server. The only
+// method supported is PUT.
+func restFileUpload(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
+		if r.Method != http.MethodPut {
+			http.Error(w, "Only PUT is supported", http.StatusBadRequest)
+			return
+		}
+
+		savePath := r.Form.Get("path")
+		var file *os.File
+		var err error
+		if savePath == "" {
+			file, err = ioutil.TempFile("", "file_upload")
+			savePath = file.Name()
+		} else {
+			savePath = internal.TildaToHome(savePath)
+			err = os.MkdirAll(filepath.Dir(savePath), 0700)
+			if err != nil {
+				s.Error("restFileUpload create diretory error", "err", err)
+				http.Error(w, "Failed to create diretory on server", http.StatusInternalServerError)
+				return
+			}
+			file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0600)
+		}
+		if err != nil {
+			s.Error("restFileUpload create file error", "err", err)
+			http.Error(w, "Failed to create file on server", http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+
+		_, err = io.Copy(file, r.Body)
+		if err != nil {
+			s.Error("restFileUpload store file error", "err", err)
+			http.Error(w, "Failed to store file on server", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		msg := make(map[string]string)
+		msg["path"] = savePath
+		err = encoder.Encode(msg)
+		if err != nil {
+			s.Warn("restFileUpload failed to encode success msg", "err", err)
 		}
 	}
 }
