@@ -44,12 +44,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	typedappsv1beta1 "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
+
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/util/homedir"
 	"k8s.io/client-go/util/retry"
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
@@ -329,13 +328,13 @@ func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []fi
 	// }
 
 	//Set up new pipe
-	reader, writer := io.Pipe()
+	pipeReader, pipeWriter := io.Pipe()
 
 	//avoid deadlock by using goroutine
 	go func() {
-		defer writer.Close()
+		defer pipeWriter.Close()
 		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
-		tarErr := makeTar(files, writer)
+		tarErr := makeTar(files, pipeWriter)
 		if tarErr != nil {
 			p.Logger.Error("Error writing tar", "err", tarErr)
 			panic(tarErr)
@@ -351,46 +350,25 @@ func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []fi
 	fmt.Println(pod.Spec.InitContainers)
 	fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
 
-	//Make a request to the APIServer for an 'attach'.
-	//Open Stdin and Stderr for use by the client
-	execRequest := p.RESTClient.Post().
-		Resource("pods").
-		Name(pod.ObjectMeta.Name).
-		Namespace(pod.ObjectMeta.Namespace).
-		SubResource("attach")
-	execRequest.VersionedParams(&apiv1.PodExecOptions{
-		Container: pod.Spec.InitContainers[0].Name,
-		Stdin:     true,
-		Stdout:    false,
-		Stderr:    true,
-		TTY:       false,
-	}, scheme.ParameterCodec)
-
-	//Create an executor to send commands / receive output.
-	//SPDY Allows multiplexed bidirectional streams to and from  the pod
-	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
-	if err != nil {
-		p.Logger.Error("Error creating SPDYExecutor", "err", err)
-		return fmt.Errorf("Error creating SPDYExecutor: %v", err)
-	}
-	fmt.Println("Created SPDYExecutor")
-
-	stdIn := reader
+	stdOut := new(Writer)
 	stdErr := new(Writer)
-
-	//Execute the command, with Std(in,out,err) pointing to the
-	//above readers and writers
-	fmt.Println("Executing remotecommand")
-	err = exec.Stream(remotecommand.StreamOptions{
-		Stdin:  stdIn,
-		Stderr: stdErr,
-		Tty:    false,
-	})
-	if err != nil {
-		p.Logger.Error("Error executing remote command", "err", err, "StdErr", stdErr)
-		fmt.Printf("StdErr: %v\n", stdErr)
-		return fmt.Errorf("Error executing remote command: %v", err)
+	// Pass no command []string, so just attach to running command in initcontainer.
+	opts := &CmdOptions{
+		StreamOptions: StreamOptions{
+			PodName:       pod.ObjectMeta.Name,
+			ContainerName: pod.Spec.InitContainers[0].Name,
+			Stdin:         true,
+			In:            pipeReader,
+			Out:           stdOut,
+			Err:           stdErr,
+		},
 	}
+
+	p.AttachCmd(opts)
+
+	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
+	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
+
 	fmt.Println("Sleeping for 15s") // wait for container to be running
 	time.Sleep(15 * time.Second)
 
@@ -429,7 +407,7 @@ func (p *kubernetesp) getQuota() (*Quota, error) {
 }
 
 // Spawn a new pod that contains a runner. Return the name.
-func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []filePair, binaryPath string, binaryArgs []string, resources *ResourceRequest, usingQuotaCh chan bool) (*Pod, error) {
+func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []filePair, binaryPath string, binaryArgs []string, resources *ResourceRequest) (*Pod, error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -481,6 +459,7 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 					},
 				},
 			},
+			Hostname: "wr-runner",
 		},
 	}
 	//Create pod
@@ -497,20 +476,20 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 	// }
 
 	//Set up new pipe
-	reader, writer := io.Pipe()
+	pipeReader, pipeWriter := io.Pipe()
 
-	//avoid deadlock on the writer by using goroutine
+	//avoid deadlock by using goroutine
 	go func() {
-		defer writer.Close()
+		defer pipeWriter.Close()
 		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
-		tarErr := makeTar(files, writer)
+		tarErr := makeTar(files, pipeWriter)
 		if tarErr != nil {
 			p.Logger.Error("Error writing tar", "err", tarErr)
 			panic(tarErr)
 		}
 	}()
 
-	//Copy the wr binary to the running pod
+	// Copy the wr binary to the running pod
 	fmt.Println("Sleeping for 15s") // wait for container to be running TODO: Use watch instead
 	time.Sleep(15 * time.Second)
 	fmt.Println("Woken up")
@@ -524,46 +503,24 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 	fmt.Println(pod.Spec.InitContainers)
 	fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
 
-	//Make a request to the APIServer for an 'attach'.
-	//Open Stdin and Stderr for use by the client
-	execRequest := p.RESTClient.Post().
-		Resource("pods").
-		Name(pod.ObjectMeta.Name).
-		Namespace(pod.ObjectMeta.Namespace).
-		SubResource("attach")
-	execRequest.VersionedParams(&apiv1.PodExecOptions{
-		Container: pod.Spec.InitContainers[0].Name,
-		Stdin:     true,
-		Stdout:    false,
-		Stderr:    true,
-		TTY:       false,
-	}, scheme.ParameterCodec)
-
-	//Create an executor to send commands / receive output.
-	//SPDY Allows multiplexed bidirectional streams to and from  the pod
-	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
-	if err != nil {
-		p.Logger.Error("Error creating SPDYExecutor", "err", err)
-		panic(fmt.Errorf("Error creating SPDYExecutor: %v", err))
-	}
-	fmt.Println("Created SPDYExecutor")
-
-	stdIn := reader
+	stdOut := new(Writer)
 	stdErr := new(Writer)
-
-	//Execute the command, with Std(in,out,err) pointing to the
-	//above readers and writers
-	fmt.Println("Executing remotecommand")
-	err = exec.Stream(remotecommand.StreamOptions{
-		Stdin:  stdIn,
-		Stderr: stdErr,
-		Tty:    false,
-	})
-	if err != nil {
-		p.Logger.Error("Error executing remote command", "err", err, "StdErr", stdErr)
-		fmt.Printf("StdErr: %v\n", stdErr)
-		panic(fmt.Errorf("Error executing remote command: %v", err))
+	// Pass no command []string, so just attach to running command in initcontainer.
+	opts := &CmdOptions{
+		StreamOptions: StreamOptions{
+			PodName:       pod.ObjectMeta.Name,
+			ContainerName: pod.Spec.InitContainers[0].Name,
+			Stdin:         true,
+			In:            pipeReader,
+			Out:           stdOut,
+			Err:           stdErr,
+		},
 	}
+
+	p.AttachCmd(opts)
+
+	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
+	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
 	return &Pod{
 		ID:        string(pod.ObjectMeta.UID),
 		Name:      pod.ObjectMeta.Name,
@@ -571,7 +528,7 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 	}, nil
 }
 
-//Deletes the namespace created for wr.
+// Deletes the namespace created for wr.
 func (p *kubernetesp) TearDown() error {
 	err := p.namespaceClient.Delete(p.newNamespaceName, &metav1.DeleteOptions{})
 	if err != nil {
@@ -581,7 +538,7 @@ func (p *kubernetesp) TearDown() error {
 	return nil
 }
 
-//Deletes the given pod, doesn't check it exists first.
+// Deletes the given pod, doesn't check it exists first.
 func (p *kubernetesp) DestroyPod(podName string) error {
 	err := p.podClient.Delete(podName, &metav1.DeleteOptions{})
 	if err != nil {
@@ -591,7 +548,7 @@ func (p *kubernetesp) DestroyPod(podName string) error {
 	return nil
 }
 
-//Checks a given pod exists. If it does, return the status
+// Checks a given pod exists. If it does, return the status
 func (p *kubernetesp) CheckPod(podName string) (working bool, err error) {
 	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
 	if err != nil {
