@@ -261,6 +261,17 @@ managerumask: 007
 # works if you are starting the manager on an OpenStack server!
 managerscheduler: "local"
 
+# manageruploaddir: Where should the wr manager store uploaded files?
+# This defaults to a dir named "uploads" in managerdir.
+#
+# This option is only relevant when you are using a cloud scheduler such as
+# OpenStack.
+#
+# This directory may be used to store a small handful of small files such as
+# cloud script and cloud config files, when --cloud_script or
+# --cloud_config_files options are passed to "wr add".
+manageruploaddir: "uploads"
+
 # runnerexecshell: What shell should be used to run commands in?
 # This defaults to bash, regardless of your current shell.
 #
@@ -410,7 +421,8 @@ clouddisk: 1
 
 # cloudscript: What script should run on newly spawned servers?
 # If unset, nothing is run. It is overridden by the --script option to
-# `wr cloud deploy` and the --cloud_script option of `wr manager start`.
+# `wr cloud deploy` and the --cloud_script option of `wr manager start`. (It is
+# NOT used as the default of --cloud_script for `wr add`.)
 # Note, this is the absolute path to a local bash script.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -422,8 +434,10 @@ clouddisk: 1
 
 # cloudconfigfiles: What config files should be copied to newly spawned servers?
 # This defaults to "~/.s3cfg,~/.aws/credentials,~/.aws/config". It is overridden
-# by the --config_files option to `wr cloud deploy` and the --cloud_config_files
-# option of `wr manager start`. Note, this is a comma separated string of paths.
+# by the --config_files option to `wr cloud deploy`, and the
+# --cloud_config_files option of `wr manager start`. (It is NOT used as the
+# default of --cloud_config_files for `wr add`.)
+# Note, this is a comma separated string of paths.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
@@ -431,6 +445,10 @@ clouddisk: 1
 # If you specify absolute paths, the file will be copied to the same absolute
 # path on spawned cloud servers. For files in your home directory which you want
 # to be placed in the home directory of the cloud servers, use the ~/ prefix.
+#
+# If local path and desired remote path are unrelated, the source and
+# destination paths can be separated with a colon, eg.
+# "~/.s3cfg.openstack:~/.s3cfg".
 #
 # Examples of files you might need to copy over are your s3 configuration files.
 # You'll need these on your cloud servers if you plan on `wr add`ing any

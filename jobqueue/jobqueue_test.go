@@ -3321,6 +3321,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			WebPort:         config.ManagerWeb,
 			SchedulerName:   "openstack",
 			SchedulerConfig: cloudConfig,
+			UploadDir:       config.ManagerUploadDir,
 			DBFile:          config.ManagerDbFile,
 			DBFileBackup:    config.ManagerDbBkFile,
 			TokenFile:       config.ManagerTokenFile,
@@ -3341,6 +3342,71 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
+
+			Convey("You can run a cmd with a per-cmd set of config files", func() {
+				// create a config file locally
+				localConfigPath := filepath.Join(runnertmpdir, "test.config")
+				configContent := []byte("myconfig\n")
+				err := ioutil.WriteFile(localConfigPath, configContent, 0600)
+				So(err, ShouldBeNil)
+
+				// pretend the server is remote to us, and upload our config
+				// file first
+				remoteConfigPath, err := jq.UploadFile(localConfigPath, "")
+				So(err, ShouldBeNil)
+				So(remoteConfigPath, ShouldEqual, filepath.Join(os.Getenv("HOME"), ".wr_development", "uploads", "4", "2", "5", "a65424cddbee3271f937530c6efc6"))
+
+				// check the remote config file was saved properly
+				content, err := ioutil.ReadFile(remoteConfigPath)
+				So(err, ShouldBeNil)
+				So(content, ShouldResemble, configContent)
+
+				// create a job that cats a config file that should only exist
+				// if the supplied cloud_config_files option worked. It then
+				// fails so we can check the stdout afterwards.
+				var jobs []*Job
+				other := make(map[string]string)
+				configPath := "~/.wr_test.config"
+				other["cloud_config_files"] = remoteConfigPath + ":" + configPath
+				jobs = append(jobs, &Job{Cmd: "cat " + configPath + " && false", Cwd: "/tmp", ReqGroup: "cat", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Hour, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "with_config_file"})
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				// wait for the job to get run
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(180 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+
+				got, err := jq.GetByRepGroup("with_config_file", 0, JobStateBuried, true, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				stderr, err := got[0].StdErr()
+				So(err, ShouldBeNil)
+				So(stderr, ShouldEqual, "")
+				stdout, err := got[0].StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, strings.TrimSuffix(string(configContent), "\n"))
+			})
 
 			Convey("You can run commands with different hardware requirements while dropping the count", func() {
 				var jobs []*Job

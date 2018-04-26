@@ -73,7 +73,8 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_username cloud_ram cloud_script cloud_flavor env
+cloud_os cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
+env
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -228,7 +229,10 @@ will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
 run on a cloud node running CentOS (with at least 4GB ram). If you set
 "cloud_flavor" then the command will only run on a server with that exact
 flavor (normally the cheapest flavor is chosen for you based on the command's
-resource requirements).
+resource requirements). The format for cloud_config_files is described under the
+help text for "wr cloud deploy"'s --config_files option. The per-job config
+files you specify will be treated as in addition to any specified during cloud
+deploy or when starting the manager.
 
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
@@ -306,6 +310,7 @@ func init() {
 	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
 	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	addCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 
@@ -333,23 +338,40 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // the manager is on the same host as us, and bool for if any job defaulted to
 // the default repgrp.
 func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
+	var isLocal bool
+	currentIP, errc := jobqueue.CurrentIP("")
+	if errc != nil {
+		warn("Could not get current IP: %s", errc)
+	}
+	if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
+		isLocal = true
+	}
+
+	// if the manager is remote, copy over any cloud config files to unique
+	// locations, and adjust cloudConfigFiles to make sense from the manager's
+	// perspective
+	if !isLocal && cloudConfigFiles != "" {
+		cloudConfigFiles = copyCloudConfigFiles(jq, cloudConfigFiles)
+	}
+
 	jd := &jobqueue.JobDefaults{
-		RepGrp:      cmdRepGroup,
-		ReqGrp:      reqGroup,
-		Cwd:         cmdCwd,
-		CwdMatters:  cmdCwdMatters,
-		ChangeHome:  cmdChangeHome,
-		CPUs:        cmdCPUs,
-		Disk:        cmdDisk,
-		Override:    cmdOvr,
-		Priority:    cmdPri,
-		Retries:     cmdRet,
-		Env:         cmdEnv,
-		CloudOS:     cmdOsPrefix,
-		CloudUser:   cmdOsUsername,
-		CloudScript: cmdPostCreationScript,
-		CloudOSRam:  cmdOsRAM,
-		CloudFlavor: cmdFlavor,
+		RepGrp:           cmdRepGroup,
+		ReqGrp:           reqGroup,
+		Cwd:              cmdCwd,
+		CwdMatters:       cmdCwdMatters,
+		ChangeHome:       cmdChangeHome,
+		CPUs:             cmdCPUs,
+		Disk:             cmdDisk,
+		Override:         cmdOvr,
+		Priority:         cmdPri,
+		Retries:          cmdRet,
+		Env:              cmdEnv,
+		CloudOS:          cmdOsPrefix,
+		CloudUser:        cmdOsUsername,
+		CloudScript:      cmdPostCreationScript,
+		CloudConfigFiles: cloudConfigFiles,
+		CloudOSRam:       cmdOsRAM,
+		CloudFlavor:      cmdFlavor,
 	}
 
 	if jd.RepGrp == "" {
@@ -435,19 +457,13 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
 	var pwd string
 	var remoteWarning bool
-	var isLocal bool
 	if cmdCwd == "" {
 		wd, errg := os.Getwd()
 		if errg != nil {
 			die("%s", errg)
 		}
-		currentIP, errc := jobqueue.CurrentIP("")
-		if errc != nil {
-			warn("Could not get current IP: %s", errc)
-		}
-		if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
+		if isLocal {
 			pwd = wd
-			isLocal = true
 		} else if cmdCwdMatters {
 			pwd = wd
 		} else {
@@ -504,6 +520,10 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 			defaultedRepG = true
 		}
 
+		if !isLocal && jvj.CloudConfigFiles != "" {
+			jvj.CloudConfigFiles = copyCloudConfigFiles(jq, jvj.CloudConfigFiles)
+		}
+
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
 			die("line %d had a problem: %s\n", lineNum, errf)
@@ -513,4 +533,38 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	}
 
 	return jobs, isLocal, defaultedRepG
+}
+
+// copyCloudConfigFiles copies local config files to the manager's machine to a
+// path based on the file's MD5, and then returns an altered input value to use
+// the MD5 paths as the sources, keeping the desired destinations. It does not
+// alter path specs for config files that don't exist locally.
+func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
+	var remoteConfigFiles []string
+	for _, cf := range strings.Split(configFiles, ",") {
+		parts := strings.Split(cf, ":")
+		local := internal.TildaToHome(parts[0])
+		_, err := os.Stat(local)
+		if err != nil {
+			remoteConfigFiles = append(remoteConfigFiles, cf)
+			continue
+		}
+
+		var desired string
+		if len(parts) == 2 {
+			desired = parts[1]
+		} else {
+			desired = parts[0]
+		}
+
+		remote, err := jq.UploadFile(local, desired)
+		if err != nil {
+			warn("failed to open file %s: %s", local, err)
+			remoteConfigFiles = append(remoteConfigFiles, cf)
+			continue
+		}
+
+		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
+	}
+	return strings.Join(remoteConfigFiles, ",")
 }

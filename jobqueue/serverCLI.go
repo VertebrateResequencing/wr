@@ -95,6 +95,26 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "shutdown":
 			s.Debug("shutdown requested")
 			s.Stop(true)
+		case "upload":
+			// upload file to us
+			if cr.File == nil {
+				srerr = ErrBadRequest
+			} else {
+				data, err := decompress(cr.File)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				} else {
+					r := bytes.NewReader(data)
+					path, err := s.uploadFile(r, cr.Path)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+					} else {
+						sr = &serverResponse{Path: path}
+					}
+				}
+			}
 		case "add":
 			// add jobs to the queue, and along side keep the environment variables
 			// they're supposed to execute under.

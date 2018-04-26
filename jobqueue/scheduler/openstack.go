@@ -123,6 +123,8 @@ type ConfigOpenStack struct {
 	// server may have a different username and thus home directory path
 	// compared to the current server), use the prefix ~/ to signify the home
 	// directory. It silently ignores files that don't exist locally.
+	// (Appended to during Schedule() by a
+	// Requirements.Other["cloud_config_files"] value.)
 	ConfigFiles string
 
 	// ServerPorts are the TCP port numbers you need to be open for
@@ -187,6 +189,7 @@ type standin struct {
 	disk           int
 	os             string
 	script         []byte
+	configFiles    string // in cloud.Server.CopyOver() format
 	usedRAM        int
 	usedCores      int
 	usedDisk       int
@@ -202,7 +205,7 @@ type standin struct {
 }
 
 // newStandin returns a new standin server
-func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, script []byte, logger log15.Logger) *standin {
+func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, script []byte, configFiles string, logger log15.Logger) *standin {
 	availableDisk := flavor.Disk
 	if disk > availableDisk {
 		availableDisk = disk
@@ -213,6 +216,7 @@ func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, scri
 		disk:           availableDisk,
 		os:             osPrefix,
 		script:         script,
+		configFiles:    configFiles,
 		waitingToSpawn: true,
 		endWait:        make(chan *cloud.Server),
 		readyToSpawn:   make(chan bool),
@@ -222,8 +226,8 @@ func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, scri
 }
 
 // matches is like cloud.Server.Matches()
-func (s *standin) matches(os string, script []byte, flavor *cloud.Flavor) bool {
-	return s.os == os && bytes.Equal(s.script, script) && (flavor == nil || flavor.ID == s.flavor.ID)
+func (s *standin) matches(os string, script []byte, configFiles string, flavor *cloud.Flavor) bool {
+	return s.os == os && bytes.Equal(s.script, script) && s.configFiles == configFiles && (flavor == nil || flavor.ID == s.flavor.ID)
 }
 
 // allocate is like cloud.Server.Allocate()
@@ -529,9 +533,9 @@ func (s *opst) getFlavor(name string) (*cloud.Flavor, error) {
 
 // serverReqs checks the given req's Other details to see if a particular kind
 // of server has been requested. If not specified, the returned os defaults to
-// the configured OSPrefix, script defaults to PostCreationScript, and flavor
-// will be nil.
-func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, flavor *cloud.Flavor, err error) {
+// the configured OSPrefix, script defaults to PostCreationScript, config files
+// defaults to ConfigFiles and flavor will be nil.
+func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, osConfigFiles string, flavor *cloud.Flavor, err error) {
 	if val, defined := req.Other["cloud_os"]; defined {
 		osPrefix = val
 	} else {
@@ -544,11 +548,21 @@ func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, 
 		osScript = s.config.PostCreationScript
 	}
 
+	if val, defined := req.Other["cloud_config_files"]; defined {
+		if s.config.ConfigFiles != "" {
+			osConfigFiles = s.config.ConfigFiles + "," + val
+		} else {
+			osConfigFiles = val
+		}
+	} else {
+		osConfigFiles = s.config.ConfigFiles
+	}
+
 	if name, defined := req.Other["cloud_flavor"]; defined {
 		flavor, err = s.getFlavor(name)
 	}
 
-	return osPrefix, osScript, flavor, err
+	return osPrefix, osScript, osConfigFiles, flavor, err
 }
 
 // canCount tells you how many jobs with the given RAM and core requirements it
@@ -557,7 +571,7 @@ func (s *opst) canCount(req *Requirements) int {
 	s.resourceMutex.RLock()
 	defer s.resourceMutex.RUnlock()
 
-	requestedOS, requestedScript, requestedFlavor, err := s.serverReqs(req)
+	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, err := s.serverReqs(req)
 	if err != nil {
 		s.Warn("Failed to determine server requirements", "err", err)
 		return 0
@@ -583,7 +597,7 @@ func (s *opst) canCount(req *Requirements) int {
 	// by one in to the first bin that has room for it.”
 	var canCount int
 	for _, server := range s.servers {
-		if !server.IsBad() && server.Matches(requestedOS, requestedScript, requestedFlavor) {
+		if !server.IsBad() && server.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor) {
 			space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
 			canCount += space
 		}
@@ -747,7 +761,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	// which runCmd call is doing what
 	logger := s.Logger.New("call", logext.RandId(8))
 
-	requestedOS, requestedScript, requestedFlavor, err := s.serverReqs(req)
+	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, err := s.serverReqs(req)
 	if err != nil {
 		return err
 	}
@@ -777,7 +791,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	// of them
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
-		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedFlavor) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
 			logger = logger.New("server", sid)
@@ -789,7 +803,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	// else see if there will be space on a soon-to-be-spawned server
 	if server == nil {
 		for _, standinServer := range s.standins {
-			if standinServer.matches(requestedOS, requestedScript, requestedFlavor) && standinServer.hasSpaceFor(req) > 0 {
+			if standinServer.matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor) && standinServer.hasSpaceFor(req) > 0 {
 				s.recordStandin(standinServer, cmd)
 				standinServer.allocate(req)
 				s.mutex.Unlock()
@@ -853,7 +867,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 		u, _ := uuid.NewV4()
 		standinID := u.String()
-		standinServer := newStandin(standinID, flavor, req.Disk, requestedOS, requestedScript, s.Logger)
+		standinServer := newStandin(standinID, flavor, req.Disk, requestedOS, requestedScript, requestedConfigFiles, s.Logger)
 		standinServer.allocate(req)
 		s.recordStandin(standinServer, cmd)
 		logger = logger.New("standin", standinID)
@@ -964,7 +978,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		if err == nil {
 			// wait until boot is finished, ssh is ready, and osScript has
 			// completed
-			err = server.WaitUntilReady(s.config.ConfigFiles, requestedScript)
+			err = server.WaitUntilReady(requestedConfigFiles, requestedScript)
 
 			if err == nil {
 				// check that the exe of the cmd we're supposed to run exists on the

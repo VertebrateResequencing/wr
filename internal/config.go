@@ -54,6 +54,7 @@ type Config struct {
 	ManagerDbFile       string `default:"db"`
 	ManagerDbBkFile     string `default:"db_bk"`
 	ManagerTokenFile    string `default:"client.token"`
+	ManagerUploadDir    string `default:"uploads"`
 	ManagerUmask        int    `default:"007"`
 	ManagerScheduler    string `default:"local"`
 	ManagerCAFile       string `default:"ca.pem"`
@@ -171,7 +172,7 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	}
 
 	// convert the possible relative paths in Manager_*_file to abs paths in
-	// Manager_dir
+	// ManagerDir
 	if !filepath.IsAbs(config.ManagerPidFile) {
 		config.ManagerPidFile = filepath.Join(config.ManagerDir, config.ManagerPidFile)
 	}
@@ -195,6 +196,9 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	}
 	if !filepath.IsAbs(config.ManagerTokenFile) {
 		config.ManagerTokenFile = filepath.Join(config.ManagerDir, config.ManagerTokenFile)
+	}
+	if !filepath.IsAbs(config.ManagerUploadDir) {
+		config.ManagerUploadDir = filepath.Join(config.ManagerDir, config.ManagerUploadDir)
 	}
 
 	// if not explicitly set, calculate ports that no one else would be

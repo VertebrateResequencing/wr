@@ -38,6 +38,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/dgryski/go-farm"
 	multierror "github.com/hashicorp/go-multierror"
 )
@@ -417,15 +418,21 @@ func envOverride(orig []string, over []string) []string {
 	return env
 }
 
+// calculateHashedDir returns the hashed directory structure corresponding to
+// a given string. Returns dirs rooted at baseDir, and a leaf name.
+func calculateHashedDir(baseDir, tohash string) (string, string) {
+	dirs := strings.SplitN(tohash, "", mkHashedLevels)
+	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
+	dirs = append([]string{baseDir}, dirs...)
+	return filepath.Join(dirs...), leaf
+}
+
 // mkHashedDir uses tohash (which should be a 32 char long string from
 // byteKey()) to create a folder nested within baseDir, and in that folder
 // creates 2 folders called cwd and tmp, which it returns. Returns an error if
 // there were problems making the directories.
 func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
-	dirs := strings.SplitN(tohash, "", mkHashedLevels)
-	dirs, leaf := dirs[0:mkHashedLevels-1], dirs[mkHashedLevels-1]
-	dirs = append([]string{baseDir, AppName + "_cwd"}, dirs...)
-	dir := filepath.Join(dirs...)
+	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+"_cwd"), tohash)
 	holdFile := filepath.Join(dir, ".hold")
 	defer func() {
 		errr := os.Remove(holdFile)
@@ -573,4 +580,15 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 		}
 	}
 	return nil
+}
+
+// compressFile reads the content of the given file then compresses that. Since
+// this happens in memory, only suitable for small files!
+func compressFile(path string) ([]byte, error) {
+	path = internal.TildaToHome(path)
+	content, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return compress(content)
 }

@@ -515,6 +515,7 @@ func startJQ(postCreation []byte) {
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		TokenFile:       config.ManagerTokenFile,
+		UploadDir:       config.ManagerUploadDir,
 		CAFile:          config.ManagerCAFile,
 		CertFile:        config.ManagerCertFile,
 		KeyFile:         config.ManagerKeyFile,

@@ -33,6 +33,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
+	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -59,6 +60,7 @@ type Server struct {
 	Name              string        // ought to correspond to the hostname
 	OS                string        // the name of the Operating System image
 	Script            []byte        // the content of a start-up script run on the server
+	ConfigFiles       string        // files that you will CopyOver() and require to be on this Server, in CopyOver() format
 	TTD               time.Duration // amount of idle time allowed before destruction
 	UserName          string        // the username needed to log in to the server
 	cancelDestruction chan bool
@@ -79,11 +81,12 @@ type Server struct {
 	logger            log15.Logger // (not embedded to make gob happy)
 }
 
-// Matches tells you if in principle a Server has the given os, script and
-// flavor. Useful before calling HasSpaceFor, since if you don't match these
-// things you can't use the Server regardless of how empty it is.
-func (s *Server) Matches(os string, script []byte, flavor *Flavor) bool {
-	return s.OS == os && bytes.Equal(s.Script, script) && (flavor == nil || flavor.ID == s.Flavor.ID)
+// Matches tells you if in principle a Server has the given os, script, config
+// files and flavor. Useful before calling HasSpaceFor, since if you don't match
+// these things you can't use the Server regardless of how empty it is.
+// configFiles is in the CopyOver() format.
+func (s *Server) Matches(os string, script []byte, configFiles string, flavor *Flavor) bool {
+	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID)
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -464,7 +467,11 @@ func (s *Server) CopyOver(files string) error {
 
 		if strings.HasPrefix(remotePath, "~/") {
 			remotePath = strings.TrimLeft(remotePath, "~/")
-			remotePath = "./" + remotePath
+			home, errh := homedir.Dir()
+			if errh != nil {
+				return errh
+			}
+			remotePath = filepath.Join(home, remotePath)
 		}
 
 		err = s.UploadFile(localPath, remotePath)

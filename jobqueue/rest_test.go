@@ -25,8 +25,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -45,6 +48,13 @@ func TestREST(t *testing.T) {
 	testLogger := log15.New()
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
 
+	dir, errt := ioutil.TempDir("", "wr_rest_tests")
+	if errt != nil {
+		log.Fatalf("could not create tempdir: %s\n", errt)
+	}
+	defer os.RemoveAll(dir)
+	uploadsDir := filepath.Join(dir, "uploads")
+
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
 	config := internal.ConfigLoad("development", true, testLogger)
@@ -53,6 +63,7 @@ func TestREST(t *testing.T) {
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   "local",
 		SchedulerConfig: &jqs.ConfigLocal{Shell: config.RunnerExecShell},
+		UploadDir:       uploadsDir,
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbFile + "_bk",
 		CAFile:          config.ManagerCAFile,
@@ -65,6 +76,7 @@ func TestREST(t *testing.T) {
 	addr := "localhost:" + config.ManagerPort
 	baseURL := "https://" + config.ManagerCertDomain + ":" + config.ManagerWeb
 	jobsEndPoint := baseURL + "/rest/v1/jobs"
+	uploadEndPoint := baseURL + "/rest/v1/upload"
 	warningsEndPoint := baseURL + "/rest/v1/warnings/"
 	serversEndPoint := baseURL + "/rest/v1/servers/"
 
@@ -79,16 +91,15 @@ func TestREST(t *testing.T) {
 
 	var server *Server
 	var token []byte
-	var err error
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, token, err = Serve(serverConfig)
-		So(err, ShouldBeNil)
+		server, _, token, errt = Serve(serverConfig)
+		So(errt, ShouldBeNil)
 
 		bearer := "Bearer " + string(token)
 
 		tlsConfig := &tls.Config{ServerName: config.ManagerCertDomain}
-		caCert, err := ioutil.ReadFile(config.ManagerCAFile)
-		if err == nil {
+		caCert, errr := ioutil.ReadFile(config.ManagerCAFile)
+		if errr == nil {
 			certPool := x509.NewCertPool()
 			certPool.AppendCertsFromPEM(caCert)
 			tlsConfig.RootCAs = certPool
@@ -446,6 +457,111 @@ func TestREST(t *testing.T) {
 			So(jstati[0].ExpectedTime, ShouldEqual, 240)
 			So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
 			So(jstati[0].Mounts, ShouldEqual, mountJSON)
+		})
+
+		Convey("Trying to POST a job with a non-existent cloud_script fails", func() {
+			cloudScript := filepath.Join(dir, "cloud.script")
+			uploadedScript := filepath.Join(dir, "cloud.script.uploaded")
+
+			scriptContent := []byte("echo 1\n")
+			err := ioutil.WriteFile(cloudScript, scriptContent, 0600)
+			So(err, ShouldBeNil)
+
+			_, err = os.Stat(uploadedScript)
+			So(err, ShouldNotBeNil)
+
+			var inputJobs []*JobViaJSON
+			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", CloudScript: uploadedScript})
+			jsonValue, err := json.Marshal(inputJobs)
+			So(err, ShouldBeNil)
+
+			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+			So(err, ShouldBeNil)
+			req.Header.Add("Authorization", bearer)
+			req.Header.Add("Content-Type", "application/json")
+			response, err := client.Do(req)
+			So(err, ShouldBeNil)
+			So(response.StatusCode, ShouldEqual, http.StatusBadRequest)
+
+			Convey("But it works after uploading the script", func() {
+				file, err := os.Open(cloudScript)
+				So(err, ShouldBeNil)
+				req, err := http.NewRequest(http.MethodPut, uploadEndPoint+"/?path="+uploadedScript, file)
+				So(err, ShouldBeNil)
+				req.Header.Add("Authorization", bearer)
+				response, err := client.Do(req)
+				So(err, ShouldBeNil)
+				responseData, err := ioutil.ReadAll(response.Body)
+				So(err, ShouldBeNil)
+				file.Close()
+
+				_, err = os.Stat(uploadedScript)
+				So(err, ShouldBeNil)
+				content, err := ioutil.ReadFile(uploadedScript)
+				So(err, ShouldBeNil)
+				So(content, ShouldResemble, scriptContent)
+
+				answer := make(map[string]string)
+				err = json.Unmarshal(responseData, &answer)
+				So(err, ShouldBeNil)
+				So(answer["path"], ShouldEqual, uploadedScript)
+
+				req, err = http.NewRequest(http.MethodPost, jobsEndPoint+"/", bytes.NewBuffer(jsonValue))
+				So(err, ShouldBeNil)
+				req.Header.Add("Authorization", bearer)
+				req.Header.Add("Content-Type", "application/json")
+				response, err = client.Do(req)
+				So(err, ShouldBeNil)
+				So(response.StatusCode, ShouldEqual, http.StatusCreated)
+
+				Convey("You can also upload without specifying an upload path", func() {
+					md5Path := filepath.Join(uploadsDir, "3", "3", "4", "d5669e1fb34a7d0583a9773e1b237")
+
+					file, err := os.Open(cloudScript)
+					So(err, ShouldBeNil)
+					req, err := http.NewRequest(http.MethodPut, uploadEndPoint+"/", file)
+					So(err, ShouldBeNil)
+					req.Header.Add("Authorization", bearer)
+					response, err := client.Do(req)
+					So(err, ShouldBeNil)
+					responseData, err := ioutil.ReadAll(response.Body)
+					So(err, ShouldBeNil)
+					file.Close()
+
+					info, err := os.Stat(md5Path)
+					So(err, ShouldBeNil)
+					content, err := ioutil.ReadFile(md5Path)
+					So(err, ShouldBeNil)
+					So(content, ShouldResemble, scriptContent)
+
+					answer := make(map[string]string)
+					err = json.Unmarshal(responseData, &answer)
+					So(err, ShouldBeNil)
+					So(answer["path"], ShouldEqual, md5Path)
+
+					// and trying a second time succeeds, but doesn't change the
+					// original upload
+					file, err = os.Open(cloudScript)
+					So(err, ShouldBeNil)
+					req, err = http.NewRequest(http.MethodPut, uploadEndPoint+"/", file)
+					So(err, ShouldBeNil)
+					req.Header.Add("Authorization", bearer)
+					response, err = client.Do(req)
+					So(err, ShouldBeNil)
+					responseData, err = ioutil.ReadAll(response.Body)
+					So(err, ShouldBeNil)
+					file.Close()
+
+					answer = make(map[string]string)
+					err = json.Unmarshal(responseData, &answer)
+					So(err, ShouldBeNil)
+					So(answer["path"], ShouldEqual, md5Path)
+
+					info2, err := os.Stat(md5Path)
+					So(err, ShouldBeNil)
+					So(info2.ModTime(), ShouldEqual, info.ModTime())
+				})
+			})
 		})
 
 		Convey("Initial GET queries on the warnings endpoint return nothing", func() {

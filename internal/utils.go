@@ -21,6 +21,8 @@ package internal
 // this file has general utility functions
 
 import (
+	"crypto/md5" // #nosec not used for security purposes
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -278,4 +280,21 @@ func InfobloxSetDomainIP(domain, ip string) error {
 	<-time.After(500 * time.Millisecond)
 
 	return nil
+}
+
+// FileMD5 calculates the MD5 hash checksum of a file, returned as HEX encoded.
+func FileMD5(path string, logger log15.Logger) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer LogClose(logger, file, "fileMD5", "path", path)
+
+	h := md5.New() // #nosec not used for security purposes
+
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

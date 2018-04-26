@@ -25,11 +25,9 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -65,23 +63,24 @@ type JobViaJSON struct {
 	Time string `json:"time"`
 	CPUs *int   `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
-	Disk        *int              `json:"disk"`
-	Override    *int              `json:"override"`
-	Priority    *int              `json:"priority"`
-	Retries     *int              `json:"retries"`
-	RepGrp      string            `json:"rep_grp"`
-	DepGrps     []string          `json:"dep_grps"`
-	Deps        []string          `json:"deps"`
-	CmdDeps     Dependencies      `json:"cmd_deps"`
-	OnFailure   BehavioursViaJSON `json:"on_failure"`
-	OnSuccess   BehavioursViaJSON `json:"on_success"`
-	OnExit      BehavioursViaJSON `json:"on_exit"`
-	Env         []string          `json:"env"`
-	CloudOS     string            `json:"cloud_os"`
-	CloudUser   string            `json:"cloud_username"`
-	CloudScript string            `json:"cloud_script"`
-	CloudOSRam  *int              `json:"cloud_ram"`
-	CloudFlavor string            `json:"cloud_flavor"`
+	Disk             *int              `json:"disk"`
+	Override         *int              `json:"override"`
+	Priority         *int              `json:"priority"`
+	Retries          *int              `json:"retries"`
+	RepGrp           string            `json:"rep_grp"`
+	DepGrps          []string          `json:"dep_grps"`
+	Deps             []string          `json:"deps"`
+	CmdDeps          Dependencies      `json:"cmd_deps"`
+	OnFailure        BehavioursViaJSON `json:"on_failure"`
+	OnSuccess        BehavioursViaJSON `json:"on_success"`
+	OnExit           BehavioursViaJSON `json:"on_exit"`
+	Env              []string          `json:"env"`
+	CloudOS          string            `json:"cloud_os"`
+	CloudUser        string            `json:"cloud_username"`
+	CloudScript      string            `json:"cloud_script"`
+	CloudConfigFiles string            `json:"cloud_config_files"`
+	CloudOSRam       *int              `json:"cloud_ram"`
+	CloudFlavor      string            `json:"cloud_flavor"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -117,6 +116,8 @@ type JobDefaults struct {
 	CloudFlavor  string
 	// CloudScript is the local path to a script.
 	CloudScript string
+	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
+	CloudConfigFiles string
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
 	CloudOSRam    int
@@ -350,16 +351,19 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else if jd.CloudOS != "" {
 		other["cloud_os"] = jd.CloudOS
 	}
+
 	if jvj.CloudUser != "" {
 		other["cloud_user"] = jvj.CloudUser
 	} else if jd.CloudUser != "" {
 		other["cloud_user"] = jd.CloudUser
 	}
+
 	if jvj.CloudFlavor != "" {
 		other["cloud_flavor"] = jvj.CloudFlavor
 	} else if jd.CloudFlavor != "" {
 		other["cloud_flavor"] = jd.CloudFlavor
 	}
+
 	var cloudScriptPath string
 	if jvj.CloudScript != "" {
 		cloudScriptPath = jvj.CloudScript
@@ -374,6 +378,13 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		}
 		other["cloud_script"] = string(postCreation)
 	}
+
+	if jvj.CloudConfigFiles != "" {
+		other["cloud_config_files"] = jvj.CloudConfigFiles
+	} else if jd.CloudConfigFiles != "" {
+		other["cloud_config_files"] = jd.CloudConfigFiles
+	}
+
 	if jvj.CloudOSRam != nil {
 		ram := *jvj.CloudOSRam
 		other["cloud_os_ram"] = strconv.Itoa(ram)
@@ -438,6 +449,8 @@ func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
 // restJobs lets you do CRUD on jobs in the queue.
 func restJobs(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue web server restJobs", false)
+
 		ok := s.httpAuthorized(w, r)
 		if !ok {
 			return
@@ -701,6 +714,8 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 // (deletes) them.
 func restWarnings(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue web server restWarnings", false)
+
 		ok := s.httpAuthorized(w, r)
 		if !ok {
 			return
@@ -738,6 +753,8 @@ func restWarnings(s *Server) http.HandlerFunc {
 // to confirm as bad and have terminated if it still exists.
 func restBadServers(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue web server restBadServers", false)
+
 		ok := s.httpAuthorized(w, r)
 		if !ok {
 			return
@@ -793,6 +810,8 @@ func restBadServers(s *Server) http.HandlerFunc {
 // method supported is PUT.
 func restFileUpload(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue web server restFileUpload", false)
+
 		ok := s.httpAuthorized(w, r)
 		if !ok {
 			return
@@ -803,33 +822,9 @@ func restFileUpload(s *Server) http.HandlerFunc {
 			return
 		}
 
-		savePath := r.Form.Get("path")
-		var file *os.File
-		var err error
-		if savePath == "" {
-			file, err = ioutil.TempFile("", "file_upload")
-			savePath = file.Name()
-		} else {
-			savePath = internal.TildaToHome(savePath)
-			err = os.MkdirAll(filepath.Dir(savePath), 0700)
-			if err != nil {
-				s.Error("restFileUpload create diretory error", "err", err)
-				http.Error(w, "Failed to create diretory on server", http.StatusInternalServerError)
-				return
-			}
-			file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0600)
-		}
+		savePath, err := s.uploadFile(r.Body, r.Form.Get("path"))
 		if err != nil {
-			s.Error("restFileUpload create file error", "err", err)
-			http.Error(w, "Failed to create file on server", http.StatusInternalServerError)
-			return
-		}
-		defer file.Close()
-
-		_, err = io.Copy(file, r.Body)
-		if err != nil {
-			s.Error("restFileUpload store file error", "err", err)
-			http.Error(w, "Failed to store file on server", http.StatusInternalServerError)
+			http.Error(w, "file upload failed", http.StatusInternalServerError)
 			return
 		}
 

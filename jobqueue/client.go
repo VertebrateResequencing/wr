@@ -92,6 +92,8 @@ type clientRequest struct {
 	Method         string
 	SchedulerGroup string
 	State          JobState
+	File           []byte // compressed bytes of file content
+	Path           string // desired path File should be stored at, can be blank
 	Timeout        time.Duration
 	Token          []byte
 }
@@ -551,6 +553,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	signalled := false
 	killCalled := false
 	var killErr error
+	var closeErr error
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
@@ -561,8 +564,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 				stateMutex.Lock()
 				signalled = true
 				stateMutex.Unlock()
-				errReader.Close()
-				outReader.Close()
+				errc := errReader.Close()
+				if errc != nil {
+					closeErr = errc
+				}
+				errc = outReader.Close()
+				if errc != nil {
+					closeErr = errc
+				}
 				return
 			case <-ticker.C:
 				stateMutex.Lock()
@@ -580,8 +589,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 					stateMutex.Lock()
 					killCalled = true
 					stateMutex.Unlock()
-					errReader.Close()
-					outReader.Close()
+					errc := errReader.Close()
+					if errc != nil {
+						closeErr = errc
+					}
+					errc = outReader.Close()
+					if errc != nil {
+						closeErr = errc
+					}
 					return
 				}
 				if errf != nil {
@@ -737,6 +752,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			myerr = fmt.Errorf("%s; killing the cmd also failed: %s", myerr.Error(), killErr.Error())
 		} else {
 			myerr = killErr
+		}
+	}
+
+	if closeErr != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; closing stderr/out of the cmd also failed: %s", myerr.Error(), closeErr.Error())
+		} else {
+			myerr = closeErr
 		}
 	}
 
@@ -1114,6 +1137,32 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 		return nil, err
 	}
 	return resp.Jobs, err
+}
+
+// UploadFile uploads a local file to the machine where the server is running,
+// so you can add cloud jobs that need a script or config file on your local
+// machine to be copied over to created cloud instances.
+//
+// If the remote path is supplied as a blank string, the remote path will be
+// chosen for you based on the MD5 checksum of your file data, rooted in the
+// server's configured UploadDir.
+//
+// The remote path can be supplied prefixed with ~/ to upload relative to the
+// remote's home directory. Otherwise it should be an absolute path.
+//
+// Returns the absolute path of the uploaded file on the server's machine.
+//
+// NB: This is only suitable for transferring small files!
+func (c *Client) UploadFile(local, remote string) (string, error) {
+	compressed, err := compressFile(local)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.request(&clientRequest{Method: "upload", File: compressed, Path: remote})
+	if err != nil {
+		return "", err
+	}
+	return resp.Path, err
 }
 
 // request the server do something and get back its response. We can only cope

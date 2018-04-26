@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -113,6 +115,7 @@ type serverResponse struct {
 	SInfo      *ServerInfo
 	SStats     *ServerStats
 	DB         []byte
+	Path       string
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -176,6 +179,7 @@ type schedulerIssue struct {
 type Server struct {
 	ServerInfo         *ServerInfo
 	token              []byte
+	uploadDir          string
 	sock               mangos.Socket
 	ch                 codec.Handle
 	db                 *db
@@ -297,6 +301,11 @@ type ServerConfig struct {
 	// in which case it will do its best to pick correctly. (This is only a
 	// possible issue if you have multiple network interfaces.)
 	CIDR string
+
+	// UploadDir is the directory where files uploaded to the Server will be
+	// stored. They get given unique names based on the MD5 checksum of the file
+	// uploaded. Defaults to /tmp.
+	UploadDir string
 
 	// Logger is a logger object that will be used to log uncaught errors and
 	// debug statements. "Uncought" errors are all errors generated during
@@ -471,9 +480,15 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		return s, msg, token, err
 	}
 
+	uploadDir := config.UploadDir
+	if uploadDir == "" {
+		uploadDir = "/tmp"
+	}
+
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
 		token:              token,
+		uploadDir:          uploadDir,
 		sock:               sock,
 		ch:                 new(codec.BincHandle),
 		rpl:                &rgToKeys{lookup: make(map[string]map[string]bool)},
@@ -795,6 +810,106 @@ func (s *Server) BackupDB(w io.Writer) error {
 // scheduler (either running or pending).
 func (s *Server) HasRunners() bool {
 	return s.scheduler.Busy()
+}
+
+// uploadFile uploads the given file data to the given path on the machine where
+// the server process is running.
+//
+// If savePath is an empty string, the file is stored at a path based on the MD5
+// checksum of the file data, rooted in the server's configured UploadDir. If it
+// turns out such a file already exists, no error is generated. savePath can be
+// prefixed with ~/ to have it saved relative to the server's home directory.
+//
+// Files stored will only be readable by the user that started the server.
+//
+// Note that this is only intended for a a few small files, such as config files
+// that need to be passed through to spawned cloud servers, when doing a cloud
+// deployment.
+//
+// Returns the absolute path to the file that now contains the given file data.
+func (s *Server) uploadFile(source io.Reader, savePath string) (string, error) {
+	var file *os.File
+	var err error
+	usedTempFile := false
+	if savePath == "" {
+		if _, err = os.Stat(s.uploadDir); err != nil && os.IsNotExist(err) {
+			err = os.MkdirAll(s.uploadDir, os.ModePerm)
+			if err != nil {
+				s.Error("uploadFile create directory error", "err", err)
+				return "", err
+			}
+		}
+		file, err = ioutil.TempFile(s.uploadDir, "file_upload")
+		if err != nil {
+			s.Error("uploadFile temp file create error", "err", err)
+			return "", err
+		}
+		savePath = file.Name()
+		usedTempFile = true
+	} else {
+		savePath = internal.TildaToHome(savePath)
+		err = os.MkdirAll(filepath.Dir(savePath), os.ModePerm)
+		if err != nil {
+			s.Error("uploadFile create directory error", "err", err)
+			return "", err
+		}
+		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0600)
+		if err != nil {
+			s.Error("uploadFile create file error", "err", err)
+			return "", err
+		}
+	}
+
+	_, err = io.Copy(file, source)
+	if err != nil {
+		s.Error("uploadFile store file error", "err", err)
+		return "", err
+	}
+	err = file.Close()
+	if err != nil {
+		s.Warn("uploadFile close file error", "err", err)
+	}
+
+	if usedTempFile {
+		// rename the file to one based on the md5 checksum of the file
+		var md5 string
+		md5, err = internal.FileMD5(savePath, s.Logger)
+		if err != nil {
+			s.Error("uploadFile md5 calculation error", "err", err)
+			return "", err
+		}
+
+		dir, leaf := calculateHashedDir(s.uploadDir, md5)
+		err = os.MkdirAll(dir, os.ModePerm)
+		if err != nil {
+			s.Error("uploadFile create directory error", "err", err)
+			return "", err
+		}
+
+		finalPath := path.Join(dir, leaf)
+		_, err = os.Stat(finalPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				err = os.Rename(savePath, finalPath)
+				if err != nil {
+					s.Error("uploadFile rename file error", "err", err)
+					return "", err
+				}
+			} else {
+				s.Error("uploadFile stat file error", "err", err)
+				return "", err
+			}
+		} else {
+			// already exists, delete the temp file
+			err = os.Remove(savePath)
+			if err != nil {
+				s.Warn("uploadFile file removal error", "err", err)
+			}
+		}
+		savePath = finalPath
+	}
+
+	return savePath, nil
 }
 
 // createQueue creates and stores a queue.Queue on the Server and sets up its
