@@ -33,7 +33,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
-	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -78,6 +77,8 @@ type Server struct {
 	usedCores         int
 	usedDisk          int
 	usedRAM           int
+	homeDir           string
+	hmutex            sync.Mutex
 	logger            log15.Logger // (not embedded to make gob happy)
 }
 
@@ -439,6 +440,8 @@ func (s *Server) UploadFile(source string, dest string) error {
 // If a specified local path does not exist, it is silently ignored, allowing
 // the specification of multiple possible config files when you might only have
 // one. The mtimes of the files are retained.
+//
+// NB: currently only works if the server supports the command 'pwd'.
 func (s *Server) CopyOver(files string) error {
 	timezone, err := s.GetTimeZone()
 	if err != nil {
@@ -466,12 +469,12 @@ func (s *Server) CopyOver(files string) error {
 		}
 
 		if strings.HasPrefix(remotePath, "~/") {
-			remotePath = strings.TrimLeft(remotePath, "~/")
-			home, errh := homedir.Dir()
+			homeDir, errh := s.HomeDir()
 			if errh != nil {
 				return errh
 			}
-			remotePath = filepath.Join(home, remotePath)
+			remotePath = strings.TrimLeft(remotePath, "~/")
+			remotePath = filepath.Join(homeDir, remotePath)
 		}
 
 		err = s.UploadFile(localPath, remotePath)
@@ -496,6 +499,23 @@ func (s *Server) CopyOver(files string) error {
 		}
 	}
 	return err
+}
+
+// HomeDir gets the absolute path to the server's home directory. Depends on
+// 'pwd' command existing on the server.
+func (s *Server) HomeDir() (string, error) {
+	s.hmutex.Lock()
+	defer s.hmutex.Unlock()
+	if s.homeDir != "" {
+		return s.homeDir, nil
+	}
+
+	stdout, _, err := s.RunCmd("pwd", false)
+	if err != nil {
+		return "", err
+	}
+	s.homeDir = strings.TrimSuffix(stdout, "\n")
+	return s.homeDir, nil
 }
 
 // GetTimeZone gets the server's time zone as a fixed time.Location in the fake
