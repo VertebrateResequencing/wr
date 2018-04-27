@@ -45,14 +45,19 @@ viewing the real-time updated status web interface.
 Server
 
     import "github.com/VertebrateResequencing/wr/jobqueue"
-    server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
+    server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
         Port:            "12345",
         WebPort:         "12346",
         SchedulerName:   "local",
         SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
-        RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
+        RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
         DBFile:          "/home/username/.wr_production/boltdb",
         DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
+		TokenFile:       "/home/username/.wr_production/client.token",
+		CAFile:          "/home/username/.wr_production/ca.pem",
+        CertFile:        "/home/username/.wr_production/cert.pem",
+        CertDomain:      "my.internal.domain.com",
+        KeyFile:         "/home/username/.wr_production/key.pem",
         Deployment:      "production",
         CIDR:            "",
     })
@@ -84,7 +89,13 @@ An example client, one for adding commands to the job queue:
         Dependencies: deps,
     })
 
-    jq, err := jobqueue.Connect("localhost:12345", 30 * time.Second)
+    jq, err := jobqueue.Connect(
+        "localhost:12345",
+        "/home/username/.wr_production/ca.pem",
+        "my.internal.domain.com",
+        token,
+        30 * time.Second
+    )
     inserts, dups, err := jq.Add(jobs, os.Environ())
 */
 package jobqueue

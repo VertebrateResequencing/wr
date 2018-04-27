@@ -59,6 +59,7 @@ type Server struct {
 	Name              string        // ought to correspond to the hostname
 	OS                string        // the name of the Operating System image
 	Script            []byte        // the content of a start-up script run on the server
+	ConfigFiles       string        // files that you will CopyOver() and require to be on this Server, in CopyOver() format
 	TTD               time.Duration // amount of idle time allowed before destruction
 	UserName          string        // the username needed to log in to the server
 	cancelDestruction chan bool
@@ -76,7 +77,17 @@ type Server struct {
 	usedCores         int
 	usedDisk          int
 	usedRAM           int
+	homeDir           string
+	hmutex            sync.Mutex
 	logger            log15.Logger // (not embedded to make gob happy)
+}
+
+// Matches tells you if in principle a Server has the given os, script, config
+// files and flavor. Useful before calling HasSpaceFor, since if you don't match
+// these things you can't use the Server regardless of how empty it is.
+// configFiles is in the CopyOver() format.
+func (s *Server) Matches(os string, script []byte, configFiles string, flavor *Flavor) bool {
+	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID)
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -429,6 +440,8 @@ func (s *Server) UploadFile(source string, dest string) error {
 // If a specified local path does not exist, it is silently ignored, allowing
 // the specification of multiple possible config files when you might only have
 // one. The mtimes of the files are retained.
+//
+// NB: currently only works if the server supports the command 'pwd'.
 func (s *Server) CopyOver(files string) error {
 	timezone, err := s.GetTimeZone()
 	if err != nil {
@@ -456,8 +469,12 @@ func (s *Server) CopyOver(files string) error {
 		}
 
 		if strings.HasPrefix(remotePath, "~/") {
+			homeDir, errh := s.HomeDir()
+			if errh != nil {
+				return errh
+			}
 			remotePath = strings.TrimLeft(remotePath, "~/")
-			remotePath = "./" + remotePath
+			remotePath = filepath.Join(homeDir, remotePath)
 		}
 
 		err = s.UploadFile(localPath, remotePath)
@@ -482,6 +499,23 @@ func (s *Server) CopyOver(files string) error {
 		}
 	}
 	return err
+}
+
+// HomeDir gets the absolute path to the server's home directory. Depends on
+// 'pwd' command existing on the server.
+func (s *Server) HomeDir() (string, error) {
+	s.hmutex.Lock()
+	defer s.hmutex.Unlock()
+	if s.homeDir != "" {
+		return s.homeDir, nil
+	}
+
+	stdout, _, err := s.RunCmd("pwd", false)
+	if err != nil {
+		return "", err
+	}
+	s.homeDir = strings.TrimSuffix(stdout, "\n")
+	return s.homeDir, nil
 }
 
 // GetTimeZone gets the server's time zone as a fixed time.Location in the fake
@@ -566,7 +600,11 @@ func (s *Server) DownloadFile(source string, dest string) error {
 
 	// copy the file content over
 	_, err = io.Copy(destFile, sourceFile)
-	return err
+	if err != nil {
+		return err
+	}
+
+	return os.Chmod(dest, 0600)
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.

@@ -5,6 +5,47 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.12.0] - 2018-04-27
+### Added
+- All communications to the manager are now via TLS, and authentication is
+  required using a token. See notes on the
+  [wiki](https://github.com/VertebrateResequencing/wr/wiki/Security).
+- You can now add jobs with a chosen cloud flavor, instead of having wr pick a
+  a flavor for you.
+- New wr sub-commands `retry`, `kill` and `remove`, so that you can do
+  everything you can do with the web interface on the command line. `wr remove`
+  can also remove whole dependency trees in one go.
+- `wr cloud teardown` now has a --debug option to see teardown details.
+- `wr cloud deploy` can now run an arbitrary script --on_success, and
+  --set_domain_ip, when using your own TLS certificate and infoblox.
+- `wr add` can now take a --cloud_config_files option, for per-job config files.
+- New upload endpoint for REST API, allowing you to add jobs with job-specific
+  cloud_scripts or cloud_config_files.
+
+### Changed
+- The -f option of `wr status` and the new `retry`, `kill` and `remove` commands
+  now takes the same format file as does `wr add`, so you easily get the status
+  of, kill, retry or remove jobs you just added.
+- `wr cloud teardown` now attempts subnet removal from a router multiple times
+  on failure, before giving up.
+- Web interface and REST API now tell you about the "other" resource reqs of
+  jobs.
+- Web interface and REST API can once again show environment variables of jobs.
+- Backwards incompatible changes to jobqueue and cloud APIs.
+
+### Fixed
+- `wr add --cwd` now has an effect.
+- Scheduler no longer tries to run jobs that were deleted using the web
+  interface, or that can never start.
+- Openstack scheduler now correctly estimates how many jobs can be run, when you
+  are running jobs with particular script, config file and flavor requirements.
+- Deleted jobs no longer reappear when restoring from a backed up database.
+- Backups include the latest transactions.
+- S3 mounts can cope with large (>1000 files) directories.
+- S3 mounts work correctly when multiplexing in non-existent directories.
+- Runners no longer hang when their job is killed.
+
+
 ## [0.11.0] - 2018-03-19
 ### Added
 - OpenStack scheduler now supports recent versions of OpenStack ("Pike").

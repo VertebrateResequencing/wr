@@ -110,6 +110,12 @@ Right now, with the limited functionality available, you will run something like
 
 (It isn't necessary to stop the manager; you can just leave it running forever.)
 
+Note that for viewing the web interface, your browser will raise a security
+warning, since by default wr will generate and use its own self-signed
+certificate. So the first time you view it you will need to allow an exception.
+See the [wiki](https://github.com/VertebrateResequencing/wr/wiki/Security) for
+more details regarding security.
+
 For usage on OpenStack, while you can bring up your own OpenStack server, ssh
 there and run `wr manager start -s openstack [options]` as normal it's easier
 to:
@@ -188,7 +194,6 @@ Not yet implemented
   dependencies). Common Workflow Language (CWL) compatibility is planned.
 * Get a complete listing of all commands with a given id via the webpage.
 * Checkpointing for long running commands.
-* Security (someone could hack to use your manager).
 * Re-run button in web interface for successfully completed commands.
 * Ability to alter expected memory and time or change env-vars of commands.
 
@@ -207,4 +212,4 @@ web interface port that wr tells you about.)
     ProxyCommand nc -X 5 -x localhost:20002 %h %p
 
 You'll then be able to access the website at
-http://login.internal.myserver.org:11302 or perhaps http://localhost:11302
+https://login.internal.myserver.org:11302 or perhaps https://localhost:11302

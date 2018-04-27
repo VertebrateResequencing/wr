@@ -20,7 +20,7 @@ var percentRounder = function(floats, min) {
         ints.push(int);
         baseline = cumulRounded;
     }
-    
+
     if (increased > 0) {
         var over = [];
         var totalOver = 0;
@@ -30,7 +30,7 @@ var percentRounder = function(floats, min) {
                 totalOver += ints[i];
             }
         }
-        
+
         var decreased = 0;
         for (var i = 0; i < over.length; i++) {
             var intIndex = over[i];
@@ -44,7 +44,7 @@ var percentRounder = function(floats, min) {
             decreased += decrease;
         }
     }
-    
+
     return ints;
 };
 
@@ -58,7 +58,7 @@ var percentScaler = function(ints, max) {
         floats.push(scaled);
     }
     return floats;
-}
+};
 
 // Number(1234).toDuration() returns a string converting the seconds supplied
 // to a human readable format from days to milliseconds, skipping unnecessary
@@ -69,7 +69,7 @@ Number.prototype.toDuration = function () {
     var h = Math.floor(d % 86400 / 3600);
     var m = Math.floor(d % 3600 / 60);
     var s = Math.floor(d % 3600 % 60);
-    
+
     var dur = '';
     if (days > 0) {
         dur += days + 'd ';
@@ -110,7 +110,7 @@ Number.prototype.mbIEC = function () {
 };
 
 // capitalize the first letter of a string
-// (taken from http://stackoverflow.com/a/1026087/675083) 
+// (taken from http://stackoverflow.com/a/1026087/675083)
 String.prototype.capitalizeFirstLetter = function() {
     return this.charAt(0).toUpperCase() + this.slice(1);
 }
@@ -135,4 +135,15 @@ ko.bindingHandlers.tooltip = {
         placement: "top",
         trigger: "hover"
     }
+};
+
+// read a query parameter, from https://stackoverflow.com/a/901144/675083
+var getParameterByName = function(name) {
+    var url = window.location.href;
+    name = name.replace(/[\[\]]/g, "\\$&");
+    var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
+        results = regex.exec(url);
+    if (!results) return null;
+    if (!results[2]) return '';
+    return decodeURIComponent(results[2].replace(/\+/g, " "));
 };

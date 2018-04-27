@@ -67,6 +67,7 @@ const (
 var (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
+	ErrBadFlavor    = "unknown server flavor"
 )
 
 // Error records an error and the operation and scheduler that caused it.
@@ -139,7 +140,7 @@ type MessageCallBack func(msg string)
 // manually check).
 type BadServerCallBack func(server *cloud.Server)
 
-// this interface must be satisfied to add support for a particular job
+// scheduleri interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
 	initialize(config interface{}, logger log15.Logger) error // do any initial set up to be able to use the job scheduler
@@ -151,6 +152,15 @@ type scheduleri interface {
 	setMessageCallBack(MessageCallBack)                       // achieve the aims of SetMessageCallBack()
 	setBadServerCallBack(BadServerCallBack)                   // achieve the aims of SetBadServerCallBack()
 	cleanup()                                                 // do any clean up once you've finished using the job scheduler
+}
+
+// CloudConfig interface could be satisfied by the config option taken by cloud
+// schedulers which have a ConfigFiles property.
+type CloudConfig interface {
+	// AddConfigFile takes a value like that of the ConfigFiles property of the
+	// struct implementing this interface, and appends this value to what is
+	// in ConfigFiles, or sets it if unset.
+	AddConfigFile(spec string)
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with

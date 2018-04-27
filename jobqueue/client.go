@@ -22,6 +22,8 @@ package jobqueue
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -33,10 +35,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
-	"github.com/go-mangos/mangos/transport/tcp"
+	"github.com/go-mangos/mangos/transport/tlstcp"
 	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
 )
@@ -91,8 +92,10 @@ type clientRequest struct {
 	Method         string
 	SchedulerGroup string
 	State          JobState
+	File           []byte // compressed bytes of file content
+	Path           string // desired path File should be stored at, can be blank
 	Timeout        time.Duration
-	User           string
+	Token          []byte
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -104,7 +107,7 @@ type Client struct {
 	sock        mangos.Socket
 	sync.Mutex
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
-	user       string
+	token      []byte
 	ServerInfo *ServerInfo
 }
 
@@ -113,20 +116,26 @@ type envStr struct {
 	Environ []string
 }
 
-// Connect creates a connection to the jobqueue server. Timeout determines how
-// long to wait for a response from the server, not only while connecting, but
-// for all subsequent interactions with it using the returned Client.
-func Connect(addr string, timeout time.Duration) (*Client, error) {
-	// a server is only allowed to be accessed by a particular user, so we get
-	// our username here. NB: *** this is not real security, since someone could
-	// just recompile with the following line altered to a hardcoded username
-	// value; it is only intended to prevent accidental use of someone else's
-	// server
-	user, err := internal.Username()
-	if err != nil {
-		return nil, err
-	}
-
+// Connect creates a connection to the jobqueue server.
+//
+// addr is the host or IP of the machine running the server, suffixed with a
+// colon and the port it is listening on, eg localhost:1234
+//
+// caFile is a path to the PEM encoded CA certificate that was used to sign the
+// server's certificate. If set as a blank string, or if the file doesn't exist,
+// the server's certificate will be trusted based on the CAs installed in the
+// normal location on the system.
+//
+// certDomain is a domain that the server's certificate is supposed to be valid
+// for.
+//
+// token is the authentication token that Serve() returned when the server was
+// started.
+//
+// Timeout determines how long to wait for a response from the server, not only
+// while connecting, but for all subsequent interactions with it using the
+// returned Client.
+func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
 	sock, err := req.NewSocket()
 	if err != nil {
 		return nil, err
@@ -141,15 +150,23 @@ func Connect(addr string, timeout time.Duration) (*Client, error) {
 		return nil, err
 	}
 
-	sock.AddTransport(tcp.NewTransport())
+	sock.AddTransport(tlstcp.NewTransport())
+	tlsConfig := &tls.Config{ServerName: certDomain}
+	caCert, err := ioutil.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
 
-	err = sock.Dial("tcp://" + addr)
-	if err != nil {
+	dialOpts := make(map[string]interface{})
+	dialOpts[mangos.OptionTLSConfig] = tlsConfig
+	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
 		return nil, err
 	}
 
 	// clients identify themselves (only for the purpose of calling methods that
-	// require the client has previously used Require()) with a UUID; v4 is used
+	// require the client has previously used Reserve()) with a UUID; v4 is used
 	// since speed doesn't matter: a typical client executable will only
 	// Connect() once; on the other hand, we avoid any possible problem with
 	// running on machines with low time resolution
@@ -157,7 +174,7 @@ func Connect(addr string, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{sock: sock, ch: new(codec.BincHandle), user: user, clientid: u}
+	c := &Client{sock: sock, ch: new(codec.BincHandle), token: token, clientid: u}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
@@ -168,8 +185,8 @@ func Connect(addr string, timeout time.Duration) (*Client, error) {
 			return c, errc
 		}
 		msg := ErrNoServer
-		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrWrongUser {
-			msg = ErrWrongUser
+		if jqerr, ok := err.(Error); ok && jqerr.Err == ErrPermissionDenied {
+			msg = ErrPermissionDenied
 		}
 		return nil, Error{"Connect", "", msg}
 	}
@@ -185,7 +202,9 @@ func (c *Client) Disconnect() error {
 }
 
 // Ping tells you if your connection to the server is working, returning static
-// information about the server. If err is nil, it works.
+// information about the server. If err is nil, it works. This is the only
+// command that interacts with the server that works if a blank or invalid
+// token had been supplied to Connect().
 func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 	resp, err := c.request(&clientRequest{Method: "ping", Timeout: timeout})
 	if err != nil {
@@ -534,6 +553,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	signalled := false
 	killCalled := false
 	var killErr error
+	var closeErr error
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
@@ -544,6 +564,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 				stateMutex.Lock()
 				signalled = true
 				stateMutex.Unlock()
+				errc := errReader.Close()
+				if errc != nil {
+					closeErr = errc
+				}
+				errc = outReader.Close()
+				if errc != nil {
+					closeErr = errc
+				}
 				return
 			case <-ticker.C:
 				stateMutex.Lock()
@@ -556,17 +584,25 @@ func (c *Client) Execute(job *Job, shell string) error {
 				stateMutex.Unlock()
 
 				kc, errf := c.Touch(job)
-				if errf != nil {
-					// we may have lost contact with the manager; this is OK. We
-					// will keep trying to touch until it works
-					continue
-				}
 				if kc {
 					killErr = cmd.Process.Kill()
 					stateMutex.Lock()
 					killCalled = true
 					stateMutex.Unlock()
+					errc := errReader.Close()
+					if errc != nil {
+						closeErr = errc
+					}
+					errc = outReader.Close()
+					if errc != nil {
+						closeErr = errc
+					}
 					return
+				}
+				if errf != nil {
+					// we may have lost contact with the manager; this is OK. We
+					// will keep trying to touch until it works
+					continue
 				}
 			case <-memTicker.C:
 				mem, errf := currentMemory(job.Pid)
@@ -716,6 +752,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			myerr = fmt.Errorf("%s; killing the cmd also failed: %s", myerr.Error(), killErr.Error())
 		} else {
 			myerr = killErr
+		}
+	}
+
+	if closeErr != nil {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; closing stderr/out of the cmd also failed: %s", myerr.Error(), closeErr.Error())
+		} else {
+			myerr = closeErr
 		}
 	}
 
@@ -999,10 +1043,10 @@ func (c *Client) Kick(jes []*JobEssence) (int, error) {
 	return resp.Existed, err
 }
 
-// Delete removes previously Bury()'d jobs from the queue completely. For use
-// when jobs were created incorrectly/ by accident, or they can never be fixed.
-// It returns a count of jobs that it actually removed. Errors will only be
-// related to not being able to contact the server.
+// Delete removes incomplete, not currently running jobs from the queue
+// completely. For use when jobs were created incorrectly/ by accident, or they
+// can never be fixed. It returns a count of jobs that it actually removed.
+// Errors will only be related to not being able to contact the server.
 func (c *Client) Delete(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
@@ -1095,6 +1139,32 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 	return resp.Jobs, err
 }
 
+// UploadFile uploads a local file to the machine where the server is running,
+// so you can add cloud jobs that need a script or config file on your local
+// machine to be copied over to created cloud instances.
+//
+// If the remote path is supplied as a blank string, the remote path will be
+// chosen for you based on the MD5 checksum of your file data, rooted in the
+// server's configured UploadDir.
+//
+// The remote path can be supplied prefixed with ~/ to upload relative to the
+// remote's home directory. Otherwise it should be an absolute path.
+//
+// Returns the absolute path of the uploaded file on the server's machine.
+//
+// NB: This is only suitable for transferring small files!
+func (c *Client) UploadFile(local, remote string) (string, error) {
+	compressed, err := compressFile(local)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.request(&clientRequest{Method: "upload", File: compressed, Path: remote})
+	if err != nil {
+		return "", err
+	}
+	return resp.Path, err
+}
+
 // request the server do something and get back its response. We can only cope
 // with one request at a time per client, or we'll get replies back in the
 // wrong order, hence we lock.
@@ -1105,7 +1175,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	// encode and send the request
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	cr.User = c.user
+	cr.Token = c.token
 	cr.ClientID = c.clientid
 	err := enc.Encode(cr)
 	if err != nil {

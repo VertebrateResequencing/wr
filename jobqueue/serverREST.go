@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/bytefmt"
+	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/ugorji/go/codec"
 )
@@ -42,7 +43,9 @@ const (
 	restJobsEndpoint       = "/rest/v1/jobs/"
 	restWarningsEndpoint   = "/rest/v1/warnings/"
 	restBadServersEndpoint = "/rest/v1/servers/"
+	restFileUploadEndpoint = "/rest/v1/upload/"
 	restFormTrue           = "true"
+	bearerSchema           = "Bearer "
 )
 
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
@@ -60,22 +63,24 @@ type JobViaJSON struct {
 	Time string `json:"time"`
 	CPUs *int   `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
-	Disk        *int              `json:"disk"`
-	Override    *int              `json:"override"`
-	Priority    *int              `json:"priority"`
-	Retries     *int              `json:"retries"`
-	RepGrp      string            `json:"rep_grp"`
-	DepGrps     []string          `json:"dep_grps"`
-	Deps        []string          `json:"deps"`
-	CmdDeps     Dependencies      `json:"cmd_deps"`
-	OnFailure   BehavioursViaJSON `json:"on_failure"`
-	OnSuccess   BehavioursViaJSON `json:"on_success"`
-	OnExit      BehavioursViaJSON `json:"on_exit"`
-	Env         []string          `json:"env"`
-	CloudOS     string            `json:"cloud_os"`
-	CloudUser   string            `json:"cloud_username"`
-	CloudScript string            `json:"cloud_script"`
-	CloudOSRam  *int              `json:"cloud_ram"`
+	Disk             *int              `json:"disk"`
+	Override         *int              `json:"override"`
+	Priority         *int              `json:"priority"`
+	Retries          *int              `json:"retries"`
+	RepGrp           string            `json:"rep_grp"`
+	DepGrps          []string          `json:"dep_grps"`
+	Deps             []string          `json:"deps"`
+	CmdDeps          Dependencies      `json:"cmd_deps"`
+	OnFailure        BehavioursViaJSON `json:"on_failure"`
+	OnSuccess        BehavioursViaJSON `json:"on_success"`
+	OnExit           BehavioursViaJSON `json:"on_exit"`
+	Env              []string          `json:"env"`
+	CloudOS          string            `json:"cloud_os"`
+	CloudUser        string            `json:"cloud_username"`
+	CloudScript      string            `json:"cloud_script"`
+	CloudConfigFiles string            `json:"cloud_config_files"`
+	CloudOSRam       *int              `json:"cloud_ram"`
+	CloudFlavor      string            `json:"cloud_flavor"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -108,8 +113,11 @@ type JobDefaults struct {
 	MountConfigs MountConfigs
 	CloudOS      string
 	CloudUser    string
+	CloudFlavor  string
 	// CloudScript is the local path to a script.
 	CloudScript string
+	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
+	CloudConfigFiles string
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
 	CloudOSRam    int
@@ -343,11 +351,19 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else if jd.CloudOS != "" {
 		other["cloud_os"] = jd.CloudOS
 	}
+
 	if jvj.CloudUser != "" {
 		other["cloud_user"] = jvj.CloudUser
 	} else if jd.CloudUser != "" {
 		other["cloud_user"] = jd.CloudUser
 	}
+
+	if jvj.CloudFlavor != "" {
+		other["cloud_flavor"] = jvj.CloudFlavor
+	} else if jd.CloudFlavor != "" {
+		other["cloud_flavor"] = jd.CloudFlavor
+	}
+
 	var cloudScriptPath string
 	if jvj.CloudScript != "" {
 		cloudScriptPath = jvj.CloudScript
@@ -355,12 +371,20 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		cloudScriptPath = jd.CloudScript
 	}
 	if cloudScriptPath != "" {
+		cloudScriptPath = internal.TildaToHome(cloudScriptPath)
 		postCreation, err := ioutil.ReadFile(cloudScriptPath)
 		if err != nil {
 			return nil, fmt.Errorf("cloud_script [%s] could not be read: %s", cloudScriptPath, err)
 		}
 		other["cloud_script"] = string(postCreation)
 	}
+
+	if jvj.CloudConfigFiles != "" {
+		other["cloud_config_files"] = jvj.CloudConfigFiles
+	} else if jd.CloudConfigFiles != "" {
+		other["cloud_config_files"] = jd.CloudConfigFiles
+	}
+
 	if jvj.CloudOSRam != nil {
 		ram := *jvj.CloudOSRam
 		other["cloud_os_ram"] = strconv.Itoa(ram)
@@ -387,18 +411,55 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}, nil
 }
 
-// restJobs lets you do CRUD on jobs in the "cmds" queue.
+// httpAuthorized checks for parameter 'token' and for Authorization header for
+// Bearer token; if not supplied, or the token is wrong, writes out an error to
+// w, otherwise returns true.
+func (s *Server) httpAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+		return false
+	}
+
+	// try token parameter
+	token := r.Form.Get("token")
+	if token == "" {
+		// try auth header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			return false
+		}
+
+		if !strings.HasPrefix(authHeader, bearerSchema) {
+			http.Error(w, "Authorization requires Bearer scheme", http.StatusUnauthorized)
+			return false
+		}
+
+		token = authHeader[len(bearerSchema):]
+	}
+
+	if !tokenMatches([]byte(token), s.token) {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// restJobs lets you do CRUD on jobs in the queue.
 func restJobs(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := r.ParseForm()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+		defer internal.LogPanic(s.Logger, "jobqueue web server restJobs", false)
+
+		ok := s.httpAuthorized(w, r)
+		if !ok {
 			return
 		}
 
 		// carry out a different action based on the HTTP Verb
 		var jobs []*Job
 		var status int
+		var err error
 		switch r.Method {
 		case http.MethodGet:
 			jobs, status, err = restJobsStatus(r, s)
@@ -432,7 +493,7 @@ func restJobs(s *Server) http.HandlerFunc {
 	}
 }
 
-// restJobsStatus gets the status of the requested jobs in the given queue. The
+// restJobsStatus gets the status of the requested jobs in the queue. The
 // request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are std, env (which can take a "true" value), limit
 // (a number) and state (one of delayed|ready|reserved|running|lost|buried|
@@ -448,7 +509,7 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 		getStd = true
 	}
 	if r.Form.Get("env") == restFormTrue {
-		// getEnv = true // *** currently disabled for security purposes
+		getEnv = true
 	}
 	if r.Form.Get("limit") != "" {
 		limit, err = strconv.Atoi(r.Form.Get("limit"))
@@ -533,6 +594,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		CloudOS:     r.Form.Get("cloud_os"),
 		CloudUser:   r.Form.Get("cloud_username"),
 		CloudScript: r.Form.Get("cloud_script"),
+		CloudFlavor: r.Form.Get("cloud_flavor"),
 		CloudOSRam:  urlStringToInt(r.Form.Get("cloud_ram")),
 	}
 	if r.Form.Get("cwd_matters") == restFormTrue {
@@ -652,6 +714,13 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 // (deletes) them.
 func restWarnings(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue web server restWarnings", false)
+
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
 		// carry out a different action based on the HTTP Verb
 		sis := []*schedulerIssue{}
 		switch r.Method {
@@ -679,14 +748,15 @@ func restWarnings(s *Server) http.HandlerFunc {
 	}
 }
 
-// restJobs lets you do CRUD on cloud servers that have gone bad. The DELETE
-// verb has a required 'id' parameter, being the ID of a server you wish to
-// confirm as bad and have terminated if it still exists.
+// restBadServers lets you do CRUD on cloud servers that have gone bad. The
+// DELETE verb has a required 'id' parameter, being the ID of a server you wish
+// to confirm as bad and have terminated if it still exists.
 func restBadServers(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := r.ParseForm()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("form parsing error: %s", err), http.StatusBadRequest)
+		defer internal.LogPanic(s.Logger, "jobqueue web server restBadServers", false)
+
+		ok := s.httpAuthorized(w, r)
+		if !ok {
 			return
 		}
 
@@ -732,6 +802,41 @@ func restBadServers(s *Server) http.HandlerFunc {
 		default:
 			http.Error(w, "Only GET and DELETE are supported", http.StatusBadRequest)
 			return
+		}
+	}
+}
+
+// restFileUpload lets you upload files from a client to the server. The only
+// method supported is PUT.
+func restFileUpload(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue web server restFileUpload", false)
+
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
+		if r.Method != http.MethodPut {
+			http.Error(w, "Only PUT is supported", http.StatusBadRequest)
+			return
+		}
+
+		savePath, err := s.uploadFile(r.Body, r.Form.Get("path"))
+		if err != nil {
+			http.Error(w, "file upload failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		msg := make(map[string]string)
+		msg["path"] = savePath
+		err = encoder.Encode(msg)
+		if err != nil {
+			s.Warn("restFileUpload failed to encode success msg", "err", err)
 		}
 	}
 }

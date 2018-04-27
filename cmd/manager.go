@@ -21,6 +21,7 @@ package cmd
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -71,7 +72,8 @@ are by default found in ~/.wr_[deployment]/log.
 If using the OpenStack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
 cloud, so that resources created will not conflict with anyone else in your
-tenant (project) also running wr.
+tenant (project) also running wr. Your server's security group must also allow
+the ports that wr will use (see wr's config file).
 Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
 on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
@@ -97,7 +99,7 @@ var managerStartCmd = &cobra.Command{
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
 		// most obvious case of failure to start
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq != nil {
 			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, jq.ServerInfo.PID)
 		}
@@ -125,6 +127,13 @@ var managerStartCmd = &cobra.Command{
 			}
 		}
 
+		// delete any old token file, so that we later know when the manager has
+		// created a new one
+		err := os.Remove(config.ManagerTokenFile)
+		if err != nil && !os.IsNotExist(err) {
+			die("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
+		}
+
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
@@ -134,11 +143,17 @@ var managerStartCmd = &cobra.Command{
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
-				jq := connect(time.Duration(managerTimeoutSeconds) * time.Second)
+				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
+				internal.WaitForFile(config.ManagerTokenFile, mTimeout)
+				jq := connect(mTimeout)
 				if jq == nil {
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
-				logStarted(jq.ServerInfo)
+				token, err := token()
+				if err != nil {
+					warn("token could not be read! [%s]", err)
+				}
+				logStarted(jq.ServerInfo, token)
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer func() {
@@ -173,7 +188,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		} else {
 			// probably no pid file, we'll see if the daemon is up by trying to
 			// connect
-			jq := connect(1 * time.Second)
+			jq := connect(1*time.Second, true)
 			if jq == nil {
 				die("wr manager does not seem to be running on port %s", config.ManagerPort)
 			}
@@ -182,17 +197,21 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		var jq *jobqueue.Client
 		if stopped {
 			// we'll do a quick test to confirm the daemon is down
-			jq = connect(1 * time.Second)
+			jq = connect(1*time.Second, true)
 			if jq != nil {
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
+				err = os.Remove(config.ManagerTokenFile)
+				if err != nil {
+					warn("failed to remove token file: %s", err)
+				}
 				return
 			}
 		} else {
 			// we failed to SIGTERM the pid in the pid file, let's take some
 			// time to confirm the daemon is really up
-			jq = connect(5 * time.Second)
+			jq = connect(5*time.Second, true)
 			if jq == nil {
 				die("according to the pid file %s, wr manager for port %s was running with pid %d, but that process could not be terminated and the manager could not be connected to; most likely the pid file is wrong and the manager is not running - after confirming, delete the pid file before trying to start the manager again", config.ManagerPidFile, config.ManagerPort, pid)
 			}
@@ -221,7 +240,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 			// since I don't trust using a client connection to shut down the
 			// server, double check I can no longer connect
 			if stopped {
-				jq = connect(1 * time.Second)
+				jq = connect(1*time.Second, true)
 				if jq != nil {
 					warn("I requested shut down of the remote manager at %s, but it's still up!", sAddr)
 					stopped = false
@@ -231,6 +250,10 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
+			err = os.Remove(config.ManagerTokenFile)
+			if err != nil {
+				warn("failed to remove token file: %s", err)
+			}
 		} else {
 			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
@@ -258,7 +281,7 @@ changes to the database between calling drain and the manager finally shutting
 down will be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first try and connect
-		jq := connect(5 * time.Second)
+		jq := connect(5*time.Second, true)
 		if jq == nil {
 			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.ManagerPort)
 		}
@@ -304,7 +327,7 @@ var managerStatusCmd = &cobra.Command{
 		}
 
 		// no pid file, so it's supposed to be down; confirm
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq == nil {
 			fmt.Println("stopped")
 		} else {
@@ -333,18 +356,15 @@ somewhere.)`,
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
-		jq, err := jobqueue.Connect(addr, timeout)
-		if err != nil {
-			die("%s", err)
-		}
+		jq := connect(timeout)
 		defer func() {
-			err = jq.Disconnect()
+			err := jq.Disconnect()
 			if err != nil {
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
 
-		err = jq.BackupDB(backupPath)
+		err := jq.BackupDB(backupPath)
 		if err != nil {
 			die("%s", err)
 		}
@@ -384,14 +404,28 @@ func init() {
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
+	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
 
-func logStarted(s *jobqueue.ServerInfo) {
+func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
-	info("wr's web interface can be reached at http://%s:%s", s.Host, s.WebPort)
+	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
+
+	if setDomainIP {
+		ip, err := jobqueue.CurrentIP("")
+		if err != nil {
+			warn("could not get IP address of localhost: %s", err)
+		}
+		err = internal.InfobloxSetDomainIP(s.Host, ip)
+		if err != nil {
+			warn("failed to set domain IP: %s", err)
+		} else {
+			info("set IP of %s to %s", s.Host, ip)
+		}
+	}
 }
 
 func startJQ(postCreation []byte) {
@@ -434,7 +468,11 @@ func startJQ(postCreation []byte) {
 	case "lsf":
 		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	case "openstack":
-		mport, _ := strconv.Atoi(config.ManagerPort)
+		mport, errf := strconv.Atoi(config.ManagerPort)
+		if errf != nil {
+			die("wr manager failed to start : %s\n", errf)
+		}
+
 		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:         cloudResourceName(localUsername),
 			SavePath:             filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
@@ -457,16 +495,31 @@ func startJQ(postCreation []byte) {
 		serverCIDR = cloudCIDR
 	}
 
+	if cloudConfig, ok := schedulerConfig.(jqs.CloudConfig); ok {
+		// this is a cloud scheduler, so include our ca.pem and client.token
+		// files in ConfigFiles, so that they will be copied to all servers
+		// that get created.
+		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
+		if config.ManagerCAFile != "" {
+			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
+		}
+	}
+
 	// start the jobqueue server
-	server, msg, err := jobqueue.Serve(jobqueue.ServerConfig{
-		AllowedUsers:    []string{localUsername},
+	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
-		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' -r %d -m %d",
+		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
+		TokenFile:       config.ManagerTokenFile,
+		UploadDir:       config.ManagerUploadDir,
+		CAFile:          config.ManagerCAFile,
+		CertFile:        config.ManagerCertFile,
+		KeyFile:         config.ManagerKeyFile,
+		CertDomain:      config.ManagerCertDomain,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
 		Logger:          serverLogger,
@@ -480,7 +533,7 @@ func startJQ(postCreation []byte) {
 		die("wr manager failed to start : %s", err)
 	}
 
-	logStarted(server.ServerInfo)
+	logStarted(server.ServerInfo, token)
 
 	// block forever while the jobqueue does its work
 	err = server.Block()

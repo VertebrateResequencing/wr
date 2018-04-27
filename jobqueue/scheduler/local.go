@@ -168,10 +168,13 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	s.mutex.Unlock()
 
 	// first find out if its at all possible to ever run this cmd
-	err := s.reqCheckFunc(req)
-	if err != nil {
-		return err
-	}
+	if count != 0 {
+		err := s.reqCheckFunc(req)
+		if err != nil {
+			return err
+		}
+	} // else, just in case a job with these reqs somehow got through in the
+	// past, allow it to be cancelled
 
 	// add to the queue
 	key := jobName(cmd, "n/a", false)
@@ -208,6 +211,22 @@ func (s *local) reqCheck(req *Requirements) error {
 		return Error{"local", "schedule", ErrImpossible}
 	}
 	return nil
+}
+
+// removeKey removes a key from the queue, for when there are no more jobs for
+// that key. If this results in an empty queue, stops autoProcessing. You must
+// hold the lock on s before calling this!
+func (s *local) removeKey(key string) {
+	err := s.queue.Remove(key)
+	if err != nil {
+		// warn unless we've already removed this key
+		if qerr, ok := err.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+			s.Warn("processQueue item removal failed", "err", err)
+		}
+	}
+	if s.queue.Stats().Items == 0 {
+		s.stopAutoProcessing()
+	}
 }
 
 // processQueue gets the oldest job in the queue, sees if it's possible to run
@@ -252,7 +271,6 @@ func (s *local) processQueue() error {
 			return err
 		}
 		key = item.Key
-		toRelease = append(toRelease, key)
 		j = item.Data.(*job)
 		j.RLock()
 		cmd = j.cmd
@@ -267,6 +285,14 @@ func (s *local) processQueue() error {
 			// extraneous ones to cancel and not start running
 			s.cancelRunCmdFunc(cmd, count)
 		}
+		if count == 0 && running == 0 {
+			// a cancellation has come in, and somehow we didn't remove this
+			// from the queue; do so now
+			s.Debug("processQueue cancelling", "cmd", cmd)
+			s.removeKey(key)
+			continue
+		}
+		toRelease = append(toRelease, key)
 		shouldCount := count - running
 		if shouldCount <= 0 {
 			// we're already running everything for this job, try the next most
@@ -316,23 +342,13 @@ func (s *local) processQueue() error {
 				delete(s.running, key)
 			}
 
-			var stopAuto bool
 			if err == nil {
 				j.Lock()
 				j.count--
 				jCount := j.count
 				j.Unlock()
 				if jCount <= 0 {
-					errr := s.queue.Remove(key)
-					if errr != nil {
-						// warn unless we've already removed this key
-						if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
-							s.Warn("processQueue item removal failed", "err", errr)
-						}
-					}
-					if s.queue.Stats().Items == 0 {
-						stopAuto = true
-					}
+					s.removeKey(key)
 				}
 			} else if err.Error() != standinNotNeeded {
 				// users are notified of relevant errors during runCmd; here we
@@ -340,9 +356,6 @@ func (s *local) processQueue() error {
 				s.Debug("runCmd error", "err", err)
 			}
 			s.mutex.Unlock()
-			if stopAuto {
-				s.stopAutoProcessing()
-			}
 			err = s.processQueue()
 			if err != nil {
 				s.Error("processQueue recall failed", "err", err)
@@ -485,11 +498,8 @@ func (s *local) startAutoProcessing() {
 }
 
 // stopAutoProcessing turns off the periodic processQueue() calls initiated by
-// startAutoProcessing().
+// startAutoProcessing(). You must hold the lock on s before calling this!
 func (s *local) stopAutoProcessing() {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	if s.cleaned || !s.autoProcessing {
 		return
 	}
@@ -527,9 +537,9 @@ func (s *local) setBadServerCallBack(cb BadServerCallBack) {}
 
 // cleanup destroys our internal queue.
 func (s *local) cleanup() {
-	s.stopAutoProcessing()
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.stopAutoProcessing()
 	s.cleaned = true
 	err := s.queue.Destroy()
 	if err != nil {
