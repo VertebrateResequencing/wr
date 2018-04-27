@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ import (
 
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/inconshreveable/log15"
+	"github.com/sevlyar/go-daemon"
 	appsv1beta1 "k8s.io/api/apps/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -73,6 +75,7 @@ type kubernetesp struct {
 	cmdOut, cmdErr    io.Writer
 	kubeconfig        *string
 	newNamespaceName  string
+	context           *daemon.Context
 	log15.Logger
 }
 
@@ -150,16 +153,16 @@ func (p *kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 // authenticated create some clients used in other methods.
 // also creates a new namespace for wr to work in
 func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
-	//Create REST client
+	// Create REST client
 	p.RESTClient = clientset.CoreV1().RESTClient()
-	//Create namespace client
+	// Create namespace client
 	p.namespaceClient = clientset.CoreV1().Namespaces()
-	//Create a unique namespace
+	// Create a unique namespace
 	generatedName := strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 	fmt.Printf("GeneratedName: %v \n", generatedName)
 	p.newNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 	fmt.Printf("newNamespaceName: %v \n", p.newNamespaceName)
-	//Retry if namespace taken
+	// Retry if namespace taken
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		nsErr := p.createNewNamespace(p.newNamespaceName)
 		if nsErr != nil {
@@ -174,22 +177,25 @@ func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
 		return fmt.Errorf("Creation of new namespace failed: %v", retryErr)
 	}
 
-	//Create client for deployments that is authenticated against the given cluster. Use default namsespace.
+	// Create client for deployments that is authenticated against the given cluster. Use default namsespace.
 	p.deploymentsClient = clientset.AppsV1beta1().Deployments(p.newNamespaceName)
 
-	//Create client for services
+	// Create client for services
 	p.serviceClient = clientset.CoreV1().Services(p.newNamespaceName)
 
-	//Create client for pods
+	// Create client for pods
 	p.podClient = clientset.CoreV1().Pods(p.newNamespaceName)
 
-	//Create portforwarder
+	// Create portforwarder
 	//p.PortForwarder =
 
-	//Make channels for port forwarding
+	// ToDO: This assumes one portforward per cluter deployment
+	// This should probably go in pod and the channels be created in an options struct
+	// to better isolate the logic
+	// Make channels for port forwarding
 	p.StopChannel = make(chan struct{}, 1)
 	p.ReadyChannel = make(chan struct{})
-	fmt.Println("Created channels")
+	fmt.Println("Created channels for portforward")
 
 	return nil
 }
@@ -399,7 +405,53 @@ func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []fi
 	fmt.Println("Sleeping for 15s") // wait for container to be running
 	time.Sleep(15 * time.Second)
 
-	return p.PortForward(pod.ObjectMeta.Name, requiredPorts)
+	// This return should be executed by the child. Daemonising code below.
+	// This way the portforward function knows nothing about how it's been daemonised.
+
+	p.context = &daemon.Context{
+		PidFileName: "portForwardPid",
+		PidFilePerm: 0644,
+		WorkDir:     "/",
+		Umask:       027,
+		Args:        []string{},
+	}
+
+	child, err := p.context.Reborn()
+	if err != nil {
+		panic(fmt.Errorf("failed to daemonize: %s", err))
+	}
+
+	if child != nil {
+		return nil
+	}
+	defer p.context.Release()
+
+	fmt.Println("Port Forward Daemon Started")
+
+	// Interupt handler: On interupt close p.StopChannel.
+	signals := make(chan os.Signal, 1)   // channel to receive interrupt
+	signal.Notify(signals, os.Interrupt) // Notify on interrupt
+	defer signal.Stop(signals)           // stop relaying signals to signals
+
+	// Avoid deadlock using goroutine
+	// <-signals is blocking
+	go func() {
+		<-signals
+		if p.StopChannel != nil { // If stop channel is open
+			//Closing StopChannel terminates the forward request
+			close(p.StopChannel)
+		}
+	}()
+	go p.PortForward(pod.ObjectMeta.Name, requiredPorts)
+
+	err = daemon.ServeSignals()
+	if err != nil {
+		panic(fmt.Errorf("Error calling daemon.ServeSignals(): %v\n", err))
+	}
+
+	fmt.Println("Port Forward Daemon Stopped")
+
+	return nil
 }
 
 // No required env variables
@@ -597,4 +649,16 @@ func (p *kubernetesp) CheckPod(podName string) (working bool, err error) {
 	default:
 		return false, nil
 	}
+}
+
+// Closes StopChannel, this stops the
+// portforward.
+func (p *kubernetesp) KillPortForward() {
+	//might need to modify all code to close the channel on interrupt instead as I'm not too sure i can attach to it
+	d, err := p.context.Search()
+	if err != nil {
+		panic(fmt.Errorf("Failed to send signal to daemon: %v\n", err))
+	}
+	daemon.SendCommands(d)
+	return
 }
