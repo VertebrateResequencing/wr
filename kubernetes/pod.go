@@ -21,8 +21,6 @@ package kubernetes
 // This file contains the code for the Pod struct.
 
 import (
-	"os/signal"
-
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
@@ -191,6 +189,7 @@ func (p *kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []
 	if err != nil {
 		return err
 	}
+
 	return fw.ForwardPorts()
 }
 
@@ -208,17 +207,21 @@ func (p *kubernetesp) PortForward(podName string, requiredPorts []int) error {
 		return fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
 	}
 
-	signals := make(chan os.Signal, 1)   // channel to receive interrupt
-	signal.Notify(signals, os.Interrupt) // Notify on interrupt
-	defer signal.Stop(signals)           // stop relaying signals to signals
+	// // On interupt close p.StopChannel.
 
-	// Avoid deadlock using goroutine
-	go func() {
-		<-signals
-		if p.StopChannel != nil {
-			close(p.StopChannel)
-		}
-	}()
+	// signals := make(chan os.Signal, 1)   // channel to receive interrupt
+	// signal.Notify(signals, os.Interrupt) // Notify on interrupt
+	// defer signal.Stop(signals)           // stop relaying signals to signals
+
+	// // Avoid deadlock using goroutine
+	// // <-signals is blocking
+	// go func() {
+	// 	<-signals
+	// 	if p.StopChannel != nil {
+	// 		//Closing StopChannel terminates the forward request
+	// 		close(p.StopChannel)
+	// 	}
+	// }()
 
 	req := p.RESTClient.Post().
 		Resource("pods").
