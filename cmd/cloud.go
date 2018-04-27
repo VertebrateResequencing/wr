@@ -423,7 +423,13 @@ and accessible.`,
 
 		// before stopping the manager, make sure we can interact with the
 		// provider - that our credentials are correct
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		var logger = log15.New()
+		if cloudDebug {
+			logger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, log15.StderrHandler))
+		} else {
+			logger.SetHandler(log15.DiscardHandler())
+		}
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), logger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -602,6 +608,7 @@ func init() {
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
+	cloudTearDownCmd.Flags().BoolVar(&cloudDebug, "debug", false, "show details of the teardown process")
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool) {

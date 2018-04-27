@@ -922,6 +922,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	var merr *multierror.Error
 
 	// delete servers, except for ourselves
+	t := time.Now()
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err := pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -931,10 +932,12 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		for _, server := range serverList {
 			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
+				t = time.Now()
 				errd := p.destroyServer(server.ID)
+				p.Debug("delete server", "time", time.Since(t), "id", server.ID)
 				if errd != nil {
 					// ignore errors, just try to delete others
-					p.Warn("server destruction durin teardown failed", "server", server.ID, "err", errd)
+					p.Warn("server destruction during teardown failed", "server", server.ID, "err", errd)
 				}
 			}
 		}
@@ -954,7 +957,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 				// fully terminated yet
 				tries := 0
 				for {
+					t = time.Now()
 					_, errr := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
+					p.Debug("remove router interface", "time", time.Since(t), "routerid", id, "subnetid", subnetid, "err", errr)
 					if errr != nil {
 						tries++
 						if tries >= 10 {
@@ -967,7 +972,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 					break
 				}
 			}
+			t = time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
+			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
 			if err != nil {
 				merr = multierror.Append(merr, err)
 			}
@@ -975,7 +982,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		// delete network (and its subnet)
 		if id := resources.Details["network"]; id != "" {
+			t = time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
+			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
 			if err != nil {
 				merr = multierror.Append(merr, err)
 			}
@@ -983,7 +992,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		// delete secgroup
 		if id := resources.Details["secgroup"]; id != "" {
+			t = time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
+			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
 			if err != nil {
 				merr = multierror.Append(merr, err)
 			}
@@ -995,7 +1006,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	// the same keypair we used to spawn our servers
 	if id := resources.Details["keypair"]; id != "" {
 		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
+			t = time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
+			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
 			if err != nil {
 				merr = multierror.Append(merr, err)
 			}
