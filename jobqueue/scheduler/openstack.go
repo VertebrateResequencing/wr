@@ -445,7 +445,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 
 	// initialise our servers with details of ourself
 	s.servers = make(map[string]*cloud.Server)
-	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript)
+	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript, s.config.ConfigFiles)
 	if err != nil {
 		return err
 	}

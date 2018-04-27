@@ -57,6 +57,7 @@ var cmdOsPrefix string
 var cmdOsUsername string
 var cmdOsRAM int
 var cmdPostCreationScript string
+var cmdCloudConfigs string
 var cmdFlavor string
 
 // addCmd represents the add command
@@ -310,7 +311,7 @@ func init() {
 	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
 	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
-	addCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
+	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 
@@ -350,8 +351,8 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	// if the manager is remote, copy over any cloud config files to unique
 	// locations, and adjust cloudConfigFiles to make sense from the manager's
 	// perspective
-	if !isLocal && cloudConfigFiles != "" {
-		cloudConfigFiles = copyCloudConfigFiles(jq, cloudConfigFiles)
+	if !isLocal && cmdCloudConfigs != "" {
+		cmdCloudConfigs = copyCloudConfigFiles(jq, cmdCloudConfigs)
 	}
 
 	jd := &jobqueue.JobDefaults{
@@ -369,7 +370,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		CloudOS:          cmdOsPrefix,
 		CloudUser:        cmdOsUsername,
 		CloudScript:      cmdPostCreationScript,
-		CloudConfigFiles: cloudConfigFiles,
+		CloudConfigFiles: cmdCloudConfigs,
 		CloudOSRam:       cmdOsRAM,
 		CloudFlavor:      cmdFlavor,
 	}

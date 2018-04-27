@@ -615,6 +615,7 @@ SENTINEL:
 		if err != nil {
 			return fmt.Errorf("cloud server files failed to upload: %s", err)
 		}
+		s.ConfigFiles = files
 	}
 
 	// run the postCreationScript
@@ -726,16 +727,17 @@ func (p *Provider) HeadNode() *Server {
 
 // LocalhostServer returns a Server object with details of the host we are
 // currently running on. No cloud API calls are made to construct this.
-func (p *Provider) LocalhostServer(os string, postCreationScript []byte) (*Server, error) {
+func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configFiles string) (*Server, error) {
 	maxRAM, err := internal.ProcMeminfoMBs()
 	if err != nil {
 		return nil, err
 	}
 	diskSize := internal.DiskSize()
 	return &Server{
-		IP:     "127.0.0.1",
-		OS:     os,
-		Script: postCreationScript,
+		IP:          "127.0.0.1",
+		OS:          os,
+		Script:      postCreationScript,
+		ConfigFiles: configFiles,
 		Flavor: &Flavor{
 			RAM:   maxRAM,
 			Cores: runtime.NumCPU(),
