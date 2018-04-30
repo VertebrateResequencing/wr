@@ -69,6 +69,7 @@ type kubernetesp struct {
 	deploymentsClient typedappsv1beta1.DeploymentInterface
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
+	configMapClient   typedv1.ConfigMapInterface
 	PortForwarder     portForwarder
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
@@ -77,6 +78,13 @@ type kubernetesp struct {
 	newNamespaceName  string
 	context           *daemon.Context
 	log15.Logger
+}
+
+type ConfigMapOpts struct {
+	// BinaryData for potential later use
+	binaryData []byte
+	data       map[string]string
+	name       string
 }
 
 func int32Ptr(i int32) *int32 { return &i }
@@ -186,6 +194,9 @@ func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	// Create client for pods
 	p.podClient = clientset.CoreV1().Pods(p.newNamespaceName)
 
+	// Create configMap client
+	p.configMapClient = clientset.CoreV1().ConfigMaps(p.newNamespaceName)
+
 	// Create portforwarder
 	//p.PortForwarder =
 
@@ -204,7 +215,7 @@ func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
 // Copies binary with name wr_linux in the current working directory.
 // Uses containerImage as the base docker image to build on top of
 // Assumes tar is available.
-func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []filePair, binaryPath string, binaryArgs []string, requiredPorts []int) error {
+func (p *kubernetesp) Deploy(containerImage string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	//Specify new wr deployment
 	deployment := &appsv1beta1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -225,6 +236,16 @@ func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []fi
 							Name: "wr-temp",
 							VolumeSource: apiv1.VolumeSource{
 								EmptyDir: &apiv1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: configMapName,
+							VolumeSource: apiv1.VolumeSource{
+								ConfigMap: &apiv1.ConfigMapVolumeSource{
+									LocalObjectReference: apiv1.LocalObjectReference{
+										Name: configMapName,
+									},
+								},
 							},
 						},
 					},
@@ -249,7 +270,11 @@ func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []fi
 							VolumeMounts: []apiv1.VolumeMount{
 								{
 									Name:      "wr-temp",
-									MountPath: mountPath,
+									MountPath: tempMountPath,
+								},
+								{
+									Name:      configMapName,
+									MountPath: configMountPath,
 								},
 							},
 							Env: []apiv1.EnvVar{
@@ -277,7 +302,7 @@ func (p *kubernetesp) Deploy(containerImage string, mountPath string, files []fi
 							VolumeMounts: []apiv1.VolumeMount{
 								{
 									Name:      "wr-temp",
-									MountPath: mountPath,
+									MountPath: tempMountPath,
 								},
 							},
 						},
@@ -488,7 +513,7 @@ func (p *kubernetesp) getQuota() (*Quota, error) {
 }
 
 // Spawn a new pod that contains a runner. Return the name.
-func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []filePair, binaryPath string, binaryArgs []string, resources *ResourceRequest) (*Pod, error) {
+func (p *kubernetesp) Spawn(baseContainer string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -501,10 +526,21 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 		},
 		Spec: apiv1.PodSpec{
 			Volumes: []apiv1.Volume{
+
 				{
 					Name: "wr-temp",
 					VolumeSource: apiv1.VolumeSource{
 						EmptyDir: &apiv1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: configMapName,
+					VolumeSource: apiv1.VolumeSource{
+						ConfigMap: &apiv1.ConfigMapVolumeSource{
+							LocalObjectReference: apiv1.LocalObjectReference{
+								Name: configMapName,
+							},
+						},
 					},
 				},
 			},
@@ -517,7 +553,11 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 					VolumeMounts: []apiv1.VolumeMount{
 						{
 							Name:      "wr-temp",
-							MountPath: mountPath,
+							MountPath: tempMountPath,
+						},
+						{
+							Name:      configMapName,
+							MountPath: configMountPath,
 						},
 					},
 					SecurityContext: &apiv1.SecurityContext{
@@ -535,7 +575,7 @@ func (p *kubernetesp) Spawn(baseContainer string, mountPath string, files []file
 					VolumeMounts: []apiv1.VolumeMount{
 						{
 							Name:      "wr-temp",
-							MountPath: mountPath,
+							MountPath: tempMountPath,
 						},
 					},
 				},
@@ -661,4 +701,21 @@ func (p *kubernetesp) KillPortForward() {
 	}
 	daemon.SendCommands(d)
 	return
+}
+
+// Creates a new configMap
+// Kubernetes 1.10 (Released Late March 2018)
+// provides a BinaryData field that could be used to
+// replace the initContainer method for copying the executable.
+// At the moment is not appropriate as it's not likely most users are
+// running 1.10
+func (p *kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
+	configMap, err := p.configMapClient.Create(&apiv1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: opts.name,
+		},
+		Data: opts.data,
+	})
+
+	return configMap, err
 }
