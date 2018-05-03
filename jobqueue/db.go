@@ -55,6 +55,7 @@ var (
 	bucketJobsLive     = []byte("jobslive")
 	bucketJobsComplete = []byte("jobscomplete")
 	bucketRTK          = []byte("repgroupToKey")
+	bucketRGs          = []byte("repgroups")
 	bucketDTK          = []byte("depgroupToKey")
 	bucketRDTK         = []byte("reverseDepgroupToKey")
 	bucketEnvs         = []byte("envs")
@@ -245,6 +246,10 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketRTK, errf)
 		}
+		_, errf = tx.CreateBucketIfNotExists(bucketRGs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRGs, errf)
+		}
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
@@ -331,6 +336,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 	var rgLookups sobsd
 	var dgLookups sobsd
 	var rdgLookups sobsd
+	repGroups := make(map[string]bool)
 	depGroups := make(map[string]bool)
 	newJobKeys := make(map[string]bool)
 	var keptJobs []*Job
@@ -355,6 +361,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		job.RLock()
 		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(job.RepGroup, key), nil})
+		repGroups[job.RepGroup] = true
 
 		for _, depGroup := range job.DepGroups {
 			if depGroup != "" {
@@ -428,6 +435,17 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			defer db.wg.Done()
 			sort.Sort(rgLookups)
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
+		}()
+
+		db.wg.Add(1)
+		go func() {
+			defer db.wg.Done()
+			var rgs sobsd
+			for rg := range repGroups {
+				rgs = append(rgs, [2][]byte{[]byte(rg), nil})
+			}
+			sort.Sort(rgs)
+			errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
 		}()
 
 		if len(dgLookups) > 0 {
@@ -631,6 +649,20 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 		return nil
 	})
 	return jobs, err
+}
+
+// retrieveRepGroups gets the rep groups of all jobs that have ever been added.
+func (db *db) retrieveRepGroups() ([]string, error) {
+	var rgs []string
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRGs)
+		b.ForEach(func(k, v []byte) error {
+			rgs = append(rgs, string(k))
+			return nil
+		})
+		return nil
+	})
+	return rgs, err
 }
 
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the

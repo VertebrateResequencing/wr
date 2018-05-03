@@ -1378,7 +1378,7 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 	return true, err
 }
 
-// getJobsByKeys gets jobs with the given keys (current and complete)
+// getJobsByKeys gets jobs with the given keys (current and complete).
 func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
 	for _, jobkey := range keys {
@@ -1415,7 +1415,7 @@ func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []
 	return jobs, srerr, qerr
 }
 
-// getJobsByRepGroup gets jobs in the given group (current and complete)
+// getJobsByRepGroup gets jobs in the given group (current and complete).
 func (s *Server) getJobsByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	// look in the in-memory queue for matching jobs
 	s.rpl.RLock()
@@ -1451,7 +1451,17 @@ func (s *Server) getJobsByRepGroup(repgroup string, limit int, state JobState, g
 	return jobs, srerr, qerr
 }
 
-// getCompleteJobsByRepGroup gets complete jobs in the given group
+// searchRepGroups looks up the rep groups of all jobs that have ever been added
+// and returns those that contain the given sub string.
+func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
+	rgs, err := s.db.retrieveRepGroups()
+	if err != nil {
+		return nil, err
+	}
+	return rgs, err
+}
+
+// getCompleteJobsByRepGroup gets complete jobs in the given group.
 func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr string, qerr string) {
 	jobs, err := s.db.retrieveCompleteJobsByRepGroup(repgroup)
 	if err != nil {
@@ -1461,7 +1471,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 	return jobs, srerr, qerr
 }
 
-// getJobsCurrent gets all current (incomplete) jobs
+// getJobsCurrent gets all current (incomplete) jobs.
 func (s *Server) getJobsCurrent(limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	var jobs []*Job
 	for _, item := range s.q.AllItems() {
