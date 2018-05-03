@@ -59,6 +59,7 @@ var cmdOsRAM int
 var cmdPostCreationScript string
 var cmdCloudConfigs string
 var cmdFlavor string
+var cmdMonitorDocker string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -74,8 +75,8 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
-env
+monitor_docker cloud_os cloud_username cloud_ram cloud_script cloud_config_files
+cloud_flavor env
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -221,6 +222,19 @@ name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
 string). These are static dependencies; once resolved they do not get re-
 evaluated.
 
+"monitor_docker" turns on monitoring of a docker container identified by the
+given string, which could be the container's --name or path to its --cidfile.
+This will add the container's peak RAM and total CPU usage to the reported RAM
+and CPU usage of this job. If the special argument "?" is supplied, monitoring
+will apply to the first new docker container that appears after the command
+starts to run. NB: in ? mode, if multiple jobs that run docker containers start
+running at the same time on the same machine, the reported stats could be wrong
+for one or more of those jobs. Requires that docker is installed on the machine
+where the job will run (and that the command uses docker to run a container).
+NB: does not handle monitoring of multiple docker containers run by a single
+command. A side effect of monitoring a container is that if you use wr to kill
+the job for this command, wr will also kill the container.
+
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
@@ -301,6 +315,7 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
 	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
+	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
@@ -367,6 +382,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		Priority:         cmdPri,
 		Retries:          cmdRet,
 		Env:              cmdEnv,
+		MonitorDocker:    cmdMonitorDocker,
 		CloudOS:          cmdOsPrefix,
 		CloudUser:        cmdOsUsername,
 		CloudScript:      cmdPostCreationScript,

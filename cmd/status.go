@@ -123,6 +123,14 @@ very many (tens of thousands+) commands.`,
 						homeChanged = "Changed home: true\n"
 					}
 				}
+				var dockerMonitored string
+				if job.MonitorDocker != "" {
+					dockerID := job.MonitorDocker
+					if dockerID == "?" {
+						dockerID += " (first container started after cmd)"
+					}
+					dockerMonitored = fmt.Sprintf("Docker container monitoring turned on for: %s\n", dockerID)
+				}
 				var behaviours string
 				if len(job.Behaviours) > 0 {
 					behaviours = fmt.Sprintf("Behaviours: %s\n", job.Behaviours)
@@ -135,7 +143,7 @@ very many (tens of thousands+) commands.`,
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, behaviours, other, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:

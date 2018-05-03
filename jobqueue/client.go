@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -29,12 +30,16 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/docker/docker/api/types"
+	docker "github.com/docker/docker/client"
 	"github.com/go-mangos/mangos"
 	"github.com/go-mangos/mangos/protocol/req"
 	"github.com/go-mangos/mangos/transport/tlstcp"
@@ -53,6 +58,7 @@ const (
 	FailReasonExit     = "command exited non-zero"
 	FailReasonRAM      = "command used too much RAM"
 	FailReasonTime     = "command used too much time"
+	FailReasonDocker   = "could not interact with docker"
 	FailReasonAbnormal = "command failed to complete normally"
 	FailReasonLost     = "lost contact with runner"
 	FailReasonSignal   = "runner received a signal to stop"
@@ -68,6 +74,7 @@ const (
 var (
 	ClientTouchInterval               = 15 * time.Second
 	ClientReleaseDelay                = 30 * time.Second
+	ClientPercentMemoryKill           = 90
 	RAMIncreaseMin            float64 = 1000
 	RAMIncreaseMultLow                = 2.0
 	RAMIncreaseMultHigh               = 1.3
@@ -498,6 +505,42 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 	cmd.Env = env
 
+	// if docker monitoring has been requested, try and get the docker client
+	// now and fail early if we can't
+	var dockerClient *docker.Client
+	existingDockerContainers := make(map[string]bool)
+	var monitorDocker, getFirstDockerContainer bool
+	if job.MonitorDocker != "" {
+		monitorDocker = true
+		dockerClient, err = docker.NewClientWithOpts(docker.FromEnv)
+		if err != nil {
+			buryErr := fmt.Errorf("failed to create docker client: %s", err)
+			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
+			if errb != nil {
+				buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
+			}
+			return buryErr
+		}
+
+		// if we've been asked to monitor the first container that appears, note
+		// existing containers
+		if job.MonitorDocker == "?" {
+			getFirstDockerContainer = true
+			containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+			if errc != nil {
+				buryErr := fmt.Errorf("failed to get docker containers: %s", errc)
+				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
+				if errb != nil {
+					buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
+				}
+				return buryErr
+			}
+			for _, container := range containers {
+				existingDockerContainers[container.ID] = true
+			}
+		}
+	}
+
 	// intercept certain signals (under LSF and SGE, SIGUSR2 may mean out-of-
 	// time, but there's no reliable way of knowing out-of-memory, so we will
 	// just treat them all the same)
@@ -546,6 +589,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// update peak mem used by command, touch job and check if we use too much
 	// resources, every 15s. Also check for signals
 	peakmem := 0
+	dockerCPU := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
 	ranoutMem := false
@@ -557,10 +601,29 @@ func (c *Client) Execute(job *Job, shell string) error {
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
 	go func() {
+		var dockerContainerID string
+
+		killCmd := func() error {
+			errk := cmd.Process.Kill()
+
+			if dockerContainerID != "" {
+				// kill the docker container as well
+				errd := dockerClient.ContainerKill(context.Background(), dockerContainerID, "SIGKILL")
+				if errk == nil {
+					errk = errd
+				} else {
+					errk = fmt.Errorf("%s, and killing the docker container failed: %s", errk.Error(), errd.Error())
+				}
+			}
+
+			return errk
+		}
+
+	CHECKING:
 		for {
 			select {
 			case <-sigs:
-				killErr = cmd.Process.Kill()
+				killErr = killCmd()
 				stateMutex.Lock()
 				signalled = true
 				stateMutex.Unlock()
@@ -572,7 +635,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errc != nil {
 					closeErr = errc
 				}
-				return
+				break CHECKING
 			case <-ticker.C:
 				stateMutex.Lock()
 				if !ranoutTime && time.Now().After(endT) {
@@ -585,7 +648,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 				kc, errf := c.Touch(job)
 				if kc {
-					killErr = cmd.Process.Kill()
+					killErr = killCmd()
 					stateMutex.Lock()
 					killCalled = true
 					stateMutex.Unlock()
@@ -597,7 +660,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 					if errc != nil {
 						closeErr = errc
 					}
-					return
+					break CHECKING
 				}
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
@@ -606,22 +669,92 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 			case <-memTicker.C:
 				mem, errf := currentMemory(job.Pid)
+
+				var cpuS int
+				if monitorDocker {
+					if dockerContainerID == "" {
+						if getFirstDockerContainer {
+							// look for a new container
+							containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+							if errc == nil {
+								for _, container := range containers {
+									if _, exists := existingDockerContainers[container.ID]; !exists {
+										dockerContainerID = container.ID
+										break
+									}
+								}
+							}
+						} else {
+							// job.MonitorDocker might be a file path
+							cidPath := job.MonitorDocker
+							if !strings.HasPrefix(cidPath, "/") {
+								cidPath = filepath.Join(cmd.Dir, cidPath)
+							}
+							_, errs := os.Stat(cidPath)
+							if errs == nil {
+								b, errr := ioutil.ReadFile(cidPath)
+								if errr == nil {
+									dockerContainerID = strings.TrimSuffix(string(b), "\n")
+								}
+							}
+
+							// or might be a name; check names of all new
+							// containers
+							if dockerContainerID == "" {
+								containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+								if errc == nil {
+								CONTAINERS:
+									for _, container := range containers {
+										if _, exists := existingDockerContainers[container.ID]; !exists {
+											for _, name := range container.Names {
+												name = strings.TrimPrefix(name, "/")
+												if name == job.MonitorDocker {
+													dockerContainerID = container.ID
+													break CONTAINERS
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+
+					if dockerContainerID != "" {
+						dockerMem, thisDockerCPU, errs := internal.DockerStats(dockerClient, dockerContainerID)
+						if errs == nil {
+							if dockerMem > mem {
+								mem = dockerMem
+							}
+							cpuS = thisDockerCPU
+						}
+					}
+				}
+
 				stateMutex.Lock()
 				if errf == nil && mem > peakmem {
 					peakmem = mem
 
 					if peakmem > job.Requirements.RAM {
-						// we don't allow things to use too much memory, or we
-						// could screw up the machine we're running on
-						killErr = cmd.Process.Kill()
-						ranoutMem = true
-						stateMutex.Unlock()
-						return
+						maxRAM, errp := internal.ProcMeminfoMBs()
+
+						// we don't allow cmds to use both more than exepected
+						// and more than 90% of phsical memory, or we could
+						// screw up the machine we're running on
+						if errp == nil && peakmem >= ((maxRAM/100)*ClientPercentMemoryKill) {
+							killErr = killCmd()
+							ranoutMem = true
+							stateMutex.Unlock()
+							break CHECKING
+						}
 					}
+				}
+				if cpuS > dockerCPU {
+					dockerCPU = cpuS
 				}
 				stateMutex.Unlock()
 			case <-stopChecking:
-				return
+				break CHECKING
 			}
 		}
 	}()
@@ -814,6 +947,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 		finalStdErr = append(finalStdErr, errsew.Error()...)
 	}
 
+	// *** following is useful when debugging; need a better way to see these
+	// errors from runner clients...
+	// if myerr != nil {
+	// 	finalStdErr = append(finalStdErr, "\n\nExecution errors:\n"...)
+	// 	finalStdErr = append(finalStdErr, myerr.Error()...)
+	// }
+
 	finalStdOut := bytes.TrimSpace(stdout.Bytes())
 	if errsow != nil {
 		finalStdOut = append(finalStdOut, "\n\nSTDOUT handling problems:\n"...)
@@ -831,7 +971,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
 		PeakRAM:  peakmem,
-		CPUtime:  cmd.ProcessState.SystemTime(),
+		CPUtime:  cmd.ProcessState.SystemTime() + time.Duration(dockerCPU)*time.Second,
 		Stdout:   finalStdOut,
 		Stderr:   finalStdErr,
 		Exited:   true,

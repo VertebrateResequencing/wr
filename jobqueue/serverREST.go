@@ -75,6 +75,7 @@ type JobViaJSON struct {
 	OnSuccess        BehavioursViaJSON `json:"on_success"`
 	OnExit           BehavioursViaJSON `json:"on_exit"`
 	Env              []string          `json:"env"`
+	MonitorDocker    string            `json:"monitor_docker"`
 	CloudOS          string            `json:"cloud_os"`
 	CloudUser        string            `json:"cloud_username"`
 	CloudScript      string            `json:"cloud_script"`
@@ -106,14 +107,15 @@ type JobDefaults struct {
 	DepGroups []string
 	Deps      Dependencies
 	// Env is a comma separated list of key=val pairs.
-	Env          string
-	OnFailure    Behaviours
-	OnSuccess    Behaviours
-	OnExit       Behaviours
-	MountConfigs MountConfigs
-	CloudOS      string
-	CloudUser    string
-	CloudFlavor  string
+	Env           string
+	OnFailure     Behaviours
+	OnSuccess     Behaviours
+	OnExit        Behaviours
+	MountConfigs  MountConfigs
+	MonitorDocker string
+	CloudOS       string
+	CloudUser     string
+	CloudFlavor   string
 	// CloudScript is the local path to a script.
 	CloudScript string
 	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
@@ -183,7 +185,7 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // properties of this JobViaJSON. The Job will not be in the queue until passed
 // to a method that adds jobs to the queue.
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
-	var cmd, cwd, rg, repg string
+	var cmd, cwd, rg, repg, monitorDocker string
 	var mb, cpus, disk, override, priority, retries int
 	var dur time.Duration
 	var envOverride []byte
@@ -344,6 +346,12 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		mounts = jd.MountConfigs
 	}
 
+	if jvj.MonitorDocker == "" {
+		monitorDocker = jd.MonitorDocker
+	} else {
+		monitorDocker = jvj.MonitorDocker
+	}
+
 	// scheduler-specific options
 	other := make(map[string]string)
 	if jvj.CloudOS != "" {
@@ -393,21 +401,22 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}
 
 	return &Job{
-		RepGroup:     repg,
-		Cmd:          cmd,
-		Cwd:          cwd,
-		CwdMatters:   cwdMatters,
-		ChangeHome:   changeHome,
-		ReqGroup:     rg,
-		Requirements: &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
-		Override:     uint8(override),
-		Priority:     uint8(priority),
-		Retries:      uint8(retries),
-		DepGroups:    depGroups,
-		Dependencies: deps,
-		EnvOverride:  envOverride,
-		Behaviours:   behaviours,
-		MountConfigs: mounts,
+		RepGroup:      repg,
+		Cmd:           cmd,
+		Cwd:           cwd,
+		CwdMatters:    cwdMatters,
+		ChangeHome:    changeHome,
+		ReqGroup:      rg,
+		Requirements:  &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
+		Override:      uint8(override),
+		Priority:      uint8(priority),
+		Retries:       uint8(retries),
+		DepGroups:     depGroups,
+		Dependencies:  deps,
+		EnvOverride:   envOverride,
+		Behaviours:    behaviours,
+		MountConfigs:  mounts,
+		MonitorDocker: monitorDocker,
 	}, nil
 }
 
@@ -581,21 +590,22 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	jd := &JobDefaults{
-		Cwd:         r.Form.Get("cwd"),
-		RepGrp:      r.Form.Get("rep_grp"),
-		ReqGrp:      r.Form.Get("req_grp"),
-		CPUs:        urlStringToInt(r.Form.Get("cpus")),
-		Disk:        urlStringToInt(r.Form.Get("disk")),
-		Override:    urlStringToInt(r.Form.Get("override")),
-		Priority:    urlStringToInt(r.Form.Get("priority")),
-		Retries:     urlStringToInt(r.Form.Get("retries")),
-		DepGroups:   urlStringToSlice(r.Form.Get("dep_grps")),
-		Env:         r.Form.Get("env"),
-		CloudOS:     r.Form.Get("cloud_os"),
-		CloudUser:   r.Form.Get("cloud_username"),
-		CloudScript: r.Form.Get("cloud_script"),
-		CloudFlavor: r.Form.Get("cloud_flavor"),
-		CloudOSRam:  urlStringToInt(r.Form.Get("cloud_ram")),
+		Cwd:           r.Form.Get("cwd"),
+		RepGrp:        r.Form.Get("rep_grp"),
+		ReqGrp:        r.Form.Get("req_grp"),
+		CPUs:          urlStringToInt(r.Form.Get("cpus")),
+		Disk:          urlStringToInt(r.Form.Get("disk")),
+		Override:      urlStringToInt(r.Form.Get("override")),
+		Priority:      urlStringToInt(r.Form.Get("priority")),
+		Retries:       urlStringToInt(r.Form.Get("retries")),
+		DepGroups:     urlStringToSlice(r.Form.Get("dep_grps")),
+		Env:           r.Form.Get("env"),
+		MonitorDocker: r.Form.Get("monitor_docker"),
+		CloudOS:       r.Form.Get("cloud_os"),
+		CloudUser:     r.Form.Get("cloud_username"),
+		CloudScript:   r.Form.Get("cloud_script"),
+		CloudFlavor:   r.Form.Get("cloud_flavor"),
+		CloudOSRam:    urlStringToInt(r.Form.Get("cloud_ram")),
 	}
 	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true

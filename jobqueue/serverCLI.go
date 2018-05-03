@@ -463,8 +463,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					removedJobs := false
 					for _, jobkey := range keys {
 						item, err := s.q.Get(jobkey)
+						if err != nil || item == nil {
+							continue
+						}
 						iState := item.Stats().State
-						if err != nil || iState == queue.ItemStateRun {
+						if iState == queue.ItemStateRun {
 							continue
 						}
 
@@ -478,7 +481,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							}
 							continue
 						}
-
 						err = s.q.Remove(jobkey)
 						if err == nil {
 							deleted++
@@ -670,37 +672,38 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	req := &scheduler.Requirements{}
 	*req = *sjob.Requirements // copy reqs since server changes these, avoiding a race condition
 	job := &Job{
-		RepGroup:     sjob.RepGroup,
-		ReqGroup:     sjob.ReqGroup,
-		DepGroups:    sjob.DepGroups,
-		Cmd:          sjob.Cmd,
-		Cwd:          sjob.Cwd,
-		CwdMatters:   sjob.CwdMatters,
-		ChangeHome:   sjob.ChangeHome,
-		ActualCwd:    sjob.ActualCwd,
-		Requirements: req,
-		Priority:     sjob.Priority,
-		Retries:      sjob.Retries,
-		PeakRAM:      sjob.PeakRAM,
-		Exited:       sjob.Exited,
-		Exitcode:     sjob.Exitcode,
-		FailReason:   sjob.FailReason,
-		StartTime:    sjob.StartTime,
-		EndTime:      sjob.EndTime,
-		Pid:          sjob.Pid,
-		Host:         sjob.Host,
-		HostID:       sjob.HostID,
-		HostIP:       sjob.HostIP,
-		CPUtime:      sjob.CPUtime,
-		State:        state,
-		Attempts:     sjob.Attempts,
-		UntilBuried:  sjob.UntilBuried,
-		ReservedBy:   sjob.ReservedBy,
-		EnvKey:       sjob.EnvKey,
-		EnvOverride:  sjob.EnvOverride,
-		Dependencies: sjob.Dependencies,
-		Behaviours:   sjob.Behaviours,
-		MountConfigs: sjob.MountConfigs,
+		RepGroup:      sjob.RepGroup,
+		ReqGroup:      sjob.ReqGroup,
+		DepGroups:     sjob.DepGroups,
+		Cmd:           sjob.Cmd,
+		Cwd:           sjob.Cwd,
+		CwdMatters:    sjob.CwdMatters,
+		ChangeHome:    sjob.ChangeHome,
+		ActualCwd:     sjob.ActualCwd,
+		Requirements:  req,
+		Priority:      sjob.Priority,
+		Retries:       sjob.Retries,
+		PeakRAM:       sjob.PeakRAM,
+		Exited:        sjob.Exited,
+		Exitcode:      sjob.Exitcode,
+		FailReason:    sjob.FailReason,
+		StartTime:     sjob.StartTime,
+		EndTime:       sjob.EndTime,
+		Pid:           sjob.Pid,
+		Host:          sjob.Host,
+		HostID:        sjob.HostID,
+		HostIP:        sjob.HostIP,
+		CPUtime:       sjob.CPUtime,
+		State:         state,
+		Attempts:      sjob.Attempts,
+		UntilBuried:   sjob.UntilBuried,
+		ReservedBy:    sjob.ReservedBy,
+		EnvKey:        sjob.EnvKey,
+		EnvOverride:   sjob.EnvOverride,
+		Dependencies:  sjob.Dependencies,
+		Behaviours:    sjob.Behaviours,
+		MountConfigs:  sjob.MountConfigs,
+		MonitorDocker: sjob.MonitorDocker,
 	}
 
 	if !sjob.StartTime.IsZero() && state == JobStateReserved {

@@ -168,6 +168,21 @@ type Job struct {
 	// ActualCwd.
 	MountConfigs MountConfigs
 
+	// MonitorDocker turns on monitoring of a docker container identified by its
+	// --name or path to its --cidfile, adding its peak RAM and CPU usage to the
+	// reported RAM and CPU usage of this job.
+	//
+	// If the special argument "?" is supplied, monitoring will apply to the
+	// first new docker container that appears after the Cmd starts to run.
+	// NB: if multiple jobs that run docker containers start running at the same
+	// time on the same machine, the reported stats could be wrong for one or
+	// more of those jobs.
+	//
+	// Requires that docker is installed on the machine where the job will run
+	// (and that the Cmd uses docker to run a container). NB: does not handle
+	// monitoring of multiple docker containers run by a single Cmd.
+	MonitorDocker string
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.

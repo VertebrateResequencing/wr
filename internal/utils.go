@@ -27,6 +27,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/url"
 	"os"
 	"os/exec"
@@ -43,6 +44,14 @@ import (
 )
 
 const gb = uint64(1.07374182e9) // for byte to GB conversion
+
+// for the RandomString implementation
+const (
+	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randIdxBits = 6                  // 6 bits to represent a rand index
+	randIdxMask = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+)
 
 var username string
 var userid int
@@ -297,4 +306,23 @@ func FileMD5(path string, logger log15.Logger) (string, error) {
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// RandomString generates a random string of length 8 characters.
+func RandomString() string {
+	// based on http://stackoverflow.com/a/31832326/675083
+	b := make([]byte, 8)
+	src := rand.NewSource(time.Now().UnixNano())
+	for i, cache, remain := 7, src.Int63(), randIdxMax; i >= 0; {
+		if remain == 0 {
+			cache, remain = src.Int63(), randIdxMax
+		}
+		if idx := int(cache & randIdxMask); idx < len(randBytes) {
+			b[i] = randBytes[idx]
+			i--
+		}
+		cache >>= randIdxBits
+		remain--
+	}
+	return string(b)
 }

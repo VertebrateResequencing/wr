@@ -64,17 +64,18 @@ type jstatusReq struct {
 // jstatus is the job info we send to the status webpage (only real difference
 // to Job is that some of the values are converted to easy-to-display forms).
 type jstatus struct {
-	Key          string
-	RepGroup     string
-	DepGroups    []string
-	Dependencies []string
-	Cmd          string
-	State        JobState
-	Cwd          string
-	CwdBase      string
-	HomeChanged  bool
-	Behaviours   string
-	Mounts       string
+	Key           string
+	RepGroup      string
+	DepGroups     []string
+	Dependencies  []string
+	Cmd           string
+	State         JobState
+	Cwd           string
+	CwdBase       string
+	HomeChanged   bool
+	Behaviours    string
+	Mounts        string
+	MonitorDocker string
 	// ExpectedRAM is in Megabytes.
 	ExpectedRAM int
 	// ExpectedTime is in seconds.
@@ -474,6 +475,7 @@ func jobToStatus(job *Job) jstatus {
 		HomeChanged:   job.ChangeHome,
 		Behaviours:    job.Behaviours.String(),
 		Mounts:        job.MountConfigs.String(),
+		MonitorDocker: job.MonitorDocker,
 		ExpectedRAM:   job.Requirements.RAM,
 		ExpectedTime:  job.Requirements.Time.Seconds(),
 		RequestedDisk: job.Requirements.Disk,

@@ -236,6 +236,12 @@
                                         <dt>Cores</dt>
                                         <dd data-bind="text: Cores"></dd>
                                     </dl>
+                                    <!-- ko if: MonitorDocker != '' -->
+                                        <dl>
+                                            <dt>Monitor Docker</dt>
+                                            <dd><span data-bind="text: MonitorDocker"></span></dd>
+                                        </dl>
+                                    <!-- /ko -->
                                     <!-- ko if: FailReason -->
                                         <dl>
                                             <!-- ko if: State == 'running' -->

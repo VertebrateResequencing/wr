@@ -1,5 +1,5 @@
-hash: e2203d54798631b547a000a0aaebf4722f85fed3f9074270d6182ab2c6390e4e
-updated: 2018-04-26T17:01:38.374633759+01:00
+hash: b5179681947c4f7148802f6b580d9e0914b9d18a767f8d3067851dcb8634334e
+updated: 2018-05-03T09:22:29.966469534+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -11,6 +11,39 @@ imports:
   version: 48ea1b39c25fc1bab3506fbc712ecbaa842c4d2d
 - name: github.com/dgryski/go-farm
   version: 2de33835d10275975374b37b2dcfd22c9020a1f5
+- name: github.com/docker/distribution
+  version: 83389a148052d74ac602f5f1d62f86ff2f3c4aa5
+  subpackages:
+  - digestset
+  - reference
+- name: github.com/docker/docker
+  version: 51a9119f6b817bbae21805ec05787d462c9492cd
+  subpackages:
+  - api
+  - api/types
+  - api/types/blkiodev
+  - api/types/container
+  - api/types/events
+  - api/types/filters
+  - api/types/image
+  - api/types/mount
+  - api/types/network
+  - api/types/registry
+  - api/types/strslice
+  - api/types/swarm
+  - api/types/swarm/runtime
+  - api/types/time
+  - api/types/versions
+  - api/types/volume
+  - client
+- name: github.com/docker/go-connections
+  version: 7395e3f8aa162843a74ed6d48e79627d9792ac55
+  subpackages:
+  - nat
+  - sockets
+  - tlsconfig
+- name: github.com/docker/go-units
+  version: 47565b4f722fb6ceae66b95f853feed578a4a51c
 - name: github.com/fanatic/go-infoblox
   version: ece4e23a370d0bbac46d17f386f73d0d124a8d97
 - name: github.com/fatih/color
@@ -18,7 +51,7 @@ imports:
 - name: github.com/go-ini/ini
   version: ace140f73450505f33e8b8418216792275ae82a7
 - name: github.com/go-mangos/mangos
-  version: d99fcacf432eddb854ef80587abee023e23c5263
+  version: ebfcfe7a6525c954fa08327634a7cd053e65f975
   subpackages:
   - protocol/rep
   - protocol/req
@@ -30,6 +63,10 @@ imports:
   - oleutil
 - name: github.com/go-stack/stack
   version: 259ab82a6cad3992b4e21ff5cac294ccb06474bc
+- name: github.com/gogo/protobuf
+  version: 1ef32a8b9fc3f8ec940126907cedb5998f6318e4
+  subpackages:
+  - proto
 - name: github.com/gophercloud/gophercloud
   version: 46e00f63eeda0660d8a47cbfd5592a4d5dbf47b8
   repo: https://github.com/sb10/gophercloud.git
@@ -52,7 +89,7 @@ imports:
   - openstack/utils
   - pagination
 - name: github.com/gorilla/websocket
-  version: eb925808374e5ca90c83401a40d711dc08c0c0f6
+  version: 21ab95fa12b9bdd8fecf5fa3586aad941cc98785
 - name: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
@@ -88,6 +125,8 @@ imports:
   version: efa589957cd060542a26d2dd7832fd6a6c6c3ade
 - name: github.com/mattn/go-isatty
   version: 6ca4dbf54d38eea1a992b3c722a76a5d1c4cb25c
+- name: github.com/Microsoft/go-winio
+  version: ab35fc04b6365e8fcb18e6e9e41ea4a02b10b175
 - name: github.com/minio/minio-go
   version: 3d2d02921f0510e9d1f66ef77a265b8dddd36992
   subpackages:
@@ -98,6 +137,13 @@ imports:
   - pkg/set
 - name: github.com/mitchellh/go-homedir
   version: b8bc1bf767474819792c23f32d8286a45736f1c6
+- name: github.com/opencontainers/go-digest
+  version: c9281466c8b2f606084ac71339773efd177436e7
+- name: github.com/opencontainers/image-spec
+  version: e562b04403929d582d449ae5386ff79dd7961a11
+  subpackages:
+  - specs-go
+  - specs-go/v1
 - name: github.com/pkg/errors
   version: 816c9085562cd7ee03e7f8188a1cfd942858cded
 - name: github.com/pkg/sftp
@@ -113,7 +159,7 @@ imports:
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: cd915bdc31582b0a56405ede7fa2f4ab043f851b
+  version: 57f370e13068146efe1cb7129f79e5d51da8a242
   subpackages:
   - cpu
   - host
@@ -151,8 +197,12 @@ imports:
 - name: golang.org/x/net
   version: 61147c48b25b599e5b561d2e9c4f3e1ef489ca41
   subpackages:
+  - context
+  - context/ctxhttp
   - idna
+  - internal/socks
   - lex/httplex
+  - proxy
   - publicsuffix
 - name: golang.org/x/sys
   version: 3b87a42e500a6dc65dae1a55d0b641295971163e

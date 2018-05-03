@@ -987,10 +987,10 @@ func TestJobqueue(t *testing.T) {
 					// and permission problems on the exe?
 				})
 
-				Convey("If a job uses too much memory it is killed and we recommend more next time", func() {
+				Convey("If a job uses more memory than expected it is not killed, but we recommend more next time", func() {
 					jobs = nil
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
-					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "run_out_of_mem"})
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
 					RecMBRound = 1
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -1001,19 +1001,72 @@ func TestJobqueue(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, JobStateReserved)
+					So(job.Requirements.RAM, ShouldEqual, 10)
 
 					err = jq.Execute(job, config.RunnerExecShell)
-					So(err, ShouldNotBeNil)
-					jqerr, ok := err.(Error)
-					So(ok, ShouldBeTrue)
-					So(jqerr.Err, ShouldEqual, FailReasonRAM)
-					So(job.State, ShouldEqual, JobStateDelayed)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
-					So(job.Exitcode, ShouldEqual, -1)
-					So(job.FailReason, ShouldEqual, FailReasonRAM)
-					So(job.Requirements.RAM, ShouldEqual, 1200)
-					jq.Delete([]*JobEssence{{Cmd: cmd}})
+					So(job.Exitcode, ShouldEqual, 0)
+
+					cmd2 := "echo another high mem job"
+					jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
+					inserts, already, err = jq.Add(jobs, envVars, true)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+					So(already, ShouldEqual, 1)
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, cmd2)
+					So(job.State, ShouldEqual, JobStateReserved)
+					So(job.Requirements.RAM, ShouldBeGreaterThanOrEqualTo, 100)
+					jq.Release(job, &JobEndState{}, "")
+
+					deleted, errd := jq.Delete([]*JobEssence{{Cmd: cmd}})
+					So(errd, ShouldBeNil)
+					So(deleted, ShouldEqual, 0)
+					deleted, errd = jq.Delete([]*JobEssence{{Cmd: cmd2}})
+					So(errd, ShouldBeNil)
+					So(deleted, ShouldEqual, 1)
 				})
+
+				maxRAM, errp := internal.ProcMeminfoMBs()
+				if errp == nil && maxRAM > 80000 { // authors high memory system
+					Convey("If a job uses close to all memory on machine it is killed and we recommend more next time", func() {
+						jobs = nil
+						cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 80000000000) }'"
+						jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(3), RepGroup: "run_out_of_mem"})
+						RecMBRound = 1
+						inserts, already, err := jq.Add(jobs, envVars, true)
+						So(err, ShouldBeNil)
+						So(inserts, ShouldEqual, 1)
+						So(already, ShouldEqual, 0)
+
+						job, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(job.Cmd, ShouldEqual, cmd)
+						So(job.State, ShouldEqual, JobStateReserved)
+
+						ClientPercentMemoryKill = 10
+						err = jq.Execute(job, config.RunnerExecShell)
+						ClientPercentMemoryKill = 90
+						So(err, ShouldNotBeNil)
+						jqerr, ok := err.(Error)
+						So(ok, ShouldBeTrue)
+						So(jqerr.Err, ShouldEqual, FailReasonRAM)
+						So(job.State, ShouldEqual, JobStateDelayed)
+						So(job.Exited, ShouldBeTrue)
+						So(job.Exitcode, ShouldEqual, -1)
+						So(job.FailReason, ShouldEqual, FailReasonRAM)
+						So(job.Requirements.RAM, ShouldBeGreaterThanOrEqualTo, 10000)
+						deleted, errd := jq.Delete([]*JobEssence{{Cmd: cmd}})
+						So(errd, ShouldBeNil)
+						So(deleted, ShouldEqual, 1)
+					})
+				} else {
+					SkipConvey("Skipping test that uses most of machine memory", func() {})
+				}
 
 				RecMBRound = 100 // revert back to normal
 
@@ -3334,6 +3387,15 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			Logger:          testLogger,
 		}
 
+		dockerInstallScript := `sudo mkdir -p /etc/docker/
+sudo bash -c "echo '{ \"bip\": \"192.168.3.3/24\", \"dns\": [\"8.8.8.8\",\"8.8.4.4\"], \"mtu\": 1380 }' > /etc/docker/daemon.json"
+sudo apt-get -y install --no-install-recommends apt-transport-https ca-certificates curl software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+sudo apt-get -yq update
+sudo apt-get -y install docker-ce
+sudo usermod -aG docker ` + osUser
+
 		Convey("You can connect with an OpenStack scheduler", t, func() {
 			server, _, token, errs = Serve(osConfig)
 			So(errs, ShouldBeNil)
@@ -3342,6 +3404,77 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
+
+			Convey("You can run cmds that start docker containers and get correct memory and cpu usage", func() {
+				var jobs []*Job
+				other := make(map[string]string)
+				other["cloud_script"] = dockerInstallScript
+
+				jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "first_docker", MonitorDocker: "?"})
+
+				dockerName := "jobqueue_test." + internal.RandomString()
+				jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "named_docker", MonitorDocker: dockerName})
+
+				dockerCidFile := "jobqueue_test.cidfile"
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 3)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(180 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								got, errg := jq.GetIncomplete(0, "", false, false)
+								if errg != nil {
+									fmt.Printf("GetIncomplete failed: %s\n", errg)
+								}
+								if len(got) == 0 {
+									ticker.Stop()
+									done <- true
+									return
+								}
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+
+				expectedRAM := 2000
+				got, err := jq.GetByRepGroup("first_docker", 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 15*time.Second)
+				So(got[0].CPUtime, ShouldBeLessThan, 4*time.Second)
+
+				got, err = jq.GetByRepGroup("named_docker", 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
+
+				got, err = jq.GetByRepGroup("cidfile_docker", 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThan, 100)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 15*time.Second)
+				So(got[0].CPUtime, ShouldBeGreaterThan, 5*time.Second)
+
+				// *** want to test that when we kill a running job, its docker
+				// is also immediately killed...
+			})
 
 			Convey("You can run a cmd with a per-cmd set of config files", func() {
 				// create a config file locally
