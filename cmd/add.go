@@ -51,14 +51,16 @@ var cmdGroupDeps string
 var cmdOnFailure string
 var cmdOnSuccess string
 var cmdOnExit string
-var cmdMounts string
 var cmdEnv string
 var cmdReRun bool
 var cmdOsPrefix string
 var cmdOsUsername string
-var cmdPostCreationScript string
 var cmdOsRAM int
 var cmdBsubMode bool
+var cmdPostCreationScript string
+var cmdCloudConfigs string
+var cmdFlavor string
+var cmdMonitorDocker string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -74,7 +76,8 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_username cloud_ram cloud_script env bsub_mode
+monitor_docker cloud_os cloud_username cloud_ram cloud_script cloud_config_files
+cloud_flavor env bsub_mode
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -220,13 +223,32 @@ name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
 string). These are static dependencies; once resolved they do not get re-
 evaluated.
 
+"monitor_docker" turns on monitoring of a docker container identified by the
+given string, which could be the container's --name or path to its --cidfile.
+This will add the container's peak RAM and total CPU usage to the reported RAM
+and CPU usage of this job. If the special argument "?" is supplied, monitoring
+will apply to the first new docker container that appears after the command
+starts to run. NB: in ? mode, if multiple jobs that run docker containers start
+running at the same time on the same machine, the reported stats could be wrong
+for one or more of those jobs. Requires that docker is installed on the machine
+where the job will run (and that the command uses docker to run a container).
+NB: does not handle monitoring of multiple docker containers run by a single
+command. A side effect of monitoring a container is that if you use wr to kill
+the job for this command, wr will also kill the container.
+
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
 will by default run on cloud nodes running Ubuntu. If you set "cloud_os" to
 "CentOS 7", "cloud_username" to "centos", "cloud_ram" to 4096, and
 "cloud_script" to "~/my_centos_post_creation_script.sh", then this command will
-run on a cloud node running CentOS (with at least 4GB ram).
+run on a cloud node running CentOS (with at least 4GB ram). If you set
+"cloud_flavor" then the command will only run on a server with that exact
+flavor (normally the cheapest flavor is chosen for you based on the command's
+resource requirements). The format for cloud_config_files is described under the
+help text for "wr cloud deploy"'s --config_files option. The per-job config
+files you specify will be treated as in addition to any specified during cloud
+deploy or when starting the manager.
 
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
@@ -248,114 +270,9 @@ new job will have this job's mount and cloud_* options.`,
 			die("--file is required")
 		}
 
-		bsubMode := ""
-		if cmdBsubMode {
-			bsubMode = deployment
-		}
-
-		jd := &jobqueue.JobDefaults{
-			RepGrp:      cmdRepGroup,
-			ReqGrp:      reqGroup,
-			Cwd:         cmdCwd,
-			CwdMatters:  cmdCwdMatters,
-			ChangeHome:  cmdChangeHome,
-			CPUs:        cmdCPUs,
-			Disk:        cmdDisk,
-			Override:    cmdOvr,
-			Priority:    cmdPri,
-			Retries:     cmdRet,
-			Env:         cmdEnv,
-			CloudOS:     cmdOsPrefix,
-			CloudUser:   cmdOsUsername,
-			CloudScript: cmdPostCreationScript,
-			CloudOSRam:  cmdOsRAM,
-			BsubMode:    bsubMode,
-		}
-
-		if jd.RepGrp == "" {
-			jd.RepGrp = "manually_added"
-		}
-
-		var err error
-		if cmdMem == "" {
-			jd.Memory = 0
-		} else {
-			mb, errf := bytefmt.ToMegabytes(cmdMem)
-			if errf != nil {
-				die("--memory was not specified correctly: %s", errf)
-			}
-			jd.Memory = int(mb)
-		}
-		if cmdTime == "" {
-			jd.Time = 0 * time.Second
-		} else {
-			jd.Time, err = time.ParseDuration(cmdTime)
-			if err != nil {
-				die("--time was not specified correctly: %s", err)
-			}
-		}
-
-		if cmdDepGroups != "" {
-			jd.DepGroups = strings.Split(cmdDepGroups, ",")
-		}
-
-		if cmdCmdDeps != "" {
-			cols := strings.Split(cmdCmdDeps, ",")
-			if len(cols)%2 != 0 {
-				die("--cmd_deps must have an even number of comma-separated entries")
-			}
-			jd.Deps = colsToDeps(cols)
-		}
-		if cmdGroupDeps != "" {
-			jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
-		}
-
-		if cmdOnFailure != "" {
-			var bjs jobqueue.BehavioursViaJSON
-			err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
-			if err != nil {
-				die("bad --on_failure: %s", err)
-			}
-			jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
-		}
-		if cmdOnSuccess != "" {
-			var bjs jobqueue.BehavioursViaJSON
-			err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
-			if err != nil {
-				die("bad --on_success: %s", err)
-			}
-			jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
-		}
-		if cmdOnExit != "" {
-			var bjs jobqueue.BehavioursViaJSON
-			err = json.Unmarshal([]byte(cmdOnExit), &bjs)
-			if err != nil {
-				die("bad --on_exit: %s", err)
-			}
-			jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
-		}
-
-		if mountJSON != "" || mountSimple != "" {
-			jd.MountConfigs = mountParse(mountJSON, mountSimple)
-		}
-
-		// open file or set up to read from STDIN
-		var reader io.Reader
-		if cmdFile == "-" {
-			reader = os.Stdin
-		} else {
-			reader, err = os.Open(cmdFile)
-			if err != nil {
-				die("could not open file '%s': %s", cmdFile, err)
-			}
-			defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
-		}
-
 		timeout := time.Duration(timeoutint) * time.Second
-		jq, err := jobqueue.Connect(addr, timeout)
-		if err != nil {
-			die("%s", err)
-		}
+		jq := connect(timeout)
+		var err error
 		defer func() {
 			err = jq.Disconnect()
 			if err != nil {
@@ -363,85 +280,11 @@ new job will have this job's mount and cloud_* options.`,
 			}
 		}()
 
-		// we'll default to pwd if the manager is on the same host as us, or if
-		// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
-		var pwd string
-		var remoteWarning bool
+		jobs, isLocal, defaultedRepG := parseCmdFile(jq)
+
 		var envVars []string
-		if cmdCwd == "" {
-			wd, err := os.Getwd()
-			if err != nil {
-				die("%s", err)
-			}
-			currentIP, err := jobqueue.CurrentIP("")
-			if err != nil {
-				warn("Could not get current IP: %s", err)
-			}
-			if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
-				pwd = wd
-				envVars = os.Environ()
-			} else if cmdCwdMatters {
-				pwd = wd
-			} else {
-				pwd = "/tmp"
-				remoteWarning = true
-			}
-		}
-
-		// for network efficiency, read in all commands and create a big slice
-		// of Jobs and Add() them in one go afterwards
-		var jobs []*jobqueue.Job
-		scanner := bufio.NewScanner(reader)
-		defaultedRepG := false
-		lineNum := 0
-		for scanner.Scan() {
-			lineNum++
-			cols := strings.Split(scanner.Text(), "\t")
-			colsn := len(cols)
-			if colsn < 1 || cols[0] == "" {
-				continue
-			}
-			if colsn > 2 {
-				die("line %d has too many columns; check `wr add -h`", lineNum)
-			}
-
-			// determine all the options for this command
-			var jvj *jobqueue.JobViaJSON
-			var jsonErr error
-			if colsn == 2 {
-				jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
-				if jsonErr == nil {
-					jvj.Cmd = cols[0]
-				}
-			} else {
-				if strings.HasPrefix(cols[0], "{") {
-					jsonErr = json.Unmarshal([]byte(cols[0]), &jvj)
-				} else {
-					jvj = &jobqueue.JobViaJSON{Cmd: cols[0]}
-				}
-			}
-
-			if jsonErr != nil {
-				die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
-			}
-
-			if jvj.Cwd == "" && jd.Cwd == "" {
-				if remoteWarning {
-					warn("command working directories defaulting to /tmp since the manager is running remotely")
-				}
-				jd.Cwd = pwd
-			}
-
-			if jvj.RepGrp == "" {
-				defaultedRepG = true
-			}
-
-			job, errf := jvj.Convert(jd)
-			if errf != nil {
-				die("line %d had a problem: %s\n", lineNum, errf)
-			}
-
-			jobs = append(jobs, job)
+		if isLocal {
+			envVars = os.Environ()
 		}
 
 		// add the jobs to the queue
@@ -478,6 +321,7 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
 	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
+	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
@@ -486,7 +330,9 @@ func init() {
 	addCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
 	addCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
 	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
+	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
+	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
@@ -508,4 +354,247 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 		deps = append(deps, jobqueue.NewDepGroupDependency(depgroup))
 	}
 	return
+}
+
+// parseCmdFile reads the given cmd file to get desired jobs, modified by
+// defaults specified in other command line args. Returns job slice, bool for if
+// the manager is on the same host as us, and bool for if any job defaulted to
+// the default repgrp.
+func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
+	var isLocal bool
+	currentIP, errc := jobqueue.CurrentIP("")
+	if errc != nil {
+		warn("Could not get current IP: %s", errc)
+	}
+	if currentIP+":"+config.ManagerPort == jq.ServerInfo.Addr {
+		isLocal = true
+	}
+
+	// if the manager is remote, copy over any cloud config files to unique
+	// locations, and adjust cloudConfigFiles to make sense from the manager's
+	// perspective
+	if !isLocal && cmdCloudConfigs != "" {
+		cmdCloudConfigs = copyCloudConfigFiles(jq, cmdCloudConfigs)
+	}
+
+	bsubMode := ""
+	if cmdBsubMode {
+		bsubMode = deployment
+	}
+
+	jd := &jobqueue.JobDefaults{
+		RepGrp:           cmdRepGroup,
+		ReqGrp:           reqGroup,
+		Cwd:              cmdCwd,
+		CwdMatters:       cmdCwdMatters,
+		ChangeHome:       cmdChangeHome,
+		CPUs:             cmdCPUs,
+		Disk:             cmdDisk,
+		Override:         cmdOvr,
+		Priority:         cmdPri,
+		Retries:          cmdRet,
+		Env:              cmdEnv,
+		MonitorDocker:    cmdMonitorDocker,
+		CloudOS:          cmdOsPrefix,
+		CloudUser:        cmdOsUsername,
+		CloudScript:      cmdPostCreationScript,
+		CloudConfigFiles: cmdCloudConfigs,
+		CloudOSRam:       cmdOsRAM,
+		CloudFlavor:      cmdFlavor,
+		BsubMode:         bsubMode,
+	}
+
+	if jd.RepGrp == "" {
+		jd.RepGrp = "manually_added"
+	}
+
+	var err error
+	if cmdMem == "" {
+		jd.Memory = 0
+	} else {
+		mb, errf := bytefmt.ToMegabytes(cmdMem)
+		if errf != nil {
+			die("--memory was not specified correctly: %s", errf)
+		}
+		jd.Memory = int(mb)
+	}
+	if cmdTime == "" {
+		jd.Time = 0 * time.Second
+	} else {
+		jd.Time, err = time.ParseDuration(cmdTime)
+		if err != nil {
+			die("--time was not specified correctly: %s", err)
+		}
+	}
+
+	if cmdDepGroups != "" {
+		jd.DepGroups = strings.Split(cmdDepGroups, ",")
+	}
+
+	if cmdCmdDeps != "" {
+		cols := strings.Split(cmdCmdDeps, ",")
+		if len(cols)%2 != 0 {
+			die("--cmd_deps must have an even number of comma-separated entries")
+		}
+		jd.Deps = colsToDeps(cols)
+	}
+	if cmdGroupDeps != "" {
+		jd.Deps = append(jd.Deps, groupsToDeps(cmdGroupDeps)...)
+	}
+
+	if cmdOnFailure != "" {
+		var bjs jobqueue.BehavioursViaJSON
+		err = json.Unmarshal([]byte(cmdOnFailure), &bjs)
+		if err != nil {
+			die("bad --on_failure: %s", err)
+		}
+		jd.OnFailure = bjs.Behaviours(jobqueue.OnFailure)
+	}
+	if cmdOnSuccess != "" {
+		var bjs jobqueue.BehavioursViaJSON
+		err = json.Unmarshal([]byte(cmdOnSuccess), &bjs)
+		if err != nil {
+			die("bad --on_success: %s", err)
+		}
+		jd.OnSuccess = bjs.Behaviours(jobqueue.OnSuccess)
+	}
+	if cmdOnExit != "" {
+		var bjs jobqueue.BehavioursViaJSON
+		err = json.Unmarshal([]byte(cmdOnExit), &bjs)
+		if err != nil {
+			die("bad --on_exit: %s", err)
+		}
+		jd.OnExit = bjs.Behaviours(jobqueue.OnExit)
+	}
+
+	if mountJSON != "" || mountSimple != "" {
+		jd.MountConfigs = mountParse(mountJSON, mountSimple)
+	}
+
+	// open file or set up to read from STDIN
+	var reader io.Reader
+	if cmdFile == "-" {
+		reader = os.Stdin
+	} else {
+		reader, err = os.Open(cmdFile)
+		if err != nil {
+			die("could not open file '%s': %s", cmdFile, err)
+		}
+		defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
+	}
+
+	// we'll default to pwd if the manager is on the same host as us, or if
+	// cwd matters, /tmp otherwise (and cmdCwd has not been supplied)
+	var pwd string
+	var remoteWarning bool
+	if cmdCwd == "" {
+		wd, errg := os.Getwd()
+		if errg != nil {
+			die("%s", errg)
+		}
+		if isLocal {
+			pwd = wd
+		} else if cmdCwdMatters {
+			pwd = wd
+		} else {
+			pwd = "/tmp"
+			remoteWarning = true
+		}
+	}
+
+	// for network efficiency, read in all commands and create a big slice
+	// of Jobs and Add() them in one go afterwards
+	var jobs []*jobqueue.Job
+	scanner := bufio.NewScanner(reader)
+	defaultedRepG := false
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		cols := strings.Split(scanner.Text(), "\t")
+		colsn := len(cols)
+		if colsn < 1 || cols[0] == "" {
+			continue
+		}
+		if colsn > 2 {
+			die("line %d has too many columns; check `wr add -h`", lineNum)
+		}
+
+		// determine all the options for this command
+		var jvj *jobqueue.JobViaJSON
+		var jsonErr error
+		if colsn == 2 {
+			jsonErr = json.Unmarshal([]byte(cols[1]), &jvj)
+			if jsonErr == nil {
+				jvj.Cmd = cols[0]
+			}
+		} else {
+			if strings.HasPrefix(cols[0], "{") {
+				jsonErr = json.Unmarshal([]byte(cols[0]), &jvj)
+			} else {
+				jvj = &jobqueue.JobViaJSON{Cmd: cols[0]}
+			}
+		}
+
+		if jsonErr != nil {
+			die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
+		}
+
+		if jvj.Cwd == "" && jd.Cwd == "" {
+			if remoteWarning {
+				warn("command working directories defaulting to /tmp since the manager is running remotely")
+			}
+			jd.Cwd = pwd
+		}
+
+		if jvj.RepGrp == "" {
+			defaultedRepG = true
+		}
+
+		if !isLocal && jvj.CloudConfigFiles != "" {
+			jvj.CloudConfigFiles = copyCloudConfigFiles(jq, jvj.CloudConfigFiles)
+		}
+
+		job, errf := jvj.Convert(jd)
+		if errf != nil {
+			die("line %d had a problem: %s\n", lineNum, errf)
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, isLocal, defaultedRepG
+}
+
+// copyCloudConfigFiles copies local config files to the manager's machine to a
+// path based on the file's MD5, and then returns an altered input value to use
+// the MD5 paths as the sources, keeping the desired destinations. It does not
+// alter path specs for config files that don't exist locally.
+func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
+	var remoteConfigFiles []string
+	for _, cf := range strings.Split(configFiles, ",") {
+		parts := strings.Split(cf, ":")
+		local := internal.TildaToHome(parts[0])
+		_, err := os.Stat(local)
+		if err != nil {
+			remoteConfigFiles = append(remoteConfigFiles, cf)
+			continue
+		}
+
+		var desired string
+		if len(parts) == 2 {
+			desired = parts[1]
+		} else {
+			desired = parts[0]
+		}
+
+		remote, err := jq.UploadFile(local, desired)
+		if err != nil {
+			warn("failed to open file %s: %s", local, err)
+			remoteConfigFiles = append(remoteConfigFiles, cf)
+			continue
+		}
+
+		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
+	}
+	return strings.Join(remoteConfigFiles, ",")
 }

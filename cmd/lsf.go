@@ -154,10 +154,7 @@ var lsfBsubCmd = &cobra.Command{
 		}
 
 		// connect to the server
-		jq, err := jobqueue.Connect(addr, 10*time.Second)
-		if err != nil {
-			die(err.Error())
-		}
+		jq := connect(10 * time.Second)
 		defer jq.Disconnect()
 
 		// add the job to the queue

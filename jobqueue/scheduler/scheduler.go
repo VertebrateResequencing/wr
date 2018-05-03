@@ -42,7 +42,6 @@ package scheduler
 import (
 	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
-	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -54,11 +53,7 @@ import (
 )
 
 const (
-	randBytes                           = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	randIdxBits                         = 6                  // 6 bits to represent a rand index
-	randIdxMask                         = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
-	randIdxMax                          = 63 / randIdxBits   // # of letter indices fitting in 63 bits
-	defaultReserveTimeout               = 1                  // implementers of reserveTimeout can just return this
+	defaultReserveTimeout               = 1 // implementers of reserveTimeout can just return this
 	infiniteQueueTime     time.Duration = 0
 )
 
@@ -67,6 +62,7 @@ const (
 var (
 	ErrBadScheduler = "unknown scheduler name"
 	ErrImpossible   = "scheduler cannot accept the job, since its resource requirements are too high"
+	ErrBadFlavor    = "unknown server flavor"
 )
 
 // Error records an error and the operation and scheduler that caused it.
@@ -139,7 +135,7 @@ type MessageCallBack func(msg string)
 // manually check).
 type BadServerCallBack func(server *cloud.Server)
 
-// this interface must be satisfied to add support for a particular job
+// scheduleri interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
 	initialize(config interface{}, logger log15.Logger) error // do any initial set up to be able to use the job scheduler
@@ -151,6 +147,15 @@ type scheduleri interface {
 	setMessageCallBack(MessageCallBack)                       // achieve the aims of SetMessageCallBack()
 	setBadServerCallBack(BadServerCallBack)                   // achieve the aims of SetBadServerCallBack()
 	cleanup()                                                 // do any clean up once you've finished using the job scheduler
+}
+
+// CloudConfig interface could be satisfied by the config option taken by cloud
+// schedulers which have a ConfigFiles property.
+type CloudConfig interface {
+	// AddConfigFile takes a value like that of the ConfigFiles property of the
+	// struct implementing this interface, and appends this value to what is
+	// in ConfigFiles, or sets it if unset.
+	AddConfigFile(spec string)
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -304,21 +309,7 @@ func jobName(cmd string, deployment string, unique bool) string {
 	name := fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
 
 	if unique {
-		// based on http://stackoverflow.com/a/31832326/675083
-		b := make([]byte, 8)
-		src := rand.NewSource(time.Now().UnixNano())
-		for i, cache, remain := 7, src.Int63(), randIdxMax; i >= 0; {
-			if remain == 0 {
-				cache, remain = src.Int63(), randIdxMax
-			}
-			if idx := int(cache & randIdxMask); idx < len(randBytes) {
-				b[i] = randBytes[idx]
-				i--
-			}
-			cache >>= randIdxBits
-			remain--
-		}
-		name += "_" + string(b)
+		name += "_" + internal.RandomString()
 	}
 
 	return name

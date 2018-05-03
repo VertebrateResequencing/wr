@@ -3,28 +3,28 @@
     <head>
         <meta charset="utf-8">
         <title>WR Status</title>
-        
+
         <!-- jQuery for various utility, and needed by bootstrap.js -->
         <script src="/js/jquery-2.2.4.min.js"></script>
-        
+
         <!-- Bootstrap for presentation and styling -->
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link rel="stylesheet" href="/css/bootstrap-3.3.7.min.css">
         <script src="/js/bootstrap-3.3.7.min.js"></script>
-        
+
         <!-- Knockout for event handling -->
         <script src="/js/knockout-3.4.0.min.js"></script>
-        
+
         <!-- Knockstrap to make buttons and things work 2-way between knockout and bootstrap -->
         <script src="/js/knockstrap-1.3.2.min.js"></script>
-        
+
         <!-- Some of our own general helper functions -->
         <script src="/js/wr-0.0.1.js"></script>
         <link rel="stylesheet" href="/css/wr-0.0.1.css">
     </head>
     <body>
-    
+
         <div id="nav" class="navbar navbar-default" role="navigation">
             <div class="container">
                 <div class="navbar-header">
@@ -32,14 +32,14 @@
                 </div>
             </div>
         </div>
-        
+
         <div id="status" class="container">
             <div id="statuserrors" data-bind="foreach: statuserror">
                 <div class="alert alert-danger fade in">
                     <p data-bind="text: $data"></p>
                 </div>
             </div>
-            
+
             <div id="badservers" data-bind="foreach: badservers">
                 <div class="alert alert-danger fade in">
                     <div class="panel panel-warning">
@@ -69,7 +69,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <div id="messages" data-bind="foreach: messages">
                 <div class="alert alert-danger fade in">
                     <div class="panel panel-warning">
@@ -90,7 +90,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
                     <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
@@ -130,7 +130,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <!-- *** not yet implemented
             <div class="row bottom-margin">
                 <div class="col-xs-5">
@@ -146,11 +146,11 @@
                 </div>
             </div>
             -->
-            
+
             <!-- ko if: sortableRepGroups().length > 0 -->
                 <hr>
             <!-- /ko -->
-             
+
             <div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
                 <div style="width: 100%;" class="well well-sm">
                     <div style="margin: 0 auto;">
@@ -199,7 +199,7 @@
                                 </div>
                             </div>
                         </div>
-                        
+
                         <!-- ko foreach: details -->
                             <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
                                 <div class="panel-heading">
@@ -236,6 +236,12 @@
                                         <dt>Cores</dt>
                                         <dd data-bind="text: Cores"></dd>
                                     </dl>
+                                    <!-- ko if: MonitorDocker != '' -->
+                                        <dl>
+                                            <dt>Monitor Docker</dt>
+                                            <dd><span data-bind="text: MonitorDocker"></span></dd>
+                                        </dl>
+                                    <!-- /ko -->
                                     <!-- ko if: FailReason -->
                                         <dl>
                                             <!-- ko if: State == 'running' -->
@@ -247,7 +253,7 @@
                                             <dd data-bind="text: FailReason"></dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
+
                                     <!-- ko if: Exited -->
                                         <dl>
                                             <dt>Exit code</dt>
@@ -316,7 +322,7 @@
                                             <dd data-bind="text: Pid"></dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
+
                                     <!-- ko if: ! Exited && (State == "reserved" || State == "running" || State == "lost") -->
                                         <dl>
                                             <dt>Started</dt>
@@ -350,7 +356,7 @@
                                             <dd data-bind="text: Pid"></dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
+
                                     <!-- ko if: ! Exited && State == "buried" && StdErr -->
                                         <dl>
                                             <dt>StdErr</dt>
@@ -359,7 +365,7 @@
                                             </dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
+
                                     <!-- ko if: DepGroups -->
                                         <dl>
                                             <dt>DepGroups</dt>
@@ -368,7 +374,7 @@
                                             </dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
+
                                     <!-- ko if: Dependencies -->
                                         <dl>
                                             <dt>Dependencies</dt>
@@ -377,28 +383,35 @@
                                             </dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
-                                    <!--
+
                                     <dl>
                                         <dt>Env</dt>
                                         <dd>
                                             <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
                                         </dd>
                                     </dl>
-                                    -->
-                                    
+
                                     <!-- ko if: Cwd -->
                                         <dl>
                                             <dt>Home Changed</dt>
                                             <dd data-bind="text: HomeChanged"></dd>
                                         </dl>
                                     <!-- /ko -->
-                                    
+
                                     <!-- ko if: Behaviours -->
                                         <dl>
                                             <dt>Behaviours</dt>
                                             <dd>
                                                 <span class="clickable" data-bind="click: $root.showBehaviours">&lt;show&gt;</span>
+                                            </dd>
+                                        </dl>
+                                    <!-- /ko -->
+
+                                    <!-- ko if: OtherRequests -->
+                                        <dl>
+                                            <dt>Resource Requirements</dt>
+                                            <dd>
+                                                <span class="clickable" data-bind="click: $root.showOther">&lt;show&gt;</span>
                                             </dd>
                                         </dl>
                                     <!-- /ko -->
@@ -438,7 +451,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <!-- action modals -->
             <div data-bind="modal: {
                 visible: actionModalVisible,
@@ -480,7 +493,7 @@
                     <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
                 </div>
             </script>
-            
+
             <!-- stdout/err modals -->
             <div data-bind="modal: {
                 visible: stdModalVisible,
@@ -488,7 +501,7 @@
                 header: { data: { label: stdModalHeader } },
                 body: { data: { content: stdOutput } }
             }"></div>
-            
+
             <!-- depgroups modal -->
             <div data-bind="modal: {
                 visible: dgModalVisible,
@@ -496,7 +509,7 @@
                 header: { data: { label: 'Dependency Groups' } },
                 body: { name: 'envModalBodyTemplate', data: dgVars }
             }"></div>
-            
+
             <!-- dependencies modal -->
             <div data-bind="modal: {
                 visible: depModalVisible,
@@ -504,7 +517,7 @@
                 header: { data: { label: 'Dependencies' } },
                 body: { name: 'envModalBodyTemplate', data: depVars }
             }"></div>
-            
+
             <!-- behaviours modal -->
             <div data-bind="modal: {
                 visible: behModalVisible,
@@ -512,7 +525,15 @@
                 header: { data: { label: 'Behaviours' } },
                 body: { name: 'envModalBodyTemplate', data: behVars }
             }"></div>
-            
+
+            <!-- other modal -->
+            <div data-bind="modal: {
+                visible: otherModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Other Resource Requirements' } },
+                body: { name: 'envModalBodyTemplate', data: otherVars }
+            }"></div>
+
             <!-- env modal -->
             <div data-bind="modal: {
                 visible: envModalVisible,
@@ -525,20 +546,21 @@
                     <span data-bind="text: $data"></span><br>
                 </div>
             </script>
-            
+
             <hr>
-            
+
             <footer id="footer">
-                <small>&copy; 2016, 2017 Genome Research Limited.</small>
+                <small>&copy; 2016-2018 Genome Research Limited.</small>
             </footer>
         </div>
-        
+
         <script type="text/javascript">
             ko.options.deferUpdates = true;
-            
+
             // viewmodel for displaying status
             function StatusViewModel() {
                 var self = this;
+                self.token = getParameterByName("token");
                 self.aquiringstatus = ko.observableArray();
                 self.statuserror = ko.observableArray();
                 self.badservers = ko.observableArray();
@@ -550,19 +572,19 @@
                 self.wallTimeUpdater;
                 self.wallTimeUpdaters = new Array();
                 self.rateLimit = 350;
-                
+
                 self.removeBadServer = function (id) {
                     self.badservers.remove(function(server) {
                         return server.ID == id;
                     });
                 }
-                
+
                 self.removeMessage = function (msg) {
                     self.messages.remove(function(schedIssue) {
                         return schedIssue.Msg == msg;
                     });
                 }
-                
+
                 self.inflight = {
                     'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
                     'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
@@ -583,7 +605,7 @@
                     if (self.inflight['delay_compute']) {
                         return self.inflight['old_total'];
                     }
-                    
+
                     var total = self.inflight['delayed']() + self.inflight['dependent']() + self.inflight['ready']() + self.inflight['running']() + self.inflight['lost']() + self.inflight['buried']();
                     if (total > 0) {
                         var multiplier = 100 / total;
@@ -600,21 +622,21 @@
                         self.inflight['lostPct'](rounded[4]);
                         self.inflight['buryPct'](rounded[5]);
                     }
-                        
+
                     self.inflight['old_total'] = total;
                     return total;
                 }).extend({ rateLimit: self.rateLimit });
-                
+
                 self.repGroups = [];
                 self.repGroupLookup = {};
                 self.sortableRepGroups = ko.observableArray();
                 self.ignore = {};
-                
+
                 // set up the websocket
                 if (window.WebSocket === undefined) {
                     self.statuserror.push("Your browser does not support WebSockets");
                 } else {
-                    self.ws = new WebSocket("ws://" + location.hostname + ":" + location.port + "/status_ws");
+                    self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws?token=" + self.token);
                     self.ws.onopen = function() {
                         self.ws.send(JSON.stringify({ Request: "current" }));
                     };
@@ -659,7 +681,7 @@
                                     if (repgroup['delay_compute']) {
                                         return repgroup['old_total'];
                                     }
-                                    
+
                                     var total = repgroup['delayed']() + repgroup['dependent']() + repgroup['ready']() + repgroup['running']() + repgroup['lost']() + repgroup['buried']() + repgroup['deleted']() + repgroup['complete']();
                                     if (total > 0) {
                                         var multiplier = 100 / total;
@@ -670,7 +692,7 @@
                                         // though we never total over 100
                                         var scaled = percentScaler([(multiplier * repgroup['delayed']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['running']()), (multiplier * repgroup['lost']()), (multiplier * repgroup['buried']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 98);
                                         var rounded = percentRounder(scaled, 2);
-                                        
+
                                         // to avoid the percentage bars
                                         // totalling over 100 at any point in
                                         // time, do all decrementing updates
@@ -689,21 +711,21 @@
                                             }
                                         }
                                     }
-                                    
+
                                     repgroup['old_total'] = total;
                                     return total;
                                 }).extend({ rateLimit: self.rateLimit });
-                                
+
                                 self.repGroups.push(repgroup);
                                 self.repGroupLookup[rg] = self.repGroups.length - 1;
-                                
+
                                 // because of our lookup, repGroup sort order
                                 // must not change, but we want them displayed
                                 // sorted, so we also push to an independent
                                 // observableArray
                                 self.sortableRepGroups.push(repgroup);
                             }
-                            
+
                             var from, to
                             switch(json['FromState']) {
                                 case 'delayed':
@@ -725,7 +747,7 @@
                                     from = repgroup['buried'];
                                     break;
                             }
-                            
+
                             if (self.ignore.hasOwnProperty(json['RepGroup']) && self.ignore[json['RepGroup']].hasOwnProperty(json['ToState']) && self.ignore[json['RepGroup']][json['ToState']] >= json['Count']) {
                                 // ignore this 'to' transition, because things
                                 // are out of order and we already accounted for
@@ -769,7 +791,7 @@
                                         break;
                                 }
                             }
-                            
+
                             repgroup['delay_compute'] = to ? 1 : 0;
                             if (from) {
                                 var newfrom = from() - json['Count'];
@@ -788,7 +810,7 @@
                                     } else {
                                         self.ignore[json['RepGroup']][json['FromState']] = json['Count'];
                                     }
-                                    
+
                                     from(0);
                                 }
                             }
@@ -848,7 +870,7 @@
                                     break
                                 }
                             }
-                            
+
                             if (! updated) {
                                 var schedIssue = {
                                     'Msg': json['Msg'],
@@ -861,14 +883,14 @@
                         }
                     }
                 }
-                
+
                 // act if the user requests a repGroup
                 self.requestRepGroup = function(formElement) {
                     console.log("requesting rep group " + self.repGroup())
-                    self.ws.send(JSON.stringify({ Request: 'search', RepGroup: self.repGroup() })); 
+                    self.ws.send(JSON.stringify({ Request: 'search', RepGroup: self.repGroup() }));
                     // *** not yet implemented in the manager, does nothing
                 };
-                
+
                 // act if the user clicks on the different types of progress
                 // bar for a repGroup
                 self.showRepgroupDelayed = function(repGroup) {
@@ -901,7 +923,7 @@
                         }
                         self.detailsOA([]);
                     }
-                    
+
                     if (repGroup.id == self.detailsRepgroup && state == self.detailsState) {
                         // stop showing
                         repGroup.details([]);
@@ -910,13 +932,13 @@
                         self.detailsOA = '';
                         return;
                     }
-                    
+
                     self.detailsRepgroup = repGroup.id;
                     self.detailsState = state;
                     self.detailsOA = repGroup.details;
                     self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state }));
                 }
-                
+
                 // act if the user clicks to view stdout/err
                 self.stdModalVisible = ko.observable(false);
                 self.stdModalHeader = ko.observable();
@@ -926,7 +948,7 @@
                     self.stdOutput(job[type]);
                     self.stdModalVisible(true);
                 }
-                
+
                 // act if the user clicks to view DepGroups
                 self.dgModalVisible = ko.observable(false);
                 self.dgVars = ko.observableArray();
@@ -934,7 +956,7 @@
                     self.dgVars(job.DepGroups);
                     self.dgModalVisible(true);
                 }
-                
+
                 // act if the user clicks to view Dependencies
                 self.depModalVisible = ko.observable(false);
                 self.depVars = ko.observableArray();
@@ -942,7 +964,7 @@
                     self.depVars(job.Dependencies);
                     self.depModalVisible(true);
                 }
-                
+
                 // act if the user clicks to view Behaviours
                 self.behModalVisible = ko.observable(false);
                 self.behVars = ko.observableArray();
@@ -950,7 +972,15 @@
                     self.behVars([job.Behaviours]);
                     self.behModalVisible(true);
                 }
-                
+
+                // act if the user clicks to view Other
+                self.otherModalVisible = ko.observable(false);
+                self.otherVars = ko.observableArray();
+                self.showOther = function(job) {
+                    self.otherVars(job.OtherRequests);
+                    self.otherModalVisible(true);
+                }
+
                 // act if the user clicks to view env
                 self.envModalVisible = ko.observable(false);
                 self.envVars = ko.observableArray();
@@ -958,7 +988,7 @@
                     self.envVars(job.Env);
                     self.envModalVisible(true);
                 }
-                
+
                 // act if the user clicks one of the action buttons in the
                 // details of a progress bar
                 self.actionModalVisible = ko.observable(false);
@@ -1001,7 +1031,7 @@
                             Key: self.actionDetails.key(),
                         }));
                     }
-                    
+
                     // reset the ui
                     if (self.detailsOA) {
                         self.detailsOA([]);
@@ -1046,13 +1076,13 @@
                     self.actionModalHeader('Confirm Commands are Dead');
                     self.actionModalVisible(true);
                 };
-                
+
                 // act if the user confirms that a server is dead
                 self.confirmDeadServer = function(server) {
                     self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
                     self.removeBadServer(server.ID)
                 };
-                
+
                 // act if the user dismisses a message
                 self.dismissMessage = function(si) {
                     self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));

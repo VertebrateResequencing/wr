@@ -64,23 +64,25 @@ type jstatusReq struct {
 // jstatus is the job info we send to the status webpage (only real difference
 // to Job is that some of the values are converted to easy-to-display forms).
 type jstatus struct {
-	Key          string
-	RepGroup     string
-	DepGroups    []string
-	Dependencies []string
-	Cmd          string
-	State        JobState
-	Cwd          string
-	CwdBase      string
-	HomeChanged  bool
-	Behaviours   string
-	Mounts       string
+	Key           string
+	RepGroup      string
+	DepGroups     []string
+	Dependencies  []string
+	Cmd           string
+	State         JobState
+	Cwd           string
+	CwdBase       string
+	HomeChanged   bool
+	Behaviours    string
+	Mounts        string
+	MonitorDocker string
 	// ExpectedRAM is in Megabytes.
 	ExpectedRAM int
 	// ExpectedTime is in seconds.
 	ExpectedTime float64
 	// RequestedDisk is in Gigabytes.
 	RequestedDisk int
+	OtherRequests []string
 	Cores         int
 	PeakRAM       int
 	Exited        bool
@@ -96,9 +98,9 @@ type jstatus struct {
 	Ended         int64
 	StdErr        string
 	StdOut        string
-	// Env        []string //*** not sending Env until we have https implemented
-	Attempts uint32
-	Similar  int
+	Env           []string
+	Attempts      uint32
+	Similar       int
 }
 
 // webInterfaceStatic is a http handler for our static documents in static.go
@@ -111,6 +113,11 @@ func webInterfaceStatic(s *Server) http.HandlerFunc {
 		path := r.URL.Path
 		if path == "/" || path == "/status" {
 			path = "/status.html"
+
+			ok := s.httpAuthorized(w, r)
+			if !ok {
+				return
+			}
 		}
 
 		// during development, to avoid having to rebuild and restart manager on
@@ -169,6 +176,11 @@ func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
 // webpage
 func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
 		conn, ok := webSocket(w, r)
 		if !ok {
 			s.Error("Failed to set up websocket", "Host", r.Host)
@@ -302,9 +314,11 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 
 							err = s.q.Remove(key)
 							if err != nil {
+								s.Warn("failed to remove job", "cmd", job.Cmd, "err", err)
 								continue
 							}
 							s.db.deleteLiveJob(key)
+							s.Debug("removed job", "cmd", job.Cmd)
 							toDelete = append(toDelete, key)
 							if job.State == JobStateReady {
 								s.decrementGroupCount(job.schedulerGroup)
@@ -433,7 +447,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 func jobToStatus(job *Job) jstatus {
 	stderr, _ := job.StdErr()
 	stdout, _ := job.StdOut()
-	// env, _ := job.Env()
+	env, _ := job.Env()
 	var cwdLeaf string
 	job.RLock()
 	defer job.RUnlock()
@@ -444,6 +458,10 @@ func jobToStatus(job *Job) jstatus {
 	state := job.State
 	if state == JobStateRunning && job.Lost {
 		state = JobStateLost
+	}
+	var ot []string
+	for key, val := range job.Requirements.Other {
+		ot = append(ot, key+":"+val)
 	}
 	return jstatus{
 		Key:           job.key(),
@@ -457,9 +475,11 @@ func jobToStatus(job *Job) jstatus {
 		HomeChanged:   job.ChangeHome,
 		Behaviours:    job.Behaviours.String(),
 		Mounts:        job.MountConfigs.String(),
+		MonitorDocker: job.MonitorDocker,
 		ExpectedRAM:   job.Requirements.RAM,
 		ExpectedTime:  job.Requirements.Time.Seconds(),
 		RequestedDisk: job.Requirements.Disk,
+		OtherRequests: ot,
 		Cores:         job.Requirements.Cores,
 		PeakRAM:       job.PeakRAM,
 		Exited:        job.Exited,
@@ -477,7 +497,7 @@ func jobToStatus(job *Job) jstatus {
 		Similar:       job.Similar,
 		StdErr:        stderr,
 		StdOut:        stdout,
-		// Env:           env,
+		Env:           env,
 	}
 }
 
@@ -501,9 +521,12 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 			stats := item.Stats()
 			if allowed[stats.State] {
 				job := item.Data.(*Job)
+				job.Lock()
+				job.State = s.itemStateToJobState(stats.State, job.Lost)
 				if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
 					jobs = append(jobs, job)
 				}
+				job.Unlock()
 			}
 		}
 	} else if req.Key != "" {
@@ -513,7 +536,11 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 		}
 		stats := item.Stats()
 		if allowed[stats.State] {
-			jobs = append(jobs, item.Data.(*Job))
+			job := item.Data.(*Job)
+			job.Lock()
+			job.State = s.itemStateToJobState(stats.State, job.Lost)
+			job.Unlock()
+			jobs = append(jobs, job)
 		}
 	}
 	return jobs

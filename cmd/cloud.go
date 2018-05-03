@@ -63,11 +63,13 @@ var osRAM int
 var osDisk int
 var flavorRegex string
 var postCreationScript string
+var postDeploymentScript string
 var cloudGatewayIP string
 var cloudCIDR string
 var cloudDNS string
 var cloudConfigFiles string
 var forceTearDown bool
+var setDomainIP bool
 var cloudDebug bool
 
 // cloudCmd represents the cloud command
@@ -124,6 +126,21 @@ Local paths that don't exist are silently ignored.
 This option is important if you want to be able to queue up commands that rely
 on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
 contain your credentials for connecting to your s3 bucket(s).
+
+The --on_success optional value is the path to some executable that you want to
+run locally after the deployment is successful. The executable will be run with
+the environment variables WR_MANAGERIP and WR_MANAGERCERTDOMAIN set to the IP
+address of the cloud server that wr manager was started on and the domain you
+configured as valid for your own TLS certificate respectively. Your executable
+might be, for example, a bash script that updates your local DNS entries.
+
+The --set_domain_ip option is an alternative to --on_success if your DNS is
+managaged with infoblox. You will need the environment variables INFOBLOX_HOST,
+INFOBLOX_USER and INFOBLOX_PASS set for this option to work. After a successful
+deployment infoblox will be used to first delete all A records for your
+configured WR_MANAGERCERTDOMAIN (which can't be localhost), and then create an
+A record for WR_MANAGERCERTDOMAIN that points to the IP address of the cloud
+server that wr manager was started on.
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
@@ -185,7 +202,7 @@ within OpenStack.`,
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file); we can't proxy if a manager is already up
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq != nil {
 			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 		}
@@ -196,6 +213,17 @@ within OpenStack.`,
 		exe, err := osext.Executable()
 		if err != nil {
 			die("could not get the path to wr: %s", err)
+		}
+
+		// later we will copy our server cert and key to the cloud "head node";
+		// if we don't have any, generate them now
+		err = internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
+		if err != nil {
+			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile, config.ManagerCertDomain)
+			if err != nil {
+				die("could not generate certs: %s", err)
+			}
+			info("created a new key and certificate for TLS")
 		}
 
 		// for debug purposes, set up logging to STDERR
@@ -255,7 +283,7 @@ within OpenStack.`,
 				if err != nil {
 					warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
 				}
-				jq = connect(2 * time.Second)
+				jq = connect(2*time.Second, true)
 				if jq != nil {
 					info("reconnected to existing wr manager on %s", sAddr(jq.ServerInfo))
 					alreadyUp = true
@@ -330,7 +358,7 @@ within OpenStack.`,
 			}
 
 			// check that we can now connect to the remote manager
-			jq = connect(40 * time.Second)
+			jq = connect(40*time.Second, true)
 			if jq == nil {
 				teardown(provider)
 				die("could not talk to wr manager on server at %s after 40s", server.IP)
@@ -340,7 +368,29 @@ within OpenStack.`,
 		}
 
 		info("should you need to, you can ssh to this server using `ssh -i %s %s@%s`", keyPath, osUsername, server.IP)
-		info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
+		token, err := token()
+		if err != nil {
+			warn("token could not be read! [%s]", err)
+		}
+		info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, string(token))
+
+		if postDeploymentScript != "" {
+			cmd := exec.Command(postDeploymentScript) // #nosec
+			cmd.Env = append(os.Environ(), "WR_MANAGERIP="+server.IP, "WR_MANAGERCERTDOMAIN="+jq.ServerInfo.Host)
+			err = cmd.Run()
+			if err != nil {
+				warn("--on_success executable [%s] failed: %s", postDeploymentScript, err)
+			}
+		}
+
+		if setDomainIP {
+			err = internal.InfobloxSetDomainIP(jq.ServerInfo.Host, server.IP)
+			if err != nil {
+				warn("failed to set domain IP: %s", err)
+			} else {
+				info("set IP of %s to %s", jq.ServerInfo.Host, server.IP)
+			}
+		}
 	},
 }
 
@@ -373,7 +423,13 @@ and accessible.`,
 
 		// before stopping the manager, make sure we can interact with the
 		// provider - that our credentials are correct
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		var logger = log15.New()
+		if cloudDebug {
+			logger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, log15.StderrHandler))
+		} else {
+			logger.SetHandler(log15.DiscardHandler())
+		}
+		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), logger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -387,7 +443,7 @@ and accessible.`,
 		noManagerForcedMsg := "; tearing down anyway - you may lose changes if not backing up the database to S3!"
 		serverHadProblems := false
 		if fmRunning {
-			jq := connect(1 * time.Second)
+			jq := connect(1*time.Second, true)
 			if jq != nil {
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
@@ -497,6 +553,11 @@ and accessible.`,
 		}
 		info("deleted all cloud resources previously created")
 
+		err = os.Remove(config.ManagerTokenFile)
+		if err != nil {
+			warn("failed to delete the token file: %s", err)
+		}
+
 		// kill the ssh forwarders
 		if fmRunning {
 			err = killProcess(fmPid)
@@ -534,6 +595,7 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().StringVarP(&postDeploymentScript, "on_success", "x", defaultConfig.DeploySuccessScript, "path to a script to run locally after a successful deployment")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	cloudDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 	cloudDeployCmd.Flags().StringVar(&cloudGatewayIP, "network_gateway_ip", defaultConfig.CloudGateway, "gateway IP for the created subnet")
@@ -541,10 +603,12 @@ func init() {
 	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to use in the created subnet")
 	cloudDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
 	cloudDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
+	cloudDeployCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
+	cloudTearDownCmd.Flags().BoolVar(&cloudDebug, "debug", false, "show details of the teardown process")
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool) {
@@ -557,8 +621,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	// create a config file on the remote to have the remote wr work on the same
-	// ports that we'd use locally, and have it use an S3 db backup location if
-	// configured
+	// ports that we'd use locally, use the right domain, and have it use an S3
+	// db backup location if configured
 	dbBk := "db_bk"
 	if internal.IsRemote(config.ManagerDbBkFile) {
 		dbBk = config.ManagerDbBkFile
@@ -576,7 +640,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			die("failed to access the local database: %s", errf)
 		}
 	}
-	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\n", mp, wp, dbBk), wrConfigFileName); err != nil {
+	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\n", mp, wp, dbBk, config.ManagerCertDomain), wrConfigFileName); err != nil {
 		teardown(provider)
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
@@ -611,6 +675,38 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
 	if err != nil {
 		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
+	}
+
+	// copy over our ca, cert and key files
+	remoteCertFile := filepath.Join("./.wr_"+config.Deployment, "cert.pem")
+	if err = server.UploadFile(config.ManagerCertFile, remoteCertFile); err != nil && !wrMayHaveStarted {
+		teardown(provider)
+		die("failed to upload wr manager certificate file to the server at %s: %s", server.IP, err)
+	}
+	remoteKeyFile = filepath.Join("./.wr_"+config.Deployment, "key.pem")
+	if err = server.UploadFile(config.ManagerKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
+		teardown(provider)
+		die("failed to upload wr manager key file to the server at %s: %s", server.IP, err)
+	}
+	_, _, err = server.RunCmd("chmod 600 "+remoteCertFile, false)
+	if err != nil {
+		warn("failed to chmod 600 %s: %s", remoteCertFile, err)
+	}
+	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	if err != nil {
+		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
+	}
+	_, err = os.Stat(config.ManagerCAFile)
+	if err == nil {
+		remoteCAFile := filepath.Join("./.wr_"+config.Deployment, "ca.pem")
+		if err = server.UploadFile(config.ManagerCAFile, remoteCAFile); err != nil && !wrMayHaveStarted {
+			teardown(provider)
+			die("failed to upload wr manager CA file to the server at %s: %s", server.IP, err)
+		}
+		_, _, err = server.RunCmd("chmod 600 "+remoteCAFile, false)
+		if err != nil {
+			warn("failed to chmod 600 %s: %s", remoteCAFile, err)
+		}
 	}
 
 	// start up the manager
@@ -698,7 +794,8 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), managerTimeoutSeconds, debugStr, wrEnvFileName)
 
-		_, e, err := server.RunCmd(mCmd, false)
+		var e string
+		_, e, err = server.RunCmd(mCmd, false)
 		if err != nil {
 			warn("failed to start wr manager on the remote server")
 			if len(e) > 0 {
@@ -748,6 +845,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 
 		// wait a few seconds for the manager to start listening on its ports
 		<-time.After(3 * time.Second)
+	}
+
+	remoteTokenFile := filepath.Join("./.wr_"+config.Deployment, "client.token")
+	err = server.DownloadFile(remoteTokenFile, config.ManagerTokenFile)
+	if err != nil {
+		teardown(provider)
+		die("could not make a local copy of the authentication token: %s", err)
 	}
 }
 

@@ -22,7 +22,6 @@ package jobqueue
 
 import (
 	"bytes"
-	"fmt"
 	"sync"
 	"time"
 
@@ -54,13 +53,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	drain := s.drain
 	s.ssmutex.RUnlock()
 
-	// check that the client making the request has the expected username; NB:
-	// *** this is not real security, since the client could just lie about its
-	// username! Right now this is intended to stop accidental use of someone
-	// else's jobqueue server
-	if cr.User == "" || !s.allowedUsers[cr.User] {
-		srerr = ErrWrongUser
-		qerr = fmt.Sprintf("User %s denied access (only %s allowed)", cr.User, s.ServerInfo.AllowedUsers)
+	// check that the client making the request has the expected token
+	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
+		srerr = ErrPermissionDenied
+		qerr = "Client presented the wrong token"
 	} else if s.q == nil || (!up && !drain) {
 		// the server just got shutdown
 		srerr = ErrClosedStop
@@ -99,6 +95,26 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "shutdown":
 			s.Debug("shutdown requested")
 			s.Stop(true)
+		case "upload":
+			// upload file to us
+			if cr.File == nil {
+				srerr = ErrBadRequest
+			} else {
+				data, err := decompress(cr.File)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				} else {
+					r := bytes.NewReader(data)
+					path, err := s.uploadFile(r, cr.Path)
+					if err != nil {
+						srerr = ErrInternalError
+						qerr = err.Error()
+					} else {
+						sr = &serverResponse{Path: path}
+					}
+				}
+			}
 		case "add":
 			// add jobs to the queue, and along side keep the environment variables
 			// they're supposed to execute under.
@@ -261,10 +277,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			item, job, srerr = s.getij(cr)
 			if srerr == "" {
 				// if kill has been called for this job, just return KillCalled
-				job.Lock()
+				job.RLock()
 				killCalled := job.killCalled
 				lost := job.Lost
-				job.Unlock()
+				job.RUnlock()
 
 				if !killCalled {
 					// also just return killCalled if server has been set to
@@ -435,30 +451,52 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sr = &serverResponse{Existed: kicked}
 			}
 		case "jdel":
-			// remove the jobs from the bury queue and the live bucket
+			// remove the jobs from the bury/delay/dependent/ready queue and the
+			// live bucket
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
 				deleted := 0
-				for _, jobkey := range cr.Keys {
-					item, err := s.q.Get(jobkey)
-					if err != nil || item.Stats().State != queue.ItemStateBury {
-						continue
+				keys := cr.Keys
+				for {
+					var skippedDeps []string
+					removedJobs := false
+					for _, jobkey := range keys {
+						item, err := s.q.Get(jobkey)
+						if err != nil || item == nil {
+							continue
+						}
+						iState := item.Stats().State
+						if iState == queue.ItemStateRun {
+							continue
+						}
+
+						// we can't allow the removal of jobs that have
+						// dependencies, as *queue would regard that as satisfying
+						// the dependency and downstream jobs would start
+						hasDeps, err := s.q.HasDependents(jobkey)
+						if err != nil || hasDeps {
+							if hasDeps {
+								skippedDeps = append(skippedDeps, jobkey)
+							}
+							continue
+						}
+						err = s.q.Remove(jobkey)
+						if err == nil {
+							deleted++
+							removedJobs = true
+							s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
+						}
 					}
 
-					// we can't allow the removal of jobs that have dependencies, as
-					// *queue would regard that as satisfying the dependency and
-					// downstream jobs would start
-					hasDeps, err := s.q.HasDependents(jobkey)
-					if err != nil || hasDeps {
+					// if we removed at least 1 job, and skipped any due to
+					// deps, repeat and see if we can remove everything desired
+					// by going down the dependency tree
+					if len(skippedDeps) > 0 && removedJobs {
+						keys = skippedDeps
 						continue
 					}
-
-					err = s.q.Remove(jobkey)
-					if err == nil {
-						deleted++
-						s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
-					}
+					break
 				}
 				s.Debug("deleted jobs", "count", deleted)
 				sr = &serverResponse{Existed: deleted}
@@ -608,6 +646,16 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 	return item, job, ""
 }
 
+func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobState {
+	state := itemsStateToJobState[itemState]
+	if state == "" {
+		state = JobStateUnknown
+	} else if state == JobStateReserved && lost {
+		state = JobStateLost
+	}
+	return state
+}
+
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
@@ -616,12 +664,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 
 	stats := item.Stats()
 
-	state := itemsStateToJobState[stats.State]
-	if state == "" {
-		state = JobStateUnknown
-	} else if state == JobStateReserved && sjob.Lost {
-		state = JobStateLost
-	}
+	state := s.itemStateToJobState(stats.State, sjob.Lost)
 
 	// we're going to fill in some properties of the Job and return
 	// it to client, but don't want those properties set here for
@@ -629,39 +672,39 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	req := &scheduler.Requirements{}
 	*req = *sjob.Requirements // copy reqs since server changes these, avoiding a race condition
 	job := &Job{
-		RepGroup:     sjob.RepGroup,
-		ReqGroup:     sjob.ReqGroup,
-		DepGroups:    sjob.DepGroups,
-		Cmd:          sjob.Cmd,
-		Cwd:          sjob.Cwd,
-		CwdMatters:   sjob.CwdMatters,
-		ChangeHome:   sjob.ChangeHome,
-		ActualCwd:    sjob.ActualCwd,
-		Requirements: req,
-		Priority:     sjob.Priority,
-		Retries:      sjob.Retries,
-		PeakRAM:      sjob.PeakRAM,
-		Exited:       sjob.Exited,
-		Exitcode:     sjob.Exitcode,
-		FailReason:   sjob.FailReason,
-		StartTime:    sjob.StartTime,
-		EndTime:      sjob.EndTime,
-		Pid:          sjob.Pid,
-		Host:         sjob.Host,
-		HostID:       sjob.HostID,
-		HostIP:       sjob.HostIP,
-		CPUtime:      sjob.CPUtime,
-		State:        state,
-		Attempts:     sjob.Attempts,
-		UntilBuried:  sjob.UntilBuried,
-		ReservedBy:   sjob.ReservedBy,
-		EnvKey:       sjob.EnvKey,
-		EnvOverride:  sjob.EnvOverride,
-		Dependencies: sjob.Dependencies,
-		Behaviours:   sjob.Behaviours,
-		MountConfigs: sjob.MountConfigs,
-		BsubMode:     sjob.BsubMode,
-		BsubID:       sjob.BsubID,
+		RepGroup:      sjob.RepGroup,
+		ReqGroup:      sjob.ReqGroup,
+		DepGroups:     sjob.DepGroups,
+		Cmd:           sjob.Cmd,
+		Cwd:           sjob.Cwd,
+		CwdMatters:    sjob.CwdMatters,
+		ChangeHome:    sjob.ChangeHome,
+		ActualCwd:     sjob.ActualCwd,
+		Requirements:  req,
+		Priority:      sjob.Priority,
+		Retries:       sjob.Retries,
+		PeakRAM:       sjob.PeakRAM,
+		Exited:        sjob.Exited,
+		Exitcode:      sjob.Exitcode,
+		FailReason:    sjob.FailReason,
+		StartTime:     sjob.StartTime,
+		EndTime:       sjob.EndTime,
+		Pid:           sjob.Pid,
+		Host:          sjob.Host,
+		HostID:        sjob.HostID,
+		HostIP:        sjob.HostIP,
+		CPUtime:       sjob.CPUtime,
+		State:         state,
+		Attempts:      sjob.Attempts,
+		UntilBuried:   sjob.UntilBuried,
+		ReservedBy:    sjob.ReservedBy,
+		EnvKey:        sjob.EnvKey,
+		EnvOverride:   sjob.EnvOverride,
+		Dependencies:  sjob.Dependencies,
+		Behaviours:    sjob.Behaviours,
+		MountConfigs:  sjob.MountConfigs,
+		MonitorDocker: sjob.MonitorDocker,
+		BsubMode:      sjob.BsubMode,
 	}
 
 	if state == JobStateReserved && !sjob.StartTime.IsZero() {
@@ -682,6 +725,7 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)
+		job.EnvCRetrieved = true
 	}
 }
 

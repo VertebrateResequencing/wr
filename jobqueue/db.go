@@ -1124,6 +1124,12 @@ func (db *db) close() error {
 			db.Lock()
 		}
 
+		// do a final backup
+		if db.backupsEnabled && db.backupQueued {
+			db.Debug("Jobqueue database not backed up, will do final backup")
+			db.backupToBackupFile(false)
+		}
+
 		err := db.bolt.Close()
 		if db.backupMount != nil {
 			erru := db.backupMount.Unmount()
@@ -1159,10 +1165,8 @@ func (db *db) backgroundBackup() {
 
 	db.backingUp = true
 	slowBackups := db.slowBackups
-	db.wg.Add(1)
 	go func(last time.Time, wait time.Duration, doNotWait bool) {
 		defer internal.LogPanic(db.Logger, "backgroundBackup", true)
-		defer db.wg.Done()
 
 		if !doNotWait {
 			now := time.Now()
@@ -1183,32 +1187,8 @@ func (db *db) backgroundBackup() {
 			<-time.After(100 * time.Millisecond)
 		}
 
-		// create the new backup file with temp name
 		start := time.Now()
-		tmpBackupPath := db.backupPath + ".tmp"
-		err := db.bolt.View(func(tx *bolt.Tx) error {
-			return tx.CopyFile(tmpBackupPath, dbFilePermission)
-		})
-
-		if slowBackups {
-			<-time.After(100 * time.Millisecond)
-		}
-
-		if err != nil {
-			db.Error("Database backup failed", "err", err)
-
-			// if it failed, delete any partial file that got made
-			errr := os.Remove(tmpBackupPath)
-			if errr != nil && !os.IsNotExist(errr) {
-				db.Warn("Removing bad database backup file failed", "path", tmpBackupPath, "err", errr)
-			}
-		} else {
-			// backup succeeded, move it over any old backup
-			errr := os.Rename(tmpBackupPath, db.backupPath)
-			if errr != nil {
-				db.Warn("Renaming new database backup file failed", "source", tmpBackupPath, "dest", db.backupPath, "err", errr)
-			}
-		}
+		db.backupToBackupFile(slowBackups)
 
 		db.Lock()
 		db.backingUp = false
@@ -1236,6 +1216,44 @@ func (db *db) backgroundBackup() {
 			db.Unlock()
 		}
 	}(db.backupLast, db.backupWait, db.backupFinal)
+}
+
+// backupToBackupFile is used by backgroundBackup() and close() to do the actual
+// backup.
+func (db *db) backupToBackupFile(slowBackups bool) {
+	// we most likely triggered this backup immediately following an operation
+	// that alters (the important parts of) the database; wait for those
+	// transactions to actually complete before backing up
+	db.wg.Wait()
+
+	db.wg.Add(1)
+	defer db.wg.Done()
+
+	// create the new backup file with temp name
+	tmpBackupPath := db.backupPath + ".tmp"
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.CopyFile(tmpBackupPath, dbFilePermission)
+	})
+
+	if slowBackups {
+		<-time.After(100 * time.Millisecond)
+	}
+
+	if err != nil {
+		db.Error("Database backup failed", "err", err)
+
+		// if it failed, delete any partial file that got made
+		errr := os.Remove(tmpBackupPath)
+		if errr != nil && !os.IsNotExist(errr) {
+			db.Warn("Removing bad database backup file failed", "path", tmpBackupPath, "err", errr)
+		}
+	} else {
+		// backup succeeded, move it over any old backup
+		errr := os.Rename(tmpBackupPath, db.backupPath)
+		if errr != nil {
+			db.Warn("Renaming new database backup file failed", "source", tmpBackupPath, "dest", db.backupPath, "err", errr)
+		}
+	}
 }
 
 // backup backs up the database to the given writer. Can be called at the same

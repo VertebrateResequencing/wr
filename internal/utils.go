@@ -21,8 +21,14 @@ package internal
 // this file has general utility functions
 
 import (
+	"crypto/md5" // #nosec not used for security purposes
+	"encoding/hex"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
+	"math/rand"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,13 +36,23 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	infoblox "github.com/fanatic/go-infoblox"
 	"github.com/inconshreveable/log15"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/shirou/gopsutil/mem"
 )
 
 const gb = uint64(1.07374182e9) // for byte to GB conversion
+
+// for the RandomString implementation
+const (
+	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randIdxBits = 6                  // 6 bits to represent a rand index
+	randIdxMask = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+)
 
 var username string
 var userid int
@@ -230,4 +246,124 @@ func Which(exeName string) string {
 	}
 
 	return ""
+}
+
+// WaitForFile waits as long as timeout for the given file to exist. When it
+// exists, returns true. Otherwise false.
+func WaitForFile(file string, timeout time.Duration) bool {
+	limit := time.After(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	for {
+		select {
+		case <-ticker.C:
+			_, err := os.Stat(file)
+			if err == nil {
+				ticker.Stop()
+				return true
+			}
+			continue
+		case <-limit:
+			ticker.Stop()
+			return false
+		}
+	}
+}
+
+// InfobloxSetDomainIP uses infoblox to set the IP of a domain. Returns an error
+// if INFOBLOX_HOST, INFOBLOX_USER or INFOBLOX_PASS env vars are not set.
+func InfobloxSetDomainIP(domain, ip string) error {
+	if domain == "localhost" {
+		return fmt.Errorf("can't set domain IP when domain is configured as localhost")
+	}
+
+	// turn off logging built in to go-infoblox
+	log.SetFlags(0)
+	log.SetOutput(ioutil.Discard)
+
+	// check env vars are defined
+	host := os.Getenv("INFOBLOX_HOST")
+	if host == "" {
+		return fmt.Errorf("INFOBLOX_HOST env var not set")
+	}
+	user := os.Getenv("INFOBLOX_USER")
+	if user == "" {
+		return fmt.Errorf("INFOBLOX_USER env var not set")
+	}
+	password := os.Getenv("INFOBLOX_PASS")
+	if password == "" {
+		return fmt.Errorf("INFOBLOX_PASS env var not set")
+	}
+
+	// create infoblox client
+	ib := infoblox.NewClient("https://"+host+"/", user, password, true, false)
+
+	// check if it's already set
+	objs, err := ib.FindRecordA(domain)
+	if err != nil {
+		return fmt.Errorf("finding A records failed: %s", err)
+	}
+
+	if len(objs) == 1 {
+		if objs[0].Ipv4Addr == ip {
+			return nil
+		}
+	}
+
+	// delete any existing entries
+	for _, obj := range objs {
+		err = ib.NetworkObject(obj.Ref).Delete(nil)
+		if err != nil {
+			return fmt.Errorf("delete of A record failed: %s", err)
+		}
+	}
+
+	// now add an A record for domain pointing to ip
+	d := url.Values{}
+	d.Set("ipv4addr", ip)
+	d.Set("name", domain)
+	_, err = ib.RecordA().Create(d, nil, nil)
+	if err != nil {
+		return fmt.Errorf("create of A record failed: %s", err)
+	}
+
+	// wait a while for things to "really" work
+	<-time.After(500 * time.Millisecond)
+
+	return nil
+}
+
+// FileMD5 calculates the MD5 hash checksum of a file, returned as HEX encoded.
+func FileMD5(path string, logger log15.Logger) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer LogClose(logger, file, "fileMD5", "path", path)
+
+	h := md5.New() // #nosec not used for security purposes
+
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// RandomString generates a random string of length 8 characters.
+func RandomString() string {
+	// based on http://stackoverflow.com/a/31832326/675083
+	b := make([]byte, 8)
+	src := rand.NewSource(time.Now().UnixNano())
+	for i, cache, remain := 7, src.Int63(), randIdxMax; i >= 0; {
+		if remain == 0 {
+			cache, remain = src.Int63(), randIdxMax
+		}
+		if idx := int(cache & randIdxMask); idx < len(randBytes) {
+			b[i] = randBytes[idx]
+			i--
+		}
+		cache >>= randIdxBits
+		remain--
+	}
+	return string(b)
 }

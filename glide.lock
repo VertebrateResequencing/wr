@@ -1,5 +1,5 @@
-hash: caa503d5fd90fbe7a55e6b9f8923c6848b9a990d73a88917f528517fd8c78251
-updated: 2018-03-17T20:04:51.52893205Z
+hash: b5179681947c4f7148802f6b580d9e0914b9d18a767f8d3067851dcb8634334e
+updated: 2018-05-03T09:22:29.966469534+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -11,22 +11,62 @@ imports:
   version: 48ea1b39c25fc1bab3506fbc712ecbaa842c4d2d
 - name: github.com/dgryski/go-farm
   version: 2de33835d10275975374b37b2dcfd22c9020a1f5
+- name: github.com/docker/distribution
+  version: 83389a148052d74ac602f5f1d62f86ff2f3c4aa5
+  subpackages:
+  - digestset
+  - reference
+- name: github.com/docker/docker
+  version: 51a9119f6b817bbae21805ec05787d462c9492cd
+  subpackages:
+  - api
+  - api/types
+  - api/types/blkiodev
+  - api/types/container
+  - api/types/events
+  - api/types/filters
+  - api/types/image
+  - api/types/mount
+  - api/types/network
+  - api/types/registry
+  - api/types/strslice
+  - api/types/swarm
+  - api/types/swarm/runtime
+  - api/types/time
+  - api/types/versions
+  - api/types/volume
+  - client
+- name: github.com/docker/go-connections
+  version: 7395e3f8aa162843a74ed6d48e79627d9792ac55
+  subpackages:
+  - nat
+  - sockets
+  - tlsconfig
+- name: github.com/docker/go-units
+  version: 47565b4f722fb6ceae66b95f853feed578a4a51c
+- name: github.com/fanatic/go-infoblox
+  version: ece4e23a370d0bbac46d17f386f73d0d124a8d97
 - name: github.com/fatih/color
   version: 507f6050b8568533fb3f5504de8e5205fa62a114
 - name: github.com/go-ini/ini
-  version: 6ecc596bd756a16c6e93e4ef9225ecdb9f54ed2c
+  version: ace140f73450505f33e8b8418216792275ae82a7
 - name: github.com/go-mangos/mangos
-  version: 8a564bf1c583c37fde04ea2cf8e48e8bfa661733
+  version: ebfcfe7a6525c954fa08327634a7cd053e65f975
   subpackages:
   - protocol/rep
   - protocol/req
   - transport/tcp
+  - transport/tlstcp
 - name: github.com/go-ole/go-ole
   version: a1ec82a652ebc7e784d7df887cfb31061aeabbcc
   subpackages:
   - oleutil
 - name: github.com/go-stack/stack
   version: 259ab82a6cad3992b4e21ff5cac294ccb06474bc
+- name: github.com/gogo/protobuf
+  version: 1ef32a8b9fc3f8ec940126907cedb5998f6318e4
+  subpackages:
+  - proto
 - name: github.com/gophercloud/gophercloud
   version: 46e00f63eeda0660d8a47cbfd5592a4d5dbf47b8
   repo: https://github.com/sb10/gophercloud.git
@@ -49,11 +89,11 @@ imports:
   - openstack/utils
   - pagination
 - name: github.com/gorilla/websocket
-  version: eb925808374e5ca90c83401a40d711dc08c0c0f6
+  version: 21ab95fa12b9bdd8fecf5fa3586aad941cc98785
 - name: github.com/grafov/bcast
   version: e9affb593f6c871f9b4c3ee6a3c77d421fe953df
 - name: github.com/hanwen/go-fuse
-  version: da8b3e44dd6cb8bbb2325ca4135f70cc6398773c
+  version: a9ddcb8a4b609500fc59c89ccc9ee05f00a5fefd
   subpackages:
   - fuse
   - fuse/nodefs
@@ -85,21 +125,29 @@ imports:
   version: efa589957cd060542a26d2dd7832fd6a6c6c3ade
 - name: github.com/mattn/go-isatty
   version: 6ca4dbf54d38eea1a992b3c722a76a5d1c4cb25c
+- name: github.com/Microsoft/go-winio
+  version: ab35fc04b6365e8fcb18e6e9e41ea4a02b10b175
 - name: github.com/minio/minio-go
-  version: 8c7c1ba13da6c92f3434b8ad09fabf99d28b93b6
+  version: 3d2d02921f0510e9d1f66ef77a265b8dddd36992
   subpackages:
   - pkg/credentials
   - pkg/encrypt
-  - pkg/policy
   - pkg/s3signer
   - pkg/s3utils
   - pkg/set
 - name: github.com/mitchellh/go-homedir
   version: b8bc1bf767474819792c23f32d8286a45736f1c6
+- name: github.com/opencontainers/go-digest
+  version: c9281466c8b2f606084ac71339773efd177436e7
+- name: github.com/opencontainers/image-spec
+  version: e562b04403929d582d449ae5386ff79dd7961a11
+  subpackages:
+  - specs-go
+  - specs-go/v1
 - name: github.com/pkg/errors
   version: 816c9085562cd7ee03e7f8188a1cfd942858cded
 - name: github.com/pkg/sftp
-  version: 49488377fa2f14143ba3067cf7555f60f6c7b550
+  version: 43ec6c679d353f6e077d3965dc74f6d996eb4a09
 - name: github.com/ricochet2200/go-disk-usage
   version: f0d1b743428fc09792f93233d9412f89f88fa2ab
   subpackages:
@@ -111,7 +159,7 @@ imports:
 - name: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb
 - name: github.com/shirou/gopsutil
-  version: 6b5767f15eb041f7260435c544a2af72f2f8a422
+  version: 57f370e13068146efe1cb7129f79e5d51da8a242
   subpackages:
   - cpu
   - host
@@ -122,21 +170,21 @@ imports:
 - name: github.com/shirou/w32
   version: bb4de0191aa41b5507caa14b0650cdbddcd9280b
 - name: github.com/spf13/cobra
-  version: c6c44e6fdcc30161c7f4480754da7230d01c06e3
+  version: 615425954c3b0d9485a7027d4d451fdcdfdee84e
 - name: github.com/spf13/pflag
-  version: ee5fd03fd6acfd43e44aea0b4135958546ed8e73
+  version: 583c0c0531f06d5278b7d917446061adc344b5cd
 - name: github.com/StackExchange/wmi
-  version: 5d049714c4a64225c3c79a7cf7d02f7fb5b96338
+  version: cdffdb33acae0e14efff2628f9bae377b597840e
 - name: github.com/ugorji/go
-  version: 02537d3a3e32ef636a53519265d211bd208ca488
+  version: f3cacc17c85ecb7f1b6a9e373ee85d1480919868
   subpackages:
   - codec
 - name: github.com/VertebrateResequencing/muxfys
-  version: 6f2f531121820caa7950f59bc31892c969cd1a14
+  version: 08617a55cece7c5b3372698905aafcdf89732849
 - name: github.com/VividCortex/ewma
   version: 43880d236f695d39c62cf7aa4ebd4508c258e6c0
 - name: golang.org/x/crypto
-  version: 374053ea96cb300f8671b8d3b07edeeb06e203b4
+  version: d6449816ce06963d9d136eee5a56fca5b0616e7e
   subpackages:
   - argon2
   - blake2b
@@ -147,27 +195,32 @@ imports:
   - poly1305
   - ssh
 - name: golang.org/x/net
-  version: 24dd3780ca4f75fed9f321890729414a4b5d3f13
+  version: 61147c48b25b599e5b561d2e9c4f3e1ef489ca41
   subpackages:
+  - context
+  - context/ctxhttp
   - idna
+  - internal/socks
   - lex/httplex
+  - proxy
+  - publicsuffix
 - name: golang.org/x/sys
-  version: 2f1e207ee39ff70f3433e49c6eb52677a515e3b5
+  version: 3b87a42e500a6dc65dae1a55d0b641295971163e
   subpackages:
   - unix
   - windows
 - name: golang.org/x/text
-  version: 8c34f848e18c4bd34d02db7f19a0ed1a0a8f5852
+  version: 7922cc490dd5a7dbaa7fd5d6196b49db59ac042f
   subpackages:
   - secure/bidirule
   - transform
   - unicode/bidi
   - unicode/norm
 - name: gopkg.in/yaml.v2
-  version: 7f97868eec74b32b0982dd158a51a446d1da7eb5
+  version: 5420a8b6744d3b0345ab293f6fcba19c978f1183
 testImports:
 - name: github.com/gopherjs/gopherjs
-  version: 82b322028c96512b15077093b16a5f1c7ea897ac
+  version: 558a9132744c22476178edf3126fd35a9754f565
   subpackages:
   - js
 - name: github.com/jtolds/gls

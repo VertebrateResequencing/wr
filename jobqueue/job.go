@@ -46,7 +46,8 @@ type JobState string
 // "deleted" states are for the benefit of the web interface (jstateCount).
 // "lost" is also a "fake" state indicating the job was running and we lost
 // contact with it; it may be dead. "unknown" is an error case that shouldn't
-// happen.
+// happen. "deletable" is a meta state that can be used when filtering jobs to
+// mean !(running|complete).
 const (
 	JobStateNew       JobState = "new"
 	JobStateDelayed   JobState = "delayed"
@@ -58,6 +59,7 @@ const (
 	JobStateDependent JobState = "dependent"
 	JobStateComplete  JobState = "complete"
 	JobStateDeleted   JobState = "deleted"
+	JobStateDeletable JobState = "deletable"
 	JobStateUnknown   JobState = "unknown"
 )
 
@@ -170,6 +172,21 @@ type Job struct {
 	// result in the job being assigned a BsubID.
 	BsubMode string
 
+	// MonitorDocker turns on monitoring of a docker container identified by its
+	// --name or path to its --cidfile, adding its peak RAM and CPU usage to the
+	// reported RAM and CPU usage of this job.
+	//
+	// If the special argument "?" is supplied, monitoring will apply to the
+	// first new docker container that appears after the Cmd starts to run.
+	// NB: if multiple jobs that run docker containers start running at the same
+	// time on the same machine, the reported stats could be wrong for one or
+	// more of those jobs.
+	//
+	// Requires that docker is installed on the machine where the job will run
+	// (and that the Cmd uses docker to run a container). NB: does not handle
+	// monitoring of multiple docker containers run by a single Cmd.
+	MonitorDocker string
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -212,6 +229,9 @@ type Job struct {
 	// to read, call job.Env() instead, to get the environment variables as a
 	// []string, where each string is like "key=value".
 	EnvC []byte
+	// Since EnvC isn't always populated on job retrieval, this lets job.Env()
+	// distinguish between no EnvC and merely not requested.
+	EnvCRetrieved bool
 	// if set (using output of CompressEnv()), they will be returned in the
 	// results of job.Env().
 	EnvOverride []byte
@@ -282,7 +302,7 @@ func (j *Job) Env() ([]string, error) {
 		return nil, err
 	}
 
-	if len(j.EnvC) == 0 {
+	if j.EnvCRetrieved && len(j.EnvC) == 0 {
 		env := os.Environ()
 		if len(overrideEs) > 0 {
 			env = envOverride(env, overrideEs)
@@ -603,6 +623,12 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 	}
 
 	return logs, err
+}
+
+// ToEssense converts a Job to its matching JobEssense, taking less space and
+// being required as input for certain methods.
+func (j *Job) ToEssense() *JobEssence {
+	return &JobEssence{JobKey: j.key()}
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
