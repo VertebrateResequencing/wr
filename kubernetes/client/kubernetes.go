@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -44,7 +43,6 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	typedappsv1beta1 "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -91,6 +89,14 @@ type ConfigMapOpts struct {
 	binaryData []byte
 	data       map[string]string
 	name       string
+}
+
+type ServiceOpts struct {
+	Name      string
+	Labels    map[string]string
+	Selector  map[string]string
+	ClusterIP string
+	Ports     []apiv1.ServicePort
 }
 
 func int32Ptr(i int32) *int32 { return &i }
@@ -221,6 +227,9 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	return nil
 }
 
+// Creates wr-manager deployment and service.
+// Copying of WR to initcontainer now done by Controller when ready
+// portforwarding now done by controller when ready
 // Deploys wr manager to the namespace created by initialize()
 // Copies binary with name wr_linux in the current working directory.
 // Uses containerImage as the base docker image to build on top of
@@ -332,61 +341,63 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files 
 	}
 	fmt.Printf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.newNamespaceName)
 	// specify service so wr-manager can be resolved using kubedns
-	service := &apiv1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "wr-manager",
-			Labels: map[string]string{
-				"app": "wr-manager",
-			},
+	svcOpts := ServiceOpts{
+		Name: "wr-manager",
+		Labels: map[string]string{
+			"app": "wr-manager",
 		},
-		Spec: apiv1.ServiceSpec{
-			Selector: map[string]string{
-				"app": "wr-manager",
-			},
-			ClusterIP: "None",
-			Ports: []apiv1.ServicePort{
-				{
-					Name: "wr-manager",
-					Port: int32(requiredPorts[0]),
-					TargetPort: intstr.IntOrString{
-						IntVal: int32(requiredPorts[0]),
-					},
+		Selector: map[string]string{
+			"app": "wr-manager",
+		},
+		ClusterIP: "None",
+		Ports: []apiv1.ServicePort{
+			{
+				Name: "wr-manager",
+				Port: int32(requiredPorts[0]),
+				TargetPort: intstr.IntOrString{
+					IntVal: int32(requiredPorts[0]),
 				},
 			},
 		},
 	}
-
-	svcResult, err := p.serviceClient.Create(service)
+	err = p.CreateService(&svcOpts)
 	if err != nil {
 		p.Logger.Error("Creating service", "err", err)
 		return err
 	}
-	fmt.Printf("Created service %q in namespace %v.\n", svcResult.GetObjectMeta().GetName(), p.newNamespaceName)
 
-	//Copy WR to pod, selecting by label.
-	//Wait for the pod to be created, then return it
-	var podList *apiv1.PodList
-	getPodErr := wait.ExponentialBackoff(retry.DefaultRetry, func() (done bool, err error) {
-		var getErr error
-		podList, getErr = p.clientset.CoreV1().Pods(p.newNamespaceName).List(metav1.ListOptions{
-			LabelSelector: "app=wr-manager",
-		})
-		switch {
-		case getErr != nil:
-			panic(fmt.Errorf("failed to list pods in namespace %v", p.newNamespaceName))
-		case len(podList.Items) == 0:
-			return false, nil
-		case len(podList.Items) > 0:
-			return true, nil
-		default:
-			return false, err
-		}
-	})
-	if getPodErr != nil {
-		p.Logger.Error("Failed to list pods", "err", err)
-		return fmt.Errorf("failed to list pods, error: %v", getPodErr)
+	/*
+	   No longer copying tarball to pod here,
+	   instead the deployment controller waits on the
+	   status of the InitContainer to be running, then
+	   runs CopyTar, found in pod.go
 
-	}
+	*/
+
+	// //Copy WR to pod, selecting by label.
+	// //Wait for the pod to be created, then return it
+	// var podList *apiv1.PodList
+	// getPodErr := wait.ExponentialBackoff(retry.DefaultRetry, func() (done bool, err error) {
+	// 	var getErr error
+	// 	podList, getErr = p.clientset.CoreV1().Pods(p.newNamespaceName).List(metav1.ListOptions{
+	// 		LabelSelector: "app=wr-manager",
+	// 	})
+	// 	switch {
+	// 	case getErr != nil:
+	// 		panic(fmt.Errorf("failed to list pods in namespace %v", p.newNamespaceName))
+	// 	case len(podList.Items) == 0:
+	// 		return false, nil
+	// 	case len(podList.Items) > 0:
+	// 		return true, nil
+	// 	default:
+	// 		return false, err
+	// 	}
+	// })
+	// if getPodErr != nil {
+	// 	p.Logger.Error("Failed to list pods", "err", err)
+	// 	return fmt.Errorf("failed to list pods, error: %v", getPodErr)
+
+	// }
 
 	// //Get the current working directory.
 	// dir, err := os.Getwd()
@@ -395,97 +406,47 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files 
 	// 	return err
 	// }
 
-	//Set up new pipe
-	pipeReader, pipeWriter := io.Pipe()
+	// //Set up new pipe
+	// pipeReader, pipeWriter := io.Pipe()
 
-	//avoid deadlock by using goroutine
-	go func() {
-		defer pipeWriter.Close()
-		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
-		tarErr := makeTar(files, pipeWriter)
-		if tarErr != nil {
-			p.Logger.Error("Error writing tar", "err", tarErr)
-			panic(tarErr)
-		}
-	}()
+	// //avoid deadlock by using goroutine
+	// go func() {
+	// 	defer pipeWriter.Close()
+	// 	//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
+	// 	tarErr := makeTar(files, pipeWriter)
+	// 	if tarErr != nil {
+	// 		p.Logger.Error("Error writing tar", "err", tarErr)
+	// 		panic(tarErr)
+	// 	}
+	// }()
 
-	//Copy the wr binary to the running pod
-	fmt.Println("Sleeping for 15s") // wait for container to be running
-	time.Sleep(15 * time.Second)
-	fmt.Println("Woken up")
-	pod := podList.Items[0]
-	fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
-	fmt.Println(pod.Spec.InitContainers)
-	fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
+	// //Copy the wr binary to the running pod
+	// fmt.Println("Sleeping for 15s") // wait for container to be running
+	// time.Sleep(15 * time.Second)
+	// fmt.Println("Woken up")
+	// pod := podList.Items[0]
+	// fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
+	// fmt.Println(pod.Spec.InitContainers)
+	// fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
 
-	stdOut := new(Writer)
-	stdErr := new(Writer)
-	// Pass no command []string, so just attach to running command in initcontainer.
-	opts := &CmdOptions{
-		StreamOptions: StreamOptions{
-			PodName:       pod.ObjectMeta.Name,
-			ContainerName: pod.Spec.InitContainers[0].Name,
-			Stdin:         true,
-			In:            pipeReader,
-			Out:           stdOut,
-			Err:           stdErr,
-		},
-	}
+	// stdOut := new(Writer)
+	// stdErr := new(Writer)
+	// // Pass no command []string, so just attach to running command in initcontainer.
+	// opts := &CmdOptions{
+	// 	StreamOptions: StreamOptions{
+	// 		PodName:       pod.ObjectMeta.Name,
+	// 		ContainerName: pod.Spec.InitContainers[0].Name,
+	// 		Stdin:         true,
+	// 		In:            pipeReader,
+	// 		Out:           stdOut,
+	// 		Err:           stdErr,
+	// 	},
+	// }
 
-	p.AttachCmd(opts)
+	// p.AttachCmd(opts)
 
-	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
-	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
-
-	fmt.Println("Sleeping for 15s") // wait for container to be running
-	time.Sleep(15 * time.Second)
-
-	// This return should be executed by the child. Daemonising code below.
-	// This way the portforward function knows nothing about how it's been daemonised.
-
-	p.context = &daemon.Context{
-		PidFileName: "portForwardPid",
-		PidFilePerm: 0644,
-		WorkDir:     "/",
-		Umask:       027,
-		Args:        []string{},
-	}
-
-	child, err := p.context.Reborn()
-	if err != nil {
-		panic(fmt.Errorf("failed to daemonize: %s", err))
-	}
-
-	if child != nil {
-		return nil
-	}
-	defer p.context.Release()
-
-	fmt.Println("Port Forward Daemon Started")
-
-	// Interupt handler: On interupt close p.StopChannel.
-	signals := make(chan os.Signal, 1)   // channel to receive interrupt
-	signal.Notify(signals, os.Interrupt) // Notify on interrupt
-	defer signal.Stop(signals)           // stop relaying signals to signals
-
-	// Avoid deadlock using goroutine
-	// <-signals is blocking
-	go func() {
-		<-signals
-		if p.StopChannel != nil { // If stop channel is open
-			//Closing StopChannel terminates the forward request
-			close(p.StopChannel)
-		}
-	}()
-	go p.PortForward(pod.ObjectMeta.Name, requiredPorts)
-
-	err = daemon.ServeSignals()
-	if err != nil {
-		panic(fmt.Errorf("Error calling daemon.ServeSignals(): %v\n", err))
-	}
-
-	fmt.Println("Port Forward Daemon Stopped")
-
+	// fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
+	// fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
 	return nil
 }
 
@@ -728,4 +689,21 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 	})
 
 	return configMap, err
+}
+
+func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
+	service := &apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   opts.Name,
+			Labels: opts.Labels,
+		},
+		Spec: apiv1.ServiceSpec{
+			Selector:  opts.Selector,
+			ClusterIP: opts.ClusterIP,
+			Ports:     opts.Ports,
+		},
+	}
+
+	_, err := p.serviceClient.Create(service)
+	return err
 }
