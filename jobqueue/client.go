@@ -121,6 +121,8 @@ type Client struct {
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
 	token      []byte
 	ServerInfo *ServerInfo
+	host       string
+	port       string
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -186,7 +188,15 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{sock: sock, ch: new(codec.BincHandle), token: token, clientid: u}
+	addrParts := strings.Split(addr, ":")
+	c := &Client{
+		sock:     sock,
+		ch:       new(codec.BincHandle),
+		token:    token,
+		clientid: u,
+		host:     addrParts[0],
+		port:     addrParts[1],
+	}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
@@ -610,6 +620,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		env = envOverride(env, []string{
 			"WR_BSUB_CONFIG=" + string(jobJSON),
+			"WR_MANAGER_HOST=" + c.host,
+			"WR_MANAGER_PORT=" + c.port,
 			"LSF_SERVERDIR=/dev/null",
 			"LSF_LIBDIR=/dev/null",
 			"LSF_ENVDIR=/dev/null",
