@@ -24,32 +24,32 @@ of the wr scheduler controller into a kubernetes cluster. It handles
 copying configuration files and binaries as well as port forwarding.
 */
 
-//import "encoding/json"
-import "flag"
-import "fmt"
-import apiv1 "k8s.io/api/core/v1"
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-import "k8s.io/apimachinery/pkg/runtime"
-import utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-import "k8s.io/apimachinery/pkg/util/wait"
-import "k8s.io/apimachinery/pkg/watch"
-import "k8s.io/client-go/kubernetes"
-import "k8s.io/client-go/rest"
-import "k8s.io/client-go/tools/cache"
-import "k8s.io/client-go/tools/clientcmd"
-import "k8s.io/client-go/util/homedir"
-import "k8s.io/client-go/util/workqueue"
-import "os"
-import "path/filepath"
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"github.com/VertebrateResequencing/wr/kubernetes/client"
+	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
+)
 
 const maxRetries = 5
 
 type Controller struct {
+	client     *client.Kubernetesp
 	clientset  kubernetes.Interface
-	restConfig *rest.Config
+	restconfig *rest.Config
 	queue      workqueue.RateLimitingInterface
 	informer   cache.SharedIndexInformer
+	namespace  string
 }
 
 func (c *Controller) createQueueAndInformer() {
@@ -58,13 +58,13 @@ func (c *Controller) createQueueAndInformer() {
 	c.informer = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				return c.clientset.CoreV1().Pods(metav1.NamespaceAll).List(metav1.ListOptions{
+				return c.clientset.CoreV1().Pods(c.namespace).List(metav1.ListOptions{
 					LabelSelector: "app=wr-manager",
 				})
 
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				return c.clientset.CoreV1().Pods(metav1.NamespaceAll).Watch(metav1.ListOptions{
+				return c.clientset.CoreV1().Pods(c.namespace).Watch(metav1.ListOptions{
 					LabelSelector:        "app=wr-manager",
 					IncludeUninitialized: true,
 					Watch:                true,
@@ -231,78 +231,32 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 	return
 }
 
-// Authenticate with cluster, return clientset.
-// Optionally supply a logger
-func Authenticate() (kubernetes.Interface, *rest.Config, error) {
-	//Determine if in cluster.
-	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
-
-	switch {
-	case len(host) == 0 || len(port) == 0:
-		var kubeconfig *string
-		//Obtain cluster authentication information from users home directory, or fall back to user input.
-		if home := homedir.HomeDir(); home != "" {
-			kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-		} else {
-			kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-		}
-		flag.Parse()
-
-		var err error
-		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-		if err != nil {
-			panic(err)
-		}
-		//Create authenticated clientset
-		clientset, err := kubernetes.NewForConfig(clusterConfig)
-		if err != nil {
-			panic(err)
-		}
-		return clientset, clusterConfig, nil
-
-	default:
-		clusterConfig, err := rest.InClusterConfig()
-		if err != nil {
-			panic(err.Error())
-		}
-		// creates the clientset
-		clientset, err := kubernetes.NewForConfig(clusterConfig)
-		if err != nil {
-			panic(err.Error())
-		}
-		return clientset, clusterConfig, nil
-
-	}
-
-}
-
 func main() {
+	var err error
 	fmt.Println("Testing Controllers")
 	fmt.Println("====================")
-	fmt.Printf("\n\n\n\n")
+	fmt.Printf("\n\n")
 	fmt.Println("Authenticating")
-	client, _, err := Authenticate()
+	c := Controller{}
+	c.clientset, c.restconfig, err = c.client.Authenticate() // Authenticate and populate Kubernetesp with clientset and restconfig.
 	if err != nil {
 		panic(err)
 	}
-
-	//fmt.Println(config)
-
-	ctrlr := Controller{
-		clientset: client,
+	err = c.client.Initialize(c.clientset) // Populate the rest of Kubernetesp
+	if err != nil {
+		panic(err)
 	}
-
 	fmt.Println("Creating queue and informer")
 	fmt.Printf("\n\n")
 	fmt.Println("====================")
 	fmt.Printf("\n\n")
-	ctrlr.createQueueAndInformer()
+	c.createQueueAndInformer()
 	fmt.Println("Adding event handlers")
-	ctrlr.addEventHandlers()
+	c.addEventHandlers()
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	ctrlr.Run(stopCh)
+	c.Run(stopCh)
 
 }
