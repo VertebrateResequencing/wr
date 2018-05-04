@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -205,6 +206,46 @@ func LogPanic(logger log15.Logger, desc string, die bool) {
 			os.Exit(1)
 		}
 	}
+}
+
+// Which returns the full path to the executable with the given name that is
+// found first in the set of $PATH directories, ignoring any path that is
+// actually a symlink to ourselves.
+func Which(exeName string) string {
+	self, _ := os.Executable()
+	self, _ = filepath.EvalSymlinks(self)
+
+	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+		stat, err := os.Stat(dir)
+		if err != nil || !stat.IsDir() {
+			continue
+		}
+		exes, err := ioutil.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, exe := range exes {
+			if exe.Name() != exeName {
+				continue
+			}
+			path := filepath.Join(dir, exe.Name())
+
+			// check that it's not a symlink to ourselves
+			path, err := filepath.EvalSymlinks(path)
+			if err != nil || path == self {
+				continue
+			}
+
+			// check it's executable
+			stat, err := os.Stat(path)
+			if err == nil && (runtime.GOOS == "windows" || stat.Mode()&0111 != 0) {
+				return path
+			}
+		}
+	}
+
+	return ""
 }
 
 // WaitForFile waits as long as timeout for the given file to exist. When it
