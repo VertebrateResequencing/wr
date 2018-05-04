@@ -16,10 +16,10 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-package kubernetes
+package client
 
 /*
-Package kubernetes provides functions to interact with a kubernetes cluster, used to
+Package client provides functions to interact with a kubernetes cluster, used to
 create resources so that you can spawn runners, then delete those
 resources when you're done.
 */
@@ -59,9 +59,7 @@ import (
 
 type kubernetesi interface{}
 
-type Quota struct{}
-
-type kubernetesp struct {
+type Kubernetesp struct {
 	clientset         kubernetes.Interface
 	clusterConfig     *rest.Config
 	RESTClient        rest.Interface
@@ -70,6 +68,7 @@ type kubernetesp struct {
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
 	configMapClient   typedv1.ConfigMapInterface
+	quotaClient       typedv1.ResourceQuotaInterface
 	PortForwarder     portForwarder
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
@@ -78,6 +77,13 @@ type kubernetesp struct {
 	newNamespaceName  string
 	context           *daemon.Context
 	log15.Logger
+}
+
+//Perhaps update Quota as part of controller..?
+type Quota struct {
+	CPU    int
+	Memory int
+	Pods   int
 }
 
 type ConfigMapOpts struct {
@@ -91,7 +97,7 @@ func int32Ptr(i int32) *int32 { return &i }
 
 func boolPtr(b bool) *bool { return &b }
 
-func (p *kubernetesp) createNewNamespace(name string) error {
+func (p *Kubernetesp) CreateNewNamespace(name string) error {
 	_, nsErr := p.namespaceClient.Create(&apiv1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -105,7 +111,7 @@ func (p *kubernetesp) createNewNamespace(name string) error {
 
 // Authenticate with cluster, return clientset.
 // Optionally supply a logger
-func (p *kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
+func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
 	var l log15.Logger
 	if len(logger) == 1 {
 		l = logger[0].New()
@@ -120,18 +126,6 @@ func (p *kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 
 	switch {
 	case len(host) == 0 || len(port) == 0:
-		clusterConfig, err := rest.InClusterConfig()
-		if err != nil {
-			panic(err.Error())
-		}
-		// creates the clientset
-		clientset, err := kubernetes.NewForConfig(clusterConfig)
-		if err != nil {
-			panic(err.Error())
-		}
-		return clientset, clusterConfig, nil
-
-	default:
 		var kubeconfig *string
 		//Obtain cluster authentication information from users home directory, or fall back to user input.
 		if home := homedir.HomeDir(); home != "" {
@@ -154,13 +148,26 @@ func (p *kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 			panic(err)
 		}
 		return clientset, clusterConfig, nil
+
+	default:
+		clusterConfig, err := rest.InClusterConfig()
+		if err != nil {
+			panic(err.Error())
+		}
+		// creates the clientset
+		clientset, err := kubernetes.NewForConfig(clusterConfig)
+		if err != nil {
+			panic(err.Error())
+		}
+		return clientset, clusterConfig, nil
+
 	}
 }
 
 // initialise uses the passed clientset to
 // authenticated create some clients used in other methods.
 // also creates a new namespace for wr to work in
-func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
+func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	// Create REST client
 	p.RESTClient = clientset.CoreV1().RESTClient()
 	// Create namespace client
@@ -172,7 +179,7 @@ func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	fmt.Printf("newNamespaceName: %v \n", p.newNamespaceName)
 	// Retry if namespace taken
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		nsErr := p.createNewNamespace(p.newNamespaceName)
+		nsErr := p.CreateNewNamespace(p.newNamespaceName)
 		if nsErr != nil {
 			fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.newNamespaceName, nsErr)
 			p.Logger.Warn("Failed to create new namespace. Trying again.", "namespace", p.newNamespaceName, "err", nsErr)
@@ -197,6 +204,9 @@ func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	// Create configMap client
 	p.configMapClient = clientset.CoreV1().ConfigMaps(p.newNamespaceName)
 
+	// Create Quota client
+	p.quotaClient = clientset.CoreV1().ResourceQuotas(p.newNamespaceName)
+
 	// Create portforwarder
 	//p.PortForwarder =
 
@@ -215,7 +225,7 @@ func (p *kubernetesp) Initialize(clientset kubernetes.Interface) error {
 // Copies binary with name wr_linux in the current working directory.
 // Uses containerImage as the base docker image to build on top of
 // Assumes tar is available.
-func (p *kubernetesp) Deploy(containerImage string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
+func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	//Specify new wr deployment
 	deployment := &appsv1beta1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -480,12 +490,12 @@ func (p *kubernetesp) Deploy(containerImage string, tempMountPath string, files 
 }
 
 // No required env variables
-func (p *kubernetesp) requiredEnv() []string {
+func (p *Kubernetesp) requiredEnv() []string {
 	return []string{}
 }
 
 // No required env variables
-func (p *kubernetesp) maybeEnv() []string {
+func (p *Kubernetesp) maybeEnv() []string {
 	return []string{""}
 }
 
@@ -493,7 +503,7 @@ func (p *kubernetesp) maybeEnv() []string {
 // As we control the hostname, just check if
 // the hostname contains 'wr' in addition to the
 // standard environment variables.
-func (p *kubernetesp) inWRPod() bool {
+func (p *Kubernetesp) inWRPod() bool {
 	hostname, err := os.Hostname()
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	inCloud := false
@@ -507,13 +517,13 @@ func (p *kubernetesp) inWRPod() bool {
 
 // Silly numbers, will eventually update.
 // Basically 'assume it will work'
-func (p *kubernetesp) getQuota() (*Quota, error) {
+func (p *Kubernetesp) getQuota() (*Quota, error) {
 	return &Quota{}, nil
 
 }
 
 // Spawn a new pod that contains a runner. Return the name.
-func (p *kubernetesp) Spawn(baseContainer string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
+func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -650,7 +660,7 @@ func (p *kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 }
 
 // Deletes the namespace created for wr.
-func (p *kubernetesp) TearDown() error {
+func (p *Kubernetesp) TearDown() error {
 	err := p.namespaceClient.Delete(p.newNamespaceName, &metav1.DeleteOptions{})
 	if err != nil {
 		p.Logger.Error("Deleting namespace", "err", err, "namespace", p.newNamespaceName)
@@ -660,7 +670,7 @@ func (p *kubernetesp) TearDown() error {
 }
 
 // Deletes the given pod, doesn't check it exists first.
-func (p *kubernetesp) DestroyPod(podName string) error {
+func (p *Kubernetesp) DestroyPod(podName string) error {
 	err := p.podClient.Delete(podName, &metav1.DeleteOptions{})
 	if err != nil {
 		p.Logger.Error("Deleting pod", "err", err, "pod", podName)
@@ -670,7 +680,7 @@ func (p *kubernetesp) DestroyPod(podName string) error {
 }
 
 // Checks a given pod exists. If it does, return the status
-func (p *kubernetesp) CheckPod(podName string) (working bool, err error) {
+func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
 	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
 	if err != nil {
 		return false, err
@@ -693,7 +703,7 @@ func (p *kubernetesp) CheckPod(podName string) (working bool, err error) {
 
 // Closes StopChannel, this stops the
 // portforward.
-func (p *kubernetesp) KillPortForward() {
+func (p *Kubernetesp) KillPortForward() {
 	//might need to modify all code to close the channel on interrupt instead as I'm not too sure i can attach to it
 	d, err := p.context.Search()
 	if err != nil {
@@ -709,7 +719,7 @@ func (p *kubernetesp) KillPortForward() {
 // replace the initContainer method for copying the executable.
 // At the moment is not appropriate as it's not likely most users are
 // running 1.10
-func (p *kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
+func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
 	configMap, err := p.configMapClient.Create(&apiv1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: opts.name,

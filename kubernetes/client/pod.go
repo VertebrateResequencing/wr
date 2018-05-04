@@ -16,7 +16,7 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-package kubernetes
+package client
 
 // This file contains the code for the Pod struct.
 
@@ -141,7 +141,7 @@ func makeTar(files []filePair, writer io.Writer) error {
 }
 
 // Attaches to a running container, pipes stdIn to the command running on that container.
-func (p *kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
+func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
 	//Make a request to the APIServer for an 'attach'.
 	//Open Stdin and Stderr for use by the client
 	execRequest := p.RESTClient.Post().
@@ -178,7 +178,7 @@ func (p *kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	return "", "", nil
 }
 
-func (p *kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
+func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
 	fmt.Println("In ForwardPorts")
 	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
 	if err != nil {
@@ -194,7 +194,7 @@ func (p *kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []
 }
 
 // Sets up port forwarding to the manager that is running inside the cluster
-func (p *kubernetesp) PortForward(podName string, requiredPorts []int) error {
+func (p *Kubernetesp) PortForward(podName string, requiredPorts []int) error {
 	fmt.Println(podName)
 	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
 	if err != nil {

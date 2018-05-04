@@ -16,40 +16,4 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-package kubernetes
-
-import (
-	"testing"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	testclient "k8s.io/client-go/kubernetes/fake"
-)
-
-var tc kubernetesp
-
-func init() {
-	tc = kubernetesp{}
-	clientset := testclient.NewSimpleClientset()
-	tc.Initialize(clientset)
-}
-
-func TestCreateNewNamespace(t *testing.T) {
-	cases := []struct {
-		namespaceName string
-	}{
-		{
-			namespaceName: "test",
-		},
-	}
-	for _, c := range cases {
-		// Do the thing
-		err := tc.createNewNamespace(c.namespaceName)
-		if err != nil {
-			t.Fatal(err.Error())
-		}
-		_, err = tc.namespaceClient.Get(c.namespaceName, metav1.GetOptions{})
-		if err != nil {
-			t.Fatal(err.Error())
-		}
-	}
-}
+package deployment
