@@ -21,6 +21,8 @@ package client
 // This file contains the code for the Pod struct.
 
 import (
+	"os/signal"
+
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
@@ -36,6 +38,7 @@ import (
 	"strconv"
 
 	"github.com/inconshreveable/log15"
+	daemon "github.com/sevlyar/go-daemon"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -141,6 +144,8 @@ func makeTar(files []filePair, writer io.Writer) error {
 }
 
 // Attaches to a running container, pipes stdIn to the command running on that container.
+// ToDO: Set up writers for stderr and out internal to AttachCmd(), returning just strings &
+// removing the fields from the CmdOptions struct
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
 	//Make a request to the APIServer for an 'attach'.
 	//Open Stdin and Stderr for use by the client
@@ -239,4 +244,99 @@ func (p *Kubernetesp) PortForward(podName string, requiredPorts []int) error {
 
 	return p.forwardPorts("POST", req.URL(), ports)
 
+}
+
+// CopyTar copies the files defined in each filePair in files to the pod provided.
+// To be called by controller when condition met
+func (p *Kubernetesp) CopyTar(files []filePair, pod *apiv1.Pod) error {
+	//Set up new pipe
+	pipeReader, pipeWriter := io.Pipe()
+
+	//avoid deadlock by using goroutine
+	go func() {
+		defer pipeWriter.Close()
+		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
+		tarErr := makeTar(files, pipeWriter)
+		if tarErr != nil {
+			p.Logger.Error("Error writing tar", "err", tarErr)
+			panic(tarErr)
+		}
+	}()
+
+	fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
+	fmt.Println(pod.Spec.InitContainers)
+	fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
+
+	stdOut := new(Writer)
+	stdErr := new(Writer)
+	// Pass no command []string, so just attach to running command in initcontainer.
+	opts := &CmdOptions{
+		StreamOptions: StreamOptions{
+			PodName:       pod.ObjectMeta.Name,
+			ContainerName: pod.Spec.InitContainers[0].Name,
+			Stdin:         true,
+			In:            pipeReader,
+			Out:           stdOut,
+			Err:           stdErr,
+		},
+	}
+
+	_, _, err := p.AttachCmd(opts)
+
+	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
+	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
+
+	return err
+
+}
+
+// To be called by controller when condition met
+func (p *Kubernetesp) DaemonisePortForward(podName string, requiredPorts []int) error {
+	// This return should be executed by the child. Daemonising code below.
+	// This way the portforward function knows nothing about how it's been daemonised.
+
+	p.context = &daemon.Context{
+		PidFileName: "portForwardPid",
+		PidFilePerm: 0644,
+		WorkDir:     "/",
+		Umask:       027,
+		Args:        []string{},
+	}
+
+	child, err := p.context.Reborn()
+	if err != nil {
+		panic(fmt.Errorf("failed to daemonize: %s", err))
+	}
+
+	if child != nil {
+		return nil
+	}
+	defer p.context.Release()
+
+	fmt.Println("Port Forward Daemon Started")
+
+	// Interupt handler: On interupt close p.StopChannel.
+	signals := make(chan os.Signal, 1)   // channel to receive interrupt
+	signal.Notify(signals, os.Interrupt) // Notify on interrupt
+	defer signal.Stop(signals)           // stop relaying signals to signals
+
+	// Avoid deadlock using goroutine
+	// <-signals is blocking
+	go func() {
+		<-signals
+		if p.StopChannel != nil { // If stop channel is open
+			//Closing StopChannel terminates the forward request
+			close(p.StopChannel)
+		}
+	}()
+	go p.PortForward(podName, requiredPorts)
+
+	err = daemon.ServeSignals()
+	if err != nil {
+		panic(fmt.Errorf("Error calling daemon.ServeSignals(): %v\n", err))
+	}
+
+	fmt.Println("Port Forward Daemon Stopped")
+
+	return nil
 }
