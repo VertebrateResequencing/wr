@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -67,6 +68,10 @@ const (
 	FailReasonUpload   = "failed to upload files to remote file system"
 	FailReasonKilled   = "killed by user request"
 )
+
+// lsfEmulationDir is the name of the directory we store our LSF emulation
+// symlinks in
+const lsfEmulationDir = ".wr_lsf_emulation"
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
@@ -116,6 +121,8 @@ type Client struct {
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
 	token      []byte
 	ServerInfo *ServerInfo
+	host       string
+	port       string
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -181,7 +188,15 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{sock: sock, ch: new(codec.BincHandle), token: token, clientid: u}
+	addrParts := strings.Split(addr, ":")
+	c := &Client{
+		sock:     sock,
+		ch:       new(codec.BincHandle),
+		token:    token,
+		clientid: u,
+		host:     addrParts[0],
+		port:     addrParts[1],
+	}
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
@@ -419,15 +434,74 @@ func (c *Client) Execute(job *Job, shell string) error {
 	stdout := &prefixSuffixSaver{N: 4096}
 	stdoutWait := stdFilter(outReader, stdout)
 
+	var onCwd bool
+	var prependPath string
+	if job.BsubMode != "" {
+		// create parent of job.Cwd so we can later mount at job.Cwd
+		parent := filepath.Dir(job.Cwd)
+		os.MkdirAll(parent, os.ModePerm)
+		if fi, err := os.Stat(parent); err != nil || !fi.Mode().IsDir() {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("parent of working directory [%s] could not be created", parent)
+		}
+	}
+	var mountCouldFail bool
+	host, err := os.Hostname()
+	if err != nil {
+		host = "localhost"
+	}
+	if job.BsubMode != "" {
+		jobCwd := job.Cwd
+		if jobCwd == "" {
+			jobCwd = "."
+		}
+		absJobCwd, err := filepath.Abs(jobCwd)
+		if err != nil {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("failed to make cmd dir absolute: %s", err)
+		}
+		parent := filepath.Dir(absJobCwd)
+
+		// create bsub and bjobs symlinks in a sister dir of job.Cwd
+		prependPath = filepath.Join(parent, lsfEmulationDir)
+		os.MkdirAll(prependPath, os.ModePerm)
+		if fi, err := os.Stat(prependPath); err != nil || !fi.Mode().IsDir() {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("sister of working directory [%s] could not be created", prependPath)
+		}
+		wr, err := os.Executable()
+		if err != nil {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("could not get path to wr: %s", err)
+		}
+		bsub := filepath.Join(prependPath, "bsub")
+		bjobs := filepath.Join(prependPath, "bjobs")
+		err = os.Symlink(wr, bsub)
+		if err != nil && !os.IsExist(err) {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("could not create bsub symlink: %s", err)
+		}
+		err = os.Symlink(wr, bjobs)
+		if err != nil && !os.IsExist(err) {
+			c.Bury(job, nil, FailReasonCwd)
+			return fmt.Errorf("could not create bjobs symlink: %s", err)
+		}
+
+		onCwd = job.CwdMatters
+	}
+
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
 	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
-		errb := c.Bury(job, nil, FailReasonCwd)
-		extra := ""
-		if errb != nil {
-			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		os.MkdirAll(job.Cwd, os.ModePerm)
+		if _, errf = os.Stat(job.Cwd); errf != nil {
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("working directory [%s] does not exist%s", job.Cwd, extra)
 		}
-		return fmt.Errorf("working directory [%s] does not exist%s", job.Cwd, extra)
 	}
 	var actualCwd, tmpDir string
 	if job.CwdMatters {
@@ -447,9 +521,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 		job.ActualCwd = actualCwd
 	}
 
+	// if we are a child job of another running on the same host, we expect
+	// mounting to fail since we're running in the same directory as our
+	// parent
+	if jsonStr := job.Getenv("WR_BSUB_CONFIG"); jsonStr != "" {
+		configJob := &Job{}
+		if err := json.Unmarshal([]byte(jsonStr), configJob); err == nil && configJob.Host == host {
+			mountCouldFail = true
+			// *** but the problem with this is, the parent job could finish
+			// while we're still running, and unmount!...
+		}
+	}
+
 	// we'll mount any configured remote file systems
-	err = job.Mount()
-	if err != nil {
+	err = job.Mount(onCwd)
+	if err != nil && !mountCouldFail {
 		if strings.Contains(err.Error(), "fusermount exited with code 256") {
 			// *** not sure what causes this, but perhaps trying again after a
 			// few seconds will help?
@@ -457,7 +543,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = job.Mount()
 		}
 		if err != nil {
-			buryErr := fmt.Errorf("failed to mount remote file system(s): %s", err)
+			buryErr := fmt.Errorf("failed to mount remote file system(s): %s (%s)", err, os.Environ())
 			errb := c.Bury(job, nil, FailReasonMount, buryErr)
 			if errb != nil {
 				buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
@@ -502,6 +588,45 @@ func (c *Client) Execute(job *Job, shell string) error {
 		if job.ChangeHome {
 			env = envOverride(env, []string{"HOME=" + actualCwd})
 		}
+	}
+	if prependPath != "" {
+		// alter env PATH to have prependPath come first
+		override := []string{"PATH=" + prependPath}
+		for _, envvar := range env {
+			pair := strings.Split(envvar, "=")
+			if pair[0] == "PATH" {
+				override[0] += ":" + pair[1]
+				break
+			}
+		}
+		env = envOverride(env, override)
+
+		// add an environment variable of this job as JSON, so that any cloud_*
+		// or mount options can be copied to child jobs created via our bsub
+		// symlink. (It will also need to know our deployment, stored in
+		// BsubMode, and to know the host we're running on in case our children
+		// run on the same host as us and therefore any mounts are expected to
+		// fail)
+		simplified := &Job{
+			MountConfigs: job.MountConfigs,
+			Requirements: job.Requirements,
+			BsubMode:     job.BsubMode,
+			Host:         host,
+		}
+		jobJSON, err := json.Marshal(simplified)
+		if err != nil {
+			c.Bury(job, nil, fmt.Sprintf("could not convert job to JSON: %s", err))
+			return fmt.Errorf("could not convert job to JSON: %s", err)
+		}
+		env = envOverride(env, []string{
+			"WR_BSUB_CONFIG=" + string(jobJSON),
+			"WR_MANAGER_HOST=" + c.host,
+			"WR_MANAGER_PORT=" + c.port,
+			"LSF_SERVERDIR=/dev/null",
+			"LSF_LIBDIR=/dev/null",
+			"LSF_ENVDIR=/dev/null",
+			"LSF_BINDIR=" + prependPath,
+		})
 	}
 	cmd.Env = env
 

@@ -704,9 +704,10 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 		Behaviours:    sjob.Behaviours,
 		MountConfigs:  sjob.MountConfigs,
 		MonitorDocker: sjob.MonitorDocker,
+		BsubMode:      sjob.BsubMode,
 	}
 
-	if !sjob.StartTime.IsZero() && state == JobStateReserved {
+	if state == JobStateReserved && !sjob.StartTime.IsZero() {
 		job.State = JobStateRunning
 	}
 	sjob.RUnlock()

@@ -82,6 +82,7 @@ type JobViaJSON struct {
 	CloudConfigFiles string            `json:"cloud_config_files"`
 	CloudOSRam       *int              `json:"cloud_ram"`
 	CloudFlavor      string            `json:"cloud_flavor"`
+	BsubMode         string            `jsob:"bsub_mode"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -123,6 +124,7 @@ type JobDefaults struct {
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
 	CloudOSRam    int
+	BsubMode      string
 	compressedEnv []byte
 	osRAM         string
 }
@@ -193,6 +195,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var deps Dependencies
 	var behaviours Behaviours
 	var mounts MountConfigs
+	var bsubMode string
 
 	if jvj.RepGrp == "" {
 		repg = jd.RepGrp
@@ -346,6 +349,11 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		mounts = jd.MountConfigs
 	}
 
+	bsubMode = jvj.BsubMode
+	if bsubMode == "" && jd.BsubMode != "" {
+		bsubMode = jd.BsubMode
+	}
+
 	if jvj.MonitorDocker == "" {
 		monitorDocker = jd.MonitorDocker
 	} else {
@@ -417,6 +425,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		Behaviours:    behaviours,
 		MountConfigs:  mounts,
 		MonitorDocker: monitorDocker,
+		BsubMode:      bsubMode,
 	}, nil
 }
 
@@ -606,6 +615,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		CloudScript:   r.Form.Get("cloud_script"),
 		CloudFlavor:   r.Form.Get("cloud_flavor"),
 		CloudOSRam:    urlStringToInt(r.Form.Get("cloud_ram")),
+		BsubMode:      r.Form.Get("bsub_mode"),
 	}
 	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true

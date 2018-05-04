@@ -56,6 +56,7 @@ var cmdReRun bool
 var cmdOsPrefix string
 var cmdOsUsername string
 var cmdOsRAM int
+var cmdBsubMode bool
 var cmdPostCreationScript string
 var cmdCloudConfigs string
 var cmdFlavor string
@@ -76,7 +77,7 @@ command as one of the name:value pairs. The possible options are:
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
 monitor_docker cloud_os cloud_username cloud_ram cloud_script cloud_config_files
-cloud_flavor env
+cloud_flavor env bsub_mode
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -257,7 +258,12 @@ base variables as they were at the moment in time you run 'wr add', so to set a
 certain environment variable for all commands, you could instead just set it
 prior to calling 'wr add'. In the remote case the command will use base
 variables as they were on the machine where the command is executed when that
-machine was started.`,
+machine was started.
+
+"bsub_mode" is a boolean that results in the job being assigned a unique (for
+this manager session) job id, and turns on bsub emulation, which means that if
+your Cmd calls bsub, it will instead result in a command being added to wr. The
+new job will have this job's mount and cloud_* options.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
@@ -329,6 +335,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
+	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
@@ -370,6 +377,11 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		cmdCloudConfigs = copyCloudConfigFiles(jq, cmdCloudConfigs)
 	}
 
+	bsubMode := ""
+	if cmdBsubMode {
+		bsubMode = deployment
+	}
+
 	jd := &jobqueue.JobDefaults{
 		RepGrp:           cmdRepGroup,
 		ReqGrp:           reqGroup,
@@ -389,6 +401,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		CloudConfigFiles: cmdCloudConfigs,
 		CloudOSRam:       cmdOsRAM,
 		CloudFlavor:      cmdFlavor,
+		BsubMode:         bsubMode,
 	}
 
 	if jd.RepGrp == "" {
