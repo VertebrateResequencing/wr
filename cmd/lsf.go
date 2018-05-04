@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -56,7 +55,7 @@ NB: currently the emulation is extremely limited, supporting only the
 interactive "console" mode where you run bsub without any arguments, and it only
 supports single flags per #BSUB line, and it only pays attention to -J, -n and
 -M flags. (This is sufficient for compatibility with 10x Genomic's cellranger
-software.)
+software, and to work as the scheduler for nextflow.)
 
 The best way to use this LSF emulation is not to call this command yourself
 directly, but to use 'wr add --bsubs [other opts]' to add the command that you
@@ -106,6 +105,7 @@ var lsfBsubCmd = &cobra.Command{
 
 		fmt.Printf("bsub> ")
 		scanner := bufio.NewScanner(os.Stdin)
+		var possibleExe string
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 
@@ -127,13 +127,15 @@ var lsfBsubCmd = &cobra.Command{
 							job.Override = 2
 						}
 					}
+				} else {
+					job.Cmd += line + "\n"
 				}
 			} else {
-				if job.Cmd == "" {
-					job.Cmd = line
-				} else {
-					job.Cmd += "; " + line
+				if possibleExe == "" {
+					parts := strings.Split(line, " ")
+					possibleExe = parts[0]
 				}
+				job.Cmd += line + "\n"
 			}
 
 			fmt.Printf("bsub> ")
@@ -149,8 +151,7 @@ var lsfBsubCmd = &cobra.Command{
 		}
 
 		if job.ReqGroup == "" {
-			parts := strings.Split(job.Cmd, " ")
-			job.ReqGroup = filepath.Base(parts[0])
+			job.ReqGroup = possibleExe
 		}
 
 		// connect to the server
@@ -158,7 +159,7 @@ var lsfBsubCmd = &cobra.Command{
 		defer jq.Disconnect()
 
 		// add the job to the queue
-		inserts, _, err := jq.Add([]*jobqueue.Job{job}, os.Environ(), true)
+		inserts, _, err := jq.Add([]*jobqueue.Job{job}, os.Environ(), false)
 		if err != nil {
 			die(err.Error())
 		}
