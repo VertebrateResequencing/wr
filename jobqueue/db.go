@@ -341,7 +341,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 	newJobKeys := make(map[string]bool)
 	var keptJobs []*Job
 	for _, job := range jobs {
-		keyStr := job.key()
+		keyStr := job.Key()
 
 		if ignoreAdded {
 			var added bool
@@ -399,7 +399,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			// arrange to have resurrected complete jobs stored in the live
 			// bucket again
 			for _, job := range jobsToQueue {
-				key := []byte(job.key())
+				key := []byte(job.Key())
 				var encoded []byte
 				enc := codec.NewEncoderBytes(&encoded, db.ch)
 				job.RLock()
@@ -421,7 +421,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		}
 
 		// now go ahead and store the lookups and jobs
-		numStores := 2
+		numStores := 3
 		if len(dgLookups) > 0 {
 			numStores++
 		}
@@ -444,7 +444,9 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			for rg := range repGroups {
 				rgs = append(rgs, [2][]byte{[]byte(rg), nil})
 			}
-			sort.Sort(rgs)
+			if len(rgs) > 1 {
+				sort.Sort(rgs)
+			}
 			errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
 		}()
 
@@ -842,7 +844,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	if db.closed {
 		return
 	}
-	jobkey := job.key()
+	jobkey := job.Key()
 	job.RLock()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
 	jrg := job.ReqGroup

@@ -270,7 +270,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						// *** probably want to take the count as a req option,
 						// so user can request to see more than just 1 job per
 						// State+Exitcode+FailReason
-						jobs, _, errstr := s.getJobsByRepGroup(req.RepGroup, 1, req.State, true, true)
+						jobs, _, errstr := s.getJobsByRepGroup(req.RepGroup, false, 1, req.State, true, true)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false
@@ -291,7 +291,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						for _, job := range jobs {
-							err := s.q.Kick(job.key())
+							err := s.q.Kick(job.Key())
 							if err != nil {
 								continue
 							}
@@ -301,7 +301,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						var toDelete []string
 						for _, job := range jobs {
-							key := job.key()
+							key := job.Key()
 
 							// we can't allow the removal of jobs that have
 							// dependencies, as *queue would regard that as
@@ -332,7 +332,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "kill":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
 						for _, job := range jobs {
-							_, err := s.killJob(job.key())
+							_, err := s.killJob(job.Key())
 							if err != nil {
 								s.Warn("web interface kill job failed", "err", err)
 							}
@@ -464,7 +464,7 @@ func jobToStatus(job *Job) jstatus {
 		ot = append(ot, key+":"+val)
 	}
 	return jstatus{
-		Key:           job.key(),
+		Key:           job.Key(),
 		RepGroup:      job.RepGroup,
 		DepGroups:     job.DepGroups,
 		Dependencies:  job.Dependencies.Stringify(),

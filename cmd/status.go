@@ -32,6 +32,8 @@ const shortTimeFormat = "06/1/2-15:04:05"
 // options for this cmd
 var cmdFileStatus string
 var cmdIDStatus string
+var cmdIDIsSubStr bool
+var cmdIDIsInternal bool
 var cmdLine string
 var showBuried bool
 var showStd bool
@@ -49,6 +51,12 @@ var statusCmd = &cobra.Command{
 Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, it gives you an overview of all your currently
 incomplete commands.
+
+-i is the report group (-i) you supplied to "wr add" when you added the job(s)
+you want the status of now. Combining with -z lets you get the status of jobs
+in multiple report groups, assuming you have arranged that related groups share
+some substring. Or -y lets you specify -i as the internal job id reported when
+using this command.
 
 The file to provide -f is in the format taken by "wr add".
 
@@ -143,7 +151,7 @@ very many (tens of thousands+) commands.`,
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s; Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %d disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, job.Requirements.Cores, job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -247,6 +255,8 @@ func init() {
 	// flags specific to this sub-command
 	statusCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want the status of; - means read from STDIN")
 	statusCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want the status of")
+	statusCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	statusCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	statusCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want the status of")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
 	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
@@ -286,8 +296,17 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		// get all jobs
 		jobs, err = jq.GetIncomplete(statusLimit, cmdState, showStd, showEnv)
 	case cmdIDStatus != "":
-		// get all jobs with this identifier (repgroup)
-		jobs, err = jq.GetByRepGroup(cmdIDStatus, statusLimit, cmdState, showStd, showEnv)
+		if cmdIDIsInternal {
+			// get the job with this internal id
+			var job *jobqueue.Job
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{
+				JobKey: cmdIDStatus,
+			}, showStd, showEnv)
+			jobs = append(jobs, job)
+		} else {
+			// get all jobs with this identifier (repgroup)
+			jobs, err = jq.GetByRepGroup(cmdIDStatus, cmdIDIsSubStr, statusLimit, cmdState, showStd, showEnv)
+		}
 	case cmdFileStatus != "":
 		// parse the supplied commands
 		parsedJobs, _, _ := parseCmdFile(jq)

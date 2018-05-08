@@ -33,6 +33,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -533,7 +534,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			if err != nil {
 				return nil, msg, token, err
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 		_, _, err = s.enqueueItems(itemdefs)
 		if err != nil {
@@ -1012,7 +1013,7 @@ func (s *Server) createQueue() {
 					job.setScheduledRunner(false)
 				}
 				if s.rc != "" {
-					errs := q.SetReserveGroup(job.key(), schedulerGroup)
+					errs := q.SetReserveGroup(job.Key(), schedulerGroup)
 					if errs != nil {
 						// we could be trying to set the reserve group after the
 						// job has already completed, if they complete
@@ -1303,7 +1304,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 				qerr = err
 				break
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 
 		// storeNewJobs also returns jobsToUpdate, which are those jobs
@@ -1316,7 +1317,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 				qerr = err
 				break
 			}
-			thisErr := s.q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+			thisErr := s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
 			if thisErr != nil {
 				qerr = thisErr
 				break
@@ -1333,7 +1334,6 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			}
 		}
 	}
-
 	return added, dups, alreadyComplete, srerr, qerr
 }
 
@@ -1424,42 +1424,6 @@ func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []
 	return jobs, srerr, qerr
 }
 
-// getJobsByRepGroup gets jobs in the given group (current and complete).
-func (s *Server) getJobsByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
-	// look in the in-memory queue for matching jobs
-	s.rpl.RLock()
-	for key := range s.rpl.lookup[repgroup] {
-		item, err := s.q.Get(key)
-		if err == nil && item != nil {
-			job := s.itemToJob(item, false, false)
-			jobs = append(jobs, job)
-		}
-	}
-	s.rpl.RUnlock()
-
-	// look in the permanent store for matching jobs
-	if state == "" || state == JobStateComplete {
-		var complete []*Job
-		complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
-		if len(complete) > 0 {
-			// a job is stored in the db with only the single most recent
-			// RepGroup it had, but we're able to retrieve jobs based on any of
-			// the RepGroups it ever had; set the RepGroup to the one the user
-			// requested *** may want to change RepGroup to store a slice of
-			// RepGroups? But that could be massive...
-			for _, cj := range complete {
-				cj.RepGroup = repgroup
-			}
-			jobs = append(jobs, complete...)
-		}
-	}
-
-	if limit > 0 || state != "" || getStd || getEnv {
-		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
-	}
-	return jobs, srerr, qerr
-}
-
 // searchRepGroups looks up the rep groups of all jobs that have ever been added
 // and returns those that contain the given sub string.
 func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
@@ -1467,7 +1431,63 @@ func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return rgs, err
+
+	var matching []string
+	for _, rg := range rgs {
+		if strings.Contains(rg, partialRepGroup) {
+			matching = append(matching, rg)
+		}
+	}
+	return matching, err
+}
+
+// getJobsByRepGroup gets jobs in the given group (current and complete).
+func (s *Server) getJobsByRepGroup(repgroup string, search bool, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+	var rgs []string
+	if search {
+		var errs error
+		rgs, errs = s.searchRepGroups(repgroup)
+		if errs != nil {
+			return nil, ErrDBError, errs.Error()
+		}
+	} else {
+		rgs = append(rgs, repgroup)
+	}
+
+	for _, rg := range rgs {
+		// look in the in-memory queue for matching jobs
+		s.rpl.RLock()
+		for key := range s.rpl.lookup[rg] {
+			item, err := s.q.Get(key)
+			if err == nil && item != nil {
+				job := s.itemToJob(item, false, false)
+				jobs = append(jobs, job)
+			}
+		}
+		s.rpl.RUnlock()
+
+		// look in the permanent store for matching jobs
+		if state == "" || state == JobStateComplete {
+			var complete []*Job
+			complete, srerr, qerr = s.getCompleteJobsByRepGroup(rg)
+			if len(complete) > 0 {
+				// a job is stored in the db with only the single most recent
+				// RepGroup it had, but we're able to retrieve jobs based on any of
+				// the RepGroups it ever had; set the RepGroup to the one the user
+				// requested *** may want to change RepGroup to store a slice of
+				// RepGroups? But that could be massive...
+				for _, cj := range complete {
+					cj.RepGroup = rg
+				}
+				jobs = append(jobs, complete...)
+			}
+		}
+	}
+
+	if limit > 0 || state != "" || getStd || getEnv {
+		jobs = s.limitJobs(jobs, limit, state, getStd, getEnv)
+	}
+	return jobs, srerr, qerr
 }
 
 // getCompleteJobsByRepGroup gets complete jobs in the given group.

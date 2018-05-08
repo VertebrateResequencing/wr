@@ -513,16 +513,20 @@ func restJobs(s *Server) http.HandlerFunc {
 
 // restJobsStatus gets the status of the requested jobs in the queue. The
 // request url can be suffixed with comma separated job keys or RepGroups.
-// Possible query parameters are std, env (which can take a "true" value), limit
-// (a number) and state (one of delayed|ready|reserved|running|lost|buried|
-// dependent|complete). Returns the Jobs, a http.Status* value and error.
+// Possible query parameters are search, std, env (which can take a "true"
+// value), limit (a number) and state (one of
+// delayed|ready|reserved|running|lost|buried| dependent|complete). Returns the
+// Jobs, a http.Status* value and error.
 func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
-	var getStd, getEnv bool
+	var search, getStd, getEnv bool
 	var limit int
 	var state JobState
 	var err error
 
+	if r.Form.Get("search") == restFormTrue {
+		search = true
+	}
 	if r.Form.Get("std") == restFormTrue {
 		getStd = true
 	}
@@ -571,7 +575,7 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 			}
 
 			// id might be a Job.RepGroup
-			theseJobs, _, qerr := s.getJobsByRepGroup(id, limit, state, getStd, getEnv)
+			theseJobs, _, qerr := s.getJobsByRepGroup(id, search, limit, state, getStd, getEnv)
 			if qerr != "" {
 				return nil, http.StatusInternalServerError, fmt.Errorf(qerr)
 			}
@@ -718,7 +722,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// slow and wasteful?...
 	var jobs []*Job
 	for _, job := range inputJobs {
-		item, qerr := s.q.Get(job.key())
+		item, qerr := s.q.Get(job.Key())
 		if qerr == nil && item != nil {
 			// append the q's version of the job, not the input job, since the
 			// job may have been a duplicate and we want to return its current

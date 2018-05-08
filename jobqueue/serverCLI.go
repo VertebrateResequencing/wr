@@ -330,7 +330,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					srerr = ErrBadRequest
 					job.Unlock()
 				} else {
-					key := job.key()
+					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
 					sgroup := job.schedulerGroup
@@ -539,7 +539,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
-				jobs, srerr, qerr = s.getJobsByRepGroup(cr.Job.RepGroup, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
+				jobs, srerr, qerr = s.getJobsByRepGroup(cr.Job.RepGroup, cr.Search, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
 				if len(jobs) > 0 {
 					sr = &serverResponse{Jobs: jobs}
 				}
@@ -567,7 +567,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		}
 		key := ""
 		if cr.Job != nil {
-			key = cr.Job.key()
+			key = cr.Job.Key()
 		}
 		return Error{cr.Method, key, qerr}
 	}
@@ -633,7 +633,7 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 		return nil, nil, ErrBadRequest
 	}
 
-	item, err := s.q.Get(cr.Job.key())
+	item, err := s.q.Get(cr.Job.Key())
 	if err != nil || item.Stats().State != queue.ItemStateRun {
 		return item, nil, ErrBadJob
 	}
@@ -721,7 +721,7 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 	job.Lock()
 	defer job.Unlock()
 	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == JobStateBuried) {
-		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.key())
+		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.Key())
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)

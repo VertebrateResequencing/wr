@@ -40,6 +40,12 @@ Specify one of the flags -f, -l, -i or -a to choose which commands you want to
 remove. Amongst those, only currently incomplete, non-running jobs will be
 affected.
 
+-i is the report group (-i) you supplied to "wr add" when you added the job(s)
+you want to now remove. Combining with -z lets you remove jobs in multiple
+report groups, assuming you have arranged that related groups share some
+substring.  Or -y lets you specify -i as the internal job id reported during
+"wr status".
+
 The file to provide -f is in the format taken by "wr add".
 
 In -f and -l mode you must provide the cwd the commands were set to run in, if
@@ -88,6 +94,8 @@ func init() {
 	removeCmd.Flags().BoolVarP(&cmdAll, "all", "a", false, "remove all incomplete, non-running jobs")
 	removeCmd.Flags().StringVarP(&cmdFileStatus, "file", "f", "", "file containing commands you want to remove; - means read from STDIN")
 	removeCmd.Flags().StringVarP(&cmdIDStatus, "identifier", "i", "", "identifier of the commands you want to remove")
+	removeCmd.Flags().BoolVarP(&cmdIDIsSubStr, "search", "z", false, "treat -i as a substring to match against all report groups")
+	removeCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	removeCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to remove")
 	removeCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
 	removeCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
