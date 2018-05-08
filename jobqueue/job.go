@@ -628,7 +628,7 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 // ToEssense converts a Job to its matching JobEssense, taking less space and
 // being required as input for certain methods.
 func (j *Job) ToEssense() *JobEssence {
-	return &JobEssence{JobKey: j.key()}
+	return &JobEssence{JobKey: j.Key()}
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
@@ -674,8 +674,8 @@ func (j *Job) updateRecsAfterFailure() {
 	}
 }
 
-// key calculates a unique key to describe the job.
-func (j *Job) key() string {
+// Key calculates a unique key to describe the job.
+func (j *Job) Key() string {
 	if j.CwdMatters {
 		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}

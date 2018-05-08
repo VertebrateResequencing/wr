@@ -100,6 +100,7 @@ type clientRequest struct {
 	JobEndState    *JobEndState
 	Jobs           []*Job
 	Keys           []string
+	Search         bool
 	Limit          int
 	Method         string
 	SchedulerGroup string
@@ -407,7 +408,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
 	if !uuid.Equal(c.clientid, job.ReservedBy) {
-		return Error{"Execute", job.key(), ErrMustReserve}
+		return Error{"Execute", job.Key(), ErrMustReserve}
 	}
 
 	// we support arbitrary shell commands that may include semi-colons,
@@ -508,7 +509,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		cmd.Dir = job.Cwd
 	} else {
 		// we'll create a unique location to work in
-		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.key())
+		actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.Key())
 		if err != nil {
 			buryErr := fmt.Errorf("could not create working directory: %s", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
@@ -569,7 +570,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		if erru != nil {
 			extra += fmt.Sprintf(" (and unmounting the job failed: %s)", erru)
 		}
-		return fmt.Errorf("failed to extract environment variables for job [%s]: %s%s", job.key(), err, extra)
+		return fmt.Errorf("failed to extract environment variables for job [%s]: %s%s", job.Key(), err, extra)
 	}
 	if tmpDir != "" {
 		// (this works fine even if tmpDir has a space in one of the dir names)
@@ -949,19 +950,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 				dorelease = true
 				if ranoutMem {
 					failreason = FailReasonRAM
-					myerr = Error{"Execute", job.key(), FailReasonRAM}
+					myerr = Error{"Execute", job.Key(), FailReasonRAM}
 				} else if signalled {
 					if ranoutTime {
 						failreason = FailReasonTime
-						myerr = Error{"Execute", job.key(), FailReasonTime}
+						myerr = Error{"Execute", job.Key(), FailReasonTime}
 					} else {
 						failreason = FailReasonSignal
-						myerr = Error{"Execute", job.key(), FailReasonSignal}
+						myerr = Error{"Execute", job.Key(), FailReasonSignal}
 					}
 				} else if killCalled {
 					dobury = true
 					failreason = FailReasonKilled
-					myerr = Error{"Execute", job.key(), FailReasonKilled}
+					myerr = Error{"Execute", job.Key(), FailReasonKilled}
 				} else {
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
@@ -1379,14 +1380,20 @@ func (c *Client) jesToKeys(jes []*JobEssence) []string {
 
 // GetByRepGroup gets multiple Jobs at once given their RepGroup (an arbitrary
 // user-supplied identifier for the purpose of grouping related jobs together
-// for reporting purposes). 'limit', if greater than 0, limits the number of
-// jobs returned that have the same State, FailReason and Exitcode, and on the
-// the last job of each State+FailReason group it populates 'Similar' with the
-// number of other excluded jobs there were in that group. Providing 'state'
-// only returns jobs in that State. 'getStd' and 'getEnv', if true, retrieve the
-// stdout, stderr and environement variables for the Jobs.
-func (c *Client) GetByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+// for reporting purposes).
+//
+// If 'subStr' is true, gets Jobs in all RepGroups that the supplied repgroup is
+// a substring of.
+//
+// 'limit', if greater than 0, limits the number of jobs returned that have the
+// same State, FailReason and Exitcode, and on the the last job of each
+// State+FailReason group it populates 'Similar' with the number of other
+// excluded jobs there were in that group.
+//
+// Providing 'state' only returns jobs in that State. 'getStd' and 'getEnv', if
+// true, retrieve the stdout, stderr and environement variables for the Jobs.
+func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup}, Search: subStr, Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
 		return nil, err
 	}
@@ -1467,7 +1474,7 @@ func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
 	if sr.Err != "" {
 		key := ""
 		if cr.Job != nil {
-			key = cr.Job.key()
+			key = cr.Job.Key()
 		}
 		return sr, Error{cr.Method, key, sr.Err}
 	}
