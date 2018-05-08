@@ -51,6 +51,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	"k8s.io/client-go/util/retry"
+	"math/rand"
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
@@ -74,7 +75,7 @@ type Kubernetesp struct {
 	kubeconfig        *string
 	newNamespaceName  string
 	context           *daemon.Context
-	log15.Logger
+	Logger            log15.Logger
 }
 
 //Perhaps update Quota as part of controller..?
@@ -179,6 +180,7 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	// Create namespace client
 	p.namespaceClient = clientset.CoreV1().Namespaces()
 	// Create a unique namespace
+	rand.Seed(time.Now().UnixNano())
 	generatedName := strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 	fmt.Printf("GeneratedName: %v \n", generatedName)
 	p.newNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
