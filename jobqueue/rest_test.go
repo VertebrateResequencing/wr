@@ -140,7 +140,7 @@ func TestREST(t *testing.T) {
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 
-			var jstati []jstatus
+			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 0)
@@ -164,7 +164,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
-			var jstati []jstatus
+			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 3)
@@ -196,7 +196,7 @@ func TestREST(t *testing.T) {
 				responseData, err := ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []jstatus
+				var jstati []JStatus
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 3)
@@ -211,7 +211,7 @@ func TestREST(t *testing.T) {
 				responseData, err := ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []jstatus
+				var jstati []JStatus
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 1)
@@ -225,7 +225,7 @@ func TestREST(t *testing.T) {
 				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati2 []jstatus
+				var jstati2 []JStatus
 				err = json.Unmarshal(responseData, &jstati2)
 				So(err, ShouldBeNil)
 				So(len(jstati2), ShouldEqual, 2)
@@ -242,7 +242,7 @@ func TestREST(t *testing.T) {
 				responseData, err := ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []jstatus
+				var jstati []JStatus
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 2)
@@ -261,7 +261,7 @@ func TestREST(t *testing.T) {
 					responseData, err := ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
-					var jstati []jstatus
+					var jstati []JStatus
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -300,7 +300,7 @@ func TestREST(t *testing.T) {
 					responseData, err := ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
-					var jstati []jstatus
+					var jstati []JStatus
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 2)
@@ -318,7 +318,7 @@ func TestREST(t *testing.T) {
 					responseData, err = ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
-					var jstati2 []jstatus
+					var jstati2 []JStatus
 					err = json.Unmarshal(responseData, &jstati2)
 					So(err, ShouldBeNil)
 					So(len(jstati2), ShouldEqual, 1)
@@ -336,7 +336,7 @@ func TestREST(t *testing.T) {
 					responseData, err = ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
-					var jstati3 []jstatus
+					var jstati3 []JStatus
 					err = json.Unmarshal(responseData, &jstati3)
 					So(err, ShouldBeNil)
 					So(len(jstati3), ShouldEqual, 1)
@@ -356,7 +356,7 @@ func TestREST(t *testing.T) {
 					responseData, err := ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
-					var jstati []jstatus
+					var jstati []JStatus
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
@@ -379,7 +379,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
-			var jstati []jstatus
+			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 1)
@@ -400,7 +400,7 @@ func TestREST(t *testing.T) {
 				responseData, err := ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var jstati []jstatus
+				var jstati []JStatus
 				err = json.Unmarshal(responseData, &jstati)
 				So(err, ShouldBeNil)
 				So(len(jstati), ShouldEqual, 1)
@@ -440,7 +440,7 @@ func TestREST(t *testing.T) {
 			So(err, ShouldBeNil)
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
-			var jstati []jstatus
+			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 1)

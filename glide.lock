@@ -1,5 +1,5 @@
-hash: b5179681947c4f7148802f6b580d9e0914b9d18a767f8d3067851dcb8634334e
-updated: 2018-05-03T09:22:29.966469534+01:00
+hash: b720e204ab97d64f5cb6cd5a12c8e1619c2a5652ace8b6774038b1161c31a31b
+updated: 2018-05-08T14:04:55.197606254+01:00
 imports:
 - name: code.cloudfoundry.org/bytefmt
   version: b31f603f5e1e047fdb38584e1a922dcc5c4de5c8
@@ -7,6 +7,8 @@ imports:
   version: d358565f3c3f5334209f1e80693e4f621650c489
 - name: github.com/BurntSushi/toml
   version: a368813c5e648fee92e5f6c30e3944ff9d5e8895
+- name: github.com/carbocation/runningvariance
+  version: fdcce8a03b6b0a7738fb52457381c120426e0fc3
 - name: github.com/coreos/bbolt
   version: 48ea1b39c25fc1bab3506fbc712ecbaa842c4d2d
 - name: github.com/dgryski/go-farm

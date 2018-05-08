@@ -494,9 +494,9 @@ func restJobs(s *Server) http.HandlerFunc {
 		}
 
 		// convert jobs to jstatus
-		jstati := make([]jstatus, len(jobs))
+		jstati := make([]JStatus, len(jobs))
 		for i, job := range jobs {
-			jstati[i] = jobToStatus(job)
+			jstati[i] = job.ToStatus()
 		}
 
 		// return job details as JSON

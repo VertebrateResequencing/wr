@@ -68,6 +68,7 @@ import:
   subpackages:
   - client
   - api/types
+- package: github.com/carbocation/runningvariance
 testImport:
 - package: github.com/smartystreets/goconvey
   version: master

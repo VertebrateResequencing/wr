@@ -372,10 +372,10 @@ func (j *Job) EnvAddOverride(env []string) error {
 // Getenv is like os.Getenv(), but for the environment variables stored in the
 // the job, including any overrides. Returns blank if Env() would have returned
 // an error.
-func (j *Job) Getenv(key string) (value string) {
+func (j *Job) Getenv(key string) string {
 	env, err := j.Env()
 	if err != nil {
-		return
+		return ""
 	}
 	for _, envvar := range env {
 		pair := strings.Split(envvar, "=")
@@ -383,7 +383,7 @@ func (j *Job) Getenv(key string) (value string) {
 			return pair[1]
 		}
 	}
-	return
+	return ""
 }
 
 // StdOut returns the decompressed job.StdOutC, which is the head and tail of
@@ -712,6 +712,64 @@ func (j *Job) setSchedulerGroup(newval string) {
 	j.Lock()
 	defer j.Unlock()
 	j.schedulerGroup = newval
+}
+
+// ToStatus converts a job to a simplified JStatus, useful for output as JSON.
+func (j *Job) ToStatus() JStatus {
+	stderr, _ := j.StdErr()
+	stdout, _ := j.StdOut()
+	env, _ := j.Env()
+	var cwdLeaf string
+	j.RLock()
+	defer j.RUnlock()
+	if j.ActualCwd != "" {
+		cwdLeaf, _ = filepath.Rel(j.Cwd, j.ActualCwd)
+		cwdLeaf = "/" + cwdLeaf
+	}
+	state := j.State
+	if state == JobStateRunning && j.Lost {
+		state = JobStateLost
+	}
+	var ot []string
+	for key, val := range j.Requirements.Other {
+		ot = append(ot, key+":"+val)
+	}
+	return JStatus{
+		Key:           j.Key(),
+		RepGroup:      j.RepGroup,
+		DepGroups:     j.DepGroups,
+		Dependencies:  j.Dependencies.Stringify(),
+		Cmd:           j.Cmd,
+		State:         state,
+		CwdBase:       j.Cwd,
+		Cwd:           cwdLeaf,
+		HomeChanged:   j.ChangeHome,
+		Behaviours:    j.Behaviours.String(),
+		Mounts:        j.MountConfigs.String(),
+		MonitorDocker: j.MonitorDocker,
+		ExpectedRAM:   j.Requirements.RAM,
+		ExpectedTime:  j.Requirements.Time.Seconds(),
+		RequestedDisk: j.Requirements.Disk,
+		OtherRequests: ot,
+		Cores:         j.Requirements.Cores,
+		PeakRAM:       j.PeakRAM,
+		Exited:        j.Exited,
+		Exitcode:      j.Exitcode,
+		FailReason:    j.FailReason,
+		Pid:           j.Pid,
+		Host:          j.Host,
+		HostID:        j.HostID,
+		HostIP:        j.HostIP,
+		Walltime:      j.WallTime().Seconds(),
+		CPUtime:       j.CPUtime.Seconds(),
+		Started:       j.StartTime.Unix(),
+		Ended:         j.EndTime.Unix(),
+		Attempts:      j.Attempts,
+		Similar:       j.Similar,
+		StdErr:        stderr,
+		StdOut:        stdout,
+		Env:           env,
+	}
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it
