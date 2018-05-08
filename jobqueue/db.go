@@ -658,11 +658,10 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 	var rgs []string
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketRGs)
-		b.ForEach(func(k, v []byte) error {
+		return b.ForEach(func(k, v []byte) error {
 			rgs = append(rgs, string(k))
 			return nil
 		})
-		return nil
 	})
 	return rgs, err
 }

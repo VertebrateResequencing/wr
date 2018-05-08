@@ -73,6 +73,9 @@ const (
 // symlinks in
 const lsfEmulationDir = ".wr_lsf_emulation"
 
+// localhost is the name of host we're running on
+const localhost = "localhost"
+
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
@@ -440,52 +443,76 @@ func (c *Client) Execute(job *Job, shell string) error {
 	if job.BsubMode != "" {
 		// create parent of job.Cwd so we can later mount at job.Cwd
 		parent := filepath.Dir(job.Cwd)
-		os.MkdirAll(parent, os.ModePerm)
-		if fi, err := os.Stat(parent); err != nil || !fi.Mode().IsDir() {
-			c.Bury(job, nil, FailReasonCwd)
-			return fmt.Errorf("parent of working directory [%s] could not be created", parent)
+		errm := os.MkdirAll(parent, os.ModePerm)
+		if fi, errs := os.Stat(parent); errs != nil || !fi.Mode().IsDir() {
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("parent of working directory [%s] could not be created: %s%s", parent, errm, extra)
 		}
 	}
 	var mountCouldFail bool
 	host, err := os.Hostname()
 	if err != nil {
-		host = "localhost"
+		host = localhost
 	}
 	if job.BsubMode != "" {
 		jobCwd := job.Cwd
 		if jobCwd == "" {
 			jobCwd = "."
 		}
-		absJobCwd, err := filepath.Abs(jobCwd)
-		if err != nil {
-			c.Bury(job, nil, FailReasonCwd)
-			return fmt.Errorf("failed to make cmd dir absolute: %s", err)
+		absJobCwd, erra := filepath.Abs(jobCwd)
+		if erra != nil {
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("failed to make cmd dir absolute: %s%s", erra, extra)
 		}
 		parent := filepath.Dir(absJobCwd)
 
 		// create bsub and bjobs symlinks in a sister dir of job.Cwd
 		prependPath = filepath.Join(parent, lsfEmulationDir)
-		os.MkdirAll(prependPath, os.ModePerm)
-		if fi, err := os.Stat(prependPath); err != nil || !fi.Mode().IsDir() {
-			c.Bury(job, nil, FailReasonCwd)
-			return fmt.Errorf("sister of working directory [%s] could not be created", prependPath)
+		errm := os.MkdirAll(prependPath, os.ModePerm)
+		if fi, errs := os.Stat(prependPath); errs != nil || !fi.Mode().IsDir() {
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("sister of working directory [%s] could not be created: %s%s", prependPath, errm, extra)
 		}
-		wr, err := os.Executable()
-		if err != nil {
-			c.Bury(job, nil, FailReasonCwd)
-			return fmt.Errorf("could not get path to wr: %s", err)
+		wr, erre := os.Executable()
+		if erre != nil {
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("could not get path to wr: %s%s", erre, extra)
 		}
 		bsub := filepath.Join(prependPath, "bsub")
 		bjobs := filepath.Join(prependPath, "bjobs")
 		err = os.Symlink(wr, bsub)
 		if err != nil && !os.IsExist(err) {
-			c.Bury(job, nil, FailReasonCwd)
-			return fmt.Errorf("could not create bsub symlink: %s", err)
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("could not create bsub symlink: %s%s", err, extra)
 		}
 		err = os.Symlink(wr, bjobs)
 		if err != nil && !os.IsExist(err) {
-			c.Bury(job, nil, FailReasonCwd)
-			return fmt.Errorf("could not create bjobs symlink: %s", err)
+			errb := c.Bury(job, nil, FailReasonCwd)
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("could not create bjobs symlink: %s%s", err, extra)
 		}
 
 		onCwd = job.CwdMatters
@@ -494,14 +521,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
 	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
-		os.MkdirAll(job.Cwd, os.ModePerm)
-		if _, errf = os.Stat(job.Cwd); errf != nil {
+		errm := os.MkdirAll(job.Cwd, os.ModePerm)
+		if _, errs := os.Stat(job.Cwd); errs != nil {
 			errb := c.Bury(job, nil, FailReasonCwd)
 			extra := ""
 			if errb != nil {
 				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
 			}
-			return fmt.Errorf("working directory [%s] does not exist%s", job.Cwd, extra)
+			return fmt.Errorf("working directory [%s] does not exist%s: %s", job.Cwd, extra, errm)
 		}
 	}
 	var actualCwd, tmpDir string
@@ -527,7 +554,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// parent
 	if jsonStr := job.Getenv("WR_BSUB_CONFIG"); jsonStr != "" {
 		configJob := &Job{}
-		if err := json.Unmarshal([]byte(jsonStr), configJob); err == nil && configJob.Host == host {
+		if erru := json.Unmarshal([]byte(jsonStr), configJob); erru == nil && configJob.Host == host {
 			mountCouldFail = true
 			// *** but the problem with this is, the parent job could finish
 			// while we're still running, and unmount!...
@@ -614,10 +641,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			BsubMode:     job.BsubMode,
 			Host:         host,
 		}
-		jobJSON, err := json.Marshal(simplified)
-		if err != nil {
-			c.Bury(job, nil, fmt.Sprintf("could not convert job to JSON: %s", err))
-			return fmt.Errorf("could not convert job to JSON: %s", err)
+		jobJSON, errm := json.Marshal(simplified)
+		if errm != nil {
+			errb := c.Bury(job, nil, fmt.Sprintf("could not convert job to JSON: %s", errm))
+			extra := ""
+			if errb != nil {
+				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+			}
+			return fmt.Errorf("could not convert job to JSON: %s%s", errm, extra)
 		}
 		env = envOverride(env, []string{
 			"WR_BSUB_CONFIG=" + string(jobJSON),
@@ -1142,7 +1173,7 @@ func (c *Client) Started(job *Job, pid int) error {
 	// host details
 	host, err := os.Hostname()
 	if err != nil {
-		host = "localhost"
+		host = localhost
 	}
 	job.Host = host
 	job.HostIP, err = CurrentIP("")

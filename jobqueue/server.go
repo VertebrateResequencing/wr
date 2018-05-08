@@ -89,7 +89,7 @@ var (
 
 // BsubID is used to give added jobs a unique (atomically incremented) id when
 // pretending to be bsub.
-var BsubID uint64 = 0
+var BsubID uint64
 
 // Error records an error and the operation and item that caused it.
 type Error struct {
@@ -384,7 +384,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	keyFile := config.KeyFile
 	certDomain := config.CertDomain
 	if certDomain == "" {
-		certDomain = "localhost"
+		certDomain = localhost
 	}
 	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string

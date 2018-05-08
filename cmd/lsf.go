@@ -70,9 +70,9 @@ var lsfBsubCmd = &cobra.Command{
 	Short: "Add a job using bsub syntax",
 	Long:  `Add a job to the queue using bsub syntax.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		wd, err := os.Getwd()
-		if err != nil {
-			die(err.Error())
+		wd, errg := os.Getwd()
+		if errg != nil {
+			die(errg.Error())
 		}
 
 		job := &jobqueue.Job{
@@ -156,7 +156,13 @@ var lsfBsubCmd = &cobra.Command{
 
 		// connect to the server
 		jq := connect(10 * time.Second)
-		defer jq.Disconnect()
+		var err error
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
 
 		// add the job to the queue
 		inserts, _, err := jq.Add([]*jobqueue.Job{job}, os.Environ(), false)

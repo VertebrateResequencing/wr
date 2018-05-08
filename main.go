@@ -99,9 +99,10 @@ options.
 package main
 
 import (
-	"github.com/VertebrateResequencing/wr/cmd"
 	"os"
 	"path/filepath"
+
+	"github.com/VertebrateResequencing/wr/cmd"
 )
 
 func main() {
