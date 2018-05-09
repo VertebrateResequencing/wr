@@ -232,6 +232,79 @@ func TestLocal(t *testing.T) {
 			}
 		})
 
+		if maxCPU > 2 {
+			Convey("Schedule() does bin packing and fills up the machine with different size cmds", func() {
+				smallTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_small_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(smallTmpdir)
+				bigTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_big_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(bigTmpdir)
+
+				blockCmd := "perl -e 'select(undef, undef, undef, 0.25)'" // sleep for 0.25s
+				blockReq := &Requirements{1, 1 * time.Second, maxCPU, 0, otherReqs}
+				smallCmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); exit(0);'", smallTmpdir) // creates a file and sleeps for 0.75s
+				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
+				bigCmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); exit(0);'", bigTmpdir)
+				bigReq := &Requirements{1, 1 * time.Second, maxCPU - 1, 0, otherReqs}
+
+				// schedule 2 big cmds and then a small one to prove the small
+				// one fits the gap and runs before the second big one
+				err = s.Schedule(bigCmd, bigReq, 2)
+				So(err, ShouldBeNil)
+				err = s.Schedule(smallCmd, smallReq, 1)
+				So(err, ShouldBeNil)
+
+				for {
+					if !s.Busy() {
+						break
+					}
+					<-time.After(1 * time.Millisecond)
+				}
+
+				bigTimes := mtimesOfFilesInDir(bigTmpdir, 2)
+				So(len(bigTimes), ShouldEqual, 2)
+				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
+				So(len(smallTimes), ShouldEqual, 1)
+				firstBig := bigTimes[0]
+				secondBig := bigTimes[1]
+				if secondBig.Before(firstBig) {
+					firstBig = bigTimes[1]
+					secondBig = bigTimes[0]
+				}
+				So(smallTimes[0], ShouldHappenOnOrAfter, firstBig)
+				So(smallTimes[0], ShouldHappenBefore, secondBig)
+
+				// schedule a blocker so that subsequent schedules will be
+				// compared to each other, then schedule 2 small cmds and a big
+				// one to prove that the big one takes priority
+				err = s.Schedule(blockCmd, blockReq, 1)
+				So(err, ShouldBeNil)
+				err = s.Schedule(smallCmd, smallReq, 2)
+				So(err, ShouldBeNil)
+				err = s.Schedule(bigCmd, bigReq, 1)
+				So(err, ShouldBeNil)
+
+				for {
+					if !s.Busy() {
+						break
+					}
+					<-time.After(1 * time.Millisecond)
+				}
+
+				bigTimes = mtimesOfFilesInDir(bigTmpdir, 1)
+				So(len(bigTimes), ShouldEqual, 1)
+				smallTimes = mtimesOfFilesInDir(smallTmpdir, 2)
+				So(len(smallTimes), ShouldEqual, 2)
+				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[0])
+				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[1])
+			})
+		}
+
 		// wait a while for any remaining jobs to finish
 		So(waitToFinish(s, 30, 100), ShouldBeTrue)
 	})
@@ -942,7 +1015,7 @@ func TestOpenstack(t *testing.T) {
 	})
 }
 
-func testDirForFiles(tmpdir string, expected int) (numfiles int) {
+func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {
 	files, err := ioutil.ReadDir(tmpdir)
 	if err != nil {
 		log.Fatal(err)
@@ -956,7 +1029,21 @@ func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 			log.Fatal(err)
 		}
 	}
-	return len(files)
+	return files
+}
+
+func testDirForFiles(tmpdir string, expected int) (numfiles int) {
+	return len(getInfoOfFilesInDir(tmpdir, expected))
+}
+
+func mtimesOfFilesInDir(tmpdir string, expected int) []time.Time {
+	files := getInfoOfFilesInDir(tmpdir, expected)
+	var times []time.Time
+	for _, info := range files {
+		times = append(times, info.ModTime())
+		os.Remove(filepath.Join(tmpdir, info.Name()))
+	}
+	return times
 }
 
 func waitToFinish(s *Scheduler, maxS int, interval int) bool {

@@ -195,8 +195,13 @@ size if necessary]
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
-possible values is 0 (default) to 255. Commands with the same priority will be
-started in the order they were added.
+possible values is 0 (default, for lowest priority) to 255 (highest priority).
+Commands with the same priority will be started in the order they were added.
+(Note, however, that order of starting is only guaranteed to hold true amongst
+jobs with similar resource requirements, since your chosen job scheduler may,
+for example, run your highest priority job on a machine where it takes up 90% of
+memory, and then find another job to run on that machine that needs 10% or less
+memory - and that job might be one of your low priority ones.)
 
 "retries" defines how many times a command will be retried automatically if it
 fails. Automatic retries are helpful in the case of transient errors, or errors

@@ -453,6 +453,8 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 
 	// set our functions for use in schedule() and processQueue()
 	s.reqCheckFunc = s.reqCheck
+	s.maxMemFunc = s.maxMem
+	s.maxCPUFunc = s.maxCPU
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
 	s.cancelRunCmdFunc = s.cancelRun
@@ -505,6 +507,16 @@ func (s *opst) reqCheck(req *Requirements) error {
 		return err
 	}
 	return nil
+}
+
+// maxMem returns the maximum memory available in quota.
+func (s *opst) maxMem() int {
+	return s.quotaMaxRAM
+}
+
+// maxCPU returns the maximum number of CPU cores available quota.
+func (s *opst) maxCPU() int {
+	return s.quotaMaxCores
 }
 
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
