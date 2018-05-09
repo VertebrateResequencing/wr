@@ -412,6 +412,10 @@ func init() {
 
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
+
+	// go back to just stderr so we don't log token to file (this doesn't affect
+	// server logging)
+	appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, log15.StderrHandler))
 	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
 
 	if setDomainIP {
@@ -534,6 +538,7 @@ func startJQ(postCreation []byte) {
 	}
 
 	logStarted(server.ServerInfo, token)
+	l15h.AddHandler(appLogger, fh) // logStarted disabled logging to file; reenable to get final message below
 
 	// block forever while the jobqueue does its work
 	err = server.Block()
