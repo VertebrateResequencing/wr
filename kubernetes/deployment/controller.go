@@ -44,12 +44,24 @@ import (
 const maxRetries = 5
 
 type Controller struct {
-	client     *client.Kubernetesp
-	clientset  kubernetes.Interface
-	restconfig *rest.Config
+	Client     *client.Kubernetesp
+	Clientset  kubernetes.Interface
+	Restconfig *rest.Config
+	Opts       *DeployOpts
 	queue      workqueue.RateLimitingInterface
 	informer   cache.SharedIndexInformer
-	namespace  string
+}
+
+type DeployOpts struct {
+	ContainerImage  string             // docker hub image
+	TempMountPath   string             // where to mount the binary
+	Files           []client.FilePair  // Files to tar across
+	BinaryPath      string             // full path to the binary to be executed
+	BinaryArgs      []string           // arguments to the binary
+	ConfigMapName   string             // name of the configmap to execute
+	ConfigMountPath string             // path to the configmap
+	RequiredPorts   []int              // ports that require forwarding
+	AttachCmdOpts   *client.CmdOptions // relevant options for the attachCmd
 }
 
 func (c *Controller) createQueueAndInformer() {
@@ -58,13 +70,13 @@ func (c *Controller) createQueueAndInformer() {
 	c.informer = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				return c.clientset.CoreV1().Pods(c.namespace).List(metav1.ListOptions{
+				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).List(metav1.ListOptions{
 					LabelSelector: "app=wr-manager",
 				})
 
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				return c.clientset.CoreV1().Pods(c.namespace).Watch(metav1.ListOptions{
+				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).Watch(metav1.ListOptions{
 					LabelSelector:        "app=wr-manager",
 					IncludeUninitialized: true,
 					Watch:                true,
@@ -127,6 +139,11 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 
 	//fmt.Println("Controller synced and ready")
 
+	// Before starting, create the initial deployment
+	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.Files, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
+	if err != nil {
+		panic(err)
+	}
 	// runWorker loops until 'bad thing'. .Until will
 	// restart the worker after a second
 	wait.Until(c.runWorker, time.Second, stopCh)
@@ -171,9 +188,8 @@ func (c *Controller) processNextItem() bool {
 }
 
 // processItem(key) is where we define how to react to a pod event
-// here we will connect it to slack
 func (c *Controller) processItem(key string) error {
-	fmt.Printf("Processing change to Pod %s\n", key)
+	fmt.Printf("Processing change t Pod %s\n", key)
 
 	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
@@ -220,43 +236,16 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			fmt.Println("InitContainer Waiting!")
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
 			fmt.Println("InitContainer Running!")
-		case obj.Status.InitContainerStatuses[0].State.Terminated != nil:
-			fmt.Println("InitContainer Terminated")
+			fmt.Println("Calling CopyTar")
+			// here goes nothing
+			c.Client.CopyTar(c.Opts.Files, obj)
+		case obj.Status.ContainerStatuses[0].State.Running != nil:
+			fmt.Println("WR manager container is running")
 		default:
-			fmt.Println("Not InitContainer related")
+			fmt.Println("Not InitContainer or WR Manager container related")
 		}
 	} else {
 		fmt.Println("InitContainerStatuses not initialised yet")
 	}
 	return
-}
-
-func main() {
-	var err error
-	fmt.Println("Testing Controllers")
-	fmt.Println("====================")
-	fmt.Printf("\n\n")
-	fmt.Println("Authenticating")
-	c := Controller{}
-	c.clientset, c.restconfig, err = c.client.Authenticate() // Authenticate and populate Kubernetesp with clientset and restconfig.
-	if err != nil {
-		panic(err)
-	}
-	err = c.client.Initialize(c.clientset) // Populate the rest of Kubernetesp
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Creating queue and informer")
-	fmt.Printf("\n\n")
-	fmt.Println("====================")
-	fmt.Printf("\n\n")
-	c.createQueueAndInformer()
-	fmt.Println("Adding event handlers")
-	c.addEventHandlers()
-
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-
-	c.Run(stopCh)
-
 }
