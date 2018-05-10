@@ -108,7 +108,7 @@ func (p *openstackp) requiredEnv() []string {
 	return openstackReqEnvs[:]
 }
 
-// maybedEnv returns envs that might be required.
+// maybeEnv returns envs that might be required.
 func (p *openstackp) maybeEnv() []string {
 	return openstackMaybeEnvs[:]
 }
