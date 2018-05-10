@@ -73,7 +73,7 @@ type Kubernetesp struct {
 	ReadyChannel      chan struct{}
 	cmdOut, cmdErr    io.Writer
 	kubeconfig        *string
-	newNamespaceName  string
+	NewNamespaceName  string
 	context           *daemon.Context
 	Logger            log15.Logger
 }
@@ -87,9 +87,9 @@ type Quota struct {
 
 type ConfigMapOpts struct {
 	// BinaryData for potential later use
-	binaryData []byte
-	data       map[string]string
-	name       string
+	BinaryData []byte
+	Data       map[string]string
+	Name       string
 }
 
 type ServiceOpts struct {
@@ -154,6 +154,9 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 			p.Logger.Error("Create authenticated clientset", "err", err)
 			panic(err)
 		}
+		// Set up internal clientset and clusterConfig
+		p.clientset = clientset
+		p.clusterConfig = clusterConfig
 		return clientset, clusterConfig, nil
 
 	default:
@@ -166,6 +169,9 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		if err != nil {
 			panic(err.Error())
 		}
+		// Set up internal clientset and clusterConfig
+		p.clientset = clientset
+		p.clusterConfig = clusterConfig
 		return clientset, clusterConfig, nil
 
 	}
@@ -181,17 +187,15 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	p.namespaceClient = clientset.CoreV1().Namespaces()
 	// Create a unique namespace
 	rand.Seed(time.Now().UnixNano())
-	generatedName := strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
-	fmt.Printf("GeneratedName: %v \n", generatedName)
-	p.newNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
-	fmt.Printf("newNamespaceName: %v \n", p.newNamespaceName)
+	p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
+	fmt.Printf("NewNamespaceName: %v \n", p.NewNamespaceName)
 	// Retry if namespace taken
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		nsErr := p.CreateNewNamespace(p.newNamespaceName)
+		nsErr := p.CreateNewNamespace(p.NewNamespaceName)
 		if nsErr != nil {
-			fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.newNamespaceName, nsErr)
-			p.Logger.Warn("Failed to create new namespace. Trying again.", "namespace", p.newNamespaceName, "err", nsErr)
-			p.newNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
+			fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.NewNamespaceName, nsErr)
+			p.Logger.Warn("Failed to create new namespace. Trying again.", "namespace", p.NewNamespaceName, "err", nsErr)
+			p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 		}
 		return nsErr
 	})
@@ -201,19 +205,19 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
 	}
 
 	// Create client for deployments that is authenticated against the given cluster. Use default namsespace.
-	p.deploymentsClient = clientset.AppsV1beta1().Deployments(p.newNamespaceName)
+	p.deploymentsClient = clientset.AppsV1beta1().Deployments(p.NewNamespaceName)
 
 	// Create client for services
-	p.serviceClient = clientset.CoreV1().Services(p.newNamespaceName)
+	p.serviceClient = clientset.CoreV1().Services(p.NewNamespaceName)
 
 	// Create client for pods
-	p.podClient = clientset.CoreV1().Pods(p.newNamespaceName)
+	p.podClient = clientset.CoreV1().Pods(p.NewNamespaceName)
 
 	// Create configMap client
-	p.configMapClient = clientset.CoreV1().ConfigMaps(p.newNamespaceName)
+	p.configMapClient = clientset.CoreV1().ConfigMaps(p.NewNamespaceName)
 
 	// Create Quota client
-	p.quotaClient = clientset.CoreV1().ResourceQuotas(p.newNamespaceName)
+	p.quotaClient = clientset.CoreV1().ResourceQuotas(p.NewNamespaceName)
 
 	// Create portforwarder
 	//p.PortForwarder =
@@ -232,11 +236,11 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
 // Creates wr-manager deployment and service.
 // Copying of WR to initcontainer now done by Controller when ready
 // portforwarding now done by controller when ready
-// Deploys wr manager to the namespace created by initialize()
+// *old* : Deploys wr manager to the namespace created by initialize()
 // Copies binary with name wr_linux in the current working directory.
 // Uses containerImage as the base docker image to build on top of
 // Assumes tar is available.
-func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
+func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files []FilePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	//Specify new wr deployment
 	deployment := &appsv1beta1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -341,7 +345,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files 
 		p.Logger.Error("Creating deployment", "err", err)
 		return err
 	}
-	fmt.Printf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.newNamespaceName)
+	fmt.Printf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.NewNamespaceName)
 	// specify service so wr-manager can be resolved using kubedns
 	svcOpts := ServiceOpts{
 		Name: "wr-manager",
@@ -381,12 +385,12 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files 
 	// var podList *apiv1.PodList
 	// getPodErr := wait.ExponentialBackoff(retry.DefaultRetry, func() (done bool, err error) {
 	// 	var getErr error
-	// 	podList, getErr = p.clientset.CoreV1().Pods(p.newNamespaceName).List(metav1.ListOptions{
+	// 	podList, getErr = p.clientset.CoreV1().Pods(p.NewNamespaceName).List(metav1.ListOptions{
 	// 		LabelSelector: "app=wr-manager",
 	// 	})
 	// 	switch {
 	// 	case getErr != nil:
-	// 		panic(fmt.Errorf("failed to list pods in namespace %v", p.newNamespaceName))
+	// 		panic(fmt.Errorf("failed to list pods in namespace %v", p.NewNamespaceName))
 	// 	case len(podList.Items) == 0:
 	// 		return false, nil
 	// 	case len(podList.Items) > 0:
@@ -486,7 +490,7 @@ func (p *Kubernetesp) getQuota() (*Quota, error) {
 }
 
 // Spawn a new pod that contains a runner. Return the name.
-func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []filePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
+func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []FilePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -624,9 +628,9 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 
 // Deletes the namespace created for wr.
 func (p *Kubernetesp) TearDown() error {
-	err := p.namespaceClient.Delete(p.newNamespaceName, &metav1.DeleteOptions{})
+	err := p.namespaceClient.Delete(p.NewNamespaceName, &metav1.DeleteOptions{})
 	if err != nil {
-		p.Logger.Error("Deleting namespace", "err", err, "namespace", p.newNamespaceName)
+		p.Logger.Error("Deleting namespace", "err", err, "namespace", p.NewNamespaceName)
 		return err
 	}
 	return nil
@@ -685,9 +689,9 @@ func (p *Kubernetesp) KillPortForward() {
 func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
 	configMap, err := p.configMapClient.Create(&apiv1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: opts.name,
+			Name: opts.Name,
 		},
-		Data: opts.data,
+		Data: opts.Data,
 	})
 
 	return configMap, err

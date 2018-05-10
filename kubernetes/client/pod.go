@@ -76,8 +76,8 @@ type StreamOptions struct {
 	Err           io.Writer
 }
 
-type filePair struct {
-	src, dest string
+type FilePair struct {
+	Src, Dest string
 }
 
 // Writer provides a method for writing output (from stderr)
@@ -126,8 +126,8 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 }
 
 // Writes tarball to an io.writer
-// Takes a slice of filePair(s), format source, destination
-func makeTar(files []filePair, writer io.Writer) error {
+// Takes a slice of FilePair(s), format source, destination
+func makeTar(files []FilePair, writer io.Writer) error {
 	//Set up tar writer
 	tarWriter := tar.NewWriter(writer)
 	defer tarWriter.Close()
@@ -135,7 +135,7 @@ func makeTar(files []filePair, writer io.Writer) error {
 	fmt.Println(len(files))
 	for i := range files {
 		fmt.Printf("Adding file %v \n", files[i])
-		if err := addFile(tarWriter, path.Clean(files[i].src), files[i].dest); err != nil {
+		if err := addFile(tarWriter, path.Clean(files[i].Src), files[i].Dest); err != nil {
 			panic(err)
 		}
 	}
@@ -152,7 +152,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	execRequest := p.RESTClient.Post().
 		Resource("pods").
 		Name(opts.PodName).
-		Namespace(p.newNamespaceName).
+		Namespace(p.NewNamespaceName).
 		SubResource("attach")
 	execRequest.VersionedParams(&apiv1.PodExecOptions{
 		Container: opts.ContainerName,
@@ -230,7 +230,7 @@ func (p *Kubernetesp) PortForward(podName string, requiredPorts []int) error {
 
 	req := p.RESTClient.Post().
 		Resource("pods").
-		Namespace(p.newNamespaceName).
+		Namespace(p.NewNamespaceName).
 		Name(pod.Name).
 		SubResource("portforward")
 
@@ -248,10 +248,12 @@ func (p *Kubernetesp) PortForward(podName string, requiredPorts []int) error {
 
 // CopyTar copies the files defined in each filePair in files to the pod provided.
 // To be called by controller when condition met
-func (p *Kubernetesp) CopyTar(files []filePair, pod *apiv1.Pod) error {
+func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	//Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
-
+	// _, pipeWriter := io.Pipe()
+	// TODO: Wait for this to complete by signalling on some channel.
+	// I think it's segfaulting as its trying to use the reader before the tarballing is finished
 	//avoid deadlock by using goroutine
 	go func() {
 		defer pipeWriter.Close()
@@ -262,10 +264,6 @@ func (p *Kubernetesp) CopyTar(files []filePair, pod *apiv1.Pod) error {
 			panic(tarErr)
 		}
 	}()
-
-	fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
-	fmt.Println(pod.Spec.InitContainers)
-	fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
 
 	stdOut := new(Writer)
 	stdErr := new(Writer)
@@ -285,7 +283,6 @@ func (p *Kubernetesp) CopyTar(files []filePair, pod *apiv1.Pod) error {
 
 	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
 	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
-
 	return err
 
 }
