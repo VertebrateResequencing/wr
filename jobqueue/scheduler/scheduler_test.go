@@ -766,7 +766,6 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("Schedule() lets you...", func() {
 				oFile := filepath.Join(tmpdir, "out")
-				oReqs := make(map[string]string)
 				if flavorRegex == `^m.*$` && os.Getenv("OS_TENANT_ID") == "" {
 					Convey("Run a job on a specific flavor", func() {
 						cmd := "sleep 10"
@@ -811,11 +810,12 @@ func TestOpenstack(t *testing.T) {
 				Convey("Run jobs with no inputs/outputs", func() {
 					// on authors setup, the following count is sufficient to
 					// test spawning instances over the quota in the test
-					// environment if we reserve 54 cores per job
-					count := 10
+					// environment if we reserve 26 cores per job
+					count := 18
 					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
 					cmd := "sleep 10"
-					thisReq := &Requirements{100, 1 * time.Minute, 54, 1, oReqs}
+					oReqs := make(map[string]string)
+					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, oReqs}
 					err := s.Schedule(cmd, thisReq, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
@@ -865,6 +865,7 @@ func TestOpenstack(t *testing.T) {
 				Convey("Run everything even when a server fails to spawn", func() {
 					debugCounter = 0
 					debugEffect = "failFirstSpawn"
+					oReqs := make(map[string]string)
 					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 					newCount := 3
 					eta := 120
@@ -878,6 +879,7 @@ func TestOpenstack(t *testing.T) {
 				Convey("Run jobs and have servers still self-terminate when a server is slow to spawn", func() {
 					debugCounter = 0
 					debugEffect = "slowSecondSpawn"
+					oReqs := make(map[string]string)
 					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 					newCount := 3
 					eta := 120
@@ -898,6 +900,7 @@ func TestOpenstack(t *testing.T) {
 
 				// *** test if we have a Centos 7 image to use...
 				if osPrefix != "Centos 7" {
+					oReqs := make(map[string]string)
 					oReqs["cloud_os"] = "Centos 7"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
@@ -952,16 +955,18 @@ func TestOpenstack(t *testing.T) {
 					})
 				}
 
-				numCores := 4
-				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 6 * numCores, oReqs})
+				numCores := 5
+				oReqsm := make(map[string]string)
+				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 0, oReqsm})
 				if err == nil && multiCoreFlavor.Cores >= numCores {
+					oReqs := make(map[string]string)
 					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
-					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, oReqs}
 					confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
 					if err == nil && confirmFlavor.Cores >= numCores {
 						Convey("Run multiple jobs at once on multi-core servers", func() {
 							cmd := "sleep 30"
-							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
+							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, oReqs}
 							err = s.Schedule(cmd, jobReq, numCores)
 							So(err, ShouldBeNil)
 							So(s.Busy(), ShouldBeTrue)
@@ -989,7 +994,7 @@ func TestOpenstack(t *testing.T) {
 							}()
 
 							// wait for enough time to have spawned a server
-							// and run both commands in parallel, but not
+							// and run the commands in parallel, but not
 							// sequentially *** but how long does it take to
 							// spawn?! (50s in authors test area, but this
 							// will vary...) we need better confirmation of
