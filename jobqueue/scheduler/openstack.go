@@ -1173,9 +1173,11 @@ func (s *opst) stateUpdate() {
 			if server.IsBad() {
 				// check if the server is fine now
 				if alive && server.PermanentProblem() == "" {
-					server.NotBad()
-					s.notifyBadServer(server)
-					s.Debug("server became good", "server", server.ID)
+					worked := server.NotBad()
+					if worked {
+						s.notifyBadServer(server)
+						s.Debug("server became good", "server", server.ID)
+					}
 				}
 			} else if !alive {
 				server.GoneBad()

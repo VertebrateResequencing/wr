@@ -66,6 +66,7 @@ type Server struct {
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
 	created           bool // to distinguish instances we discovered or spawned
+	toBeDestroyed     bool
 	destroyed         bool
 	goneBad           bool
 	location          *time.Location
@@ -147,6 +148,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 					// destroy the server
 					s.mutex.Lock()
 					s.onDeathrow = false
+					s.toBeDestroyed = true
 					s.mutex.Unlock()
 					err := s.Destroy()
 					s.logger.Debug("server died on deathrow", "err", err)
@@ -643,13 +645,16 @@ func (s *Server) GoneBad(permanentProblem ...string) {
 }
 
 // NotBad lets you change your mind about a server you called GoneBad() on.
-// (Unless GoneBad() was called with a permanentProblem.)
-func (s *Server) NotBad() {
+// (Unless GoneBad() was called with a permanentProblem, or the server has been
+// destroyed).
+func (s *Server) NotBad() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if s.permanentProblem == "" {
+	if !s.destroyed && !s.toBeDestroyed && s.permanentProblem == "" {
 		s.goneBad = false
+		return true
 	}
+	return false
 }
 
 // IsBad tells you if GoneBad() has been called (more recently than NotBad()).
@@ -686,6 +691,7 @@ func (s *Server) Destroy() error {
 		ch <- true
 	}
 
+	s.toBeDestroyed = false
 	s.destroyed = true
 	s.goneBad = true
 
@@ -716,7 +722,7 @@ func (s *Server) Destroy() error {
 func (s *Server) Destroyed() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	return s.destroyed
+	return s.destroyed || s.toBeDestroyed
 }
 
 // Alive tells you if a server is usable. It first does the same check as
@@ -724,7 +730,7 @@ func (s *Server) Destroyed() bool {
 // will double check the server to make sure it can be ssh'd to.
 func (s *Server) Alive(checkSSH ...bool) bool {
 	s.mutex.Lock()
-	if s.destroyed {
+	if s.destroyed || s.toBeDestroyed {
 		s.mutex.Unlock()
 		return false
 	}
