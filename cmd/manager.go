@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -46,6 +48,7 @@ var localUsername string
 var backupPath string
 var managerTimeoutSeconds int
 var managerDebug bool
+var maxServers int
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -145,8 +148,19 @@ var managerStartCmd = &cobra.Command{
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
 				internal.WaitForFile(config.ManagerTokenFile, mTimeout)
-				jq := connect(mTimeout)
+				jq := connect(mTimeout, true)
 				if jq == nil {
+					// display any error or crit lines in the log
+					f, errf := os.Open(config.ManagerLogFile)
+					if errf == nil {
+						scanner := bufio.NewScanner(f)
+						for scanner.Scan() {
+							line := scanner.Text()
+							if strings.Contains(line, "lvl=crit") || strings.Contains(line, "lvl=eror") {
+								fmt.Println(line)
+							}
+						}
+					}
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
 				token, err := token()
@@ -506,6 +520,16 @@ func startJQ(postCreation []byte) {
 		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
 		if config.ManagerCAFile != "" {
 			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
+		}
+
+		// also check that we're actually in the cloud, or this is not going to
+		// work
+		provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
+		if errc != nil {
+			die("cloud not connect to %s: %s", scheduler, errc)
+		}
+		if !provider.InCloud() {
+			die("according to hostname, this is not an instance in %s", scheduler)
 		}
 	}
 
