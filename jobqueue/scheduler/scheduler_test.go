@@ -19,6 +19,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -529,7 +530,6 @@ func TestOpenstack(t *testing.T) {
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
-
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
 		})
@@ -767,7 +767,6 @@ func TestOpenstack(t *testing.T) {
 			Convey("Schedule() lets you...", func() {
 				oFile := filepath.Join(tmpdir, "out")
 				oReqs := make(map[string]string)
-
 				if flavorRegex == `^m.*$` && os.Getenv("OS_TENANT_ID") == "" {
 					Convey("Run a job on a specific flavor", func() {
 						cmd := "sleep 10"
@@ -1072,13 +1071,20 @@ func waitToFinish(s *Scheduler, maxS int, interval int) bool {
 }
 
 func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	var extra string
 	if len(flavor) == 1 {
 		extra = "--flavor " + flavor[0] + " "
 	}
 	if osPrefix == "" {
-		cmd := exec.Command("bash", "-c", novaCmd+" list "+extra+"| grep -c "+rName)
+		cmdStr := novaCmd + " list " + extra + "| grep -c " + rName
+		cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 		out, err := cmd.Output()
+		if ctx.Err() != nil {
+			log.Printf("exec of [%s] timed out\n", cmdStr)
+			return 0
+		}
 		if err == nil {
 			count, err := strconv.Atoi(strings.TrimSpace(string(out)))
 			if err == nil {
@@ -1086,8 +1092,13 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 			}
 		}
 	} else {
-		cmd := exec.Command("bash", "-c", novaCmd+" list "+extra+"| grep "+rName)
+		cmdStr := novaCmd + " list " + extra + "| grep " + rName
+		cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 		out, err := cmd.Output()
+		if ctx.Err() != nil {
+			log.Printf("exec of [%s] timed out\n", cmdStr)
+			return 0
+		}
 		if err == nil {
 			r := regexp.MustCompile(rName + "-\\S+")
 			count := 0
