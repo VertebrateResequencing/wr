@@ -174,25 +174,10 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 		return err
 	}
 
-	// get the external network id
-	p.externalNetworkID, err = networks.IDFromName(p.networkClient, p.poolName)
-	if err != nil {
-		return err
-	}
-
-	// get the details of all the possible server flavors
+	// flavors and images are retrieved on-demand via caching methods that store
+	// in these maps
 	p.fmap = make(map[string]*Flavor)
-	err = p.cacheFlavors()
-	if err != nil {
-		return err
-	}
-
-	// get the details of all active images
 	p.imap = make(map[string]*images.Image)
-	err = p.cacheImages()
-	if err != nil {
-		return err
-	}
 
 	// to get a reasonable new server timeout we'll keep track of how long it
 	// takes to spawn them using an exponentially weighted moving average. We
@@ -515,6 +500,14 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 		return err
 	}
 	if routerID == "" {
+		// get the external network id
+		if p.externalNetworkID == "" {
+			p.externalNetworkID, err = networks.IDFromName(p.networkClient, p.poolName)
+			if err != nil {
+				return err
+			}
+		}
+
 		var router *routers.Router
 		router, err = routers.Create(p.networkClient, routers.CreateOpts{
 			Name:         resources.ResourceName,
@@ -617,7 +610,10 @@ func (p *openstackp) flavors() map[string]*Flavor {
 		}
 		p.fmapMutex.RLock()
 	}
-	fmap := p.fmap
+	fmap := make(map[string]*Flavor)
+	for key, val := range p.fmap {
+		fmap[key] = val
+	}
 	p.fmapMutex.RUnlock()
 	return fmap
 }
