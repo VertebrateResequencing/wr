@@ -30,6 +30,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,10 +49,11 @@ import (
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 
+	"math/rand"
+
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	"k8s.io/client-go/util/retry"
-	"math/rand"
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
@@ -270,6 +272,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files 
 									LocalObjectReference: apiv1.LocalObjectReference{
 										Name: configMapName,
 									},
+									DefaultMode: int32Ptr(0777),
 								},
 							},
 						},
@@ -517,6 +520,7 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 							LocalObjectReference: apiv1.LocalObjectReference{
 								Name: configMapName,
 							},
+							DefaultMode: int32Ptr(0777),
 						},
 					},
 				},
@@ -695,6 +699,31 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 	})
 
 	return configMap, err
+}
+
+// Very basic string fudging.
+// This allows a wr pod to execute some arbitrary script before starting the runner / manager.
+// So far it appears to work
+func (p *Kubernetesp) CreateInitScriptConfigMap(name string, scriptPath string) error {
+	// read in the script given
+	buf, err := ioutil.ReadFile(scriptPath)
+	if err != nil {
+		return err
+	}
+	// stringify
+	script := string(buf)
+
+	// Insert script into template
+	top := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
+	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+
+	_, err = p.NewConfigMap(&ConfigMapOpts{
+		Name: name,
+		Data: map[string]string{name + ".sh": top + script + bottom},
+	})
+
+	return err
+
 }
 
 func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
