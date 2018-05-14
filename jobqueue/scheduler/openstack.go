@@ -745,20 +745,30 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 		osRAM = s.config.OSRAM
 	}
 
-	disk := req.Disk
-	if disk == 0 {
-		disk = s.config.OSDisk
-	}
-
-	if req.RAM < osRAM || req.Disk < disk {
+	if req.RAM < osRAM {
 		reqForSpawn = &Requirements{
 			RAM:   osRAM,
 			Time:  req.Time,
 			Cores: req.Cores,
-			Disk:  disk,
+			Disk:  req.Disk,
 			Other: req.Other,
 		}
 	}
+
+	disk := req.Disk
+	if disk == 0 {
+		disk = s.config.OSDisk
+	}
+	if req.Disk < disk {
+		reqForSpawn = &Requirements{
+			RAM:   reqForSpawn.RAM,
+			Time:  reqForSpawn.Time,
+			Cores: reqForSpawn.Cores,
+			Disk:  disk,
+			Other: reqForSpawn.Other,
+		}
+	}
+
 	return reqForSpawn
 }
 
