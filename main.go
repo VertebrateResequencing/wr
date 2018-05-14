@@ -113,6 +113,8 @@ func main() {
 		cmd.ExecuteLSF("bsub")
 	case "bjobs":
 		cmd.ExecuteLSF("bjobs")
+	case "bkill":
+		cmd.ExecuteLSF("bkill")
 	default:
 		// otherwise we call our root command, which handles everything else
 		cmd.Execute()

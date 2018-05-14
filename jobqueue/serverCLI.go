@@ -705,6 +705,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 		MountConfigs:  sjob.MountConfigs,
 		MonitorDocker: sjob.MonitorDocker,
 		BsubMode:      sjob.BsubMode,
+		BsubID:        sjob.BsubID,
 	}
 
 	if state == JobStateReserved && !sjob.StartTime.IsZero() {

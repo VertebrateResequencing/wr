@@ -80,7 +80,7 @@ func Execute() {
 // ExecuteLSF is for treating a call to wr as if `wr lsf xxx` was called, for
 // the LSF emulation to work.
 func ExecuteLSF(cmd string) {
-	args := []string{"lsf", cmd}
+	args := append([]string{"lsf", cmd}, os.Args[1:]...)
 	command, _, err := RootCmd.Find(args)
 	if err != nil {
 		die(err.Error())

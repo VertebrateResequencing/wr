@@ -21,19 +21,40 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	goflag "flag"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/spf13/cobra"
 )
 
+const lsfTimeFormat = "Jan 02 15:04"
+
+var jobStateToLSFState = map[jobqueue.JobState]string{
+	jobqueue.JobStateNew:       "PEND",
+	jobqueue.JobStateDelayed:   "PEND",
+	jobqueue.JobStateDependent: "PEND",
+	jobqueue.JobStateReady:     "PEND",
+	jobqueue.JobStateReserved:  "PEND",
+	jobqueue.JobStateRunning:   "RUN",
+	jobqueue.JobStateLost:      "UNKWN",
+	jobqueue.JobStateBuried:    "EXIT",
+	jobqueue.JobStateComplete:  "DONE",
+}
+
 // options for this cmd
+var lsfNoHeader bool
+var lsfFormat string
+var lsfQueue string
 
 // lsfCmd represents the lsf command.
 var lsfCmd = &cobra.Command{
@@ -55,7 +76,8 @@ NB: currently the emulation is extremely limited, supporting only the
 interactive "console" mode where you run bsub without any arguments, and it only
 supports single flags per #BSUB line, and it only pays attention to -J, -n and
 -M flags. (This is sufficient for compatibility with 10x Genomic's cellranger
-software, and to work as the scheduler for nextflow.)
+software (which has Maritan built in), and to work as the scheduler for
+nextflow.) There is only one "queue", called 'wr'.
 
 The best way to use this LSF emulation is not to call this command yourself
 directly, but to use 'wr add --bsubs [other opts]' to add the command that you
@@ -184,6 +206,8 @@ var lsfBsubCmd = &cobra.Command{
 	},
 }
 
+type lsfFieldDisplay func(*jobqueue.Job) string
+
 // bjobs sub-command emulates bjobs.
 var lsfBjobsCmd = &cobra.Command{
 	Use:   "bjobs",
@@ -191,21 +215,266 @@ var lsfBjobsCmd = &cobra.Command{
 	Long: `See jobs that have been added using the lsf bsub command, using bjobs
 syntax and being formatted the way bjobs display this information.
 
-NB: Not yet implemented.`,
+Only lists all incomplete jobs. Unlike real bjobs, does not list recently
+completed jobs. Unlike real bjobs, does not truncate columns (always effectivly
+in -w mode).
+
+Only supports this limited set of real bjobs options:
+-noheader
+-o <output format>
+-q <queue name>
+
+The output format only supports simple listing of desired columns (not choosing
+their width), and specifying the delimiter. The only columns supported are
+JOBID, USER, STAT, QUEUE, FROM_HOST, EXEC_HOST, JOB_NAME and SUBMIT_TIME.
+eg. -o 'JOBID STAT SUBMIT_TIME delimiter=","'
+
+While -q can be provided, and that provided queue will be displayed in the
+output, in reality there is only 1 queue called 'wr', so -q has no real function
+other than providing compatability with real bjobs command line args.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("bjobs not yet implemented")
-		os.Exit(-1)
+		user, err := internal.Username()
+		if err != nil {
+			die(err.Error())
+		}
+
+		// connect to the server
+		jq := connect(10 * time.Second)
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
+
+		// set up viewing of the allowed fields
+		fieldLookup := make(map[string]lsfFieldDisplay)
+		fieldLookup["JOBID"] = func(job *jobqueue.Job) string {
+			return strconv.Itoa(int(job.BsubID))
+		}
+		fieldLookup["USER"] = func(job *jobqueue.Job) string {
+			return user
+		}
+		fieldLookup["STAT"] = func(job *jobqueue.Job) string {
+			return jobStateToLSFState[job.State]
+		}
+		fieldLookup["QUEUE"] = func(job *jobqueue.Job) string {
+			return lsfQueue
+		}
+		fieldLookup["FROM_HOST"] = func(job *jobqueue.Job) string {
+			return jq.ServerInfo.Host
+		}
+		fieldLookup["EXEC_HOST"] = func(job *jobqueue.Job) string {
+			return job.Host
+		}
+		fieldLookup["JOB_NAME"] = func(job *jobqueue.Job) string {
+			return job.RepGroup
+		}
+		fieldLookup["SUBMIT_TIME"] = func(job *jobqueue.Job) string {
+			return job.StartTime.Format(lsfTimeFormat)
+		}
+
+		// parse -o
+		var delimiter string
+		var fields []string
+		var w io.Writer
+		if lsfFormat != "" {
+			// parse -o format
+			re := regexp.MustCompile(`(?i)\s*delimiter=["'](.*)["']\s*`)
+			matches := re.FindStringSubmatch(lsfFormat)
+			if matches != nil {
+				delimiter = matches[1]
+				lsfFormat = re.ReplaceAllString(lsfFormat, "")
+			} else {
+				delimiter = " "
+			}
+			for _, field := range strings.Split(lsfFormat, " ") {
+				field = strings.ToUpper(field)
+				if _, exists := fieldLookup[field]; !exists {
+					die("unsupported field '%s'", field)
+				}
+				fields = append(fields, field)
+			}
+
+			// custom format just uses a single delimiter between fields
+			w = os.Stdout
+		} else {
+			// standard format uses aligned columns of the fields
+			delimiter = "\t"
+			fields = []string{"JOBID", "USER", "STAT", "QUEUE", "FROM_HOST", "EXEC_HOST", "JOB_NAME", "SUBMIT_TIME"}
+			w = tabwriter.NewWriter(os.Stdout, 2, 2, 3, ' ', 0)
+		}
+
+		// get all incomplete jobs
+		jobs, err := jq.GetIncomplete(0, "", false, false)
+		if err != nil {
+			die(err.Error())
+		}
+
+		// print out details about the ones that have BsubIDs
+		found := false
+		for _, job := range jobs {
+			jid := job.BsubID
+			if jid == 0 {
+				continue
+			}
+
+			if !found {
+				if !lsfNoHeader {
+					// print header
+					fmt.Fprintln(w, strings.Join(fields, delimiter))
+				}
+				found = true
+			}
+
+			var vals []string
+			for _, field := range fields {
+				vals = append(vals, fieldLookup[field](job))
+			}
+			fmt.Fprintln(w, strings.Join(vals, delimiter))
+		}
+
+		if lsfFormat == "" {
+			tw := w.(*tabwriter.Writer)
+			tw.Flush()
+		}
+
+		if !found {
+			fmt.Println("No unfinished job found")
+		}
+	},
+}
+
+// bkill sub-command emulates bkill.
+var lsfBkillCmd = &cobra.Command{
+	Use:   "bkill",
+	Short: "Kill jobs added using bsub",
+	Long: `Kill jobs that have been added using the lsf bsub command.
+
+Only supports providing jobIds as command line arguements. Does not currently
+understand any of the options that real bkill does.
+
+Note that if a given jobId is not currently in the queue, always just claims
+that the job has already finished, even if an invalid jobId was supplied.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// convert args to uint64s
+		desired := make(map[uint64]bool)
+		for _, arg := range args {
+			i, err := strconv.Atoi(arg)
+			if err != nil {
+				die("could not convert jobID [%s] to an int: %s", arg, err)
+			}
+			desired[uint64(i)] = true
+		}
+		if len(desired) == 0 {
+			die("job ID must be specified")
+		}
+
+		// connect to the server
+		jq := connect(10 * time.Second)
+		var err error
+		defer func() {
+			err = jq.Disconnect()
+			if err != nil {
+				warn("Disconnecting from the server failed: %s", err)
+			}
+		}()
+
+		// get all incomplete jobs *** this is hardly efficient...
+		jobs, err := jq.GetIncomplete(0, "", false, false)
+		if err != nil {
+			die(err.Error())
+		}
+
+		// remove the matching ones
+	JOBS:
+		for _, job := range jobs {
+			jid := job.BsubID
+			if !desired[jid] {
+				continue
+			}
+
+			if job.State == jobqueue.JobStateRunning {
+				_, errk := jq.Kill([]*jobqueue.JobEssence{job.ToEssense()})
+				if errk != nil {
+					warn("error trying to kill job %d: %s", jid, errk)
+					continue
+				}
+
+				// wait until it gets buried
+				for {
+					<-time.After(500 * time.Millisecond)
+					got, errg := jq.GetByEssence(job.ToEssense(), false, false)
+					if errg != nil {
+						warn("error trying confirm job %d was killed: %s", jid, errg)
+						continue JOBS
+					}
+
+					if got.State == jobqueue.JobStateBuried {
+						break
+					}
+				}
+			}
+
+			_, errd := jq.Delete([]*jobqueue.JobEssence{job.ToEssense()})
+			if errd != nil {
+				warn("error trying to delete job %d: %s", jid, errd)
+				continue
+			}
+
+			fmt.Printf("Job <%d> is being terminated\n", jid)
+			delete(desired, jid)
+		}
+
+		for jid := range desired {
+			fmt.Printf("Job <%d>: Job has already finished\n", jid)
+		}
 	},
 }
 
 func init() {
+	// custom handling of LSF args with their single dashes
+	args, lsfArgs := filterGoFlags(os.Args, map[string]bool{
+		"noheader": false,
+		"o":        true,
+		"q":        true,
+	})
+	os.Args = args
+
+	goflag.BoolVar(&lsfNoHeader, "noheader", false, "disable header output")
+	goflag.StringVar(&lsfFormat, "o", "", "output format")
+	goflag.StringVar(&lsfQueue, "q", "wr", "queue")
+	if err := goflag.CommandLine.Parse(lsfArgs); err != nil {
+		die("error parsing LSF args: ", err)
+	}
+
 	RootCmd.AddCommand(lsfCmd)
 	lsfCmd.AddCommand(lsfBsubCmd)
 	lsfCmd.AddCommand(lsfBjobsCmd)
+	lsfCmd.AddCommand(lsfBkillCmd)
+}
 
-	// flags specific to these sub-commands
-	// defaultConfig := internal.DefaultConfig()
-	// managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
-	// managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
-	// managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
+// filterGoFlags splits lsf args, which use single dash named args, from wr
+// args, which use single dash to mean a set of shorthand flags.
+func filterGoFlags(args []string, prefixes map[string]bool) ([]string, []string) {
+	// from https://gist.github.com/doublerebel/8b95c5c118e958e495d2
+	var goFlags []string
+	for i := 0; 0 < len(args) && i < len(args); i++ {
+		for prefix, hasValue := range prefixes {
+			if strings.HasPrefix(args[i], "-"+prefix) {
+				goFlags = append(goFlags, args[i])
+				skip := 1
+				if hasValue && i+1 < len(args) {
+					goFlags = append(goFlags, args[i+1])
+					skip = 2
+				}
+				if i+skip <= len(args) {
+					args = append(args[:i], args[i+skip:]...)
+				}
+				i--
+				break
+			}
+		}
+	}
+	return args, goFlags
 }
