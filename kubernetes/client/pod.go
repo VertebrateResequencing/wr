@@ -198,16 +198,9 @@ func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []
 }
 
 // Sets up port forwarding to the manager that is running inside the cluster
-func (p *Kubernetesp) PortForward(podName string, requiredPorts []int) error {
-	fmt.Println(podName)
-	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
-	if err != nil {
-		p.Logger.Error("Getting pod for port forward", "err", err, "pod", podName)
-		return err
-	}
-	fmt.Println(pod)
+func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	if pod.Status.Phase != apiv1.PodRunning {
-		p.Logger.Error("unable to forward port because pod is not running.", "status", pod.Status.Phase, "pod", podName)
+		p.Logger.Error("unable to forward port because pod is not running.", "status", pod.Status.Phase, "pod", pod.ObjectMeta.Name)
 		return fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
 	}
 
@@ -287,10 +280,11 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 }
 
 // To be called by controller when condition met
-func (p *Kubernetesp) DaemonisePortForward(podName string, requiredPorts []int) error {
+// I don't think this can work like this. Needs to be callable as an exec'd command to the binary?
+func (p *Kubernetesp) DaemonisePortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	// This return should be executed by the child. Daemonising code below.
 	// This way the portforward function knows nothing about how it's been daemonised.
-
+	fmt.Println("In daemoniseportforward")
 	p.context = &daemon.Context{
 		PidFileName: "portForwardPid",
 		PidFilePerm: 0644,
@@ -298,7 +292,7 @@ func (p *Kubernetesp) DaemonisePortForward(podName string, requiredPorts []int) 
 		Umask:       027,
 		Args:        []string{},
 	}
-
+	fmt.Println("Calling context.Reborn()")
 	child, err := p.context.Reborn()
 	if err != nil {
 		panic(fmt.Errorf("failed to daemonize: %s", err))
@@ -307,6 +301,7 @@ func (p *Kubernetesp) DaemonisePortForward(podName string, requiredPorts []int) 
 	if child != nil {
 		return nil
 	}
+	fmt.Println("Calling defer on release")
 	defer p.context.Release()
 
 	fmt.Println("Port Forward Daemon Started")
@@ -321,11 +316,11 @@ func (p *Kubernetesp) DaemonisePortForward(podName string, requiredPorts []int) 
 	go func() {
 		<-signals
 		if p.StopChannel != nil { // If stop channel is open
-			//Closing StopChannel terminates the forward request
+			// Closing StopChannel terminates the forward request
 			close(p.StopChannel)
 		}
 	}()
-	go p.PortForward(podName, requiredPorts)
+	go p.PortForward(pod, requiredPorts)
 
 	err = daemon.ServeSignals()
 	if err != nil {
