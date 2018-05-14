@@ -40,7 +40,6 @@ import (
 	"github.com/inconshreveable/log15"
 	daemon "github.com/sevlyar/go-daemon"
 	apiv1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
@@ -131,7 +130,7 @@ func makeTar(files []FilePair, writer io.Writer) error {
 	//Set up tar writer
 	tarWriter := tar.NewWriter(writer)
 	defer tarWriter.Close()
-	//Add each file to the tarball
+	// Add each file to the tarball
 	fmt.Println(len(files))
 	for i := range files {
 		fmt.Printf("Adding file %v \n", files[i])
@@ -147,8 +146,8 @@ func makeTar(files []FilePair, writer io.Writer) error {
 // ToDO: Set up writers for stderr and out internal to AttachCmd(), returning just strings &
 // removing the fields from the CmdOptions struct
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
-	//Make a request to the APIServer for an 'attach'.
-	//Open Stdin and Stderr for use by the client
+	// Make a request to the APIServer for an 'attach'.
+	// Open Stdin and Stderr for use by the client
 	execRequest := p.RESTClient.Post().
 		Resource("pods").
 		Name(opts.PodName).
@@ -162,14 +161,14 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 		TTY:       false,
 	}, scheme.ParameterCodec)
 
-	//Create an executor to send commands / receive output.
-	//SPDY Allows multiplexed bidirectional streams to and from  the pod
+	// Create an executor to send commands / receive output.
+	// SPDY Allows multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
 		panic(fmt.Errorf("Error creating SPDYExecutor: %v", err))
 	}
-	//Execute the command, with Std(in,out,err) pointing to the
-	//above readers and writers
+	// Execute the command, with Std(in,out,err) pointing to the
+	// above readers and writers
 	err = exec.Stream(remotecommand.StreamOptions{
 		Stdin:  opts.In,
 		Stdout: opts.Out,
@@ -234,7 +233,7 @@ func (p *Kubernetesp) PortForward(podName string, requiredPorts []int) error {
 		Name(pod.Name).
 		SubResource("portforward")
 
-	//convert ports from []int to []string
+	// convert ports from []int to []string
 	ports := make([]string, 2)
 	for i, port := range requiredPorts {
 		ports[i] = strconv.Itoa(port)
