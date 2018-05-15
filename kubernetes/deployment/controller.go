@@ -101,7 +101,6 @@ func (c *Controller) addEventHandlers() {
 			key, err := cache.MetaNamespaceKeyFunc(newObj)
 			if err == nil {
 				c.queue.Add(key)
-				//fmt.Printf("==== Incoming Update to a Pod ====\n")
 			}
 
 		},
@@ -129,7 +128,6 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	// Ensure workqueue is shut down properly
 	defer c.queue.ShutDown()
 
-	//fmt.Println("Starting Controller")
 	go c.informer.Run(stopCh)
 
 	if !cache.WaitForCacheSync(stopCh, c.HasSynced) {
@@ -137,14 +135,12 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		return
 	}
 
-	//fmt.Println("Controller synced and ready")
-
 	// Before starting, create the initial deployment
 	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.Files, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 	if err != nil {
 		panic(err)
 	}
-	// runWorker loops until 'bad thing'. .Until will
+	// runWorker loops until 'bad thing'. '.Until' will
 	// restart the worker after a second
 	wait.Until(c.runWorker, time.Second, stopCh)
 }
@@ -227,7 +223,7 @@ func (c *Controller) processObj(obj interface{}) error {
 	return nil
 }
 
-//Assume there is only 1 initcontainer
+// Assume there is only 1 initcontainer
 func (c *Controller) processPod(obj *apiv1.Pod) {
 	fmt.Println("processPod Called")
 	if len(obj.Status.InitContainerStatuses) != 0 {
@@ -240,7 +236,9 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			// here goes nothing
 			c.Client.CopyTar(c.Opts.Files, obj)
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
-			fmt.Println("WR manager container is running")
+			fmt.Println("WR manager container is running, calling PortForward")
+			go c.Client.PortForward(obj, c.Opts.RequiredPorts)
+			defer close(c.Client.StopChannel)
 		default:
 			fmt.Println("Not InitContainer or WR Manager container related")
 		}
