@@ -437,9 +437,6 @@ func (j *Job) TriggerBehaviours(success bool) error {
 // itself. (This will fail if j.Cwd is not empty or already mounted by another
 // process.)
 func (j *Job) Mount(onCwd ...bool) error {
-	// j.Lock()
-	// defer j.Unlock()
-
 	cwd := j.Cwd
 	defaultMount := filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase := cwd
