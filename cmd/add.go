@@ -594,7 +594,7 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 
 		remote, err := jq.UploadFile(local, desired)
 		if err != nil {
-			warn("failed to open file %s: %s", local, err)
+			warn("failed to upload [%s] to [%s]: %s", local, desired, err)
 			remoteConfigFiles = append(remoteConfigFiles, cf)
 			continue
 		}
