@@ -436,14 +436,10 @@ func init() {
 	// custom handling of LSF args with their single dashes
 	args, lsfArgs := filterGoFlags(os.Args, map[string]bool{
 		"noheader": false,
-		"o":        true,
-		"q":        true,
 	})
 	os.Args = args
 
 	goflag.BoolVar(&lsfNoHeader, "noheader", false, "disable header output")
-	goflag.StringVar(&lsfFormat, "o", "", "output format")
-	goflag.StringVar(&lsfQueue, "q", "wr", "queue")
 	if err := goflag.CommandLine.Parse(lsfArgs); err != nil {
 		die("error parsing LSF args: ", err)
 	}
@@ -452,6 +448,11 @@ func init() {
 	lsfCmd.AddCommand(lsfBsubCmd)
 	lsfCmd.AddCommand(lsfBjobsCmd)
 	lsfCmd.AddCommand(lsfBkillCmd)
+
+	// add lsf single character options using normal method, so these don't get
+	// stripped out from all other wr sub-cmds
+	lsfBjobsCmd.Flags().StringVarP(&lsfFormat, "output", "o", "", "output format")
+	lsfBjobsCmd.Flags().StringVarP(&lsfQueue, "queue", "q", "wr", "queue")
 }
 
 // filterGoFlags splits lsf args, which use single dash named args, from wr
