@@ -438,86 +438,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 	stdout := &prefixSuffixSaver{N: 4096}
 	stdoutWait := stdFilter(outReader, stdout)
 
-	var onCwd bool
-	var prependPath string
-	if job.BsubMode != "" {
-		// create parent of job.Cwd so we can later mount at job.Cwd
-		parent := filepath.Dir(job.Cwd)
-		errm := os.MkdirAll(parent, os.ModePerm)
-		if fi, errs := os.Stat(parent); errs != nil || !fi.Mode().IsDir() {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("parent of working directory [%s] could not be created: %s%s", parent, errm, extra)
-		}
-	}
-	var mountCouldFail bool
-	host, err := os.Hostname()
-	if err != nil {
-		host = localhost
-	}
-	if job.BsubMode != "" {
-		jobCwd := job.Cwd
-		if jobCwd == "" {
-			jobCwd = "."
-		}
-		absJobCwd, erra := filepath.Abs(jobCwd)
-		if erra != nil {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("failed to make cmd dir absolute: %s%s", erra, extra)
-		}
-		parent := filepath.Dir(absJobCwd)
-
-		// create bsub and bjobs symlinks in a sister dir of job.Cwd
-		prependPath = filepath.Join(parent, lsfEmulationDir)
-		errm := os.MkdirAll(prependPath, os.ModePerm)
-		if fi, errs := os.Stat(prependPath); errs != nil || !fi.Mode().IsDir() {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("sister of working directory [%s] could not be created: %s%s", prependPath, errm, extra)
-		}
-		wr, erre := os.Executable()
-		if erre != nil {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("could not get path to wr: %s%s", erre, extra)
-		}
-		bsub := filepath.Join(prependPath, "bsub")
-		bjobs := filepath.Join(prependPath, "bjobs")
-		err = os.Symlink(wr, bsub)
-		if err != nil && !os.IsExist(err) {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("could not create bsub symlink: %s%s", err, extra)
-		}
-		err = os.Symlink(wr, bjobs)
-		if err != nil && !os.IsExist(err) {
-			errb := c.Bury(job, nil, FailReasonCwd)
-			extra := ""
-			if errb != nil {
-				extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
-			}
-			return fmt.Errorf("could not create bjobs symlink: %s%s", err, extra)
-		}
-
-		onCwd = job.CwdMatters
-	}
-
 	// we'll run the command from the desired directory, which must exist or
 	// it will fail
 	if fi, errf := os.Stat(job.Cwd); errf != nil || !fi.Mode().IsDir() {
@@ -549,9 +469,48 @@ func (c *Client) Execute(job *Job, shell string) error {
 		job.ActualCwd = actualCwd
 	}
 
+	var myerr error
+
+	var onCwd bool
+	var prependPath string
+	if job.BsubMode != "" {
+		// create our bsub symlinks in a tmp dir
+		prependPath, err = ioutil.TempDir("", lsfEmulationDir)
+		if err != nil {
+			buryErr := fmt.Errorf("could not create lsf emulation directory: %s", err)
+			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
+			if errb != nil {
+				buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
+			}
+			return buryErr
+		}
+		defer func() {
+			errr := os.RemoveAll(prependPath)
+			if errr != nil {
+				if myerr == nil {
+					myerr = errr
+				} else {
+					myerr = fmt.Errorf("%s (and removing the lsf emulation dir failed: %s)", myerr.Error(), errr)
+				}
+			}
+		}()
+
+		err = c.createLSFSymlinks(prependPath, job)
+		if err != nil {
+			return err
+		}
+
+		onCwd = job.CwdMatters
+	}
+
 	// if we are a child job of another running on the same host, we expect
 	// mounting to fail since we're running in the same directory as our
 	// parent
+	var mountCouldFail bool
+	host, err := os.Hostname()
+	if err != nil {
+		host = localhost
+	}
 	if jsonStr := job.Getenv("WR_BSUB_CONFIG"); jsonStr != "" {
 		configJob := &Job{}
 		if erru := json.Unmarshal([]byte(jsonStr), configJob); erru == nil && configJob.Host == host {
@@ -579,8 +538,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 			return buryErr
 		}
 	}
-
-	var myerr error
 
 	// and we'll run it with the environment variables that were present when
 	// the command was first added to the queue (or if none, current env vars,
@@ -1160,6 +1117,53 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	return myerr
+}
+
+// createLSFSymlinks creates symlinks of bsub, bjobs and bkill to own exe,
+// inside the given dir.
+func (c *Client) createLSFSymlinks(prependPath string, job *Job) error {
+	wr, erre := os.Executable()
+	if erre != nil {
+		errb := c.Bury(job, nil, FailReasonCwd)
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+		return fmt.Errorf("could not get path to wr: %s%s", erre, extra)
+	}
+
+	bsub := filepath.Join(prependPath, "bsub")
+	bjobs := filepath.Join(prependPath, "bjobs")
+	bkill := filepath.Join(prependPath, "bkill")
+	err := os.Symlink(wr, bsub)
+	if err != nil {
+		errb := c.Bury(job, nil, FailReasonCwd)
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+		return fmt.Errorf("could not create bsub symlink: %s%s", err, extra)
+	}
+	err = os.Symlink(wr, bjobs)
+	if err != nil {
+		errb := c.Bury(job, nil, FailReasonCwd)
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+		return fmt.Errorf("could not create bjobs symlink: %s%s", err, extra)
+	}
+	err = os.Symlink(wr, bkill)
+	if err != nil {
+		errb := c.Bury(job, nil, FailReasonCwd)
+		extra := ""
+		if errb != nil {
+			extra = fmt.Sprintf(" (and burying the job failed: %s)", errb)
+		}
+		return fmt.Errorf("could not create bkill symlink: %s%s", err, extra)
+	}
+
+	return nil
 }
 
 // Started updates a Job on the server with information that you've started
