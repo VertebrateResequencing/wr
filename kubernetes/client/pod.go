@@ -21,8 +21,6 @@ package client
 // This file contains the code for the Pod struct.
 
 import (
-	"os/signal"
-
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
@@ -38,7 +36,6 @@ import (
 	"strconv"
 
 	"github.com/inconshreveable/log15"
-	daemon "github.com/sevlyar/go-daemon"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
@@ -277,57 +274,4 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
 	return err
 
-}
-
-// To be called by controller when condition met
-// I don't think this can work like this. Needs to be callable as an exec'd command to the binary?
-func (p *Kubernetesp) DaemonisePortForward(pod *apiv1.Pod, requiredPorts []int) error {
-	// This return should be executed by the child. Daemonising code below.
-	// This way the portforward function knows nothing about how it's been daemonised.
-	fmt.Println("In daemoniseportforward")
-	p.context = &daemon.Context{
-		PidFileName: "portForwardPid",
-		PidFilePerm: 0644,
-		WorkDir:     "/",
-		Umask:       027,
-		Args:        []string{},
-	}
-	fmt.Println("Calling context.Reborn()")
-	child, err := p.context.Reborn()
-	if err != nil {
-		panic(fmt.Errorf("failed to daemonize: %s", err))
-	}
-
-	if child != nil {
-		return nil
-	}
-	fmt.Println("Calling defer on release")
-	defer p.context.Release()
-
-	fmt.Println("Port Forward Daemon Started")
-
-	// Interupt handler: On interupt close p.StopChannel.
-	signals := make(chan os.Signal, 1)   // channel to receive interrupt
-	signal.Notify(signals, os.Interrupt) // Notify on interrupt
-	defer signal.Stop(signals)           // stop relaying signals to signals
-
-	// Avoid deadlock using goroutine
-	// <-signals is blocking
-	go func() {
-		<-signals
-		if p.StopChannel != nil { // If stop channel is open
-			// Closing StopChannel terminates the forward request
-			close(p.StopChannel)
-		}
-	}()
-	go p.PortForward(pod, requiredPorts)
-
-	err = daemon.ServeSignals()
-	if err != nil {
-		panic(fmt.Errorf("Error calling daemon.ServeSignals(): %v\n", err))
-	}
-
-	fmt.Println("Port Forward Daemon Stopped")
-
-	return nil
 }
