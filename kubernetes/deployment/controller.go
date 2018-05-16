@@ -238,7 +238,6 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
 			fmt.Println("WR manager container is running, calling PortForward")
 			go c.Client.PortForward(obj, c.Opts.RequiredPorts)
-			defer close(c.Client.StopChannel)
 		default:
 			fmt.Println("Not InitContainer or WR Manager container related")
 		}
