@@ -19,6 +19,11 @@
 package scheduler
 
 import (
+	"fmt"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	kubeinformers "k8s.io/client-go/informers"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
@@ -27,6 +32,7 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -95,6 +101,91 @@ func NewController(
 	})
 
 	return controller
+}
+
+// Run sets up event handlers, synces informer caches and starts workers
+// blocks until stopCh is closed, at which point it'll shut down workqueue
+// and wait for workers to finish processing.
+func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
+	defer runtime.HandleCrash()
+	defer c.workqueue.ShutDown()
+
+	// Start informer factories, begin populating informer caches.
+
+	// Wait for caches to sync before starting workers
+	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
+		return fmt.Errorf("failed to wait for caches to sync")
+	}
+
+	// start workers
+	for i := 0; i < threadiness; i++ {
+		go wait.Until(c.runWorker, time.Second, stopCh)
+	}
+
+	<-stopCh
+
+	return nil
+}
+
+// continually call processNextWorkItem to
+// read and process th enext message on the workqueue
+func (c *Controller) runWorker() {
+	for c.processNextWorkItem() {
+	}
+}
+
+// processNextWorkItem reads a single work item off the workqueue and
+// attempts to process it, by calling the syncHandler.
+func (c *Controller) processNextWorkItem() bool {
+	obj, shutdown := c.workqueue.Get()
+
+	if shutdown {
+		return false
+	}
+
+	// Wrap this block in func so can defer c.workqueue.Done.
+	err := func(obj interface{}) error {
+		// Call done so workqueue knows we have
+		// finished processing this item
+		// Must also call forget if we don't want the
+		// item re-queued.
+		defer c.workqueue.Done(obj)
+		var key string
+		var ok bool
+		// strings come off workqueue: namespace/name.
+		// delayed nature of wq means items in informer cache
+		// may be more up to date than the item initially
+		// put in the wq.
+		if key, ok = obj.(string); !ok {
+			// As item in workqueue is invalid, call forget
+			// else would loop attempting to process an
+			// invalid work item.
+			c.workqueue.Forget(obj)
+			runtime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
+			return nil
+		}
+
+		// Run syncHandler, passing it the namespace/name key of the resource to be synced
+		if err := c.syncHandler(key); err != nil {
+			return fmt.Errorf("error syncing '%s' : %s", key, err.Error())
+		}
+		// Finally, if no error occurs forget the item so it's not queued again
+		c.workqueue.Forget(obj)
+		return nil
+
+	}(obj)
+
+	if err != nil {
+		runtime.HandleError(err)
+		return true
+	}
+	return true
+}
+
+// syncHandler compares the actual state with the desired, and attempts
+// to converge the two
+func (c *Controller) syncHandler(key string) error {
+	return nil
 }
 
 func (c *Controller) handleObject(obj interface{}) {}
