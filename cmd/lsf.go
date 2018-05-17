@@ -76,8 +76,8 @@ NB: currently the emulation is extremely limited, supporting only the
 interactive "console" mode where you run bsub without any arguments, and it only
 supports single flags per #BSUB line, and it only pays attention to -J, -n and
 -M flags. (This is sufficient for compatibility with 10x Genomic's cellranger
-software (which has Maritan built in), and to work as the scheduler for
-nextflow.) There is only one "queue", called 'wr'.
+software (which has Martian built in), and to work as the scheduler for
+nextflow in LSF mode.) There is only one "queue", called 'wr'.
 
 The best way to use this LSF emulation is not to call this command yourself
 directly, but to use 'wr add --bsubs [other opts]' to add the command that you
@@ -216,7 +216,7 @@ var lsfBjobsCmd = &cobra.Command{
 syntax and being formatted the way bjobs display this information.
 
 Only lists all incomplete jobs. Unlike real bjobs, does not list recently
-completed jobs. Unlike real bjobs, does not truncate columns (always effectivly
+completed jobs. Unlike real bjobs, does not truncate columns (always effectively
 in -w mode).
 
 Only supports this limited set of real bjobs options:
@@ -231,7 +231,7 @@ eg. -o 'JOBID STAT SUBMIT_TIME delimiter=","'
 
 While -q can be provided, and that provided queue will be displayed in the
 output, in reality there is only 1 queue called 'wr', so -q has no real function
-other than providing compatability with real bjobs command line args.`,
+other than providing compatibility with real bjobs command line args.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		user, err := internal.Username()
 		if err != nil {
@@ -336,7 +336,10 @@ other than providing compatability with real bjobs command line args.`,
 
 		if lsfFormat == "" {
 			tw := w.(*tabwriter.Writer)
-			tw.Flush()
+			errf := tw.Flush()
+			if errf != nil {
+				warn("failed to flush output: %s", errf)
+			}
 		}
 
 		if !found {
@@ -351,7 +354,7 @@ var lsfBkillCmd = &cobra.Command{
 	Short: "Kill jobs added using bsub",
 	Long: `Kill jobs that have been added using the lsf bsub command.
 
-Only supports providing jobIds as command line arguements. Does not currently
+Only supports providing jobIds as command line arguments. Does not currently
 understand any of the options that real bkill does.
 
 Note that if a given jobId is not currently in the queue, always just claims

@@ -671,33 +671,33 @@ func (s *Server) CreateSharedDisk() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get install nfs-kernel-server -y")
+	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get install nfs-kernel-server -y") // #nosec
 	err := cmd.Run()
 	if err != nil {
 		return err
 	}
 
-	cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath))
+	cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath)) // #nosec
 	err = cmd.Run()
 	if err != nil {
 		return err
 	}
 
-	if _, err := os.Stat(sharePath); err != nil && os.IsNotExist(err) {
-		cmd = exec.CommandContext(ctx, "bash", "-c", "sudo mkdir "+sharePath)
-		err = cmd.Run()
-		if err != nil {
-			return err
+	if _, errs := os.Stat(sharePath); errs != nil && os.IsNotExist(errs) {
+		cmd = exec.CommandContext(ctx, "bash", "-c", "sudo mkdir "+sharePath) // #nosec
+		errs = cmd.Run()
+		if errs != nil {
+			return errs
 		}
 
-		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, sharePath))
-		err = cmd.Run()
-		if err != nil {
-			return err
+		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, sharePath)) // #nosec
+		errs = cmd.Run()
+		if errs != nil {
+			return errs
 		}
 	}
 
-	cmd = exec.CommandContext(ctx, "bash", "-c", "sudo systemctl start nfs-kernel-server.service && sudo exportfs -a")
+	cmd = exec.CommandContext(ctx, "bash", "-c", "sudo systemctl start nfs-kernel-server.service && sudo export"+"fs -a") // #nosec (the split is to avoid a false-positive spelling mistake)
 	err = cmd.Run()
 	if err != nil {
 		return err
