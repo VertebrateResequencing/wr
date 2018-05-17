@@ -182,28 +182,32 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 // initialise uses the passed clientset to
 // authenticated create some clients used in other methods.
 // also creates a new namespace for wr to work in
-func (p *Kubernetesp) Initialize(clientset kubernetes.Interface) error {
+func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...string) error {
 	// Create REST client
 	p.RESTClient = clientset.CoreV1().RESTClient()
 	// Create namespace client
 	p.namespaceClient = clientset.CoreV1().Namespaces()
-	// Create a unique namespace
-	rand.Seed(time.Now().UnixNano())
-	p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
-	fmt.Printf("NewNamespaceName: %v \n", p.NewNamespaceName)
-	// Retry if namespace taken
-	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		nsErr := p.CreateNewNamespace(p.NewNamespaceName)
-		if nsErr != nil {
-			fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.NewNamespaceName, nsErr)
-			p.Logger.Warn("Failed to create new namespace. Trying again.", "namespace", p.NewNamespaceName, "err", nsErr)
-			p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
+	// Create a unique namespace if one isn't passed
+	if len(namespace) == 1 {
+		p.NewNamespaceName = namespace[0]
+	} else {
+		rand.Seed(time.Now().UnixNano())
+		p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
+		fmt.Printf("NewNamespaceName: %v \n", p.NewNamespaceName)
+		// Retry if namespace taken
+		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			nsErr := p.CreateNewNamespace(p.NewNamespaceName)
+			if nsErr != nil {
+				fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.NewNamespaceName, nsErr)
+				p.Logger.Warn("Failed to create new namespace. Trying again.", "namespace", p.NewNamespaceName, "err", nsErr)
+				p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
+			}
+			return nsErr
+		})
+		if retryErr != nil {
+			p.Logger.Error("Creation of new namespace failed", "err", retryErr)
+			return fmt.Errorf("Creation of new namespace failed: %v", retryErr)
 		}
-		return nsErr
-	})
-	if retryErr != nil {
-		p.Logger.Error("Creation of new namespace failed", "err", retryErr)
-		return fmt.Errorf("Creation of new namespace failed: %v", retryErr)
 	}
 
 	// Create client for deployments that is authenticated against the given cluster. Use default namsespace.
