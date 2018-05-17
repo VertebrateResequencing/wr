@@ -235,7 +235,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// real pid; though it may actually be running on a remote host and we
 		// managed to connect to it via ssh port forwarding; compare the server
 		// ip to our own
-		currentIP, err := jobqueue.CurrentIP("")
+		currentIP, err := internal.CurrentIP("")
 		if err != nil {
 			warn("Could not get current IP: %s", err)
 		}
@@ -433,7 +433,7 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
 
 	if setDomainIP {
-		ip, err := jobqueue.CurrentIP("")
+		ip, err := internal.CurrentIP("")
 		if err != nil {
 			warn("could not get IP address of localhost: %s", err)
 		}

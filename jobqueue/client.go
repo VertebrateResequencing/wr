@@ -593,10 +593,12 @@ func (c *Client) Execute(job *Job, shell string) error {
 		// run on the same host as us and therefore any mounts are expected to
 		// fail)
 		simplified := &Job{
-			MountConfigs: job.MountConfigs,
 			Requirements: job.Requirements,
 			BsubMode:     job.BsubMode,
 			Host:         host,
+		}
+		if _, exists := job.Requirements.Other["cloud_shared"]; !exists {
+			simplified.MountConfigs = job.MountConfigs
 		}
 		jobJSON, errm := json.Marshal(simplified)
 		if errm != nil {
@@ -1180,7 +1182,7 @@ func (c *Client) Started(job *Job, pid int) error {
 		host = localhost
 	}
 	job.Host = host
-	job.HostIP, err = CurrentIP("")
+	job.HostIP, err = internal.CurrentIP("")
 	if err != nil {
 		return err
 	}

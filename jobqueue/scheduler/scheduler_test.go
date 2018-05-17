@@ -766,6 +766,40 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("Schedule() lets you...", func() {
 				oFile := filepath.Join(tmpdir, "out")
+
+				Convey("Run jobs that use a NFS shared disk", func() {
+					cmd := "touch /shared/test1"
+					other := make(map[string]string)
+					other["cloud_shared"] = "true"
+					localReq := &Requirements{100, 1 * time.Minute, 1, 1, other}
+					err := s.Schedule(cmd, localReq, 1)
+					So(err, ShouldBeNil)
+
+					remoteReq := oss.reqForSpawn(localReq)
+					for _, server := range oss.servers {
+						if server.Flavor.RAM >= remoteReq.RAM {
+							remoteReq.RAM = server.Flavor.RAM + 1000
+						}
+					}
+					remoteReq.Other = other
+					cmd = "touch /shared/test2"
+					err = s.Schedule(cmd, remoteReq, 1)
+					So(err, ShouldBeNil)
+
+					So(s.Busy(), ShouldBeTrue)
+					So(waitToFinish(s, 240, 1000), ShouldBeTrue)
+
+					_, err = os.Stat("/shared/test1")
+					So(err, ShouldBeNil)
+					_, err = os.Stat("/shared/test2")
+					So(err, ShouldBeNil)
+
+					err = os.Remove("/shared/test1")
+					So(err, ShouldBeNil)
+					err = os.Remove("/shared/test2")
+					So(err, ShouldBeNil)
+				})
+
 				if flavorRegex == `^m.*$` && os.Getenv("OS_TENANT_ID") == "" {
 					Convey("Run a job on a specific flavor", func() {
 						cmd := "sleep 10"

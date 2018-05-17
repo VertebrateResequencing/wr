@@ -82,7 +82,8 @@ type JobViaJSON struct {
 	CloudConfigFiles string            `json:"cloud_config_files"`
 	CloudOSRam       *int              `json:"cloud_ram"`
 	CloudFlavor      string            `json:"cloud_flavor"`
-	BsubMode         string            `jsob:"bsub_mode"`
+	CloudShared      bool              `json:"cloud_shared"`
+	BsubMode         string            `json:"bsub_mode"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -124,6 +125,7 @@ type JobDefaults struct {
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
 	CloudOSRam    int
+	CloudShared   bool
 	BsubMode      string
 	compressedEnv []byte
 	osRAM         string
@@ -408,6 +410,10 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		other["cloud_os_ram"] = jd.DefaultCloudOSRam()
 	}
 
+	if jvj.CloudShared || jd.CloudShared {
+		other["cloud_shared"] = "true"
+	}
+
 	return &Job{
 		RepGroup:      repg,
 		Cmd:           cmd,
@@ -626,6 +632,9 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	}
 	if r.Form.Get("change_home") == restFormTrue {
 		jd.ChangeHome = true
+	}
+	if r.Form.Get("cloud_shared") == restFormTrue {
+		jd.CloudShared = true
 	}
 	if r.Form.Get("memory") != "" {
 		mb, err := bytefmt.ToMegabytes(r.Form.Get("memory"))

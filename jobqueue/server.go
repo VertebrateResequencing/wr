@@ -459,7 +459,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	ip, err := CurrentIP(config.CIDR)
+	ip, err := internal.CurrentIP(config.CIDR)
 	if err != nil {
 		serverLogger.Error("getting current IP failed", "err", err)
 	}

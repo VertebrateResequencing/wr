@@ -59,6 +59,7 @@ var cmdOsRAM int
 var cmdBsubMode bool
 var cmdPostCreationScript string
 var cmdCloudConfigs string
+var cmdCloudSharedDisk bool
 var cmdFlavor string
 var cmdMonitorDocker string
 
@@ -77,7 +78,7 @@ command as one of the name:value pairs. The possible options are:
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
 monitor_docker cloud_os cloud_username cloud_ram cloud_script cloud_config_files
-cloud_flavor env bsub_mode
+cloud_flavor cloud_shared env bsub_mode
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -255,6 +256,16 @@ help text for "wr cloud deploy"'s --config_files option. The per-job config
 files you specify will be treated as in addition to any specified during cloud
 deploy or when starting the manager.
 
+cloud_shared only works when using a cloud scheduler where both the manager and
+jobs will run on Ubuntu. It will cause /shared on the manager's server to be
+NFS shared to /shared mounted on the server where your job runs. This gives you
+an easy way of having a shared disk in the cloud, but the size of that disk is
+limited to the size of the manager's volume. Performance may also be poor. This
+is only intended when you need a little bit of shared state between jobs, not
+for writing lots of large files. (If you need a high performance shared disk,
+don't use this option, and instead set up your own shared filesystem, eg.
+GlusterFS, and specify a cloud_script that mounts it.)
+
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
 that are overwritten depend on if you run 'wr add' on the same machine as you
@@ -292,7 +303,8 @@ new job will have this job's mount and cloud_* options.`,
 			envVars = os.Environ()
 		}
 
-		// add the jobs to the queue
+		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
+		// time to avoid time out issues...
 		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
 		if err != nil {
 			die("%s", err)
@@ -338,6 +350,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
+	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
@@ -367,7 +380,7 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // the default repgrp.
 func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
-	currentIP, errc := jobqueue.CurrentIP("")
+	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
 		warn("Could not get current IP: %s", errc)
 	}
@@ -406,6 +419,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		CloudConfigFiles: cmdCloudConfigs,
 		CloudOSRam:       cmdOsRAM,
 		CloudFlavor:      cmdFlavor,
+		CloudShared:      cmdCloudSharedDisk,
 		BsubMode:         bsubMode,
 	}
 
@@ -546,7 +560,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 
 		if jvj.Cwd == "" && jd.Cwd == "" {
 			if remoteWarning {
-				warn("command working directories defaulting to /tmp since the manager is running remotely")
+				warn("command working directories defaulting to %s since the manager is running remotely", pwd)
 			}
 			jd.Cwd = pwd
 		}

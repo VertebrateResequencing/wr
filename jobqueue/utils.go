@@ -31,9 +31,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -59,89 +57,6 @@ var pss = []byte("Pss:")
 var cr = []byte("\r")
 var lf = []byte("\n")
 var ellipses = []byte("[...]\n")
-
-// CurrentIP returns the IP address of the machine we're running on right now.
-// The cidr argument can be an empty string, but if set to the CIDR of the
-// machine's primary network, it helps us be sure of getting the correct IP
-// address (for when there are multiple network interfaces on the machine).
-func CurrentIP(cidr string) (string, error) {
-	var ipNet *net.IPNet
-	if cidr != "" {
-		_, ipn, err := net.ParseCIDR(cidr)
-		if err == nil {
-			ipNet = ipn
-		}
-		// *** ignoring error since I don't want to change the return value of
-		// this method...
-	}
-
-	conn, err := net.Dial("udp", "8.8.8.8:80") // doesn't actually connect, dest doesn't need to exist
-	if err != nil {
-		// fall-back on the old method we had...
-
-		// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
-		// cross-linux&MacOS solution that works reliably...
-		var out []byte
-		out, err = exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
-		var ip string
-		if err != nil {
-			ip = string(out)
-
-			// paranoid confirmation this ip is in our CIDR
-			if ip != "" && ipNet != nil {
-				pip := net.ParseIP(ip)
-				if pip != nil {
-					if !ipNet.Contains(pip) {
-						ip = ""
-					}
-				}
-			}
-		}
-
-		// if the above fails, fall back on manually going through all our
-		// network interfaces
-		if ip == "" {
-			var addrs []net.Addr
-			addrs, err = net.InterfaceAddrs()
-			if err != nil {
-				return "", err
-			}
-			for _, address := range addrs {
-				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
-					if thisIPNet.IP.To4() != nil {
-						if ipNet != nil {
-							if ipNet.Contains(thisIPNet.IP) {
-								ip = thisIPNet.IP.String()
-								break
-							}
-						} else {
-							ip = thisIPNet.IP.String()
-							break
-						}
-					}
-				}
-			}
-		}
-
-		return ip, nil
-	}
-
-	defer func() {
-		err = conn.Close()
-	}()
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	ip := localAddr.IP
-
-	// paranoid confirmation this ip is in our CIDR
-	if ipNet != nil {
-		if ipNet.Contains(ip) {
-			return ip.String(), err
-		}
-	} else {
-		return ip.String(), err
-	}
-	return "", err
-}
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
 // encoded string 43 bytes long. Used by the server to create a token passed to

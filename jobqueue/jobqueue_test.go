@@ -80,13 +80,13 @@ func TestJobqueueUtils(t *testing.T) {
 	}
 
 	Convey("CurrentIP() works", t, func() {
-		ip, err := CurrentIP("")
+		ip, err := internal.CurrentIP("")
 		So(err, ShouldBeNil)
 		So(ip, ShouldNotBeBlank)
-		ip, err = CurrentIP("9.9.9.9/24")
+		ip, err = internal.CurrentIP("9.9.9.9/24")
 		So(err, ShouldBeNil)
 		So(ip, ShouldBeBlank)
-		ip, err = CurrentIP(ip + "/16")
+		ip, err = internal.CurrentIP(ip + "/16")
 		So(err, ShouldBeNil)
 		So(ip, ShouldEqual, ip)
 	})
@@ -4410,7 +4410,7 @@ func runner() {
 func setDomainIP(domain string) {
 	host, _ := os.Hostname()
 	if host == "vr-2-2-02" {
-		ip, _ := CurrentIP("")
+		ip, _ := internal.CurrentIP("")
 		internal.InfobloxSetDomainIP(domain, ip)
 	}
 }

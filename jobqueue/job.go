@@ -169,7 +169,12 @@ type Job struct {
 	MountConfigs MountConfigs
 
 	// BsubMode set to either Production or Development when Add()ing a job will
-	// result in the job being assigned a BsubID.
+	// result in the job being assigned a BsubID. Such jobs, when they run, will
+	// see bsub, bjobs and bkill as symlinks to wr, thus if they call bsub, they
+	// will actually add jobs to the jobqueue etc. Those jobs will pick up the
+	// same Requirements.Other as this job, and the same MountConfigs. If
+	// Requirements.Other["cloud_shared"] is "true", the MountConfigs are not
+	// reused.
 	BsubMode string
 
 	// MonitorDocker turns on monitoring of a docker container identified by its
