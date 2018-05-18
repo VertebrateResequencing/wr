@@ -565,7 +565,6 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 					},
 				},
 			},
-			Hostname: "wr-runner",
 		},
 	}
 	//Create pod
@@ -573,60 +572,68 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 	if err != nil {
 		p.Logger.Error("Failed to create pod", "err", err)
 	}
-	// //Copy WR to newly created pod
-	// //Get the current working directory
-	// dir, err := os.Getwd()
+	/*
+	   No longer copying tarball to pod here,
+	   instead the scheduling controller waits on the
+	   status of the InitContainer to be running, then
+	   runs CopyTar, found in pod.go
+
+	*/
+
+	// // //Copy WR to newly created pod
+	// // //Get the current working directory
+	// // dir, err := os.Getwd()
+	// // if err != nil {
+	// // 	p.Logger.Error("Failed to get current working directory", "err", err)
+	// // 	panic(err)
+	// // }
+
+	// //Set up new pipe
+	// pipeReader, pipeWriter := io.Pipe()
+
+	// //avoid deadlock by using goroutine
+	// go func() {
+	// 	defer pipeWriter.Close()
+	// 	//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
+	// 	tarErr := makeTar(files, pipeWriter)
+	// 	if tarErr != nil {
+	// 		p.Logger.Error("Error writing tar", "err", tarErr)
+	// 		panic(tarErr)
+	// 	}
+	// }()
+
+	// // Copy the wr binary to the running pod
+	// fmt.Println("Sleeping for 15s") // wait for container to be running TODO: Use watch instead
+	// time.Sleep(15 * time.Second)
+	// fmt.Println("Woken up")
+	// fmt.Println("Getting updated pod") //TODO: Use watch channel to notify on success
+	// pod, err = p.podClient.Get(pod.ObjectMeta.Name, metav1.GetOptions{})
 	// if err != nil {
-	// 	p.Logger.Error("Failed to get current working directory", "err", err)
+	// 	p.Logger.Error("Error getting updated pod", "err", err)
 	// 	panic(err)
 	// }
+	// fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
+	// fmt.Println(pod.Spec.InitContainers)
+	// fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
 
-	//Set up new pipe
-	pipeReader, pipeWriter := io.Pipe()
+	// stdOut := new(Writer)
+	// stdErr := new(Writer)
+	// // Pass no command []string, so just attach to running command in initcontainer.
+	// opts := &CmdOptions{
+	// 	StreamOptions: StreamOptions{
+	// 		PodName:       pod.ObjectMeta.Name,
+	// 		ContainerName: pod.Spec.InitContainers[0].Name,
+	// 		Stdin:         true,
+	// 		In:            pipeReader,
+	// 		Out:           stdOut,
+	// 		Err:           stdErr,
+	// 	},
+	// }
 
-	//avoid deadlock by using goroutine
-	go func() {
-		defer pipeWriter.Close()
-		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
-		tarErr := makeTar(files, pipeWriter)
-		if tarErr != nil {
-			p.Logger.Error("Error writing tar", "err", tarErr)
-			panic(tarErr)
-		}
-	}()
+	// p.AttachCmd(opts)
 
-	// Copy the wr binary to the running pod
-	fmt.Println("Sleeping for 15s") // wait for container to be running TODO: Use watch instead
-	time.Sleep(15 * time.Second)
-	fmt.Println("Woken up")
-	fmt.Println("Getting updated pod") //TODO: Use watch channel to notify on success
-	pod, err = p.podClient.Get(pod.ObjectMeta.Name, metav1.GetOptions{})
-	if err != nil {
-		p.Logger.Error("Error getting updated pod", "err", err)
-		panic(err)
-	}
-	fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
-	fmt.Println(pod.Spec.InitContainers)
-	fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
-
-	stdOut := new(Writer)
-	stdErr := new(Writer)
-	// Pass no command []string, so just attach to running command in initcontainer.
-	opts := &CmdOptions{
-		StreamOptions: StreamOptions{
-			PodName:       pod.ObjectMeta.Name,
-			ContainerName: pod.Spec.InitContainers[0].Name,
-			Stdin:         true,
-			In:            pipeReader,
-			Out:           stdOut,
-			Err:           stdErr,
-		},
-	}
-
-	p.AttachCmd(opts)
-
-	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
-	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
+	// fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
+	// fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
 	return &Pod{
 		ID:        string(pod.ObjectMeta.UID),
 		Name:      pod.ObjectMeta.Name,
@@ -674,18 +681,6 @@ func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
 	default:
 		return false, nil
 	}
-}
-
-// Closes StopChannel, this stops the
-// portforward.
-func (p *Kubernetesp) KillPortForward() {
-	//might need to modify all code to close the channel on interrupt instead as I'm not too sure i can attach to it
-	d, err := p.context.Search()
-	if err != nil {
-		panic(fmt.Errorf("Failed to send signal to daemon: %v\n", err))
-	}
-	daemon.SendCommands(d)
-	return
 }
 
 // Creates a new configMap
