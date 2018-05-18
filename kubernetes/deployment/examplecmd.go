@@ -1,3 +1,8 @@
+// Below is roughly how I invisage this getting used.
+// Will deploy wr-manager to cluster, start up running
+// the provided script, followed by wr. Then port forwards
+// and daemonises.
+
 package main
 
 import (
