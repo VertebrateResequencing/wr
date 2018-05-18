@@ -1070,6 +1070,116 @@ func TestJobqueue(t *testing.T) {
 
 				RecMBRound = 100 // revert back to normal
 
+				Convey("Jobs that fork and change processgroup can still be fully killed", func() {
+					jobs = nil
+
+					tmpdir, err := ioutil.TempDir("", "wr_kill_test")
+					So(err, ShouldBeNil)
+					defer os.RemoveAll(tmpdir)
+
+					cmd := fmt.Sprintf("perl -Mstrict -we 'open(OUT, qq[>%s/$$]); my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { sleep(60); exit 0; } open(OUT, qq[>%s/$subpid]); waitpid $subpid, 0; exit 0; }  open(OUT, qq[>%s/$pid]); sleep(30); waitpid $pid, 0'", tmpdir, tmpdir, tmpdir)
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+					inserts, already, err := jq.Add(jobs, envVars, true)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+					So(already, ShouldEqual, 0)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, cmd)
+					So(job.State, ShouldEqual, JobStateReserved)
+
+					ich := make(chan int, 1)
+					ech := make(chan error, 1)
+					go func() {
+						<-time.After(1 * time.Second)
+						i, errk := jq.Kill([]*JobEssence{job.ToEssense()})
+						ich <- i
+						ech <- errk
+					}()
+
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					jqerr, ok := err.(Error)
+					So(ok, ShouldBeTrue)
+					So(jqerr.Err, ShouldEqual, FailReasonKilled)
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, -1)
+					So(job.FailReason, ShouldEqual, FailReasonKilled)
+
+					i := <-ich
+					So(i, ShouldEqual, 1)
+					err = <-ech
+					So(err, ShouldBeNil)
+
+					files, err := ioutil.ReadDir(tmpdir)
+					So(err, ShouldBeNil)
+					count := 0
+					for _, file := range files {
+						if file.IsDir() {
+							continue
+						}
+						count++
+						pid, err := strconv.Atoi(file.Name())
+						So(err, ShouldBeNil)
+						process, err := os.FindProcess(pid)
+						So(err, ShouldBeNil)
+						err = process.Signal(syscall.Signal(0))
+						So(err, ShouldNotBeNil)
+						So(err.Error(), ShouldContainSubstring, "process already finished")
+					}
+					So(count, ShouldEqual, 3)
+
+					deleted, errd := jq.Delete([]*JobEssence{{Cmd: cmd}})
+					So(errd, ShouldBeNil)
+					So(deleted, ShouldEqual, 1)
+				})
+
+				Convey("Jobs that fork and change processgroup have correct memory usage reported", func() {
+					jobs = nil
+					cmd := `perl -Mstrict -we 'my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { my @a; for (1..100) { push(@a, q[a] x 10000000); } exit 0; } waitpid $subpid, 0; exit 0; } my @b; for (1..100) { push(@b, q[b] x 1000000); } waitpid $pid, 0'`
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+					inserts, already, err := jq.Add(jobs, envVars, true)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+					So(already, ShouldEqual, 0)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, cmd)
+					So(job.State, ShouldEqual, JobStateReserved)
+
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, JobStateComplete)
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 0)
+					So(job.PeakRAM, ShouldBeGreaterThan, 500)
+				})
+
+				Convey("Jobs that fork and change processgroup have correct CPU time reported", func() {
+					jobs = nil
+					cmd := `perl -Mstrict -we 'my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { my $a = 2; for (1..10000000) { $a *= $a } exit 0; } waitpid $subpid, 0; exit 0; } my $b = 2; for (1..10000000) { $b *= $b } waitpid $pid, 0'`
+					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+					inserts, already, err := jq.Add(jobs, envVars, true)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+					So(already, ShouldEqual, 0)
+
+					job, err := jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, cmd)
+					So(job.State, ShouldEqual, JobStateReserved)
+
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldBeNil)
+					So(job.State, ShouldEqual, JobStateComplete)
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 0)
+					So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()+(job.WallTime()/2))
+				})
+
 				Convey("The stdout/err of jobs is only kept for failed jobs, and cwd&TMPDIR&HOME get set appropriately", func() {
 					jobs = nil
 					baseDir, err := ioutil.TempDir("", "wr_jobqueue_test_runner_dir_")

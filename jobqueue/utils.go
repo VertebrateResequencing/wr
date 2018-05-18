@@ -39,6 +39,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/dgryski/go-farm"
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/shirou/gopsutil/process"
 )
 
 // AppName gets used in certain places like naming the base directory of created
@@ -156,10 +157,9 @@ func decompress(compressed []byte) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// get the current memory usage of a pid, relying on modern linux /proc/*/smaps
-// (based on http://stackoverflow.com/a/31881979/675083).
+// get the current memory usage of a pid and all its children, relying on modern
+// linux /proc/*/smaps (based on http://stackoverflow.com/a/31881979/675083).
 func currentMemory(pid int) (int, error) {
-	var err error
 	f, err := os.Open(fmt.Sprintf("/proc/%d/smaps", pid))
 	if err != nil {
 		return 0, err
@@ -195,7 +195,52 @@ func currentMemory(pid int) (int, error) {
 	// convert kB to MB
 	mem := int(kb / 1024)
 
-	return mem, err
+	// recurse for children
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return mem, err
+	}
+	children, err := p.Children()
+	if err != nil && err.Error() != "process does not have children" { // err != process.ErrorNoChildren
+		return mem, err
+	}
+	for _, child := range children {
+		childMem, errr := currentMemory(int(child.Pid))
+		if errr != nil {
+			continue
+		}
+		mem += childMem
+	}
+
+	return mem, nil
+}
+
+// getChildProcesses gets the child processes of the given pid, recursively.
+func getChildProcesses(pid int32) ([]*process.Process, error) {
+	var children []*process.Process
+	p, err := process.NewProcess(pid)
+	if err != nil {
+		// we ignore errors, since we allow for working on processes that we're in
+		// the process of killing
+		return children, nil
+	}
+
+	children, err = p.Children()
+	if err != nil && err.Error() != "process does not have children" {
+		return children, err
+	}
+
+	for _, child := range children {
+		theseKids, errk := getChildProcesses(child.Pid)
+		if errk != nil {
+			continue
+		}
+		if len(theseKids) > 0 {
+			children = append(children, theseKids...)
+		}
+	}
+
+	return children, nil
 }
 
 // this prefixSuffixSaver-related code is taken from os/exec, since they are not

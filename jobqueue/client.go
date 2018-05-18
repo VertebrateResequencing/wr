@@ -720,7 +720,19 @@ func (c *Client) Execute(job *Job, shell string) error {
 		var dockerContainerID string
 
 		killCmd := func() error {
+			// get children first
+			children, errc := getChildProcesses(int32(cmd.Process.Pid))
+
+			// then kill *** race condition if cmd spawns more children...
 			errk := cmd.Process.Kill()
+
+			if errc != nil {
+				if errk == nil {
+					errk = errc
+				} else {
+					errk = fmt.Errorf("%s, and getting child processes failed: %s", errk.Error(), errc.Error())
+				}
+			}
 
 			if dockerContainerID != "" {
 				// kill the docker container as well
@@ -729,6 +741,17 @@ func (c *Client) Execute(job *Job, shell string) error {
 					errk = errd
 				} else {
 					errk = fmt.Errorf("%s, and killing the docker container failed: %s", errk.Error(), errd.Error())
+				}
+			}
+
+			for _, child := range children {
+				// try and kill any children in case the above didn't already
+				// result in their death
+				errc = child.Kill()
+				if errk == nil {
+					errk = errc
+				} else {
+					errk = fmt.Errorf("%s, and killing its child process failed: %s", errk.Error(), errc.Error())
 				}
 			}
 
@@ -885,18 +908,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
 
-	// we could get the max rss from ProcessState.SysUsage, but we'll stick with
-	// our better (?) pss-based Peakmem, unless the command exited so quickly
-	// we never ticked and calculated it
-	if peakmem == 0 {
-		ru := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-		if runtime.GOOS == "darwin" {
-			// Maxrss values are bytes
-			peakmem = int((ru.Maxrss / 1024) / 1024)
-		} else {
-			// Maxrss values are kb
-			peakmem = int(ru.Maxrss / 1024)
-		}
+	// though we have tried to track peak memory while the cmd ran (mainly to
+	// know if we use too much memory and kill during a run), our method might
+	// miss a peak that cmd.ProcessState can tell us about, so use that if
+	// higher
+	peakRSS := cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss
+	var peakRSSMB int
+	if runtime.GOOS == "darwin" {
+		// Maxrss values are bytes
+		peakRSSMB = int((peakRSS / 1024) / 1024)
+	} else {
+		// Maxrss values are kb
+		peakRSSMB = int(peakRSS / 1024)
+	}
+	if peakRSSMB > peakmem {
+		peakmem = peakRSSMB
 	}
 
 	// include our own memory usage in the peakmem of the command, since the
@@ -1087,7 +1113,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
 		PeakRAM:  peakmem,
-		CPUtime:  cmd.ProcessState.SystemTime() + time.Duration(dockerCPU)*time.Second,
+		CPUtime:  cmd.ProcessState.SystemTime() + cmd.ProcessState.UserTime() + time.Duration(dockerCPU)*time.Second,
 		Stdout:   finalStdOut,
 		Stderr:   finalStdErr,
 		Exited:   true,
