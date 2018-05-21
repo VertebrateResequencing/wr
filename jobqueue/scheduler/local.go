@@ -605,6 +605,6 @@ func (s *local) cleanup() {
 	s.cleaned = true
 	err := s.queue.Destroy()
 	if err != nil {
-		s.Warn("local schedular cleanup failed", "err", err)
+		s.Warn("local scheduler cleanup failed", "err", err)
 	}
 }
