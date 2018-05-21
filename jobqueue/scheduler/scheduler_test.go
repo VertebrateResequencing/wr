@@ -246,11 +246,11 @@ func TestLocal(t *testing.T) {
 				}
 				defer os.RemoveAll(bigTmpdir)
 
-				blockCmd := "perl -e 'select(undef, undef, undef, 0.25)'" // sleep for 0.25s
+				blockCmd := "sleep 0.25"
 				blockReq := &Requirements{1, 1 * time.Second, maxCPU, 0, otherReqs}
-				smallCmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); exit(0);'", smallTmpdir) // creates a file and sleeps for 0.75s
+				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
 				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
-				bigCmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); exit(0);'", bigTmpdir)
+				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
 				bigReq := &Requirements{1, 1 * time.Second, maxCPU - 1, 0, otherReqs}
 
 				// schedule 2 big cmds and then a small one to prove the small
@@ -282,12 +282,13 @@ func TestLocal(t *testing.T) {
 
 				// schedule a blocker so that subsequent schedules will be
 				// compared to each other, then schedule 2 small cmds and a big
-				// one to prove that the big one takes priority
+				// command that uses all cpus to prove that the biggest one
+				// takes priority
 				err = s.Schedule(blockCmd, blockReq, 1)
 				So(err, ShouldBeNil)
 				err = s.Schedule(smallCmd, smallReq, 2)
 				So(err, ShouldBeNil)
-				err = s.Schedule(bigCmd, bigReq, 1)
+				err = s.Schedule(bigCmd, blockReq, 1)
 				So(err, ShouldBeNil)
 
 				for {
@@ -303,6 +304,11 @@ func TestLocal(t *testing.T) {
 				So(len(smallTimes), ShouldEqual, 2)
 				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[0])
 				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[1])
+				// *** one of the above 2 tests can fail; the jobs start in the
+				// correct order, which is what we're trying to test for, but
+				// finish in the wrong order. That is, the big job takes a few
+				// extra ms before it does anything. Not sure how to test for
+				// actual job start time order...
 			})
 		}
 
