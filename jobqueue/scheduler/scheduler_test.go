@@ -609,8 +609,8 @@ func TestOpenstack(t *testing.T) {
 				} else {
 					// author's pike install
 					So(flavor.ID, ShouldEqual, "2000")
-					So(flavor.RAM, ShouldEqual, 9100)
-					So(flavor.Disk, ShouldEqual, 16)
+					So(flavor.RAM, ShouldEqual, 8600)
+					So(flavor.Disk, ShouldEqual, 15)
 					So(flavor.Cores, ShouldEqual, 1)
 
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
@@ -624,29 +624,29 @@ func TestOpenstack(t *testing.T) {
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2001")
-					So(flavor.RAM, ShouldEqual, 18200)
-					So(flavor.Disk, ShouldEqual, 32)
+					So(flavor.RAM, ShouldEqual, 17200)
+					So(flavor.Disk, ShouldEqual, 31)
 					So(flavor.Cores, ShouldEqual, 2)
 
 					flavor, err = oss.determineFlavor(&Requirements{30000, 1 * time.Minute, 1, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2002")
-					So(flavor.RAM, ShouldEqual, 36400)
-					So(flavor.Disk, ShouldEqual, 64)
+					So(flavor.RAM, ShouldEqual, 34400)
+					So(flavor.Disk, ShouldEqual, 62)
 					So(flavor.Cores, ShouldEqual, 4)
 
 					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2003")
-					So(flavor.RAM, ShouldEqual, 72800)
-					So(flavor.Disk, ShouldEqual, 129)
+					So(flavor.RAM, ShouldEqual, 68800)
+					So(flavor.Disk, ShouldEqual, 125)
 					So(flavor.Cores, ShouldEqual, 8)
 
 					flavor, err = oss.determineFlavor(&Requirements{120000, 1 * time.Minute, 1, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2004")
-					So(flavor.RAM, ShouldEqual, 145600)
-					So(flavor.Disk, ShouldEqual, 258)
+					So(flavor.RAM, ShouldEqual, 137600)
+					So(flavor.Disk, ShouldEqual, 250)
 					So(flavor.Cores, ShouldEqual, 16)
 
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
