@@ -22,10 +22,12 @@ package cloud
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,6 +38,8 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+const sharePath = "/shared" // mount point for the *SharedDisk methods
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration
@@ -60,12 +64,14 @@ type Server struct {
 	OS                string        // the name of the Operating System image
 	Script            []byte        // the content of a start-up script run on the server
 	ConfigFiles       string        // files that you will CopyOver() and require to be on this Server, in CopyOver() format
+	SharedDisk        bool          // the server will mount /shared
 	TTD               time.Duration // amount of idle time allowed before destruction
 	UserName          string        // the username needed to log in to the server
 	cancelDestruction chan bool
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
 	created           bool // to distinguish instances we discovered or spawned
+	toBeDestroyed     bool
 	destroyed         bool
 	goneBad           bool
 	location          *time.Location
@@ -79,15 +85,17 @@ type Server struct {
 	usedRAM           int
 	homeDir           string
 	hmutex            sync.Mutex
+	createdShare      bool
+	csmutex           sync.Mutex
 	logger            log15.Logger // (not embedded to make gob happy)
 }
 
 // Matches tells you if in principle a Server has the given os, script, config
-// files and flavor. Useful before calling HasSpaceFor, since if you don't match
-// these things you can't use the Server regardless of how empty it is.
-// configFiles is in the CopyOver() format.
-func (s *Server) Matches(os string, script []byte, configFiles string, flavor *Flavor) bool {
-	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID)
+// files, flavor and has a shared disk mounted. Useful before calling
+// HasSpaceFor, since if you don't match these things you can't use the Server
+// regardless of how empty it is. configFiles is in the CopyOver() format.
+func (s *Server) Matches(os string, script []byte, configFiles string, flavor *Flavor, sharedDisk bool) bool {
+	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID) && s.SharedDisk == sharedDisk
 }
 
 // Allocate records that the given resources have now been used up on this
@@ -147,6 +155,7 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 					// destroy the server
 					s.mutex.Lock()
 					s.onDeathrow = false
+					s.toBeDestroyed = true
 					s.mutex.Unlock()
 					err := s.Destroy()
 					s.logger.Debug("server died on deathrow", "err", err)
@@ -406,7 +415,7 @@ func (s *Server) UploadFile(source string, dest string) error {
 	defer internal.LogClose(s.logger, client, "upload file client session", "source", source, "dest", dest)
 
 	// create all parent dirs of dest
-	err = s.MkDir(dest)
+	err = s.MkDir(filepath.Dir(dest))
 	if err != nil {
 		return err
 	}
@@ -556,7 +565,7 @@ func (s *Server) CreateFile(content string, dest string) error {
 	defer internal.LogClose(s.logger, client, "create file client session")
 
 	// create all parent dirs of dest
-	err = s.MkDir(dest)
+	err = s.MkDir(filepath.Dir(dest))
 	if err != nil {
 		return err
 	}
@@ -608,17 +617,131 @@ func (s *Server) DownloadFile(source string, dest string) error {
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.
-func (s *Server) MkDir(dest string) error {
+// Requires sudo.
+func (s *Server) MkDir(dir string) error {
+	if dir == "." {
+		return nil
+	}
+
 	//*** it would be nice to do this with client.Mkdir, but that doesn't do
 	// the equivalent of mkdir -p, and errors out if dirs already exist... for
 	// now it's easier to just call mkdir
-	dir := filepath.Dir(dest)
-	if dir != "." {
-		_, _, err := s.RunCmd("mkdir -p "+dir, false)
-		if err != nil {
-			return err
+	_, _, err := s.RunCmd(fmt.Sprintf("[ -d %s ]", dir), false)
+	if err == nil {
+		// dir already exists
+		return nil
+	}
+
+	// try without sudo, so that if we create multiple dirs, they all have the
+	// correct permissions
+	_, _, err = s.RunCmd("mkdir -p "+dir, false)
+	if err == nil {
+		return nil
+	}
+
+	// try again with sudo
+	_, e, err := s.RunCmd("sudo mkdir -p "+dir, false)
+	if err != nil {
+		return fmt.Errorf("%s; %s", e, err.Error())
+	}
+
+	// correct permission on leaf dir *** not currently correcting permission on
+	// any parent dirs we might have just made
+	_, e, err = s.RunCmd(fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, dir), false)
+	if err != nil {
+		return fmt.Errorf("%s; %s", e, err.Error())
+	}
+
+	return nil
+}
+
+// CreateSharedDisk creates an NFS share at /shared, which must be empty or not
+// exist. This does not work for remote Servers, so only call this on the return
+// value of LocalhostServer(). Does nothing and returns nil if the share was
+// already created. NB: this is currently hard-coded to only work on Ubuntu, and
+// the ability to sudo is required! Also assumes you don't have any other shares
+// configured, and no other process started the NFS server!
+func (s *Server) CreateSharedDisk() error {
+	s.csmutex.Lock()
+	defer s.csmutex.Unlock()
+	if s.createdShare {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get install nfs-kernel-server -y") // #nosec
+	err := cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath)) // #nosec
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	if _, errs := os.Stat(sharePath); errs != nil && os.IsNotExist(errs) {
+		cmd = exec.CommandContext(ctx, "bash", "-c", "sudo mkdir "+sharePath) // #nosec
+		errs = cmd.Run()
+		if errs != nil {
+			return errs
+		}
+
+		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, sharePath)) // #nosec
+		errs = cmd.Run()
+		if errs != nil {
+			return errs
 		}
 	}
+
+	cmd = exec.CommandContext(ctx, "bash", "-c", "sudo systemctl start nfs-kernel-server.service && sudo export"+"fs -a") // #nosec (the split is to avoid a false-positive spelling mistake)
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	s.createdShare = true
+	s.SharedDisk = true
+	s.logger.Debug("created shared disk")
+	return nil
+}
+
+// MountSharedDisk can be used to mount a share from another Server (identified
+// by its IP address) that you called CreateSharedDisk() on. The shared disk
+// will be accessible at /shared. Does nothing and returns nil if the share was
+// already mounted (or created on this Server). NB: currently hard-coded to use
+// apt-get to install nfs-common on the server first, so probably only
+// compatible with Ubuntu. Requires sudo.
+func (s *Server) MountSharedDisk(nfsServerIP string) error {
+	s.csmutex.Lock()
+	defer s.csmutex.Unlock()
+	if s.createdShare {
+		return nil
+	}
+
+	_, _, err := s.RunCmd("sudo apt-get install nfs-common -y", false)
+	if err != nil {
+		return err
+	}
+
+	err = s.MkDir(sharePath)
+	if err != nil {
+		return err
+	}
+	s.logger.Debug("ran MkDir")
+
+	stdo, stde, err := s.RunCmd(fmt.Sprintf("sudo mount %s:%s %s", nfsServerIP, sharePath, sharePath), false)
+	if err != nil {
+		s.logger.Error("mount attempt failed", "stdout", stdo, "stderr", stde)
+		return err
+	}
+
+	s.createdShare = true
+	s.SharedDisk = true
+	s.logger.Debug("mounted shared disk")
 	return nil
 }
 
@@ -643,13 +766,16 @@ func (s *Server) GoneBad(permanentProblem ...string) {
 }
 
 // NotBad lets you change your mind about a server you called GoneBad() on.
-// (Unless GoneBad() was called with a permanentProblem.)
-func (s *Server) NotBad() {
+// (Unless GoneBad() was called with a permanentProblem, or the server has been
+// destroyed).
+func (s *Server) NotBad() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if s.permanentProblem == "" {
+	if !s.destroyed && !s.toBeDestroyed && s.permanentProblem == "" {
 		s.goneBad = false
+		return true
 	}
+	return false
 }
 
 // IsBad tells you if GoneBad() has been called (more recently than NotBad()).
@@ -686,6 +812,7 @@ func (s *Server) Destroy() error {
 		ch <- true
 	}
 
+	s.toBeDestroyed = false
 	s.destroyed = true
 	s.goneBad = true
 
@@ -716,7 +843,7 @@ func (s *Server) Destroy() error {
 func (s *Server) Destroyed() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	return s.destroyed
+	return s.destroyed || s.toBeDestroyed
 }
 
 // Alive tells you if a server is usable. It first does the same check as
@@ -724,7 +851,7 @@ func (s *Server) Destroyed() bool {
 // will double check the server to make sure it can be ssh'd to.
 func (s *Server) Alive(checkSSH ...bool) bool {
 	s.mutex.Lock()
-	if s.destroyed {
+	if s.destroyed || s.toBeDestroyed {
 		s.mutex.Unlock()
 		return false
 	}

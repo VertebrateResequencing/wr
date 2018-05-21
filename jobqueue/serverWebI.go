@@ -22,7 +22,6 @@ package jobqueue
 
 import (
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -61,20 +60,21 @@ type jstatusReq struct {
 	Msg        string // required argument for dismissMsg
 }
 
-// jstatus is the job info we send to the status webpage (only real difference
+// JStatus is the job info we send to the status webpage (only real difference
 // to Job is that some of the values are converted to easy-to-display forms).
-type jstatus struct {
-	Key          string
-	RepGroup     string
-	DepGroups    []string
-	Dependencies []string
-	Cmd          string
-	State        JobState
-	Cwd          string
-	CwdBase      string
-	HomeChanged  bool
-	Behaviours   string
-	Mounts       string
+type JStatus struct {
+	Key           string
+	RepGroup      string
+	DepGroups     []string
+	Dependencies  []string
+	Cmd           string
+	State         JobState
+	Cwd           string
+	CwdBase       string
+	HomeChanged   bool
+	Behaviours    string
+	Mounts        string
+	MonitorDocker string
 	// ExpectedRAM is in Megabytes.
 	ExpectedRAM int
 	// ExpectedTime is in seconds.
@@ -269,12 +269,12 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						// *** probably want to take the count as a req option,
 						// so user can request to see more than just 1 job per
 						// State+Exitcode+FailReason
-						jobs, _, errstr := s.getJobsByRepGroup(req.RepGroup, 1, req.State, true, true)
+						jobs, _, errstr := s.getJobsByRepGroup(req.RepGroup, false, 1, req.State, true, true)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false
 							for _, job := range jobs {
-								status := jobToStatus(job)
+								status := job.ToStatus()
 								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
 								err := conn.WriteJSON(status)
 								if err != nil {
@@ -290,7 +290,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						for _, job := range jobs {
-							err := s.q.Kick(job.key())
+							err := s.q.Kick(job.Key())
 							if err != nil {
 								continue
 							}
@@ -300,7 +300,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
 						var toDelete []string
 						for _, job := range jobs {
-							key := job.key()
+							key := job.Key()
 
 							// we can't allow the removal of jobs that have
 							// dependencies, as *queue would regard that as
@@ -331,7 +331,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "kill":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
 						for _, job := range jobs {
-							_, err := s.killJob(job.key())
+							_, err := s.killJob(job.Key())
 							if err != nil {
 								s.Warn("web interface kill job failed", "err", err)
 							}
@@ -361,7 +361,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				case req.Key != "":
 					jobs, _, errstr := s.getJobsByKeys([]string{req.Key}, true, true)
 					if errstr == "" && len(jobs) == 1 {
-						status := jobToStatus(jobs[0])
+						status := jobs[0].ToStatus()
 						writeMutex.Lock()
 						err := conn.WriteJSON(status)
 						writeMutex.Unlock()
@@ -440,62 +440,6 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				}
 			}
 		}(conn, stopper)
-	}
-}
-
-func jobToStatus(job *Job) jstatus {
-	stderr, _ := job.StdErr()
-	stdout, _ := job.StdOut()
-	env, _ := job.Env()
-	var cwdLeaf string
-	job.RLock()
-	defer job.RUnlock()
-	if job.ActualCwd != "" {
-		cwdLeaf, _ = filepath.Rel(job.Cwd, job.ActualCwd)
-		cwdLeaf = "/" + cwdLeaf
-	}
-	state := job.State
-	if state == JobStateRunning && job.Lost {
-		state = JobStateLost
-	}
-	var ot []string
-	for key, val := range job.Requirements.Other {
-		ot = append(ot, key+":"+val)
-	}
-	return jstatus{
-		Key:           job.key(),
-		RepGroup:      job.RepGroup,
-		DepGroups:     job.DepGroups,
-		Dependencies:  job.Dependencies.Stringify(),
-		Cmd:           job.Cmd,
-		State:         state,
-		CwdBase:       job.Cwd,
-		Cwd:           cwdLeaf,
-		HomeChanged:   job.ChangeHome,
-		Behaviours:    job.Behaviours.String(),
-		Mounts:        job.MountConfigs.String(),
-		ExpectedRAM:   job.Requirements.RAM,
-		ExpectedTime:  job.Requirements.Time.Seconds(),
-		RequestedDisk: job.Requirements.Disk,
-		OtherRequests: ot,
-		Cores:         job.Requirements.Cores,
-		PeakRAM:       job.PeakRAM,
-		Exited:        job.Exited,
-		Exitcode:      job.Exitcode,
-		FailReason:    job.FailReason,
-		Pid:           job.Pid,
-		Host:          job.Host,
-		HostID:        job.HostID,
-		HostIP:        job.HostIP,
-		Walltime:      job.WallTime().Seconds(),
-		CPUtime:       job.CPUtime.Seconds(),
-		Started:       job.StartTime.Unix(),
-		Ended:         job.EndTime.Unix(),
-		Attempts:      job.Attempts,
-		Similar:       job.Similar,
-		StdErr:        stderr,
-		StdOut:        stdout,
-		Env:           env,
 	}
 }
 

@@ -19,6 +19,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -231,6 +232,85 @@ func TestLocal(t *testing.T) {
 				// before resources for the first become available
 			}
 		})
+
+		if maxCPU > 2 {
+			Convey("Schedule() does bin packing and fills up the machine with different size cmds", func() {
+				smallTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_small_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(smallTmpdir)
+				bigTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_big_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(bigTmpdir)
+
+				blockCmd := "sleep 0.25"
+				blockReq := &Requirements{1, 1 * time.Second, maxCPU, 0, otherReqs}
+				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
+				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
+				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
+				bigReq := &Requirements{1, 1 * time.Second, maxCPU - 1, 0, otherReqs}
+
+				// schedule 2 big cmds and then a small one to prove the small
+				// one fits the gap and runs before the second big one
+				err = s.Schedule(bigCmd, bigReq, 2)
+				So(err, ShouldBeNil)
+				err = s.Schedule(smallCmd, smallReq, 1)
+				So(err, ShouldBeNil)
+
+				for {
+					if !s.Busy() {
+						break
+					}
+					<-time.After(1 * time.Millisecond)
+				}
+
+				bigTimes := mtimesOfFilesInDir(bigTmpdir, 2)
+				So(len(bigTimes), ShouldEqual, 2)
+				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
+				So(len(smallTimes), ShouldEqual, 1)
+				firstBig := bigTimes[0]
+				secondBig := bigTimes[1]
+				if secondBig.Before(firstBig) {
+					firstBig = bigTimes[1]
+					secondBig = bigTimes[0]
+				}
+				So(smallTimes[0], ShouldHappenOnOrAfter, firstBig)
+				So(smallTimes[0], ShouldHappenBefore, secondBig)
+
+				// schedule a blocker so that subsequent schedules will be
+				// compared to each other, then schedule 2 small cmds and a big
+				// command that uses all cpus to prove that the biggest one
+				// takes priority
+				err = s.Schedule(blockCmd, blockReq, 1)
+				So(err, ShouldBeNil)
+				err = s.Schedule(smallCmd, smallReq, 2)
+				So(err, ShouldBeNil)
+				err = s.Schedule(bigCmd, blockReq, 1)
+				So(err, ShouldBeNil)
+
+				for {
+					if !s.Busy() {
+						break
+					}
+					<-time.After(1 * time.Millisecond)
+				}
+
+				bigTimes = mtimesOfFilesInDir(bigTmpdir, 1)
+				So(len(bigTimes), ShouldEqual, 1)
+				smallTimes = mtimesOfFilesInDir(smallTmpdir, 2)
+				So(len(smallTimes), ShouldEqual, 2)
+				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[0])
+				So(bigTimes[0], ShouldHappenOnOrBefore, smallTimes[1])
+				// *** one of the above 2 tests can fail; the jobs start in the
+				// correct order, which is what we're trying to test for, but
+				// finish in the wrong order. That is, the big job takes a few
+				// extra ms before it does anything. Not sure how to test for
+				// actual job start time order...
+			})
+		}
 
 		// wait a while for any remaining jobs to finish
 		So(waitToFinish(s, 30, 100), ShouldBeTrue)
@@ -456,7 +536,6 @@ func TestOpenstack(t *testing.T) {
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
-
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(), ShouldEqual, 1)
 		})
@@ -536,8 +615,8 @@ func TestOpenstack(t *testing.T) {
 				} else {
 					// author's pike install
 					So(flavor.ID, ShouldEqual, "2000")
-					So(flavor.RAM, ShouldEqual, 9100)
-					So(flavor.Disk, ShouldEqual, 16)
+					So(flavor.RAM, ShouldEqual, 8600)
+					So(flavor.Disk, ShouldEqual, 15)
 					So(flavor.Cores, ShouldEqual, 1)
 
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
@@ -551,29 +630,29 @@ func TestOpenstack(t *testing.T) {
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2001")
-					So(flavor.RAM, ShouldEqual, 18200)
-					So(flavor.Disk, ShouldEqual, 32)
+					So(flavor.RAM, ShouldEqual, 17200)
+					So(flavor.Disk, ShouldEqual, 31)
 					So(flavor.Cores, ShouldEqual, 2)
 
 					flavor, err = oss.determineFlavor(&Requirements{30000, 1 * time.Minute, 1, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2002")
-					So(flavor.RAM, ShouldEqual, 36400)
-					So(flavor.Disk, ShouldEqual, 64)
+					So(flavor.RAM, ShouldEqual, 34400)
+					So(flavor.Disk, ShouldEqual, 62)
 					So(flavor.Cores, ShouldEqual, 4)
 
 					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2003")
-					So(flavor.RAM, ShouldEqual, 72800)
-					So(flavor.Disk, ShouldEqual, 129)
+					So(flavor.RAM, ShouldEqual, 68800)
+					So(flavor.Disk, ShouldEqual, 125)
 					So(flavor.Cores, ShouldEqual, 8)
 
 					flavor, err = oss.determineFlavor(&Requirements{120000, 1 * time.Minute, 1, 1, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2004")
-					So(flavor.RAM, ShouldEqual, 145600)
-					So(flavor.Disk, ShouldEqual, 258)
+					So(flavor.RAM, ShouldEqual, 137600)
+					So(flavor.Disk, ShouldEqual, 250)
 					So(flavor.Cores, ShouldEqual, 16)
 
 					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
@@ -693,7 +772,39 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("Schedule() lets you...", func() {
 				oFile := filepath.Join(tmpdir, "out")
-				oReqs := make(map[string]string)
+
+				Convey("Run jobs that use a NFS shared disk", func() {
+					cmd := "touch /shared/test1"
+					other := make(map[string]string)
+					other["cloud_shared"] = "true"
+					localReq := &Requirements{100, 1 * time.Minute, 1, 1, other}
+					err := s.Schedule(cmd, localReq, 1)
+					So(err, ShouldBeNil)
+
+					remoteReq := oss.reqForSpawn(localReq)
+					for _, server := range oss.servers {
+						if server.Flavor.RAM >= remoteReq.RAM {
+							remoteReq.RAM = server.Flavor.RAM + 1000
+						}
+					}
+					remoteReq.Other = other
+					cmd = "touch /shared/test2"
+					err = s.Schedule(cmd, remoteReq, 1)
+					So(err, ShouldBeNil)
+
+					So(s.Busy(), ShouldBeTrue)
+					So(waitToFinish(s, 240, 1000), ShouldBeTrue)
+
+					_, err = os.Stat("/shared/test1")
+					So(err, ShouldBeNil)
+					_, err = os.Stat("/shared/test2")
+					So(err, ShouldBeNil)
+
+					err = os.Remove("/shared/test1")
+					So(err, ShouldBeNil)
+					err = os.Remove("/shared/test2")
+					So(err, ShouldBeNil)
+				})
 
 				if flavorRegex == `^m.*$` && os.Getenv("OS_TENANT_ID") == "" {
 					Convey("Run a job on a specific flavor", func() {
@@ -739,11 +850,12 @@ func TestOpenstack(t *testing.T) {
 				Convey("Run jobs with no inputs/outputs", func() {
 					// on authors setup, the following count is sufficient to
 					// test spawning instances over the quota in the test
-					// environment if we reserve 54 cores per job
-					count := 10
+					// environment if we reserve 26 cores per job
+					count := 18
 					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
 					cmd := "sleep 10"
-					thisReq := &Requirements{100, 1 * time.Minute, 54, 1, oReqs}
+					oReqs := make(map[string]string)
+					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, oReqs}
 					err := s.Schedule(cmd, thisReq, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
@@ -793,6 +905,7 @@ func TestOpenstack(t *testing.T) {
 				Convey("Run everything even when a server fails to spawn", func() {
 					debugCounter = 0
 					debugEffect = "failFirstSpawn"
+					oReqs := make(map[string]string)
 					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 					newCount := 3
 					eta := 120
@@ -806,6 +919,7 @@ func TestOpenstack(t *testing.T) {
 				Convey("Run jobs and have servers still self-terminate when a server is slow to spawn", func() {
 					debugCounter = 0
 					debugEffect = "slowSecondSpawn"
+					oReqs := make(map[string]string)
 					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
 					newCount := 3
 					eta := 120
@@ -826,6 +940,7 @@ func TestOpenstack(t *testing.T) {
 
 				// *** test if we have a Centos 7 image to use...
 				if osPrefix != "Centos 7" {
+					oReqs := make(map[string]string)
 					oReqs["cloud_os"] = "Centos 7"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
@@ -880,16 +995,18 @@ func TestOpenstack(t *testing.T) {
 					})
 				}
 
-				numCores := 4
-				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 6 * numCores, oReqs})
+				numCores := 5
+				oReqsm := make(map[string]string)
+				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 0, oReqsm})
 				if err == nil && multiCoreFlavor.Cores >= numCores {
+					oReqs := make(map[string]string)
 					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
-					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 6, oReqs}
+					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, oReqs}
 					confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
 					if err == nil && confirmFlavor.Cores >= numCores {
 						Convey("Run multiple jobs at once on multi-core servers", func() {
 							cmd := "sleep 30"
-							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, int(multiCoreFlavor.Disk / numCores), oReqs}
+							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, oReqs}
 							err = s.Schedule(cmd, jobReq, numCores)
 							So(err, ShouldBeNil)
 							So(s.Busy(), ShouldBeTrue)
@@ -917,7 +1034,7 @@ func TestOpenstack(t *testing.T) {
 							}()
 
 							// wait for enough time to have spawned a server
-							// and run both commands in parallel, but not
+							// and run the commands in parallel, but not
 							// sequentially *** but how long does it take to
 							// spawn?! (50s in authors test area, but this
 							// will vary...) we need better confirmation of
@@ -942,7 +1059,7 @@ func TestOpenstack(t *testing.T) {
 	})
 }
 
-func testDirForFiles(tmpdir string, expected int) (numfiles int) {
+func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {
 	files, err := ioutil.ReadDir(tmpdir)
 	if err != nil {
 		log.Fatal(err)
@@ -956,7 +1073,21 @@ func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 			log.Fatal(err)
 		}
 	}
-	return len(files)
+	return files
+}
+
+func testDirForFiles(tmpdir string, expected int) (numfiles int) {
+	return len(getInfoOfFilesInDir(tmpdir, expected))
+}
+
+func mtimesOfFilesInDir(tmpdir string, expected int) []time.Time {
+	files := getInfoOfFilesInDir(tmpdir, expected)
+	var times []time.Time
+	for _, info := range files {
+		times = append(times, info.ModTime())
+		os.Remove(filepath.Join(tmpdir, info.Name()))
+	}
+	return times
 }
 
 func waitToFinish(s *Scheduler, maxS int, interval int) bool {
@@ -985,13 +1116,20 @@ func waitToFinish(s *Scheduler, maxS int, interval int) bool {
 }
 
 func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	var extra string
 	if len(flavor) == 1 {
 		extra = "--flavor " + flavor[0] + " "
 	}
 	if osPrefix == "" {
-		cmd := exec.Command("bash", "-c", novaCmd+" list "+extra+"| grep -c "+rName)
+		cmdStr := novaCmd + " list " + extra + "| grep -c " + rName
+		cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 		out, err := cmd.Output()
+		if ctx.Err() != nil {
+			log.Printf("exec of [%s] timed out\n", cmdStr)
+			return 0
+		}
 		if err == nil {
 			count, err := strconv.Atoi(strings.TrimSpace(string(out)))
 			if err == nil {
@@ -999,8 +1137,13 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 			}
 		}
 	} else {
-		cmd := exec.Command("bash", "-c", novaCmd+" list "+extra+"| grep "+rName)
+		cmdStr := novaCmd + " list " + extra + "| grep " + rName
+		cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 		out, err := cmd.Output()
+		if ctx.Err() != nil {
+			log.Printf("exec of [%s] timed out\n", cmdStr)
+			return 0
+		}
 		if err == nil {
 			r := regexp.MustCompile(rName + "-\\S+")
 			count := 0

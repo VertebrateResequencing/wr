@@ -64,6 +64,11 @@ import:
   version: ^1.6.0
 - package: github.com/hashicorp/go-multierror
 - package: github.com/fanatic/go-infoblox
+- package: github.com/docker/docker
+  subpackages:
+  - client
+  - api/types
+- package: github.com/carbocation/runningvariance
 testImport:
 - package: github.com/smartystreets/goconvey
   version: master

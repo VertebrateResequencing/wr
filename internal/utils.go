@@ -27,10 +27,13 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math/rand"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +46,14 @@ import (
 )
 
 const gb = uint64(1.07374182e9) // for byte to GB conversion
+
+// for the RandomString implementation
+const (
+	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	randIdxBits = 6                  // 6 bits to represent a rand index
+	randIdxMask = 1<<randIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
+)
 
 var username string
 var userid int
@@ -198,6 +209,46 @@ func LogPanic(logger log15.Logger, desc string, die bool) {
 	}
 }
 
+// Which returns the full path to the executable with the given name that is
+// found first in the set of $PATH directories, ignoring any path that is
+// actually a symlink to ourselves.
+func Which(exeName string) string {
+	self, _ := os.Executable()
+	self, _ = filepath.EvalSymlinks(self)
+
+	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+		stat, err := os.Stat(dir)
+		if err != nil || !stat.IsDir() {
+			continue
+		}
+		exes, err := ioutil.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, exe := range exes {
+			if exe.Name() != exeName {
+				continue
+			}
+			path := filepath.Join(dir, exe.Name())
+
+			// check that it's not a symlink to ourselves
+			path, err := filepath.EvalSymlinks(path)
+			if err != nil || path == self {
+				continue
+			}
+
+			// check it's executable
+			stat, err := os.Stat(path)
+			if err == nil && (runtime.GOOS == "windows" || stat.Mode()&0111 != 0) {
+				return path
+			}
+		}
+	}
+
+	return ""
+}
+
 // WaitForFile waits as long as timeout for the given file to exist. When it
 // exists, returns true. Otherwise false.
 func WaitForFile(file string, timeout time.Duration) bool {
@@ -297,4 +348,106 @@ func FileMD5(path string, logger log15.Logger) (string, error) {
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// RandomString generates a random string of length 8 characters.
+func RandomString() string {
+	// based on http://stackoverflow.com/a/31832326/675083
+	b := make([]byte, 8)
+	src := rand.NewSource(time.Now().UnixNano())
+	for i, cache, remain := 7, src.Int63(), randIdxMax; i >= 0; {
+		if remain == 0 {
+			cache, remain = src.Int63(), randIdxMax
+		}
+		if idx := int(cache & randIdxMask); idx < len(randBytes) {
+			b[i] = randBytes[idx]
+			i--
+		}
+		cache >>= randIdxBits
+		remain--
+	}
+	return string(b)
+}
+
+// CurrentIP returns the IP address of the machine we're running on right now.
+// The cidr argument can be an empty string, but if set to the CIDR of the
+// machine's primary network, it helps us be sure of getting the correct IP
+// address (for when there are multiple network interfaces on the machine).
+func CurrentIP(cidr string) (string, error) {
+	var ipNet *net.IPNet
+	if cidr != "" {
+		_, ipn, err := net.ParseCIDR(cidr)
+		if err == nil {
+			ipNet = ipn
+		}
+		// *** ignoring error since I don't want to change the return value of
+		// this method...
+	}
+
+	conn, err := net.Dial("udp", "8.8.8.8:80") // doesn't actually connect, dest doesn't need to exist
+	if err != nil {
+		// fall-back on the old method we had...
+
+		// first just hope http://stackoverflow.com/a/25851186/675083 gives us a
+		// cross-linux&MacOS solution that works reliably...
+		var out []byte
+		out, err = exec.Command("sh", "-c", "ip -4 route get 8.8.8.8 | head -1 | cut -d' ' -f8 | tr -d '\\n'").Output() // #nosec
+		var ip string
+		if err != nil {
+			ip = string(out)
+
+			// paranoid confirmation this ip is in our CIDR
+			if ip != "" && ipNet != nil {
+				pip := net.ParseIP(ip)
+				if pip != nil {
+					if !ipNet.Contains(pip) {
+						ip = ""
+					}
+				}
+			}
+		}
+
+		// if the above fails, fall back on manually going through all our
+		// network interfaces
+		if ip == "" {
+			var addrs []net.Addr
+			addrs, err = net.InterfaceAddrs()
+			if err != nil {
+				return "", err
+			}
+			for _, address := range addrs {
+				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
+					if thisIPNet.IP.To4() != nil {
+						if ipNet != nil {
+							if ipNet.Contains(thisIPNet.IP) {
+								ip = thisIPNet.IP.String()
+								break
+							}
+						} else {
+							ip = thisIPNet.IP.String()
+							break
+						}
+					}
+				}
+			}
+		}
+
+		return ip, nil
+	}
+
+	defer func() {
+		err = conn.Close()
+	}()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	ip := localAddr.IP
+
+	// paranoid confirmation this ip is in our CIDR
+	if ipNet != nil {
+		if ipNet.Contains(ip) {
+			return ip.String(), err
+		}
+	} else {
+		return ip.String(), err
+	}
+	return "", err
 }

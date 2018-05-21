@@ -168,6 +168,30 @@ type Job struct {
 	// ActualCwd.
 	MountConfigs MountConfigs
 
+	// BsubMode set to either Production or Development when Add()ing a job will
+	// result in the job being assigned a BsubID. Such jobs, when they run, will
+	// see bsub, bjobs and bkill as symlinks to wr, thus if they call bsub, they
+	// will actually add jobs to the jobqueue etc. Those jobs will pick up the
+	// same Requirements.Other as this job, and the same MountConfigs. If
+	// Requirements.Other["cloud_shared"] is "true", the MountConfigs are not
+	// reused.
+	BsubMode string
+
+	// MonitorDocker turns on monitoring of a docker container identified by its
+	// --name or path to its --cidfile, adding its peak RAM and CPU usage to the
+	// reported RAM and CPU usage of this job.
+	//
+	// If the special argument "?" is supplied, monitoring will apply to the
+	// first new docker container that appears after the Cmd starts to run.
+	// NB: if multiple jobs that run docker containers start running at the same
+	// time on the same machine, the reported stats could be wrong for one or
+	// more of those jobs.
+	//
+	// Requires that docker is installed on the machine where the job will run
+	// (and that the Cmd uses docker to run a container). NB: does not handle
+	// monitoring of multiple docker containers run by a single Cmd.
+	MonitorDocker string
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -233,6 +257,11 @@ type Job struct {
 	// when retrieving jobs with a limit, this tells you how many jobs were
 	// excluded.
 	Similar int
+	// name of the queue the Job was added to.
+	Queue string
+	// unique (for this manager session) id of the job submission, present if
+	// BsubMode was set when the job was added.
+	BsubID uint64
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -345,6 +374,23 @@ func (j *Job) EnvAddOverride(env []string) error {
 	return err
 }
 
+// Getenv is like os.Getenv(), but for the environment variables stored in the
+// the job, including any overrides. Returns blank if Env() would have returned
+// an error.
+func (j *Job) Getenv(key string) string {
+	env, err := j.Env()
+	if err != nil {
+		return ""
+	}
+	for _, envvar := range env {
+		pair := strings.Split(envvar, "=")
+		if pair[0] == key {
+			return pair[1]
+		}
+	}
+	return ""
+}
+
 // StdOut returns the decompressed job.StdOutC, which is the head and tail of
 // job.Cmd's STDOUT when it ran. If the Cmd hasn't run yet, or if it output
 // nothing to STDOUT, you will get an empty string. Note that StdOutC is only
@@ -390,7 +436,12 @@ func (j *Job) TriggerBehaviours(success bool) error {
 // otherwise the actual working directory is used as the mount point (and the
 // parent of that used for unspecified CacheBase). Relative CacheDir options
 // are treated relative to the CacheBase.
-func (j *Job) Mount() error {
+//
+// If the optional onCwd argument is supplied true, and ActualCwd is not
+// defined, then instead of mounting at j.Cwd/mnt, it tries to mount at j.Cwd
+// itself. (This will fail if j.Cwd is not empty or already mounted by another
+// process.)
+func (j *Job) Mount(onCwd ...bool) error {
 	cwd := j.Cwd
 	defaultMount := filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase := cwd
@@ -398,6 +449,9 @@ func (j *Job) Mount() error {
 		cwd = j.ActualCwd
 		defaultMount = cwd
 		defaultCacheBase = filepath.Dir(cwd)
+	} else if len(onCwd) == 1 && onCwd[0] {
+		defaultMount = j.Cwd
+		defaultCacheBase = filepath.Dir(j.Cwd)
 	}
 
 	for _, mc := range j.MountConfigs {
@@ -530,6 +584,9 @@ func (j *Job) Mount() error {
 // directories between the mount point(s) and Cwd if not CwdMatters and the
 // mount point was (within) ActualCwd.
 func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
+	// j.Lock()
+	// defer j.Unlock()
+
 	var doNotUpload bool
 	if len(stopUploads) == 1 {
 		doNotUpload = stopUploads[0]
@@ -573,7 +630,7 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 // ToEssense converts a Job to its matching JobEssense, taking less space and
 // being required as input for certain methods.
 func (j *Job) ToEssense() *JobEssence {
-	return &JobEssence{JobKey: j.key()}
+	return &JobEssence{JobKey: j.Key()}
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
@@ -619,8 +676,8 @@ func (j *Job) updateRecsAfterFailure() {
 	}
 }
 
-// key calculates a unique key to describe the job.
-func (j *Job) key() string {
+// Key calculates a unique key to describe the job.
+func (j *Job) Key() string {
 	if j.CwdMatters {
 		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
@@ -657,6 +714,64 @@ func (j *Job) setSchedulerGroup(newval string) {
 	j.Lock()
 	defer j.Unlock()
 	j.schedulerGroup = newval
+}
+
+// ToStatus converts a job to a simplified JStatus, useful for output as JSON.
+func (j *Job) ToStatus() JStatus {
+	stderr, _ := j.StdErr()
+	stdout, _ := j.StdOut()
+	env, _ := j.Env()
+	var cwdLeaf string
+	j.RLock()
+	defer j.RUnlock()
+	if j.ActualCwd != "" {
+		cwdLeaf, _ = filepath.Rel(j.Cwd, j.ActualCwd)
+		cwdLeaf = "/" + cwdLeaf
+	}
+	state := j.State
+	if state == JobStateRunning && j.Lost {
+		state = JobStateLost
+	}
+	var ot []string
+	for key, val := range j.Requirements.Other {
+		ot = append(ot, key+":"+val)
+	}
+	return JStatus{
+		Key:           j.Key(),
+		RepGroup:      j.RepGroup,
+		DepGroups:     j.DepGroups,
+		Dependencies:  j.Dependencies.Stringify(),
+		Cmd:           j.Cmd,
+		State:         state,
+		CwdBase:       j.Cwd,
+		Cwd:           cwdLeaf,
+		HomeChanged:   j.ChangeHome,
+		Behaviours:    j.Behaviours.String(),
+		Mounts:        j.MountConfigs.String(),
+		MonitorDocker: j.MonitorDocker,
+		ExpectedRAM:   j.Requirements.RAM,
+		ExpectedTime:  j.Requirements.Time.Seconds(),
+		RequestedDisk: j.Requirements.Disk,
+		OtherRequests: ot,
+		Cores:         j.Requirements.Cores,
+		PeakRAM:       j.PeakRAM,
+		Exited:        j.Exited,
+		Exitcode:      j.Exitcode,
+		FailReason:    j.FailReason,
+		Pid:           j.Pid,
+		Host:          j.Host,
+		HostID:        j.HostID,
+		HostIP:        j.HostIP,
+		Walltime:      j.WallTime().Seconds(),
+		CPUtime:       j.CPUtime.Seconds(),
+		Started:       j.StartTime.Unix(),
+		Ended:         j.EndTime.Unix(),
+		Attempts:      j.Attempts,
+		Similar:       j.Similar,
+		StdErr:        stderr,
+		StdOut:        stdout,
+		Env:           env,
+	}
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it

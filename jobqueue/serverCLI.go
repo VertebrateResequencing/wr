@@ -330,7 +330,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					srerr = ErrBadRequest
 					job.Unlock()
 				} else {
-					key := job.key()
+					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
 					sgroup := job.schedulerGroup
@@ -463,8 +463,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					removedJobs := false
 					for _, jobkey := range keys {
 						item, err := s.q.Get(jobkey)
+						if err != nil || item == nil {
+							continue
+						}
 						iState := item.Stats().State
-						if err != nil || iState == queue.ItemStateRun {
+						if iState == queue.ItemStateRun {
 							continue
 						}
 
@@ -478,7 +481,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							}
 							continue
 						}
-
 						err = s.q.Remove(jobkey)
 						if err == nil {
 							deleted++
@@ -537,7 +539,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
-				jobs, srerr, qerr = s.getJobsByRepGroup(cr.Job.RepGroup, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
+				jobs, srerr, qerr = s.getJobsByRepGroup(cr.Job.RepGroup, cr.Search, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
 				if len(jobs) > 0 {
 					sr = &serverResponse{Jobs: jobs}
 				}
@@ -565,7 +567,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		}
 		key := ""
 		if cr.Job != nil {
-			key = cr.Job.key()
+			key = cr.Job.Key()
 		}
 		return Error{cr.Method, key, qerr}
 	}
@@ -631,7 +633,7 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 		return nil, nil, ErrBadRequest
 	}
 
-	item, err := s.q.Get(cr.Job.key())
+	item, err := s.q.Get(cr.Job.Key())
 	if err != nil || item.Stats().State != queue.ItemStateRun {
 		return item, nil, ErrBadJob
 	}
@@ -670,40 +672,43 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	req := &scheduler.Requirements{}
 	*req = *sjob.Requirements // copy reqs since server changes these, avoiding a race condition
 	job := &Job{
-		RepGroup:     sjob.RepGroup,
-		ReqGroup:     sjob.ReqGroup,
-		DepGroups:    sjob.DepGroups,
-		Cmd:          sjob.Cmd,
-		Cwd:          sjob.Cwd,
-		CwdMatters:   sjob.CwdMatters,
-		ChangeHome:   sjob.ChangeHome,
-		ActualCwd:    sjob.ActualCwd,
-		Requirements: req,
-		Priority:     sjob.Priority,
-		Retries:      sjob.Retries,
-		PeakRAM:      sjob.PeakRAM,
-		Exited:       sjob.Exited,
-		Exitcode:     sjob.Exitcode,
-		FailReason:   sjob.FailReason,
-		StartTime:    sjob.StartTime,
-		EndTime:      sjob.EndTime,
-		Pid:          sjob.Pid,
-		Host:         sjob.Host,
-		HostID:       sjob.HostID,
-		HostIP:       sjob.HostIP,
-		CPUtime:      sjob.CPUtime,
-		State:        state,
-		Attempts:     sjob.Attempts,
-		UntilBuried:  sjob.UntilBuried,
-		ReservedBy:   sjob.ReservedBy,
-		EnvKey:       sjob.EnvKey,
-		EnvOverride:  sjob.EnvOverride,
-		Dependencies: sjob.Dependencies,
-		Behaviours:   sjob.Behaviours,
-		MountConfigs: sjob.MountConfigs,
+		RepGroup:      sjob.RepGroup,
+		ReqGroup:      sjob.ReqGroup,
+		DepGroups:     sjob.DepGroups,
+		Cmd:           sjob.Cmd,
+		Cwd:           sjob.Cwd,
+		CwdMatters:    sjob.CwdMatters,
+		ChangeHome:    sjob.ChangeHome,
+		ActualCwd:     sjob.ActualCwd,
+		Requirements:  req,
+		Priority:      sjob.Priority,
+		Retries:       sjob.Retries,
+		PeakRAM:       sjob.PeakRAM,
+		Exited:        sjob.Exited,
+		Exitcode:      sjob.Exitcode,
+		FailReason:    sjob.FailReason,
+		StartTime:     sjob.StartTime,
+		EndTime:       sjob.EndTime,
+		Pid:           sjob.Pid,
+		Host:          sjob.Host,
+		HostID:        sjob.HostID,
+		HostIP:        sjob.HostIP,
+		CPUtime:       sjob.CPUtime,
+		State:         state,
+		Attempts:      sjob.Attempts,
+		UntilBuried:   sjob.UntilBuried,
+		ReservedBy:    sjob.ReservedBy,
+		EnvKey:        sjob.EnvKey,
+		EnvOverride:   sjob.EnvOverride,
+		Dependencies:  sjob.Dependencies,
+		Behaviours:    sjob.Behaviours,
+		MountConfigs:  sjob.MountConfigs,
+		MonitorDocker: sjob.MonitorDocker,
+		BsubMode:      sjob.BsubMode,
+		BsubID:        sjob.BsubID,
 	}
 
-	if !sjob.StartTime.IsZero() && state == JobStateReserved {
+	if state == JobStateReserved && !sjob.StartTime.IsZero() {
 		job.State = JobStateRunning
 	}
 	sjob.RUnlock()
@@ -717,7 +722,7 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 	job.Lock()
 	defer job.Unlock()
 	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == JobStateBuried) {
-		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.key())
+		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(job.Key())
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)

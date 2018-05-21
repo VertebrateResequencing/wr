@@ -573,10 +573,10 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // non-blank it will CopyOver the specified files (after the server is ready,
 // before any postCreationScript is run).
 //
-// postCreationScript is the optional []byte content of a script that will be
-// run on the server (as the user supplied to Spawn()) once it is ready, and it
-// will complete before this function returns; empty slice means do nothing.
-func (s *Server) WaitUntilReady(files string, postCreationScript ...[]byte) error {
+// postCreationScript is the []byte content of a script that will be run on the
+// server (as the user supplied to Spawn()) once it is ready, and it will
+// complete before this function returns; empty slice means do nothing.
+func (s *Server) WaitUntilReady(files string, postCreationScript []byte) error {
 	// wait for ssh to come up
 	_, err := s.SSHClient()
 	if err != nil {
@@ -619,9 +619,9 @@ SENTINEL:
 	}
 
 	// run the postCreationScript
-	if len(postCreationScript[0]) > 0 {
+	if len(postCreationScript) > 0 {
 		pcsPath := "/tmp/.postCreationScript"
-		err = s.CreateFile(string(postCreationScript[0]), pcsPath)
+		err = s.CreateFile(string(postCreationScript), pcsPath)
 		if err != nil {
 			return fmt.Errorf("cloud server start up script failed to upload: %s", err)
 		}
@@ -647,7 +647,7 @@ SENTINEL:
 			s.logger.Warn("failed to remove post creation script", "path", pcsPath, "err", rmErr)
 		}
 
-		s.Script = postCreationScript[0]
+		s.Script = postCreationScript
 
 		// because the postCreationScript may have altered PATH and other things
 		// that subsequent RunCmd may rely on, clear the client
@@ -727,15 +727,29 @@ func (p *Provider) HeadNode() *Server {
 
 // LocalhostServer returns a Server object with details of the host we are
 // currently running on. No cloud API calls are made to construct this.
-func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configFiles string) (*Server, error) {
+func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configFiles string, cidr ...string) (*Server, error) {
 	maxRAM, err := internal.ProcMeminfoMBs()
 	if err != nil {
 		return nil, err
 	}
+
 	diskSize := internal.DiskSize()
+
+	ip, err := internal.CurrentIP(cidr[0])
+	if err != nil {
+		return nil, err
+	}
+
+	user, err := internal.Username()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
-		IP:          "127.0.0.1",
+		Name:        "localhost",
+		IP:          ip,
 		OS:          os,
+		UserName:    user,
 		Script:      postCreationScript,
 		ConfigFiles: configFiles,
 		Flavor: &Flavor{

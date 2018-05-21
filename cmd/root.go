@@ -73,7 +73,21 @@ $ wr status`,
 // the rootCmd.
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
-		os.Exit(-1)
+		die(err.Error())
+	}
+}
+
+// ExecuteLSF is for treating a call to wr as if `wr lsf xxx` was called, for
+// the LSF emulation to work.
+func ExecuteLSF(cmd string) {
+	args := append([]string{"lsf", cmd}, os.Args[1:]...)
+	command, _, err := RootCmd.Find(args)
+	if err != nil {
+		die(err.Error())
+	}
+	RootCmd.SetArgs(args)
+	if err := command.Execute(); err != nil {
+		die(err.Error())
 	}
 }
 
@@ -257,7 +271,7 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 		die("could not read token file; has the manager been started? [%s]", err)
 	}
 
-	jq, err := jobqueue.Connect("localhost:"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
+	jq, err := jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, caFile, config.ManagerCertDomain, token, wait)
 	if err != nil && !(len(expectedToBeDown) == 1 && expectedToBeDown[0]) {
 		die("%s", err)
 	}

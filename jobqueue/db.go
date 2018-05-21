@@ -55,6 +55,7 @@ var (
 	bucketJobsLive     = []byte("jobslive")
 	bucketJobsComplete = []byte("jobscomplete")
 	bucketRTK          = []byte("repgroupToKey")
+	bucketRGs          = []byte("repgroups")
 	bucketDTK          = []byte("depgroupToKey")
 	bucketRDTK         = []byte("reverseDepgroupToKey")
 	bucketEnvs         = []byte("envs")
@@ -245,6 +246,10 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketRTK, errf)
 		}
+		_, errf = tx.CreateBucketIfNotExists(bucketRGs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketRGs, errf)
+		}
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
@@ -331,11 +336,12 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 	var rgLookups sobsd
 	var dgLookups sobsd
 	var rdgLookups sobsd
+	repGroups := make(map[string]bool)
 	depGroups := make(map[string]bool)
 	newJobKeys := make(map[string]bool)
 	var keptJobs []*Job
 	for _, job := range jobs {
-		keyStr := job.key()
+		keyStr := job.Key()
 
 		if ignoreAdded {
 			var added bool
@@ -355,6 +361,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		job.RLock()
 		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(job.RepGroup, key), nil})
+		repGroups[job.RepGroup] = true
 
 		for _, depGroup := range job.DepGroups {
 			if depGroup != "" {
@@ -392,7 +399,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			// arrange to have resurrected complete jobs stored in the live
 			// bucket again
 			for _, job := range jobsToQueue {
-				key := []byte(job.key())
+				key := []byte(job.Key())
 				var encoded []byte
 				enc := codec.NewEncoderBytes(&encoded, db.ch)
 				job.RLock()
@@ -414,7 +421,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		}
 
 		// now go ahead and store the lookups and jobs
-		numStores := 2
+		numStores := 3
 		if len(dgLookups) > 0 {
 			numStores++
 		}
@@ -428,6 +435,19 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			defer db.wg.Done()
 			sort.Sort(rgLookups)
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
+		}()
+
+		db.wg.Add(1)
+		go func() {
+			defer db.wg.Done()
+			var rgs sobsd
+			for rg := range repGroups {
+				rgs = append(rgs, [2][]byte{[]byte(rg), nil})
+			}
+			if len(rgs) > 1 {
+				sort.Sort(rgs)
+			}
+			errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
 		}()
 
 		if len(dgLookups) > 0 {
@@ -633,6 +653,19 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 	return jobs, err
 }
 
+// retrieveRepGroups gets the rep groups of all jobs that have ever been added.
+func (db *db) retrieveRepGroups() ([]string, error) {
+	var rgs []string
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRGs)
+		return b.ForEach(func(k, v []byte) error {
+			rgs = append(rgs, string(k))
+			return nil
+		})
+	})
+	return rgs, err
+}
+
 // retrieveCompleteJobsByRepGroup gets jobs with the given RepGroup from the
 // completed jobs bucket (ie. those that have gone through the queue and been
 // Archive()d), but not those that are also currently live (ie. are being
@@ -810,7 +843,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	if db.closed {
 		return
 	}
-	jobkey := job.key()
+	jobkey := job.Key()
 	job.RLock()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
 	jrg := job.ReqGroup

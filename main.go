@@ -98,8 +98,25 @@ options.
 */
 package main
 
-import "github.com/VertebrateResequencing/wr/cmd"
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/VertebrateResequencing/wr/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	// handle our executable being a symlink named bsub, in which case call
+	// `wr lsf bsub`; likewise for bjobs
+	switch filepath.Base(os.Args[0]) {
+	case "bsub":
+		cmd.ExecuteLSF("bsub")
+	case "bjobs":
+		cmd.ExecuteLSF("bjobs")
+	case "bkill":
+		cmd.ExecuteLSF("bkill")
+	default:
+		// otherwise we call our root command, which handles everything else
+		cmd.Execute()
+	}
 }

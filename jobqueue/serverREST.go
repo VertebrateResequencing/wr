@@ -75,12 +75,15 @@ type JobViaJSON struct {
 	OnSuccess        BehavioursViaJSON `json:"on_success"`
 	OnExit           BehavioursViaJSON `json:"on_exit"`
 	Env              []string          `json:"env"`
+	MonitorDocker    string            `json:"monitor_docker"`
 	CloudOS          string            `json:"cloud_os"`
 	CloudUser        string            `json:"cloud_username"`
 	CloudScript      string            `json:"cloud_script"`
 	CloudConfigFiles string            `json:"cloud_config_files"`
 	CloudOSRam       *int              `json:"cloud_ram"`
 	CloudFlavor      string            `json:"cloud_flavor"`
+	CloudShared      bool              `json:"cloud_shared"`
+	BsubMode         string            `json:"bsub_mode"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -106,14 +109,15 @@ type JobDefaults struct {
 	DepGroups []string
 	Deps      Dependencies
 	// Env is a comma separated list of key=val pairs.
-	Env          string
-	OnFailure    Behaviours
-	OnSuccess    Behaviours
-	OnExit       Behaviours
-	MountConfigs MountConfigs
-	CloudOS      string
-	CloudUser    string
-	CloudFlavor  string
+	Env           string
+	OnFailure     Behaviours
+	OnSuccess     Behaviours
+	OnExit        Behaviours
+	MountConfigs  MountConfigs
+	MonitorDocker string
+	CloudOS       string
+	CloudUser     string
+	CloudFlavor   string
 	// CloudScript is the local path to a script.
 	CloudScript string
 	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
@@ -121,6 +125,8 @@ type JobDefaults struct {
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
 	CloudOSRam    int
+	CloudShared   bool
+	BsubMode      string
 	compressedEnv []byte
 	osRAM         string
 }
@@ -183,7 +189,7 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // properties of this JobViaJSON. The Job will not be in the queue until passed
 // to a method that adds jobs to the queue.
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
-	var cmd, cwd, rg, repg string
+	var cmd, cwd, rg, repg, monitorDocker string
 	var mb, cpus, disk, override, priority, retries int
 	var dur time.Duration
 	var envOverride []byte
@@ -191,6 +197,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var deps Dependencies
 	var behaviours Behaviours
 	var mounts MountConfigs
+	var bsubMode string
 
 	if jvj.RepGrp == "" {
 		repg = jd.RepGrp
@@ -344,6 +351,17 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		mounts = jd.MountConfigs
 	}
 
+	bsubMode = jvj.BsubMode
+	if bsubMode == "" && jd.BsubMode != "" {
+		bsubMode = jd.BsubMode
+	}
+
+	if jvj.MonitorDocker == "" {
+		monitorDocker = jd.MonitorDocker
+	} else {
+		monitorDocker = jvj.MonitorDocker
+	}
+
 	// scheduler-specific options
 	other := make(map[string]string)
 	if jvj.CloudOS != "" {
@@ -392,22 +410,28 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		other["cloud_os_ram"] = jd.DefaultCloudOSRam()
 	}
 
+	if jvj.CloudShared || jd.CloudShared {
+		other["cloud_shared"] = "true"
+	}
+
 	return &Job{
-		RepGroup:     repg,
-		Cmd:          cmd,
-		Cwd:          cwd,
-		CwdMatters:   cwdMatters,
-		ChangeHome:   changeHome,
-		ReqGroup:     rg,
-		Requirements: &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
-		Override:     uint8(override),
-		Priority:     uint8(priority),
-		Retries:      uint8(retries),
-		DepGroups:    depGroups,
-		Dependencies: deps,
-		EnvOverride:  envOverride,
-		Behaviours:   behaviours,
-		MountConfigs: mounts,
+		RepGroup:      repg,
+		Cmd:           cmd,
+		Cwd:           cwd,
+		CwdMatters:    cwdMatters,
+		ChangeHome:    changeHome,
+		ReqGroup:      rg,
+		Requirements:  &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
+		Override:      uint8(override),
+		Priority:      uint8(priority),
+		Retries:       uint8(retries),
+		DepGroups:     depGroups,
+		Dependencies:  deps,
+		EnvOverride:   envOverride,
+		Behaviours:    behaviours,
+		MountConfigs:  mounts,
+		MonitorDocker: monitorDocker,
+		BsubMode:      bsubMode,
 	}, nil
 }
 
@@ -476,9 +500,9 @@ func restJobs(s *Server) http.HandlerFunc {
 		}
 
 		// convert jobs to jstatus
-		jstati := make([]jstatus, len(jobs))
+		jstati := make([]JStatus, len(jobs))
 		for i, job := range jobs {
-			jstati[i] = jobToStatus(job)
+			jstati[i] = job.ToStatus()
 		}
 
 		// return job details as JSON
@@ -495,16 +519,20 @@ func restJobs(s *Server) http.HandlerFunc {
 
 // restJobsStatus gets the status of the requested jobs in the queue. The
 // request url can be suffixed with comma separated job keys or RepGroups.
-// Possible query parameters are std, env (which can take a "true" value), limit
-// (a number) and state (one of delayed|ready|reserved|running|lost|buried|
-// dependent|complete). Returns the Jobs, a http.Status* value and error.
+// Possible query parameters are search, std, env (which can take a "true"
+// value), limit (a number) and state (one of
+// delayed|ready|reserved|running|lost|buried| dependent|complete). Returns the
+// Jobs, a http.Status* value and error.
 func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
-	var getStd, getEnv bool
+	var search, getStd, getEnv bool
 	var limit int
 	var state JobState
 	var err error
 
+	if r.Form.Get("search") == restFormTrue {
+		search = true
+	}
 	if r.Form.Get("std") == restFormTrue {
 		getStd = true
 	}
@@ -553,7 +581,7 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 			}
 
 			// id might be a Job.RepGroup
-			theseJobs, _, qerr := s.getJobsByRepGroup(id, limit, state, getStd, getEnv)
+			theseJobs, _, qerr := s.getJobsByRepGroup(id, search, limit, state, getStd, getEnv)
 			if qerr != "" {
 				return nil, http.StatusInternalServerError, fmt.Errorf(qerr)
 			}
@@ -581,27 +609,32 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	jd := &JobDefaults{
-		Cwd:         r.Form.Get("cwd"),
-		RepGrp:      r.Form.Get("rep_grp"),
-		ReqGrp:      r.Form.Get("req_grp"),
-		CPUs:        urlStringToInt(r.Form.Get("cpus")),
-		Disk:        urlStringToInt(r.Form.Get("disk")),
-		Override:    urlStringToInt(r.Form.Get("override")),
-		Priority:    urlStringToInt(r.Form.Get("priority")),
-		Retries:     urlStringToInt(r.Form.Get("retries")),
-		DepGroups:   urlStringToSlice(r.Form.Get("dep_grps")),
-		Env:         r.Form.Get("env"),
-		CloudOS:     r.Form.Get("cloud_os"),
-		CloudUser:   r.Form.Get("cloud_username"),
-		CloudScript: r.Form.Get("cloud_script"),
-		CloudFlavor: r.Form.Get("cloud_flavor"),
-		CloudOSRam:  urlStringToInt(r.Form.Get("cloud_ram")),
+		Cwd:           r.Form.Get("cwd"),
+		RepGrp:        r.Form.Get("rep_grp"),
+		ReqGrp:        r.Form.Get("req_grp"),
+		CPUs:          urlStringToInt(r.Form.Get("cpus")),
+		Disk:          urlStringToInt(r.Form.Get("disk")),
+		Override:      urlStringToInt(r.Form.Get("override")),
+		Priority:      urlStringToInt(r.Form.Get("priority")),
+		Retries:       urlStringToInt(r.Form.Get("retries")),
+		DepGroups:     urlStringToSlice(r.Form.Get("dep_grps")),
+		Env:           r.Form.Get("env"),
+		MonitorDocker: r.Form.Get("monitor_docker"),
+		CloudOS:       r.Form.Get("cloud_os"),
+		CloudUser:     r.Form.Get("cloud_username"),
+		CloudScript:   r.Form.Get("cloud_script"),
+		CloudFlavor:   r.Form.Get("cloud_flavor"),
+		CloudOSRam:    urlStringToInt(r.Form.Get("cloud_ram")),
+		BsubMode:      r.Form.Get("bsub_mode"),
 	}
 	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true
 	}
 	if r.Form.Get("change_home") == restFormTrue {
 		jd.ChangeHome = true
+	}
+	if r.Form.Get("cloud_shared") == restFormTrue {
+		jd.CloudShared = true
 	}
 	if r.Form.Get("memory") != "" {
 		mb, err := bytefmt.ToMegabytes(r.Form.Get("memory"))
@@ -698,7 +731,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// slow and wasteful?...
 	var jobs []*Job
 	for _, job := range inputJobs {
-		item, qerr := s.q.Get(job.key())
+		item, qerr := s.q.Get(job.Key())
 		if qerr == nil && item != nil {
 			// append the q's version of the job, not the input job, since the
 			// job may have been a duplicate and we want to return its current

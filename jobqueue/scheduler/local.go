@@ -37,6 +37,7 @@ import (
 const (
 	localPlace          = "localhost"
 	localReserveTimeout = 1
+	priorityScaler      = float64(255) / float64(100)
 )
 
 // reqCheckers are functions used by schedule() to see if it is at all possible
@@ -44,6 +45,12 @@ const (
 // in the local struct so that other implementers of scheduleri can embed local,
 // use local's schedule(), but have their own reqChecker implementation.)
 type reqChecker func(req *Requirements) error
+
+// maxResourceGetter are functions used by schedule() to see what the maximum of
+// of a resource like memory or time is. (We make use of this in the local
+// struct so that other implementers of scheduleri can embed local, use local's
+// schedule(), but have their own maxResourceGetter implementation.)
+type maxResourceGetter func() int
 
 // canCounters are functions used by processQueue() to see how many of a job
 // can be run. (We make use of this in the local struct so that other
@@ -85,6 +92,8 @@ type local struct {
 	running          map[string]int
 	cleaned          bool
 	reqCheckFunc     reqChecker
+	maxMemFunc       maxResourceGetter
+	maxCPUFunc       maxResourceGetter
 	canCountFunc     canCounter
 	stateUpdateFunc  stateUpdater
 	stateUpdateFreq  time.Duration
@@ -136,6 +145,8 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 
 	// set our functions for use in schedule() and processQueue()
 	s.reqCheckFunc = s.reqCheck
+	s.maxMemFunc = s.maxMem
+	s.maxCPUFunc = s.maxCPU
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
 	s.cancelRunCmdFunc = s.cancelRun
@@ -176,6 +187,21 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	} // else, just in case a job with these reqs somehow got through in the
 	// past, allow it to be cancelled
 
+	// priority of this cmd will be based on how "large" it is, which is the max
+	// of the percentage of available memory it needs and percentage of cpus it
+	// needs. A cmd that needs 100% of memory or cpu will be our highest
+	// priority command, which is expressed as priority 255, while one that
+	// needs 0% of resources will be expressed as priority 0.
+	maxMem := s.maxMemFunc()
+	maxCPU := s.maxCPUFunc()
+	percentMemNeeded := (float64(req.RAM) / float64(maxMem)) * float64(100)
+	percentCPUNeeded := (float64(req.Cores) / float64(maxCPU)) * float64(100)
+	percentMachineNeeded := percentMemNeeded
+	if percentCPUNeeded > percentMachineNeeded {
+		percentMachineNeeded = percentCPUNeeded
+	}
+	priority := uint8(math.Round(priorityScaler * percentMachineNeeded))
+
 	// add to the queue
 	key := jobName(cmd, "n/a", false)
 	data := &job{
@@ -184,7 +210,8 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 		count: count,
 	}
 	s.mutex.Lock()
-	item, err := s.queue.Add(key, "", data, 0, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
+
+	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
 			// update the job's count (only)
@@ -201,7 +228,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 	s.startAutoProcessing()
 
-	// try and run the oldest job in the queue
+	// try and run the jobs in the queue
 	return s.processQueue()
 }
 
@@ -211,6 +238,16 @@ func (s *local) reqCheck(req *Requirements) error {
 		return Error{"local", "schedule", ErrImpossible}
 	}
 	return nil
+}
+
+// maxMem returns the maximum memory available on the machine in MB.
+func (s *local) maxMem() int {
+	return s.maxRAM
+}
+
+// maxCPU returns the total number of CPU cores available on the machine.
+func (s *local) maxCPU() int {
+	return s.maxCores
 }
 
 // removeKey removes a key from the queue, for when there are no more jobs for
@@ -229,8 +266,9 @@ func (s *local) removeKey(key string) {
 	}
 }
 
-// processQueue gets the oldest job in the queue, sees if it's possible to run
-// it, does so if it is, otherwise returns the job to the queue.
+// processQueue goes through the jobs in the queue by size, sees if it's
+// possible to run any, does so if it is, otherwise returns the jobs to the
+// queue.
 func (s *local) processQueue() error {
 	// first perform any global state update needed by the scheduler
 	s.stateUpdateFunc()
@@ -247,12 +285,6 @@ func (s *local) processQueue() error {
 		return nil
 	}
 
-	var key, cmd string
-	var req *Requirements
-	var count, canCount int
-	var j *job
-
-	// get the oldest job
 	var toRelease []string
 	defer func() {
 		for _, key := range toRelease {
@@ -262,6 +294,8 @@ func (s *local) processQueue() error {
 			}
 		}
 	}()
+
+	// go through the jobs largest to smallest (standard bin packing approach)
 	for {
 		item, err := s.queue.Reserve()
 		if err != nil {
@@ -270,12 +304,12 @@ func (s *local) processQueue() error {
 			}
 			return err
 		}
-		key = item.Key
-		j = item.Data.(*job)
+		key := item.Key
+		j := item.Data.(*job)
 		j.RLock()
-		cmd = j.cmd
-		req = j.req
-		count = j.count
+		cmd := j.cmd
+		req := j.req
+		count := j.count
 		j.RUnlock()
 
 		running := s.running[key]
@@ -295,101 +329,92 @@ func (s *local) processQueue() error {
 		toRelease = append(toRelease, key)
 		shouldCount := count - running
 		if shouldCount <= 0 {
-			// we're already running everything for this job, try the next most
-			// oldest
+			// we're already running everything for this job, try the next
+			// largest cmd
 			continue
 		}
 
 		// now see if there's remaining capacity to run the job
-		canCount = s.canCountFunc(req)
+		canCount := s.canCountFunc(req)
 		s.Debug("processQueue canCount", "can", canCount, "running", running, "should", shouldCount)
 		if canCount > shouldCount {
 			canCount = shouldCount
 		}
 
 		if canCount == 0 {
-			// we don't want to go to the next most oldest, but will wait until
-			// something calls processQueue() again to get the cmd for this
-			// job running: dumb fifo behaviour
-			//*** could easily make this less dumb by considering how long we
-			// most likely have to wait for a currently running job to finish,
-			// and seeing if there are any other jobs in the queue that will
-			// finish in less time...
-			return nil
+			// try and fill any "gaps" (spare memory/ cpu) by seeing if a cmd
+			// with lesser resource requirements can be run
+			continue
 		}
 
-		break
-	}
-
-	// start running what we can
-	s.Debug("processQueue runCmdFunc", "count", canCount)
-	reserved := make(chan bool, canCount)
-	for i := 0; i < canCount; i++ {
-		s.running[key]++
-
-		go func() {
-			defer internal.LogPanic(s.Logger, "runCmd", true)
-
-			err := s.runCmdFunc(cmd, req, reserved)
-
-			s.mutex.Lock()
-			s.resourceMutex.Lock()
-			s.ram -= req.RAM
-			s.cores -= req.Cores
-			s.resourceMutex.Unlock()
-			s.running[key]--
-			if s.running[key] <= 0 {
-				delete(s.running, key)
-			}
-
-			if err == nil {
-				j.Lock()
-				j.count--
-				jCount := j.count
-				j.Unlock()
-				if jCount <= 0 {
-					s.removeKey(key)
-				}
-			} else if err.Error() != standinNotNeeded {
-				// users are notified of relevant errors during runCmd; here we
-				// just debug log everything
-				s.Debug("runCmd error", "err", err)
-			}
-			s.mutex.Unlock()
-			err = s.processQueue()
-			if err != nil {
-				s.Error("processQueue recall failed", "err", err)
-			}
-		}()
-	}
-
-	// before allowing this function to be called again, wait for all the above
-	// runCmdFuncs to at least get as far as reserving their resources, so
-	// subsequent calls to canCountFunc will be accurate
-	s.processing = true
-	go func() {
+		// start running what we can
+		s.Debug("processQueue runCmdFunc", "count", canCount)
+		reserved := make(chan bool, canCount)
 		for i := 0; i < canCount; i++ {
-			<-reserved
-		}
+			s.running[key]++
 
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
-		s.processing = false
-		recall := s.recall
-		s.recall = false
-		if recall {
 			go func() {
-				errp := s.processQueue()
-				if errp != nil {
-					s.Warn("processQueue recall failed", "err", errp)
+				defer internal.LogPanic(s.Logger, "runCmd", true)
+
+				err := s.runCmdFunc(cmd, req, reserved)
+
+				s.mutex.Lock()
+				s.resourceMutex.Lock()
+				s.ram -= req.RAM
+				s.cores -= req.Cores
+				s.resourceMutex.Unlock()
+				s.running[key]--
+				if s.running[key] <= 0 {
+					delete(s.running, key)
+				}
+
+				if err == nil {
+					j.Lock()
+					j.count--
+					jCount := j.count
+					j.Unlock()
+					if jCount <= 0 {
+						s.removeKey(key)
+					}
+				} else if err.Error() != standinNotNeeded {
+					// users are notified of relevant errors during runCmd; here
+					// we just debug log everything
+					s.Debug("runCmd error", "err", err)
+				}
+				s.mutex.Unlock()
+				err = s.processQueue()
+				if err != nil {
+					s.Error("processQueue recall failed", "err", err)
 				}
 			}()
 		}
-	}()
 
-	// the item will now be released, so on the next call to this method we'll
-	// try to run the remainder
-	return nil
+		// before allowing this function to be called again, wait for all the
+		// above runCmdFuncs to at least get as far as reserving their
+		// resources, so subsequent calls to canCountFunc will be accurate
+		s.processing = true
+		go func() {
+			for i := 0; i < canCount; i++ {
+				<-reserved
+			}
+
+			s.mutex.Lock()
+			defer s.mutex.Unlock()
+			s.processing = false
+			recall := s.recall
+			s.recall = false
+			if recall {
+				go func() {
+					errp := s.processQueue()
+					if errp != nil {
+						s.Warn("processQueue recall failed", "err", errp)
+					}
+				}()
+			}
+		}()
+
+		// keep looping, in case any smaller job can also be run
+	}
 }
 
 // canCount tells you how many jobs with the given RAM and core requirements it

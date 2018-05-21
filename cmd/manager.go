@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -46,6 +48,7 @@ var localUsername string
 var backupPath string
 var managerTimeoutSeconds int
 var managerDebug bool
+var maxServers int
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -145,8 +148,19 @@ var managerStartCmd = &cobra.Command{
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
 				internal.WaitForFile(config.ManagerTokenFile, mTimeout)
-				jq := connect(mTimeout)
+				jq := connect(mTimeout, true)
 				if jq == nil {
+					// display any error or crit lines in the log
+					f, errf := os.Open(config.ManagerLogFile)
+					if errf == nil {
+						scanner := bufio.NewScanner(f)
+						for scanner.Scan() {
+							line := scanner.Text()
+							if strings.Contains(line, "lvl=crit") || strings.Contains(line, "lvl=eror") {
+								fmt.Println(line)
+							}
+						}
+					}
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
 				token, err := token()
@@ -221,7 +235,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// real pid; though it may actually be running on a remote host and we
 		// managed to connect to it via ssh port forwarding; compare the server
 		// ip to our own
-		currentIP, err := jobqueue.CurrentIP("")
+		currentIP, err := internal.CurrentIP("")
 		if err != nil {
 			warn("Could not get current IP: %s", err)
 		}
@@ -412,10 +426,14 @@ func init() {
 
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
+
+	// go back to just stderr so we don't log token to file (this doesn't affect
+	// server logging)
+	appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, log15.StderrHandler))
 	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
 
 	if setDomainIP {
-		ip, err := jobqueue.CurrentIP("")
+		ip, err := internal.CurrentIP("")
 		if err != nil {
 			warn("could not get IP address of localhost: %s", err)
 		}
@@ -503,6 +521,16 @@ func startJQ(postCreation []byte) {
 		if config.ManagerCAFile != "" {
 			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
 		}
+
+		// also check that we're actually in the cloud, or this is not going to
+		// work
+		provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
+		if errc != nil {
+			die("cloud not connect to %s: %s", scheduler, errc)
+		}
+		if !provider.InCloud() {
+			die("according to hostname, this is not an instance in %s", scheduler)
+		}
 	}
 
 	// start the jobqueue server
@@ -534,6 +562,7 @@ func startJQ(postCreation []byte) {
 	}
 
 	logStarted(server.ServerInfo, token)
+	l15h.AddHandler(appLogger, fh) // logStarted disabled logging to file; reenable to get final message below
 
 	// block forever while the jobqueue does its work
 	err = server.Block()

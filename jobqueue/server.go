@@ -33,7 +33,9 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -84,6 +86,10 @@ var (
 	ServerCheckRunnerTime = 1 * time.Minute
 	ServerLogClientErrors = true
 )
+
+// BsubID is used to give added jobs a unique (atomically incremented) id when
+// pretending to be bsub.
+var BsubID uint64
 
 // Error records an error and the operation and item that caused it.
 type Error struct {
@@ -378,7 +384,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	keyFile := config.KeyFile
 	certDomain := config.CertDomain
 	if certDomain == "" {
-		certDomain = "localhost"
+		certDomain = localhost
 	}
 	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string
@@ -453,7 +459,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	ip, err := CurrentIP(config.CIDR)
+	ip, err := internal.CurrentIP(config.CIDR)
 	if err != nil {
 		serverLogger.Error("getting current IP failed", "err", err)
 	}
@@ -528,7 +534,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			if err != nil {
 				return nil, msg, token, err
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 		_, _, err = s.enqueueItems(itemdefs)
 		if err != nil {
@@ -1007,7 +1013,7 @@ func (s *Server) createQueue() {
 					job.setScheduledRunner(false)
 				}
 				if s.rc != "" {
-					errs := q.SetReserveGroup(job.key(), schedulerGroup)
+					errs := q.SetReserveGroup(job.Key(), schedulerGroup)
 					if errs != nil {
 						// we could be trying to set the reserve group after the
 						// job has already completed, if they complete
@@ -1263,6 +1269,10 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 		if s.rc != "" {
 			job.schedulerGroup = job.Requirements.Stringify()
 		}
+		if job.BsubMode != "" {
+			atomic.AddUint64(&BsubID, 1)
+			job.BsubID = atomic.LoadUint64(&BsubID)
+		}
 		job.Unlock()
 	}
 
@@ -1294,7 +1304,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 				qerr = err
 				break
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 
 		// storeNewJobs also returns jobsToUpdate, which are those jobs
@@ -1307,7 +1317,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 				qerr = err
 				break
 			}
-			thisErr := s.q.Update(job.key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+			thisErr := s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
 			if thisErr != nil {
 				qerr = thisErr
 				break
@@ -1324,7 +1334,6 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			}
 		}
 	}
-
 	return added, dups, alreadyComplete, srerr, qerr
 }
 
@@ -1378,7 +1387,7 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 	return true, err
 }
 
-// getJobsByKeys gets jobs with the given keys (current and complete)
+// getJobsByKeys gets jobs with the given keys (current and complete).
 func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
 	for _, jobkey := range keys {
@@ -1415,33 +1424,63 @@ func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []
 	return jobs, srerr, qerr
 }
 
-// getJobsByRepGroup gets jobs in the given group (current and complete)
-func (s *Server) getJobsByRepGroup(repgroup string, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
-	// look in the in-memory queue for matching jobs
-	s.rpl.RLock()
-	for key := range s.rpl.lookup[repgroup] {
-		item, err := s.q.Get(key)
-		if err == nil && item != nil {
-			job := s.itemToJob(item, false, false)
-			jobs = append(jobs, job)
+// searchRepGroups looks up the rep groups of all jobs that have ever been added
+// and returns those that contain the given sub string.
+func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
+	rgs, err := s.db.retrieveRepGroups()
+	if err != nil {
+		return nil, err
+	}
+
+	var matching []string
+	for _, rg := range rgs {
+		if strings.Contains(rg, partialRepGroup) {
+			matching = append(matching, rg)
 		}
 	}
-	s.rpl.RUnlock()
+	return matching, err
+}
 
-	// look in the permanent store for matching jobs
-	if state == "" || state == JobStateComplete {
-		var complete []*Job
-		complete, srerr, qerr = s.getCompleteJobsByRepGroup(repgroup)
-		if len(complete) > 0 {
-			// a job is stored in the db with only the single most recent
-			// RepGroup it had, but we're able to retrieve jobs based on any of
-			// the RepGroups it ever had; set the RepGroup to the one the user
-			// requested *** may want to change RepGroup to store a slice of
-			// RepGroups? But that could be massive...
-			for _, cj := range complete {
-				cj.RepGroup = repgroup
+// getJobsByRepGroup gets jobs in the given group (current and complete).
+func (s *Server) getJobsByRepGroup(repgroup string, search bool, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+	var rgs []string
+	if search {
+		var errs error
+		rgs, errs = s.searchRepGroups(repgroup)
+		if errs != nil {
+			return nil, ErrDBError, errs.Error()
+		}
+	} else {
+		rgs = append(rgs, repgroup)
+	}
+
+	for _, rg := range rgs {
+		// look in the in-memory queue for matching jobs
+		s.rpl.RLock()
+		for key := range s.rpl.lookup[rg] {
+			item, err := s.q.Get(key)
+			if err == nil && item != nil {
+				job := s.itemToJob(item, false, false)
+				jobs = append(jobs, job)
 			}
-			jobs = append(jobs, complete...)
+		}
+		s.rpl.RUnlock()
+
+		// look in the permanent store for matching jobs
+		if state == "" || state == JobStateComplete {
+			var complete []*Job
+			complete, srerr, qerr = s.getCompleteJobsByRepGroup(rg)
+			if len(complete) > 0 {
+				// a job is stored in the db with only the single most recent
+				// RepGroup it had, but we're able to retrieve jobs based on any of
+				// the RepGroups it ever had; set the RepGroup to the one the user
+				// requested *** may want to change RepGroup to store a slice of
+				// RepGroups? But that could be massive...
+				for _, cj := range complete {
+					cj.RepGroup = rg
+				}
+				jobs = append(jobs, complete...)
+			}
 		}
 	}
 
@@ -1451,7 +1490,7 @@ func (s *Server) getJobsByRepGroup(repgroup string, limit int, state JobState, g
 	return jobs, srerr, qerr
 }
 
-// getCompleteJobsByRepGroup gets complete jobs in the given group
+// getCompleteJobsByRepGroup gets complete jobs in the given group.
 func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr string, qerr string) {
 	jobs, err := s.db.retrieveCompleteJobsByRepGroup(repgroup)
 	if err != nil {
@@ -1461,7 +1500,7 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 	return jobs, srerr, qerr
 }
 
-// getJobsCurrent gets all current (incomplete) jobs
+// getJobsCurrent gets all current (incomplete) jobs.
 func (s *Server) getJobsCurrent(limit int, state JobState, getStd bool, getEnv bool) []*Job {
 	var jobs []*Job
 	for _, item := range s.q.AllItems() {

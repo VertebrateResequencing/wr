@@ -56,9 +56,12 @@ var cmdReRun bool
 var cmdOsPrefix string
 var cmdOsUsername string
 var cmdOsRAM int
+var cmdBsubMode bool
 var cmdPostCreationScript string
 var cmdCloudConfigs string
+var cmdCloudSharedDisk bool
 var cmdFlavor string
+var cmdMonitorDocker string
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -74,8 +77,8 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-cloud_os cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
-env
+monitor_docker cloud_os cloud_username cloud_ram cloud_script cloud_config_files
+cloud_flavor cloud_shared env bsub_mode
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -193,8 +196,13 @@ size if necessary]
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
-possible values is 0 (default) to 255. Commands with the same priority will be
-started in the order they were added.
+possible values is 0 (default, for lowest priority) to 255 (highest priority).
+Commands with the same priority will be started in the order they were added.
+(Note, however, that order of starting is only guaranteed to hold true amongst
+jobs with similar resource requirements, since your chosen job scheduler may,
+for example, run your highest priority job on a machine where it takes up 90% of
+memory, and then find another job to run on that machine that needs 10% or less
+memory - and that job might be one of your low priority ones.)
 
 "retries" defines how many times a command will be retried automatically if it
 fails. Automatic retries are helpful in the case of transient errors, or errors
@@ -221,6 +229,19 @@ name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
 string). These are static dependencies; once resolved they do not get re-
 evaluated.
 
+"monitor_docker" turns on monitoring of a docker container identified by the
+given string, which could be the container's --name or path to its --cidfile.
+This will add the container's peak RAM and total CPU usage to the reported RAM
+and CPU usage of this job. If the special argument "?" is supplied, monitoring
+will apply to the first new docker container that appears after the command
+starts to run. NB: in ? mode, if multiple jobs that run docker containers start
+running at the same time on the same machine, the reported stats could be wrong
+for one or more of those jobs. Requires that docker is installed on the machine
+where the job will run (and that the command uses docker to run a container).
+NB: does not handle monitoring of multiple docker containers run by a single
+command. A side effect of monitoring a container is that if you use wr to kill
+the job for this command, wr will also kill the container.
+
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
@@ -235,6 +256,16 @@ help text for "wr cloud deploy"'s --config_files option. The per-job config
 files you specify will be treated as in addition to any specified during cloud
 deploy or when starting the manager.
 
+cloud_shared only works when using a cloud scheduler where both the manager and
+jobs will run on Ubuntu. It will cause /shared on the manager's server to be
+NFS shared to /shared mounted on the server where your job runs. This gives you
+an easy way of having a shared disk in the cloud, but the size of that disk is
+limited to the size of the manager's volume. Performance may also be poor. This
+is only intended when you need a little bit of shared state between jobs, not
+for writing lots of large files. (If you need a high performance shared disk,
+don't use this option, and instead set up your own shared filesystem, eg.
+GlusterFS, and specify a cloud_script that mounts it.)
+
 "env" is an array of "key=value" environment variables, which override or add to
 the environment variables the command will see when it runs. The base variables
 that are overwritten depend on if you run 'wr add' on the same machine as you
@@ -243,7 +274,12 @@ base variables as they were at the moment in time you run 'wr add', so to set a
 certain environment variable for all commands, you could instead just set it
 prior to calling 'wr add'. In the remote case the command will use base
 variables as they were on the machine where the command is executed when that
-machine was started.`,
+machine was started.
+
+"bsub_mode" is a boolean that results in the job being assigned a unique (for
+this manager session) job id, and turns on bsub emulation, which means that if
+your Cmd calls bsub, it will instead result in a command being added to wr. The
+new job will have this job's mount and cloud_* options.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
@@ -267,7 +303,8 @@ machine was started.`,
 			envVars = os.Environ()
 		}
 
-		// add the jobs to the queue
+		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
+		// time to avoid time out issues...
 		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
 		if err != nil {
 			die("%s", err)
@@ -301,6 +338,7 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
 	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
 	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
+	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
@@ -312,8 +350,10 @@ func init() {
 	addCmd.Flags().StringVar(&cmdFlavor, "cloud_flavor", "", "in the cloud, exact name of the server flavor that the commands must run on")
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
+	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
+	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
@@ -340,7 +380,7 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // the default repgrp.
 func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
-	currentIP, errc := jobqueue.CurrentIP("")
+	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
 		warn("Could not get current IP: %s", errc)
 	}
@@ -355,6 +395,11 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		cmdCloudConfigs = copyCloudConfigFiles(jq, cmdCloudConfigs)
 	}
 
+	bsubMode := ""
+	if cmdBsubMode {
+		bsubMode = deployment
+	}
+
 	jd := &jobqueue.JobDefaults{
 		RepGrp:           cmdRepGroup,
 		ReqGrp:           reqGroup,
@@ -367,12 +412,15 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		Priority:         cmdPri,
 		Retries:          cmdRet,
 		Env:              cmdEnv,
+		MonitorDocker:    cmdMonitorDocker,
 		CloudOS:          cmdOsPrefix,
 		CloudUser:        cmdOsUsername,
 		CloudScript:      cmdPostCreationScript,
 		CloudConfigFiles: cmdCloudConfigs,
 		CloudOSRam:       cmdOsRAM,
 		CloudFlavor:      cmdFlavor,
+		CloudShared:      cmdCloudSharedDisk,
+		BsubMode:         bsubMode,
 	}
 
 	if jd.RepGrp == "" {
@@ -512,7 +560,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 
 		if jvj.Cwd == "" && jd.Cwd == "" {
 			if remoteWarning {
-				warn("command working directories defaulting to /tmp since the manager is running remotely")
+				warn("command working directories defaulting to %s since the manager is running remotely", pwd)
 			}
 			jd.Cwd = pwd
 		}
@@ -560,7 +608,7 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 
 		remote, err := jq.UploadFile(local, desired)
 		if err != nil {
-			warn("failed to open file %s: %s", local, err)
+			warn("failed to upload [%s] to [%s]: %s", local, desired, err)
 			remoteConfigFiles = append(remoteConfigFiles, cf)
 			continue
 		}
