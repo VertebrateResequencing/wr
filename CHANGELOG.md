@@ -5,6 +5,50 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.13.0] - 2018-05-21
+### Added
+- Minimual LSF client (bsub, bjobs, bkill) emulation, for using wr as the
+  backend scheduler and runner for legacy or alternate workflow systems, such as
+  Nextflow or Martian.
+- `wr add` has new --monitor_docker option to get accurate memory and cpu usage
+  stats for jobs that run docker, and to kill those dockers when you kill the
+  job.
+- `wr add` has new --cloud_shared option, for turning on a simple NFS shared
+  disk when using the OpenStack scheduler with Ubuntu.
+- `wr status`, `retry`, `kill` and `remove` take new -z and -y modifiers to
+  treat -i as a repgroup substr (show status of jobs in multiple repgroups) or
+  as an internal job identifier (which are now displayed by `status`).
+- `wr status` has new -o option to define the output format, including new json
+  and summary formats (shows mean resource usage across a repgroup).
+
+### Changed
+- Jobs are now only killed if they both use more than expected memory and more
+  than 90% of total physical memory.
+- Local scheduler (and by extension some behaviour of the OpenStack scheduler)
+  now does bin packing, trying to run as many jobs as possible in parallel by
+  filling in "gaps" in resource usage. Commands that use more resources will be
+  scheduled to run before other commands. Job priority only decides the order
+  that jobs of equal resource usage run in.
+- Trying to start the manager in OpenStack mode outside of OpenStack now
+  immediately returns an error.
+- `wr manager start` now shows error/crit lines from the log, on failure to
+  start.
+- Backwards incompatible changes to cloud API.
+
+### Fixed
+- `wr manager start` no longer logs its authentication token.
+- Race condition where an OpenStack server could be destroyed yet be considered
+  usable.
+- `wr` client commands now obey managerhost config option when not running on
+  the same host as the manager.
+- OpenStack scheduler no longer ignores requested job memory when non-default
+  OS disk set.
+- Reported peak memory usage of jobs fixed to consider usage of all child
+  processes of the initial command (even if they change their process group and
+  fork).
+- Reported CPU time of jobs fixed to include user time, not just system time.
+
+
 ## [0.12.0] - 2018-04-27
 ### Added
 - All communications to the manager are now via TLS, and authentication is
