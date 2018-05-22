@@ -85,24 +85,26 @@ func (s *k8s) initialize(namespace string, logger log15.Logger) error {
 
 	// Initialise the informer factory
 	// Confine all informers to the provided namespace
-	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*30, namespace, func(listopts *metav1.ListOptions){
+	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*30, namespace, func(listopts *metav1.ListOptions) {
 		listopts.IncludeUninitialized = true
 		listopts.Watch = true
 	})
 
+	// Initialise a filepair of the things
+	files := []client.FilePair{{"/tmp/foo.txt", "/tmp/bar.txt"}}
 	// Create the controller
-	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory)
+	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, files)
 
 	stopCh := make(chan struct{})
 
 	go kubeInformerFactory.Start(stopCh)
 
 	// Start the scheduling controller
-	go func(stopCh) {
+	go func() {
 		if err = controller.Run(2, stopCh); err != nil {
 			logger.Error("Error running controller", err.Error())
 		}
-	}(stopCh)
+	}()
 
 	return nil
 }
