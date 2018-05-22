@@ -67,6 +67,7 @@ func NewController(
 	restconfig *rest.Config,
 	libclient *client.Kubernetesp,
 	kubeInformerFactory kubeinformers.SharedInformerFactory,
+	files []client.FilePair,
 
 ) *Controller {
 	// obtain references to shared index informers for the pod and node
@@ -295,6 +296,7 @@ func (c *Controller) nodeHandler(obj interface{}) {
 }
 
 // Assume there is only 1 initcontainer
+// Copy tar to waiting initcontainers.
 func (c *Controller) processPod(pod *corev1.Pod) error {
 	if len(pod.Status.InitContainerStatuses) != 0 {
 		switch {
