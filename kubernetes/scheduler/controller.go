@@ -22,20 +22,33 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeinformers "k8s.io/client-go/informers"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	corev1 "k8s.io/api/core/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/kubernetes/pkg/controller"
 
 	"k8s.io/client-go/util/workqueue"
 )
 
+const (
+	// maxRetries is the number of times a deployment will be retried before it is dropped out of the queue.
+	// With the current rate-limiter in use (5ms*2^(maxRetries-1)) the following numbers represent the times
+	// a deployment is going to be requeued:
+	//
+	// 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s, 5.1s, 10.2s, 20.4s, 41s, 82s
+	maxRetries = 15
+)
+
+// Controller stores everything the controller needs
 type Controller struct {
 	libclient     *client.Kubernetesp
 	kubeclientset kubernetes.Interface
@@ -45,6 +58,7 @@ type Controller struct {
 	nodeLister    corelisters.NodeLister
 	nodeSynced    cache.InformerSynced
 	workqueue     workqueue.RateLimitingInterface
+	files         []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
 }
 
 // NewController returns a new scheduler controller
@@ -72,32 +86,40 @@ func NewController(
 	}
 
 	// Set up event handlers
-	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.handleObject,
-		UpdateFunc: func(old, new interface{}) {
-			newPod := new.(*corev1.Pod)
-			oldPod := old.(*corev1.Pod)
-			if newPod.ResourceVersion == oldPod.ResourceVersion {
-				// Periodic resync will send update events for all known pods
-				// if they're different they will have different RVs
-				return
-			}
-			controller.handleObject(new)
-		},
-		DeleteFunc: controller.handleObject,
-	})
+	// Only watch pods with the label 'app=wr-runner'
+	podInformer.Informer().AddEventHandler(
+		cache.FilteringResourceEventHandler{
+			FilterFunc: func(obj interface{}) bool {
+				pod := obj.(*corev1.Pod)
+				return pod.ObjectMeta.Labels["app=wr-runner"] == "true"
+			},
+			Handler: cache.ResourceEventHandlerFuncs{
+				AddFunc: controller.podHandler,
+				UpdateFunc: func(old, new interface{}) {
+					newPod := new.(*corev1.Pod)
+					oldPod := old.(*corev1.Pod)
+					if newPod.ResourceVersion == oldPod.ResourceVersion {
+						// Periodic resync will send update events for all known pods
+						// if they're different they will have different RVs
+						return
+					}
+					controller.podHandler(new)
+				},
+				DeleteFunc: controller.podHandler,
+			},
+		})
 
 	nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.handleObject,
+		AddFunc: controller.nodeHandler,
 		UpdateFunc: func(old, new interface{}) {
 			newNode := new.(*corev1.Node)
 			oldNode := old.(*corev1.Node)
 			if newNode.ResourceVersion == oldNode.ResourceVersion {
 				return
 			}
-			controller.handleObject(new)
+			controller.nodeHandler(new)
 		},
-		DeleteFunc: controller.handleObject,
+		DeleteFunc: controller.nodeHandler,
 	})
 
 	return controller
@@ -161,14 +183,14 @@ func (c *Controller) processNextWorkItem() bool {
 			// else would loop attempting to process an
 			// invalid work item.
 			c.workqueue.Forget(obj)
-			runtime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
+			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 			return nil
 		}
 
 		// Run syncHandler, passing it the namespace/name key of the resource to be synced
-		if err := c.syncHandler(key); err != nil {
-			return fmt.Errorf("error syncing '%s' : %s", key, err.Error())
-		}
+		err := c.processItem(key)
+		// handleErr will handle adding to the queue again.
+		c.handleErr(err, key)
 		// Finally, if no error occurs forget the item so it's not queued again
 		c.workqueue.Forget(obj)
 		return nil
@@ -176,16 +198,140 @@ func (c *Controller) processNextWorkItem() bool {
 	}(obj)
 
 	if err != nil {
-		runtime.HandleError(err)
+		utilruntime.HandleError(err)
 		return true
 	}
 	return true
 }
 
-// syncHandler compares the actual state with the desired, and attempts
-// to converge the two
-func (c *Controller) syncHandler(key string) error {
+func (c *Controller) processItem(key string) error {
+	// Convert the namespace/name string into a distinct namespace and name
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
+		return nil
+	}
+
+	// Check if it's something without a namespace.
+	// If it is, it must be a Node.
+	if len(namespace) == 0 {
+
+		// Currently nodes are the only thing without a namespace listened for.
+		node, err := c.nodeLister.Get(name)
+
+		if err != nil {
+			// The Node  may no longer exist, in which case we stop
+			// processing.
+
+			if errors.IsNotFound(err) {
+				utilruntime.HandleError(fmt.Errorf("node '%s' in work queue no longer exists", key))
+				return nil
+			}
+
+			return err
+		}
+
+		// Pass the node to processNode
+		err = c.processNode(node)
+		return err
+	}
+
+	// It has a namespace, it must be a pod.
+	pod, err := c.podLister.Pods(namespace).Get(name)
+
+	if err != nil {
+		// The pod  may no longer exist, in which case we stop
+		// processing.
+		if errors.IsNotFound(err) {
+			utilruntime.HandleError(fmt.Errorf("pod '%s' in work queue no longer exists", key))
+			return nil
+		}
+
+		return err
+	}
+
+	// Pass the pod to processPod
+	err = c.processPod(pod)
+
+	return err
+}
+
+// podHandler adds pods to the queue
+// may be expanded later, generally there are separate
+// add, update and delete functions. Currently this
+// isn't needed as we are just watching for when to call
+// CopyTar()
+func (c *Controller) podHandler(obj interface{}) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		utilruntime.HandleError(fmt.Errorf("Couldn't cast object to pod for object %#v", obj))
+		return
+	}
+	key, err := controller.KeyFunc(pod)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", pod, err))
+		return
+	}
+	c.workqueue.Add(key)
+}
+
+// nodeHandler adds nodes to the queue
+// may be expanded later, generally there are separate
+// add, update and delete functions. Currently this
+// isn't needed as we just want a running total of allocatable
+// resources
+func (c *Controller) nodeHandler(obj interface{}) {
+	node, ok := obj.(*corev1.Node)
+	if !ok {
+		utilruntime.HandleError(fmt.Errorf("Couldn't cast object to node for object %#v", obj))
+		return
+	}
+	key, err := controller.KeyFunc(node)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", node, err))
+		return
+	}
+	c.workqueue.Add(key)
+}
+
+// Assume there is only 1 initcontainer
+func (c *Controller) processPod(pod *corev1.Pod) error {
+	if len(pod.Status.InitContainerStatuses) != 0 {
+		switch {
+		case pod.Status.InitContainerStatuses[0].State.Waiting != nil:
+			fmt.Println("InitContainer Waiting!")
+		case pod.Status.InitContainerStatuses[0].State.Running != nil:
+			fmt.Println("InitContainer Running!")
+			fmt.Println("Calling CopyTar")
+			err := c.libclient.CopyTar(c.files, pod)
+			if err != nil {
+				return err
+			}
+		default:
+		}
+	} else {
+		fmt.Println("InitContainerStatuses not initialised yet")
+	}
 	return nil
 }
 
-func (c *Controller) handleObject(obj interface{}) {}
+func (c *Controller) processNode(node *corev1.Node) error {
+	return nil
+}
+
+func (c *Controller) handleErr(err error, key interface{}) {
+	if err == nil {
+		c.workqueue.Forget(key)
+		return
+	}
+
+	if c.workqueue.NumRequeues(key) < maxRetries {
+		//glog.V(2).Infof("Error processing key %v: %v", key, err)
+		c.workqueue.AddRateLimited(key)
+		return
+	}
+
+	utilruntime.HandleError(err)
+	//glog.V(2).Infof("Dropping key %q out of the queue: %v", key, err)
+	c.workqueue.Forget(key)
+}
