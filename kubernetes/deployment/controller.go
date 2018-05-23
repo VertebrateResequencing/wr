@@ -43,6 +43,8 @@ import (
 
 const maxRetries = 5
 
+// Controller defines a deployment controller
+// and it's options
 type Controller struct {
 	Client     *client.Kubernetesp
 	Clientset  kubernetes.Interface
@@ -52,6 +54,7 @@ type Controller struct {
 	informer   cache.SharedIndexInformer
 }
 
+// DeployOpts specify the options for the deployment
 type DeployOpts struct {
 	ContainerImage  string             // docker hub image
 	TempMountPath   string             // where to mount the binary
@@ -136,7 +139,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	}
 
 	// Before starting, create the initial deployment
-	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.Files, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
+	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 	if err != nil {
 		panic(err)
 	}
@@ -218,7 +221,7 @@ func (c *Controller) processObj(obj interface{}) error {
 		c.processPod(v)
 	default:
 		fmt.Println("Default case executed, throwing error")
-		return error(fmt.Errorf("Error: obj is not a pod."))
+		return error(fmt.Errorf("obj is not a pod"))
 	}
 	return nil
 }
