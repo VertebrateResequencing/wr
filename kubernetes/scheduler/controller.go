@@ -58,7 +58,24 @@ type Controller struct {
 	nodeLister    corelisters.NodeLister
 	nodeSynced    cache.InformerSynced
 	workqueue     workqueue.RateLimitingInterface
-	files         []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
+	opts          ScheduleOpts
+}
+
+// ScheduleOpts stores options  for the scheduler
+type ScheduleOpts struct {
+	Files  []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
+	CbChan chan string       // Channel to send errors to
+}
+
+// Request contains relevant information
+// for processing a request.
+type Request struct {
+	RAM    int
+	Time   time.Duration
+	Cores  int
+	Disk   int
+	Other  map[string]string
+	CbChan chan error
 }
 
 // NewController returns a new scheduler controller
@@ -67,7 +84,7 @@ func NewController(
 	restconfig *rest.Config,
 	libclient *client.Kubernetesp,
 	kubeInformerFactory kubeinformers.SharedInformerFactory,
-	files []client.FilePair,
+	opts ScheduleOpts,
 
 ) *Controller {
 	// obtain references to shared index informers for the pod and node
@@ -84,6 +101,7 @@ func NewController(
 		nodeLister:    nodeInformer.Lister(),
 		nodeSynced:    nodeInformer.Informer().HasSynced,
 		workqueue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		opts:          opts,
 	}
 
 	// Set up event handlers
@@ -305,7 +323,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		case pod.Status.InitContainerStatuses[0].State.Running != nil:
 			fmt.Println("InitContainer Running!")
 			fmt.Println("Calling CopyTar")
-			err := c.libclient.CopyTar(c.files, pod)
+			err := c.libclient.CopyTar(c.opts.Files, pod)
 			if err != nil {
 				return err
 			}
