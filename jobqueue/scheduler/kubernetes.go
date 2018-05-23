@@ -43,7 +43,7 @@ type k8s struct {
 	callBackChan    chan string
 	cbmutex         sync.RWMutex
 	badCallBackChan chan *cloud.Server
-	reqChan         chan *Requirements
+	reqChan         chan *kubescheduler.Request
 	msgCB           MessageCallBack
 	badServerCB     BadServerCallBack
 }
@@ -68,10 +68,10 @@ func (s *k8s) initialize(namespace string, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 
-	// Set up message notifier
+	// Set up message notifier & request channels
 	s.callBackChan = make(chan string, 5)
 	s.badCallBackChan = make(chan *cloud.Server, 5)
-	go s.notifyCallBack(s.callBackChan, s.badCallBackChan)
+	s.reqChan = make(chan *kubescheduler.Request)
 
 	// Prerequisites to start the controller
 	s.libclient = &client.Kubernetesp{}
@@ -90,10 +90,18 @@ func (s *k8s) initialize(namespace string, logger log15.Logger) error {
 		listopts.Watch = true
 	})
 
-	// Initialise a filepair of the things
-	files := []client.FilePair{{"/tmp/foo.txt", "/tmp/bar.txt"}}
+	// Initialise scheduler opts
+	opts := kubescheduler.ScheduleOpts{
+		Files:   []client.FilePair{{"/tmp/foo.txt", "/tmp/bar.txt"}},
+		CbChan:  s.callBackChan,
+		ReqChan: s.reqChan,
+	}
+
+	// Start listening for messages on call back channels
+	go s.notifyCallBack(s.callBackChan, s.badCallBackChan)
+
 	// Create the controller
-	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, files)
+	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, opts)
 
 	stopCh := make(chan struct{})
 
@@ -110,19 +118,49 @@ func (s *k8s) initialize(namespace string, logger log15.Logger) error {
 }
 
 // Send a request to see if a cmd with the provided requirements
-// can be scheduled.
+// can ever be scheduled.
+// If the request can be scheduled, errChan returns nil then is closed
+// If it can't ever be sheduled an error is sent on errChan and returned.
 func (s *k8s) reqCheck(req *Requirements) error {
-	return nil
+	// Create error channel
+	errChan := make(chan error)
+	// Rewrite *Requirements to a kubescheduler.Request
+	r := &kubescheduler.Request{
+		RAM:    req.RAM,
+		Time:   req.Time,
+		Cores:  req.Cores,
+		Disk:   req.Disk,
+		Other:  req.Other,
+		CbChan: errChan,
+	}
+	// Do i want this to be non blocking??
+	// Do i want it to block in a goroutine??
+
+	// Blocking sends are fine in a goroutine?
+	go func() {
+		s.reqChan <- r
+	}()
+	// select {
+	// case s.reqChan <- r:
+	// 	fmt.Println("Request sent")
+	// default:
+	// 	fmt.Println("No request sent")
+	// }
+	// Do i want this to block or not?
+	// What about multiple errors?
+	err := <-errChan
+
+	return err
 }
 
-// setMessageCallBack sets the given callback.
+// setMessageCallBack sets the given callback function.
 func (s *k8s) setMessageCallback(cb MessageCallBack) {
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
 	s.msgCB = cb
 }
 
-// setBadServerCallBack sets the given callback.
+// setBadServerCallBack sets the given callback function.
 func (s *k8s) setBadServerCallBack(cb BadServerCallBack) {
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
@@ -160,4 +198,17 @@ func (s *k8s) cleanup() {
 		s.Warn("namespace deletion errored", "err", err)
 	}
 	return
+}
+
+// Work out how many pods with given resource requests can be scheduled based on resource requests on the
+// nodes in the cluster.
+func (s *k8s) canCount(req *Requirements) (canCount int) {
+
+}
+
+// RunFunc calls spawn() and exits with an error = nil when pod has terminated. (Runner exited)
+// Or an error if there was a problem. Use deletefunc in controller to send message?
+// (based on some sort of channel communication?)
+func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
+
 }
