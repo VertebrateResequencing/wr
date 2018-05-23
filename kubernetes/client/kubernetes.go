@@ -60,6 +60,9 @@ import (
 
 type kubernetesi interface{}
 
+// Kubernetesp is the implementation for the kubernetes
+// cluster provider. It provides access to all methods
+// defined in this package
 type Kubernetesp struct {
 	clientset         kubernetes.Interface
 	clusterConfig     *rest.Config
@@ -69,7 +72,6 @@ type Kubernetesp struct {
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
 	configMapClient   typedv1.ConfigMapInterface
-	quotaClient       typedv1.ResourceQuotaInterface
 	PortForwarder     portForwarder
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
@@ -80,13 +82,8 @@ type Kubernetesp struct {
 	Logger            log15.Logger
 }
 
-//Perhaps update Quota as part of controller..?
-type Quota struct {
-	CPU    int
-	Memory int
-	Pods   int
-}
-
+// ConfigMapOpts defines the name and Data
+// (Binary, or strings) to store in a ConfigMap
 type ConfigMapOpts struct {
 	// BinaryData for potential later use
 	BinaryData []byte
@@ -94,6 +91,8 @@ type ConfigMapOpts struct {
 	Name       string
 }
 
+// ServiceOpts defines basic options
+// for a kubernetes service
 type ServiceOpts struct {
 	Name      string
 	Labels    map[string]string
@@ -106,6 +105,7 @@ func int32Ptr(i int32) *int32 { return &i }
 
 func boolPtr(b bool) *bool { return &b }
 
+// CreateNewNamespace Creates a new namespace with the provided name
 func (p *Kubernetesp) CreateNewNamespace(name string) error {
 	_, nsErr := p.namespaceClient.Create(&apiv1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -179,9 +179,10 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 	}
 }
 
-// initialise uses the passed clientset to
-// authenticated create some clients used in other methods.
-// also creates a new namespace for wr to work in
+// Initialize uses the passed clientset to
+// create some authenticated clients used in other methods.
+// also creates a new namespace for wr to work in.
+// Optionally pass a namespace as a string.
 func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...string) error {
 	// Create REST client
 	p.RESTClient = clientset.CoreV1().RESTClient()
@@ -222,9 +223,6 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	// Create configMap client
 	p.configMapClient = clientset.CoreV1().ConfigMaps(p.NewNamespaceName)
 
-	// Create Quota client
-	p.quotaClient = clientset.CoreV1().ResourceQuotas(p.NewNamespaceName)
-
 	// Create portforwarder
 	//p.PortForwarder =
 
@@ -239,14 +237,14 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	return nil
 }
 
-// Creates wr-manager deployment and service.
+// Deploy creates the wr-manager deployment and service.
 // Copying of WR to initcontainer now done by Controller when ready
 // portforwarding now done by controller when ready
 // *old* : Deploys wr manager to the namespace created by initialize()
 // Copies binary with name wr_linux in the current working directory.
 // Uses containerImage as the base docker image to build on top of
 // Assumes tar is available.
-func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, files []FilePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
+func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	//Specify new wr deployment
 	deployment := &appsv1beta1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -489,15 +487,8 @@ func (p *Kubernetesp) inWRPod() bool {
 	return inCloud
 }
 
-// Silly numbers, will eventually update.
-// Basically 'assume it will work'
-func (p *Kubernetesp) getQuota() (*Quota, error) {
-	return &Quota{}, nil
-
-}
-
 // Spawn a new pod that contains a runner. Return the name.
-func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []FilePair, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
+func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -571,6 +562,7 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 	pod, err := p.podClient.Create(pod)
 	if err != nil {
 		p.Logger.Error("Failed to create pod", "err", err)
+		return nil, err
 	}
 	/*
 	   No longer copying tarball to pod here,
@@ -638,10 +630,10 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, files []
 		ID:        string(pod.ObjectMeta.UID),
 		Name:      pod.ObjectMeta.Name,
 		Resources: resources,
-	}, nil
+	}, err
 }
 
-// Deletes the namespace created for wr.
+// TearDown deletes the namespace created for wr.
 func (p *Kubernetesp) TearDown() error {
 	err := p.namespaceClient.Delete(p.NewNamespaceName, &metav1.DeleteOptions{})
 	if err != nil {
@@ -651,7 +643,7 @@ func (p *Kubernetesp) TearDown() error {
 	return nil
 }
 
-// Deletes the given pod, doesn't check it exists first.
+// DestroyPod deletes the given pod, doesn't check it exists first.
 func (p *Kubernetesp) DestroyPod(podName string) error {
 	err := p.podClient.Delete(podName, &metav1.DeleteOptions{})
 	if err != nil {
@@ -661,7 +653,7 @@ func (p *Kubernetesp) DestroyPod(podName string) error {
 	return nil
 }
 
-// Checks a given pod exists. If it does, return the status
+// CheckPod checks a given pod exists. If it does, return the status
 func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
 	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
 	if err != nil {
@@ -683,7 +675,7 @@ func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
 	}
 }
 
-// Creates a new configMap
+// NewConfigMap creates a new configMap
 // Kubernetes 1.10 (Released Late March 2018)
 // provides a BinaryData field that could be used to
 // replace the initContainer method for copying the executable.
@@ -700,7 +692,7 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 	return configMap, err
 }
 
-// Very basic string fudging.
+// CreateInitScriptConfigMap performs very basic string fudging.
 // This allows a wr pod to execute some arbitrary script before starting the runner / manager.
 // So far it appears to work
 func (p *Kubernetesp) CreateInitScriptConfigMap(name string, scriptPath string) error {
@@ -725,6 +717,8 @@ func (p *Kubernetesp) CreateInitScriptConfigMap(name string, scriptPath string) 
 
 }
 
+// CreateService Creates a service with the defined options from
+// ServiceOpts
 func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
 	service := &apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{

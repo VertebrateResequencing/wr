@@ -43,6 +43,8 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
+// Pod contains some basic identifying information
+// about a pod
 type Pod struct {
 	ID        string
 	Name      string
@@ -50,19 +52,28 @@ type Pod struct {
 	logger    log15.Logger
 }
 
+// ResourceRequest specifies a
+// request for resources. Used in Spawn()
 type ResourceRequest struct {
 	Default bool
 	Cores   int
 	Disk    int
-	Ram     int
+	RAM     int
 }
 
+// CmdOptions contains StreamOptions
+// for use in AttachCmd().
+// Optionally Specify a Command where it could
+// also be used if a RunCmd() were ever needed
 type CmdOptions struct {
 	StreamOptions
 
 	Command []string
 }
 
+// StreamOptions specifies all resources
+// needed to attach / run a command in a pod,
+// and stream in StdIn / return StdOut & StdErr.
 type StreamOptions struct {
 	PodName       string
 	ContainerName string
@@ -72,6 +83,8 @@ type StreamOptions struct {
 	Err           io.Writer
 }
 
+// FilePair is a source, destination
+// pair of file paths
 type FilePair struct {
 	Src, Dest string
 }
@@ -139,7 +152,7 @@ func makeTar(files []FilePair, writer io.Writer) error {
 	return nil
 }
 
-// Attaches to a running container, pipes stdIn to the command running on that container.
+// AttachCmd attaches to a running container, pipes stdIn to the command running on that container.
 // ToDO: Set up writers for stderr and out internal to AttachCmd(), returning just strings &
 // removing the fields from the CmdOptions struct
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
@@ -194,7 +207,7 @@ func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []
 	return fw.ForwardPorts()
 }
 
-// Sets up port forwarding to the manager that is running inside the cluster
+// PortForward sets up port forwarding to the manager that is running inside the cluster
 func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	if pod.Status.Phase != apiv1.PodRunning {
 		p.Logger.Error("unable to forward port because pod is not running.", "status", pod.Status.Phase, "pod", pod.ObjectMeta.Name)
