@@ -347,11 +347,18 @@ func (c *Controller) handleErr(err error, key interface{}) {
 
 	if c.workqueue.NumRequeues(key) < maxRetries {
 		//glog.V(2).Infof("Error processing key %v: %v", key, err)
+		c.sendErrChan(fmt.Sprintf("Error processing key %v: %v", key, err.Error()))
 		c.workqueue.AddRateLimited(key)
 		return
 	}
 
 	utilruntime.HandleError(err)
 	//glog.V(2).Infof("Dropping key %q out of the queue: %v", key, err)
+	c.sendErrChan(fmt.Sprintf("Dropping key %q out of queue %v", key, err.Error()))
 	c.workqueue.Forget(key)
+}
+
+// send a string of the provided error to the callback channel
+func (c *Controller) sendErrChan(err string) {
+	c.opts.CbChan <- err
 }
