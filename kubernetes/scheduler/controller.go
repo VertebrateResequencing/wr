@@ -29,6 +29,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -42,7 +43,7 @@ import (
 const (
 	// maxRetries is the number of times a deployment will be retried before it is dropped out of the queue.
 	// With the current rate-limiter in use (5ms*2^(maxRetries-1)) the following numbers represent the times
-	// a deployment is going to be requeued:
+	// a work item is going to be requeued:
 	//
 	// 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s, 5.1s, 10.2s, 20.4s, 41s, 82s
 	maxRetries = 15
@@ -59,24 +60,28 @@ type Controller struct {
 	nodeSynced    cache.InformerSynced
 	workqueue     workqueue.RateLimitingInterface
 	opts          ScheduleOpts
+	nodeResources map[nodeName]corev1.ResourceList
 }
 
 // ScheduleOpts stores options  for the scheduler
 type ScheduleOpts struct {
-	Files  []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
-	CbChan chan string       // Channel to send errors to
+	Files   []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
+	CbChan  chan string       // Channel to send errors on
+	ReqChan chan *Request     // Channel to send requests to
 }
 
 // Request contains relevant information
 // for processing a request.
 type Request struct {
-	RAM    int
+	RAM    *resource.Quantity
 	Time   time.Duration
-	Cores  int
-	Disk   int
+	Cores  *resource.Quantity
+	Disk   *resource.Quantity
 	Other  map[string]string
 	CbChan chan error
 }
+
+type nodeName string
 
 // NewController returns a new scheduler controller
 func NewController(
@@ -102,6 +107,7 @@ func NewController(
 		nodeSynced:    nodeInformer.Informer().HasSynced,
 		workqueue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 		opts:          opts,
+		nodeResources: make(map[nodeName]corev1.ResourceList),
 	}
 
 	// Set up event handlers
@@ -124,7 +130,7 @@ func NewController(
 					}
 					controller.podHandler(new)
 				},
-				DeleteFunc: controller.podHandler,
+				DeleteFunc: controller.podHandler, // remove node from nodeResources
 			},
 		})
 
@@ -138,8 +144,20 @@ func NewController(
 			}
 			controller.nodeHandler(new)
 		},
-		DeleteFunc: controller.nodeHandler,
+		DeleteFunc: func(obj interface{}) {
+			node, ok := obj.(*corev1.Node)
+			if !ok {
+				utilruntime.HandleError(fmt.Errorf("Couldn't cast object to node for object %#v", obj))
+				return
+			}
+			// Delete the node from the nodeResources map.
+			// Do it here, so it's not an item added to the queue.
+			// Therefore deletions potentially are reacted to more quickly
+			delete(controller.nodeResources, nodeName(node.ObjectMeta.Name))
+		},
 	})
+
+	controller.handleReqCheck(2) // start request handlers.
 
 	return controller
 }
@@ -335,7 +353,15 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 	return nil
 }
 
+// Keep a running total of the total allocatable resources.
+// Adds information to a map[nodeName]resourcelist.
 func (c *Controller) processNode(node *corev1.Node) error {
+	// Set the capacity. May want allocatable later ?
+	// log me!
+	// This shouldn't need to be a threadsafe map, as processNode
+	// will only be called by processItem provided a key from the
+	// workqueue
+	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Capacity
 	return nil
 }
 
@@ -358,7 +384,30 @@ func (c *Controller) handleErr(err error, key interface{}) {
 	c.workqueue.Forget(key)
 }
 
-// send a string of the provided error to the callback channel
+// Send a string of the provided error to the callback channel
 func (c *Controller) sendErrChan(err string) {
 	c.opts.CbChan <- err
+}
+
+func (c *Controller) handleReqCheck(threadiness int) {
+	for i := 0; i < threadiness; i++ {
+		go c.reqCheckHandler()
+	}
+}
+
+// For now ignore that you can set quotas on a k8s cluster.
+// Assume that the user can schedule an entire node.
+// Not using PV's at all here.
+func (c *Controller) reqCheckHandler() {
+	for {
+		req := <-c.opts.ReqChan
+		for _, n := range c.nodeResources {
+			if req.Cores.Cmp(n[corev1.ResourceName("cpu")]) != 1 &&
+				req.Disk.Cmp(n[corev1.ResourceName("storage")]) != 1 &&
+				req.RAM.Cmp(n[corev1.ResourceName("memory")]) != 1 {
+				req.CbChan <- nil // It is possible to eventually schedule
+			}
+		}
+		req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
+	}
 }
