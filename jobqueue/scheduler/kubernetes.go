@@ -27,6 +27,7 @@ import (
 	kubescheduler "github.com/VertebrateResequencing/wr/kubernetes/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/inconshreveable/log15"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
 )
@@ -121,15 +122,19 @@ func (s *k8s) initialize(namespace string, logger log15.Logger) error {
 // can ever be scheduled.
 // If the request can be scheduled, errChan returns nil then is closed
 // If it can't ever be sheduled an error is sent on errChan and returned.
+// TODO: OCC if error: What if a node is added shortly after? (Autoscaling?)
 func (s *k8s) reqCheck(req *Requirements) error {
 	// Create error channel
 	errChan := make(chan error)
 	// Rewrite *Requirements to a kubescheduler.Request
+	cores := resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
+	ram := resource.NewQuantity(int64(req.RAM)*1024*1024*1024, resource.BinarySI)
+	disk := resource.NewQuantity(int64(req.Disk)*1000*1000*1000, resource.DecimalSI)
 	r := &kubescheduler.Request{
-		RAM:    req.RAM,
+		RAM:    ram,
 		Time:   req.Time,
-		Cores:  req.Cores,
-		Disk:   req.Disk,
+		Cores:  cores,
+		Disk:   disk,
 		Other:  req.Other,
 		CbChan: errChan,
 	}
