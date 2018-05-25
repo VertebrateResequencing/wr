@@ -361,7 +361,7 @@ func (c *Controller) processNode(node *corev1.Node) error {
 	// This shouldn't need to be a threadsafe map, as processNode
 	// will only be called by processItem provided a key from the
 	// workqueue
-	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Capacity
+	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
 	return nil
 }
 
@@ -398,12 +398,13 @@ func (c *Controller) handleReqCheck(threadiness int) {
 // For now ignore that you can set quotas on a k8s cluster.
 // Assume that the user can schedule an entire node.
 // Not using PV's at all here.
+// ToDO: Multiple PV/Not PV types.
 func (c *Controller) reqCheckHandler() {
 	for {
 		req := <-c.opts.ReqChan
 		for _, n := range c.nodeResources {
 			if req.Cores.Cmp(n[corev1.ResourceName("cpu")]) != 1 &&
-				req.Disk.Cmp(n[corev1.ResourceName("storage")]) != 1 &&
+				req.Disk.Cmp(n[corev1.ResourceName("ephemeral-storage")]) != 1 &&
 				req.RAM.Cmp(n[corev1.ResourceName("memory")]) != 1 {
 				req.CbChan <- nil // It is possible to eventually schedule
 			}
