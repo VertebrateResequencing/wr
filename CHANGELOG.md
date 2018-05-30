@@ -5,6 +5,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.13.1] - 2018-05-30
+### Added
+- `wr cloud deploy` has new --resource_name option, allowing for a single user
+  to have multiple named deployments. See the
+  [wiki](https://github.com/VertebrateResequencing/wr/wiki/Multiple-Cloud-Deployments)
+  for details.
+
+
 ## [0.13.0] - 2018-05-21
 ### Added
 - Minimual LSF client (bsub, bjobs, bkill) emulation, for using wr as the
