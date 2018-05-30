@@ -72,6 +72,7 @@ var forceTearDown bool
 var setDomainIP bool
 var cloudDebug bool
 var cloudManagerTimeoutSeconds int
+var cloudResourceNameUniquer string
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -244,7 +245,7 @@ within OpenStack.`,
 		if err != nil {
 			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
 		}
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), cloudLogger)
+		provider, err := cloud.New(providerName, cloudResourceName(cloudResourceNameUniquer), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), cloudLogger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -430,7 +431,7 @@ and accessible.`,
 		} else {
 			logger.SetHandler(log15.DiscardHandler())
 		}
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), logger)
+		provider, err := cloud.New(providerName, cloudResourceName(cloudResourceNameUniquer), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), logger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
@@ -590,6 +591,7 @@ func init() {
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
+	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you)")
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", defaultConfig.CloudOS, "prefix of name, or ID, of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", defaultConfig.CloudUser, "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
@@ -608,6 +610,7 @@ func init() {
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
+	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you)")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	cloudTearDownCmd.Flags().BoolVar(&cloudDebug, "debug", false, "show details of the teardown process")
 }
@@ -652,7 +655,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	// copy over our cloud resource details, including our ssh key
-	cRN := cloudResourceName("")
+	cRN := cloudResourceName(cloudResourceNameUniquer)
 	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+"."+cRN)
 	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+"."+cRN)
 	if err = server.UploadFile(localResourceFile, remoteResourceFile); err != nil && !wrMayHaveStarted {
@@ -787,7 +790,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if cloudDebug {
 			debugStr = " --debug"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), cloudManagerTimeoutSeconds, debugStr, wrEnvFileName)
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, cloudResourceNameUniquer, cloudManagerTimeoutSeconds, debugStr, wrEnvFileName)
 
 		var e string
 		_, e, err = server.RunCmd(mCmd, false)
