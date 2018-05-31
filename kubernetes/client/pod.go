@@ -55,10 +55,9 @@ type Pod struct {
 // ResourceRequest specifies a
 // request for resources. Used in Spawn()
 type ResourceRequest struct {
-	Default bool
-	Cores   int
-	Disk    int
-	RAM     int
+	Cores int
+	Disk  int
+	RAM   int
 }
 
 // CmdOptions contains StreamOptions
