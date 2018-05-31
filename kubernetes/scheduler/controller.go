@@ -20,6 +20,7 @@ package scheduler
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -61,13 +62,15 @@ type Controller struct {
 	workqueue     workqueue.RateLimitingInterface
 	opts          ScheduleOpts
 	nodeResources map[nodeName]corev1.ResourceList
+	podAliveMap   *sync.Map
 }
 
 // ScheduleOpts stores options  for the scheduler
 type ScheduleOpts struct {
-	Files   []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
-	CbChan  chan string       // Channel to send errors on
-	ReqChan chan *Request     // Channel to send requests to
+	Files        []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
+	CbChan       chan string       // Channel to send errors on
+	ReqChan      chan *Request     // Channel to send requests about resource availability to
+	PodAliveChan chan *PodAlive
 }
 
 // Request contains relevant information
@@ -79,6 +82,13 @@ type Request struct {
 	Disk   *resource.Quantity
 	Other  map[string]string
 	CbChan chan error
+}
+
+// PodAlive contains a pod, and a chan error
+// that is closed when the pod terminates succesfully.
+type PodAlive struct {
+	Pod     *corev1.Pod
+	ErrChan chan error
 }
 
 type nodeName string
@@ -157,7 +167,13 @@ func NewController(
 		},
 	})
 
-	controller.handleReqCheck(2) // start request handlers.
+	// Set up the map[pod.ObjectMeta.UID]errChan
+	// where errChan is a unique channel for handling errors
+	// related to the passed pod. Uses the sync.Map as
+	// it fits use case 1 exactly: "The Map type is optimized for
+	// two common use cases: (1) when the entry for a given key
+	// is only ever written once but read many times.."
+	controller.podAliveMap = new(sync.Map)
 
 	return controller
 }
@@ -175,6 +191,10 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
+
+	// start request handler(s)
+	c.handleReqCheck(2)
+	c.handlePodAlive(2)
 
 	// start workers
 	for i := 0; i < threadiness; i++ {
@@ -347,8 +367,15 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		default:
 		}
-	} else {
-		fmt.Println("InitContainerStatuses not initialised yet")
+	} else if pod.Status.Phase == corev1.PodPhase("Succeeded") {
+		// Get the pod's errChan
+		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
+		if ok {
+			ec := result.(chan error)
+			ec <- nil
+		} else {
+			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
+		}
 	}
 	return nil
 }
@@ -410,5 +437,23 @@ func (c *Controller) reqCheckHandler() {
 			}
 		}
 		req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
+	}
+}
+
+func (c *Controller) handlePodAlive(threadiness int) {
+	for i := 0; i < threadiness; i++ {
+		go c.podAliveHandler()
+	}
+}
+
+// podAliveHandler recieves a request and adds the channel
+// in that request to the podAliveMap with the key being
+// the UID of the pod.
+func (c *Controller) podAliveHandler() {
+	for {
+		req := <-c.opts.PodAliveChan
+		// Store the error channel in the map.
+		c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req.ErrChan)
+		// log req recieved and processed.
 	}
 }
