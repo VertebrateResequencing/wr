@@ -7,14 +7,15 @@ package main
 
 import (
 	"flag"
-	"github.com/VertebrateResequencing/wr/kubernetes/client"
-	"github.com/VertebrateResequencing/wr/kubernetes/deployment"
-	"github.com/sevlyar/go-daemon"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/VertebrateResequencing/wr/kubernetes/client"
+	"github.com/VertebrateResequencing/wr/kubernetes/deployment"
+	"github.com/sevlyar/go-daemon"
 )
 
 var (
@@ -49,7 +50,7 @@ func StartController(binaryPath string, scriptPath string, stopCh chan struct{})
 	configMapName := strings.TrimSuffix(scriptName, filepath.Ext(scriptName))
 
 	// Create a ConfigMap
-	err = c.Client.CreateInitScriptConfigMap(configMapName, scriptPath)
+	err = c.Client.CreateInitScriptConfigMapFromFile(configMapName, scriptPath)
 	if err != nil {
 		panic(err)
 	}
