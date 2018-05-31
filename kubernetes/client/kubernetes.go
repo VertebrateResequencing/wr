@@ -488,7 +488,7 @@ func (p *Kubernetesp) inWRPod() bool {
 }
 
 // Spawn a new pod that contains a runner. Return the name.
-func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*Pod, error) {
+func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*apiv1.Pod, error) {
 	//Generate a pod name?
 	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
 	//Create a new pod.
@@ -523,7 +523,7 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, binaryPa
 			Containers: []apiv1.Container{
 				{
 					Name:    "wr-runner",
-					Image:   baseContainer,
+					Image:   baseContainerImage,
 					Command: []string{binaryPath},
 					Args:    binaryArgs,
 					VolumeMounts: []apiv1.VolumeMount{
@@ -626,11 +626,7 @@ func (p *Kubernetesp) Spawn(baseContainer string, tempMountPath string, binaryPa
 
 	// fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
 	// fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
-	return &Pod{
-		ID:        string(pod.ObjectMeta.UID),
-		Name:      pod.ObjectMeta.Name,
-		Resources: resources,
-	}, err
+	return pod, err
 }
 
 // TearDown deletes the namespace created for wr.
@@ -692,10 +688,9 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 	return configMap, err
 }
 
-// CreateInitScriptConfigMap performs very basic string fudging.
-// This allows a wr pod to execute some arbitrary script before starting the runner / manager.
-// So far it appears to work
-func (p *Kubernetesp) CreateInitScriptConfigMap(name string, scriptPath string) error {
+// CreateInitScriptConfigMapFromFile is the same as CreateInitScriptConfigMap
+// but takes a path to a file as input.
+func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(name string, scriptPath string) error {
 	// read in the script given
 	buf, err := ioutil.ReadFile(scriptPath)
 	if err != nil {
@@ -709,6 +704,24 @@ func (p *Kubernetesp) CreateInitScriptConfigMap(name string, scriptPath string) 
 	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
 
 	_, err = p.NewConfigMap(&ConfigMapOpts{
+		Name: name,
+		Data: map[string]string{name + ".sh": top + script + bottom},
+	})
+
+	return err
+
+}
+
+// CreateInitScriptConfigMap performs very basic string fudging.
+// This allows a wr pod to execute some arbitrary script before starting the runner / manager.
+// So far it appears to work
+func (p *Kubernetesp) CreateInitScriptConfigMap(name string, script string) error {
+
+	// Insert script into template
+	top := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
+	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+
+	_, err := p.NewConfigMap(&ConfigMapOpts{
 		Name: name,
 		Data: map[string]string{name + ".sh": top + script + bottom},
 	})
