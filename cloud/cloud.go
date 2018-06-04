@@ -851,8 +851,12 @@ func uniqueResourceName(prefix string) string {
 
 // nameToHostName makes the given name compatible with being a hostname in the
 // same way that OpenStack horizon does: convert to lower case and convert non
-// [a-z1-9\-] characters to - characters.
+// [a-z1-9\-] characters to - characters. Also truncates to 63 characters.
 func nameToHostName(name string) string {
 	hostname := strings.ToLower(name)
-	return hostNameRegex.ReplaceAllString(hostname, "-")
+	hostname = hostNameRegex.ReplaceAllString(hostname, "-")
+	if len(hostname) > 63 {
+		hostname = hostname[0:63]
+	}
+	return hostname
 }

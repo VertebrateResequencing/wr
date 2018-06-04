@@ -199,6 +199,10 @@ within OpenStack.`,
 			}
 		}
 
+		if len(cloudResourceNameUniquer) > 11 {
+			die("--resource_name must be 11 characters or less")
+		}
+
 		// first we need our working directory to exist
 		createWorkingDir()
 
@@ -591,7 +595,7 @@ func init() {
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
-	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you)")
+	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you, max length 11)")
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", defaultConfig.CloudOS, "prefix of name, or ID, of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", defaultConfig.CloudUser, "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
@@ -610,7 +614,7 @@ func init() {
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
-	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you)")
+	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name you set during deploy")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	cloudTearDownCmd.Flags().BoolVar(&cloudDebug, "debug", false, "show details of the teardown process")
 }
