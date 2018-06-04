@@ -341,7 +341,7 @@ func (s *local) processQueue() error {
 			canCount = shouldCount
 		}
 
-		if canCount == 0 {
+		if canCount <= 0 {
 			// try and fill any "gaps" (spare memory/ cpu) by seeing if a cmd
 			// with lesser resource requirements can be run
 			continue
@@ -429,10 +429,18 @@ func (s *local) canCount(req *Requirements) int {
 	// use too much RAM, but we will end up killing cmds that do this, so it
 	// shouldn't be too much of an issue.
 	canCount := int(math.Floor(float64(s.maxRAM-s.ram) / float64(req.RAM)))
+	if canCount < 0 {
+		s.Warn("negative canCount", "can", canCount, "maxRam", s.maxRAM, "ram", s.ram, "reqRam", req.RAM)
+		canCount = 0
+	}
 	if canCount >= 1 {
 		canCount2 := int(math.Floor(float64(s.maxCores-s.cores) / float64(req.Cores)))
 		if canCount2 < canCount {
 			canCount = canCount2
+			if canCount < 0 {
+				s.Warn("negative canCount", "can", canCount, "maxCores", s.maxCores, "cores", s.cores, "reqCores", req.Cores)
+				canCount = 0
+			}
 		}
 	}
 	return canCount
