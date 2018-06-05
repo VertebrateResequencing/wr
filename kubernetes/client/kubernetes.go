@@ -316,6 +316,10 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 									Name:  "WR_MANAGERWEB",
 									Value: strconv.Itoa(requiredPorts[1]),
 								},
+								{
+									Name:  "HOME",
+									Value: tempMountPath,
+								},
 							},
 							SecurityContext: &apiv1.SecurityContext{
 								Privileged: boolPtr(true),
@@ -534,6 +538,12 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 						{
 							Name:      configMapName,
 							MountPath: configMountPath,
+						},
+					},
+					Env: []apiv1.EnvVar{
+						{
+							Name:  "HOME",
+							Value: tempMountPath,
 						},
 					},
 					SecurityContext: &apiv1.SecurityContext{
