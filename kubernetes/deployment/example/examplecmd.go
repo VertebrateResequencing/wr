@@ -99,7 +99,7 @@ func main() {
 	args = append(args, "--script")
 	args = append(args, sAbs)
 
-	log.Println(args)
+	log.Printf("Args passed to me: %s", args)
 
 	cntxt := daemon.Context{
 		PidFileName: "pfwpid",
@@ -127,6 +127,7 @@ func main() {
 		log.Fatalln(err)
 	}
 	if d != nil {
+		log.Printf("This is PostParent()")
 		return
 	}
 	defer cntxt.Release()
