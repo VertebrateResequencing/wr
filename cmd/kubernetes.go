@@ -47,11 +47,16 @@ import (
 // we want this to be unique.
 const podBinDir = "/wr-tmp"
 
+// podScriptDir is where the configMap will be mounted.
+const podScriptDir = "/scripts/"
+
 // options for this cmd
 var podPostCreationScript string
+var postCreationConfigMap string
 var podDNS string
 var podConfigFiles string
 var kubeDebug bool
+var maxPods int
 
 // cloudCmd represents the cloud command
 var kubeCmd = &cobra.Command{
@@ -185,7 +190,7 @@ hub is supported`,
 			die("failed to daemonize: %s", err)
 		}
 		if child != nil {
-			// PostParent()
+			// PostParent() (Runs in the parent process after spawning child)
 			info("please wait while %s resources are created...", providerName)
 
 			// check that we can now connect to the remote manager
@@ -200,7 +205,13 @@ hub is supported`,
 			info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 		} else {
 			defer cntxt.Release()
-			// PostChild()
+			// PostChild() (what the child will run)
+
+			debugStr := ""
+			if cloudDebug {
+				debugStr = " --debug"
+			}
+
 			// Look for a set of resources in the manager directory
 			// If found, load them else use a new empty set.
 			resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
@@ -258,17 +269,23 @@ hub is supported`,
 				internal.LogClose(kubeLogger, file, "resource file", "path", resourcePath)
 			}
 
+			remoteExe := filepath.Join(podBinDir, "wr-linux")
+			m := maxPods - 1
+
+			mCmd := fmt.Sprintf("%s manager start --deployment %s --scheduler kubernetes --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_dns '%s' --timeout %d%s",
+				remoteExe, config.Deployment, serverKeepAlive, m, configMapName, podDNS, managerTimeoutSeconds, debugStr)
+			binaryArgs := strings.Fields(mCmd)
 			// Specify deployment options
 			c.Opts = &kubedeployment.DeployOpts{
 				ContainerImage: "ubuntu:latest",
-				TempMountPath:  "/wr-tmp",
+				TempMountPath:  podBinDir,
 				Files: []client.FilePair{
-					{exe, "/wr-tmp/"},
+					{exe, podBinDir},
 				},
-				BinaryPath:      "/scripts/" + scriptName,
-				BinaryArgs:      []string{"/wr-tmp/wr-linux", "manager", "start", "-f"},
+				BinaryPath:      podScriptDir + scriptName,
+				BinaryArgs:      binaryArgs,
 				ConfigMapName:   configMapName,
-				ConfigMountPath: "/scripts",
+				ConfigMountPath: podScriptDir,
 				RequiredPorts:   []int{mp, wp},
 			}
 		}
@@ -280,12 +297,11 @@ hub is supported`,
 // the daemon by sending it a term signal
 var kubeTearDownCmd = &cobra.Command{
 	Use:   "teardown",
-	Short: "Delete all cloud resources that deploy created",
+	Short: "Delete all kubernetes resources that deploy created",
 	Long: `Immediately stop the remote workflow manager, saving its state.
 
-Deletes all cloud resources that wr created (servers, networks, keys, security
-profiles etc.). (Except for any files that were saved to persistent cloud
-storage.)
+Deletes all kubernetes resources that wr created (pods, deployments, config maps, namespaces).
+(Except for any files that were saved to persistent cloud storage.)
 
 Note that any runners that are currently running will die, along with any
 commands they were running. It is more graceful to issue 'wr manager drain'
@@ -293,16 +309,12 @@ first, and regularly rerun drain until it reports the manager is stopped, and
 only then request a teardown (you'll need to add the --force option). But this
 is only a good idea if you have configured wr to back up its database to S3, as
 otherwise your database going forward will not reflect anything you did during
-that cloud deployment.
+that kubernetes deployment.
 
 If you don't back up to S3, the teardown command tries to copy the remote
 database locally, which is only possible while the remote server is still up
 and accessible.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if providerName == "" {
-			die("--provider is required")
-		}
-
 		// before stopping the manager, make sure we can interact with the
 		// provider - that our credentials are correct
 		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
@@ -459,13 +471,13 @@ func init() {
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
-	kubeDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	kubeDeployCmd.Flags().StringVarP(&podPostCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each pod created")
 	kubeDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
-	kubeDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to use in the created subnet")
-	kubeDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
+	kubeDeployCmd.Flags().StringVar(&podDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to on the created pods")
+	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
-	kubeDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
+	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 }
