@@ -140,6 +140,12 @@ fully.`,
 			die("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
 		}
 
+		if scheduler == "kubernetes" {
+			if len(kubeNamespace) == 0 {
+				die("Namespace must be specified when using the kubernetes scheduler")
+			}
+		}
+
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
@@ -422,6 +428,7 @@ func init() {
 	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
+	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "ns", "", "for the kubernetes scheduler, the namespace to use")
 	managerStartCmd.Flags().StringVarP(&postCreationConfigMap, "config_map", "cm", defaultConfig.CloudScript, "for the kubernetes scheduler, the name of the config map to mount in each spawned pod")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
