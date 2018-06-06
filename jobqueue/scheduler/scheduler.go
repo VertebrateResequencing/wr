@@ -186,6 +186,8 @@ func New(name string, config interface{}, logger ...log15.Logger) (*Scheduler, e
 		s = &Scheduler{impl: new(local)}
 	case "openstack":
 		s = &Scheduler{impl: new(opst)}
+	case "kubernetes":
+		s = &Scheduler{impl: new(k8s)}
 	default:
 		return nil, Error{name, "New", ErrBadScheduler}
 	}
