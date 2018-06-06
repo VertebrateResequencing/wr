@@ -23,7 +23,9 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -51,7 +53,7 @@ const podBinDir = "/wr-tmp"
 // podScriptDir is where the configMap will be mounted.
 const podScriptDir = "/scripts/"
 
-const linuxBinaryName = "wr-linux"
+const linuxBinaryName = "/wr-linux"
 
 // options for this cmd
 var podPostCreationScript string
@@ -128,6 +130,28 @@ already have user_allow_other set or at least be present and commented out
 hub is supported`,
 	Run: func(cmd *cobra.Command, args []string) {
 
+		// for debug purposes, set up logging to STDERR
+		kubeLogger := log15.New()
+		logLevel := log15.LvlWarn
+		if kubeDebug {
+			logLevel = log15.LvlDebug
+		}
+		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+
+		fh, err := log15.FileHandler(config.ManagerLogFile, log15.LogfmtFormat())
+		if err != nil {
+			warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
+		} else {
+			l15h.AddHandler(appLogger, fh)
+
+			// have the server logger output to file, levelled with caller info
+			logLevel := log15.LvlWarn
+			if managerDebug {
+				logLevel = log15.LvlDebug
+			}
+			kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
+		}
+
 		var postCreation []byte
 		if podPostCreationScript != "" {
 			var err error
@@ -135,6 +159,8 @@ hub is supported`,
 			if err != nil {
 				die("--script %s could not be read: %s", podPostCreationScript, err)
 			}
+		} else {
+			podPostCreationScript = "nil.sh"
 		}
 
 		// first we need our working directory to exist
@@ -158,14 +184,6 @@ hub is supported`,
 		// binary, in case we are deploying from a mac.
 		exe = filepath.Dir(exe) + linuxBinaryName
 
-		// for debug purposes, set up logging to STDERR
-		kubeLogger := log15.New()
-		logLevel := log15.LvlWarn
-		if kubeDebug {
-			logLevel = log15.LvlDebug
-		}
-		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
-
 		// get all necessary cloud resources in place
 		mp, err := strconv.Atoi(config.ManagerPort)
 		if err != nil {
@@ -185,30 +203,34 @@ hub is supported`,
 		if err != nil {
 			die("Could not authenticate against the cluster: %s", err)
 		}
+		info("Authenticated succesfully.")
 
 		// Daemonise here
 		fwPidPath := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
 		cntxt := daemon.Context{
 			PidFileName: fwPidPath,
 			PidFilePerm: 0644,
+			LogFileName: "pfwlog",
+			LogFilePerm: 0640,
 			WorkDir:     "/",
 			Umask:       027,
 			Args:        args,
 		}
 		child, err := cntxt.Reborn()
 		if err != nil {
+			log.Fatalln(err)
 			die("failed to daemonize: %s", err)
 		}
 		if child != nil {
 			// PostParent() (Runs in the parent process after spawning child)
-			info("please wait while %s resources are created...", providerName)
+			info("please wait while the kubernetes deployment is created...")
 
 			// check that we can now connect to the remote manager
 			// I'm setting the timeout to 120s, as some initscripts may
 			// take a long time to complete.
 			jq = connect(120 * time.Second)
 			if jq == nil {
-				die("could not talk to wr manager on server at %s after 120s")
+				die("could not talk to wr manager after 120s")
 			}
 
 			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
@@ -216,6 +238,7 @@ hub is supported`,
 		} else {
 			defer cntxt.Release()
 			// PostChild() (what the child will run)
+			info("In daemon")
 
 			debugStr := ""
 			if cloudDebug {
@@ -227,6 +250,7 @@ hub is supported`,
 			resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
 			var resources *cloud.Resources
 
+			info("Checking resources")
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
 				resources = &cloud.Resources{ResourceName: "Kubernetes", Details: make(map[string]string)}
@@ -234,14 +258,14 @@ hub is supported`,
 				// Populate the rest of Kubernetesp
 				err = c.Client.Initialize(c.Clientset)
 				if err != nil {
-					panic(err)
+					die("Failed to authenticate to provided namespace: %s", err)
 				}
 				// Create the configMap
 				scriptName = filepath.Base(podPostCreationScript)
 				configMapName = strings.TrimSuffix(scriptName, filepath.Ext(scriptName))
 				err = c.Client.CreateInitScriptConfigMap(configMapName, string(postCreation))
 				if err != nil {
-					panic(err)
+					die("Failed to create config map: %s", err)
 				}
 				kubeNamespace = c.Client.NewNamespaceName
 				// Store the namespace and configMapName for fun and profit.
@@ -259,6 +283,7 @@ hub is supported`,
 				_ = file.Close()
 
 			} else {
+				info("Opening resource file with path: %s", resourcePath)
 				file, err := os.Open(resourcePath)
 				if err != nil {
 					die("Could not open resource file with path: %s", err)
@@ -299,6 +324,12 @@ hub is supported`,
 				ConfigMountPath: podScriptDir,
 				RequiredPorts:   []int{mp, wp},
 			}
+			info("Files to be copied: %s", files)
+
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			info("Starting controller")
+			c.Run(stopCh)
 		}
 
 	},
@@ -509,14 +540,14 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 
 	// remove the '~/' prefix as tar will
 	// create a ~/.. file. We don't want this.
-	rewritten := make([]string, len(split))
+	rewritten := []string{}
 	for _, path := range split {
 		if strings.HasPrefix(path, "~/") {
 			// Trim prefix
-			s := strings.TrimPrefix(path, "~/")
+			st := strings.TrimPrefix(path, "~/")
 			// Add podBinDir as new prefix
-			s = podBinDir + s
-			rewritten = append(rewritten, s)
+			st = podBinDir + "/" + st
+			rewritten = append(rewritten, st)
 		} else {
 			warn("File with path %s is being ignored as it does not have prefix '~/'", path)
 		}
@@ -526,20 +557,24 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	// deploy options.
 
 	// Get absolute paths for all paths in removed
-	filePairs := make([]client.FilePair, len(rewritten))
+	usr, err := user.Current()
+	if err != nil {
+		die("Failed to get current user: %s", err)
+	}
+	hDir := usr.HomeDir
+	filePairs := []client.FilePair{}
 	for i, path := range split {
 		if strings.HasPrefix(path, "~/") {
-			// evaluate any symlinks
-			evs, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				die("Failed to evaluate symlinks for file with path: %s", path)
-			}
-			// get absolute path
-			abs, err := filepath.Abs(evs)
-			if err != nil {
-				die("Failed to get absolute path for file with path: %s", path)
-			}
-			filePairs = append(filePairs, client.FilePair{abs, rewritten[i]})
+			// // evaluate any symlinks
+			// evs, err := filepath.EvalSymlinks(path)
+			// if err != nil {
+			// 	die("Failed to evaluate symlinks for file with path: %s", path)
+			// }
+			// rewrite ~/ to hDir
+			st := strings.TrimPrefix(path, "~/")
+			st = hDir + "/" + st
+
+			filePairs = append(filePairs, client.FilePair{st, rewritten[i]})
 		}
 	}
 	return filePairs

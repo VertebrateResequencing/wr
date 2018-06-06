@@ -20,7 +20,7 @@ package scheduler
 
 import (
 	"fmt"
-	"path/filepath"
+	"os/user"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
@@ -381,7 +381,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 
 	// remove the '~/' prefix as tar will
 	// create a ~/.. file. We don't want this.
-	rewritten := make([]string, len(split))
+	rewritten := []string{}
 	for _, path := range split {
 		if strings.HasPrefix(path, "~/") {
 			// Trim prefix
@@ -398,20 +398,24 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// deploy options.
 
 	// Get absolute paths for all paths in removed
-	filePairs := make([]client.FilePair, len(rewritten))
+	usr, err := user.Current()
+	if err != nil {
+		s.Logger.Error(fmt.Sprintf("Failed to get user: %s", usr))
+	}
+	hDir := usr.HomeDir
+	filePairs := []client.FilePair{}
 	for i, path := range split {
 		if strings.HasPrefix(path, "~/") {
-			// evaluate any symlinks
-			evs, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				s.Logger.Error(fmt.Sprintf("Failed to evaluate symlinks for file with path: %s", path))
-			}
-			// get absolute path
-			abs, err := filepath.Abs(evs)
-			if err != nil {
-				s.Logger.Error(fmt.Sprintf("Failed to get absolute path for file with path: %s", path))
-			}
-			filePairs = append(filePairs, client.FilePair{abs, rewritten[i]})
+			// // evaluate any symlinks
+			// evs, err := filepath.EvalSymlinks(path)
+			// if err != nil {
+			// 	s.Logger.Error(fmt.Sprintf("Failed to evaluate symlinks for file with path: %s", path))
+			// }
+			// rewrite ~/ to hDir
+			st := strings.TrimPrefix(path, "~/")
+			st = hDir + "/" + st
+
+			filePairs = append(filePairs, client.FilePair{st, rewritten[i]})
 		}
 	}
 	return filePairs
