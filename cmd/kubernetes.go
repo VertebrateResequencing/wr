@@ -51,6 +51,8 @@ const podBinDir = "/wr-tmp"
 // podScriptDir is where the configMap will be mounted.
 const podScriptDir = "/scripts/"
 
+const linuxBinaryName = "wr-linux"
+
 // options for this cmd
 var podPostCreationScript string
 var postCreationConfigMap string
@@ -152,6 +154,9 @@ hub is supported`,
 		if err != nil {
 			die("could not get the path to wr: %s", err)
 		}
+		// we then  need to rewrite it to always use the 'wr-linux'
+		// binary, in case we are deploying from a mac.
+		exe = filepath.Dir(exe) + linuxBinaryName
 
 		// for debug purposes, set up logging to STDERR
 		kubeLogger := log15.New()
@@ -274,7 +279,7 @@ hub is supported`,
 				internal.LogClose(kubeLogger, file, "resource file", "path", resourcePath)
 			}
 
-			remoteExe := filepath.Join(podBinDir, "wr-linux")
+			remoteExe := filepath.Join(podBinDir, linuxBinaryName)
 			m := maxPods - 1
 
 			mCmd := fmt.Sprintf("%s manager start --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --cloud_dns '%s' --timeout %d%s",
