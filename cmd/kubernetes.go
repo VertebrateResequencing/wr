@@ -44,7 +44,8 @@ import (
 // podBinDir is where we will upload executables to our created pod.
 // it is a volume mount added to the init container and the container that will
 // run wr. As defining a volume mount overwrites whatever is in that directory
-// we want this to be unique.
+// we want this to be unique. This is also what $HOME is set to, allowing paths
+// of the form '~/' to still work.
 const podBinDir = "/wr-tmp"
 
 // podScriptDir is where the configMap will be mounted.
@@ -53,10 +54,14 @@ const podScriptDir = "/scripts/"
 // options for this cmd
 var podPostCreationScript string
 var postCreationConfigMap string
+var containerImage string
 var podDNS string
 var podConfigFiles string
 var kubeDebug bool
+var kubeNamespace string
 var maxPods int
+var scriptName string
+var configMapName string
 
 // cloudCmd represents the cloud command
 var kubeCmd = &cobra.Command{
@@ -216,8 +221,7 @@ hub is supported`,
 			// If found, load them else use a new empty set.
 			resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
 			var resources *cloud.Resources
-			var scriptName string
-			var configMapName string
+
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
 				resources = &cloud.Resources{ResourceName: "Kubernetes", Details: make(map[string]string)}
@@ -234,6 +238,7 @@ hub is supported`,
 				if err != nil {
 					panic(err)
 				}
+				kubeNamespace = c.Client.NewNamespaceName
 				// Store the namespace and configMapName for fun and profit.
 				resources.Details["namespace"] = c.Client.NewNamespaceName
 				resources.Details["configMapName"] = configMapName
@@ -258,11 +263,11 @@ hub is supported`,
 				if err != nil {
 					panic(err)
 				}
-				namespace := resources.Details["namespace"]
+				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
 				scriptName = resources.Details["scriptName"]
 				// Populate the rest of Kubernetesp
-				err = c.Client.Initialize(c.Clientset, namespace)
+				err = c.Client.Initialize(c.Clientset, kubeNamespace)
 				if err != nil {
 					panic(err)
 				}
@@ -272,16 +277,17 @@ hub is supported`,
 			remoteExe := filepath.Join(podBinDir, "wr-linux")
 			m := maxPods - 1
 
-			mCmd := fmt.Sprintf("%s manager start --deployment %s --scheduler kubernetes --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_dns '%s' --timeout %d%s",
-				remoteExe, config.Deployment, serverKeepAlive, m, configMapName, podDNS, managerTimeoutSeconds, debugStr)
+			mCmd := fmt.Sprintf("%s manager start --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --cloud_dns '%s' --timeout %d%s",
+				remoteExe, config.Deployment, kubeNamespace, serverKeepAlive, m, configMapName, containerImage, podConfigFiles, podDNS, managerTimeoutSeconds, debugStr)
 			binaryArgs := strings.Fields(mCmd)
+			files := rewriteConfigFiles(podConfigFiles)
+			files = append(files, client.FilePair{exe, podBinDir})
+
 			// Specify deployment options
 			c.Opts = &kubedeployment.DeployOpts{
-				ContainerImage: "ubuntu:latest",
-				TempMountPath:  podBinDir,
-				Files: []client.FilePair{
-					{exe, podBinDir},
-				},
+				ContainerImage:  containerImage,
+				TempMountPath:   podBinDir,
+				Files:           files,
 				BinaryPath:      podScriptDir + scriptName,
 				BinaryArgs:      binaryArgs,
 				ConfigMapName:   configMapName,
@@ -476,10 +482,63 @@ func init() {
 	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 	kubeDeployCmd.Flags().StringVar(&podDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to on the created pods")
 	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
+	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "ci", defaultConfig.ContainerImage, "Docker Hubs image to use for spawned pods")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
+}
+
+// rewrite any relative path to replace '~/' with podBinDir
+// returning []client.FilePair to be copied to the manager.
+// the comma separated list is then passed again, and the
+// same function called on the manager so all the filepaths
+// should match up when the manager calls Spawn().
+// currently only relative paths are allowed, any path not
+// starting '~/' is dropped as everything ultimately needs
+// to go into podBinDir as that's the volume that gets
+// preserved across containers.
+func rewriteConfigFiles(configFiles string) []client.FilePair {
+	// get a slice of paths.
+	split := strings.Split(configFiles, ",")
+
+	// remove the '~/' prefix as tar will
+	// create a ~/.. file. We don't want this.
+	rewritten := make([]string, len(split))
+	for _, path := range split {
+		if strings.HasPrefix(path, "~/") {
+			// Trim prefix
+			s := strings.TrimPrefix(path, "~/")
+			// Add podBinDir as new prefix
+			s = podBinDir + s
+			rewritten = append(rewritten, s)
+		} else {
+			warn("File with path %s is being ignored as it does not have prefix '~/'", path)
+		}
+	}
+
+	// create []client.FilePair to pass in to the
+	// deploy options.
+
+	// Get absolute paths for all paths in removed
+	filePairs := make([]client.FilePair, len(rewritten))
+	for i, path := range split {
+		if strings.HasPrefix(path, "~/") {
+			// evaluate any symlinks
+			evs, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				die("Failed to evaluate symlinks for file with path: %s", path)
+			}
+			// get absolute path
+			abs, err := filepath.Abs(evs)
+			if err != nil {
+				die("Failed to get absolute path for file with path: %s", path)
+			}
+			filePairs = append(filePairs, client.FilePair{abs, rewritten[i]})
+		}
+	}
+	return filePairs
+
 }
 
 // func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool) {
