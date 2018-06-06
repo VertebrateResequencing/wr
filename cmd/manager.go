@@ -533,6 +533,17 @@ func startJQ(postCreation []byte) {
 			DNSNameServers:       strings.Split(cloudDNS, ","),
 		}
 		serverCIDR = cloudCIDR
+	case "kubernetes":
+		schedulerConfig = &jqs.ConfigKubernetes{
+			Image:              osPrefix,
+			PostCreationScript: postCreation,
+			ConfigFiles:        cloudConfigFiles,
+			Shell:              "bash",
+			TempMountPath:      filepath.Dir(exe),
+			LocalBinaryPath:    exe,
+			Namespace:          kubeNamespace,
+		}
+
 	}
 
 	if cloudConfig, ok := schedulerConfig.(jqs.CloudConfig); ok {
