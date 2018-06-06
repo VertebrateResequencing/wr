@@ -487,7 +487,7 @@ func init() {
 	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 	kubeDeployCmd.Flags().StringVar(&podDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to on the created pods")
 	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
-	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "ci", defaultConfig.ContainerImage, "Docker Hubs image to use for spawned pods")
+	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "Docker Hubs image to use for spawned pods")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
