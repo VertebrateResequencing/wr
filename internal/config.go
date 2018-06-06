@@ -71,6 +71,7 @@ type Config struct {
 	CloudGateway        string `default:"192.168.0.1"`
 	CloudDNS            string `default:"8.8.4.4,8.8.8.8"`
 	CloudOS             string `default:"Ubuntu Xenial"`
+	ContainerImage      string `default:"ubuntu:latest"`
 	CloudUser           string `default:"ubuntu"`
 	CloudRAM            int    `default:"2048"`
 	CloudDisk           int    `default:"1"`
