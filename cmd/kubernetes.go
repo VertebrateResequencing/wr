@@ -552,46 +552,60 @@ func init() {
 // to go into podBinDir as that's the volume that gets
 // preserved across containers.
 func rewriteConfigFiles(configFiles string) []client.FilePair {
-	// get a slice of paths.
-	split := strings.Split(configFiles, ",")
-
-	// remove the '~/' prefix as tar will
-	// create a ~/.. file. We don't want this.
-	rewritten := []string{}
-	for _, path := range split {
-		if strings.HasPrefix(path, "~/") {
-			// Trim prefix
-			st := strings.TrimPrefix(path, "~/")
-			// Add podBinDir as new prefix
-			st = podBinDir + "/" + st
-			rewritten = append(rewritten, st)
-		} else {
-			warn("File with path %s is being ignored as it does not have prefix '~/'", path)
-		}
-	}
-
-	// create []client.FilePair to pass in to the
-	// deploy options.
-
-	// Get absolute paths for all paths in removed
+	// Get current user's home directory
 	usr, err := user.Current()
 	if err != nil {
 		die("Failed to get current user: %s", err)
 	}
 	hDir := usr.HomeDir
 	filePairs := []client.FilePair{}
-	for i, path := range split {
-		if strings.HasPrefix(path, "~/") {
-			// // evaluate any symlinks
-			// evs, err := filepath.EvalSymlinks(path)
-			// if err != nil {
-			// 	die("Failed to evaluate symlinks for file with path: %s", path)
-			// }
-			// rewrite ~/ to hDir
-			st := strings.TrimPrefix(path, "~/")
-			st = hDir + "/" + st
+	paths := []string{}
 
-			filePairs = append(filePairs, client.FilePair{st, rewritten[i]})
+	// Get a slice of paths.
+	split := strings.Split(configFiles, ",")
+
+	// Loop over all paths in split, if any don't exist
+	// silently remove them.
+	for _, path := range split {
+		localPath := internal.TildaToHome(path)
+		_, err := os.Stat(localPath)
+		if err != nil {
+			continue
+		} else {
+			paths = append(paths, path)
+		}
+	}
+
+	// remove the '~/' prefix as tar will
+	// create a ~/.. file. We don't want this.
+	// replace '~/' with podBinDir which we define
+	// as $HOME. Remove the file name, just
+	// returning the directory it is in.
+	dests := []string{}
+	for _, path := range paths {
+		if strings.HasPrefix(path, "~/") {
+			// Return only the directory the file is in
+			dir := filepath.Dir(path)
+			// Trim prefix
+			dir = strings.TrimPrefix(dir, "~")
+			// Add podBinDir as new prefix
+			dir = podBinDir + dir
+			dests = append(dests, dir)
+		} else {
+			warn("File with path %s is being ignored as it does not have prefix '~/'", path)
+		}
+	}
+
+	// create []client.FilePair to pass in to the
+	// deploy options. Replace '~/' with the current
+	// user's $HOME
+	for i, path := range paths {
+		if strings.HasPrefix(path, "~/") {
+			// rewrite ~/ to hDir
+			src := strings.TrimPrefix(path, "~/")
+			src = hDir + "/" + src
+
+			filePairs = append(filePairs, client.FilePair{src, dests[i]})
 		}
 	}
 	return filePairs
