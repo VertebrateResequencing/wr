@@ -20,9 +20,12 @@ package scheduler
 
 import (
 	"fmt"
+	"os"
 	"os/user"
+	"path/filepath"
 
 	"github.com/VertebrateResequencing/wr/cloud"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	kubescheduler "github.com/VertebrateResequencing/wr/kubernetes/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -376,46 +379,61 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 // to go into TempMountPath as that's the volume that gets
 // preserved across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
-	// get a slice of paths.
-	split := strings.Split(configFiles, ",")
-
-	// remove the '~/' prefix as tar will
-	// create a ~/.. file. We don't want this.
-	rewritten := []string{}
-	for _, path := range split {
-		if strings.HasPrefix(path, "~/") {
-			// Trim prefix
-			st := strings.TrimPrefix(path, "~/")
-			// Add podBinDir as new prefix
-			st = s.config.TempMountPath + st
-			rewritten = append(rewritten, st)
-		} else {
-			s.Logger.Warn(fmt.Sprintf("File with path %s is being ignored as it does not have prefix '~/'", path))
-		}
-	}
-
-	// create []client.FilePair to pass in to the
-	// deploy options.
-
-	// Get absolute paths for all paths in removed
+	// Get current user's home directory
 	usr, err := user.Current()
 	if err != nil {
 		s.Logger.Error(fmt.Sprintf("Failed to get user: %s", usr))
 	}
 	hDir := usr.HomeDir
 	filePairs := []client.FilePair{}
+	paths := []string{}
+
+	// Get a slice of paths.
+	split := strings.Split(configFiles, ",")
+
+	// Loop over all paths in split, if any don't exist
+	// silently remove them.
+	for _, path := range split {
+		localPath := internal.TildaToHome(path)
+		_, err := os.Stat(localPath)
+		if err != nil {
+			continue
+		} else {
+			paths = append(paths, path)
+		}
+	}
+
+	// remove the '~/' prefix as tar will
+	// create a ~/.. file. We don't want this.
+	// replace '~/' with TempMountPath which we define
+	// as $HOME in the created pods.
+	// Remove the file name, just returning the
+	// directory it is in.
+	dests := []string{}
+	for _, path := range paths {
+		if strings.HasPrefix(path, "~/") {
+			// Return only the directory the file is in
+			dir := filepath.Dir(path)
+			// Trim prefix
+			dir = strings.TrimPrefix(dir, "~")
+			// Add podBinDir as new prefix
+			dir = s.config.TempMountPath + dir
+			dests = append(dests, dir)
+		} else {
+			s.Logger.Warn(fmt.Sprintf("File with path %s is being ignored as it does not have prefix '~/'", path))
+		}
+	}
+
+	// create []client.FilePair to pass in to the
+	// deploy options. Replace '~/' with the current
+	// user's $HOME
 	for i, path := range split {
 		if strings.HasPrefix(path, "~/") {
-			// // evaluate any symlinks
-			// evs, err := filepath.EvalSymlinks(path)
-			// if err != nil {
-			// 	s.Logger.Error(fmt.Sprintf("Failed to evaluate symlinks for file with path: %s", path))
-			// }
 			// rewrite ~/ to hDir
 			st := strings.TrimPrefix(path, "~/")
 			st = hDir + "/" + st
 
-			filePairs = append(filePairs, client.FilePair{st, rewritten[i]})
+			filePairs = append(filePairs, client.FilePair{st, dests[i]})
 		}
 	}
 	return filePairs
