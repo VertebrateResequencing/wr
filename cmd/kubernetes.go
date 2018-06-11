@@ -23,7 +23,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -33,7 +32,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/sevlyar/go-daemon"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	kubedeployment "github.com/VertebrateResequencing/wr/kubernetes/deployment"
@@ -48,12 +46,15 @@ import (
 // run wr. As defining a volume mount overwrites whatever is in that directory
 // we want this to be unique. This is also what $HOME is set to, allowing paths
 // of the form '~/' to still work.
-const podBinDir = "/wr-tmp"
+const podBinDir = "/wr-tmp/"
 
 // podScriptDir is where the configMap will be mounted.
 const podScriptDir = "/scripts/"
 
+// The name of the wr linux binary to be expected
 const linuxBinaryName = "/wr-linux"
+
+const kubeLogFileName = "kubelog"
 
 // options for this cmd
 var podPostCreationScript string
@@ -129,7 +130,6 @@ already have user_allow_other set or at least be present and commented out
 (wr will enable it). By default 'ubuntu:latest' is used. Currently only docker
 hub is supported`,
 	Run: func(cmd *cobra.Command, args []string) {
-
 		// for debug purposes, set up logging to STDERR
 		kubeLogger := log15.New()
 		logLevel := log15.LvlWarn
@@ -138,26 +138,25 @@ hub is supported`,
 		}
 		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
-		fh, err := log15.FileHandler(config.ManagerLogFile, log15.LogfmtFormat())
-		if err != nil {
-			warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
-		} else {
-			l15h.AddHandler(appLogger, fh)
-
-			// have the server logger output to file, levelled with caller info
-			logLevel := log15.LvlWarn
-			if managerDebug {
-				logLevel = log15.LvlDebug
-			}
-			kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
-		}
-
 		var postCreation []byte
+		var extraArgs []string
 		if podPostCreationScript != "" {
 			var err error
 			postCreation, err = ioutil.ReadFile(podPostCreationScript)
 			if err != nil {
 				die("--script %s could not be read: %s", podPostCreationScript, err)
+			}
+			// daemon runs from /, so we need to convert relative to absolute
+			// path *** and then pretty hackily, re-specify the option by
+			// repeating it on the end of os.Args, where the daemonization code
+			// will pick it up
+			pcsAbs, err := filepath.Abs(podPostCreationScript)
+			if err != nil {
+				die("--script %s could not be converted to an absolute path: %s", podPostCreationScript, err)
+			}
+			if pcsAbs != postCreationScript {
+				extraArgs = append(extraArgs, "--script")
+				extraArgs = append(extraArgs, pcsAbs)
 			}
 		} else {
 			podPostCreationScript = "nil.sh"
@@ -180,6 +179,7 @@ hub is supported`,
 		if err != nil {
 			die("could not get the path to wr: %s", err)
 		}
+
 		// we then  need to rewrite it to always use the 'wr-linux'
 		// binary, in case we are deploying from a mac.
 		exe = filepath.Dir(exe) + linuxBinaryName
@@ -189,55 +189,68 @@ hub is supported`,
 		if err != nil {
 			die("bad manager_port [%s]: %s", config.ManagerPort, err)
 		}
+
 		wp, err := strconv.Atoi(config.ManagerWeb)
 		if err != nil {
 			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
 		}
+
 		// Set up the client
 		c := kubedeployment.Controller{
 			Client: &client.Kubernetesp{},
 		}
-		info("Authenticating against the provided cluster.")
+
 		// Authenticate and populate Kubernetesp with clientset and restconfig.
+		info("Authenticating against the provided cluster.")
 		c.Clientset, c.Restconfig, err = c.Client.Authenticate()
 		if err != nil {
 			die("Could not authenticate against the cluster: %s", err)
 		}
 		info("Authenticated succesfully.")
 
-		// Daemonise here
+		// Daemonise
 		fwPidPath := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
-		cntxt := daemon.Context{
-			PidFileName: fwPidPath,
-			PidFilePerm: 0644,
-			LogFileName: "pfwlog",
-			LogFilePerm: 0640,
-			WorkDir:     "/",
-			Umask:       027,
-			Args:        args,
-		}
-		child, err := cntxt.Reborn()
-		if err != nil {
-			log.Fatalln(err)
-			die("failed to daemonize: %s", err)
-		}
+		umask := 007
+		child, context := daemonize(fwPidPath, umask, extraArgs...)
 		if child != nil {
 			// PostParent() (Runs in the parent process after spawning child)
-			info("please wait while the kubernetes deployment is created...")
+			info("Please wait while the kubernetes deployment is created...")
 
 			// check that we can now connect to the remote manager
-			// I'm setting the timeout to 120s, as some initscripts may
-			// take a long time to complete.
-			jq = connect(120 * time.Second)
+
+			jq = connect(40 * time.Second)
 			if jq == nil {
-				die("could not talk to wr manager after 120s")
+				die("could not talk to wr manager after 40s")
 			}
 
 			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
 			info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
 		} else {
-			defer cntxt.Release()
-			// PostChild() (what the child will run)
+			// daemonized child, that will run until signalled to stop
+			// Set up logging to file
+
+			kubeDaemonLogger := log15.New()
+			kubeLogFile := filepath.Join(config.ManagerDir, kubeLogFileName)
+			fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
+			if err != nil {
+				warn("wr manager could not log to %s: %s", kubeLogFile, err)
+			} else {
+				l15h.AddHandler(appLogger, fh)
+
+				// have the server logger output to file, levelled with caller info
+				logLevel := log15.LvlWarn
+				if kubeDebug {
+					logLevel = log15.LvlDebug
+				}
+				kubeDaemonLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
+			}
+
+			defer func() {
+				err := context.Release()
+				if err != nil {
+					warn("daemon release failed: %s", err)
+				}
+			}()
 			info("In daemon")
 
 			debugStr := ""
@@ -254,12 +267,14 @@ hub is supported`,
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
 				resources = &cloud.Resources{ResourceName: "Kubernetes", Details: make(map[string]string)}
-				info("Initialising clients.")
+
 				// Populate the rest of Kubernetesp
+				info("Initialising clients.")
 				err = c.Client.Initialize(c.Clientset)
 				if err != nil {
 					die("Failed to authenticate to provided namespace: %s", err)
 				}
+
 				// Create the configMap
 				scriptName = filepath.Base(podPostCreationScript)
 				configMapName = strings.TrimSuffix(scriptName, filepath.Ext(scriptName))
@@ -267,7 +282,9 @@ hub is supported`,
 				if err != nil {
 					die("Failed to create config map: %s", err)
 				}
+
 				kubeNamespace = c.Client.NewNamespaceName
+
 				// Store the namespace and configMapName for fun and profit.
 				resources.Details["namespace"] = c.Client.NewNamespaceName
 				resources.Details["configMapName"] = configMapName
@@ -301,7 +318,7 @@ hub is supported`,
 				if err != nil {
 					panic(err)
 				}
-				internal.LogClose(kubeLogger, file, "resource file", "path", resourcePath)
+				internal.LogClose(kubeDaemonLogger, file, "resource file", "path", resourcePath)
 			}
 
 			remoteExe := filepath.Join(podBinDir, linuxBinaryName)
