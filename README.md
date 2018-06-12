@@ -41,7 +41,7 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.8 of go is required):
+Alternatively, build it yourself (at least v1.10 of go is required):
 
 1. Install go on your machine and setup the environment according to:
 [golang.org/doc/install](https://golang.org/doc/install)
