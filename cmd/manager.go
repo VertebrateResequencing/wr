@@ -49,6 +49,8 @@ var backupPath string
 var managerTimeoutSeconds int
 var managerDebug bool
 var maxServers int
+var maxLocalCores int
+var maxLocalRAM int
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -393,6 +395,11 @@ func reportLiveStatus(jq *jobqueue.Client) {
 }
 
 func init() {
+	defaultMaxRAM, err := internal.ProcMeminfoMBs()
+	if err != nil {
+		defaultMaxRAM = 0
+	}
+
 	RootCmd.AddCommand(managerCmd)
 	managerCmd.AddCommand(managerStartCmd)
 	managerCmd.AddCommand(managerDrainCmd)
@@ -405,6 +412,8 @@ func init() {
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
 	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
+	managerStartCmd.Flags().IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(), "for local scheduler, maximum number of cores to use; 0 means unlimited")
+	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "for local scheduler, maximum MB of memory to use; 0 means unlimited")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
@@ -482,7 +491,11 @@ func startJQ(postCreation []byte) {
 	serverCIDR := ""
 	switch scheduler {
 	case "local":
-		schedulerConfig = &jqs.ConfigLocal{Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.ConfigLocal{
+			Shell:    config.RunnerExecShell,
+			MaxCores: maxLocalCores,
+			MaxRAM:   maxLocalRAM,
+		}
 	case "lsf":
 		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
 	case "openstack":
