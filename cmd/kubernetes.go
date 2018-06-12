@@ -58,7 +58,6 @@ const kubeLogFileName = "kubelog"
 
 // options for this cmd
 var podPostCreationScript string
-var postCreationConfigMap string
 var containerImage string
 var podDNS string
 var podConfigFiles string
@@ -67,6 +66,7 @@ var kubeNamespace string
 var maxPods int
 var scriptName string
 var configMapName string
+var kubeConfigMap string
 
 // cloudCmd represents the cloud command
 var kubeCmd = &cobra.Command{
@@ -324,7 +324,7 @@ hub is supported`,
 			remoteExe := filepath.Join(podBinDir, linuxBinaryName)
 			m := maxPods - 1
 
-			mCmd := fmt.Sprintf("%s manager start --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --cloud_dns '%s' --timeout %d%s",
+			mCmd := fmt.Sprintf("%s manager start -f --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --cloud_dns '%s' --timeout %d%s",
 				remoteExe, config.Deployment, kubeNamespace, serverKeepAlive, m, configMapName, containerImage, podConfigFiles, podDNS, managerTimeoutSeconds, debugStr)
 			binaryArgs := strings.Fields(mCmd)
 			files := rewriteConfigFiles(podConfigFiles)
