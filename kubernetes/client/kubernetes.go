@@ -48,7 +48,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	typedappsv1beta1 "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
-	rbacv1 "k8s.io/client-go/kubernetes/typed/rbac/v1"
 	"k8s.io/client-go/rest"
 
 	"math/rand"
@@ -74,7 +73,6 @@ type Kubernetesp struct {
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
 	configMapClient   typedv1.ConfigMapInterface
-	rbacClient        *rbacv1.RbacV1Client
 	PortForwarder     portForwarder
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
@@ -245,10 +243,9 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 // Uses containerImage as the base docker image to build on top of
 // Assumes tar is available.
 func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
-	rbacClient := rbacv1.New(p.RESTClient)
 	// Patch the default cluster role for to allow
 	// pods and nodes to be viewed.
-	_, err := rbacClient.ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
+	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "wr-cluster-role-binding",
 		},
