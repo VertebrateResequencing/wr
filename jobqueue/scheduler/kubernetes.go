@@ -21,7 +21,6 @@ package scheduler
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -86,6 +85,9 @@ type ConfigKubernetes struct {
 	// after a server is Spawn()ed. (Overridden during Schedule() by a
 	// Requirements.Other["cloud_script"] value.)
 	PostCreationScript []byte
+
+	// ConfigMap to use in place of PostCreationScript
+	ConfigMap string
 
 	// ConfigFiles is a comma separated list of paths to config files that
 	// should be copied over to all spawned servers. Absolute paths are copied
@@ -153,10 +155,16 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
 	s.local.Logger = s.Logger
 
-	// Create the default PostCreationScript
+	// Create the default PostCreationScript if no config map passed.
 	// If the byte stream does not stringify things may go horribly wrong.
-	script := string(s.config.PostCreationScript)
-	s.libclient.CreateInitScriptConfigMap(defaultScriptName, script)
+	if len(s.config.ConfigMap) == 0 {
+		if string(s.config.PostCreationScript) != "" {
+			script := string(s.config.PostCreationScript)
+			s.libclient.CreateInitScriptConfigMap(defaultScriptName, script)
+		} else {
+			s.Logger.Crit("a config map or post creation script must be provided.")
+		}
+	}
 
 	// Set up message notifier & request channels
 	s.callBackChan = make(chan string, 5)
@@ -380,11 +388,9 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 // preserved across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory
-	usr, err := user.Current()
-	if err != nil {
-		s.Logger.Error(fmt.Sprintf("Failed to get user: %s", usr))
-	}
-	hDir := usr.HomeDir
+	// os.user.Current() was failing in a pod.
+	// https://github.com/mitchellh/go-homedir ?
+	hDir := os.Getenv("HOME")
 	filePairs := []client.FilePair{}
 	paths := []string{}
 
@@ -427,7 +433,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// create []client.FilePair to pass in to the
 	// deploy options. Replace '~/' with the current
 	// user's $HOME
-	for i, path := range split {
+	for i, path := range paths {
 		if strings.HasPrefix(path, "~/") {
 			// rewrite ~/ to hDir
 			st := strings.TrimPrefix(path, "~/")
