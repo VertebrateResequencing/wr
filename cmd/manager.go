@@ -142,7 +142,10 @@ fully.`,
 
 		if scheduler == "kubernetes" {
 			if len(kubeNamespace) == 0 {
-				die("Namespace must be specified when using the kubernetes scheduler")
+				die("namespace must be specified when using the kubernetes scheduler")
+			}
+			if len(configMapName) == 0 && len(postCreationScript) == 0 {
+				die("either a config map name or path to a post creation script is required")
 			}
 		}
 
@@ -429,7 +432,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
-	managerStartCmd.Flags().StringVarP(&postCreationConfigMap, "config_map", "", defaultConfig.CloudScript, "for the kubernetes scheduler, the name of the config map to mount in each spawned pod")
+	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", " for the kubernetes scheduler, provide an existing config map to initialise with all pods with. To be used instead of --cloud_script")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
 	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", defaultConfig.CloudGateway, "for cloud schedulers, gateway IP for the created subnet")
@@ -537,8 +540,9 @@ func startJQ(postCreation []byte) {
 		schedulerConfig = &jqs.ConfigKubernetes{
 			Image:              osPrefix,
 			PostCreationScript: postCreation,
+			ConfigMap:          configMapName,
 			ConfigFiles:        cloudConfigFiles,
-			Shell:              "bash",
+			Shell:              config.RunnerExecShell,
 			TempMountPath:      filepath.Dir(exe),
 			LocalBinaryPath:    exe,
 			Namespace:          kubeNamespace,
