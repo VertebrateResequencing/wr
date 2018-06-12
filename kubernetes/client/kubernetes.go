@@ -248,10 +248,9 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 	rbacClient := rbacv1.New(p.RESTClient)
 	// Patch the default cluster role for to allow
 	// pods and nodes to be viewed.
-	rbacClient.ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
+	_, err := rbacClient.ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "wr-cluster-role-binding",
-			Namespace: p.NewNamespaceName,
+			Name: "wr-cluster-role-binding",
 		},
 		Subjects: []rbacapi.Subject{
 			{
@@ -266,6 +265,9 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 			Name:     "system:kube-scheduler",
 		},
 	})
+	if err != nil {
+		return fmt.Errorf("Failed to create cluster role binding in namespace %s: %s", p.NewNamespaceName, err)
+	}
 	//Specify new wr deployment
 	deployment := &appsv1beta1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
