@@ -218,7 +218,7 @@ hub is supported`,
 
 			// check that we can now connect to the remote manager
 
-			jq = connect(40 * time.Second)
+			jq = connect(120 * time.Second)
 			if jq == nil {
 				die("could not talk to wr manager after 40s")
 			}
@@ -229,7 +229,7 @@ hub is supported`,
 			// daemonized child, that will run until signalled to stop
 			// Set up logging to file
 
-			kubeDaemonLogger := log15.New()
+			// kubeDaemonLogger := log15.New()
 			kubeLogFile := filepath.Join(config.ManagerDir, kubeLogFileName)
 			fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
 			if err != nil {
@@ -238,11 +238,11 @@ hub is supported`,
 				l15h.AddHandler(appLogger, fh)
 
 				// have the server logger output to file, levelled with caller info
-				logLevel := log15.LvlWarn
-				if kubeDebug {
-					logLevel = log15.LvlDebug
-				}
-				kubeDaemonLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
+				// logLevel := log15.LvlWarn
+				// if kubeDebug {
+				// 	logLevel = log15.LvlDebug
+				// }
+				//	kubeDaemonLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
 			}
 
 			defer func() {
@@ -318,7 +318,7 @@ hub is supported`,
 				if err != nil {
 					panic(err)
 				}
-				internal.LogClose(kubeDaemonLogger, file, "resource file", "path", resourcePath)
+				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 			}
 
 			remoteExe := filepath.Join(podBinDir, linuxBinaryName)
@@ -340,6 +340,7 @@ hub is supported`,
 				ConfigMapName:   configMapName,
 				ConfigMountPath: podScriptDir,
 				RequiredPorts:   []int{mp, wp},
+				Logger:          appLogger,
 			}
 			info("Files to be copied: %s", files)
 

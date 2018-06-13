@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
+	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -65,6 +66,7 @@ type DeployOpts struct {
 	ConfigMountPath string             // path to the configmap
 	RequiredPorts   []int              // ports that require forwarding
 	AttachCmdOpts   *client.CmdOptions // relevant options for the attachCmd
+	Logger          log15.Logger
 }
 
 func (c *Controller) createQueueAndInformer() {
@@ -141,6 +143,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	// Before starting, create the initial deployment
 	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 	if err != nil {
+		c.Opts.Logger.Error(fmt.Sprintf("Failed to create deployment: %s", err))
 		panic(err)
 	}
 	// runWorker loops until 'bad thing'. '.Until' will
@@ -173,12 +176,12 @@ func (c *Controller) processNextItem() bool {
 		// No error => queue stop tracking history
 		c.queue.Forget(key)
 	} else if c.queue.NumRequeues(key) < maxRetries {
-		fmt.Printf("Error processing %s, will retry: %v\n", key, err)
+		c.Opts.Logger.Error(fmt.Sprintf("Error processing %s, will retry: %v\n", key, err))
 		// requeue
 		c.queue.AddRateLimited(key)
 	} else {
 		// err != nil and too many retries
-		fmt.Printf("Error processing %s, giving up: %v\n", key, err)
+		c.Opts.Logger.Error(fmt.Sprintf("Error processing %s, giving up: %v\n", key, err))
 		c.queue.Forget(key)
 		utilruntime.HandleError(err)
 	}
@@ -188,7 +191,7 @@ func (c *Controller) processNextItem() bool {
 
 // processItem(key) is where we define how to react to a pod event
 func (c *Controller) processItem(key string) error {
-	fmt.Printf("Processing change t Pod %s\n", key)
+	c.Opts.Logger.Info(fmt.Sprintf("Processing change to Pod %s", key))
 
 	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
@@ -196,20 +199,20 @@ func (c *Controller) processItem(key string) error {
 	}
 
 	if !exists {
-		fmt.Printf("Object with key %s deleted. \n\nObj: %v", key, obj)
+		c.Opts.Logger.Info(fmt.Sprintf("Object with key %s deleted. \n\nObj: %v", key, obj))
 		fmt.Printf("\n\n")
 		fmt.Println("====================")
 		fmt.Printf("\n\n")
 		return nil
 	}
-	c.processObj(obj)
+	err = c.processObj(obj)
 	//jsonObj, err := json.Marshal(obj)
 	//fmt.Printf(string(jsonObj))
 	//fmt.Printf("Object with key %s created. \n\nObj: %v", key, obj)
 	fmt.Printf("\n\n")
 	fmt.Println("====================")
 	fmt.Printf("\n\n")
-	return nil
+	return err
 }
 
 func (c *Controller) processObj(obj interface{}) error {
@@ -232,20 +235,20 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 	if len(obj.Status.InitContainerStatuses) != 0 {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
-			fmt.Println("InitContainer Waiting!")
+			c.Opts.Logger.Info(fmt.Sprintf("InitContainer Waiting!"))
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
-			fmt.Println("InitContainer Running!")
-			fmt.Println("Calling CopyTar")
+			c.Opts.Logger.Info(fmt.Sprintf("InitContainer Running!"))
+			c.Opts.Logger.Info(fmt.Sprintf("Calling CopyTar"))
 			// here goes nothing
 			c.Client.CopyTar(c.Opts.Files, obj)
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
-			fmt.Println("WR manager container is running, calling PortForward")
+			c.Opts.Logger.Info(fmt.Sprintf("WR manager container is running, calling PortForward"))
 			go c.Client.PortForward(obj, c.Opts.RequiredPorts)
 		default:
-			fmt.Println("Not InitContainer or WR Manager container related")
+			c.Opts.Logger.Info(fmt.Sprintf("Not InitContainer or WR Manager container related"))
 		}
 	} else {
-		fmt.Println("InitContainerStatuses not initialised yet")
+		c.Opts.Logger.Info(fmt.Sprintf("InitContainerStatuses not initialised yet"))
 	}
 	return
 }
