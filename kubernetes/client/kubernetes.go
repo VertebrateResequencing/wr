@@ -247,7 +247,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 	// pods and nodes to be viewed.
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "wr-cluster-role-binding",
+			GenerateName: "wr-cluster-role-binding",
 		},
 		Subjects: []rbacapi.Subject{
 			{
