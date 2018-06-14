@@ -546,6 +546,7 @@ func startJQ(postCreation []byte) {
 			TempMountPath:      filepath.Dir(exe),
 			LocalBinaryPath:    exe,
 			Namespace:          kubeNamespace,
+			ManagerDir:         config.ManagerDir,
 		}
 
 	}

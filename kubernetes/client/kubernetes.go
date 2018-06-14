@@ -124,9 +124,9 @@ func (p *Kubernetesp) CreateNewNamespace(name string) error {
 func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
 	var l log15.Logger
 	if len(logger) == 1 {
-		l = logger[0].New()
+		l = logger[0].New("clientlib", "true")
 	} else {
-		l = log15.New()
+		l = log15.New("clientlib")
 		l.SetHandler(log15.DiscardHandler())
 	}
 	p.Logger = l
@@ -136,6 +136,7 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 
 	switch {
 	case len(host) == 0 || len(port) == 0:
+		p.Logger.Info("Authenticating using information from user's home directory")
 		var kubeconfig *string
 		//Obtain cluster authentication information from users home directory, or fall back to user input.
 		if home := homedir.HomeDir(); home != "" {
@@ -148,21 +149,23 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		var err error
 		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 		if err != nil {
-			p.Logger.Error("Build cluster configuration from ~/.kube", "err", err)
+			p.Logger.Error("Failed to build cluster configuration from ~/.kube", "err", err)
 			panic(err)
 		}
 		//Create authenticated clientset
 		clientset, err := kubernetes.NewForConfig(clusterConfig)
 		if err != nil {
-			p.Logger.Error("Create authenticated clientset", "err", err)
+			p.Logger.Error("Creating authenticated clientset", "err", err)
 			panic(err)
 		}
 		// Set up internal clientset and clusterConfig
+		p.Logger.Info("Succesfully authenticated using information from user's home directory")
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
 		return clientset, clusterConfig, nil
 
 	default:
+		p.Logger.Info("Authenticating using InClusterConfig()")
 		clusterConfig, err := rest.InClusterConfig()
 		if err != nil {
 			panic(err.Error())
@@ -175,9 +178,11 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		// Set up internal clientset and clusterConfig
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
+		p.Logger.Info("Succesfully authenticated using InClusterConfig()")
 		return clientset, clusterConfig, nil
 
 	}
+
 }
 
 // Initialize uses the passed clientset to
@@ -259,7 +264,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 		RoleRef: rbacapi.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     "system:kube-scheduler",
+			Name:     "system:node",
 		},
 	})
 	if err != nil {
