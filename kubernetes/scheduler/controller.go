@@ -20,6 +20,7 @@ package scheduler
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -29,6 +30,8 @@ import (
 	kubeinformers "k8s.io/client-go/informers"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
+	"github.com/inconshreveable/log15"
+	"github.com/sb10/l15h"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -48,6 +51,9 @@ const (
 	//
 	// 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s, 5.1s, 10.2s, 20.4s, 41s, 82s
 	maxRetries = 15
+
+	// kubeSchedulerControllerLog is the file name to save logs to
+	kubeSchedulerControllerLog = "kubeSchedulerControllerLog"
 )
 
 // Controller stores everything the controller needs
@@ -63,6 +69,7 @@ type Controller struct {
 	opts          ScheduleOpts
 	nodeResources map[nodeName]corev1.ResourceList
 	podAliveMap   *sync.Map
+	logger        log15.Logger
 }
 
 // ScheduleOpts stores options  for the scheduler
@@ -70,7 +77,9 @@ type ScheduleOpts struct {
 	Files        []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
 	CbChan       chan string       // Channel to send errors on
 	ReqChan      chan *Request     // Channel to send requests about resource availability to
-	PodAliveChan chan *PodAlive
+	PodAliveChan chan *PodAlive    // Channel to send PodAlive requests
+	ManagerDir   string            // Directory to store logs in
+	Logger       log15.Logger
 }
 
 // Request contains relevant information
@@ -182,20 +191,36 @@ func NewController(
 // blocks until stopCh is closed, at which point it'll shut down workqueue
 // and wait for workers to finish processing.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
+	c.logger = c.opts.Logger.New("schedulerController", "kubernetes")
+	kubeLogFile := filepath.Join(c.opts.ManagerDir, kubeSchedulerControllerLog)
+	fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
+	if err != nil {
+		return fmt.Errorf("wr kubernetes scheduler could not log to %s: %s", kubeLogFile, err)
+	}
+
+	l15h.AddHandler(c.logger, fh)
+	c.logger.Info("In Run()")
 	defer runtime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
 	// Start informer factories, begin populating informer caches.
 
 	// Wait for caches to sync before starting workers
+	c.logger.Info("Waiting for caches to sync")
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
+		c.logger.Crit("failed to wait for caches to sync")
+		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
+	c.logger.Info("Caches synced")
 
 	// start request handler(s)
-	c.handleReqCheck(2)
-	c.handlePodAlive(2)
+	c.logger.Info("Calling handleReqCheck")
+	c.handleReqCheck(1)
+	c.logger.Info("Calling handlePodAlive")
+	c.handlePodAlive(1)
 
+	c.logger.Info("In Run(), starting workers")
 	// start workers
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
@@ -354,13 +379,14 @@ func (c *Controller) nodeHandler(obj interface{}) {
 // Assume there is only 1 initcontainer
 // Copy tar to waiting initcontainers.
 func (c *Controller) processPod(pod *corev1.Pod) error {
+	c.logger.Info(fmt.Sprintf("processPod called on %s", pod.ObjectMeta.Name))
 	if len(pod.Status.InitContainerStatuses) != 0 {
 		switch {
 		case pod.Status.InitContainerStatuses[0].State.Waiting != nil:
-			fmt.Println("InitContainer Waiting!")
+			c.logger.Info(fmt.Sprintf("InitContainer for pod %s Waiting", pod.ObjectMeta.Name))
 		case pod.Status.InitContainerStatuses[0].State.Running != nil:
-			fmt.Println("InitContainer Running!")
-			fmt.Println("Calling CopyTar")
+			c.logger.Info(fmt.Sprintf("InitContainer for pod %s Running", pod.ObjectMeta.Name))
+			c.logger.Info(fmt.Sprintf("Calling CopyTar for pod %s Running", pod.ObjectMeta.Name))
 			err := c.libclient.CopyTar(c.opts.Files, pod)
 			if err != nil {
 				return err
@@ -368,12 +394,15 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		default:
 		}
 	} else if pod.Status.Phase == corev1.PodPhase("Succeeded") {
-		// Get the pod's errChan
+		c.logger.Info(fmt.Sprintf("Pod %s exited succesfully, notifying", pod.ObjectMeta.Name))
+		// Get the pod's errChan, return nil signifying that the pod
+		// (runner) exited succesfully.
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
 		if ok {
 			ec := result.(chan error)
 			ec <- nil
 		} else {
+			c.logger.Info(fmt.Sprintf("Could not find return error channel for pod %s", pod.ObjectMeta.Name))
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 	}
@@ -383,11 +412,13 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 // Keep a running total of the total allocatable resources.
 // Adds information to a map[nodeName]resourcelist.
 func (c *Controller) processNode(node *corev1.Node) error {
+	c.logger.Info(fmt.Sprintf("processNode called on %s", node.ObjectMeta.Name))
 	// Set the capacity. May want allocatable later ?
 	// log me!
 	// This shouldn't need to be a threadsafe map, as processNode
 	// will only be called by processItem provided a key from the
 	// workqueue
+	c.logger.Info(fmt.Sprintf("Adding node %s with allocatable resources %v", node.ObjectMeta.Name, node.Status.Allocatable))
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
 	return nil
 }
@@ -399,24 +430,26 @@ func (c *Controller) handleErr(err error, key interface{}) {
 	}
 
 	if c.workqueue.NumRequeues(key) < maxRetries {
-		//glog.V(2).Infof("Error processing key %v: %v", key, err)
+		c.logger.Error(fmt.Sprintf("Error processing key %v: %v", key, err.Error()))
 		c.sendErrChan(fmt.Sprintf("Error processing key %v: %v", key, err.Error()))
 		c.workqueue.AddRateLimited(key)
 		return
 	}
 
 	utilruntime.HandleError(err)
-	//glog.V(2).Infof("Dropping key %q out of the queue: %v", key, err)
+	c.logger.Error(fmt.Sprintf("Dropping key %q out of queue %v", key, err.Error()))
 	c.sendErrChan(fmt.Sprintf("Dropping key %q out of queue %v", key, err.Error()))
 	c.workqueue.Forget(key)
 }
 
 // Send a string of the provided error to the callback channel
 func (c *Controller) sendErrChan(err string) {
+	c.logger.Info("sendErrChan called with error", "err", err)
 	c.opts.CbChan <- err
 }
 
 func (c *Controller) handleReqCheck(threadiness int) {
+	c.logger.Info("Starting reqCheckHandlers")
 	for i := 0; i < threadiness; i++ {
 		go c.reqCheckHandler()
 	}
@@ -441,6 +474,7 @@ func (c *Controller) reqCheckHandler() {
 }
 
 func (c *Controller) handlePodAlive(threadiness int) {
+	c.logger.Info("Starting podAliveHandlers")
 	for i := 0; i < threadiness; i++ {
 		go c.podAliveHandler()
 	}
