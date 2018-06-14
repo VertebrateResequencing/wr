@@ -1,0 +1,134 @@
+
+# Gopkg.toml example
+#
+# Refer to https://github.com/golang/dep/blob/master/docs/Gopkg.toml.md
+# for detailed Gopkg.toml documentation.
+#
+# required = ["github.com/user/thing/cmd/thing"]
+# ignored = ["github.com/user/project/pkgX", "bitbucket.org/user/project/pkgA/pkgY"]
+#
+# [[constraint]]
+#   name = "github.com/user/project"
+#   version = "1.0.0"
+#
+# [[constraint]]
+#   name = "github.com/user/project2"
+#   branch = "dev"
+#   source = "github.com/myfork/project2"
+#
+# [[override]]
+#  name = "github.com/x/y"
+#  version = "2.4.0"
+
+
+# To use reference package:
+# #   vendor/k8s.io/kubernetes/pkg/util/parsers/parsers.go:36:16: undefined: reference.ParseNormalizedNamed
+ [[override]]
+   name = "github.com/docker/distribution"
+   branch = "master"
+
+[[constraint]]
+  name = "code.cloudfoundry.org/bytefmt"
+
+[[constraint]]
+  name = "github.com/VertebrateResequencing/muxfys"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/VividCortex/ewma"
+
+[[constraint]]
+  name = "github.com/coreos/bbolt"
+
+[[constraint]]
+  name = "github.com/dgryski/go-farm"
+
+[[constraint]]
+  name = "github.com/docker/docker"
+  version = "1.13.1"
+
+[[constraint]]
+  name = "github.com/fatih/color"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/go-mangos/mangos"
+
+[[constraint]]
+  name = "github.com/gophercloud/gophercloud"
+  source = "https://github.com/sb10/gophercloud.git"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/gorilla/websocket"
+
+[[constraint]]
+  name = "github.com/grafov/bcast"
+
+[[constraint]]
+  name = "github.com/hashicorp/go-multierror"
+
+[[constraint]]
+  name = "github.com/hashicorp/golang-lru"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/inconshreveable/log15"
+
+[[constraint]]
+  name = "github.com/jinzhu/configor"
+
+[[constraint]]
+  name = "github.com/jpillora/backoff"
+
+[[constraint]]
+  name = "github.com/kardianos/osext"
+
+[[constraint]]
+  name = "github.com/pkg/sftp"
+
+[[constraint]]
+  name = "github.com/ricochet2200/go-disk-usage"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/satori/go.uuid"
+
+[[constraint]]
+  name = "github.com/sb10/l15h"
+
+[[constraint]]
+  name = "github.com/sevlyar/go-daemon"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/shirou/gopsutil"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/smartystreets/goconvey"
+
+[[constraint]]
+  name = "github.com/spf13/cobra"
+
+[[constraint]]
+  name = "github.com/ugorji/go"
+
+[[constraint]]
+  name = "golang.org/x/crypto"
+
+[[constraint]]
+  name = "k8s.io/api"
+  branch = "release-1.10"
+
+[[constraint]]
+  name = "k8s.io/apimachinery"
+  branch = "release-1.10"
+
+[[constraint]]
+  name = "k8s.io/client-go"
+  version = "7.0.0"
+
+[[constraint]]
+  name = "k8s.io/kubernetes"
+  version = "1.10.4"
