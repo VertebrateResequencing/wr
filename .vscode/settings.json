@@ -1,0 +1,31 @@
+{
+  "go.lintOnSave": "package",
+  "editor.formatOnSave": true,
+  "go.lintTool": "gometalinter",
+  "go.vetOnSave": "workspace",
+  "go.useLanguageServer": true,
+  "go.formatTool": "goreturns",
+  "go.lintFlags": [
+    "--vendor",
+    "--disable-all",
+    "--enable=vet",
+    "--enable=golint",
+    "--enable=ineffassign",
+    "--enable=goconst",
+    "--enable=unconvert",
+    "--enable=interfacer",
+    "--enable=gotypex",
+    "--enable=structcheck",
+    "--enable=gofmt",
+    "--enable=varcheck",
+    "--enable=gotype",
+    "--enable=deadcode",
+    "--enable=unparam",
+    "--enable=goimports",
+    "--enable=gas",
+    "--json",
+    "--fast",
+    "--deadline",
+    "30s"
+  ]
+}
