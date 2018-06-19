@@ -63,7 +63,8 @@ type k8s struct {
 // ConfigKubernetes holds configuration options required by
 // the kubernetes scheduler.
 
-const defaultScriptName = "DefaultPostCreationScript"
+var defaultScriptName = "wr-default"
+
 const kubeSchedulerLog = "kubeSchedulerLog"
 
 // ConfigKubernetes holds the configuration options for the kubernetes
@@ -151,8 +152,11 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	l15h.AddHandler(s.Logger, fh)
 
+	s.Logger.Info(fmt.Sprintf("configuration passed: %#v", s.config))
+
 	// make queue
 	s.queue = queue.New(localPlace)
+	s.running = make(map[string]int)
 
 	// set our functions for use in schedule() and processQueue()
 	s.reqCheckFunc = s.reqCheck
@@ -202,9 +206,9 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Initialise the informer factory
 	// Confine all informers to the provided namespace
-	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*30, s.config.Namespace, func(listopts *metav1.ListOptions) {
+	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*15, s.config.Namespace, func(listopts *metav1.ListOptions) {
 		listopts.IncludeUninitialized = true
-		listopts.Watch = true
+		//listopts.Watch = true
 	})
 
 	// Rewrite config files.
@@ -226,7 +230,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Create the controller
 	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, opts)
-
+	s.Logger.Info(fmt.Sprintf("Controller contents: %+v", controller))
 	stopCh := make(chan struct{})
 
 	go kubeInformerFactory.Start(stopCh)
@@ -249,25 +253,25 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 // TODO: OCC if error: What if a node is added shortly after? (Deals with autoscaling?)
 // https://godoc.org/k8s.io/apimachinery/pkg/util/wait#ExponentialBackoff
 func (s *k8s) reqCheck(req *Requirements) error {
-	s.Logger.Info("reqCheck called")
-	// Create error channel
-	errChan := make(chan error)
+	s.Logger.Info(fmt.Sprintf("reqCheck called with requirements %#v", req))
+
 	// Rewrite *Requirements to a kubescheduler.Request
 	cores := resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
-	ram := resource.NewQuantity(int64(req.RAM)*1024*1024*1024, resource.BinarySI)
+	ram := resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
 	disk := resource.NewQuantity(int64(req.Disk)*1000*1000*1000, resource.DecimalSI)
 	r := &kubescheduler.Request{
-		RAM:    ram,
+		RAM:    *ram,
 		Time:   req.Time,
-		Cores:  cores,
-		Disk:   disk,
+		Cores:  *cores,
+		Disk:   *disk,
 		Other:  req.Other,
-		CbChan: errChan,
+		CbChan: make(chan error),
 	}
 	// Do i want this to be non blocking??
 	// Do i want it to block in a goroutine??
 
 	// Blocking sends are fine in a goroutine?
+	s.Logger.Info(fmt.Sprintf("Sending request to listener %#v", r))
 	go func() {
 		s.reqChan <- r
 	}()
@@ -279,7 +283,9 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	// }
 	// Do i want this to block or not?
 	// What about multiple errors?
-	err := <-errChan
+	s.Logger.Info("Waiting on reqCheck to return")
+	err := <-r.CbChan
+	s.Logger.Info(fmt.Sprintf("Recieved error: %s, returning", err))
 
 	return err
 }
@@ -348,7 +354,7 @@ func (s *k8s) canCount(req *Requirements) (canCount int) {
 // Or an error if there was a problem. Use deletefunc in controller to send message?
 // (based on some sort of channel communication?)
 func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
-	s.Logger.Info("RunCmd Called")
+	s.Logger.Info(fmt.Sprintf("RunCmd Called with cmd %s and requirements %#v", cmd, req))
 	// The first 'argument' to cmd will be the absolute path to the manager's executable.
 	// Work out the local binary's name from localBinaryPath.
 	//binaryName := filepath.Base(s.config.localBinaryPath)
@@ -364,6 +370,11 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		RAM:   req.RAM,
 	}
 
+	if len(s.config.ConfigMap) != 0 {
+		defaultScriptName = s.config.ConfigMap
+	}
+
+	s.Logger.Info(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
 	pod, err := s.libclient.Spawn(s.config.Image,
 		s.config.TempMountPath,
 		configMountPath+defaultScriptName,
@@ -373,9 +384,10 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		requirements)
 
 	if err != nil {
-		s.Logger.Error("error creating runner pod", "err", err)
+		s.Logger.Error("error creating runner", "err", err)
 		return err
 	}
+	s.Logger.Info(fmt.Sprintf("Spawn request succeded, pod %s", pod.ObjectMeta.Name))
 
 	// We need to know when the pod we've created (the runner) terminates
 	// there is a listener in the controller that will notify when a pod passed
@@ -383,6 +395,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	// is the channel being closed.
 
 	// Send the request to the listener.
+	s.Logger.Info(fmt.Sprintf("Sending request to the podAliveChan with pod %s", pod.ObjectMeta.Name))
 	errChan := make(chan error)
 	go func() {
 		req := &kubescheduler.PodAlive{
@@ -396,12 +409,14 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	// e.g CrashBackLoopoff suggesting the post create
 	// script is throwing an error, return it here.
 	// Don't delete the pod if some error is thrown.
+	s.Logger.Info("Waiting on status of pod %s")
 	err = <-errChan
 	if err != nil {
-		s.Logger.Error("error spawning runner pod", "err", err)
+		s.Logger.Error(fmt.Sprintf("error spawning runner, pod name: %s", pod.ObjectMeta.Name), "err", err)
 		return err
 	}
 
+	s.Logger.Info(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
 	// Delete terminated pod if no error thrown.
 	err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
 
