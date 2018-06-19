@@ -7,6 +7,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/VertebrateResequencing/wr/kubernetes/deployment"
+	"github.com/inconshreveable/log15"
+	"github.com/sb10/l15h"
 	"github.com/sevlyar/go-daemon"
 )
 
@@ -22,12 +25,14 @@ var (
 	signal = flag.String("s", "", `send signal to the port forwarding daemon
 		quit -- graceful shutdown 
 		stop -- fast shutdown`)
-	script = flag.String("script", "", `postcreation script to be used`)
-	binary = flag.String("binary", "", `path to wr binary`)
+	script     = flag.String("script", "", `postcreation script to be used`)
+	binary     = flag.String("binary", "", `path to wr binary`)
+	foreground = flag.Bool("f", false, `run in foreground`)
 )
 
 var err error
 var stopCh chan struct{}
+var kubeLogger log15.Logger
 
 func StartController(binaryPath string, scriptPath string, stopCh chan struct{}) {
 	log.Printf("controller started with binary path %s and script path %s", binaryPath, scriptPath)
@@ -61,6 +66,7 @@ func StartController(binaryPath string, scriptPath string, stopCh chan struct{})
 	if err != nil {
 		panic(err)
 	}
+
 	c.Opts = &deployment.DeployOpts{
 		ContainerImage: "ubuntu:latest",
 		TempMountPath:  "/wr-tmp",
@@ -72,6 +78,7 @@ func StartController(binaryPath string, scriptPath string, stopCh chan struct{})
 		ConfigMapName:   configMapName,
 		ConfigMountPath: "/scripts",
 		RequiredPorts:   []int{1120, 1121},
+		Logger:          kubeLogger,
 	}
 
 	defer close(stopCh)
@@ -92,51 +99,68 @@ func main() {
 	args := os.Args
 
 	bAbs, err := filepath.Abs(*binary)
+	if err != nil {
+		panic(err)
+	}
 	sAbs, err := filepath.Abs(*script)
+	if err != nil {
+		panic(err)
+	}
 
 	args = append(args, "--binary")
 	args = append(args, bAbs)
 	args = append(args, "--script")
 	args = append(args, sAbs)
 
+	// Create a logger to handle logging things.
+	// for debug purposes, set up logging to STDERR
+	kubeLogger = log15.New()
+	logLevel := log15.LvlDebug
+	kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+
 	log.Printf("Args passed to me: %s", args)
 
-	cntxt := daemon.Context{
-		PidFileName: "pfwpid",
-		PidFilePerm: 0644,
-		LogFileName: "pfwlog",
-		LogFilePerm: 0640,
-		WorkDir:     "/",
-		Umask:       027,
-		Args:        args,
-	}
+	if !*foreground {
 
-	// Daemon currently running
-	if len(daemon.ActiveFlags()) > 0 {
-		d, err := cntxt.Search()
-		if err != nil {
-			log.Fatalln("Unable to send signal to daemon: ", err)
+		cntxt := daemon.Context{
+			PidFileName: "pfwpid",
+			PidFilePerm: 0644,
+			LogFileName: "pfwlog",
+			LogFilePerm: 0640,
+			WorkDir:     "/",
+			Umask:       027,
+			Args:        args,
 		}
-		daemon.SendCommands(d)
-		return
-	}
 
-	// Check if forward flag is set
-	d, err := cntxt.Reborn()
-	if err != nil {
-		log.Fatalln(err)
-	}
-	if d != nil {
-		log.Printf("This is PostParent()")
-		return
-	}
-	defer cntxt.Release()
+		// Daemon currently running
+		if len(daemon.ActiveFlags()) > 0 {
+			d, err := cntxt.Search()
+			if err != nil {
+				log.Fatalln("Unable to send signal to daemon: ", err)
+			}
+			daemon.SendCommands(d)
+			return
+		}
 
-	log.Println("======================")
-	log.Println("daemon started")
+		// Check if forward flag is set
+		d, err := cntxt.Reborn()
+		if err != nil {
+			log.Fatalln(err)
+		}
+		if d != nil {
+			log.Printf("This is PostParent()")
+			return
+		}
+		defer cntxt.Release()
+
+		log.Println("======================")
+		log.Println("daemon started")
+		stopCh = make(chan struct{})
+		StartController(bAbs, sAbs, stopCh)
+	}
 	stopCh = make(chan struct{})
+	fmt.Printf("bAbs: %s, sAbs: %s /n", bAbs, sAbs)
 	StartController(bAbs, sAbs, stopCh)
-
 }
 
 func termHandler(sig os.Signal) error {
