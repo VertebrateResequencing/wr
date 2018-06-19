@@ -139,7 +139,8 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
 		return
 	}
-
+	// Check if an existing deployment with the label 'app=wr-manager' exists
+	// if it does, skip the Deploy()
 	// Before starting, create the initial deployment
 	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 	if err != nil {
@@ -242,7 +243,7 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			// here goes nothing
 			c.Client.CopyTar(c.Opts.Files, obj)
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
-			c.Opts.Logger.Info(fmt.Sprintf("WR manager container is running, calling PortForward"))
+			c.Opts.Logger.Info(fmt.Sprintf("WR manager container is running, calling PortForward with ports %v", c.Opts.RequiredPorts))
 			go c.Client.PortForward(obj, c.Opts.RequiredPorts)
 		default:
 			c.Opts.Logger.Info(fmt.Sprintf("Not InitContainer or WR Manager container related"))
