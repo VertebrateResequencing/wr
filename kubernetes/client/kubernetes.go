@@ -523,7 +523,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 	//Create a new pod.
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "wr-runner",
+			GenerateName: "wr-runner-",
 			Labels: map[string]string{
 				"wr": "runner",
 			},
