@@ -144,7 +144,7 @@ func makeTar(files []FilePair, writer io.Writer) error {
 	for i := range files {
 		fmt.Printf("Adding file %v \n", files[i])
 		if err := addFile(tarWriter, path.Clean(files[i].Src), files[i].Dest); err != nil {
-			panic(err)
+			return err
 		}
 	}
 	fmt.Println("Done adding files to tar")
@@ -250,9 +250,9 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 // CopyTar copies the files defined in each filePair in files to the pod provided.
 // To be called by controller when condition met
 func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
+	p.Logger.Info(fmt.Sprintf("CopyTar Called with files %#v on pod %s", files, pod.ObjectMeta.Name))
 	//Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
-	// _, pipeWriter := io.Pipe()
 	// TODO: Wait for this to complete by signalling on some channel.
 	// I think it's segfaulting as its trying to use the reader before the tarballing is finished
 	//avoid deadlock by using goroutine
@@ -281,9 +281,12 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	}
 
 	_, _, err := p.AttachCmd(opts)
+	if err != nil {
+		p.Logger.Error("Error running AttachCmd for CopyTar", "err", err)
+	}
 
-	fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
-	fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
+	p.Logger.Info(fmt.Sprintf("Contents of stdOut: %v\n", stdOut.Str))
+	p.Logger.Info(fmt.Sprintf("Contents of stdErr: %v\n", stdErr.Str))
 	return err
 
 }
