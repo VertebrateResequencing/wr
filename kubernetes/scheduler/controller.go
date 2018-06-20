@@ -140,16 +140,19 @@ func NewController(
 			},
 			Handler: cache.ResourceEventHandlerFuncs{
 				AddFunc: controller.podHandler,
-				UpdateFunc: func(old, new interface{}) {
-					newPod := new.(*corev1.Pod)
-					oldPod := old.(*corev1.Pod)
-					if newPod.ResourceVersion == oldPod.ResourceVersion {
-						// Periodic resync will send update events for all known pods
-						// if they're different they will have different RVs
-						return
-					}
-					controller.podHandler(new)
+				UpdateFunc: func(oldObj, newObj interface{}) {
+					controller.podHandler(newObj)
 				},
+				// UpdateFunc: func(old, new interface{}) {
+				// 	newPod := new.(*corev1.Pod)
+				// 	oldPod := old.(*corev1.Pod)
+				// 	if newPod.ResourceVersion == oldPod.ResourceVersion {
+				// 		// Periodic resync will send update events for all known pods
+				// 		// if they're different they will have different RVs
+				// 		return
+				// 	}
+				// 	controller.podHandler(new)
+				// },
 				DeleteFunc: controller.podHandler, // remove node from nodeResources
 			},
 		})
@@ -208,8 +211,6 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 
 	// Wait for caches to sync before starting workers
 	c.logger.Info("Waiting for caches to sync")
-	c.logger.Info(fmt.Sprintf("Contents of c.podSynced: %+v", c.podSynced))
-	c.logger.Info(fmt.Sprintf("Contents of c.nodeSynced: ", c.nodeSynced))
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
 		c.logger.Crit("failed to wait for caches to sync")
 		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
@@ -348,7 +349,6 @@ func (c *Controller) processItem(key string) error {
 // CopyTar()
 func (c *Controller) podHandler(obj interface{}) {
 	pod, ok := obj.(*corev1.Pod)
-	c.logger.Info(fmt.Sprintf("podHandler recieved pod %#v", pod))
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("Couldn't cast object to pod for object %#v", obj))
 		return
