@@ -252,7 +252,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 	// pods and nodes to be viewed.
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "wr-cluster-role-binding",
+			GenerateName: "wr-cluster-role-binding-",
 		},
 		Subjects: []rbacapi.Subject{
 			{
@@ -264,7 +264,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 		RoleRef: rbacapi.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     "system:node",
+			Name:     "cluster-admin",
 		},
 	})
 	if err != nil {
@@ -578,7 +578,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 			},
 			InitContainers: []apiv1.Container{
 				{
-					Name:      "init-container",
+					Name:      "runner-init-container",
 					Image:     "ubuntu:17.10",
 					Command:   []string{"/bin/tar", "-xf", "-"},
 					Stdin:     true,
