@@ -543,7 +543,7 @@ func startJQ(postCreation []byte) {
 			ConfigMap:          configMapName,
 			ConfigFiles:        cloudConfigFiles,
 			Shell:              config.RunnerExecShell,
-			TempMountPath:      filepath.Dir(exe),
+			TempMountPath:      filepath.Dir(exe) + "/",
 			LocalBinaryPath:    exe,
 			Namespace:          kubeNamespace,
 			ManagerDir:         config.ManagerDir,
