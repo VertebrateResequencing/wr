@@ -361,7 +361,10 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	configMountPath := "/scripts"
 
 	// Split the cmd into []string
-	binaryArgs := strings.Fields(cmd)
+	//binaryArgs := strings.Fields(cmd)
+	// please work, oh hack.
+	cmd = strings.Replace(cmd, "'", "", -1)
+	binaryArgs := []string{cmd}
 
 	// Create requirements struct
 	requirements := &client.ResourceRequest{
@@ -374,10 +377,13 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		defaultScriptName = s.config.ConfigMap
 	}
 
+	//DEBUG:
+	//binaryArgs = []string{"tail", "-f", "/dev/null"}
+
 	s.Logger.Info(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
 	pod, err := s.libclient.Spawn(s.config.Image,
 		s.config.TempMountPath,
-		configMountPath+defaultScriptName,
+		configMountPath+"/"+defaultScriptName+".sh",
 		binaryArgs,
 		defaultScriptName,
 		configMountPath,
@@ -409,7 +415,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	// e.g CrashBackLoopoff suggesting the post create
 	// script is throwing an error, return it here.
 	// Don't delete the pod if some error is thrown.
-	s.Logger.Info("Waiting on status of pod %s")
+	s.Logger.Info(fmt.Sprintf("Waiting on status of pod %s", pod.ObjectMeta.Name))
 	err = <-errChan
 	if err != nil {
 		s.Logger.Error(fmt.Sprintf("error spawning runner, pod name: %s", pod.ObjectMeta.Name), "err", err)
