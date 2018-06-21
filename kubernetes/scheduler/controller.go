@@ -153,7 +153,14 @@ func NewController(
 				// 	}
 				// 	controller.podHandler(new)
 				// },
-				DeleteFunc: controller.podHandler, // remove node from nodeResources
+				DeleteFunc: func(obj interface{}) {
+					pod, ok := obj.(*corev1.Pod)
+					if !ok {
+						utilruntime.HandleError(fmt.Errorf("Couldn't cast object to pod for object %#v", obj))
+						return
+					}
+					controller.logger.Info("Pod %s deleted", "pod", pod.ObjectMeta.Name)
+				},
 			},
 		})
 
