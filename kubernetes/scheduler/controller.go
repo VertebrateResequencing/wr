@@ -406,7 +406,8 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		default:
 		}
-	} else if pod.Status.Phase == corev1.PodPhase("Succeeded") {
+	}
+	if pod.Status.Phase == corev1.PodPhase("Succeeded") {
 		c.logger.Info(fmt.Sprintf("Pod %s exited succesfully, notifying", pod.ObjectMeta.Name))
 		// Get the pod's errChan, return nil signifying that the pod
 		// (runner) exited succesfully.
