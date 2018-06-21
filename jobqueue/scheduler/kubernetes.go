@@ -238,7 +238,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	// Start the scheduling controller
 	s.Logger.Info("Starting scheduling controller")
 	go func() {
-		if err = controller.Run(1, stopCh); err != nil {
+		if err = controller.Run(2, stopCh); err != nil {
 			s.Logger.Error("Error running controller", err.Error())
 		}
 	}()
@@ -285,7 +285,10 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	// What about multiple errors?
 	s.Logger.Info("Waiting on reqCheck to return")
 	err := <-r.CbChan
-	s.Logger.Info(fmt.Sprintf("Recieved error: %s, returning", err))
+	if err != nil {
+		//s.msgCB(fmt.Sprintf("Requirements check for request %s recieved error: %s", req.Stringify(), err))
+		s.Logger.Info(fmt.Sprintf("Requirements check recieved error: %s", err))
+	}
 
 	return err
 }
@@ -390,9 +393,13 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		requirements)
 
 	if err != nil {
-		s.Logger.Error("error creating runner", "err", err)
+		s.Logger.Error("error spawning runner pod", "err", err)
+		//s.msgCB(fmt.Sprintf("Kubernetes: Was unable to spawn a pod for a runner with requirements %s: %s", req.Stringify(), err))
+		reservedCh <- false
 		return err
 	}
+
+	reservedCh <- true
 	s.Logger.Info(fmt.Sprintf("Spawn request succeded, pod %s", pod.ObjectMeta.Name))
 
 	// We need to know when the pod we've created (the runner) terminates
