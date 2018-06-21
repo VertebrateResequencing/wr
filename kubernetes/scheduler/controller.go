@@ -225,15 +225,11 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	}
 	c.logger.Info("Caches synced")
 
-	// start request handler(s)
-	c.logger.Info("Calling handleReqCheck")
-	c.handleReqCheck(1)
-	c.logger.Info("Calling handlePodAlive")
-	c.handlePodAlive(1)
-
 	c.logger.Info("In Run(), starting workers")
 	// start workers
 	for i := 0; i < threadiness; i++ {
+		go wait.Until(c.runReqCheck, time.Second, stopCh)
+		go wait.Until(c.runPodAlive, time.Second, stopCh)
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
@@ -465,10 +461,10 @@ func (c *Controller) sendErrChan(err string) {
 	c.opts.CbChan <- err
 }
 
-func (c *Controller) handleReqCheck(threadiness int) {
-	c.logger.Info("Starting reqCheckHandlers")
-	for i := 0; i < threadiness; i++ {
-		go c.reqCheckHandler()
+func (c *Controller) runReqCheck() {
+	c.logger.Info("runReqCheck() called.")
+	for c.reqCheckHandler() {
+		c.logger.Info("Inside loop whilst reqCheckHandler is true")
 	}
 }
 
@@ -476,45 +472,45 @@ func (c *Controller) handleReqCheck(threadiness int) {
 // Assume that the user can schedule an entire node.
 // Not using PV's at all here.
 // ToDO: Multiple PV/Not PV types.
-func (c *Controller) reqCheckHandler() {
-	for {
-		req := <-c.opts.ReqChan
-		c.logger.Info(fmt.Sprintf("reqCheckHandler recieved request: %#v", req))
-		jsonObj, _ := json.Marshal(c.nodeResources)
-		c.logger.Info(fmt.Sprintf("Current nodeResources %s", jsonObj))
+func (c *Controller) reqCheckHandler() bool {
+	c.logger.Info("reqCheckHandler() called.")
+	req := <-c.opts.ReqChan
+	// c.logger.Info(fmt.Sprintf("reqCheckHandler recieved request: %#v", req))
+	// jsonObj, _ := json.Marshal(c.nodeResources)
+	// c.logger.Info(fmt.Sprintf("Current nodeResources %s", jsonObj))
 
-		for _, n := range c.nodeResources {
-			c.logger.Info(fmt.Sprintf("CPU comparrison: %v", n.Cpu().Cmp(req.Cores)))
-			c.logger.Info(fmt.Sprintf("Memory comparrison: %v", n.Memory().Cmp(req.RAM)))
-			c.logger.Info(fmt.Sprintf("Ephemeral Disk comparrison: %v", n.StorageEphemeral().Cmp(req.Disk)))
-			// Node should always have more resource than the request. (eval cmp = 1 == '>')
-			if n.Cpu().Cmp(req.Cores) != -1 &&
-				//req.Disk.Cmp(n[corev1.ResourceName("ephemeral-storage")]) != 1 &&
-				n.Memory().Cmp(req.RAM) != -1 {
-				c.logger.Info(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
-				req.CbChan <- nil // It is possible to eventually schedule
-			}
+	for _, n := range c.nodeResources {
+		// c.logger.Info(fmt.Sprintf("CPU comparrison: %v", n.Cpu().Cmp(req.Cores)))
+		// c.logger.Info(fmt.Sprintf("Memory comparrison: %v", n.Memory().Cmp(req.RAM)))
+		// c.logger.Info(fmt.Sprintf("Ephemeral Disk comparrison: %v", n.StorageEphemeral().Cmp(req.Disk)))
+		// Node should always have more resource than the request. (eval cmp = 1 == '>')
+		if n.Cpu().Cmp(req.Cores) != -1 &&
+			//req.Disk.Cmp(n[corev1.ResourceName("ephemeral-storage")]) != 1 &&
+			n.Memory().Cmp(req.RAM) != -1 {
+			c.logger.Info(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+			req.CbChan <- nil // It is possible to eventually schedule
 		}
-		c.logger.Info(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
-		req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
 	}
+	c.logger.Info(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
+	req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
+
+	return true
 }
 
-func (c *Controller) handlePodAlive(threadiness int) {
-	c.logger.Info("Starting podAliveHandlers")
-	for i := 0; i < threadiness; i++ {
-		go c.podAliveHandler()
+func (c *Controller) runPodAlive() {
+	for c.podAliveHandler() {
 	}
 }
 
 // podAliveHandler recieves a request and adds the channel
 // in that request to the podAliveMap with the key being
 // the UID of the pod.
-func (c *Controller) podAliveHandler() {
-	for {
-		req := <-c.opts.PodAliveChan
-		// Store the error channel in the map.
-		c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req.ErrChan)
-		// log req recieved and processed.
-	}
+func (c *Controller) podAliveHandler() bool {
+	req := <-c.opts.PodAliveChan
+	c.logger.Info(fmt.Sprintf("Recieved PodAlive Request for pod %s", req.Pod.ObjectMeta.Name))
+	// Store the error channel in the map.
+	c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req.ErrChan)
+	c.logger.Info(fmt.Sprintf("Stored ErrChan for pod %s in map.", req.Pod.ObjectMeta.Name))
+
+	return true
 }
