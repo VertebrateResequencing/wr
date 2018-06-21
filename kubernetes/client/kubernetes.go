@@ -529,6 +529,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 			},
 		},
 		Spec: apiv1.PodSpec{
+			RestartPolicy: apiv1.RestartPolicyOnFailure,
 			Volumes: []apiv1.Volume{
 
 				{
