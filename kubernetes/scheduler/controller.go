@@ -40,7 +40,6 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/kubernetes/pkg/controller"
 
 	"k8s.io/client-go/util/workqueue"
 )
@@ -139,20 +138,30 @@ func NewController(
 				return pod.ObjectMeta.Labels["wr"] == "runner"
 			},
 			Handler: cache.ResourceEventHandlerFuncs{
-				AddFunc: controller.podHandler,
-				UpdateFunc: func(oldObj, newObj interface{}) {
-					controller.podHandler(newObj)
+				AddFunc: func(obj interface{}) {
+					key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+					if err != nil {
+						utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", obj, err))
+						return
+					}
+					controller.workqueue.Add(key)
 				},
-				// UpdateFunc: func(old, new interface{}) {
-				// 	newPod := new.(*corev1.Pod)
-				// 	oldPod := old.(*corev1.Pod)
-				// 	if newPod.ResourceVersion == oldPod.ResourceVersion {
-				// 		// Periodic resync will send update events for all known pods
-				// 		// if they're different they will have different RVs
-				// 		return
-				// 	}
-				// 	controller.podHandler(new)
-				// },
+				UpdateFunc: func(old, new interface{}) {
+					newPod := new.(*corev1.Pod)
+					oldPod := old.(*corev1.Pod)
+					if newPod.ResourceVersion == oldPod.ResourceVersion {
+						// Periodic resync will send update events for all known pods
+						// if they're different they will have different RVs
+						return
+					}
+					key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(new)
+					if err != nil {
+						utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", new, err))
+						return
+					}
+					controller.workqueue.Add(key)
+
+				},
 				DeleteFunc: func(obj interface{}) {
 					pod, ok := obj.(*corev1.Pod)
 					if !ok {
@@ -165,14 +174,29 @@ func NewController(
 		})
 
 	nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.nodeHandler,
-		UpdateFunc: func(old, new interface{}) {
-			newNode := new.(*corev1.Node)
-			oldNode := old.(*corev1.Node)
-			if newNode.ResourceVersion == oldNode.ResourceVersion {
+		AddFunc: func(obj interface{}) {
+			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+			if err != nil {
+				utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", obj, err))
 				return
 			}
-			controller.nodeHandler(new)
+			controller.workqueue.Add(key)
+		},
+		UpdateFunc: func(old, new interface{}) {
+			newPod := new.(*corev1.Node)
+			oldPod := old.(*corev1.Node)
+			if newPod.ResourceVersion == oldPod.ResourceVersion {
+				// Periodic resync will send update events for all known nodes
+				// if they're different they will have different RVs
+				return
+			}
+			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(new)
+			if err != nil {
+				utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", new, err))
+				return
+			}
+			controller.workqueue.Add(key)
+
 		},
 		DeleteFunc: func(obj interface{}) {
 			node, ok := obj.(*corev1.Node)
@@ -343,50 +367,6 @@ func (c *Controller) processItem(key string) error {
 	err = c.processPod(pod)
 
 	return err
-}
-
-// podHandler adds pods to the queue
-// may be expanded later, generally there are separate
-// add, update and delete functions. Currently this
-// isn't needed as we are just watching for when to call
-// CopyTar()
-func (c *Controller) podHandler(obj interface{}) {
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		utilruntime.HandleError(fmt.Errorf("Couldn't cast object to pod for object %#v", obj))
-		return
-	}
-	key, err := controller.KeyFunc(pod)
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", pod, err))
-		return
-	}
-	c.workqueue.Add(key)
-}
-
-// nodeHandler adds nodes to the queue
-// may be expanded later, generally there are separate
-// add, update and delete functions. Currently this
-// isn't needed as we just want a running total of allocatable
-// resources
-func (c *Controller) nodeHandler(obj interface{}) {
-	_, ok := obj.(*corev1.Node)
-	if !ok {
-		utilruntime.HandleError(fmt.Errorf("Couldn't cast object to node for object %#v", obj))
-		return
-	}
-	// This doesn't work. I don't know why.
-	// 'object has no meta: object does not
-	// implement the Object interfaces
-	// I'm not going to add nodes to the work queue
-	key, err := controller.KeyFunc(obj)
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", obj, err))
-		return
-	}
-	c.workqueue.Add(key)
-
-	// Immediately call
 }
 
 // Assume there is only 1 initcontainer
