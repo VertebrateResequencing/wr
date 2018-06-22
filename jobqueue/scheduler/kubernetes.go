@@ -317,9 +317,15 @@ func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *clo
 	for {
 		select {
 		case msg := <-callBackChan:
-			go s.msgCB(msg)
+			s.Logger.Info("Callback notification", "msg", msg)
+			if s.msgCB != nil {
+				go s.msgCB(msg)
+			}
 		case badServer := <-badCallBackChan:
-			go s.badServerCB(badServer)
+			s.Logger.Info("Bad server callback notification", "msg", badServer)
+			if s.badServerCB != nil {
+				go s.badServerCB(badServer)
+			}
 		}
 	}
 
