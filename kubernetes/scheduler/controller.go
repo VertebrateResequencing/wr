@@ -19,7 +19,6 @@
 package scheduler
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -207,7 +206,6 @@ func NewController(
 			}
 			// Delete the node from the nodeResources map.
 			// Do it here, so it's not an item added to the queue.
-			// So deletions are reacted to more quickly
 			delete(controller.nodeResources, nodeName(node.ObjectMeta.Name))
 		},
 	})
@@ -452,10 +450,13 @@ func (c *Controller) sendErrChan(err string) {
 }
 
 func (c *Controller) runReqCheck() {
-	c.logger.Info("runReqCheck() called.")
-	for c.reqCheckHandler() {
-		c.logger.Info("Inside loop whilst reqCheckHandler is true")
-	}
+	c.logger.Info("runReqCheck() called, starting loop in goroutine")
+	go func() {
+		for c.reqCheckHandler() {
+			c.logger.Info("Inside loop whilst reqCheckHandler is true")
+		}
+	}()
+	c.logger.Info("runReqCheck() exiting")
 }
 
 // For now ignore that you can set quotas on a k8s cluster.
@@ -465,20 +466,19 @@ func (c *Controller) runReqCheck() {
 func (c *Controller) reqCheckHandler() bool {
 	c.logger.Info("reqCheckHandler() called.")
 	req := <-c.opts.ReqChan
-	// c.logger.Info(fmt.Sprintf("reqCheckHandler recieved request: %#v", req))
-	// jsonObj, _ := json.Marshal(c.nodeResources)
-	// c.logger.Info(fmt.Sprintf("Current nodeResources %s", jsonObj))
+	c.logger.Info("reqCheckHandler() recieved req.")
 
 	for _, n := range c.nodeResources {
-		// c.logger.Info(fmt.Sprintf("CPU comparrison: %v", n.Cpu().Cmp(req.Cores)))
-		// c.logger.Info(fmt.Sprintf("Memory comparrison: %v", n.Memory().Cmp(req.RAM)))
-		// c.logger.Info(fmt.Sprintf("Ephemeral Disk comparrison: %v", n.StorageEphemeral().Cmp(req.Disk)))
-		// Node should always have more resource than the request. (eval cmp = 1 == '>')
+		// A Node should always have equal or more resource
+		// than the request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 = '<'),
+		// Return when the first node that meets the requirements is found.
 		if n.Cpu().Cmp(req.Cores) != -1 &&
 			//req.Disk.Cmp(n[corev1.ResourceName("ephemeral-storage")]) != 1 &&
 			n.Memory().Cmp(req.RAM) != -1 {
-			c.logger.Info(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+			// c.logger.Info(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+			c.logger.Info("Returning schedulable from reqCheckHandler")
 			req.CbChan <- nil // It is possible to eventually schedule
+			return true
 		}
 	}
 	c.logger.Info(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
@@ -488,19 +488,25 @@ func (c *Controller) reqCheckHandler() bool {
 }
 
 func (c *Controller) runPodAlive() {
-	for c.podAliveHandler() {
-	}
+	c.logger.Info("runPodAlive() called, starting loop in goroutine")
+	go func() {
+		for c.podAliveHandler() {
+			c.logger.Info("podAliveHandler() returned true")
+		}
+	}()
+	c.logger.Info("runPodAlive() exiting")
 }
 
 // podAliveHandler recieves a request and adds the channel
 // in that request to the podAliveMap with the key being
 // the UID of the pod.
 func (c *Controller) podAliveHandler() bool {
+	c.logger.Info("podAliveHandler() called")
 	req := <-c.opts.PodAliveChan
 	c.logger.Info(fmt.Sprintf("Recieved PodAlive Request for pod %s", req.Pod.ObjectMeta.Name))
 	// Store the error channel in the map.
-	c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req.ErrChan)
-	c.logger.Info(fmt.Sprintf("Stored ErrChan for pod %s in map.", req.Pod.ObjectMeta.Name))
+	c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req)
+	c.logger.Info(fmt.Sprintf("Stored req for pod %s in map, returning true", req.Pod.ObjectMeta.Name))
 
 	return true
 }
