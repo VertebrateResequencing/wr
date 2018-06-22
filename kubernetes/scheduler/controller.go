@@ -98,6 +98,7 @@ type Request struct {
 type PodAlive struct {
 	Pod     *corev1.Pod
 	ErrChan chan error
+	Done    bool
 }
 
 type nodeName string
@@ -389,12 +390,20 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 	}
 	if pod.Status.Phase == corev1.PodPhase("Succeeded") {
 		c.logger.Info(fmt.Sprintf("Pod %s exited succesfully, notifying", pod.ObjectMeta.Name))
+		//jsonObj, _ := json.Marshal(pod)
+		//c.logger.Info(fmt.Sprintf("Contents of pod %s", jsonObj))
 		// Get the pod's errChan, return nil signifying that the pod
 		// (runner) exited succesfully.
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
 		if ok {
-			ec := result.(chan error)
-			ec <- nil
+			go func() {
+				req := result.(*PodAlive)
+				if !req.Done {
+					req.Done = true
+					c.logger.Info(fmt.Sprintf("Sending nil on ec for %s", pod.ObjectMeta.Name))
+					req.ErrChan <- nil
+				}
+			}()
 		} else {
 			c.logger.Info(fmt.Sprintf("Could not find return error channel for pod %s", pod.ObjectMeta.Name))
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
