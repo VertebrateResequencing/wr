@@ -420,6 +420,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		req := &kubescheduler.PodAlive{
 			Pod:     pod,
 			ErrChan: errChan,
+			Done:    false,
 		}
 		s.podAliveChan <- req
 	}()
