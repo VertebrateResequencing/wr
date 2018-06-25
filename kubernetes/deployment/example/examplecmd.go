@@ -11,7 +11,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
@@ -51,14 +50,15 @@ func StartController(binaryPath string, scriptPath string, stopCh chan struct{})
 	log.Println("Authenticated and Initialised!")
 	log.Println("====================")
 
-	scriptName := filepath.Base(scriptPath)
-	configMapName := strings.TrimSuffix(scriptName, filepath.Ext(scriptName))
-
 	// Create a ConfigMap
-	err = c.Client.CreateInitScriptConfigMapFromFile(configMapName, scriptPath)
+	cmap, err := c.Client.CreateInitScriptConfigMapFromFile(scriptPath)
 	if err != nil {
 		panic(err)
 	}
+
+	scriptName := client.DefaultScriptName
+	configMapName := cmap.ObjectMeta.Name
+
 	// Set up the parameters for the deployment
 	// AttachCmdOpts gets populated by controller when pod is created.
 	dir, err := os.Getwd()
