@@ -60,10 +60,9 @@ type k8s struct {
 	logger          log15.Logger
 }
 
-// ConfigKubernetes holds configuration options required by
-// the kubernetes scheduler.
-
-var defaultScriptName = "wr-default"
+var defaultScriptName = client.DefaultScriptName
+var configMapName string
+var scriptName string
 
 const kubeSchedulerLog = "kubeSchedulerLog"
 
@@ -177,8 +176,13 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	// If the byte stream does not stringify things may go horribly wrong.
 	if len(s.config.ConfigMap) == 0 {
 		if string(s.config.PostCreationScript) != "" {
-			script := string(s.config.PostCreationScript)
-			s.libclient.CreateInitScriptConfigMap(defaultScriptName, script)
+			cmap, err := s.libclient.CreateInitScriptConfigMap(string(s.config.PostCreationScript))
+			if err != nil {
+				s.Logger.Crit("failed to create configmap from PostCreationScript")
+				return err
+			}
+			configMapName = cmap.ObjectMeta.Name
+			scriptName = defaultScriptName
 		} else {
 			s.Logger.Crit("a config map or post creation script must be provided.")
 		}
@@ -367,11 +371,26 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	// The first 'argument' to cmd will be the absolute path to the manager's executable.
 	// Work out the local binary's name from localBinaryPath.
 	//binaryName := filepath.Base(s.config.localBinaryPath)
+
 	configMountPath := "/scripts"
 
-	// Split the cmd into []string
-	//binaryArgs := strings.Fields(cmd)
-	// please work, oh hack.
+	// If there is an overwridden cloud_script, create a configmap and pass that instead.
+	// If there was a ConfigMap passed
+	if val, defined := req.Other["cloud_script"]; defined {
+		cmap, err := s.libclient.CreateInitScriptConfigMap(val)
+		if err != nil {
+			return err
+		}
+		configMapName = cmap.ObjectMeta.Name
+		scriptName = defaultScriptName
+	} else if len(s.config.ConfigMap) != 0 {
+		configMapName = s.config.ConfigMap
+		scriptName = defaultScriptName
+	}
+
+	// Remove any single quotes
+	// this causes issues passing information
+	// to the runner
 	cmd = strings.Replace(cmd, "'", "", -1)
 	binaryArgs := []string{cmd}
 
@@ -382,19 +401,15 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		RAM:   req.RAM,
 	}
 
-	if len(s.config.ConfigMap) != 0 {
-		defaultScriptName = s.config.ConfigMap
-	}
-
 	//DEBUG:
 	//binaryArgs = []string{"tail", "-f", "/dev/null"}
 
 	s.Logger.Info(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
 	pod, err := s.libclient.Spawn(s.config.Image,
 		s.config.TempMountPath,
-		configMountPath+"/"+defaultScriptName+".sh",
+		configMountPath+"/"+scriptName,
 		binaryArgs,
-		defaultScriptName,
+		configMapName,
 		configMountPath,
 		requirements)
 
