@@ -327,9 +327,13 @@ hub is supported`,
 
 			mCmd := fmt.Sprintf("%s manager start -f --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --cloud_dns '%s' --timeout %d%s --local_username %s",
 				remoteExe, config.Deployment, kubeNamespace, serverKeepAlive, m, configMapName, containerImage, podConfigFiles, podDNS, managerTimeoutSeconds, debugStr, realUsername())
-			binaryArgs := strings.Fields(mCmd)
+
+			mCmd = strings.Replace(mCmd, "'", "", -1)
+			binaryArgs := []string{mCmd}
+
 			files := rewriteConfigFiles(podConfigFiles)
 			files = append(files, client.FilePair{exe, podBinDir})
+			info(fmt.Sprintf("podConfigFiles: %#v", podConfigFiles))
 
 			// Specify deployment options
 			c.Opts = &kubedeployment.DeployOpts{
