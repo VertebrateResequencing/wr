@@ -220,7 +220,7 @@ hub is supported`,
 
 			jq = connect(120 * time.Second)
 			if jq == nil {
-				die("could not talk to wr manager after 40s")
+				die("could not talk to wr manager after 120s")
 			}
 
 			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
@@ -276,12 +276,13 @@ hub is supported`,
 				}
 
 				// Create the configMap
-				scriptName = filepath.Base(podPostCreationScript)
-				configMapName = strings.TrimSuffix(scriptName, filepath.Ext(scriptName))
-				err = c.Client.CreateInitScriptConfigMap(configMapName, string(postCreation))
+
+				cmap, err := c.Client.CreateInitScriptConfigMap(string(postCreation))
 				if err != nil {
 					die("Failed to create config map: %s", err)
 				}
+				scriptName = client.DefaultScriptName
+				configMapName = cmap.ObjectMeta.Name
 
 				kubeNamespace = c.Client.NewNamespaceName
 

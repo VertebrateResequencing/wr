@@ -27,6 +27,8 @@ resources when you're done.
 import (
 
 	//"errors"
+	"crypto/md5"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -59,7 +61,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
-type kubernetesi interface{}
+const DefaultScriptName = "wr-boot"
 
 // Kubernetesp is the implementation for the kubernetes
 // cluster provider. It provides access to all methods
@@ -73,6 +75,7 @@ type Kubernetesp struct {
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
 	configMapClient   typedv1.ConfigMapInterface
+	configMapHashes   map[string][16]byte
 	PortForwarder     portForwarder
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
@@ -228,6 +231,10 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 
 	// Create configMap client
 	p.configMapClient = clientset.CoreV1().ConfigMaps(p.NewNamespaceName)
+
+	// Store md5 hashes of the data in each configMap.
+	// used when calling newConfigMap().
+	p.configMapHashes = map[string][16]byte{}
 
 	// ToDO: This assumes one portforward per cluter deployment
 	// This should probably go in pod and the channels be created in an options struct
@@ -714,23 +721,48 @@ func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
 // At the moment is not appropriate as it's not likely most users are
 // running 1.10
 func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
+	//Check if we have already created a config map with a script with the same hash.
+
+	// Calculate hash of opts.Data, json stringify it first.
+	jsonData, err := json.Marshal(opts.Data)
+	if err != nil {
+		return nil, err
+	}
+	md5 := md5.Sum([]byte(jsonData))
+
+	var match string
+	for k, v := range p.configMapHashes {
+		if v == md5 {
+			match = k
+		}
+
+	}
+	if len(match) != 0 {
+		configMap, err := p.configMapClient.Get(match, metav1.GetOptions{})
+		return configMap, err
+	}
+
+	// No coonfigmap with the data we want exists, so create one.
 	configMap, err := p.configMapClient.Create(&apiv1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: opts.Name,
+			GenerateName: "wr-script-",
 		},
 		Data: opts.Data,
 	})
+
+	// Store the name and md5 in configMapHashes
+	p.configMapHashes[configMap.ObjectMeta.Name] = md5
 
 	return configMap, err
 }
 
 // CreateInitScriptConfigMapFromFile is the same as CreateInitScriptConfigMap
 // but takes a path to a file as input.
-func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(name string, scriptPath string) error {
+func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(scriptPath string) (*apiv1.ConfigMap, error) {
 	// read in the script given
 	buf, err := ioutil.ReadFile(scriptPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// stringify
 	script := string(buf)
@@ -739,30 +771,28 @@ func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(name string, scriptPath 
 	top := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
 	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
 
-	_, err = p.NewConfigMap(&ConfigMapOpts{
-		Name: name,
-		Data: map[string]string{name + ".sh": top + script + bottom},
+	cmap, err := p.NewConfigMap(&ConfigMapOpts{
+		Data: map[string]string{DefaultScriptName: top + script + bottom},
 	})
 
-	return err
+	return cmap, err
 
 }
 
 // CreateInitScriptConfigMap performs very basic string fudging.
 // This allows a wr pod to execute some arbitrary script before starting the runner / manager.
 // So far it appears to work
-func (p *Kubernetesp) CreateInitScriptConfigMap(name string, script string) error {
+func (p *Kubernetesp) CreateInitScriptConfigMap(script string) (*apiv1.ConfigMap, error) {
 
 	// Insert script into template
 	top := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
 	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
 
-	_, err := p.NewConfigMap(&ConfigMapOpts{
-		Name: name,
-		Data: map[string]string{name + ".sh": top + script + bottom},
+	cmap, err := p.NewConfigMap(&ConfigMapOpts{
+		Data: map[string]string{DefaultScriptName: top + script + bottom},
 	})
 
-	return err
+	return cmap, err
 
 }
 
