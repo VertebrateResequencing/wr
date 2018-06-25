@@ -450,12 +450,10 @@ func (c *Controller) sendErrChan(err string) {
 }
 
 func (c *Controller) runReqCheck() {
-	c.logger.Info("runReqCheck() called, starting loop in goroutine")
-	go func() {
-		for c.reqCheckHandler() {
-			c.logger.Info("Inside loop whilst reqCheckHandler is true")
-		}
-	}()
+	c.logger.Info("runReqCheck() called")
+	for c.reqCheckHandler() {
+		c.logger.Info("Inside loop whilst reqCheckHandler is true")
+	}
 	c.logger.Info("runReqCheck() exiting")
 }
 
@@ -488,12 +486,10 @@ func (c *Controller) reqCheckHandler() bool {
 }
 
 func (c *Controller) runPodAlive() {
-	c.logger.Info("runPodAlive() called, starting loop in goroutine")
-	go func() {
-		for c.podAliveHandler() {
-			c.logger.Info("podAliveHandler() returned true")
-		}
-	}()
+	c.logger.Info("runPodAlive() called")
+	for c.podAliveHandler() {
+		c.logger.Info("podAliveHandler() returned true")
+	}
 	c.logger.Info("runPodAlive() exiting")
 }
 
