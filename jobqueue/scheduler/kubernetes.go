@@ -465,7 +465,6 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 // to go into TempMountPath as that's the volume that gets
 // preserved across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
-	s.Logger.Info("rewriteConfigFiles Called")
 	// Get current user's home directory
 	// os.user.Current() was failing in a pod.
 	// https://github.com/mitchellh/go-homedir ?
@@ -482,6 +481,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 		localPath := internal.TildaToHome(path)
 		_, err := os.Stat(localPath)
 		if err != nil {
+			s.Logger.Info(fmt.Sprintf("Dropping path %s, with error %s", localPath, err))
 			continue
 		} else {
 			paths = append(paths, path)
@@ -516,7 +516,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 		if strings.HasPrefix(path, "~/") {
 			// rewrite ~/ to hDir
 			st := strings.TrimPrefix(path, "~/")
-			st = hDir + "/" + st
+			st = hDir + st
 
 			filePairs = append(filePairs, client.FilePair{st, dests[i]})
 		}
