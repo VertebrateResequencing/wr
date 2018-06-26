@@ -31,6 +31,7 @@ import (
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -141,12 +142,22 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	}
 	// Check if an existing deployment with the label 'app=wr-manager' exists
 	// if it does, skip the Deploy()
-	// Before starting, create the initial deployment
-	err := c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
+	_, err := c.Clientset.Apps().Deployments(c.Client.NewNamespaceName).Get("wr-manager", metav1.GetOptions{})
 	if err != nil {
-		c.Opts.Logger.Error(fmt.Sprintf("Failed to create deployment: %s", err))
-		panic(err)
+		if errors.IsNotFound(err) {
+			// Create the initial deployment
+			err = c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Failed to create deployment: %s", err))
+				panic(err)
+			}
+		} else {
+			c.Opts.Logger.Crit("wr-manager deployment found but not healthy.")
+			panic(err)
+		}
 	}
+	c.Opts.Logger.Info("Found existing healthy wr-manager deployment, reconnecting")
+
 	// runWorker loops until 'bad thing'. '.Until' will
 	// restart the worker after a second
 	wait.Until(c.runWorker, time.Second, stopCh)
