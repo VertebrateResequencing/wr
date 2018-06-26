@@ -261,22 +261,25 @@ hub is supported`,
 			// Look for a set of resources in the manager directory
 			// If found, load them else use a new empty set.
 			resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
-			var resources *cloud.Resources
+			resources := &cloud.Resources{}
 
 			info("Checking resources")
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
-				resources = &cloud.Resources{ResourceName: "Kubernetes", Details: make(map[string]string)}
+				resources = &cloud.Resources{
+					ResourceName: "Kubernetes",
+					Details:      make(map[string]string),
+					PrivateKey:   "",
+					Servers:      make(map[string]*cloud.Server)}
 
 				// Populate the rest of Kubernetesp
 				info("Initialising clients.")
 				err = c.Client.Initialize(c.Clientset)
 				if err != nil {
-					die("Failed to authenticate to provided namespace: %s", err)
+					die("Failed to initialise clients: %s", err)
 				}
 
 				// Create the configMap
-
 				cmap, err := c.Client.CreateInitScriptConfigMap(string(postCreation))
 				if err != nil {
 					die("Failed to create config map: %s", err)
@@ -287,17 +290,21 @@ hub is supported`,
 				kubeNamespace = c.Client.NewNamespaceName
 
 				// Store the namespace and configMapName for fun and profit.
-				resources.Details["namespace"] = c.Client.NewNamespaceName
+				resources.Details["namespace"] = kubeNamespace
 				resources.Details["configMapName"] = configMapName
 				resources.Details["scriptName"] = scriptName
 
 				// Save resources.
 				file, err := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 				if err != nil {
+					warn("failed to open resource file %s for writing: %s", resourcePath, err)
 					panic(err)
 				}
 				encoder := gob.NewEncoder(file)
-				encoder.Encode(resources)
+				err = encoder.Encode(resources)
+				if err != nil {
+					info("Failed to encode resource file: %s", err)
+				}
 				_ = file.Close()
 
 			} else {
@@ -309,12 +316,14 @@ hub is supported`,
 				decoder := gob.NewDecoder(file)
 				err = decoder.Decode(resources)
 				if err != nil {
+					info("Error decoding resource file: %s", err)
 					panic(err)
 				}
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
 				scriptName = resources.Details["scriptName"]
 				// Populate the rest of Kubernetesp
+				info("Initialising to namespace %s", kubeNamespace)
 				err = c.Client.Initialize(c.Clientset, kubeNamespace)
 				if err != nil {
 					panic(err)
@@ -347,7 +356,6 @@ hub is supported`,
 				RequiredPorts:   []int{mp, wp},
 				Logger:          appLogger,
 			}
-			info("Files to be copied: %s", files)
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
