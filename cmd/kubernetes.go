@@ -338,6 +338,9 @@ hub is supported`,
 				remoteExe, config.Deployment, kubeNamespace, serverKeepAlive, m, configMapName, containerImage, podConfigFiles, podDNS, managerTimeoutSeconds, debugStr, realUsername())
 
 			mCmd = strings.Replace(mCmd, "'", "", -1)
+			if kubeDebug {
+				mCmd = mCmd + " --debug"
+			}
 			binaryArgs := []string{mCmd}
 
 			files := rewriteConfigFiles(podConfigFiles)
