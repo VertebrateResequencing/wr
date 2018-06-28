@@ -135,10 +135,10 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 	p.Logger = l
 
 	//Determine if in cluster.
-	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+	host, port, kubevar := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT"), os.Getenv("KUBECONFIG")
 
 	switch {
-	case len(host) == 0 || len(port) == 0:
+	case (len(host) == 0 || len(port) == 0) && len(kubevar) == 0:
 		p.Logger.Info("Authenticating using information from user's home directory")
 		var kubeconfig *string
 		//Obtain cluster authentication information from users home directory, or fall back to user input.
@@ -163,6 +163,28 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		}
 		// Set up internal clientset and clusterConfig
 		p.Logger.Info("Succesfully authenticated using information from user's home directory")
+		p.clientset = clientset
+		p.clusterConfig = clusterConfig
+		return clientset, clusterConfig, nil
+	case len(kubevar) != 0:
+		p.Logger.Info(fmt.Sprintf("Authenticating using information env var $KUBECONFIG: %s", kubevar))
+		var kubeconfig *string
+		kubeconfig = &kubevar
+
+		var err error
+		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+		if err != nil {
+			p.Logger.Error(fmt.Sprintf("Failed to build cluster configuration from %s", kubevar), "err", err)
+			panic(err)
+		}
+		//Create authenticated clientset
+		clientset, err := kubernetes.NewForConfig(clusterConfig)
+		if err != nil {
+			p.Logger.Error("Creating authenticated clientset", "err", err)
+			panic(err)
+		}
+		// Set up internal clientset and clusterConfig
+		p.Logger.Info(fmt.Sprintf("Succesfully authenticated using information from %s", kubevar))
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
 		return clientset, clusterConfig, nil
@@ -536,7 +558,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 			},
 		},
 		Spec: apiv1.PodSpec{
-			RestartPolicy: apiv1.RestartPolicyOnFailure,
+			RestartPolicy: apiv1.RestartPolicyNever,
 			Volumes: []apiv1.Volume{
 
 				{
