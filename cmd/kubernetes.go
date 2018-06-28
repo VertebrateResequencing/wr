@@ -201,12 +201,10 @@ hub is supported`,
 		}
 
 		// Authenticate and populate Kubernetesp with clientset and restconfig.
-		info("Authenticating against the provided cluster.")
-		c.Clientset, c.Restconfig, err = c.Client.Authenticate()
+		c.Clientset, c.Restconfig, err = c.Client.Authenticate(kubeLogger)
 		if err != nil {
 			die("Could not authenticate against the cluster: %s", err)
 		}
-		info("Authenticated succesfully.")
 
 		// Daemonise
 		fwPidPath := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
@@ -215,7 +213,6 @@ hub is supported`,
 		if child != nil {
 			// PostParent() (Runs in the parent process after spawning child)
 			info("Please wait while the kubernetes deployment is created...")
-
 			// check that we can now connect to the remote manager
 
 			jq = connect(120 * time.Second)
