@@ -69,12 +69,20 @@ run.
 You'll need to start this daemon with the 'start' sub-command before you can
 achieve anything useful with the other wr commands. If the background
 process that is spawned when you run this dies, your workflows will become
-stalled until you run the 'start' sub-command again.
+stalled until you run the 'start' sub-command again.`,
+}
+
+// start sub-command starts the daemon
+var managerStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start workflow management",
+	Long: `Start the workflow manager, daemonizing it in to the background
+(unless --foreground option is supplied).
 
 If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
-If using the OpenStack scheduler, note that you must be running on an OpenStack
+If using the openstack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
 cloud, so that resources created will not conflict with anyone else in your
 tenant (project) also running wr. Your server's security group must also allow
@@ -83,20 +91,13 @@ Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
 on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
 OpenStack scheduler.
+
 If you want to start multiple managers up in different OpenStack networks that
 you've created yourself, note that --local_username will need to be globally
 unique, since it is used to name the private key that will be created in
 OpenStack, and if a key with that name already exists, the manager will not be
 able to create a new one (or get the existing one), and so will not function
 fully.`,
-}
-
-// start sub-command starts the daemon
-var managerStartCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start workflow management",
-	Long: `Start the workflow manager, daemonizing it in to the background
-(unless --foreground option is supplied).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// first we need our working directory to exist
 		createWorkingDir()
