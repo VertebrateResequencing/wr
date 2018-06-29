@@ -19,7 +19,7 @@
 package cmd
 
 import (
-	"bufio"
+	// "bufio"
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
@@ -388,15 +388,37 @@ If you don't back up to S3, the teardown command tries to copy the remote
 database locally, which is only possible while the remote server is still up
 and accessible.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		kubeLogger := log15.New()
+		logLevel := log15.LvlWarn
+		if kubeDebug {
+			logLevel = log15.LvlDebug
+		}
+		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 		// before stopping the manager, make sure we can interact with the
-		// provider - that our credentials are correct
-		provider, err := cloud.New(providerName, cloudResourceName(""), filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
+		// cluster - that our credentials are correct
+		client := &client.Kubernetesp{}
+		_, _, err := client.Authenticate(kubeLogger)
 		if err != nil {
-			die("failed to connect to %s: %s", providerName, err)
+			die("Could not authenticate against the cluster: %s", err)
+		}
+
+		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
+		resources := &cloud.Resources{}
+
+		info("Opening resource file with path: %s", resourcePath)
+		file, err := os.Open(resourcePath)
+		if err != nil {
+			die("Could not open resource file with path: %s", err)
+		}
+		decoder := gob.NewDecoder(file)
+		err = decoder.Decode(resources)
+		if err != nil {
+			info("Error decoding resource file: %s", err)
+			panic(err)
 		}
 
 		// now check if the ssh forwarding is up
-		fmPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
+		fmPidFile := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
 		// try and stop the remote manager
@@ -467,70 +489,66 @@ and accessible.`,
 			}
 		}
 
+		if serverHadProblems {
+			warn("Problems were had")
+		}
+
+		// ToDo after logging looked at.
+
 		// copy over any manager logs that got created locally (ignore errors,
 		// and overwrite any existing file) *** currently missing the final
 		// shutdown message doing things this way, but ok?...
-		headNode := provider.HeadNode()
-		if headNode != nil && headNode.Alive() {
-			cloudLogFilePath := config.ManagerLogFile + "." + providerName
-			errf := headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
+		// headNode := provider.HeadNode()
+		// if headNode != nil && headNode.Alive() {
+		// 	cloudLogFilePath := config.ManagerLogFile + "." + providerName
+		// 	errf := headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
 
-			if errf != nil {
-				warn("could not download the remote log file: %s", errf)
-			} else {
-				// display any crit lines in that log file
-				if errf == nil {
-					f, errf := os.Open(cloudLogFilePath)
-					if errf == nil {
-						explained := false
-						scanner := bufio.NewScanner(f)
-						for scanner.Scan() {
-							line := scanner.Text()
-							if strings.Contains(line, "lvl=crit") {
-								if !explained {
-									warn("looks like the manager on the remote server suffered critical errors:")
-									explained = true
-								}
-								fmt.Println(line)
-							}
-						}
+		// 	if errf != nil {
+		// 		warn("could not download the remote log file: %s", errf)
+		// 	} else {
+		// 		// display any crit lines in that log file
+		// 		if errf == nil {
+		// 			f, errf := os.Open(cloudLogFilePath)
+		// 			if errf == nil {
+		// 				explained := false
+		// 				scanner := bufio.NewScanner(f)
+		// 				for scanner.Scan() {
+		// 					line := scanner.Text()
+		// 					if strings.Contains(line, "lvl=crit") {
+		// 						if !explained {
+		// 							warn("looks like the manager on the remote server suffered critical errors:")
+		// 							explained = true
+		// 						}
+		// 						fmt.Println(line)
+		// 					}
+		// 				}
 
-						if serverHadProblems {
-							info("the remote manager log has been saved to %s", cloudLogFilePath)
-						}
-					}
-				}
-			}
-		}
+		// 				if serverHadProblems {
+		// 					info("the remote manager log has been saved to %s", cloudLogFilePath)
+		// 				}
+		// 			}
+		// 		}
+		// 	}
+		// }
 
-		// teardown cloud resources we created
-		err = provider.TearDown()
+		// teardown kubernetes resources we created
+		err = client.TearDown(resources.Details["namespace"])
 		if err != nil {
-			die("failed to delete the cloud resources previously created: %s", err)
+			die("failed to delete the kubernetes resources previously created: %s", err)
 		}
-		err = os.Remove(filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key"))
+		err = os.Remove(filepath.Join(config.ManagerDir, "kubernetes_resources"))
 		if err != nil {
-			warn("failed to delete the cloud resources file: %s", err)
+			warn("failed to delete the kubernetes resources file: %s", err)
 		}
-		info("deleted all cloud resources previously created")
+		info("deleted all kubernetes resources previously created")
 
-		// kill the ssh forwarders
+		// kill the port forwarders
 		if fmRunning {
 			err = killProcess(fmPid)
 			if err == nil {
 				err = os.Remove(fmPidFile)
 				if err != nil && !os.IsNotExist(err) {
 					warn("failed to remove the forwarder pid file %s: %s", fmPidFile, err)
-				}
-			}
-		}
-		fwPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fw.pid")
-		if fwPid, fwRunning := checkProcess(fwPidFile); fwRunning {
-			err = killProcess(fwPid)
-			if err == nil {
-				err = os.Remove(fwPidFile)
-				if err != nil && !os.IsNotExist(err) {
-					warn("failed to remove the forwarder pid file %s: %s", fwPidFile, err)
 				}
 			}
 		}
