@@ -184,7 +184,7 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 			panic(err)
 		}
 		// Set up internal clientset and clusterConfig
-		p.Logger.Info(fmt.Sprintf("Succesfully authenticated using information from %s", kubevar))
+		p.Logger.Info("Succesfully authenticated")
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
 		return clientset, clusterConfig, nil
@@ -282,6 +282,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-cluster-role-binding-",
+			Labels:       map[string]string{"wr": "ClusterRoleBinding"},
 		},
 		Subjects: []rbacapi.Subject{
 			{
@@ -695,12 +696,26 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 }
 
 // TearDown deletes the namespace created for wr.
-func (p *Kubernetesp) TearDown() error {
-	err := p.namespaceClient.Delete(p.NewNamespaceName, &metav1.DeleteOptions{})
+func (p *Kubernetesp) TearDown(namespace string) error {
+	err := p.clientset.CoreV1().Namespaces().Delete(namespace, &metav1.DeleteOptions{})
 	if err != nil {
-		p.Logger.Error("Deleting namespace", "err", err, "namespace", p.NewNamespaceName)
+		p.Logger.Error("Deleting namespace", "err", err, "namespace", namespace)
 		return err
 	}
+
+	crbl, err := p.clientset.RbacV1().ClusterRoleBindings().List(metav1.ListOptions{
+		LabelSelector: "wr",
+	})
+	if err != nil {
+		p.Logger.Error("Getting ClusterRoleBindings", "err", err)
+		return err
+	}
+	err = p.clientset.RbacV1().ClusterRoleBindings().Delete(crbl.Items[0].ObjectMeta.Name, &metav1.DeleteOptions{})
+	if err != nil {
+		p.Logger.Error("Deleting ClusterRoleBinding", "ClusterRoleBinding", crbl.Items[0].ObjectMeta.Name, "err", err)
+		return err
+	}
+
 	return nil
 }
 
