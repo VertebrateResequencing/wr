@@ -21,6 +21,8 @@ package client
 // This file contains the code for the Pod struct.
 
 import (
+	"strings"
+
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
@@ -289,4 +291,29 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	p.Logger.Info(fmt.Sprintf("Contents of stdErr: %v\n", stdErr.Str))
 	return err
 
+}
+
+// GetLog Gets the logs from a container with the name 'wr-runner'
+func (p *Kubernetesp) GetLog(pod *apiv1.Pod) (string, error) {
+	req := p.RESTClient.Get().
+		Namespace(p.NewNamespaceName).
+		Name(pod.ObjectMeta.Name).
+		Resource("pods").
+		SubResource("log").
+		Param("container", "wr-runner")
+
+	readCloser, err := req.Stream()
+	if err != nil {
+		return "", err
+	}
+
+	out := new(Writer)
+
+	defer readCloser.Close()
+	_, err = io.Copy(out, readCloser)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.Join(out.Str, " "), nil
 }
