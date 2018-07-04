@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeinformers "k8s.io/client-go/informers"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
@@ -73,11 +74,12 @@ type Controller struct {
 
 // ScheduleOpts stores options  for the scheduler
 type ScheduleOpts struct {
-	Files        []client.FilePair // files to copy to each spawned runner. Potentially listen on a channel later.
-	CbChan       chan string       // Channel to send errors on
-	ReqChan      chan *Request     // Channel to send requests about resource availability to
-	PodAliveChan chan *PodAlive    // Channel to send PodAlive requests
-	ManagerDir   string            // Directory to store logs in
+	Files        []client.FilePair  // files to copy to each spawned runner. Potentially listen on a channel later.
+	CbChan       chan string        // Channel to send errors on
+	BadCbChan    chan *cloud.Server // Send bad 'servers' back to wr.
+	ReqChan      chan *Request      // Channel to send requests about resource availability to
+	PodAliveChan chan *PodAlive     // Channel to send PodAlive requests
+	ManagerDir   string             // Directory to store logs in
 	Logger       log15.Logger
 }
 
@@ -262,7 +264,7 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 }
 
 // continually call processNextWorkItem to
-// read and process th enext message on the workqueue
+// read and process the next message on the workqueue
 func (c *Controller) runWorker() {
 	for c.processNextWorkItem() {
 	}
@@ -386,7 +388,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		default:
 		}
 	}
-	if pod.Status.Phase == corev1.PodPhase("Succeeded") {
+	if pod.Status.Phase == corev1.PodSucceeded {
 		c.logger.Info(fmt.Sprintf("Pod %s exited succesfully, notifying", pod.ObjectMeta.Name))
 		//jsonObj, _ := json.Marshal(pod)
 		//c.logger.Info(fmt.Sprintf("Contents of pod %s", jsonObj))
@@ -405,6 +407,53 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		} else {
 			c.logger.Info(fmt.Sprintf("Could not find return error channel for pod %s", pod.ObjectMeta.Name))
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
+		}
+	}
+	if pod.Status.Phase == corev1.PodFailed {
+		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
+		if ok {
+			go func() {
+				req := result.(*PodAlive)
+				if !req.Done {
+					req.Done = true
+					c.logger.Info(fmt.Sprintf("Sending err on ec for %s", pod.ObjectMeta.Name))
+					req.ErrChan <- fmt.Errorf("Pod %s failed", pod.ObjectMeta.Name)
+				}
+			}()
+		} else {
+			c.logger.Info(fmt.Sprintf("Could not find return error channel for pod %s", pod.ObjectMeta.Name))
+			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
+		}
+		// Get logs
+		logs, err := c.libclient.GetLog(pod)
+		if err != nil {
+			c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
+		}
+		// Callback to user, trying to give an informative error.
+		c.logger.Info(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason))
+		c.sendErrChan(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s\n Logs: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason, logs))
+		c.sendBadServer(&cloud.Server{
+			Name: pod.ObjectMeta.Name,
+		})
+
+	}
+	if len(pod.Status.ContainerStatuses) != 0 {
+		switch {
+		case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
+			// Get logs
+			logs, err := c.libclient.GetLog(pod)
+			if err != nil {
+				c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
+			}
+			c.sendErrChan(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v\n %s",
+				pod.ObjectMeta.Name,
+				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
+				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode,
+				logs))
+			c.logger.Info(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v",
+				pod.ObjectMeta.Name,
+				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
+				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode))
 		}
 	}
 	return nil
@@ -446,7 +495,17 @@ func (c *Controller) handleErr(err error, key interface{}) {
 // Send a string of the provided error to the callback channel
 func (c *Controller) sendErrChan(err string) {
 	c.logger.Info("sendErrChan called with error", "err", err)
-	c.opts.CbChan <- err
+	go func() {
+		c.opts.CbChan <- err
+	}()
+}
+
+// Send a *cloud.Server to wr that's gone bad.
+func (c *Controller) sendBadServer(server *cloud.Server) {
+	c.logger.Info("sendBadServer called")
+	go func() {
+		c.opts.BadCbChan <- server
+	}()
 }
 
 func (c *Controller) runReqCheck() {
@@ -481,6 +540,7 @@ func (c *Controller) reqCheckHandler() bool {
 	}
 	c.logger.Info(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
 	req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
+	c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
 
 	return true
 }
