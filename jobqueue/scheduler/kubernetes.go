@@ -223,6 +223,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	opts := kubescheduler.ScheduleOpts{
 		Files:        files,
 		CbChan:       s.callBackChan,
+		BadCbChan:    s.badCallBackChan,
 		ReqChan:      s.reqChan,
 		PodAliveChan: s.podAliveChan,
 		Logger:       logger,
@@ -293,12 +294,12 @@ func (s *k8s) reqCheck(req *Requirements) error {
 		//s.msgCB(fmt.Sprintf("Requirements check for request %s recieved error: %s", req.Stringify(), err))
 		s.Logger.Info(fmt.Sprintf("Requirements check recieved error: %s", err))
 	}
-
+	s.Logger.Info("reqCheck returned ok")
 	return err
 }
 
 // setMessageCallBack sets the given callback function.
-func (s *k8s) setMessageCallback(cb MessageCallBack) {
+func (s *k8s) setMessageCallBack(cb MessageCallBack) {
 	s.Logger.Info("setMessageCallBack called")
 	s.cbmutex.Lock()
 	defer s.cbmutex.Unlock()
@@ -317,18 +318,22 @@ func (s *k8s) setBadServerCallBack(cb BadServerCallBack) {
 // notifyMessage recieves on the channel
 // if anything is recieved call s.msgCB(msg).
 func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *cloud.Server) {
-	s.Logger.Info("notifyCallBack called")
+	s.Logger.Info("notifyCallBack handler started")
 	for {
 		select {
 		case msg := <-callBackChan:
 			s.Logger.Info("Callback notification", "msg", msg)
 			if s.msgCB != nil {
 				go s.msgCB(msg)
+			} else {
+				s.logger.Info("No message callback function defined")
 			}
 		case badServer := <-badCallBackChan:
 			s.Logger.Info("Bad server callback notification", "msg", badServer)
 			if s.badServerCB != nil {
 				go s.badServerCB(badServer)
+			} else {
+				s.logger.Info("No bad server callback function defined")
 			}
 		}
 	}
@@ -348,10 +353,10 @@ func (s *k8s) cleanup() {
 		s.Warn("cleanup queue destruction failed", "err", err)
 	}
 
-	err = s.libclient.TearDown()
-	if err != nil {
-		s.Warn("namespace deletion errored", "err", err)
-	}
+	// err = s.libclient.TearDown()
+	// if err != nil {
+	// 	s.Warn("namespace deletion errored", "err", err)
+	// }
 	return
 }
 
@@ -360,7 +365,7 @@ func (s *k8s) cleanup() {
 func (s *k8s) canCount(req *Requirements) (canCount int) {
 	s.Logger.Info("canCount Called, returning 1")
 	// return 1 until I decide what to do.
-	return 1
+	return 10
 }
 
 // RunFunc calls spawn() and exits with an error = nil when pod has terminated. (Runner exited)
@@ -451,13 +456,15 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		return err
 	}
 
-	s.Logger.Info(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
+	// s.Logger.Info(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
 	// Delete terminated pod if no error thrown.
-	err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
+	// err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
+	s.Logger.Info("Returning at end of runCmd()")
 
 	return err
 }
 
+// * Run on the manager, inside the cluster *
 // rewrite any relative path to replace '~/' with TempMountPath
 // returning []client.FilePair to be copied to the runner.
 // currently only relative paths are allowed, any path not
@@ -497,12 +504,16 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	dests := []string{}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "~/") {
-			// Return only the directory the file is in
-			dir := filepath.Dir(path)
+			// Return the file path relative to '~/'
+			rel, err := filepath.Rel("~/", path)
+			if err != nil {
+				s.Logger.Warn(fmt.Sprintf("Could not convert path %s to relative path.", path))
+			}
+			dir := filepath.Dir(rel)
 			// Trim prefix
-			dir = strings.TrimPrefix(dir, "~")
+			// dir = strings.TrimPrefix(dir, "~")
 			// Add podBinDir as new prefix
-			dir = s.config.TempMountPath + dir
+			dir = s.config.TempMountPath + dir + "/"
 			dests = append(dests, dir)
 		} else {
 			s.Logger.Warn(fmt.Sprintf("File with path %s is being ignored as it does not have prefix '~/'", path))
