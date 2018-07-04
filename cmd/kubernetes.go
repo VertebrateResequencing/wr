@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -585,11 +584,8 @@ func init() {
 // preserved across containers.
 func rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory
-	usr, err := user.Current()
-	if err != nil {
-		die("Failed to get current user: %s", err)
-	}
-	hDir := usr.HomeDir
+	hDir := os.Getenv("HOME")
+
 	filePairs := []client.FilePair{}
 	paths := []string{}
 
@@ -616,12 +612,16 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	dests := []string{}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "~/") {
-			// Return only the directory the file is in
-			dir := filepath.Dir(path)
+			// Return the file path relative to '~/'
+			rel, err := filepath.Rel("~/", path)
+			if err != nil {
+				warn(fmt.Sprintf("Could not convert path %s to relative path.", path))
+			}
+			dir := filepath.Dir(rel)
 			// Trim prefix
-			dir = strings.TrimPrefix(dir, "~")
+			// dir = strings.TrimPrefix(dir, "~")
 			// Add podBinDir as new prefix
-			dir = podBinDir + dir
+			dir = podBinDir + dir + "/"
 			dests = append(dests, dir)
 		} else {
 			warn("File with path %s is being ignored as it does not have prefix '~/'", path)
