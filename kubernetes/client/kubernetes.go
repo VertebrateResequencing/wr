@@ -167,7 +167,7 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		p.clusterConfig = clusterConfig
 		return clientset, clusterConfig, nil
 	case len(kubevar) != 0:
-		p.Logger.Info(fmt.Sprintf("Authenticating using information env var $KUBECONFIG: %s", kubevar))
+		p.Logger.Info(fmt.Sprintf("Authenticating using $KUBECONFIG: %s", kubevar))
 		var kubeconfig *string
 		kubeconfig = &kubevar
 
@@ -378,6 +378,15 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 							},
 							SecurityContext: &apiv1.SecurityContext{
 								Privileged: boolPtr(true),
+							},
+							Lifecycle: &apiv1.Lifecycle{
+								PreStop: &apiv1.Handler{
+									Exec: &apiv1.ExecAction{
+										Command: []string{"cat", tempMountPath + ".wr_development/log",
+											"cat", tempMountPath + ".wr_development/kubeSchedulerLog",
+											"cat", tempMountPath + ".wr_development/kubeSchedulerControllerLog"},
+									},
+								},
 							},
 						},
 					},
@@ -601,9 +610,16 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 							Name:  "HOME",
 							Value: tempMountPath,
 						},
+						{
+							Name:  "USER",
+							Value: "root",
+						},
 					},
 					SecurityContext: &apiv1.SecurityContext{
 						Privileged: boolPtr(true),
+						Capabilities: &apiv1.Capabilities{
+							Add: []apiv1.Capability{"SYS_ADMIN"},
+						},
 					},
 				},
 			},
