@@ -365,7 +365,7 @@ func (s *k8s) cleanup() {
 func (s *k8s) canCount(req *Requirements) (canCount int) {
 	s.Logger.Info("canCount Called, returning 1")
 	// return 1 until I decide what to do.
-	return 10
+	return 100
 }
 
 // RunFunc calls spawn() and exits with an error = nil when pod has terminated. (Runner exited)
@@ -393,9 +393,17 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		scriptName = defaultScriptName
 	}
 
-	// Remove any single quotes
-	// this causes issues passing information
-	// to the runner
+	// If there is an overwridden cloud_os, pass that instead.
+	var containerImage string
+	if val, defined := req.Other["cloud_os"]; defined {
+		containerImage = val
+		s.Logger.Info(fmt.Sprintf("setting container image to %s", containerImage))
+	} else {
+		containerImage = s.config.Image
+	}
+
+	// Remove any single quotes as this causes
+	// issues passing information to the runner
 	cmd = strings.Replace(cmd, "'", "", -1)
 	binaryArgs := []string{cmd}
 
@@ -410,7 +418,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	//binaryArgs = []string{"tail", "-f", "/dev/null"}
 
 	s.Logger.Info(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
-	pod, err := s.libclient.Spawn(s.config.Image,
+	pod, err := s.libclient.Spawn(containerImage,
 		s.config.TempMountPath,
 		configMountPath+"/"+scriptName,
 		binaryArgs,
