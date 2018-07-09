@@ -435,7 +435,14 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		c.sendBadServer(&cloud.Server{
 			Name: pod.ObjectMeta.Name,
 		})
-
+	}
+	if pod.Status.Phase == corev1.PodPending {
+		// If the request on the container is currently not possible, send a callback to the user
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodScheduled && condition.Reason == "Unschedulable" {
+				c.sendErrChan(fmt.Sprintf("Pod %s pending, reason: %s", pod.ObjectMeta.Name, condition.Message))
+			}
+		}
 	}
 	if len(pod.Status.ContainerStatuses) != 0 {
 		switch {
