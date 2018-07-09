@@ -45,6 +45,7 @@ import (
 	appsv1beta1 "k8s.io/api/apps/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	rbacapi "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -453,79 +454,6 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 
 	*/
 
-	// //Copy WR to pod, selecting by label.
-	// //Wait for the pod to be created, then return it
-	// var podList *apiv1.PodList
-	// getPodErr := wait.ExponentialBackoff(retry.DefaultRetry, func() (done bool, err error) {
-	// 	var getErr error
-	// 	podList, getErr = p.clientset.CoreV1().Pods(p.NewNamespaceName).List(metav1.ListOptions{
-	// 		LabelSelector: "app=wr-manager",
-	// 	})
-	// 	switch {
-	// 	case getErr != nil:
-	// 		panic(fmt.Errorf("failed to list pods in namespace %v", p.NewNamespaceName))
-	// 	case len(podList.Items) == 0:
-	// 		return false, nil
-	// 	case len(podList.Items) > 0:
-	// 		return true, nil
-	// 	default:
-	// 		return false, err
-	// 	}
-	// })
-	// if getPodErr != nil {
-	// 	p.Logger.Error("Failed to list pods", "err", err)
-	// 	return fmt.Errorf("failed to list pods, error: %v", getPodErr)
-
-	// }
-
-	// //Get the current working directory.
-	// dir, err := os.Getwd()
-	// if err != nil {
-	// 	p.Logger.Error("Failed to get current working directory", "err", err)
-	// 	return err
-	// }
-
-	// //Set up new pipe
-	// pipeReader, pipeWriter := io.Pipe()
-
-	// //avoid deadlock by using goroutine
-	// go func() {
-	// 	defer pipeWriter.Close()
-	// 	//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
-	// 	tarErr := makeTar(files, pipeWriter)
-	// 	if tarErr != nil {
-	// 		p.Logger.Error("Error writing tar", "err", tarErr)
-	// 		panic(tarErr)
-	// 	}
-	// }()
-
-	// //Copy the wr binary to the running pod
-	// fmt.Println("Sleeping for 15s") // wait for container to be running
-	// time.Sleep(15 * time.Second)
-	// fmt.Println("Woken up")
-	// pod := podList.Items[0]
-	// fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
-	// fmt.Println(pod.Spec.InitContainers)
-	// fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
-
-	// stdOut := new(Writer)
-	// stdErr := new(Writer)
-	// // Pass no command []string, so just attach to running command in initcontainer.
-	// opts := &CmdOptions{
-	// 	StreamOptions: StreamOptions{
-	// 		PodName:       pod.ObjectMeta.Name,
-	// 		ContainerName: pod.Spec.InitContainers[0].Name,
-	// 		Stdin:         true,
-	// 		In:            pipeReader,
-	// 		Out:           stdOut,
-	// 		Err:           stdErr,
-	// 	},
-	// }
-
-	// p.AttachCmd(opts)
-
-	// fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
-	// fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
 	return nil
 }
 
@@ -557,9 +485,6 @@ func (p *Kubernetesp) inWRPod() bool {
 
 // Spawn a new pod that contains a runner. Return the name.
 func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*apiv1.Pod, error) {
-	//Generate a pod name?
-	//podName := "wr-runner-" + strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1)
-	//Create a new pod.
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-runner-",
@@ -615,6 +540,12 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 							Value: "root",
 						},
 					},
+					Resources: apiv1.ResourceRequirements{
+						Requests: apiv1.ResourceList{
+							apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(resources.Cores)*1000, resource.DecimalSI),
+							apiv1.ResourceMemory: *resource.NewQuantity(int64(resources.RAM)*1024*1024, resource.BinarySI),
+						},
+					},
 					SecurityContext: &apiv1.SecurityContext{
 						Privileged: boolPtr(true),
 						Capabilities: &apiv1.Capabilities{
@@ -640,74 +571,21 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 			},
 		},
 	}
-	//Create pod
+	// Create pod
 	pod, err := p.podClient.Create(pod)
 	if err != nil {
 		p.Logger.Error("Failed to create pod", "err", err)
 		return nil, err
 	}
+
 	/*
 	   No longer copying tarball to pod here,
-	   instead the scheduling controller waits on the
+	   instead the deployment controller waits on the
 	   status of the InitContainer to be running, then
 	   runs CopyTar, found in pod.go
 
 	*/
 
-	// // //Copy WR to newly created pod
-	// // //Get the current working directory
-	// // dir, err := os.Getwd()
-	// // if err != nil {
-	// // 	p.Logger.Error("Failed to get current working directory", "err", err)
-	// // 	panic(err)
-	// // }
-
-	// //Set up new pipe
-	// pipeReader, pipeWriter := io.Pipe()
-
-	// //avoid deadlock by using goroutine
-	// go func() {
-	// 	defer pipeWriter.Close()
-	// 	//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
-	// 	tarErr := makeTar(files, pipeWriter)
-	// 	if tarErr != nil {
-	// 		p.Logger.Error("Error writing tar", "err", tarErr)
-	// 		panic(tarErr)
-	// 	}
-	// }()
-
-	// // Copy the wr binary to the running pod
-	// fmt.Println("Sleeping for 15s") // wait for container to be running TODO: Use watch instead
-	// time.Sleep(15 * time.Second)
-	// fmt.Println("Woken up")
-	// fmt.Println("Getting updated pod") //TODO: Use watch channel to notify on success
-	// pod, err = p.podClient.Get(pod.ObjectMeta.Name, metav1.GetOptions{})
-	// if err != nil {
-	// 	p.Logger.Error("Error getting updated pod", "err", err)
-	// 	panic(err)
-	// }
-	// fmt.Printf("Container for pod is %v\n", pod.Spec.InitContainers[0].Name)
-	// fmt.Println(pod.Spec.InitContainers)
-	// fmt.Printf("Pod has name %v, in namespace %v\n", pod.ObjectMeta.Name, pod.ObjectMeta.Namespace)
-
-	// stdOut := new(Writer)
-	// stdErr := new(Writer)
-	// // Pass no command []string, so just attach to running command in initcontainer.
-	// opts := &CmdOptions{
-	// 	StreamOptions: StreamOptions{
-	// 		PodName:       pod.ObjectMeta.Name,
-	// 		ContainerName: pod.Spec.InitContainers[0].Name,
-	// 		Stdin:         true,
-	// 		In:            pipeReader,
-	// 		Out:           stdOut,
-	// 		Err:           stdErr,
-	// 	},
-	// }
-
-	// p.AttachCmd(opts)
-
-	// fmt.Printf("Contents of stdOut: %v\n", stdOut.Str)
-	// fmt.Printf("Contents of stdErr: %v\n", stdErr.Str)
 	return pod, err
 }
 
@@ -781,7 +659,7 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 	if err != nil {
 		return nil, err
 	}
-	md5 := md5.Sum([]byte(jsonData))
+	md5 := md5.Sum([]byte(jsonData)) //#nosec
 
 	var match string
 	for k, v := range p.configMapHashes {
