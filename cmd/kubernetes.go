@@ -171,6 +171,25 @@ hub is supported`,
 			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 		}
 
+		// now check if there's a daemon running.
+		// If it is the forwarding must've died. (Closed laptop?)
+		// If so kill the now useless daemon. This avoids the 'resource unavaliable'
+		// daemonising error.
+		fmPidFile := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
+		fmPid, fmRunning := checkProcess(fmPidFile)
+
+		if fmRunning {
+			info("Killing stale daemon with PID %s.", fmPid)
+			stale, err := os.FindProcess(fmPid)
+			if err != nil {
+				warn("Failed to find process", "err", err)
+			}
+			errr := stale.Kill()
+			if errr != nil {
+				warn("Killing process returned error", "err", errr)
+			}
+		}
+
 		// we will spawn wr on the remote server we will create, which means we
 		// need to know the path to ourselves in case we're not in the user's
 		// $PATH
