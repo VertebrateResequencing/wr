@@ -287,6 +287,12 @@
                                             <dt>Peak RAM</dt>
                                             <dd data-bind="text: PeakRAM.mbIEC()"></dd>
                                         </dl>
+                                        <!-- ko if: PeakDisk > 0 -->
+                                            <dl>
+                                                <dt>Peak Disk</dt>
+                                                <dd data-bind="text: PeakDisk.mbIEC()"></dd>
+                                            </dl>
+                                        <!-- /ko -->
                                         <dl>
                                             <dt>Started</dt>
                                             <dd data-bind="text: Started.toDate()"></dd>

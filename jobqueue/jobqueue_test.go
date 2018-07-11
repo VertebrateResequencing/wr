@@ -389,6 +389,7 @@ func TestJobqueue(t *testing.T) {
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
 				for index, job := range jobs {
 					job.PeakRAM = index + 1
+					job.PeakDisk = int64(index + 2)
 					job.StartTime = time.Now()
 					job.EndTime = job.StartTime.Add(time.Duration(index+1) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
@@ -397,6 +398,9 @@ func TestJobqueue(t *testing.T) {
 				rmem, err := server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 100)
+				rdisk, err := server.db.recommendedReqGroupDisk("fake_group")
+				So(err, ShouldBeNil)
+				So(rdisk, ShouldEqual, 100)
 				rtime, err := server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
 				So(rtime, ShouldEqual, 1800)
@@ -404,6 +408,7 @@ func TestJobqueue(t *testing.T) {
 				for i := 11; i <= 100; i++ {
 					job := &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}
 					job.PeakRAM = i * 100
+					job.PeakDisk = int64(i * 200)
 					job.StartTime = time.Now()
 					job.EndTime = job.StartTime.Add(time.Duration(i*100) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
@@ -412,6 +417,9 @@ func TestJobqueue(t *testing.T) {
 				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 9500)
+				rdisk, err = server.db.recommendedReqGroupDisk("fake_group")
+				So(err, ShouldBeNil)
+				So(rdisk, ShouldEqual, 19000)
 				rtime, err = server.db.recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
 				So(rtime, ShouldEqual, 10800)
@@ -720,6 +728,7 @@ func TestJobqueue(t *testing.T) {
 				So(job.Exited, ShouldBeTrue)
 				So(job.Exitcode, ShouldEqual, 0)
 				So(job.PeakRAM, ShouldBeGreaterThan, 0)
+				So(job.PeakDisk, ShouldEqual, 0)
 				So(job.Pid, ShouldBeGreaterThan, 0)
 				host, _ := os.Hostname()
 				So(job.Host, ShouldEqual, host)

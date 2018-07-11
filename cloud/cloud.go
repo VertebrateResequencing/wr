@@ -733,7 +733,7 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 		return nil, err
 	}
 
-	diskSize := internal.DiskSize()
+	diskSize := internal.DiskSize(".")
 
 	ip, err := internal.CurrentIP(cidr[0])
 	if err != nil {

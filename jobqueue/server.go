@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -960,11 +961,16 @@ func (s *Server) createQueue() {
 					recommendedReq = rec
 				} else {
 					recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
+					recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
 					recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
-					if recm == 0 || recs == 0 || errm != nil || errs != nil {
+					if recm == 0 || recs == 0 || errm != nil || errd != nil || errs != nil {
 						groupToReqs[job.ReqGroup] = nil
 					} else {
-						recommendedReq = &scheduler.Requirements{RAM: recm, Time: time.Duration(recs) * time.Second}
+						recdGBs := 0
+						if recd > 0 { // not all jobs collect disk usage, so this can be 0
+							recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
+						}
+						recommendedReq = &scheduler.Requirements{RAM: recm, Disk: recdGBs, Time: time.Duration(recs) * time.Second}
 						groupToReqs[job.ReqGroup] = recommendedReq
 					}
 				}
@@ -975,11 +981,15 @@ func (s *Server) createQueue() {
 						if recommendedReq.RAM > job.Requirements.RAM {
 							job.Requirements.RAM = recommendedReq.RAM
 						}
+						if recommendedReq.Disk > job.Requirements.Disk {
+							job.Requirements.Disk = recommendedReq.Disk
+						}
 						if recommendedReq.Time > job.Requirements.Time {
 							job.Requirements.Time = recommendedReq.Time
 						}
 					} else {
 						job.Requirements.RAM = recommendedReq.RAM
+						job.Requirements.Disk = recommendedReq.Disk
 						job.Requirements.Time = recommendedReq.Time
 					}
 					job.Unlock()

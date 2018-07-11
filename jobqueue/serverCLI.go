@@ -231,6 +231,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sjob.StartTime = tnil
 					sjob.EndTime = tnil
 					sjob.PeakRAM = 0
+					sjob.PeakDisk = 0
 					sjob.Exitcode = -1
 					sgroup := sjob.schedulerGroup
 					sjob.Unlock()
@@ -684,6 +685,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 		Priority:      sjob.Priority,
 		Retries:       sjob.Retries,
 		PeakRAM:       sjob.PeakRAM,
+		PeakDisk:      sjob.PeakDisk,
 		Exited:        sjob.Exited,
 		Exitcode:      sjob.Exitcode,
 		FailReason:    sjob.FailReason,

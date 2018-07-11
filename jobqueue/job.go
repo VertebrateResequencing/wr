@@ -201,6 +201,8 @@ type Job struct {
 	ActualCwd string
 	// peak RAM (MB) used.
 	PeakRAM int
+	// peak disk (MB) used.
+	PeakDisk int64
 	// true if the Cmd was run and exited.
 	Exited bool
 	// if the job ran and exited, its exit code is recorded here, but check
@@ -441,7 +443,11 @@ func (j *Job) TriggerBehaviours(success bool) error {
 // defined, then instead of mounting at j.Cwd/mnt, it tries to mount at j.Cwd
 // itself. (This will fail if j.Cwd is not empty or already mounted by another
 // process.)
-func (j *Job) Mount(onCwd ...bool) error {
+//
+// Returns any non-shared cache directories, and any directories in (or at) the
+// job's actual cwd if anything was mounted there, for the purpose of knowing
+// what directories to check and not check for disk usage.
+func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 	cwd := j.Cwd
 	defaultMount := filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase := cwd
@@ -454,6 +460,8 @@ func (j *Job) Mount(onCwd ...bool) error {
 		defaultCacheBase = filepath.Dir(j.Cwd)
 	}
 
+	var uniqueCacheDirs []string
+	var uniqueMountedDirs []string
 	for _, mc := range j.MountConfigs {
 		var rcs []*muxfys.RemoteConfig
 		for _, mt := range mc.Targets {
@@ -463,7 +471,7 @@ func (j *Job) Mount(onCwd ...bool) error {
 				if erru != nil {
 					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
 				}
-				return err
+				return uniqueCacheDirs, uniqueMountedDirs, err
 			}
 			accessor, err := muxfys.NewS3Accessor(accessorConfig)
 			if err != nil {
@@ -471,13 +479,17 @@ func (j *Job) Mount(onCwd ...bool) error {
 				if erru != nil {
 					err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
 				}
-				return err
+				return uniqueCacheDirs, uniqueMountedDirs, err
 			}
 
 			cacheDir := mt.CacheDir
 			if cacheDir != "" && !filepath.IsAbs(cacheDir) {
 				cacheDir = filepath.Join(defaultCacheBase, cacheDir)
-			}
+
+				// *** we should only set this if not writing, or if writing to
+				// a non-empty dir, which we don't know about at this point...
+				uniqueCacheDirs = append(uniqueCacheDirs, cacheDir)
+			} // *** else, the cache is in a unique dir that I don't know about?
 			rc := &muxfys.RemoteConfig{
 				Accessor:  accessor,
 				CacheData: mt.Cache,
@@ -494,7 +506,7 @@ func (j *Job) Mount(onCwd ...bool) error {
 			if erru != nil {
 				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
 			}
-			return err
+			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
 		retries := 10
@@ -506,9 +518,11 @@ func (j *Job) Mount(onCwd ...bool) error {
 		if mount != "" {
 			if !filepath.IsAbs(mount) {
 				mount = filepath.Join(cwd, mount)
+				uniqueMountedDirs = append(uniqueMountedDirs, mount)
 			}
 		} else {
 			mount = defaultMount
+			uniqueMountedDirs = append(uniqueMountedDirs, mount)
 		}
 		cacheBase := mc.CacheBase
 		if cacheBase != "" {
@@ -531,7 +545,7 @@ func (j *Job) Mount(onCwd ...bool) error {
 			if erru != nil {
 				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
 			}
-			return err
+			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
 		err = fs.Mount(rcs...)
@@ -540,7 +554,7 @@ func (j *Job) Mount(onCwd ...bool) error {
 			if erru != nil {
 				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
 			}
-			return err
+			return uniqueCacheDirs, uniqueMountedDirs, err
 		}
 
 		// (we can't use each fs.UnmountOnDeath() function because that tries
@@ -568,7 +582,7 @@ func (j *Job) Mount(onCwd ...bool) error {
 		}()
 	}
 
-	return nil
+	return uniqueCacheDirs, uniqueMountedDirs, nil
 }
 
 // Unmount unmounts any remote filesystems that were previously mounted with
@@ -643,6 +657,7 @@ func (j *Job) updateAfterExit(jes *JobEndState) {
 	j.Exited = true
 	j.Exitcode = jes.Exitcode
 	j.PeakRAM = jes.PeakRAM
+	j.PeakDisk = jes.PeakDisk
 	j.CPUtime = jes.CPUtime
 	j.EndTime = time.Now()
 	if jes.Cwd != "" {
@@ -669,6 +684,12 @@ func (j *Job) updateRecsAfterFailure() {
 			updatedMB = float64(j.PeakRAM) + RAMIncreaseMin
 		}
 		j.Requirements.RAM = int(math.Ceil(updatedMB/100) * 100)
+		j.Override = uint8(1)
+	case FailReasonDisk:
+		// flat increase of 30%
+		updatedMB := float64(j.PeakDisk) / float64(1024)
+		updatedMB *= RAMIncreaseMultHigh
+		j.Requirements.Disk = int(math.Ceil(updatedMB/100) * 100)
 		j.Override = uint8(1)
 	case FailReasonTime:
 		j.Requirements.Time += 1 * time.Hour
@@ -755,6 +776,7 @@ func (j *Job) ToStatus() JStatus {
 		OtherRequests: ot,
 		Cores:         j.Requirements.Cores,
 		PeakRAM:       j.PeakRAM,
+		PeakDisk:      j.PeakDisk,
 		Exited:        j.Exited,
 		Exitcode:      j.Exitcode,
 		FailReason:    j.FailReason,

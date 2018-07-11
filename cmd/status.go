@@ -140,6 +140,7 @@ name to just the first letter, eg. -o c):
 			counts := make(map[string]map[jobqueue.JobState]int)
 			buried := make(map[string]map[string][]string)
 			memory := make(map[string]*runningvariance.RunningStat)
+			disk := make(map[string]*runningvariance.RunningStat)
 			walltime := make(map[string]*runningvariance.RunningStat)
 			cputime := make(map[string]*runningvariance.RunningStat)
 			for _, job := range jobs {
@@ -161,10 +162,12 @@ name to just the first letter, eg. -o c):
 				} else if state == jobqueue.JobStateComplete {
 					if _, exists := memory[job.RepGroup]; !exists {
 						memory[job.RepGroup] = runningvariance.NewRunningStat()
+						disk[job.RepGroup] = runningvariance.NewRunningStat()
 						walltime[job.RepGroup] = runningvariance.NewRunningStat()
 						cputime[job.RepGroup] = runningvariance.NewRunningStat()
 					}
 					memory[job.RepGroup].Push(float64(job.PeakRAM))
+					disk[job.RepGroup].Push(float64(job.PeakDisk))
 					walltime[job.RepGroup].Push(float64(job.WallTime()))
 					cputime[job.RepGroup].Push(float64(job.CPUtime))
 				}
@@ -181,7 +184,7 @@ name to just the first letter, eg. -o c):
 			for _, rg := range rgs {
 				var usage string
 				if counts[rg][jobqueue.JobStateComplete] > 0 {
-					usage = fmt.Sprintf(" memory=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)", int(memory[rg].Mean()), int(memory[rg].StandardDeviation()), time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()), time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
+					usage = fmt.Sprintf(" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)", int(memory[rg].Mean()), int(memory[rg].StandardDeviation()), int(disk[rg].Mean()), int(disk[rg].StandardDeviation()), time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()), time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
 				}
 
 				var dead string
@@ -268,7 +271,7 @@ name to just the first letter, eg. -o c):
 					if job.State != jobqueue.JobStateComplete {
 						prefix = "Stats of previous attempt"
 					}
-					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
+					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
 					if showextra && showStd && job.Exitcode != 0 {
 						stdout, errs := job.StdOut()
 						if errs != nil {
