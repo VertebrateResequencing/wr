@@ -545,6 +545,10 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 							apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(resources.Cores)*1000, resource.DecimalSI),
 							apiv1.ResourceMemory: *resource.NewQuantity(int64(resources.RAM)*1024*1024, resource.BinarySI),
 						},
+						Limits: apiv1.ResourceList{
+							apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(resources.Cores+1)*1000, resource.DecimalSI),
+							apiv1.ResourceMemory: *resource.NewQuantity(int64(resources.RAM+(resources.RAM/5))*1024*1024, resource.BinarySI),
+						},
 					},
 					SecurityContext: &apiv1.SecurityContext{
 						Privileged: boolPtr(true),
