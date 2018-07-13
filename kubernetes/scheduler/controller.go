@@ -425,7 +425,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 		// Get logs
-		logs, err := c.libclient.GetLog(pod)
+		logs, err := c.libclient.GetLog(pod, 25)
 		if err != nil {
 			c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
 		}
@@ -448,7 +448,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		switch {
 		case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
 			// Get logs
-			logs, err := c.libclient.GetLog(pod)
+			logs, err := c.libclient.GetLog(pod, 25)
 			if err != nil {
 				c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
 			}
