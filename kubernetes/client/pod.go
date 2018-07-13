@@ -294,13 +294,15 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 }
 
 // GetLog Gets the logs from a container with the name 'wr-runner'
-func (p *Kubernetesp) GetLog(pod *apiv1.Pod) (string, error) {
+// Returns the last n lines.
+func (p *Kubernetesp) GetLog(pod *apiv1.Pod, lines int) (string, error) {
 	req := p.RESTClient.Get().
 		Namespace(p.NewNamespaceName).
 		Name(pod.ObjectMeta.Name).
 		Resource("pods").
 		SubResource("log").
-		Param("container", "wr-runner")
+		Param("container", "wr-runner").
+		Param("tailLines", fmt.Sprintf("%v", lines))
 
 	readCloser, err := req.Stream()
 	if err != nil {
