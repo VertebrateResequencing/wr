@@ -62,10 +62,9 @@ type ResourceRequest struct {
 	RAM   int
 }
 
-// CmdOptions contains StreamOptions
-// for use in AttachCmd().
-// Optionally Specify a Command where it could
-// also be used if a RunCmd() were ever needed
+// CmdOptions contains StreamOptions for use in AttachCmd()
+// or ExecCmd(). The first item in the command slice must be
+// the command to execute only, any following will be arguments.
 type CmdOptions struct {
 	StreamOptions
 
@@ -78,7 +77,6 @@ type CmdOptions struct {
 type StreamOptions struct {
 	PodName       string
 	ContainerName string
-	Stdin         bool
 	In            io.Reader
 	Out           io.Writer
 	Err           io.Writer
@@ -153,7 +151,8 @@ func makeTar(files []FilePair, writer io.Writer) error {
 	return nil
 }
 
-// AttachCmd attaches to a running container, pipes stdIn to the command running on that container.
+// AttachCmd attaches to a running container, pipes StdIn to the command running on that container
+// if StdIn is supplied.
 // ToDO: Set up writers for stderr and out internal to AttachCmd(), returning just strings &
 // removing the fields from the CmdOptions struct
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
@@ -166,7 +165,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 		SubResource("attach")
 	execRequest.VersionedParams(&apiv1.PodExecOptions{
 		Container: opts.ContainerName,
-		Stdin:     opts.Stdin,
+		Stdin:     opts.In != nil,
 		Stdout:    true,
 		Stderr:    true,
 		TTY:       false,
@@ -189,6 +188,45 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	if err != nil {
 		fmt.Printf("StdErr: %v\n", opts.Err)
 		panic(fmt.Errorf("Error executing remote command: %v", err))
+	}
+	return "", "", nil
+}
+
+// ExecCmd executes the provided command inside a running container, if StdIn is supplied
+// pipes StdIn to the command.
+// Should work after only calling Authenticate()
+func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdErr string, err error) {
+	// Make Request to APISever to 'exec' a command
+	execRequest := p.RESTClient.Post().
+		Resource("pods").
+		Name(opts.PodName).
+		Namespace(namespace).
+		SubResource("exec").
+		Param("container", opts.ContainerName)
+	execRequest.VersionedParams(&apiv1.PodExecOptions{
+		Container: opts.ContainerName,
+		Command:   opts.Command,
+		Stdin:     opts.In != nil,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       false,
+	}, scheme.ParameterCodec)
+	// Create an executor to send commands / receive output.
+	// SPDY Allows multiplexed bidirectional streams to and from  the pod
+	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
+	if err != nil {
+		return "", "", fmt.Errorf("Error creating SPDYExecutor: %v", err)
+	}
+	// Execute the command, with Std(in,out,err) pointing to the
+	// above readers and writers
+	err = exec.Stream(remotecommand.StreamOptions{
+		Stdin:  opts.In,
+		Stdout: opts.Out,
+		Stderr: opts.Err,
+		Tty:    false,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("Error executing remote command: %v", err)
 	}
 	return "", "", nil
 }
@@ -275,7 +313,6 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		StreamOptions: StreamOptions{
 			PodName:       pod.ObjectMeta.Name,
 			ContainerName: pod.Spec.InitContainers[0].Name,
-			Stdin:         true,
 			In:            pipeReader,
 			Out:           stdOut,
 			Err:           stdErr,
