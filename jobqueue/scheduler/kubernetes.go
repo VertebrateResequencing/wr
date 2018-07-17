@@ -136,6 +136,16 @@ type ConfigKubernetes struct {
 	ManagerDir string
 }
 
+// AddConfigFile takes a value as per the ConfigFiles property, and appends it
+// to the existing ConfigFiles value (or sets it if unset).
+func (c *ConfigKubernetes) AddConfigFile(configFile string) {
+	if c.ConfigFiles == "" {
+		c.ConfigFiles = configFile
+	} else {
+		c.ConfigFiles += "," + configFile
+	}
+}
+
 // Set up prerequisites, call Run()
 // Create channels to pass requests to the controller.
 // Create queue.
@@ -472,8 +482,9 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	return err
 }
 
+// This is ugly, I'm sorry.
 // * Run on the manager, inside the cluster *
-// rewrite any relative path to replace '~/' with TempMountPath
+// Rewrite any relative path to replace '~/' with TempMountPath
 // returning []client.FilePair to be copied to the runner.
 // currently only relative paths are allowed, any path not
 // starting '~/' is dropped as everything ultimately needs
@@ -486,36 +497,118 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	hDir := os.Getenv("HOME")
 	filePairs := []client.FilePair{}
 	paths := []string{}
+	pairSrc := []string{}
+	pairDst := []string{}
 
 	// Get a slice of paths.
 	split := strings.Split(configFiles, ",")
 
-	// Loop over all paths in split, if any don't exist
-	// silently remove them.
+	// Loop over all local paths in split, if any don't exist
+	// silently remove them. If a path is of the form src:dest
+	// stat the src, if it exists add the pair to a new set to be
+	// processed separately.
+	// It probably makes more sense to create the []FilePair here, and just
+	// process all FilePair.Dests in one step at the end.
 	for _, path := range split {
 		localPath := internal.TildaToHome(path)
 		_, err := os.Stat(localPath)
 		if err != nil {
-			s.Logger.Info(fmt.Sprintf("Dropping path %s, with error %s", localPath, err))
-			continue
+			// Assume first that path is of the form src:dest
+			srcDest := strings.Split(path, ":")
+			// If there is no : separator, drop the path
+			if len(srcDest) == 1 {
+				s.Logger.Info(fmt.Sprintf("Dropping path %s, with error %s", localPath, err))
+				continue
+			}
+			if len(srcDest) == 2 {
+				// the client.token is not generated when this runs, so
+				// if the file is client.token, ignore the fact it does not exist
+				if filepath.Base(srcDest[0]) == "client.token" {
+					s.Logger.Info(fmt.Sprintf("Assuming %s, is the client.token. Adding.", path))
+					pairSrc = append(pairSrc, srcDest[0])
+					pairDst = append(pairDst, srcDest[1])
+				} else {
+					// Check the src exists.
+					_, errr := os.Stat(srcDest[0])
+					if errr != nil {
+						// the client.token is not generated when this runs, so
+						// if the file is client.token, ignore the fact it does not
+						s.Logger.Info(fmt.Sprintf("Dropping path %s, with error %s", path, errr))
+						continue
+					}
+
+					// Add the src:dest to separate slices
+					pairSrc = append(pairSrc, srcDest[0])
+					pairDst = append(pairDst, srcDest[1])
+				}
+			}
+			s.Logger.Error(fmt.Sprintf("Source destination pair %s is mallformed.", path))
+
 		} else {
 			paths = append(paths, path)
 		}
 	}
 
-	// remove the '~/' prefix as tar will
-	// create a ~/.. file. We don't want this.
-	// replace '~/' with TempMountPath which we define
-	// as $HOME in the created pods.
-	// Remove the file name, just returning the
-	// directory it is in.
+	// create []client.FilePair to pass in to the
+	// deploy options. Replace '~/' with the current
+	// user's $HOME. This is because $HOME on the manager
+	// will match $HOME on the spawned runner.
+
+	// Process single paths
+	dests := s.rewriteDests(paths)
+
+	// For all paths which the src check has passed
+	// create the dest path by rewriting ~/ to hDir.
+	for i, path := range paths {
+		if strings.HasPrefix(path, "~/") {
+			// rewrite ~/ to hDir
+			st := strings.TrimPrefix(path, "~/")
+			st = hDir + st
+
+			filePairs = append(filePairs, client.FilePair{st, dests[i]})
+		} else {
+			// The source must exist, so tar won't fail. Add it anyway.
+			filePairs = append(filePairs, client.FilePair{path, dests[i]})
+		}
+	}
+
+	// Process src:dest pairs
+	dests = s.rewriteDests(pairDst)
+
+	// For all paths which the src check has passed
+	// create the dest path by rewriting ~/ to hDir.
+	for i, path := range pairSrc {
+		if strings.HasPrefix(path, "~/") {
+			// rewrite ~/ to hDir
+			st := strings.TrimPrefix(path, "~/")
+			st = hDir + st
+
+			filePairs = append(filePairs, client.FilePair{st, dests[i]})
+		} else {
+			// The source must exist, so tar won't fail. Add it anyway.
+			filePairs = append(filePairs, client.FilePair{path, dests[i]})
+		}
+	}
+
+	return filePairs
+
+}
+
+// remove the '~/' prefix as tar will
+// create a ~/.. file. We don't want this as the files will
+// be lost in the initcontainers filesystem.
+// replace '~/' with TempMountPath which we define
+// as $HOME in the created pods.
+// Remove the file name, just returning the
+// directory it is in.
+func (s *k8s) rewriteDests(paths []string) []string {
 	dests := []string{}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "~/") {
 			// Return the file path relative to '~/'
 			rel, err := filepath.Rel("~/", path)
 			if err != nil {
-				s.Logger.Warn(fmt.Sprintf("Could not convert path %s to relative path.", path))
+				s.Logger.Error(fmt.Sprintf("Could not convert path %s to relative path.", path))
 			}
 			dir := filepath.Dir(rel)
 			// Trim prefix
@@ -524,22 +617,9 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 			dir = s.config.TempMountPath + dir + "/"
 			dests = append(dests, dir)
 		} else {
-			s.Logger.Warn(fmt.Sprintf("File with path %s is being ignored as it does not have prefix '~/'", path))
+			s.Logger.Warn(fmt.Sprintf("File with destination path %s may be lost as it does not have prefix '~/'", path))
+			dests = append(dests, path)
 		}
 	}
-
-	// create []client.FilePair to pass in to the
-	// deploy options. Replace '~/' with the current
-	// user's $HOME
-	for i, path := range paths {
-		if strings.HasPrefix(path, "~/") {
-			// rewrite ~/ to hDir
-			st := strings.TrimPrefix(path, "~/")
-			st = hDir + st
-
-			filePairs = append(filePairs, client.FilePair{st, dests[i]})
-		}
-	}
-	return filePairs
-
+	return dests
 }
