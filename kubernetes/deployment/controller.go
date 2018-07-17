@@ -25,9 +25,12 @@ copying configuration files and binaries as well as port forwarding.
 */
 
 import (
+	"encoding/gob"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
@@ -67,6 +70,7 @@ type DeployOpts struct {
 	ConfigMountPath string             // path to the configmap
 	RequiredPorts   []int              // ports that require forwarding
 	AttachCmdOpts   *client.CmdOptions // relevant options for the attachCmd
+	ResourcePath    string             // Path to the resource file kubeCmd creates
 	Logger          log15.Logger
 }
 
@@ -248,12 +252,48 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
 			c.Opts.Logger.Info(fmt.Sprintf("InitContainer Waiting!"))
+
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
 			c.Opts.Logger.Info(fmt.Sprintf("InitContainer Running!"))
-			c.Opts.Logger.Info(fmt.Sprintf("Calling CopyTar"))
-			// here goes nothing
+			c.Opts.Logger.Info(fmt.Sprintf("Calling CopyTar with files: %+v", c.Opts.Files))
 			c.Client.CopyTar(c.Opts.Files, obj)
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
+			// Write the pod name, name to the resources file.
+			// This allows us to retrieve it to obtain the client.token
+			resources := &cloud.Resources{}
+			file, err := os.OpenFile(c.Opts.ResourcePath, os.O_RDONLY, 0600)
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Could not open resource file with path: %s", err))
+			}
+			c.Opts.Logger.Info(fmt.Sprintf("Opened resource file with path %s", c.Opts.ResourcePath))
+			decoder := gob.NewDecoder(file)
+			err = decoder.Decode(resources)
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Error decoding resource file: %s", err))
+			}
+			err = file.Close()
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Failed to close resource file: %s", err))
+			}
+			file2, err := os.OpenFile(c.Opts.ResourcePath, os.O_WRONLY, 0600)
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Failed to open file2 %s", err))
+			}
+			resources.Details["manager-pod"] = obj.ObjectMeta.Name
+			encoder := gob.NewEncoder(file2)
+			err = encoder.Encode(resources)
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Failed to encode resource file: %s", err))
+			}
+			err = file2.Close()
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Failed to close resource file2: %s", err))
+			}
+
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Failed to close resource file %s", err))
+			}
+			c.Opts.Logger.Info(fmt.Sprintf("Stored manager pod name %s in resource file", obj.ObjectMeta.Name))
 			c.Opts.Logger.Info(fmt.Sprintf("WR manager container is running, calling PortForward with ports %v", c.Opts.RequiredPorts))
 			go c.Client.PortForward(obj, c.Opts.RequiredPorts)
 		default:
