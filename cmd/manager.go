@@ -34,6 +34,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
 	"github.com/sb10/l15h"
@@ -560,15 +561,24 @@ func startJQ(postCreation []byte) {
 			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
 		}
 
-		// also check that we're actually in the cloud, or this is not going to
-		// work
-		provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
-		if errc != nil {
-			die("cloud not connect to %s: %s", scheduler, errc)
+		if scheduler != "kubernetes" {
+			// also check that we're actually in the cloud, or this is not going to
+			// work
+			provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
+			if errc != nil {
+				die("cloud not connect to %s: %s", scheduler, errc)
+			}
+			if !provider.InCloud() {
+				die("according to hostname, this is not an instance in %s", scheduler)
+			}
 		}
-		if !provider.InCloud() {
-			die("according to hostname, this is not an instance in %s", scheduler)
+
+		// kubernetes specific code to check if we are in a wr pod inside a cluster
+		kubeWRPod := client.InWRPod()
+		if !kubeWRPod {
+			die("according to hostname, this is not a container in %s", scheduler)
 		}
+
 	}
 
 	// start the jobqueue server
