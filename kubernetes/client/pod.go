@@ -252,7 +252,7 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 // CopyTar copies the files defined in each filePair in files to the pod provided.
 // To be called by controller when condition met
 func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
-	p.Logger.Info(fmt.Sprintf("CopyTar Called with files %#v on pod %s", files, pod.ObjectMeta.Name))
+	p.Logger.Info(fmt.Sprintf("copyTar Called with files %#v on pod %s", files, pod.ObjectMeta.Name))
 	//Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
 	// TODO: Wait for this to complete by signalling on some channel.
@@ -263,7 +263,7 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
 		tarErr := makeTar(files, pipeWriter)
 		if tarErr != nil {
-			p.Logger.Error("Error writing tar", "err", tarErr)
+			p.Logger.Error("error writing tar", "err", tarErr)
 			panic(tarErr)
 		}
 	}()
@@ -284,11 +284,11 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 
 	_, _, err := p.AttachCmd(opts)
 	if err != nil {
-		p.Logger.Error("Error running AttachCmd for CopyTar", "err", err)
+		p.Logger.Error("error running AttachCmd for CopyTar", "err", err)
 	}
 
-	p.Logger.Info(fmt.Sprintf("Contents of stdOut: %v\n", stdOut.Str))
-	p.Logger.Info(fmt.Sprintf("Contents of stdErr: %v\n", stdErr.Str))
+	p.Logger.Info(fmt.Sprintf("contents of stdOut: %v\n", stdOut.Str))
+	p.Logger.Info(fmt.Sprintf("contents of stdErr: %v\n", stdErr.Str))
 	return err
 
 }

@@ -141,7 +141,7 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 
 	switch {
 	case (len(host) == 0 || len(port) == 0) && len(kubevar) == 0:
-		p.Logger.Info("Authenticating using information from user's home directory")
+		p.Logger.Info("authenticating using information from user's home directory")
 		var kubeconfig *string
 		//Obtain cluster authentication information from users home directory, or fall back to user input.
 		if home := homedir.HomeDir(); home != "" {
@@ -154,45 +154,49 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		var err error
 		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 		if err != nil {
-			p.Logger.Error("Failed to build cluster configuration from ~/.kube", "err", err)
+			p.Logger.Error("failed to build cluster configuration from ~/.kube", "err", err)
 			panic(err)
 		}
 		//Create authenticated clientset
 		clientset, err := kubernetes.NewForConfig(clusterConfig)
 		if err != nil {
-			p.Logger.Error("Creating authenticated clientset", "err", err)
+			p.Logger.Error("creating authenticated clientset", "err", err)
 			panic(err)
 		}
 		// Set up internal clientset and clusterConfig
-		p.Logger.Info("Succesfully authenticated using information from user's home directory")
+		p.Logger.Info("succesfully authenticated using information from user's home directory")
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
+		// Create REST client
+		p.RESTClient = clientset.CoreV1().RESTClient()
 		return clientset, clusterConfig, nil
 	case len(kubevar) != 0:
-		p.Logger.Info(fmt.Sprintf("Authenticating using $KUBECONFIG: %s", kubevar))
+		p.Logger.Info(fmt.Sprintf("authenticating using $KUBECONFIG: %s", kubevar))
 		var kubeconfig *string
 		kubeconfig = &kubevar
 
 		var err error
 		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 		if err != nil {
-			p.Logger.Error(fmt.Sprintf("Failed to build cluster configuration from %s", kubevar), "err", err)
+			p.Logger.Error(fmt.Sprintf("failed to build cluster configuration from %s", kubevar), "err", err)
 			panic(err)
 		}
 		//Create authenticated clientset
 		clientset, err := kubernetes.NewForConfig(clusterConfig)
 		if err != nil {
-			p.Logger.Error("Creating authenticated clientset", "err", err)
+			p.Logger.Error("creating authenticated clientset", "err", err)
 			panic(err)
 		}
 		// Set up internal clientset and clusterConfig
-		p.Logger.Info("Succesfully authenticated")
+		p.Logger.Info("succesfully authenticated")
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
+		// Create REST client
+		p.RESTClient = clientset.CoreV1().RESTClient()
 		return clientset, clusterConfig, nil
 
 	default:
-		p.Logger.Info("Authenticating using InClusterConfig()")
+		p.Logger.Info("authenticating using InClusterConfig()")
 		clusterConfig, err := rest.InClusterConfig()
 		if err != nil {
 			panic(err.Error())
@@ -205,9 +209,9 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		// Set up internal clientset and clusterConfig
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
-		p.Logger.Info("Succesfully authenticated using InClusterConfig()")
 		// Create REST client
 		p.RESTClient = clientset.CoreV1().RESTClient()
+		p.Logger.Info("succesfully authenticated using InClusterConfig()")
 		return clientset, clusterConfig, nil
 
 	}
@@ -234,13 +238,13 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 			nsErr := p.CreateNewNamespace(p.NewNamespaceName)
 			if nsErr != nil {
 				fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.NewNamespaceName, nsErr)
-				p.Logger.Warn("Failed to create new namespace. Trying again.", "namespace", p.NewNamespaceName, "err", nsErr)
+				p.Logger.Warn("failed to create new namespace. Trying again.", "namespace", p.NewNamespaceName, "err", nsErr)
 				p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 			}
 			return nsErr
 		})
 		if retryErr != nil {
-			p.Logger.Error("Creation of new namespace failed", "err", retryErr)
+			p.Logger.Error("creation of new namespace failed", "err", retryErr)
 			return fmt.Errorf("Creation of new namespace failed: %v", retryErr)
 		}
 	}
@@ -261,7 +265,7 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	// used when calling newConfigMap().
 	p.configMapHashes = map[string][16]byte{}
 
-	// ToDO: This assumes one portforward per cluter deployment
+	// ToDO: This assumes one portforward per namespaced deployment
 	// This should probably go in pod and the channels be created in an options struct
 	// to better isolate the logic
 
@@ -273,13 +277,18 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 }
 
 // Deploy creates the wr-manager deployment and service.
-// Copying of WR to initcontainer now done by Controller when ready
-// portforwarding now done by controller when ready
-// *old* : Deploys wr manager to the namespace created by initialize()
-// Copies binary with name wr_linux in the current working directory.
-// Uses containerImage as the base docker image to build on top of
-// Assumes tar is available.
-func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
+// Creates ClusterRoleBinding to allow the default service account
+// in the namespace rights to manage cluster. (ToDo: Write own ClusterRole that
+// allows fewer permissions)
+// Copying of WR to initcontainer done by Controller when ready
+// (Assumes tar is available).
+// Portforwarding done by controller when ready.
+// ContainerImage is the Image used for the manager pod
+// tempMountPath is the path at which the 'wr-tmp' directory is set to. It is also set to $HOME
+// command is the command to be executed in the container
+// cmdArgs are the arguments to pass to the supplied command
+// configMapName is the name of the configmap to mount at the configMountPath provided. Usually this contains the
+func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, command string, cmdArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	// Patch the default cluster role for to allow
 	// pods and nodes to be viewed.
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
@@ -353,8 +362,8 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 									ContainerPort: int32(requiredPorts[1]),
 								},
 							},
-							Command: []string{binaryPath},
-							Args:    binaryArgs,
+							Command: []string{command},
+							Args:    cmdArgs,
 							VolumeMounts: []apiv1.VolumeMount{
 								{
 									Name:      "wr-temp",
@@ -418,7 +427,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 	fmt.Println("Creating deployment...")
 	result, err := p.deploymentsClient.Create(deployment)
 	if err != nil {
-		p.Logger.Error("Creating deployment", "err", err)
+		p.Logger.Error("creating deployment", "err", err)
 		return err
 	}
 	fmt.Printf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.NewNamespaceName)
@@ -444,7 +453,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, binary
 	}
 	err = p.CreateService(&svcOpts)
 	if err != nil {
-		p.Logger.Error("Creating service", "err", err)
+		p.Logger.Error("creating service", "err", err)
 		return err
 	}
 
@@ -469,11 +478,11 @@ func (p *Kubernetesp) maybeEnv() []string {
 	return []string{""}
 }
 
-// Check if we are in a WR pod.
+// InWRPod() checks if we are in a WR pod.
 // As we control the hostname, just check if
 // the hostname contains 'wr' in addition to the
 // standard environment variables.
-func (p *Kubernetesp) inWRPod() bool {
+func InWRPod() bool {
 	hostname, err := os.Hostname()
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	inCloud := false
@@ -580,7 +589,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 	// Create pod
 	pod, err := p.podClient.Create(pod)
 	if err != nil {
-		p.Logger.Error("Failed to create pod", "err", err)
+		p.Logger.Error("failed to create pod", "err", err)
 		return nil, err
 	}
 
@@ -599,7 +608,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 func (p *Kubernetesp) TearDown(namespace string) error {
 	err := p.clientset.CoreV1().Namespaces().Delete(namespace, &metav1.DeleteOptions{})
 	if err != nil {
-		p.Logger.Error("Deleting namespace", "err", err, "namespace", namespace)
+		p.Logger.Error("deleting namespace", "err", err, "namespace", namespace)
 		return err
 	}
 
@@ -607,12 +616,12 @@ func (p *Kubernetesp) TearDown(namespace string) error {
 		LabelSelector: "wr",
 	})
 	if err != nil {
-		p.Logger.Error("Getting ClusterRoleBindings", "err", err)
+		p.Logger.Error("getting ClusterRoleBindings", "err", err)
 		return err
 	}
 	err = p.clientset.RbacV1().ClusterRoleBindings().Delete(crbl.Items[0].ObjectMeta.Name, &metav1.DeleteOptions{})
 	if err != nil {
-		p.Logger.Error("Deleting ClusterRoleBinding", "ClusterRoleBinding", crbl.Items[0].ObjectMeta.Name, "err", err)
+		p.Logger.Error("deleting ClusterRoleBinding", "ClusterRoleBinding", crbl.Items[0].ObjectMeta.Name, "err", err)
 		return err
 	}
 
@@ -623,7 +632,7 @@ func (p *Kubernetesp) TearDown(namespace string) error {
 func (p *Kubernetesp) DestroyPod(podName string) error {
 	err := p.podClient.Delete(podName, &metav1.DeleteOptions{})
 	if err != nil {
-		p.Logger.Error("Deleting pod", "err", err, "pod", podName)
+		p.Logger.Error("deleting pod", "err", err, "pod", podName)
 		return err
 	}
 	return nil
