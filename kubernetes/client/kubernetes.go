@@ -123,7 +123,8 @@ func (p *Kubernetesp) CreateNewNamespace(name string) error {
 	return nil
 }
 
-// Authenticate with cluster, return clientset.
+// Authenticate with cluster, return clientset and RESTConfig.
+// Can be called from within or outside of a cluster, should still work.
 // Optionally supply a logger
 func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
 	var l log15.Logger
@@ -205,6 +206,8 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
 		p.Logger.Info("Succesfully authenticated using InClusterConfig()")
+		// Create REST client
+		p.RESTClient = clientset.CoreV1().RESTClient()
 		return clientset, clusterConfig, nil
 
 	}
@@ -213,11 +216,10 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 
 // Initialize uses the passed clientset to
 // create some authenticated clients used in other methods.
-// also creates a new namespace for wr to work in.
+// Creates a new namespace for wr to work in.
 // Optionally pass a namespace as a string.
 func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...string) error {
-	// Create REST client
-	p.RESTClient = clientset.CoreV1().RESTClient()
+
 	// Create namespace client
 	p.namespaceClient = clientset.CoreV1().Namespaces()
 	// Create a unique namespace if one isn't passed
