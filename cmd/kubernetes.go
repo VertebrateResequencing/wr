@@ -166,7 +166,7 @@ hub is supported`,
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file); we can't proxy if a manager is already up
-		jq := connect(1 * time.Second)
+		jq := connect(1*time.Second, true)
 		if jq != nil {
 			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 		}
@@ -179,7 +179,7 @@ hub is supported`,
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
 		if fmRunning {
-			info("Killing stale daemon with PID %s.", fmPid)
+			info("killing stale daemon with PID %s.", fmPid)
 			stale, err := os.FindProcess(fmPid)
 			if err != nil {
 				warn("Failed to find process", "err", err)
@@ -188,6 +188,17 @@ hub is supported`,
 			if errr != nil {
 				warn("Killing process returned error", "err", errr)
 			}
+		}
+
+		// later we will copy our server cert and key to the manager pod;
+		// if we don't have any, generate them now
+		err := internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
+		if err != nil {
+			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile, config.ManagerCertDomain)
+			if err != nil {
+				die("could not generate certs: %s", err)
+			}
+			info("created a new key and certificate for TLS")
 		}
 
 		// we will spawn wr on the remote server we will create, which means we
@@ -213,10 +224,13 @@ hub is supported`,
 			die("bad manager_web [%s]: %s", config.ManagerWeb, err)
 		}
 
-		// Set up the client
+		// Set up the client and resource files
 		c := kubedeployment.Controller{
 			Client: &client.Kubernetesp{},
 		}
+
+		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
+		resources := &cloud.Resources{}
 
 		// Authenticate and populate Kubernetesp with clientset and restconfig.
 		c.Clientset, c.Restconfig, err = c.Client.Authenticate(kubeLogger)
@@ -230,16 +244,61 @@ hub is supported`,
 		child, context := daemonize(fwPidPath, umask, extraArgs...)
 		if child != nil {
 			// PostParent() (Runs in the parent process after spawning child)
-			info("Please wait while the kubernetes deployment is created...")
+			info("please wait while the kubernetes deployment is created...")
 			// check that we can now connect to the remote manager
 
-			jq = connect(120 * time.Second)
+			jq = connect(120*time.Second, true)
 			if jq == nil {
 				die("could not talk to wr manager after 120s")
 			}
 
 			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
-			info("wr's web interface can be reached locally at http://localhost:%s", jq.ServerInfo.WebPort)
+			// The remote manager is running, read the resource file to determine the name
+			// of the pod to fetch the client.token from.
+
+			// Read the manager pod's name from resource file
+			file, err := os.Open(resourcePath)
+			if err != nil {
+				die("Could not open resource file with path: %s", err)
+			}
+			decoder := gob.NewDecoder(file)
+			err = decoder.Decode(resources)
+			if err != nil {
+				info("Error decoding resource file: %s", err)
+				panic(err)
+			}
+			managerPodName := resources.Details["manager-pod"]
+			namespace := resources.Details["namespace"]
+
+			internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
+
+			stdOut := new(client.Writer)
+			stdErr := new(client.Writer)
+			opts := &client.CmdOptions{
+				Command: []string{"cat", podBinDir + ".wr_" + config.Deployment + "/client.token"},
+				StreamOptions: client.StreamOptions{
+					PodName:       managerPodName,
+					ContainerName: "wr-manager",
+					Out:           stdOut,
+					Err:           stdErr,
+				},
+			}
+			// Exec the command in the pod
+			_, _, err = c.Client.ExecCmd(opts, namespace)
+			if err != nil {
+				die("something went executing the command to retrieve the token: %s", err)
+			}
+			if stdErr.Str != nil {
+				die("the command to retrieve the token exited non zero: %s", err)
+			}
+			token := strings.Join(stdOut.Str, " ")
+			// Write token to file
+			err = ioutil.WriteFile(config.ManagerTokenFile, []byte(token), 0644)
+			if err != nil {
+				warn("Failed to write token to file: %s", err)
+			}
+
+			info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, token)
 		} else {
 			// daemonized child, that will run until signalled to stop
 			// Set up logging to file
@@ -251,13 +310,6 @@ hub is supported`,
 				warn("wr manager could not log to %s: %s", kubeLogFile, err)
 			} else {
 				l15h.AddHandler(appLogger, fh)
-
-				// have the server logger output to file, levelled with caller info
-				// logLevel := log15.LvlWarn
-				// if kubeDebug {
-				// 	logLevel = log15.LvlDebug
-				// }
-				//	kubeDaemonLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(fh)))
 			}
 
 			defer func() {
@@ -275,8 +327,6 @@ hub is supported`,
 
 			// Look for a set of resources in the manager directory
 			// If found, load them else use a new empty set.
-			resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
-			resources := &cloud.Resources{}
 
 			info("Checking resources")
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
@@ -323,7 +373,7 @@ hub is supported`,
 				_ = file.Close()
 
 			} else {
-				info("Opening resource file with path: %s", resourcePath)
+				info("opening resource file with path: %s", resourcePath)
 				file, err := os.Open(resourcePath)
 				if err != nil {
 					die("Could not open resource file with path: %s", err)
@@ -331,14 +381,14 @@ hub is supported`,
 				decoder := gob.NewDecoder(file)
 				err = decoder.Decode(resources)
 				if err != nil {
-					info("Error decoding resource file: %s", err)
+					warn("error decoding resource file: %s", err)
 					panic(err)
 				}
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
 				scriptName = resources.Details["scriptName"]
 				// Populate the rest of Kubernetesp
-				info("Initialising to namespace %s", kubeNamespace)
+				info("initialising to namespace %s", kubeNamespace)
 				err = c.Client.Initialize(c.Clientset, kubeNamespace)
 				if err != nil {
 					panic(err)
@@ -356,10 +406,18 @@ hub is supported`,
 			if kubeDebug {
 				mCmd = mCmd + " --debug"
 			}
+
 			binaryArgs := []string{mCmd}
 
+			// Add the configFiles passed to the deploy cmd
 			files := rewriteConfigFiles(podConfigFiles)
+			// Copy the wr-linux binary
 			files = append(files, client.FilePair{exe, podBinDir})
+			// Copy cert, key & ca files
+			files = append(files, client.FilePair{filepath.Join(config.ManagerDir + "/key.pem"), podBinDir + ".wr_" + config.Deployment + "/"})
+			files = append(files, client.FilePair{filepath.Join(config.ManagerDir + "/ca.pem"), podBinDir + ".wr_" + config.Deployment + "/"})
+			files = append(files, client.FilePair{filepath.Join(config.ManagerDir + "/cert.pem"), podBinDir + ".wr_" + config.Deployment + "/"})
+
 			info(fmt.Sprintf("podConfigFiles: %#v", podConfigFiles))
 
 			// Specify deployment options
@@ -373,6 +431,7 @@ hub is supported`,
 				ConfigMountPath: podScriptDir,
 				RequiredPorts:   []int{mp, wp},
 				Logger:          appLogger,
+				ResourcePath:    resourcePath,
 			}
 
 			stopCh := make(chan struct{})
