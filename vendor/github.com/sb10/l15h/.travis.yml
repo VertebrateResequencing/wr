@@ -1,0 +1,9 @@
+language: go
+sudo: false
+go:
+  - master
+before_install:
+  - go get github.com/mattn/goveralls
+script:
+  - go test -v -coverprofile=l15h.coverprofile -covermode count .
+  - $HOME/gopath/bin/goveralls -coverprofile=l15h.coverprofile -service travis-ci

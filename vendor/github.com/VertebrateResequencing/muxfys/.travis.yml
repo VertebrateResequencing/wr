@@ -1,0 +1,18 @@
+language: go
+sudo: true
+go:
+  - "1.10"
+before_install:
+  - sudo apt-get install -qq pkg-config fuse
+  - sudo modprobe fuse
+  - sudo chmod 666 /dev/fuse
+  - sudo chown root:$USER /etc/fuse.conf
+  - sudo sed -i '/user_allow_other/s/^#//g' /etc/fuse.conf
+  - go get github.com/mattn/goveralls
+before_script:
+  - go get github.com/minio/minio
+  - export PATH=$PATH:$HOME/gopath/bin
+  - export MUXFYS_S3_PORT="9000"
+script:
+  - go test -v -coverprofile=muxfys.coverprofile -covermode count .
+  - goveralls -coverprofile=muxfys.coverprofile -service travis-ci

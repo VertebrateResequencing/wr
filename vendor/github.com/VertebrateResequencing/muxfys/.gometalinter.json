@@ -1,0 +1,1 @@
+{ "Enable": ["unconvert", "interfacer", "gotypex", "structcheck", "gofmt", "varcheck", "gotype", "goconst", "deadcode", "vet", "unparam", "golint", "goimports", "gas", "megacheck", "ineffassign", "misspell", "nakedret", "vetshadow", "errcheck"], "Exclude": ["jobqueue/static.go"] }
