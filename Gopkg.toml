@@ -25,13 +25,17 @@
 # #   vendor/k8s.io/kubernetes/pkg/util/parsers/parsers.go:36:16: undefined: reference.ParseNormalizedNamed
  [[override]]
    name = "github.com/docker/distribution"
-   branch = "master"
+   revision = "83389a148052d74ac602f5f1d62f86ff2f3c4aa5"
 
 [[constraint]]
   name = "code.cloudfoundry.org/bytefmt"
 
 [[constraint]]
   name = "github.com/VertebrateResequencing/muxfys"
+  version = "v3.0.0"
+
+[[constraint]]
+   name = "github.com/minio/minio-go"
 
 [[constraint]]
   branch = "master"
@@ -42,10 +46,6 @@
 
 [[constraint]]
   name = "github.com/dgryski/go-farm"
-
-[[constraint]]
-  name = "github.com/docker/docker"
-  version = "1.13.1"
 
 [[constraint]]
   name = "github.com/fatih/color"
@@ -128,6 +128,10 @@
 [[constraint]]
   name = "k8s.io/client-go"
   version = "7.0.0"
+
+[[constraint]]
+  name = "github.com/docker/docker"
+  branch = "master"
 
 [[constraint]]
   name = "k8s.io/kubernetes"
