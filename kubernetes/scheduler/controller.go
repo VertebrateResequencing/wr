@@ -532,10 +532,15 @@ func (c *Controller) runReqCheck() {
 // Not using PV's at all here.
 // ToDO: Multiple PV/Not PV types.
 func (c *Controller) reqCheckHandler() bool {
-	c.logger.Info("reqCheckHandler() called.")
+	c.logger.Debug("reqCheckHandler() called.")
 	req := <-c.opts.ReqChan
-	c.logger.Info("reqCheckHandler() recieved req.")
+	c.logger.Debug("reqCheckHandler() recieved req.")
+	c.logger.Debug("obtaining RLock()")
 	c.nodeResourceMutex.RLock()
+	c.logger.Debug("obtained RLock()")
+
+	defer c.nodeResourceMutex.RUnlock()
+	defer c.logger.Debug("returned RLock()")
 
 	for _, n := range c.nodeResources {
 		// A Node should always have equal or more resource
