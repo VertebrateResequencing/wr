@@ -535,7 +535,7 @@ func (c *Controller) reqCheckHandler() bool {
 	c.logger.Info("reqCheckHandler() called.")
 	req := <-c.opts.ReqChan
 	c.logger.Info("reqCheckHandler() recieved req.")
-	c.nodeResourceMutex.Lock()
+	c.nodeResourceMutex.RLock()
 
 	for _, n := range c.nodeResources {
 		// A Node should always have equal or more resource
@@ -550,7 +550,7 @@ func (c *Controller) reqCheckHandler() bool {
 			return true
 		}
 	}
-	c.nodeResourceMutex.Unlock()
+	c.nodeResourceMutex.RUnlock()
 	c.logger.Info(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
 	req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
 	c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
