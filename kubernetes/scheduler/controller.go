@@ -120,16 +120,17 @@ func NewController(
 	nodeInformer := kubeInformerFactory.Core().V1().Nodes()
 
 	controller := &Controller{
-		libclient:     libclient,
-		kubeclientset: kubeclientset,
-		restconfig:    restconfig,
-		podLister:     podInformer.Lister(),
-		podSynced:     podInformer.Informer().HasSynced,
-		nodeLister:    nodeInformer.Lister(),
-		nodeSynced:    nodeInformer.Informer().HasSynced,
-		workqueue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
-		opts:          opts,
-		nodeResources: make(map[nodeName]corev1.ResourceList),
+		libclient:         libclient,
+		kubeclientset:     kubeclientset,
+		restconfig:        restconfig,
+		podLister:         podInformer.Lister(),
+		podSynced:         podInformer.Informer().HasSynced,
+		nodeLister:        nodeInformer.Lister(),
+		nodeSynced:        nodeInformer.Informer().HasSynced,
+		workqueue:         workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		opts:              opts,
+		nodeResources:     make(map[nodeName]corev1.ResourceList),
+		nodeResourceMutex: new(sync.RWMutex),
 	}
 
 	// Set up event handlers
