@@ -540,9 +540,10 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 					// Add the src:dest to separate slices
 					pairSrc = append(pairSrc, srcDest[0])
 					pairDst = append(pairDst, srcDest[1])
+					continue
 				}
 			}
-			s.Logger.Error(fmt.Sprintf("Source destination pair %s is mallformed.", path))
+			s.Logger.Error(fmt.Sprintf("Source destination pair %s is malformed.", path))
 
 		} else {
 			paths = append(paths, path)
