@@ -535,6 +535,8 @@ func (queue *Queue) GetRunningData() []interface{} {
 // to these items - use for read-only purposes.
 func (queue *Queue) AllItems() []*Item {
 	var items []*Item
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
 	for _, item := range queue.items {
 		items = append(items, item)
 	}
