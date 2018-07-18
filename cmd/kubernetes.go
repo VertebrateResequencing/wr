@@ -252,7 +252,6 @@ hub is supported`,
 				die("could not talk to wr manager after 120s")
 			}
 
-			info("wr manager remotely started on %s", sAddr(jq.ServerInfo))
 			// The remote manager is running, read the resource file to determine the name
 			// of the pod to fetch the client.token from.
 
@@ -297,7 +296,7 @@ hub is supported`,
 			if err != nil {
 				warn("Failed to write token to file: %s", err)
 			}
-
+			info("wr manager remotely started in pod %s (%s)", managerPodName, sAddr(jq.ServerInfo))
 			info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, token)
 		} else {
 			// daemonized child, that will run until signalled to stop
