@@ -482,7 +482,7 @@ and accessible.`,
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
 		resources := &cloud.Resources{}
 
-		info("Opening resource file with path: %s", resourcePath)
+		info("opening resource file with path: %s", resourcePath)
 		file, err := os.Open(resourcePath)
 		if err != nil {
 			die("Could not open resource file with path: %s", err)
@@ -490,7 +490,7 @@ and accessible.`,
 		decoder := gob.NewDecoder(file)
 		err = decoder.Decode(resources)
 		if err != nil {
-			info("Error decoding resource file: %s", err)
+			warn("error decoding resource file: %s", err)
 			panic(err)
 		}
 
@@ -503,7 +503,7 @@ and accessible.`,
 		noManagerForcedMsg := "; tearing down anyway - you may lose changes if not backing up the database to S3!"
 		serverHadProblems := false
 		if fmRunning {
-			jq := connect(1 * time.Second)
+			jq := connect(1*time.Second, true)
 			if jq != nil {
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
@@ -617,6 +617,23 @@ and accessible.`,
 		if err != nil {
 			warn("failed to delete the kubernetes resources file: %s", err)
 		}
+		err = os.Remove(filepath.Join(config.ManagerDir + "/key.pem"))
+		if err != nil {
+			warn("failed to delete key.pem: %s", err)
+		}
+		err = os.Remove(filepath.Join(config.ManagerDir + "/cert.pem"))
+		if err != nil {
+			warn("failed to delete cert.pem: %s", err)
+		}
+		err = os.Remove(filepath.Join(config.ManagerDir + "/ca.pem"))
+		if err != nil {
+			warn("failed to delete ca.pem: %s", err)
+		}
+		err = os.Remove(filepath.Join(config.ManagerDir + "/client.token"))
+		if err != nil {
+			warn("failed to delete the client token : %s", err)
+		}
+
 		info("deleted all kubernetes resources previously created")
 
 		// kill the port forwarders
@@ -721,97 +738,3 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	return filePairs
 
 }
-
-// func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool) {
-
-// 	if !alreadyStarted {
-// 		// create a file containing all the env vars for this provider, so that
-// 		// we can source it later
-// 		envvars, _ := cloud.AllEnv(providerName)
-// 		envvarExports := ""
-// 		for _, env := range envvars {
-// 			val := os.Getenv(env)
-// 			if val == "" {
-// 				continue
-// 			}
-// 			// *** this is bash-like only; is that a problem?
-// 			envvarExports += fmt.Sprintf("export %s=\"%s\"\n", env, val)
-// 		}
-// 		err = server.CreateFile(envvarExports, wrEnvFileName)
-// 		if err != nil {
-// 			teardown(provider)
-// 			die("failed to create our environment variables file on the server at %s: %s", server.IP, err)
-// 		}
-// 		_, _, err = server.RunCmd("chmod 600 "+wrEnvFileName, false)
-// 		if err != nil {
-// 			warn("failed to chmod 600 %s: %s", wrEnvFileName, err)
-// 		}
-
-// 		var configFilesArg string
-// 		if cloudConfigFiles != "" {
-// 			// strip any local file locations
-// 			var remoteConfigFiles []string
-// 			for _, cf := range strings.Split(cloudConfigFiles, ",") {
-// 				parts := strings.Split(cf, ":")
-// 				if len(parts) == 2 {
-// 					remoteConfigFiles = append(remoteConfigFiles, parts[1])
-// 				} else {
-// 					remoteConfigFiles = append(remoteConfigFiles, cf)
-// 				}
-// 			}
-
-// 			configFilesArg = " --cloud_config_files '" + strings.Join(remoteConfigFiles, ",") + "'"
-// 		}
-
-// 		debugStr := ""
-// 		if cloudDebug {
-// 			debugStr = " --debug"
-// 		}
-// 		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, realUsername(), managerTimeoutSeconds, debugStr, wrEnvFileName)
-
-// 		_, e, err := server.RunCmd(mCmd, false)
-// 		if err != nil {
-// 			warn("failed to start wr manager on the remote server")
-// 			if len(e) > 0 {
-// 				color.Red(e)
-// 			}
-
-// 			// copy over any manager logs that got created locally (ignore
-// 			// errors, and overwrite any existing file)
-// 			cloudLogFilePath := config.ManagerLogFile + "." + providerName
-// 			errf := server.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
-
-// 		}
-// 	}
-// }
-
-// func checkProcess(pidPath string) (pid int, running bool) {
-// 	// read file (treat errors such as file not existing as no process)
-// 	pidBytes, err := ioutil.ReadFile(pidPath)
-// 	if err != nil {
-// 		return pid, running
-// 	}
-
-// 	// convert file contents to pid (also treating errors as no process)
-// 	pid, err = strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-// 	if err != nil {
-// 		return pid, running
-// 	}
-
-// 	// see if the pid is running
-// 	process, err := os.FindProcess(pid)
-// 	if err != nil {
-// 		return pid, running
-// 	}
-// 	err = process.Signal(syscall.Signal(0))
-// 	running = err == nil
-// 	return pid, running
-// }
-
-// func killProcess(pid int) error {
-// 	process, err := os.FindProcess(pid)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return process.Signal(syscall.Signal(9))
-// }
