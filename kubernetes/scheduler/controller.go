@@ -58,18 +58,19 @@ const (
 
 // Controller stores everything the controller needs
 type Controller struct {
-	libclient     *client.Kubernetesp
-	kubeclientset kubernetes.Interface
-	restconfig    *rest.Config
-	podLister     corelisters.PodLister
-	podSynced     cache.InformerSynced
-	nodeLister    corelisters.NodeLister
-	nodeSynced    cache.InformerSynced
-	workqueue     workqueue.RateLimitingInterface
-	opts          ScheduleOpts
-	nodeResources map[nodeName]corev1.ResourceList
-	podAliveMap   *sync.Map
-	logger        log15.Logger
+	libclient         *client.Kubernetesp
+	kubeclientset     kubernetes.Interface
+	restconfig        *rest.Config
+	podLister         corelisters.PodLister
+	podSynced         cache.InformerSynced
+	nodeLister        corelisters.NodeLister
+	nodeSynced        cache.InformerSynced
+	workqueue         workqueue.RateLimitingInterface
+	opts              ScheduleOpts
+	nodeResources     map[nodeName]corev1.ResourceList
+	nodeResourceMutex *sync.RWMutex
+	podAliveMap       *sync.Map
+	logger            log15.Logger
 }
 
 // ScheduleOpts stores options  for the scheduler
@@ -476,6 +477,8 @@ func (c *Controller) processNode(node *corev1.Node) error {
 	// will only be called by processItem provided a key from the
 	// workqueue
 	//c.logger.Info(fmt.Sprintf("Adding node %s with allocatable resources %v", node.ObjectMeta.Name, node.Status.Allocatable))
+	c.nodeResourceMutex.Lock()
+	defer c.nodeResourceMutex.Unlock()
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
 	return nil
 }
@@ -531,6 +534,7 @@ func (c *Controller) reqCheckHandler() bool {
 	c.logger.Info("reqCheckHandler() called.")
 	req := <-c.opts.ReqChan
 	c.logger.Info("reqCheckHandler() recieved req.")
+	c.nodeResourceMutex.Lock()
 
 	for _, n := range c.nodeResources {
 		// A Node should always have equal or more resource
@@ -545,6 +549,7 @@ func (c *Controller) reqCheckHandler() bool {
 			return true
 		}
 	}
+	c.nodeResourceMutex.Unlock()
 	c.logger.Info(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
 	req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
 	c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
