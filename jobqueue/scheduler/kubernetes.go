@@ -173,6 +173,8 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.runCmdFunc = s.runCmd
 	s.cancelRunCmdFunc = s.cancelRun
 	s.stateUpdateFunc = s.stateUpdate
+	s.maxMemFunc = s.maxMem
+	s.maxCPUFunc = s.maxCPU
 	s.stateUpdateFreq = s.config.StateUpdateFrequency
 	if s.stateUpdateFreq == 0 {
 		s.stateUpdateFreq = 1 * time.Minute
@@ -623,4 +625,16 @@ func (s *k8s) rewriteDests(paths []string) []string {
 		}
 	}
 	return dests
+}
+
+// Tell the embedded local scheduler that we've got unlimited
+// resources. Let the k8s scheduler handle everything else.
+// ~~ It may be worth expanding this to set maximums to the total
+// node capacity at some point. ~~
+func (s *k8s) maxMem() int {
+	return 0
+}
+
+func (s *k8s) maxCPU() int {
+	return 0
 }
