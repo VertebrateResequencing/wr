@@ -688,7 +688,7 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 		return configMap, err
 	}
 
-	// No coonfigmap with the data we want exists, so create one.
+	// No configmap with the data we want exists, so create one.
 	configMap, err := p.configMapClient.Create(&apiv1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-script-",
