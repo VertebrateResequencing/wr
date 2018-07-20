@@ -253,22 +253,6 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 		return fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)
 	}
 
-	// // On interupt close p.StopChannel.
-
-	// signals := make(chan os.Signal, 1)   // channel to receive interrupt
-	// signal.Notify(signals, os.Interrupt) // Notify on interrupt
-	// defer signal.Stop(signals)           // stop relaying signals to signals
-
-	// // Avoid deadlock using goroutine
-	// // <-signals is blocking
-	// go func() {
-	// 	<-signals
-	// 	if p.StopChannel != nil {
-	// 		//Closing StopChannel terminates the forward request
-	// 		close(p.StopChannel)
-	// 	}
-	// }()
-
 	req := p.RESTClient.Post().
 		Resource("pods").
 		Namespace(p.NewNamespaceName).
@@ -288,17 +272,13 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 }
 
 // CopyTar copies the files defined in each filePair in files to the pod provided.
-// To be called by controller when condition met
+// Called by controller when initContainer status is running.
 func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	p.Logger.Info(fmt.Sprintf("copyTar Called with files %#v on pod %s", files, pod.ObjectMeta.Name))
 	//Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
-	// TODO: Wait for this to complete by signalling on some channel.
-	// I think it's segfaulting as its trying to use the reader before the tarballing is finished
-	//avoid deadlock by using goroutine
 	go func() {
 		defer pipeWriter.Close()
-		//[]filePair{{dir + "/.wr_config.yml", "/wr-tmp/"}, {dir + "/wr-linux", "/wr-tmp/"}}
 		tarErr := makeTar(files, pipeWriter)
 		if tarErr != nil {
 			p.Logger.Error("error writing tar", "err", tarErr)
@@ -308,7 +288,7 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 
 	stdOut := new(Writer)
 	stdErr := new(Writer)
-	// Pass no command []string, so just attach to running command in initcontainer.
+
 	opts := &CmdOptions{
 		StreamOptions: StreamOptions{
 			PodName:       pod.ObjectMeta.Name,
@@ -324,8 +304,8 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		p.Logger.Error("error running AttachCmd for CopyTar", "err", err)
 	}
 
-	p.Logger.Info(fmt.Sprintf("contents of stdOut: %v\n", stdOut.Str))
-	p.Logger.Info(fmt.Sprintf("contents of stdErr: %v\n", stdErr.Str))
+	p.Logger.Debug(fmt.Sprintf("contents of stdOut: %v\n", stdOut.Str))
+	p.Logger.Debug(fmt.Sprintf("contents of stdErr: %v\n", stdErr.Str))
 	return err
 
 }
