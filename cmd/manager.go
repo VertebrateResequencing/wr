@@ -571,12 +571,12 @@ func startJQ(postCreation []byte) {
 			if !provider.InCloud() {
 				die("according to hostname, this is not an instance in %s", scheduler)
 			}
-		}
-
-		// kubernetes specific code to check if we are in a wr pod inside a cluster
-		kubeWRPod := client.InWRPod()
-		if !kubeWRPod {
-			die("according to hostname, this is not a container in %s", scheduler)
+		} else {
+			// kubernetes specific code to check if we are in a wr pod inside a cluster
+			kubeWRPod := client.InWRPod()
+			if !kubeWRPod {
+				die("according to hostname, this is not a container in kubernetes")
+			}
 		}
 
 	}
