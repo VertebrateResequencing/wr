@@ -575,7 +575,7 @@ func startJQ(postCreation []byte) {
 			// kubernetes specific code to check if we are in a wr pod inside a cluster
 			kubeWRPod := client.InWRPod()
 			if !kubeWRPod {
-				die("according to hostname, this is not a container in kubernetes")
+				die("according to hostname and env vars, this is not a container in kubernetes")
 			}
 		}
 
