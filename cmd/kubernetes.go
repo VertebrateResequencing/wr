@@ -44,13 +44,19 @@ import (
 // it is a volume mount added to the init container and the container that will
 // run wr. As defining a volume mount overwrites whatever is in that directory
 // we want this to be unique. This is also what $HOME is set to, allowing paths
-// of the form '~/' to still work.
+// of the form '~/' to still work. Anything not copied into podBinDir will be lost
+// when the init container completes. This is why all files to be copied over are
+// rewritten into the form ~/foo/bar (Or in special cases, hard coded to podBinDir)
 const podBinDir = "/wr-tmp/"
 
 // podScriptDir is where the configMap will be mounted.
 const podScriptDir = "/scripts/"
 
-// The name of the wr linux binary to be expected
+// The name of the wr linux binary to be expected.
+// This is passed to the config map that is set as the
+// entry point for the chosen container. This way we can
+// ensure the users post creation script starts before the main
+// command
 const linuxBinaryName = "/wr-linux"
 
 const kubeLogFileName = "kubelog"
@@ -104,18 +110,18 @@ variables of the server the command is run on.
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created pod before any commands run on them. You
 might install some software for example. Note that the script is run by default
-as root. If necessary you may specify a user. If  your bash script has commands with
-'sudo' you may need to install sudo. This is usually when the image does not include
-it. For debian based images this may look like 'apt-get -y install sudo'.
+as root. If  your bash script has commands with 'sudo' you may need to install sudo. 
+This is usually when the image does not include it (e.g the ubuntu images).
+For debian based images this may look like 'apt-get -y install sudo'.
 
 The --config_files option lets you specify comma separated arbitrary text file
 paths that should be copied from your local system to any created cloud servers.
-Absolute paths will be copied to the same absolute path on the server. For files
-that should be transferred from your home directory to the cloud server's home
-directory (which could be at different absolute paths), prefix your path with
-"~/". If the local path of a file is unrelated to the remote path, separate the
-paths with a colon to specify source and destination, eg.
-"~/projectSpecific/.s3cfg:~/.s3cfg".
+Currently due to limitations in the way files are copied to pods, only files with 
+a destination "~/foo/bar" will be copied. For files that should be transferred 
+from your home directory to the cloud server's home directory (which could be at
+different absolute paths), prefix your path with "~/". If the local path of a 
+file is unrelated to the remote path, separate the paths with a colon to specify
+source and destination, eg. "~/projectSpecific/.s3cfg:~/.s3cfg".
 Local paths that don't exist are silently ignored.
 This option is important if you want to be able to queue up commands that rely
 on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
@@ -123,11 +129,11 @@ contain your credentials for connecting to your s3 bucket(s).
 
 Deploy can work with most container images because it uploads wr to any pod it
 creates; your image does not have to have wr installed on it. The only
-requirements of the image are that it has tar installed, and bash.
+requirements of the image are that it has tar cat and bash installed.
 For --mounts to work, fuse-utils must be installed, and /etc/fuse.conf should
 already have user_allow_other set or at least be present and commented out
-(wr will enable it). By default 'ubuntu:latest' is used. Currently only docker
-hub is supported`,
+(wr will enable it). 
+By default 'ubuntu:latest' is used. Currently only docker hub is supported`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// for debug purposes, set up logging to STDERR
 		kubeLogger := log15.New()
@@ -137,6 +143,7 @@ hub is supported`,
 		}
 		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
+		// Read in post creation script
 		var postCreation []byte
 		var extraArgs []string
 		if podPostCreationScript != "" {
@@ -271,6 +278,8 @@ hub is supported`,
 
 			internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
+			// cat the contents of the client.token in the running manager, so we can
+			// write them to disk locally, and provide the URL for accessing the web interface
 			stdOut := new(client.Writer)
 			stdErr := new(client.Writer)
 			opts := &client.CmdOptions{
@@ -282,6 +291,7 @@ hub is supported`,
 					Err:           stdErr,
 				},
 			}
+
 			// Exec the command in the pod
 			_, _, err = c.Client.ExecCmd(opts, namespace)
 			if err != nil {
@@ -291,6 +301,7 @@ hub is supported`,
 				die("the command to retrieve the token exited non zero: %s", err)
 			}
 			token := strings.Join(stdOut.Str, " ")
+
 			// Write token to file
 			err = ioutil.WriteFile(config.ManagerTokenFile, []byte(token), 0644)
 			if err != nil {
@@ -301,8 +312,6 @@ hub is supported`,
 		} else {
 			// daemonized child, that will run until signalled to stop
 			// Set up logging to file
-
-			// kubeDaemonLogger := log15.New()
 			kubeLogFile := filepath.Join(config.ManagerDir, kubeLogFileName)
 			fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
 			if err != nil {
@@ -326,7 +335,6 @@ hub is supported`,
 
 			// Look for a set of resources in the manager directory
 			// If found, load them else use a new empty set.
-
 			info("Checking resources")
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
@@ -442,8 +450,8 @@ hub is supported`,
 	},
 }
 
-// teardown sub-command deletes all cloud resources we created and then stops
-// the daemon by sending it a term signal
+// teardown sub-command deletes all kubernetes resources we created and then stops
+// the daemon by killing it's pid.
 var kubeTearDownCmd = &cobra.Command{
 	Use:   "teardown",
 	Short: "Delete all kubernetes resources that deploy created",
