@@ -58,7 +58,7 @@ const (
 
 // Controller stores everything the controller needs
 type Controller struct {
-	libclient         *client.Kubernetesp
+	libclient         *client.Kubernetesp // Our client library
 	kubeclientset     kubernetes.Interface
 	restconfig        *rest.Config
 	podLister         corelisters.PodLister
@@ -66,7 +66,7 @@ type Controller struct {
 	nodeLister        corelisters.NodeLister
 	nodeSynced        cache.InformerSynced
 	workqueue         workqueue.RateLimitingInterface
-	opts              ScheduleOpts
+	opts              ScheduleOpts // Options for the scheduler
 	nodeResources     map[nodeName]corev1.ResourceList
 	nodeResourceMutex *sync.RWMutex
 	podAliveMap       *sync.Map
@@ -75,7 +75,7 @@ type Controller struct {
 
 // ScheduleOpts stores options  for the scheduler
 type ScheduleOpts struct {
-	Files        []client.FilePair  // files to copy to each spawned runner. Potentially listen on a channel later.
+	Files        []client.FilePair  // Files to copy to each spawned runner. Potentially listen on a channel later.
 	CbChan       chan string        // Channel to send errors on
 	BadCbChan    chan *cloud.Server // Send bad 'servers' back to wr.
 	ReqChan      chan *Request      // Channel to send requests about resource availability to
@@ -85,7 +85,7 @@ type ScheduleOpts struct {
 }
 
 // Request contains relevant information
-// for processing a request.
+// for processing a request from reqCheck().
 type Request struct {
 	RAM    resource.Quantity
 	Time   time.Duration
@@ -96,7 +96,7 @@ type Request struct {
 }
 
 // PodAlive contains a pod, and a chan error
-// that is closed when the pod terminates succesfully.
+// that is notified when the pod terminates.
 type PodAlive struct {
 	Pod     *corev1.Pod
 	ErrChan chan error
@@ -244,15 +244,15 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	// Start informer factories, begin populating informer caches.
 
 	// Wait for caches to sync before starting workers
-	c.logger.Info("Waiting for caches to sync")
+	c.logger.Debug("Waiting for caches to sync")
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
 		c.logger.Crit("failed to wait for caches to sync")
 		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
-	c.logger.Info("Caches synced")
+	c.logger.Debug("Caches synced")
 
-	c.logger.Info("In Run(), starting workers")
+	c.logger.Debug("In Run(), starting workers")
 	// start workers
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runReqCheck, time.Second, stopCh)
@@ -372,10 +372,14 @@ func (c *Controller) processItem(key string) error {
 	return err
 }
 
-// Assume there is only 1 initcontainer
-// Copy tar to waiting initcontainers.
+// processPod implements the logic for how to react to observing
+// a pod in a given state. It currently copies the files passed in at
+// runtime to any pod with a waiting initcontainer, and returns errors
+// status updates and logs via the pod's ErrChan that is stored in c.podAliveMap.
 func (c *Controller) processPod(pod *corev1.Pod) error {
 	c.logger.Debug(fmt.Sprintf("processPod called on %s", pod.ObjectMeta.Name))
+	// Assume only 1 init container
+	// Given we control this (Deploy() / Spawn() this is ok)
 	if len(pod.Status.InitContainerStatuses) != 0 {
 		switch {
 		case pod.Status.InitContainerStatuses[0].State.Waiting != nil:
@@ -390,6 +394,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 		default:
 		}
 	}
+	// Error handling
 	if pod.Status.Phase == corev1.PodSucceeded {
 		c.logger.Debug(fmt.Sprintf("Pod %s exited succesfully, notifying", pod.ObjectMeta.Name))
 		//jsonObj, _ := json.Marshal(pod)
@@ -411,6 +416,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 	}
+	// Entire pod has failed for some reason.
 	if pod.Status.Phase == corev1.PodFailed {
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
 		if ok {
@@ -438,6 +444,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			Name: pod.ObjectMeta.Name,
 		})
 	}
+	// Pod is pending (cluster has not got enough capacity.)
 	if pod.Status.Phase == corev1.PodPending {
 		// If the request on the container is currently not possible, send a callback to the user
 		for _, condition := range pod.Status.Conditions {
@@ -446,6 +453,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		}
 	}
+	// Handle individual container failures.
 	if len(pod.Status.ContainerStatuses) != 0 {
 		switch {
 		case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
@@ -468,25 +476,24 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 	return nil
 }
 
-// Keep a running total of the total allocatable resources.
-// Adds information to a map[nodeName]resourcelist.
+// processNode is called whenever an informer encounters
+// a changed node.
 func (c *Controller) processNode(node *corev1.Node) error {
-	//c.logger.Info(fmt.Sprintf("processNode called on %s", node.ObjectMeta.Name))
-	// Set the capacity. May want allocatable later ?
-	// log me!
-	// This shouldn't need to be a threadsafe map, as processNode
-	// will only be called by processItem provided a key from the
-	// workqueue
-	//c.logger.Info(fmt.Sprintf("Adding node %s with allocatable resources %v", node.ObjectMeta.Name, node.Status.Allocatable))
+	// Keep a running total of the total allocatable resources.
+	// Adds information to a map[nodeName]resourcelist.
+	c.logger.Debug(fmt.Sprintf("processNode called on %s", node.ObjectMeta.Name))
+	c.logger.Debug(fmt.Sprintf("Adding node %s with allocatable resources %v", node.ObjectMeta.Name, node.Status.Allocatable))
 	c.logger.Debug("obtaining resourcemutex Lock()")
 	c.nodeResourceMutex.Lock()
 	c.logger.Debug("obtained resourcemutex Lock()")
+	// Set the allocatable resource amount
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
 	c.nodeResourceMutex.Unlock()
 	c.logger.Debug("returned resourcemutex Lock()")
 	return nil
 }
 
+// Nice unified error handling
 func (c *Controller) handleErr(err error, key interface{}) {
 	if err == nil {
 		c.workqueue.Forget(key)

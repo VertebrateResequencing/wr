@@ -205,9 +205,10 @@ func (c *Controller) processNextItem() bool {
 	return true
 }
 
-// processItem(key) is where we define how to react to a pod event
+// processItem(key) is where we define how to react to an item coming
+// off the work queue
 func (c *Controller) processItem(key string) error {
-	c.Opts.Logger.Info(fmt.Sprintf("Processing change to Pod %s", key))
+	c.Opts.Logger.Debug(fmt.Sprintf("Processing change to Pod %s", key))
 
 	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
@@ -215,7 +216,7 @@ func (c *Controller) processItem(key string) error {
 	}
 
 	if !exists {
-		c.Opts.Logger.Info(fmt.Sprintf("Object with key %s deleted. \n\nObj: %v", key, obj))
+		c.Opts.Logger.Debug(fmt.Sprintf("Object with key %s deleted. \n\nObj: %v", key, obj))
 		fmt.Printf("\n\n")
 		fmt.Println("====================")
 		fmt.Printf("\n\n")
@@ -231,6 +232,7 @@ func (c *Controller) processItem(key string) error {
 	return err
 }
 
+// Process a generic object
 func (c *Controller) processObj(obj interface{}) error {
 	fmt.Println("processObj called")
 	fmt.Printf("Object has type %T\n", obj)
@@ -245,16 +247,18 @@ func (c *Controller) processObj(obj interface{}) error {
 	return nil
 }
 
-// Assume there is only 1 initcontainer
+// processPod defines how to react to a pod coming off the workqueue
+// in an observed state.
+// Assumes there is only 1 initcontainer
 func (c *Controller) processPod(obj *apiv1.Pod) {
 	fmt.Println("processPod Called")
 	if len(obj.Status.InitContainerStatuses) != 0 {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
-			c.Opts.Logger.Info(fmt.Sprintf("InitContainer Waiting!"))
+			c.Opts.Logger.Debug(fmt.Sprintf("InitContainer Waiting!"))
 
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
-			c.Opts.Logger.Info(fmt.Sprintf("InitContainer Running!"))
+			c.Opts.Logger.Debug(fmt.Sprintf("InitContainer Running!"))
 			c.Opts.Logger.Info(fmt.Sprintf("Calling CopyTar with files: %+v", c.Opts.Files))
 			c.Client.CopyTar(c.Opts.Files, obj)
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
@@ -297,10 +301,10 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			c.Opts.Logger.Info(fmt.Sprintf("WR manager container is running, calling PortForward with ports %v", c.Opts.RequiredPorts))
 			go c.Client.PortForward(obj, c.Opts.RequiredPorts)
 		default:
-			c.Opts.Logger.Info(fmt.Sprintf("Not InitContainer or WR Manager container related"))
+			c.Opts.Logger.Debug(fmt.Sprintf("Not InitContainer or WR Manager container related"))
 		}
 	} else {
-		c.Opts.Logger.Info(fmt.Sprintf("InitContainerStatuses not initialised yet"))
+		c.Opts.Logger.Debug(fmt.Sprintf("InitContainerStatuses not initialised yet"))
 	}
 	return
 }
