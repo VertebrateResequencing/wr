@@ -563,42 +563,34 @@ and accessible.`,
 		}
 
 		// ToDo after logging looked at.
+		info("retrieving logs")
+		// cat logfiles and write to disk.
+		log, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
+		if err != nil {
+			warn("error retrieving log file: %s", err)
+		}
+		kubeSchedulerLog, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerLog"})
+		if err != nil {
+			warn("error retrieving kubeSchedulerLog file: %s", err)
+		}
+		kubeSchedulerControllerLog, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerControllerLog"})
+		if err != nil {
+			warn("error retrieving kubeSchedulerControllerLog file: %s", err)
+		}
 
-		// copy over any manager logs that got created locally (ignore errors,
-		// and overwrite any existing file) *** currently missing the final
-		// shutdown message doing things this way, but ok?...
-		// headNode := provider.HeadNode()
-		// if headNode != nil && headNode.Alive() {
-		// 	cloudLogFilePath := config.ManagerLogFile + "." + providerName
-		// 	errf := headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
-
-		// 	if errf != nil {
-		// 		warn("could not download the remote log file: %s", errf)
-		// 	} else {
-		// 		// display any crit lines in that log file
-		// 		if errf == nil {
-		// 			f, errf := os.Open(cloudLogFilePath)
-		// 			if errf == nil {
-		// 				explained := false
-		// 				scanner := bufio.NewScanner(f)
-		// 				for scanner.Scan() {
-		// 					line := scanner.Text()
-		// 					if strings.Contains(line, "lvl=crit") {
-		// 						if !explained {
-		// 							warn("looks like the manager on the remote server suffered critical errors:")
-		// 							explained = true
-		// 						}
-		// 						fmt.Println(line)
-		// 					}
-		// 				}
-
-		// 				if serverHadProblems {
-		// 					info("the remote manager log has been saved to %s", cloudLogFilePath)
-		// 				}
-		// 			}
-		// 		}
-		// 	}
-		// }
+		// Write logs to file
+		err = ioutil.WriteFile(config.ManagerDir+"/log", []byte(log), 0644)
+		if err != nil {
+			warn("failed to write log to file: %s", err)
+		}
+		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0644)
+		if err != nil {
+			warn("failed to write kubeSchedulerLog to file: %s", err)
+		}
+		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerControllerLog", []byte(kubeSchedulerControllerLog), 0644)
+		if err != nil {
+			warn("failed to write kubeSchedulerControllerLog to file: %s", err)
+		}
 
 		// teardown kubernetes resources we created
 		err = client.TearDown(resources.Details["namespace"])
