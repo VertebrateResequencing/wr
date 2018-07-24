@@ -32,6 +32,7 @@ import (
 )
 
 const shortTimeFormat = "06/1/2-15:04:05"
+const allRepGrps = "all above"
 
 // options for this cmd
 var cmdFileStatus string
@@ -143,6 +144,8 @@ name to just the first letter, eg. -o c):
 			disk := make(map[string]*runningvariance.RunningStat)
 			walltime := make(map[string]*runningvariance.RunningStat)
 			cputime := make(map[string]*runningvariance.RunningStat)
+			startends := make(map[string][]time.Time)
+			counts[allRepGrps] = make(map[jobqueue.JobState]int)
 			for _, job := range jobs {
 				if _, exists := counts[job.RepGroup]; !exists {
 					counts[job.RepGroup] = make(map[jobqueue.JobState]int)
@@ -152,6 +155,7 @@ name to just the first letter, eg. -o c):
 					state = jobqueue.JobStateRunning
 				}
 				counts[job.RepGroup][job.State]++
+				counts[allRepGrps][job.State]++
 
 				if state == jobqueue.JobStateBuried {
 					if _, exists := buried[job.RepGroup]; !exists {
@@ -165,26 +169,62 @@ name to just the first letter, eg. -o c):
 						disk[job.RepGroup] = runningvariance.NewRunningStat()
 						walltime[job.RepGroup] = runningvariance.NewRunningStat()
 						cputime[job.RepGroup] = runningvariance.NewRunningStat()
+						startends[job.RepGroup] = []time.Time{job.StartTime, job.EndTime}
 					}
 					memory[job.RepGroup].Push(float64(job.PeakRAM))
 					disk[job.RepGroup].Push(float64(job.PeakDisk))
 					walltime[job.RepGroup].Push(float64(job.WallTime()))
 					cputime[job.RepGroup].Push(float64(job.CPUtime))
+					if job.StartTime.Before(startends[job.RepGroup][0]) {
+						startends[job.RepGroup][0] = job.StartTime
+					}
+					if job.EndTime.After(startends[job.RepGroup][1]) {
+						startends[job.RepGroup][1] = job.EndTime
+					}
+
+					if _, exists := memory[allRepGrps]; !exists {
+						memory[allRepGrps] = runningvariance.NewRunningStat()
+						disk[allRepGrps] = runningvariance.NewRunningStat()
+						walltime[allRepGrps] = runningvariance.NewRunningStat()
+						cputime[allRepGrps] = runningvariance.NewRunningStat()
+						startends[allRepGrps] = []time.Time{job.StartTime, job.EndTime}
+					}
+					memory[allRepGrps].Push(float64(job.PeakRAM))
+					disk[allRepGrps].Push(float64(job.PeakDisk))
+					walltime[allRepGrps].Push(float64(job.WallTime()))
+					cputime[allRepGrps].Push(float64(job.CPUtime))
+					if job.StartTime.Before(startends[allRepGrps][0]) {
+						startends[allRepGrps][0] = job.StartTime
+					}
+					if job.EndTime.After(startends[allRepGrps][1]) {
+						startends[allRepGrps][1] = job.EndTime
+					}
 				}
 			}
 
 			// sort RepGroups for a nicer display
+			all := counts[allRepGrps]
+			delete(counts, allRepGrps)
 			var rgs []string
 			for rg := range counts {
 				rgs = append(rgs, rg)
 			}
 			sort.Strings(rgs)
 
+			if len(rgs) > 1 {
+				rgs = append(rgs, allRepGrps)
+				counts[allRepGrps] = all
+			}
+
 			// display summary for each RepGroup
 			for _, rg := range rgs {
 				var usage string
 				if counts[rg][jobqueue.JobStateComplete] > 0 {
 					usage = fmt.Sprintf(" memory=%dMB(+/-%dMB) disk=%dMB(+/-%dMB) walltime=%s(+/-%s) cputime=%s(+/-%s)", int(memory[rg].Mean()), int(memory[rg].StandardDeviation()), int(disk[rg].Mean()), int(disk[rg].StandardDeviation()), time.Duration(walltime[rg].Mean()), time.Duration(walltime[rg].StandardDeviation()), time.Duration(cputime[rg].Mean()), time.Duration(cputime[rg].StandardDeviation()))
+
+					if counts[rg][jobqueue.JobStateComplete] > 1 {
+						usage = usage + fmt.Sprintf(" started=%s ended=%s elapsed=%s", startends[rg][0].Format(shortTimeFormat), startends[rg][1].Format(shortTimeFormat), startends[rg][1].Sub(startends[rg][0]))
+					}
 				}
 
 				var dead string
