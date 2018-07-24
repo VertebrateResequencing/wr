@@ -144,6 +144,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
 		return
 	}
+
 	// Check if an existing deployment with the label 'app=wr-manager' exists
 	// if it does, skip the Deploy()
 	_, err := c.Clientset.Apps().Deployments(c.Client.NewNamespaceName).Get("wr-manager", metav1.GetOptions{})
@@ -260,7 +261,10 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
 			c.Opts.Logger.Debug(fmt.Sprintf("InitContainer Running!"))
 			c.Opts.Logger.Info(fmt.Sprintf("Calling CopyTar with files: %+v", c.Opts.Files))
-			c.Client.CopyTar(c.Opts.Files, obj)
+			err := c.Client.CopyTar(c.Opts.Files, obj)
+			if err != nil {
+				c.Opts.Logger.Error(fmt.Sprintf("Error copying tarball: %s", err))
+			}
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
 			// Write the pod name, name to the resources file.
 			// This allows us to retrieve it to obtain the client.token
