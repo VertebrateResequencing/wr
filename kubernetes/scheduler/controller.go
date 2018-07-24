@@ -18,6 +18,16 @@
 
 package scheduler
 
+/*
+
+Package scheduler a kubernetes controller to oversee the scheduling of wr-runner
+pods to a kubernetes cluster, It is an adapter that communicates wit the
+scheduleri implementation in ../../jobqueue/scheduler/kubernetes.go, and
+provides answers to questions that require up to date information about
+what is going on inside a cluster.
+
+*/
+
 import (
 	"fmt"
 	"path/filepath"
@@ -438,7 +448,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
 		}
 		// Callback to user, trying to give an informative error.
-		c.logger.Info(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason))
+		c.logger.Error(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason))
 		c.sendErrChan(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s\n Logs: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason, logs))
 		c.sendBadServer(&cloud.Server{
 			Name: pod.ObjectMeta.Name,
@@ -557,7 +567,7 @@ func (c *Controller) reqCheckHandler() bool {
 		// than the request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 = '<'),
 		// Return when the first node that meets the requirements is found.
 		if n.Cpu().Cmp(req.Cores) != -1 &&
-			//req.Disk.Cmp(n[corev1.ResourceName("ephemeral-storage")]) != 1 &&
+			n.StorageEphemeral().Cmp(req.Disk) != -1 &&
 			n.Memory().Cmp(req.RAM) != -1 {
 			// c.logger.Info(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
 			c.logger.Debug("Returning schedulable from reqCheckHandler")
