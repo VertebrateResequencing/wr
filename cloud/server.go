@@ -40,6 +40,7 @@ import (
 )
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
+const sshShortTimeOut = 5 * time.Second
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration
@@ -217,7 +218,7 @@ func (s *Server) SSHClient() (*ssh.Client, error) {
 				ssh.PublicKeys(signer),
 			},
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
-			Timeout:         5 * time.Second,
+			Timeout:         sshShortTimeOut,
 		}
 
 		// dial in to the server, allowing certain errors that indicate that the
@@ -290,7 +291,7 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 	sshClient, err := s.SSHClient()
 	if err != nil {
 		s.logger.Debug("server ssh could not be established", "err", err)
-		return nil, fmt.Errorf("cloud SSHSession() failed: %s", err.Error())
+		return nil, fmt.Errorf("cloud SSHSession() failed to get a client: %s", err.Error())
 	}
 
 	// *** even though sshclient has a timeout, it still hangs forever if we
@@ -302,7 +303,7 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 	sessionCh := make(chan *ssh.Session)
 	go func() {
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(sshShortTimeOut):
 			s.logger.Debug("server ssh timed out")
 			done <- fmt.Errorf("cloud SSHSession() timed out")
 		case <-worked:
@@ -314,7 +315,7 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 		session, errf := sshClient.NewSession()
 		if errf != nil {
 			s.logger.Debug("server ssh failed", "err", errf)
-			done <- fmt.Errorf("cloud SSHSession() failed: %s", errf.Error())
+			done <- fmt.Errorf("cloud SSHSession() failed to esatablish a session: %s", errf.Error())
 			return
 		}
 		worked <- true
