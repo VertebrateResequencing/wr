@@ -280,27 +280,12 @@ By default 'ubuntu:latest' is used. Currently only docker hub is supported`,
 
 			// cat the contents of the client.token in the running manager, so we can
 			// write them to disk locally, and provide the URL for accessing the web interface
-			stdOut := new(client.Writer)
-			stdErr := new(client.Writer)
-			opts := &client.CmdOptions{
-				Command: []string{"cat", podBinDir + ".wr_" + config.Deployment + "/client.token"},
-				StreamOptions: client.StreamOptions{
-					PodName:       managerPodName,
-					ContainerName: "wr-manager",
-					Out:           stdOut,
-					Err:           stdErr,
-				},
-			}
+			stdOut, _, err := c.Client.ExecInPod(managerPodName, "wr-manager", namespace, []string{"cat", podBinDir + ".wr_" + config.Deployment + "/client.token"})
 
-			// Exec the command in the pod
-			_, _, err = c.Client.ExecCmd(opts, namespace)
 			if err != nil {
 				die("something went executing the command to retrieve the token: %s", err)
 			}
-			if stdErr.Str != nil {
-				die("the command to retrieve the token exited non zero: %s", err)
-			}
-			token := strings.Join(stdOut.Str, " ")
+			token := stdOut
 
 			// Write token to file
 			err = ioutil.WriteFile(config.ManagerTokenFile, []byte(token), 0644)
