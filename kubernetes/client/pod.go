@@ -93,11 +93,6 @@ type Writer struct {
 	Str []string
 }
 
-type portForwarder interface {
-	forwardPorts(method string, url *url.URL, requiredPorts []string) error
-	PortForward(podName string, requiredPorts []int) error
-}
-
 // Write writes output (from stderr)
 func (w *Writer) Write(p []byte) (n int, err error) {
 	str := string(p)
@@ -153,8 +148,7 @@ func makeTar(files []FilePair, writer io.Writer) error {
 
 // AttachCmd attaches to a running container, pipes StdIn to the command running on that container
 // if StdIn is supplied.
-// ToDO: Set up writers for stderr and out internal to AttachCmd(), returning just strings &
-// removing the fields from the CmdOptions struct
+// Should work after only calling Authenticate()
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
 	// Make a request to the APIServer for an 'attach'.
 	// Open Stdin and Stderr for use by the client
@@ -261,21 +255,6 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 
 }
 
-func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
-	fmt.Println("In ForwardPorts")
-	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
-	if err != nil {
-		return err
-	}
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
-	fw, err := portforward.New(dialer, requiredPorts, p.StopChannel, p.ReadyChannel, p.cmdOut, p.cmdErr)
-	if err != nil {
-		return err
-	}
-
-	return fw.ForwardPorts()
-}
-
 // PortForward sets up port forwarding to the manager that is running inside the cluster
 func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	if pod.Status.Phase != apiv1.PodRunning {
@@ -299,6 +278,21 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 
 	return p.forwardPorts("POST", req.URL(), ports)
 
+}
+
+func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
+	fmt.Println("In ForwardPorts")
+	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
+	if err != nil {
+		return err
+	}
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
+	fw, err := portforward.New(dialer, requiredPorts, p.StopChannel, p.ReadyChannel, p.cmdOut, p.cmdErr)
+	if err != nil {
+		return err
+	}
+
+	return fw.ForwardPorts()
 }
 
 // CopyTar copies the files defined in each filePair in files to the pod provided.
