@@ -231,6 +231,36 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 	return "", "", nil
 }
 
+// ExecInPod is a convenience function to call ExecCmd without needing to set up writers for stdOut/Err
+// Accepts a pod name, container name, namespace and command. If you want to pass StdIn have a need for a
+//reader / writer then you'll need to use ExecCmd. If the command executes in the container and stdErr is
+// not nil, the command will return an error containing the contents of stdErr
+func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string, command []string) (string, string, error) {
+	stdOut := new(Writer)
+	stdErr := new(Writer)
+	opts := &CmdOptions{
+		Command: command,
+		StreamOptions: StreamOptions{
+			PodName:       podName,
+			ContainerName: containerName,
+			Out:           stdOut,
+			Err:           stdErr,
+		},
+	}
+
+	// Exec the command in the pod
+	_, _, err := p.ExecCmd(opts, namespace)
+	if err != nil {
+		return "", "", err
+	}
+	if len(stdErr.Str) != 0 {
+		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command returned non zero: %s", stdErr.Str)
+	}
+
+	return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), nil
+
+}
+
 func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
 	fmt.Println("In ForwardPorts")
 	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
