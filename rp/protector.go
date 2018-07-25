@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/satori/go.uuid"
+	"github.com/gofrs/uuid"
 )
 
 // Protector struct is used to Protect a particular resource by granting tokens
@@ -107,7 +107,10 @@ func (p *Protector) Request(numTokens int) (Receipt, error) {
 	}
 
 	// create a request object
-	u, _ := uuid.NewV4()
+	u, err := uuid.NewV4()
+	if err != nil {
+		return Receipt(""), err
+	}
 	r := &request{
 		id:        Receipt(u.String()),
 		grantedCh: make(chan bool, 1),

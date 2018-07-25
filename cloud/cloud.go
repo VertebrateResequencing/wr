@@ -84,8 +84,8 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
-	"github.com/satori/go.uuid"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can

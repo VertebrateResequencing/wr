@@ -34,8 +34,8 @@ import (
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-multierror"
-	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
 )
 

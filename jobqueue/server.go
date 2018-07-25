@@ -44,14 +44,14 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/rep"
-	"github.com/go-mangos/mangos/transport/tlstcp"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
+	"nanomsg.org/go-mangos/protocol/rep"
+	"nanomsg.org/go-mangos/transport/tlstcp"
 )
 
 // Err* constants are found in our returned Errors under err.Err, so you can

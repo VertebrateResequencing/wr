@@ -48,8 +48,8 @@ Alternatively, build it yourself (at least v1.10 of go is required):
 (make sure to set your `$GOPATH`). An example way of setting up a personal Go
 installation in your home directory would be:
 
-        wget "https://dl.google.com/go/go1.10.linux-amd64.tar.gz"
-        tar -xvzf go1.10.linux-amd64.tar.gz && rm go1.10.linux-amd64.tar.gz
+        wget "https://dl.google.com/go/go1.10.3.linux-amd64.tar.gz"
+        tar -xvzf go1.10.3.linux-amd64.tar.gz && rm go1.10.3.linux-amd64.tar.gz
         export GOROOT=$HOME/go
         export PATH=$PATH:$GOROOT/bin
         mkdir work

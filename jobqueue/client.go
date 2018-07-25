@@ -42,11 +42,11 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/docker/docker/api/types"
 	docker "github.com/docker/docker/client"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/req"
-	"github.com/go-mangos/mangos/transport/tlstcp"
-	"github.com/satori/go.uuid"
+	"github.com/gofrs/uuid"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
+	"nanomsg.org/go-mangos/protocol/req"
+	"nanomsg.org/go-mangos/transport/tlstcp"
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs
