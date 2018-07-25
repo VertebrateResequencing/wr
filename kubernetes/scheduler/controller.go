@@ -102,7 +102,15 @@ type Request struct {
 	Cores  resource.Quantity
 	Disk   resource.Quantity
 	Other  map[string]string
-	CbChan chan error
+	CbChan chan Response
+}
+
+// Response contains relevant information for
+// responding to a Request from reqCheck()
+type Response struct {
+	Error     error
+	Ephemeral bool // indicate if ephemeral storage is enabled
+
 }
 
 // PodAlive contains a pod, and a chan error
@@ -419,6 +427,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 					req.Done = true
 					c.logger.Info(fmt.Sprintf("Sending nil on ec for %s", pod.ObjectMeta.Name))
 					req.ErrChan <- nil
+					close(req.ErrChan)
 				}
 			}()
 		} else {
@@ -436,6 +445,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 					req.Done = true
 					c.logger.Error(fmt.Sprintf("Sending err on ec for %s", pod.ObjectMeta.Name))
 					req.ErrChan <- fmt.Errorf("Pod %s failed", pod.ObjectMeta.Name)
+					close(req.ErrChan)
 				}
 			}()
 		} else {
@@ -550,6 +560,8 @@ func (c *Controller) runReqCheck() {
 // For now ignore that you can set quotas on a k8s cluster.
 // Assume that the user can schedule an entire node.
 // Not using PV's at all here.
+// Currently there is no way to catastrophically fail,
+// if that were to happen, this func should return falses
 // ToDO: Multiple PV/Not PV types.
 func (c *Controller) reqCheckHandler() bool {
 	c.logger.Debug("reqCheckHandler() called.")
@@ -562,22 +574,61 @@ func (c *Controller) reqCheckHandler() bool {
 	defer c.nodeResourceMutex.RUnlock()
 	defer c.logger.Debug("returned RLock()")
 
+	StorageEphemeralEnabled := false
+
+	// Check if any node reports ephemeral storage
 	for _, n := range c.nodeResources {
-		// A Node should always have equal or more resource
-		// than the request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 = '<'),
-		// Return when the first node that meets the requirements is found.
-		if n.Cpu().Cmp(req.Cores) != -1 &&
-			n.StorageEphemeral().Cmp(req.Disk) != -1 &&
-			n.Memory().Cmp(req.RAM) != -1 {
-			// c.logger.Info(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
-			c.logger.Debug("Returning schedulable from reqCheckHandler")
-			req.CbChan <- nil // It is possible to eventually schedule
-			return true
+		if _, ok := n["ephemeral-storage"]; ok {
+			StorageEphemeralEnabled = true
 		}
 	}
 
-	c.logger.Debug(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
-	req.CbChan <- fmt.Errorf("No node has the capacity to schedule the current job")
+	// If no node reports ephemeral storage, turn off the check.
+	// Disk requests will silently ignored
+	if !StorageEphemeralEnabled {
+		for _, n := range c.nodeResources {
+			// A Node should always have equal or more resource than the request.
+			// (The  .Cmp function works:  1 = '>', 0 = '==', -1 = '<'),
+			// return when the first node that meets the requirements is found.
+			if n.Cpu().Cmp(req.Cores) != -1 && n.Memory().Cmp(req.RAM) != -1 {
+				c.logger.Debug(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+				req.CbChan <- Response{
+					Error:     nil, // It is possible to eventually schedule
+					Ephemeral: StorageEphemeralEnabled,
+				}
+
+				// If disk was requested, warn.
+				if resource.NewQuantity(int64(0), resource.DecimalSI).Cmp(req.Disk) != 0 {
+					c.sendErrChan(`The cluster is not reporting node ephemeral storage. 
+				If your command requires more storage than is avaliable on the node or there are competing requests it may fail.`)
+				}
+
+				return true
+			}
+		}
+	} else {
+		for _, n := range c.nodeResources {
+			// A Node should always have equal or more resource than the request.
+			// (The  .Cmp function works:  1 = '>', 0 = '==', -1 = '<'),
+			// return when the first node that meets the requirements is found.
+			if n.Cpu().Cmp(req.Cores) != -1 &&
+				n.StorageEphemeral().Cmp(req.Disk) != -1 &&
+				n.Memory().Cmp(req.RAM) != -1 {
+				c.logger.Debug(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+				req.CbChan <- Response{
+					Error:     nil, // It is possible to eventually schedule
+					Ephemeral: StorageEphemeralEnabled,
+				}
+
+				return true
+			}
+		}
+	}
+
+	c.logger.Error(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
+	req.CbChan <- Response{
+		Error:     fmt.Errorf("No node has the capacity to schedule the current job"),
+		Ephemeral: StorageEphemeralEnabled}
 	c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
 
 	return true
