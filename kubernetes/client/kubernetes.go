@@ -21,12 +21,12 @@ package client
 /*
 Package client provides functions to interact with a kubernetes cluster, used to
 create resources so that you can spawn runners, then delete those
-resources when you're done.
+resources when you're done. Everything is centred around a Kubernetesp struct.
+Calling Authenticate() will allow AttachCmd and ExecCmd to work without needing
+to Initialize()
 */
 
 import (
-
-	//"errors"
 	"crypto/md5"
 	"encoding/json"
 	"flag"
@@ -55,11 +55,11 @@ import (
 
 	"math/rand"
 
+	// Allow auth against gcp cluster
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	"k8s.io/client-go/util/retry"
-	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
 const DefaultScriptName = "wr-boot"
@@ -77,7 +77,6 @@ type Kubernetesp struct {
 	podClient         typedv1.PodInterface
 	configMapClient   typedv1.ConfigMapInterface
 	configMapHashes   map[string][16]byte
-	PortForwarder     portForwarder
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
 	cmdOut, cmdErr    io.Writer
@@ -278,8 +277,8 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 
 // Deploy creates the wr-manager deployment and service.
 // Creates ClusterRoleBinding to allow the default service account
-// in the namespace rights to manage cluster. (ToDo: Write own ClusterRole that
-// allows fewer permissions)
+// in the namespace rights to manage cluster.
+// (ToDo: Write own ClusterRole that allows fewer permissions)
 // Copying of WR to initcontainer done by Controller when ready
 // (Assumes tar is available).
 // Portforwarding done by controller when ready.
@@ -349,7 +348,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 					Containers: []apiv1.Container{
 						{
 							Name:  "wr-manager",
-							Image: "ubuntu:17.10",
+							Image: "ubuntu:latest",
 							Ports: []apiv1.ContainerPort{
 								{
 									Name:          "wr-manager",
@@ -431,7 +430,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 		return err
 	}
 	fmt.Printf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.NewNamespaceName)
-	// specify service so wr-manager can be resolved using kubedns
+	// specify service so wr-manager can be resolved using kubedns if needed
 	svcOpts := ServiceOpts{
 		Name: "wr-manager",
 		Labels: map[string]string{
@@ -553,8 +552,9 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 					},
 					Resources: apiv1.ResourceRequirements{
 						Requests: apiv1.ResourceList{
-							apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(resources.Cores)*1000, resource.DecimalSI),
-							apiv1.ResourceMemory: *resource.NewQuantity(int64(resources.RAM)*1024*1024, resource.BinarySI),
+							apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(resources.Cores)*1000, resource.DecimalSI),
+							apiv1.ResourceMemory:           *resource.NewQuantity(int64(resources.RAM)*1024*1024, resource.BinarySI),
+							apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(resources.Disk)*1024*1024*1024, resource.BinarySI),
 						},
 						Limits: apiv1.ResourceList{
 							apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(resources.Cores+1)*1000, resource.DecimalSI),
@@ -572,7 +572,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 			InitContainers: []apiv1.Container{
 				{
 					Name:      "runner-init-container",
-					Image:     "ubuntu:17.10",
+					Image:     "ubuntu:latest",
 					Command:   []string{"/bin/tar", "-xf", "-"},
 					Stdin:     true,
 					StdinOnce: true,

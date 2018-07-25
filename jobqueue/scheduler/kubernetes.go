@@ -51,12 +51,14 @@ type k8s struct {
 	config          *ConfigKubernetes
 	libclient       *client.Kubernetesp
 	callBackChan    chan string
-	cbmutex         sync.RWMutex
+	cbmutex         *sync.RWMutex
 	badCallBackChan chan *cloud.Server
 	reqChan         chan *kubescheduler.Request
 	podAliveChan    chan *kubescheduler.PodAlive
 	msgCB           MessageCallBack
 	badServerCB     BadServerCallBack
+	es              bool
+	esmutex         *sync.RWMutex
 	logger          log15.Logger
 }
 
@@ -175,6 +177,8 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.stateUpdateFunc = s.stateUpdate
 	s.maxMemFunc = s.maxMem
 	s.maxCPUFunc = s.maxCPU
+	s.cbmutex = new(sync.RWMutex)
+	s.esmutex = new(sync.RWMutex)
 	s.stateUpdateFreq = s.config.StateUpdateFrequency
 	if s.stateUpdateFreq == 0 {
 		s.stateUpdateFreq = 1 * time.Minute
@@ -275,39 +279,34 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	// Rewrite *Requirements to a kubescheduler.Request
 	cores := resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
 	ram := resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
-	disk := resource.NewQuantity(int64(req.Disk)*1000*1000*1000, resource.DecimalSI)
+	disk := resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI)
 	r := &kubescheduler.Request{
 		RAM:    *ram,
 		Time:   req.Time,
 		Cores:  *cores,
 		Disk:   *disk,
 		Other:  req.Other,
-		CbChan: make(chan error),
+		CbChan: make(chan kubescheduler.Response),
 	}
-	// Do i want this to be non blocking??
-	// Do i want it to block in a goroutine??
 
-	// Blocking sends are fine in a goroutine?
 	s.Logger.Info(fmt.Sprintf("Sending request to listener %#v", r))
 	go func() {
 		s.reqChan <- r
 	}()
-	// select {
-	// case s.reqChan <- r:
-	// 	fmt.Println("Request sent")
-	// default:
-	// 	fmt.Println("No request sent")
-	// }
-	// Do i want this to block or not?
-	// What about multiple errors?
+
 	s.Logger.Info("Waiting on reqCheck to return")
-	err := <-r.CbChan
-	if err != nil {
+	resp := <-r.CbChan
+	s.esmutex.Lock()
+	defer s.esmutex.Unlock()
+	if resp.Error != nil {
 		//s.msgCB(fmt.Sprintf("Requirements check for request %s recieved error: %s", req.Stringify(), err))
-		s.Logger.Info(fmt.Sprintf("Requirements check recieved error: %s", err))
+		s.Logger.Error(fmt.Sprintf("Requirements check recieved error: %s", resp.Error))
+		s.es = resp.Ephemeral
+		return resp.Error
 	}
 	s.Logger.Info("reqCheck returned ok")
-	return err
+	s.es = resp.Ephemeral
+	return resp.Error
 }
 
 // setMessageCallBack sets the given callback function.
@@ -365,18 +364,14 @@ func (s *k8s) cleanup() {
 		s.Warn("cleanup queue destruction failed", "err", err)
 	}
 
-	// err = s.libclient.TearDown()
-	// if err != nil {
-	// 	s.Warn("namespace deletion errored", "err", err)
-	// }
 	return
 }
 
 // Work out how many pods with given resource requests can be scheduled based on resource requests on the
 // nodes in the cluster.
 func (s *k8s) canCount(req *Requirements) (canCount int) {
-	s.Logger.Info("canCount Called, returning 1")
-	// return 1 until I decide what to do.
+	s.Logger.Info("canCount Called, returning 100")
+	// 100 is  a big enough block for anyone...
 	return 100
 }
 
@@ -425,6 +420,14 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		Disk:  req.Disk,
 		RAM:   req.RAM,
 	}
+
+	// If ephemeral storage is not enabled on the cluster
+	// don't request any
+	s.esmutex.RLock()
+	if !s.es {
+		requirements.Disk = 0
+	}
+	s.esmutex.RUnlock()
 
 	//DEBUG:
 	//binaryArgs = []string{"tail", "-f", "/dev/null"}
