@@ -81,6 +81,7 @@ type Server struct {
 	permanentProblem  string
 	provider          *Provider
 	sshclient         *ssh.Client
+	sshSessions       int
 	usedCores         int
 	usedDisk          int
 	usedRAM           int
@@ -200,6 +201,16 @@ func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 func (s *Server) SSHClient() (*ssh.Client, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	if s.sshSessions > 10 {
+		// default MaxSessions for sshd is 10; create a new client
+		// *** should reuse past clients when those sessions get closed, ie. use
+		// a proper ssh session pool, but eg. github.com/chao-mu/sshpool didn't
+		// work as expected...
+		s.sshclient = nil
+		s.sshSessions = 1
+	}
+
 	if s.sshclient == nil {
 		if s.provider.PrivateKey() == "" {
 			s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
@@ -288,6 +299,9 @@ func sshDial(addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
 // ssh on the server. Will time out and return an error if the session can't be
 // created within 5s.
 func (s *Server) SSHSession() (*ssh.Session, error) {
+	s.mutex.Lock()
+	s.sshSessions++
+	s.mutex.Unlock()
 	sshClient, err := s.SSHClient()
 	if err != nil {
 		s.logger.Debug("server ssh could not be established", "err", err)
