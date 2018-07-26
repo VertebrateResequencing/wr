@@ -1,5 +1,6 @@
 /*
- * Minio Go Library for Amazon S3 Compatible Cloud Storage (C) 2015 Minio, Inc.
+ * Minio Go Library for Amazon S3 Compatible Cloud Storage
+ * Copyright 2015-2017 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,19 +18,13 @@
 package minio
 
 import (
-	"hash"
+	"context"
 	"io"
 	"math"
 	"os"
 
 	"github.com/minio/minio-go/pkg/s3utils"
 )
-
-// Verify if reader is *os.File
-func isFile(reader io.Reader) (ok bool) {
-	_, ok = reader.(*os.File)
-	return
-}
 
 // Verify if reader is *minio.Object
 func isObject(reader io.Reader) (ok bool) {
@@ -40,6 +35,26 @@ func isObject(reader io.Reader) (ok bool) {
 // Verify if reader is a generic ReaderAt
 func isReadAt(reader io.Reader) (ok bool) {
 	_, ok = reader.(io.ReaderAt)
+	if ok {
+		var v *os.File
+		v, ok = reader.(*os.File)
+		if ok {
+			// Stdin, Stdout and Stderr all have *os.File type
+			// which happen to also be io.ReaderAt compatible
+			// we need to add special conditions for them to
+			// be ignored by this function.
+			for _, f := range []string{
+				"/dev/stdin",
+				"/dev/stdout",
+				"/dev/stderr",
+			} {
+				if f == v.Name() {
+					ok = false
+					break
+				}
+			}
+		}
+	}
 	return
 }
 
@@ -76,31 +91,9 @@ func optimalPartInfo(objectSize int64) (totalPartsCount int, partSize int64, las
 	return totalPartsCount, partSize, lastPartSize, nil
 }
 
-// hashCopyN - Calculates chosen hashes up to partSize amount of bytes.
-func hashCopyN(hashAlgorithms map[string]hash.Hash, hashSums map[string][]byte, writer io.Writer, reader io.Reader, partSize int64) (size int64, err error) {
-	hashWriter := writer
-	for _, v := range hashAlgorithms {
-		hashWriter = io.MultiWriter(hashWriter, v)
-	}
-
-	// Copies to input at writer.
-	size, err = io.CopyN(hashWriter, reader, partSize)
-	if err != nil {
-		// If not EOF return error right here.
-		if err != io.EOF {
-			return 0, err
-		}
-	}
-
-	for k, v := range hashAlgorithms {
-		hashSums[k] = v.Sum(nil)
-	}
-	return size, err
-}
-
 // getUploadID - fetch upload id if already present for an object name
 // or initiate a new request to fetch a new upload id.
-func (c Client) newUploadID(bucketName, objectName string, metaData map[string][]string) (uploadID string, err error) {
+func (c Client) newUploadID(ctx context.Context, bucketName, objectName string, opts PutObjectOptions) (uploadID string, err error) {
 	// Input validation.
 	if err := s3utils.CheckValidBucketName(bucketName); err != nil {
 		return "", err
@@ -110,7 +103,7 @@ func (c Client) newUploadID(bucketName, objectName string, metaData map[string][
 	}
 
 	// Initiate multipart upload for an object.
-	initMultipartUploadResult, err := c.initiateMultipartUpload(bucketName, objectName, metaData)
+	initMultipartUploadResult, err := c.initiateMultipartUpload(ctx, bucketName, objectName, opts)
 	if err != nil {
 		return "", err
 	}

@@ -1,7 +1,8 @@
 // +build ignore
 
 /*
- * Minio Go Library for Amazon S3 Compatible Cloud Storage (C) 2016 Minio, Inc.
+ * Minio Go Library for Amazon S3 Compatible Cloud Storage
+ * Copyright 2015-2017 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,7 +61,10 @@ func main() {
 	// src.SetMatchETagExceptCond("31624deb84149d2f8ef9c385918b653a")
 
 	// Destination object
-	dst := minio.NewDestinationInfo("my-bucketname", "my-objectname", nil)
+	dst, err := minio.NewDestinationInfo("my-bucketname", "my-objectname", nil, nil)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	// Initiate copy object.
 	err = s3Client.CopyObject(dst, src)

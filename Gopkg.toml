@@ -52,7 +52,7 @@
 
 [[constraint]]
   branch = "master"
-  name = "github.com/go-mangos/mangos"
+  name = "nanomsg.org/go-mangos"
 
 [[constraint]]
   name = "github.com/gophercloud/gophercloud"
@@ -91,8 +91,8 @@
   name = "github.com/ricochet2200/go-disk-usage"
 
 [[constraint]]
-  branch = "master"
-  name = "github.com/satori/go.uuid"
+  version = "2.1.0"
+  name = "github.com/gofrs/uuid"
 
 [[constraint]]
   name = "github.com/sb10/l15h"
@@ -133,6 +133,6 @@
   name = "github.com/docker/docker"
   branch = "master"
 
-[[constraint]]
+[[override]]
   name = "k8s.io/kubernetes"
   version = "1.10.4"

@@ -137,10 +137,10 @@ func TestFromWithArg(t *testing.T) {
 	args := NewBuildArgs(make(map[string]*string))
 
 	val := "sometag"
-	metaArg := instructions.ArgCommand{
+	metaArg := instructions.ArgCommand{KeyValuePairOptional: instructions.KeyValuePairOptional{
 		Key:   "THETAG",
 		Value: &val,
-	}
+	}}
 	cmd := &instructions.Stage{
 		BaseName: "alpine:${THETAG}",
 	}
@@ -155,6 +155,22 @@ func TestFromWithArg(t *testing.T) {
 	assert.Check(t, is.Equal(expected, sb.state.baseImage.ImageID()))
 	assert.Check(t, is.Len(sb.state.buildArgs.GetAllAllowed(), 0))
 	assert.Check(t, is.Len(sb.state.buildArgs.GetAllMeta(), 1))
+}
+
+func TestFromWithArgButBuildArgsNotGiven(t *testing.T) {
+	b := newBuilderWithMockBackend()
+	args := NewBuildArgs(make(map[string]*string))
+
+	metaArg := instructions.ArgCommand{}
+	cmd := &instructions.Stage{
+		BaseName: "${THETAG}",
+	}
+	err := processMetaArg(metaArg, shell.NewLex('\\'), args)
+
+	sb := newDispatchRequest(b, '\\', nil, args, newStagesBuildResults())
+	assert.NilError(t, err)
+	err = initializeStage(sb, cmd)
+	assert.Error(t, err, "base name (${THETAG}) should not be blank")
 }
 
 func TestFromWithUndefinedArg(t *testing.T) {
@@ -377,7 +393,7 @@ func TestArg(t *testing.T) {
 
 	argName := "foo"
 	argVal := "bar"
-	cmd := &instructions.ArgCommand{Key: argName, Value: &argVal}
+	cmd := &instructions.ArgCommand{KeyValuePairOptional: instructions.KeyValuePairOptional{Key: argName, Value: &argVal}}
 	err := dispatch(sb, cmd)
 	assert.NilError(t, err)
 
