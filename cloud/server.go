@@ -80,8 +80,9 @@ type Server struct {
 	onDeathrow        bool
 	permanentProblem  string
 	provider          *Provider
-	sshclient         *ssh.Client
-	sshSessions       int
+	sshClientConfig   *ssh.ClientConfig
+	sshClients        []*ssh.Client
+	sshClientState    []bool
 	usedCores         int
 	usedDisk          int
 	usedRAM           int
@@ -196,84 +197,108 @@ func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
 	return canDo
 }
 
+// createSSHClientConfig creates an ssh client config and stores it on self.
+func (s *Server) createSSHClientConfig() error {
+	if s.provider.PrivateKey() == "" {
+		s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
+		return errors.New("missing ssh key")
+	}
+
+	// parse private key and make config
+	signer, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
+	if err != nil {
+		s.logger.Error("failed to parse private key", "path", s.provider.savePath, "err", err)
+		return err
+	}
+	s.sshClientConfig = &ssh.ClientConfig{
+		User: s.UserName,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
+		Timeout:         sshShortTimeOut,
+	}
+	return nil
+}
+
 // SSHClient returns an ssh.Client object that could be used to ssh to the
-// server. Requires that port 22 is accessible for SSH.
-func (s *Server) SSHClient() (*ssh.Client, error) {
+// server. Requires that port 22 is accessible for SSH. The client returned will
+// be one that hasn't failed to create a session yet; a new client will be
+// created if necessary. You get back the client's index, so that if this client
+// fails to create a session you can mark this client as bad.
+func (s *Server) SSHClient() (*ssh.Client, int, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if s.sshSessions > 10 {
-		// default MaxSessions for sshd is 10; create a new client
-		// *** should reuse past clients when those sessions get closed, ie. use
-		// a proper ssh session pool, but eg. github.com/chao-mu/sshpool didn't
-		// work as expected...
-		s.sshclient = nil
-		s.sshSessions = 1
+	// return a client that is still good (most likely to be a more recent
+	// client)
+	numClients := len(s.sshClientState)
+	var client *ssh.Client
+	var index int
+	for i := numClients - 1; i >= 0; i-- {
+		if s.sshClientState[i] {
+			client = s.sshClients[i]
+			index = i
+			break
+		}
+	}
+	if client != nil {
+		return client, index, nil
 	}
 
-	if s.sshclient == nil {
-		if s.provider.PrivateKey() == "" {
-			s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
-			return nil, errors.New("missing ssh key")
-		}
-
-		// parse private key and make config
-		signer, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
+	// create a new client, add it to the pool
+	if s.sshClientConfig == nil {
+		err := s.createSSHClientConfig()
 		if err != nil {
-			s.logger.Error("failed to parse private key", "path", s.provider.savePath, "err", err)
-			return nil, err
+			return nil, index, err
 		}
-		sshConfig := &ssh.ClientConfig{
-			User: s.UserName,
-			Auth: []ssh.AuthMethod{
-				ssh.PublicKeys(signer),
-			},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
-			Timeout:         sshShortTimeOut,
-		}
+	}
 
-		// dial in to the server, allowing certain errors that indicate that the
-		// network or server isn't really ready for ssh yet; wait for up to
-		// 5mins for success, if we had only just created this server
-		hostAndPort := s.IP + ":22"
-		s.sshclient, err = sshDial(hostAndPort, sshConfig)
-		if err != nil {
-			limit := time.After(sshTimeOut)
-			ticker := time.NewTicker(1 * time.Second)
-			ticks := 0
-		DIAL:
-			for {
-				select {
-				case <-ticker.C:
-					s.sshclient, err = sshDial(hostAndPort, sshConfig)
-					if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
-						continue DIAL
-					}
-
-					// if it worked, we stop trying; if it failed again with a
-					// different error, we keep trying for at least 45 seconds
-					// to allow for the vagueries of OS start ups (eg. CentOS
-					// brings up sshd and starts rejecting connections before
-					// the centos user gets added)
-					ticks++
-					if err == nil || ticks == 9 || !s.created {
-						ticker.Stop()
-						break DIAL
-					} else {
-						continue DIAL
-					}
-				case <-limit:
-					ticker.Stop()
-					err = errors.New("giving up waiting for ssh to work")
-					break DIAL
+	// dial in to the server, allowing certain errors that indicate that the
+	// network or server isn't really ready for ssh yet; wait for up to
+	// 5mins for success, if we had only just created this server
+	hostAndPort := s.IP + ":22"
+	client, err := sshDial(hostAndPort, s.sshClientConfig)
+	if err != nil {
+		limit := time.After(sshTimeOut)
+		ticker := time.NewTicker(1 * time.Second)
+		ticks := 0
+	DIAL:
+		for {
+			select {
+			case <-ticker.C:
+				client, err = sshDial(hostAndPort, s.sshClientConfig)
+				if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
+					continue DIAL
 				}
-			}
-			if err != nil {
-				return nil, err
+
+				// if it worked, we stop trying; if it failed again with a
+				// different error, we keep trying for at least 45 seconds
+				// to allow for the vagueries of OS start ups (eg. CentOS
+				// brings up sshd and starts rejecting connections before
+				// the centos user gets added)
+				ticks++
+				if err == nil || ticks == 9 || !s.created {
+					ticker.Stop()
+					break DIAL
+				} else {
+					continue DIAL
+				}
+			case <-limit:
+				ticker.Stop()
+				err = errors.New("giving up waiting for ssh to work")
+				break DIAL
 			}
 		}
+		if err != nil {
+			return nil, index, err
+		}
 	}
-	return s.sshclient, nil
+
+	s.sshClients = append(s.sshClients, client)
+	s.sshClientState = append(s.sshClientState, true)
+
+	return client, len(s.sshClients) - 1, nil
 }
 
 // sshDial calls ssh.Dial() and enforces the config's timeout, which ssh.Dial()
@@ -297,15 +322,15 @@ func sshDial(addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
 
 // SSHSession returns an ssh.Session object that could be used to do things via
 // ssh on the server. Will time out and return an error if the session can't be
-// created within 5s.
-func (s *Server) SSHSession() (*ssh.Session, error) {
-	s.mutex.Lock()
-	s.sshSessions++
-	s.mutex.Unlock()
-	sshClient, err := s.SSHClient()
+// created within 5s. Also returns the index of the client this session came
+// from, so that when you can call CloseSSHSession() when you're done with the
+// returned session. The retry argument is optional and should not be
+// supplied by you; it is used to limit recursion when retrying on failure.
+func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
+	sshClient, clientIndex, err := s.SSHClient()
 	if err != nil {
 		s.logger.Debug("server ssh could not be established", "err", err)
-		return nil, fmt.Errorf("cloud SSHSession() failed to get a client: %s", err.Error())
+		return nil, clientIndex, fmt.Errorf("cloud SSHSession() failed to get a client: %s", err.Error())
 	}
 
 	// *** even though sshclient has a timeout, it still hangs forever if we
@@ -339,20 +364,42 @@ func (s *Server) SSHSession() (*ssh.Session, error) {
 
 	err = <-done
 	if err != nil {
-		return nil, err
+		s.mutex.Lock()
+		s.sshClientState[clientIndex] = false
+		s.mutex.Unlock()
+
+		if len(retry) == 1 && retry[0] {
+			return nil, clientIndex, err
+		}
+		return s.SSHSession(true)
 	}
-	return <-sessionCh, nil
+	return <-sessionCh, clientIndex, nil
+}
+
+// CloseSSHSession is used to close a session opened with SSHSession(). If the
+// client used to create the session (as indicated by the supplied index, also
+// retrieved from SSHSession()) was marked as bad, it will now be marked as
+// good, on the assumption there is now "space" for a new session.
+func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
+	err := session.Close()
+	if err != nil && err.Error() != "EOF" {
+		s.logger.Warn("failed to close ssh session", "err", err)
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.sshClientState[clientIndex] = true
 }
 
 // RunCmd runs the given command on the server, optionally in the background.
 // You get the command's STDOUT and STDERR as strings.
 func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
 	// create a session
-	session, err := s.SSHSession()
+	session, clientIndex, err := s.SSHSession()
 	if err != nil {
 		return stdout, stderr, err
 	}
-	defer internal.LogClose(s.logger, session, "runcmd ssh session", "cmd", cmd)
+	defer s.CloseSSHSession(session, clientIndex)
 
 	// if the sever is destroyed while running, arrange to immediately return an
 	// error
@@ -418,7 +465,7 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 
 // UploadFile uploads a local file to the given location on the server.
 func (s *Server) UploadFile(source string, dest string) error {
-	sshClient, err := s.SSHClient()
+	sshClient, _, err := s.SSHClient()
 	if err != nil {
 		return err
 	}
@@ -568,7 +615,7 @@ func (s *Server) GetTimeZone() (*time.Location, error) {
 
 // CreateFile creates a new file with the given content on the server.
 func (s *Server) CreateFile(content string, dest string) error {
-	sshClient, err := s.SSHClient()
+	sshClient, _, err := s.SSHClient()
 	if err != nil {
 		return err
 	}
@@ -599,7 +646,7 @@ func (s *Server) CreateFile(content string, dest string) error {
 // DownloadFile downloads a file from the server and stores it locally. The
 // directory for your local file must already exist.
 func (s *Server) DownloadFile(source string, dest string) error {
-	sshClient, err := s.SSHClient()
+	sshClient, _, err := s.SSHClient()
 	if err != nil {
 		return err
 	}
@@ -827,6 +874,14 @@ func (s *Server) Destroy() error {
 		ch <- true
 	}
 
+	// explicitly close any client connections
+	for _, client := range s.sshClients {
+		err := client.Close()
+		if err != nil {
+			s.logger.Warn("client connection failed to close prior to server destruction", "err", err)
+		}
+	}
+
 	s.toBeDestroyed = false
 	s.destroyed = true
 	s.goneBad = true
@@ -880,14 +935,11 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 	if len(checkSSH) == 1 && checkSSH[0] {
 		// provider may claim the server is fine, but it might not really be
 		// usable; confirm we can still ssh to it
-		session, err := s.SSHSession()
+		session, clientIndex, err := s.SSHSession()
 		if err != nil {
 			return false
 		}
-		errc := session.Close()
-		if errc != nil {
-			s.logger.Warn("alive check ssh session did not close", "err", errc)
-		}
+		s.CloseSSHSession(session, clientIndex)
 	}
 
 	return true
