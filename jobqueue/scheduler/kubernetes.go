@@ -163,7 +163,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	l15h.AddHandler(s.Logger, fh)
 
-	s.Logger.Info(fmt.Sprintf("configuration passed: %#v", s.config))
+	s.Logger.Debug(fmt.Sprintf("configuration passed: %#v", s.config))
 
 	// make queue
 	s.queue = queue.New(localPlace)
@@ -251,7 +251,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Create the controller
 	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, opts)
-	s.Logger.Info(fmt.Sprintf("Controller contents: %+v", controller))
+	s.Logger.Debug(fmt.Sprintf("Controller contents: %+v", controller))
 	stopCh := make(chan struct{})
 
 	go kubeInformerFactory.Start(stopCh)
@@ -280,6 +280,7 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	cores := resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
 	ram := resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
 	disk := resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI)
+
 	r := &kubescheduler.Request{
 		RAM:    *ram,
 		Time:   req.Time,
@@ -289,23 +290,26 @@ func (s *k8s) reqCheck(req *Requirements) error {
 		CbChan: make(chan kubescheduler.Response),
 	}
 
-	s.Logger.Info(fmt.Sprintf("Sending request to listener %#v", r))
+	s.Logger.Debug(fmt.Sprintf("Sending request to listener %#v", r))
 	go func() {
 		s.reqChan <- r
 	}()
 
-	s.Logger.Info("Waiting on reqCheck to return")
+	s.Logger.Debug("Waiting on reqCheck to return")
 	resp := <-r.CbChan
+
 	s.esmutex.Lock()
 	defer s.esmutex.Unlock()
+
 	if resp.Error != nil {
-		//s.msgCB(fmt.Sprintf("Requirements check for request %s recieved error: %s", req.Stringify(), err))
 		s.Logger.Error(fmt.Sprintf("Requirements check recieved error: %s", resp.Error))
 		s.es = resp.Ephemeral
 		return resp.Error
 	}
+
 	s.Logger.Info("reqCheck returned ok")
 	s.es = resp.Ephemeral
+
 	return resp.Error
 }
 
@@ -329,22 +333,22 @@ func (s *k8s) setBadServerCallBack(cb BadServerCallBack) {
 // notifyMessage recieves on the channel
 // if anything is recieved call s.msgCB(msg).
 func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *cloud.Server) {
-	s.Logger.Info("notifyCallBack handler started")
+	s.Logger.Debug("notifyCallBack handler started")
 	for {
 		select {
 		case msg := <-callBackChan:
-			s.Logger.Info("Callback notification", "msg", msg)
+			s.Logger.Debug("Callback notification", "msg", msg)
 			if s.msgCB != nil {
 				go s.msgCB(msg)
 			} else {
-				s.logger.Info("No message callback function defined")
+				s.logger.Error("No message callback function defined")
 			}
 		case badServer := <-badCallBackChan:
-			s.Logger.Info("Bad server callback notification", "msg", badServer)
+			s.Logger.Debug("Bad server callback notification", "msg", badServer)
 			if s.badServerCB != nil {
 				go s.badServerCB(badServer)
 			} else {
-				s.logger.Info("No bad server callback function defined")
+				s.logger.Error("No bad server callback function defined")
 			}
 		}
 	}
@@ -353,7 +357,7 @@ func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *clo
 
 // Delete the namespace when all pods have exited.
 func (s *k8s) cleanup() {
-	s.Logger.Info("cleanup() Called")
+	s.Logger.Debug("cleanup() Called")
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -370,7 +374,7 @@ func (s *k8s) cleanup() {
 // Work out how many pods with given resource requests can be scheduled based on resource requests on the
 // nodes in the cluster.
 func (s *k8s) canCount(req *Requirements) (canCount int) {
-	s.Logger.Info("canCount Called, returning 100")
+	s.Logger.Debug("canCount Called, returning 100")
 	// 100 is  a big enough block for anyone...
 	return 100
 }
@@ -379,7 +383,7 @@ func (s *k8s) canCount(req *Requirements) (canCount int) {
 // Or an error if there was a problem. Use deletefunc in controller to send message?
 // (based on some sort of channel communication?)
 func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
-	s.Logger.Info(fmt.Sprintf("RunCmd Called with cmd %s and requirements %#v", cmd, req))
+	s.Logger.Debug(fmt.Sprintf("RunCmd Called with cmd %s and requirements %#v", cmd, req))
 	// The first 'argument' to cmd will be the absolute path to the manager's executable.
 	// Work out the local binary's name from localBinaryPath.
 	//binaryName := filepath.Base(s.config.localBinaryPath)
@@ -404,7 +408,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	var containerImage string
 	if val, defined := req.Other["cloud_os"]; defined {
 		containerImage = val
-		s.Logger.Info(fmt.Sprintf("setting container image to %s", containerImage))
+		s.Logger.Debug(fmt.Sprintf("setting container image to %s", containerImage))
 	} else {
 		containerImage = s.config.Image
 	}
@@ -432,7 +436,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	//DEBUG:
 	//binaryArgs = []string{"tail", "-f", "/dev/null"}
 
-	s.Logger.Info(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
+	s.Logger.Debug(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
 	pod, err := s.libclient.Spawn(containerImage,
 		s.config.TempMountPath,
 		configMountPath+"/"+scriptName,
@@ -443,13 +447,13 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 
 	if err != nil {
 		s.Logger.Error("error spawning runner pod", "err", err)
-		//s.msgCB(fmt.Sprintf("Kubernetes: Was unable to spawn a pod for a runner with requirements %s: %s", req.Stringify(), err))
+		s.msgCB(fmt.Sprintf("unable to spawn a runner with requirements %s: %s", req.Stringify(), err))
 		reservedCh <- false
 		return err
 	}
 
 	reservedCh <- true
-	s.Logger.Info(fmt.Sprintf("Spawn request succeded, pod %s", pod.ObjectMeta.Name))
+	s.Logger.Debug(fmt.Sprintf("Spawn request succeded, pod %s", pod.ObjectMeta.Name))
 
 	// We need to know when the pod we've created (the runner) terminates
 	// there is a listener in the controller that will notify when a pod passed
@@ -457,7 +461,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	// is the channel being closed.
 
 	// Send the request to the listener.
-	s.Logger.Info(fmt.Sprintf("Sending request to the podAliveChan with pod %s", pod.ObjectMeta.Name))
+	s.Logger.Debug(fmt.Sprintf("Sending request to the podAliveChan with pod %s", pod.ObjectMeta.Name))
 	errChan := make(chan error)
 	go func() {
 		req := &kubescheduler.PodAlive{
@@ -472,17 +476,17 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	// e.g CrashBackLoopoff suggesting the post create
 	// script is throwing an error, return it here.
 	// Don't delete the pod if some error is thrown.
-	s.Logger.Info(fmt.Sprintf("Waiting on status of pod %s", pod.ObjectMeta.Name))
+	s.Logger.Debug(fmt.Sprintf("Waiting on status of pod %s", pod.ObjectMeta.Name))
 	err = <-errChan
 	if err != nil {
-		s.Logger.Error(fmt.Sprintf("error spawning runner, pod name: %s", pod.ObjectMeta.Name), "err", err)
+		s.Logger.Error(fmt.Sprintf("error with pod: %s", pod.ObjectMeta.Name), "err", err)
 		return err
 	}
 
-	// s.Logger.Info(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
+	// s.Logger.Debug(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
 	// Delete terminated pod if no error thrown.
 	// err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
-	s.Logger.Info("Returning at end of runCmd()")
+	s.Logger.Debug("Returning at end of runCmd()")
 
 	return err
 }
@@ -522,7 +526,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 			srcDest := strings.Split(path, ":")
 			// If there is no : separator, drop the path
 			if len(srcDest) == 1 {
-				s.Logger.Info(fmt.Sprintf("Dropping path %s, with error %s", localPath, err))
+				s.Logger.Warn(fmt.Sprintf("Dropping path %s, with error %s", localPath, err))
 				continue
 			}
 			if len(srcDest) == 2 {
@@ -538,7 +542,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 					if errr != nil {
 						// the client.token is not generated when this runs, so
 						// if the file is client.token, ignore the fact it does not
-						s.Logger.Info(fmt.Sprintf("Dropping path %s, with error %s", path, errr))
+						s.Logger.Warn(fmt.Sprintf("Dropping path %s, with error %s", path, errr))
 						continue
 					}
 
