@@ -604,7 +604,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 	return pod, err
 }
 
-// TearDown deletes the namespace created for wr.
+// TearDown deletes the namespace and cluster role binding created for wr.
 func (p *Kubernetesp) TearDown(namespace string) error {
 	err := p.clientset.CoreV1().Namespaces().Delete(namespace, &metav1.DeleteOptions{})
 	if err != nil {
