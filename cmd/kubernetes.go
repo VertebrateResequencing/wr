@@ -130,10 +130,20 @@ contain your credentials for connecting to your s3 bucket(s).
 Deploy can work with most container images because it uploads wr to any pod it
 creates; your image does not have to have wr installed on it. The only
 requirements of the image are that it has tar cat and bash installed.
+(Please only use bash)
+
 For --mounts to work, fuse-utils must be installed, and /etc/fuse.conf should
 already have user_allow_other set or at least be present and commented out
 (wr will enable it). 
-By default 'ubuntu:latest' is used. Currently only docker hub is supported`,
+
+By default the 'ubuntu:latest' image is used. Currently any container registry
+natively supported by kubernetes should work, currently there is no support for
+secrets so some private registries may not work (Node authentication should).
+
+See https://kubernetes.io/docs/concepts/containers/images/ for more details.
+
+Currently authenticating against the cluster will be attempted with configuration
+files found in ~/.kube, or with the $KUBECONFIG variable.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// for debug purposes, set up logging to STDERR
 		kubeLogger := log15.New()
@@ -379,6 +389,7 @@ By default 'ubuntu:latest' is used. Currently only docker hub is supported`,
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
 				scriptName = resources.Details["scriptName"]
+
 				// Populate the rest of Kubernetesp
 				info("initialising to namespace %s", kubeNamespace)
 				err = c.Client.Initialize(c.Clientset, kubeNamespace)
@@ -562,7 +573,6 @@ and accessible.`,
 			warn("Problems were had")
 		}
 
-		// ToDo after logging looked at.
 		info("retrieving logs")
 		// cat logfiles and write to disk.
 		log, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
@@ -645,7 +655,7 @@ func init() {
 	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
 	kubeDeployCmd.Flags().StringVar(&podDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to on the created pods")
 	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
-	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "Docker Hubs image to use for spawned pods")
+	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "image to use for spawned pods")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
