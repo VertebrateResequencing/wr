@@ -47,22 +47,41 @@ and defines the call back channels for communication between the controller and 
 
 The controller monitors pods and nodes in the cluster.
 
-Pods are watched for init containers to copy tarballs to in the same way the deployment controller does and
-to report status changes of a pod to the scheduleri implementation. This logic is in processPod(). Reporting
-is done over specific channels defined at pod creation (runCmd in ../../jobqueue/scheduler/kubernetes.go)
-where the channel is retrieved by pod name. Currently when runCmd makes a Spawn() request, it also creates
-a PodAlive request that is handled by the podAliveHandler, which will store a copy of the pod, it's
-respective error channel and a done bool. Then when processPod observes a succesfully completed pod it will
-notify on that error channel, by sending nil and then setting the done bool to true. Any failures will result
-in a failure being sent down that channel instead. A failure will also result in a message being sent as a
-callback to the end user (via the web ui) containing the last 25 lines of logs from that pod (configurable).
+Pods are watched for init containers to copy tarballs to in the same way the deployment controller.
+They also report status changes of a pod to the scheduleri implementation. This logic is in processPod(). Reporting
+is done over a specific channel defined at pod creation (see runCmd in ../../jobqueue/scheduler/kubernetes.go)
 
-A nodes avaliable resources are also monotired, in order to fulfil the reqCheck() in ../../jobqueue/scheduler/kubernetes.go,
-a cached total of all resources avaliable to each node is kept in memory for the controller. A request is submitted
-in a similar manner to the way PodAlive requests are, and the relevant channel is returned a nil error or the
-reason for the failure. This informes the wr scheduler if it worth submitting a request for a runner.Controller
-Currently checks are only against RAM and Number of cores, Kubernetes 1.10 allows nodes to report ephemeral storage
-and the line 'n.StorageEphemeral().Cmp(req.Disk) != -1 ' checks this. On clusters below 1.10, this always passes so
-it is possible to schedule a job that requires more disk than the node has.
+When runCmd makes a call to client.Spawn() it also creates a PodAlive request that is handled by the podAliveHandler(),
+which will store a copy of the pod, it's error channel and a done bool. Once encountered by processPod() a pod's
+channel is retrieved by pod name.  Then when processPod observes a succesfully completed pod it will
+notify on the error channel by sending nil and then setting the done bool to true. Any failures will result
+in a failure being sent down that channel instead. A failure will also result in a message being sent as a
+callback to the end user (via the web ui, sendErrChan()) containing the last 25 lines of logs from that pod
+(configurable). The done bool is important as the pod lifecycle means that the same pod will be added to the workqueue
+multiple times throughout it's deletion. We only want to send on the channel once, and the done bool indicates if we have.
+
+A pod alive request is:
+
+	type PodAlive struct {
+	Pod     *corev1.Pod // The pod that the ErrChan is for
+	ErrChan chan error // ErrChan to send errors on
+	Done    bool
+	}
+
+sent down a channel defined when the controller is created.
+
+A nodes' avaliable resources are also monitored, in order to fulfil the reqCheck() in ../../jobqueue/scheduler/kubernetes.go,
+a cached total of all resources avaliable to each node is kept in memory for the controller.
+A request is submitted in a similar manner to the way PodAlive requests are, and the relevant
+channel is returned a nil error or the reason for the failure. This informes the wr scheduler
+if it's worth submitting a request for a runner.
+
+Currently checks are only against RAM and Number of cores if running on a cluster with node level ephemeral storage
+tracking disabled. Kubernetes 1.10 enables this by default. The line 'n.StorageEphemeral().Cmp(req.Disk) != -1 ' checks this.
+On with this turned off, this always passes so it is possible to schedule a job that requires more disk than the node has.
+This can lead to interesting failures. The concept of Ephemeral storage on a node goes against the kubernetes model of using
+persistent volumes, and so is currently a beta feature where the API may change. Currently the user is warned about this.
+
+
 
 */

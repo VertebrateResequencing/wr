@@ -93,6 +93,12 @@ on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
 OpenStack scheduler.
 
+Similarly, If using the Kubernetes scheduler you must already be running in a 
+pod. Be sure to pass a namespace for WR to use that will not have another WR 
+user attempting to use it.
+Instead it is recommended to use 'wr kubernetes deploy' to bootstrap WR to a 
+cluster. 
+
 If you want to start multiple managers up in different OpenStack networks that
 you've created yourself, note that --local_username will need to be globally
 unique, since it is used to name the private key that will be created in
