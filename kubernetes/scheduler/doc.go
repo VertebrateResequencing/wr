@@ -73,15 +73,35 @@ sent down a channel defined when the controller is created.
 A nodes' avaliable resources are also monitored, in order to fulfil the reqCheck() in ../../jobqueue/scheduler/kubernetes.go,
 a cached total of all resources avaliable to each node is kept in memory for the controller.
 A request is submitted in a similar manner to the way PodAlive requests are, and the relevant
-channel is returned a nil error or the reason for the failure. This informes the wr scheduler
-if it's worth submitting a request for a runner.
+channel is returned a nil error or the reason for the failure. This informs the wr scheduler
+to decide if it's worth submitting a request for a runner.
 
 Currently checks are only against RAM and Number of cores if running on a cluster with node level ephemeral storage
 tracking disabled. Kubernetes 1.10 enables this by default. The line 'n.StorageEphemeral().Cmp(req.Disk) != -1 ' checks this.
-On with this turned off, this always passes so it is possible to schedule a job that requires more disk than the node has.
+With this turned off, this always passes so it is possible to schedule a job that requires more disk than the node has.
 This can lead to interesting failures. The concept of Ephemeral storage on a node goes against the kubernetes model of using
 persistent volumes, and so is currently a beta feature where the API may change. Currently the user is warned about this.
 
+A request / response will look like:
 
+	// Request contains relevant information
+	// for processing a request from reqCheck().
+	type Request struct {
+		RAM    resource.Quantity
+		Time   time.Duration
+		Cores  resource.Quantity
+		Disk   resource.Quantity
+		Other  map[string]string
+		CbChan chan Response
+	}
+
+	// Response contains relevant information for
+	// responding to a Request from reqCheck()
+	type Response struct {
+		Error     error
+		Ephemeral bool // indicate if ephemeral storage is enabled
+	}
+
+Each response contains an ephemeral bool that informs the scheduler if it should request ephemeral storage.
 
 */
