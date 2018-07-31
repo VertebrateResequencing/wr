@@ -285,12 +285,12 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				// Read the namespace resource file
 				file, err := os.Open(resourcePath)
 				if err != nil {
-					die("Could not open resource file with path: %s", err)
+					die("could not open resource file with path: %s", err)
 				}
 				decoder := gob.NewDecoder(file)
 				err = decoder.Decode(resources)
 				if err != nil {
-					die("Error decoding resource file: %s", err)
+					die("error decoding resource file: %s", err)
 				}
 
 				namespace := resources.Details["namespace"]
@@ -310,7 +310,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 		}
 
 		if !kubeDeploy {
-			info("Found existing healthy wr-manager deployment, reconnecting")
+			info("found existing healthy wr-manager deployment, reconnecting")
+		} else {
+			info("please wait while wr is deployed to the cluster")
 		}
 
 		// Daemonise
@@ -502,17 +504,17 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			// Create the deployment if an existing one does not exist
 			if kubeDeploy {
 
-				info("Creating WR deployment")
+				info("creating WR deployment")
 				err = c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 				if err != nil {
-					die(fmt.Sprintf("Failed to create deployment: %s", err))
+					die(fmt.Sprintf("failed to create deployment: %s", err))
 				}
 			}
 
 			// Start Controller
 			stopCh := make(chan struct{})
 			defer close(stopCh)
-			info("Starting controller")
+			info("starting controller")
 			c.Run(stopCh)
 		}
 
@@ -552,7 +554,7 @@ and accessible.`,
 		client := &client.Kubernetesp{}
 		_, _, err := client.Authenticate(kubeLogger)
 		if err != nil {
-			die("Could not authenticate against the cluster: %s", err)
+			die("could not authenticate against the cluster: %s", err)
 		}
 
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
@@ -561,7 +563,7 @@ and accessible.`,
 		info("opening resource file with path: %s", resourcePath)
 		file, err := os.Open(resourcePath)
 		if err != nil {
-			die("Could not open resource file with path: %s", err)
+			die("could not open resource file with path: %s", err)
 		}
 		decoder := gob.NewDecoder(file)
 		err = decoder.Decode(resources)
@@ -676,10 +678,20 @@ and accessible.`,
 		}
 
 		// teardown kubernetes resources we created
-		err = client.TearDown(resources.Details["namespace"])
-		if err != nil {
-			die("failed to delete the kubernetes resources previously created: %s", err)
+		if len(kubeNamespace) != 0 {
+			info("deleting namespace %s", kubeNamespace)
+			err = client.TearDown(kubeNamespace)
+			if err != nil {
+				die("failed to delete the kubernetes resources previously created: %s", err)
+			}
+		} else {
+			info("deleting namespace %s", resources.Details["namespace"])
+			err = client.TearDown(resources.Details["namespace"])
+			if err != nil {
+				die("failed to delete the kubernetes resources previously created: %s", err)
+			}
 		}
+
 		err = os.Remove(filepath.Join(config.ManagerDir, "kubernetes_resources"))
 		if err != nil {
 			warn("failed to delete the kubernetes resources file: %s", err)
@@ -734,6 +746,7 @@ func init() {
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
+	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
 }
 
 // rewrite any relative path to replace '~/' with podBinDir
