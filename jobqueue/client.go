@@ -412,7 +412,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// for other methods since the server does this check and returns an error,
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
-	if !uuid.Equal(c.clientid, job.ReservedBy) {
+	if c.clientid != job.ReservedBy {
 		return Error{"Execute", job.Key(), ErrMustReserve}
 	}
 
