@@ -38,6 +38,8 @@ import (
 	"github.com/kardianos/osext"
 	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // podBinDir is where we will upload executables to our created pod.
@@ -255,15 +257,68 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			die("Could not authenticate against the cluster: %s", err)
 		}
 
+		// Check if an existing deployment with the label 'app=wr-manager' exists.
+		// Read in namespace from resource file, if no file exists and no namespace
+		// is passed as a flag create new namespace and redeploy.
+		// If a resource file exists or a namespace is passed as a flag check to see if
+		// there is an existing manager deployment to reconnect to
+
+		var kubeDeploy bool //defaults false
+
+		// If a namespace is passed it takes priority.
+		if len(kubeNamespace) != 0 {
+			_, err = c.Clientset.Apps().Deployments(kubeNamespace).Get("wr-manager", metav1.GetOptions{})
+			if err != nil {
+				if errors.IsNotFound(err) {
+					// set the flag that tells the daemon to redeploy.
+					kubeDeploy = true
+				} else {
+					die("wr-manager deployment found but not healthy: %s", err)
+				}
+			}
+		} else {
+			// Look for a set of resources in the manager directory
+			// If found, load them, otherwise use a new empty set.
+			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
+				kubeDeploy = true
+			} else {
+				// Read the namespace resource file
+				file, err := os.Open(resourcePath)
+				if err != nil {
+					die("Could not open resource file with path: %s", err)
+				}
+				decoder := gob.NewDecoder(file)
+				err = decoder.Decode(resources)
+				if err != nil {
+					die("Error decoding resource file: %s", err)
+				}
+
+				namespace := resources.Details["namespace"]
+				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
+
+				// check for a healthy deployment
+				_, err = c.Clientset.Apps().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+				if err != nil {
+					if errors.IsNotFound(err) {
+						// set the flag that tells the daemon to redeploy.
+						kubeDeploy = true
+					} else {
+						die("wr-manager deployment found but not healthy: %s", err)
+					}
+				}
+			}
+		}
+
+		if !kubeDeploy {
+			info("Found existing healthy wr-manager deployment, reconnecting")
+		}
+
 		// Daemonise
 		fwPidPath := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
 		umask := 007
 		child, context := daemonize(fwPidPath, umask, extraArgs...)
 		if child != nil {
 			// PostParent() (Runs in the parent process after spawning child)
-			info("please wait while the kubernetes deployment is created...")
-			// check that we can now connect to the remote manager
-
 			jq = connect(120*time.Second, true)
 			if jq == nil {
 				die("could not talk to wr manager after 120s")
@@ -280,8 +335,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			decoder := gob.NewDecoder(file)
 			err = decoder.Decode(resources)
 			if err != nil {
-				info("Error decoding resource file: %s", err)
-				panic(err)
+				die("Error decoding resource file: %s", err)
 			}
 			managerPodName := resources.Details["manager-pod"]
 			namespace := resources.Details["namespace"]
@@ -341,9 +395,17 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 
 				// Populate the rest of Kubernetesp
 				info("Initialising clients.")
-				err = c.Client.Initialize(c.Clientset)
-				if err != nil {
-					die("Failed to initialise clients: %s", err)
+				// If there is a predefined namespace set, use it.
+				if len(kubeNamespace) != 0 {
+					err = c.Client.Initialize(c.Clientset, kubeNamespace)
+					if err != nil {
+						die("Failed to initialise clients: %s", err)
+					}
+				} else {
+					err = c.Client.Initialize(c.Clientset)
+					if err != nil {
+						die("Failed to initialise clients: %s", err)
+					}
 				}
 
 				// Create the configMap
@@ -437,6 +499,17 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				ResourcePath:    resourcePath,
 			}
 
+			// Create the deployment if an existing one does not exist
+			if kubeDeploy {
+
+				info("Creating WR deployment")
+				err = c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
+				if err != nil {
+					die(fmt.Sprintf("Failed to create deployment: %s", err))
+				}
+			}
+
+			// Start Controller
 			stopCh := make(chan struct{})
 			defer close(stopCh)
 			info("Starting controller")
@@ -656,6 +729,7 @@ func init() {
 	kubeDeployCmd.Flags().StringVar(&podDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to on the created pods")
 	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
 	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "image to use for spawned pods")
+	kubeDeployCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
