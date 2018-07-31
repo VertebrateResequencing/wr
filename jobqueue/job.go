@@ -127,6 +127,10 @@ type Job struct {
 	// ReqGroup.
 	Requirements *scheduler.Requirements
 
+	// RequirementsOrig is like Requirements, but only has the original RAM,
+	// Disk and time values set by you, if any.
+	RequirementsOrig *scheduler.Requirements
+
 	// Override determines if your own supplied Requirements get used, or if the
 	// systems' calculated values get used. 0 means prefer the system values. 1
 	// means prefer your values if they are higher. 2 means always use your

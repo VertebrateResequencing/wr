@@ -178,21 +178,24 @@ sizes in a certain range, and then provide a req_grp that describes this, eg.
 only learning about how good your estimates are! The name of your executable
 should almost always be part of the req_grp name.)
 
-"override" defines if your memory and time should be used instead of the
+"override" defines if your memory, disk or time should be used instead of the
 manager's estimate. Possible values are:
-0 = do not override wr's learned values for memory and time (if any)
+0 = do not override wr's learned values for memory, disk and time (if any)
 1 = override if yours are higher
 2 = always override
+(If you choose to override eg. only disk, then the learned value for memory and
+time will be used.)
 
 "cpus" tells wr manager exactly how many CPU cores your command needs.
 
 "disk" tells wr manager how much free disk space (in GB) your command needs. If
 you know that where your command will store its outputs to will not run out of
-disk space, set this to 0 to avoid unnecessary disk space checks (or possible
-volume creation, in the case of cloud schedulers).
-[disk space reservation and checking is not currently implemented, except for
-the openstack scheduler which will create temporary volumes of the specified
-size if necessary]
+disk space, set this to 0 to avoid unnecessary disk space checks. Disk space
+reservation only applies to the OpenStack schedulers which will create temporary
+volumes of the specified size if necessary.
+Note that disk space usage checking and learning only occurs for jobs where
+cwd doesn't matter (is a unique directory), and ignores the contents of mounted
+directories.
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of

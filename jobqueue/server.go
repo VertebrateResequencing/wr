@@ -951,51 +951,79 @@ func (s *Server) createQueue() {
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
 
-			// depending on job.Override, get memory and time
+			// depending on job.Override, get memory, disk and time
 			// recommendations, which are rounded to get fewer larger
 			// groups
 			noRec := false
-			if job.Override != 2 {
-				var recommendedReq *scheduler.Requirements
-				if rec, existed := groupToReqs[job.ReqGroup]; existed {
-					recommendedReq = rec
+			var recommendedReq *scheduler.Requirements
+			if rec, existed := groupToReqs[job.ReqGroup]; existed {
+				recommendedReq = rec
+			} else {
+				recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
+				recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
+				recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
+				if recm == 0 || recs == 0 || errm != nil || errd != nil || errs != nil {
+					groupToReqs[job.ReqGroup] = nil
 				} else {
-					recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
-					recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
-					recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
-					if recm == 0 || recs == 0 || errm != nil || errd != nil || errs != nil {
-						groupToReqs[job.ReqGroup] = nil
-					} else {
-						recdGBs := 0
-						if recd > 0 { // not all jobs collect disk usage, so this can be 0
-							recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
-						}
-						recommendedReq = &scheduler.Requirements{RAM: recm, Disk: recdGBs, Time: time.Duration(recs) * time.Second}
-						groupToReqs[job.ReqGroup] = recommendedReq
+					recdGBs := 0
+					if recd > 0 { // not all jobs collect disk usage, so this can be 0
+						recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
+					}
+					recommendedReq = &scheduler.Requirements{RAM: recm, Disk: recdGBs, Time: time.Duration(recs) * time.Second}
+					groupToReqs[job.ReqGroup] = recommendedReq
+				}
+			}
+
+			if recommendedReq != nil {
+				job.Lock()
+				if job.RequirementsOrig == nil {
+					job.RequirementsOrig = &scheduler.Requirements{
+						RAM:  job.Requirements.RAM,
+						Time: job.Requirements.Time,
+						Disk: job.Requirements.Disk,
 					}
 				}
-
-				if recommendedReq != nil {
-					job.Lock()
-					if job.Override == 1 {
+				if job.RequirementsOrig.RAM > 0 {
+					switch job.Override {
+					case 0:
+						job.Requirements.RAM = recommendedReq.RAM
+					case 1:
 						if recommendedReq.RAM > job.Requirements.RAM {
 							job.Requirements.RAM = recommendedReq.RAM
 						}
+					}
+				} else {
+					job.Requirements.RAM = recommendedReq.RAM
+				}
+
+				if job.RequirementsOrig.Disk > 0 {
+					switch job.Override {
+					case 0:
+						job.Requirements.Disk = recommendedReq.Disk
+					case 1:
 						if recommendedReq.Disk > job.Requirements.Disk {
 							job.Requirements.Disk = recommendedReq.Disk
 						}
+					}
+				} else {
+					job.Requirements.Disk = recommendedReq.Disk
+				}
+
+				if job.RequirementsOrig.Time > 0 {
+					switch job.Override {
+					case 0:
+						job.Requirements.Time = recommendedReq.Time
+					case 1:
 						if recommendedReq.Time > job.Requirements.Time {
 							job.Requirements.Time = recommendedReq.Time
 						}
-					} else {
-						job.Requirements.RAM = recommendedReq.RAM
-						job.Requirements.Disk = recommendedReq.Disk
-						job.Requirements.Time = recommendedReq.Time
 					}
-					job.Unlock()
 				} else {
-					noRec = true
+					job.Requirements.Time = recommendedReq.Time
 				}
+				job.Unlock()
+			} else {
+				noRec = true
 			}
 
 			var req *scheduler.Requirements
