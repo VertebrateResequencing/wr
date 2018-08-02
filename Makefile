@@ -1,4 +1,4 @@
-PKG := github.com/VertebrateResequencing/wr
+PKG := github.com/theobarberbany/wr
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
