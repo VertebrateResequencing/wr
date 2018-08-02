@@ -59,7 +59,7 @@ const podScriptDir = "/scripts/"
 // entry point for the chosen container. This way we can
 // ensure the users post creation script starts before the main
 // command
-const linuxBinaryName = "/wr-linux"
+const linuxBinaryName = "/wr"
 
 const kubeLogFileName = "kubelog"
 
@@ -429,14 +429,13 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				file, err := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 				if err != nil {
 					warn("failed to open resource file %s for writing: %s", resourcePath, err)
-					panic(err)
 				}
 				encoder := gob.NewEncoder(file)
 				err = encoder.Encode(resources)
 				if err != nil {
-					info("Failed to encode resource file: %s", err)
+					warn("Failed to encode resource file: %s", err)
 				}
-				_ = file.Close()
+				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
 			} else {
 				info("opening resource file with path: %s", resourcePath)
@@ -447,8 +446,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				decoder := gob.NewDecoder(file)
 				err = decoder.Decode(resources)
 				if err != nil {
-					warn("error decoding resource file: %s", err)
-					panic(err)
+					die("error decoding resource file: %s", err)
+
 				}
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
@@ -458,7 +457,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				info("initialising to namespace %s", kubeNamespace)
 				err = c.Client.Initialize(c.Clientset, kubeNamespace)
 				if err != nil {
-					panic(err)
+					die("Failed to initialise client to namespace %s", kubeNamespace)
 				}
 				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 			}
@@ -568,8 +567,7 @@ and accessible.`,
 		decoder := gob.NewDecoder(file)
 		err = decoder.Decode(resources)
 		if err != nil {
-			warn("error decoding resource file: %s", err)
-			panic(err)
+			die("error decoding resource file: %s", err)
 		}
 
 		// now check if the ssh forwarding is up
