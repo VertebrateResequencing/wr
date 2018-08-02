@@ -18,19 +18,26 @@ before_install:
   - go get github.com/mattn/goveralls
   - go get github.com/Masterminds/glide
   # - $HOME/gopath/bin/glide -q install
+  # wr consists of multiple Go packages, which refer to each other by
+  # their absolute GitHub path, e.g. github.com/VertebrateResequencing/wr/kubernetes/client.
+  # That means, by default, if someone forks the repo and makes changes across
+  # multiple packages within wr, Travis won't pass for the branch on their
+  # own repo. To fix that, we move the directory
+  - mkdir -p $TRAVIS_BUILD_DIR $GOPATH/src/github.com/VertebrateResequencing
+  - test ! -d $GOPATH/src/github.com/VertebrateResequencing/wr && mv $TRAVIS_BUILD_DIR $GOPATH/src/github.com/VertebrateResequencing/wr || true
 
 jobs:
   include:
 
-    - stage: Tests
-      script:
-        - go test -tags netgo -v -coverprofile=queue.coverprofile -covermode count ./queue
-        - go test -tags netgo -v -coverprofile=sched.coverprofile -covermode count ./jobqueue/scheduler
-        - WR_MANAGERPORT="11301" go test -tags netgo -v -coverprofile=jq.coverprofile -covermode count ./jobqueue
-        - go test -tags netgo -v -coverprofile=cloud.coverprofile -covermode count ./cloud
-        - go test -tags netgo -v -coverprofile=rp.coverprofile -covermode count ./rp
-        - $HOME/gopath/bin/gover
-        - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
+    # - stage: Tests
+    #   script:
+    #     - go test -tags netgo -v -coverprofile=queue.coverprofile -covermode count ./queue
+    #     - go test -tags netgo -v -coverprofile=sched.coverprofile -covermode count ./jobqueue/scheduler
+    #     - WR_MANAGERPORT="11301" go test -tags netgo -v -coverprofile=jq.coverprofile -covermode count ./jobqueue
+    #     - go test -tags netgo -v -coverprofile=cloud.coverprofile -covermode count ./cloud
+    #     - go test -tags netgo -v -coverprofile=rp.coverprofile -covermode count ./rp
+    #     - $HOME/gopath/bin/gover
+    #     - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
     
     - stage: Compile for k8s e2e
       script: make compile_k8s_tmp
