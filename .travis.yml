@@ -45,6 +45,8 @@ jobs:
     - stage: E2E Tests
       script: make test-e2e
       before_script:
+        # Build the binary to use
+        - make compile_k8s_tmp
         # Make root rshared in order to fix kube-dns problems.
         - sudo mount --make-rshared /
         # Download kubectl, which is a requirement for using minikube and running e2e tests.
