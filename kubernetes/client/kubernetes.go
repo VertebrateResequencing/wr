@@ -111,7 +111,7 @@ func boolPtr(b bool) *bool { return &b }
 
 // CreateNewNamespace Creates a new namespace with the provided name
 func (p *Kubernetesp) CreateNewNamespace(name string) error {
-	_, nsErr := p.namespaceClient.Create(&apiv1.Namespace{
+	_, nsErr := p.clientset.CoreV1().Namespaces().Create(&apiv1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
@@ -223,8 +223,6 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 // Optionally pass a namespace as a string.
 func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...string) error {
 
-	// Create namespace client
-	p.namespaceClient = clientset.CoreV1().Namespaces()
 	// Create a unique namespace if one isn't passed
 	if len(namespace) == 1 {
 		p.NewNamespaceName = namespace[0]
@@ -467,16 +465,6 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 	return nil
 }
 
-// No required env variables
-func (p *Kubernetesp) requiredEnv() []string {
-	return []string{}
-}
-
-// No required env variables
-func (p *Kubernetesp) maybeEnv() []string {
-	return []string{""}
-}
-
 // InWRPod() checks if we are in a WR pod.
 // As we control the hostname, just check if
 // the hostname contains 'wr' in addition to the
@@ -484,13 +472,13 @@ func (p *Kubernetesp) maybeEnv() []string {
 func InWRPod() bool {
 	hostname, err := os.Hostname()
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
-	inCloud := false
+	inPod := false
 	if err == nil && len(host) != 0 && len(port) != 0 {
 		if strings.Contains(hostname, "wr") {
-			inCloud = true
+			inPod = true
 		}
 	}
-	return inCloud
+	return inPod
 }
 
 // Spawn a new pod that contains a runner. Return the name.

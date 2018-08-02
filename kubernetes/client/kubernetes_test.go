@@ -25,16 +25,25 @@ import (
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	testclient "k8s.io/client-go/kubernetes/fake"
 )
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
+var autherr error
 
 func init() {
 	tc = client.Kubernetesp{}
-	clientset = testclient.NewSimpleClientset()
-	tc.Initialize(clientset)
+	clientset, _, autherr = tc.Authenticate()
+	if autherr != nil {
+		panic(autherr)
+	}
+	_ = tc.CreateNewNamespace("wr-testing")
+	// Use the default namesace to avoid mess when testing on
+	// non ephemeral clusters
+	autherr = tc.Initialize(clientset, "wr-testing")
+	if autherr != nil {
+		panic(autherr)
+	}
 }
 
 func TestCreateNewNamespace(t *testing.T) {
@@ -46,14 +55,19 @@ func TestCreateNewNamespace(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Do the thing
 		err := tc.CreateNewNamespace(c.namespaceName)
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Error(err.Error())
 		}
 		_, err = clientset.CoreV1().Namespaces().Get(c.namespaceName, metav1.GetOptions{})
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Error(err.Error())
+		}
+		// Clean up
+		err = clientset.CoreV1().Namespaces().Delete(c.namespaceName, &metav1.DeleteOptions{})
+		if err != nil {
+			t.Log("failed to clean up namespace", err.Error())
 		}
 	}
 }
+
