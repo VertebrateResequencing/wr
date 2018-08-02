@@ -29,9 +29,17 @@ install: vendor
 	@go install -tags netgo ${LDFLAGS}
 	@echo installed to ${GOPATH}/bin/wr
 
+compile_k8s_tmp: /tmp/wr
+/tmp/wr:
+	export CGO_ENABLED=0	&& \
+	go build -o /tmp/wr
+
 test: export CGO_ENABLED = 0
 test:
 	@go test -p 1 -tags netgo -timeout 20m --count 1 ${PKG_LIST}
+
+test-e2e: ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
+	./kubernetes/run-e2e.sh
 
 race: export CGO_ENABLED = 1
 race:
@@ -66,4 +74,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test race lint lintextra install clean dist
+.PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e
