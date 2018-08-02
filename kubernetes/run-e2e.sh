@@ -17,7 +17,7 @@ echo ''
 
 # Test kubeCmd
 # Test kubeDeployCmd
-/tmp/wr kubernetes deploy
+/tmp/wr kubernetes deploy --debug
 /tmp/wr kubernetes teardown
 
 # Test deployment controller.
