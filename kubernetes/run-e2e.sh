@@ -17,7 +17,7 @@ echo ''
 
 # Test kubeCmd
 # Test kubeDeployCmd
-/tmp/wr kubernetes deploy --debug
+/tmp/wr kubernetes deploy --debug || (cat ~/.wr_production/{kube,}log; /bin/false)
 /tmp/wr kubernetes teardown
 
 # Test deployment controller.
@@ -27,4 +27,3 @@ echo '* Running client tests'
 GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/client/...
 
 echo -e '- Tests completed successfully!\n'
-

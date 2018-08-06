@@ -45,8 +45,6 @@ jobs:
     - stage: E2E Tests
       script: make test-e2e
       before_script:
-        # Build the binary to use
-        - make compile_k8s_tmp
         # Make root rshared in order to fix kube-dns problems.
         - sudo mount --make-rshared /
         # Download kubectl, which is a requirement for using minikube and running e2e tests.
@@ -63,3 +61,7 @@ jobs:
         - kubectl create clusterrolebinding add-on-cluster-admin --clusterrole=cluster-admin --serviceaccount=kube-system:default
         # Wait for kube-dns to become ready.
         - JSONPATH='{range .items[*]}{@.metadata.name}:{range @.status.conditions[*]}{@.type}={@.status};{end}{end}'; until kubectl -n kube-system get pods -lk8s-app=kube-dns -o jsonpath="$JSONPATH" 2>&1 | grep -q "Ready=True"; do sleep 1;echo "waiting for kube-dns to be available"; kubectl get pods --all-namespaces; done
+         # Install nsenter so port forwarding works
+        - git clone https://github.com/jetstack/ubuntu-nsenter && docker build -t ubuntu-nsenter ubuntu-nsenter/. && docker run -v /usr/local/bin:/hostbin ubuntu-nsenter cp /nsenter /hostbin/nsenter
+        # Build the binary to use
+        - make compile_k8s_tmp
