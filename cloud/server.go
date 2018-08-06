@@ -339,7 +339,7 @@ func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
 
 	done := make(chan error, 1)
 	worked := make(chan bool, 1)
-	sessionCh := make(chan *ssh.Session)
+	sessionCh := make(chan *ssh.Session, 1)
 	go func() {
 		select {
 		case <-time.After(sshShortTimeOut):

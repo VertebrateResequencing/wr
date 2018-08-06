@@ -3751,13 +3751,14 @@ sudo usermod -aG docker ` + osUser
 						select {
 						case <-ticker.C:
 							if server.HasRunners() {
-								got, errf := jq.GetByRepGroup("sleep", false, 0, JobStateRunning, false, false)
+								running, errf := jq.GetByRepGroup("sleep", false, 0, JobStateRunning, false, false)
+								complete, errf := jq.GetByRepGroup("sleep", false, 0, JobStateComplete, false, false)
 								if errf != nil {
 									ticker.Stop()
 									started <- false
 									return
 								}
-								if len(got) == 2 {
+								if len(running)+len(complete) == 2 {
 									ticker.Stop()
 									started <- true
 									return
