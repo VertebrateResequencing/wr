@@ -5,6 +5,28 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.14.0] - 2018-08-07
+### Added
+- Added commands will now be killed if the disk fills up.
+- Certain kinds of jobs (non --cwd_matters, no or uniquely-cached mounts) now
+  have their disk usage tracked and reported.
+- The local scheduler can now be limited in its CPU and memory usage.
+
+### Changed
+- `wr add --report_grp` renamed `--rep_grp` for consistency with the JSON arg.
+- `wr add -o 1|2` now only override the supplied resource types, using learned
+  values for other types.
+- `wr status -o summary` now adds a line summarising all displayed rep groups
+  along with an overall start and end time. It also now shows disk usage.
+- `wr manager` help text related to start moved to the `start` sub-command.
+
+### Fixed
+- OpenStack servers are no longer failed as bad if more than MaxSessions SSH
+  sessions are opened on them.
+- `wr cloud deploy --resource_name` limited to 11 characters, since hostnames
+  have a maximum length.
+- Fix a case of a manager panic leading to unexpected death.
+
 ## [0.13.1] - 2018-05-30
 ### Added
 - `wr cloud deploy` has new --resource_name option, allowing for a single user
