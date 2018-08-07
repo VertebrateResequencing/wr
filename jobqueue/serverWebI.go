@@ -84,6 +84,7 @@ type JStatus struct {
 	OtherRequests []string
 	Cores         int
 	PeakRAM       int
+	PeakDisk      int64 // MBs
 	Exited        bool
 	Exitcode      int
 	FailReason    string

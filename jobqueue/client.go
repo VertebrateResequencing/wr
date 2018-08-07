@@ -27,6 +27,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -41,11 +42,11 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/docker/docker/api/types"
 	docker "github.com/docker/docker/client"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/req"
-	"github.com/go-mangos/mangos/transport/tlstcp"
-	"github.com/satori/go.uuid"
+	"github.com/gofrs/uuid"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
+	"nanomsg.org/go-mangos/protocol/req"
+	"nanomsg.org/go-mangos/transport/tlstcp"
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs
@@ -58,6 +59,7 @@ const (
 	FailReasonCExit    = "command invalid exit code"
 	FailReasonExit     = "command exited non-zero"
 	FailReasonRAM      = "command used too much RAM"
+	FailReasonDisk     = "ran out of disk space"
 	FailReasonTime     = "command used too much time"
 	FailReasonDocker   = "could not interact with docker"
 	FailReasonAbnormal = "command failed to complete normally"
@@ -386,11 +388,11 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // mounted prior to running the Cmd, and unmounted afterwards.
 //
 // Internally, Execute() calls Mount() and Started() and keeps track of peak RAM
-// used. It regularly calls Touch() on the Job so that the server knows we are
-// still alive and handling the Job successfully. It also intercepts SIGTERM,
-// SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running Cmd and
-// returning Error.Err(FailReasonSignal); you should check for this and exit
-// your process. Finally it calls Unmount() and TriggerBehaviours().
+// and disk used. It regularly calls Touch() on the Job so that the server knows
+// we are still alive and handling the Job successfully. It also intercepts
+// SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2, sending SIGKILL to the running
+// Cmd and returning Error.Err(FailReasonSignal); you should check for this and
+// exit your process. Finally it calls Unmount() and TriggerBehaviours().
 //
 // If Kill() is called while executing the Cmd, the next internal Touch() call
 // will result in the Cmd being killed and the job being Bury()ied.
@@ -400,7 +402,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // Otherwise, it will have been Release()d or Bury()ied as appropriate.
 //
 // The supplied shell is the shell to execute the Cmd under, ideally bash
-// (something that understand the command "set -o pipefail").
+// (something that understands the command "set -o pipefail").
 //
 // You have to have been the one to Reserve() the supplied Job, or this will
 // immediately return an error. NB: the peak RAM tracking assumes we are running
@@ -410,7 +412,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// for other methods since the server does this check and returns an error,
 	// but in this case we want to avoid starting to execute the command before
 	// finding out about this problem
-	if !uuid.Equal(c.clientid, job.ReservedBy) {
+	if c.clientid != job.ReservedBy {
 		return Error{"Execute", job.Key(), ErrMustReserve}
 	}
 
@@ -452,6 +454,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 	}
 	var actualCwd, tmpDir string
+	var dirsToCheckDiskSpace []string
 	if job.CwdMatters {
 		cmd.Dir = job.Cwd
 	} else {
@@ -467,6 +470,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		cmd.Dir = actualCwd
 		job.ActualCwd = actualCwd
+		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
 
 	var myerr error
@@ -521,13 +525,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 
 	// we'll mount any configured remote file systems
-	err = job.Mount(onCwd)
+	uniqueCacheDirs, uniqueMountedDirs, err := job.Mount(onCwd)
 	if err != nil && !mountCouldFail {
 		if strings.Contains(err.Error(), "fusermount exited with code 256") {
 			// *** not sure what causes this, but perhaps trying again after a
 			// few seconds will help?
 			<-time.After(5 * time.Second)
-			err = job.Mount()
+			uniqueCacheDirs, uniqueMountedDirs, err = job.Mount()
 		}
 		if err != nil {
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %s (%s)", err, os.Environ())
@@ -536,6 +540,50 @@ func (c *Client) Execute(job *Job, shell string) error {
 				buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
 			}
 			return buryErr
+		}
+	}
+
+	// later, check mount cache dirs for disk usage
+	if len(uniqueCacheDirs) > 0 {
+		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, uniqueCacheDirs...)
+	}
+
+	// later, check unmounted parts of unique cwd for disk usage, or mounted
+	// parts that start off empty
+	dontCheckDirs := make(map[string]bool)
+	if actualCwd != "" {
+		if len(uniqueMountedDirs) > 0 {
+			noCheck := false
+			for _, dir := range uniqueMountedDirs {
+				d, erro := os.Open(dir)
+				if erro == nil {
+					files, errr := d.Readdir(1)
+					if errc := d.Close(); errc != nil {
+						if myerr == nil {
+							myerr = errc
+						} else {
+							myerr = fmt.Errorf("%s (and closing dir failed: %s)", myerr.Error(), errc)
+						}
+					}
+					if (errr == nil || errr == io.EOF) && len(files) == 0 {
+						continue
+					}
+				}
+
+				if dir == cmd.Dir {
+					noCheck = true
+					break
+				}
+				if strings.HasPrefix(dir, actualCwd) {
+					dontCheckDirs[dir] = true
+				}
+			}
+
+			if !noCheck {
+				dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, actualCwd)
+			}
+		} else {
+			dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, actualCwd)
 		}
 	}
 
@@ -702,20 +750,39 @@ func (c *Client) Execute(job *Job, shell string) error {
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %s%s", job.Cmd, err, extra)
 	}
 
-	// update peak mem used by command, touch job and check if we use too much
-	// resources, every 15s. Also check for signals
+	// update peak mem and disk used by command, touch job and check if we use
+	// too much resources, every 15s. Also check for signals
 	peakmem := 0
+	var peakdisk int64
 	dockerCPU := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
 	ranoutMem := false
 	ranoutTime := false
+	ranoutDisk := false
 	signalled := false
 	killCalled := false
 	var killErr error
 	var closeErr error
 	var stateMutex sync.Mutex
 	stopChecking := make(chan bool, 1)
+	diskUsageCheck := func() (int64, error) {
+		var used int64
+		for _, dir := range dirsToCheckDiskSpace {
+			var thisUsed int64
+			var thisErr error
+			if dir == actualCwd {
+				thisUsed, thisErr = currentDisk(dir, dontCheckDirs)
+			} else {
+				thisUsed, thisErr = currentDisk(dir)
+			}
+			if thisErr != nil {
+				return 0, thisErr
+			}
+			used += thisUsed
+		}
+		return used, nil
+	}
 	go func() {
 		var dockerContainerID string
 
@@ -807,8 +874,20 @@ func (c *Client) Execute(job *Job, shell string) error {
 					continue
 				}
 			case <-memTicker.C:
+				// always see if we've run out of disk space on the machine, in
+				// which case abort
+				if internal.NoDiskSpaceLeft(filepath.Dir(job.Cwd)) {
+					killErr = killCmd()
+					stateMutex.Lock()
+					ranoutDisk = true
+					stateMutex.Unlock()
+					break CHECKING
+				}
+
+				// get current memory usage
 				mem, errf := currentMemory(job.Pid)
 
+				// deal with docker monitoring
 				var cpuS int
 				if monitorDocker {
 					if dockerContainerID == "" {
@@ -870,6 +949,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 					}
 				}
 
+				// get current disk usage
+				disk, errd := diskUsageCheck()
+
+				// now update peaks
 				stateMutex.Lock()
 				if errf == nil && mem > peakmem {
 					peakmem = mem
@@ -878,7 +961,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 						maxRAM, errp := internal.ProcMeminfoMBs()
 
 						// we don't allow cmds to use both more than exepected
-						// and more than 90% of phsical memory, or we could
+						// and more than 90% of physical memory, or we could
 						// screw up the machine we're running on
 						if errp == nil && peakmem >= ((maxRAM/100)*ClientPercentMemoryKill) {
 							killErr = killCmd()
@@ -890,6 +973,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 				if cpuS > dockerCPU {
 					dockerCPU = cpuS
+				}
+				if errd == nil && disk > peakdisk {
+					peakdisk = disk
 				}
 				stateMutex.Unlock()
 			case <-stopChecking:
@@ -935,6 +1021,13 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 	peakmem += ourmem
 
+	// get a final read on disk usage, for jobs that produce output after the
+	// last ticker fired
+	finalDisk, errd := diskUsageCheck()
+	if errd == nil && finalDisk > peakdisk {
+		peakdisk = finalDisk
+	}
+
 	// get the exit code and figure out what to do with the Job
 	var exitcode int
 	dobury := false
@@ -967,6 +1060,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if ranoutMem {
 					failreason = FailReasonRAM
 					myerr = Error{"Execute", job.Key(), FailReasonRAM}
+				} else if ranoutDisk {
+					failreason = FailReasonDisk
+					myerr = Error{"Execute", job.Key(), FailReasonDisk}
 				} else if signalled {
 					if ranoutTime {
 						failreason = FailReasonTime
@@ -1010,7 +1106,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-sigs:
 				return
 			case <-ticker2.C:
-				if !killCalled && !ranoutMem && !signalled {
+				if !killCalled && !ranoutMem && !ranoutDisk && !signalled {
 					_, errf := c.Touch(job)
 					if errf != nil {
 						return
@@ -1113,6 +1209,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
 		PeakRAM:  peakmem,
+		PeakDisk: peakdisk,
 		CPUtime:  cmd.ProcessState.SystemTime() + cmd.ProcessState.UserTime() + time.Duration(dockerCPU)*time.Second,
 		Stdout:   finalStdOut,
 		Stderr:   finalStdErr,
@@ -1244,6 +1341,7 @@ type JobEndState struct {
 	Cwd      string
 	Exitcode int
 	PeakRAM  int
+	PeakDisk int64
 	CPUtime  time.Duration
 	Stdout   []byte
 	Stderr   []byte
@@ -1262,6 +1360,7 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 	job.Exited = true
 	job.Exitcode = jes.Exitcode
 	job.PeakRAM = jes.PeakRAM
+	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
 	if jes.Cwd != "" {
 		job.ActualCwd = jes.Cwd

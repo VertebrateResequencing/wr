@@ -46,6 +46,7 @@ import (
 )
 
 const gb = uint64(1.07374182e9) // for byte to GB conversion
+const mb100 = uint64(104857600) // 100MB in bytes
 
 // for the RandomString implementation
 const (
@@ -179,9 +180,16 @@ func ProcMeminfoMBs() (int, error) {
 
 // DiskSize returns the size of the disk (mounted at the given directory, "."
 // for current) in GB.
-func DiskSize() int {
-	usage := du.NewDiskUsage(".")
+func DiskSize(dir string) int {
+	usage := du.NewDiskUsage(dir)
 	return int(usage.Size() / gb)
+}
+
+// NoDiskSpaceLeft tells you if the disk (mounted at the given directory, "."
+// for current) has no more space left (or is within 100MB of being full).
+func NoDiskSpaceLeft(dir string) bool {
+	usage := du.NewDiskUsage(dir)
+	return usage.Free() < mb100
 }
 
 // LogClose is for use to Close() an object during a defer when you don't care

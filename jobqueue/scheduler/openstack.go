@@ -34,9 +34,9 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
-	"github.com/satori/go.uuid"
 )
 
 const (

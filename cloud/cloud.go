@@ -84,8 +84,9 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
-	"github.com/satori/go.uuid"
+	"golang.org/x/crypto/ssh"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -578,7 +579,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 // complete before this function returns; empty slice means do nothing.
 func (s *Server) WaitUntilReady(files string, postCreationScript []byte) error {
 	// wait for ssh to come up
-	_, err := s.SSHClient()
+	_, _, err := s.SSHClient()
 	if err != nil {
 		return err
 	}
@@ -650,8 +651,15 @@ SENTINEL:
 		s.Script = postCreationScript
 
 		// because the postCreationScript may have altered PATH and other things
-		// that subsequent RunCmd may rely on, clear the client
-		s.sshclient = nil
+		// that subsequent RunCmd may rely on, clear the clients
+		for _, client := range s.sshClients {
+			err = client.Close()
+			if err != nil {
+				s.logger.Warn("failed to close client ssh connection", "err", err)
+			}
+		}
+		s.sshClients = []*ssh.Client{}
+		s.sshClientState = []bool{}
 	}
 
 	return nil
@@ -733,7 +741,7 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 		return nil, err
 	}
 
-	diskSize := internal.DiskSize()
+	diskSize := internal.DiskSize(".")
 
 	ip, err := internal.CurrentIP(cidr[0])
 	if err != nil {
@@ -851,8 +859,12 @@ func uniqueResourceName(prefix string) string {
 
 // nameToHostName makes the given name compatible with being a hostname in the
 // same way that OpenStack horizon does: convert to lower case and convert non
-// [a-z1-9\-] characters to - characters.
+// [a-z1-9\-] characters to - characters. Also truncates to 63 characters.
 func nameToHostName(name string) string {
 	hostname := strings.ToLower(name)
-	return hostNameRegex.ReplaceAllString(hostname, "-")
+	hostname = hostNameRegex.ReplaceAllString(hostname, "-")
+	if len(hostname) > 63 {
+		hostname = hostname[0:63]
+	}
+	return hostname
 }

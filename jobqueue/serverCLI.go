@@ -28,9 +28,8 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/go-mangos/mangos"
-	"github.com/satori/go.uuid"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
 )
 
 // handleRequest parses the bytes received from a connected client in to a
@@ -231,6 +230,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sjob.StartTime = tnil
 					sjob.EndTime = tnil
 					sjob.PeakRAM = 0
+					sjob.PeakDisk = 0
 					sjob.Exitcode = -1
 					sgroup := sjob.schedulerGroup
 					sjob.Unlock()
@@ -639,7 +639,7 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 	}
 	job := item.Data.(*Job)
 
-	if !uuid.Equal(cr.ClientID, job.ReservedBy) {
+	if cr.ClientID != job.ReservedBy {
 		return item, job, ErrMustReserve
 	}
 
@@ -684,6 +684,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 		Priority:      sjob.Priority,
 		Retries:       sjob.Retries,
 		PeakRAM:       sjob.PeakRAM,
+		PeakDisk:      sjob.PeakDisk,
 		Exited:        sjob.Exited,
 		Exitcode:      sjob.Exitcode,
 		FailReason:    sjob.FailReason,

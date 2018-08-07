@@ -31,14 +31,14 @@ install: vendor
 
 test: export CGO_ENABLED = 0
 test:
-	@go test -p 1 -tags netgo -timeout 15m --count 1 ${PKG_LIST}
+	@go test -p 1 -tags netgo -timeout 20m --count 1 ${PKG_LIST}
 
 race: export CGO_ENABLED = 1
 race:
 	@go test -p 1 -tags netgo -race -v --count 1 ./queue
 	@go test -p 1 -tags netgo -race -v --count 1 ./jobqueue
 	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./jobqueue/scheduler
-	@go test -p 1 -tags netgo -race -v --count 1 -timeout 15m ./cloud
+	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./cloud
 	@go test -p 1 -tags netgo -race -v --count 1 ./rp
 
 # go get -u gopkg.in/alecthomas/gometalinter.v2

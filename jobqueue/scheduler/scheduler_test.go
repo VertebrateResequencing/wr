@@ -51,7 +51,7 @@ func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
 	Convey("You can get a new local scheduler", t, func() {
-		s, err := New("local", &ConfigLocal{"bash", 1 * time.Second}, testLogger)
+		s, err := New("local", &ConfigLocal{"bash", 1 * time.Second, 0, 0}, testLogger)
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -315,6 +315,43 @@ func TestLocal(t *testing.T) {
 		// wait a while for any remaining jobs to finish
 		So(waitToFinish(s, 30, 100), ShouldBeTrue)
 	})
+
+	if maxCPU > 1 {
+		Convey("You can get a new local scheduler that uses less than all CPUs", t, func() {
+			s, err := New("local", &ConfigLocal{"bash", 1 * time.Second, 1, 0}, testLogger)
+			So(err, ShouldBeNil)
+			So(s, ShouldNotBeNil)
+
+			tmpDir, err := ioutil.TempDir("", "wr_schedulers_local_test_slee[_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			cmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.5", tmpDir)
+			sleepReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
+
+			err = s.Schedule(cmd, sleepReq, 2)
+			So(err, ShouldBeNil)
+
+			for {
+				if !s.Busy() {
+					break
+				}
+				<-time.After(1 * time.Millisecond)
+			}
+
+			times := mtimesOfFilesInDir(tmpDir, 2)
+			So(len(times), ShouldEqual, 2)
+			first := times[0]
+			second := times[1]
+			if second.Before(first) {
+				first = times[1]
+				second = times[0]
+			}
+			So(first, ShouldHappenBefore, second)
+			So(first, ShouldHappenBefore, second.Add(-400*time.Millisecond))
+		})
+	}
 }
 
 func TestLSF(t *testing.T) {

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -43,14 +44,14 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
-	"github.com/go-mangos/mangos"
-	"github.com/go-mangos/mangos/protocol/rep"
-	"github.com/go-mangos/mangos/transport/tlstcp"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
 	"github.com/ugorji/go/codec"
+	"nanomsg.org/go-mangos"
+	"nanomsg.org/go-mangos/protocol/rep"
+	"nanomsg.org/go-mangos/transport/tlstcp"
 )
 
 // Err* constants are found in our returned Errors under err.Err, so you can
@@ -950,42 +951,79 @@ func (s *Server) createQueue() {
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
 
-			// depending on job.Override, get memory and time
+			// depending on job.Override, get memory, disk and time
 			// recommendations, which are rounded to get fewer larger
 			// groups
 			noRec := false
-			if job.Override != 2 {
-				var recommendedReq *scheduler.Requirements
-				if rec, existed := groupToReqs[job.ReqGroup]; existed {
-					recommendedReq = rec
+			var recommendedReq *scheduler.Requirements
+			if rec, existed := groupToReqs[job.ReqGroup]; existed {
+				recommendedReq = rec
+			} else {
+				recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
+				recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
+				recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
+				if recm == 0 || recs == 0 || errm != nil || errd != nil || errs != nil {
+					groupToReqs[job.ReqGroup] = nil
 				} else {
-					recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
-					recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
-					if recm == 0 || recs == 0 || errm != nil || errs != nil {
-						groupToReqs[job.ReqGroup] = nil
-					} else {
-						recommendedReq = &scheduler.Requirements{RAM: recm, Time: time.Duration(recs) * time.Second}
-						groupToReqs[job.ReqGroup] = recommendedReq
+					recdGBs := 0
+					if recd > 0 { // not all jobs collect disk usage, so this can be 0
+						recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
+					}
+					recommendedReq = &scheduler.Requirements{RAM: recm, Disk: recdGBs, Time: time.Duration(recs) * time.Second}
+					groupToReqs[job.ReqGroup] = recommendedReq
+				}
+			}
+
+			if recommendedReq != nil {
+				job.Lock()
+				if job.RequirementsOrig == nil {
+					job.RequirementsOrig = &scheduler.Requirements{
+						RAM:  job.Requirements.RAM,
+						Time: job.Requirements.Time,
+						Disk: job.Requirements.Disk,
 					}
 				}
-
-				if recommendedReq != nil {
-					job.Lock()
-					if job.Override == 1 {
+				if job.RequirementsOrig.RAM > 0 {
+					switch job.Override {
+					case 0:
+						job.Requirements.RAM = recommendedReq.RAM
+					case 1:
 						if recommendedReq.RAM > job.Requirements.RAM {
 							job.Requirements.RAM = recommendedReq.RAM
 						}
+					}
+				} else {
+					job.Requirements.RAM = recommendedReq.RAM
+				}
+
+				if job.RequirementsOrig.Disk > 0 {
+					switch job.Override {
+					case 0:
+						job.Requirements.Disk = recommendedReq.Disk
+					case 1:
+						if recommendedReq.Disk > job.Requirements.Disk {
+							job.Requirements.Disk = recommendedReq.Disk
+						}
+					}
+				} else {
+					job.Requirements.Disk = recommendedReq.Disk
+				}
+
+				if job.RequirementsOrig.Time > 0 {
+					switch job.Override {
+					case 0:
+						job.Requirements.Time = recommendedReq.Time
+					case 1:
 						if recommendedReq.Time > job.Requirements.Time {
 							job.Requirements.Time = recommendedReq.Time
 						}
-					} else {
-						job.Requirements.RAM = recommendedReq.RAM
-						job.Requirements.Time = recommendedReq.Time
 					}
-					job.Unlock()
 				} else {
-					noRec = true
+					job.Requirements.Time = recommendedReq.Time
 				}
+				job.Unlock()
+			} else {
+				noRec = true
 			}
 
 			var req *scheduler.Requirements

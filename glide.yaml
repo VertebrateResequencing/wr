@@ -6,7 +6,7 @@ import:
 - package: github.com/VividCortex/ewma
   version: master
 - package: github.com/dgryski/go-farm
-- package: github.com/go-mangos/mangos
+- package: nanomsg.org/go-mangos
   version: master
   subpackages:
   - protocol/rep
@@ -40,8 +40,8 @@ import:
 - package: github.com/ricochet2200/go-disk-usage
   subpackages:
   - du
-- package: github.com/satori/go.uuid
-  version: master
+- package: github.com/gofrs/uuid
+  version: ^2.0.0
 - package: github.com/sb10/l15h
 - package: github.com/sevlyar/go-daemon
   version: 01bb5caedcc4ad839213b4ff96c363f6fab40adb

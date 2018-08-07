@@ -61,7 +61,8 @@ var (
 	bucketEnvs         = []byte("envs")
 	bucketStdO         = []byte("stdo")
 	bucketStdE         = []byte("stde")
-	bucketJobMBs       = []byte("jobMBs")
+	bucketJobRAM       = []byte("jobRAM")
+	bucketJobDisk      = []byte("jobDisk")
 	bucketJobSecs      = []byte("jobSecs")
 	wipeDevDBOnInit    = true
 	forceBackups       = false
@@ -270,9 +271,13 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketStdE, errf)
 		}
-		_, errf = tx.CreateBucketIfNotExists(bucketJobMBs)
+		_, errf = tx.CreateBucketIfNotExists(bucketJobRAM)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobMBs, errf)
+			return fmt.Errorf("create bucket %s: %s", bucketJobRAM, errf)
+		}
+		_, errf = tx.CreateBucketIfNotExists(bucketJobDisk)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketJobDisk, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobSecs)
 		if errf != nil {
@@ -583,8 +588,13 @@ func (db *db) archiveJob(key string, job *Job) error {
 			return errf
 		}
 
-		b = tx.Bucket(bucketJobMBs)
+		b = tx.Bucket(bucketJobRAM)
 		errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakRAM)), []byte(strconv.Itoa(job.PeakRAM)))
+		if errf != nil {
+			return errf
+		}
+		b = tx.Bucket(bucketJobDisk)
+		errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", job.ReqGroup, dbDelimiter, job.PeakDisk)), []byte(strconv.Itoa(int(job.PeakDisk))))
 		if errf != nil {
 			return errf
 		}
@@ -847,7 +857,8 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	job.RLock()
 	secs := int(math.Ceil(job.EndTime.Sub(job.StartTime).Seconds()))
 	jrg := job.ReqGroup
-	jpm := job.PeakRAM
+	jpr := job.PeakRAM
+	jpd := job.PeakDisk
 	jec := job.Exitcode
 	job.RUnlock()
 	db.wg.Add(1)
@@ -883,8 +894,13 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 				return errf
 			}
 
-			b := tx.Bucket(bucketJobMBs)
-			errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpm)), []byte(strconv.Itoa(jpm)))
+			b := tx.Bucket(bucketJobRAM)
+			errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpr)), []byte(strconv.Itoa(jpr)))
+			if errf != nil {
+				return errf
+			}
+			b = tx.Bucket(bucketJobDisk)
+			errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpd)), []byte(strconv.Itoa(int(jpd))))
 			if errf != nil {
 				return errf
 			}
@@ -947,7 +963,17 @@ func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobMBs, reqGroup, RecMBRound)
+	return db.recommendedReqGroupStat(bucketJobRAM, reqGroup, RecMBRound)
+}
+
+// recommendedReqGroupDisk returns the 95th percentile peak disk usage of
+// all jobs that previously ran with the given reqGroup. If there are too few
+// prior values to calculate a 95th percentile, or if the 95th percentile is
+// very close to the maximum value, returns the maximum value instead. In either
+// case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
+// are no prior values.
+func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
+	return db.recommendedReqGroupStat(bucketJobDisk, reqGroup, RecMBRound)
 }
 
 // recommendReqGroupTime returns the 95th percentile wall time taken of all jobs

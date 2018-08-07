@@ -215,6 +215,48 @@ func currentMemory(pid int) (int, error) {
 	return mem, nil
 }
 
+// get the current disk usage within a directory, in MBs. Optionally, provide a
+// map of absolute paths to dirs (within path) that should not be checked.
+func currentDisk(path string, ignore ...map[string]bool) (int64, error) {
+	var disk int64
+
+	skip := make(map[string]bool)
+	if len(ignore) == 1 && len(ignore[0]) > 0 {
+		skip = ignore[0]
+	}
+
+	dir, err := os.Open(path)
+	if err != nil {
+		return disk, err
+	}
+	defer func() {
+		err = dir.Close()
+	}()
+
+	files, err := dir.Readdir(-1)
+	if err != nil {
+		return disk, err
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			abs := filepath.Join(path, file.Name())
+			if skip[abs] {
+				continue
+			}
+			recurse, errr := currentDisk(abs)
+			if errr != nil {
+				return disk, errr
+			}
+			disk += recurse
+		} else {
+			disk += file.Size() / (1024 * 1024)
+		}
+	}
+
+	return disk, err
+}
+
 // getChildProcesses gets the child processes of the given pid, recursively.
 func getChildProcesses(pid int32) ([]*process.Process, error) {
 	var children []*process.Process

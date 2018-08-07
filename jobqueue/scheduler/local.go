@@ -116,6 +116,17 @@ type ConfigLocal struct {
 	// StateUpdateFrequency is the frequency at which to re-check the queue to
 	// see if anything can now run. 0 (default) is treated as 1 minute.
 	StateUpdateFrequency time.Duration
+
+	// MaxCores is the maximum number of CPU cores on the machine to use for
+	// running jobs. Specifying more cores than the machine has results in using
+	// as many cores as the machine has, which is also the default. Values
+	// below 1 are treated as default.
+	MaxCores int
+
+	// MaxRAM is the maximum amount of machine memory to use for running jobs.
+	// The unit is in MB, and defaults to all available memory. Specifying more
+	// than this uses the default amount. Values below 1 are treated as default.
+	MaxRAM int
 }
 
 // jobs are what we store in our queue.
@@ -133,10 +144,22 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 	s.Logger = logger.New("scheduler", "local")
 
 	s.maxCores = runtime.NumCPU()
+	if s.config.MaxCores > 0 && s.config.MaxCores < s.maxCores {
+		s.maxCores = s.config.MaxCores
+		if s.maxCores < 1 {
+			s.maxCores = 1
+		}
+	}
 	var err error
 	s.maxRAM, err = internal.ProcMeminfoMBs()
 	if err != nil {
 		return err
+	}
+	if s.config.MaxRAM > 0 && s.config.MaxRAM < s.maxRAM {
+		s.maxRAM = s.config.MaxRAM
+		if s.maxRAM < 1 {
+			s.maxRAM = 1
+		}
 	}
 
 	// make our queue
@@ -341,7 +364,7 @@ func (s *local) processQueue() error {
 			canCount = shouldCount
 		}
 
-		if canCount == 0 {
+		if canCount <= 0 {
 			// try and fill any "gaps" (spare memory/ cpu) by seeing if a cmd
 			// with lesser resource requirements can be run
 			continue
@@ -429,10 +452,18 @@ func (s *local) canCount(req *Requirements) int {
 	// use too much RAM, but we will end up killing cmds that do this, so it
 	// shouldn't be too much of an issue.
 	canCount := int(math.Floor(float64(s.maxRAM-s.ram) / float64(req.RAM)))
+	if canCount < 0 {
+		s.Warn("negative canCount", "can", canCount, "maxRam", s.maxRAM, "ram", s.ram, "reqRam", req.RAM)
+		canCount = 0
+	}
 	if canCount >= 1 {
 		canCount2 := int(math.Floor(float64(s.maxCores-s.cores) / float64(req.Cores)))
 		if canCount2 < canCount {
 			canCount = canCount2
+			if canCount < 0 {
+				s.Warn("negative canCount", "can", canCount, "maxCores", s.maxCores, "cores", s.cores, "reqCores", req.Cores)
+				canCount = 0
+			}
 		}
 	}
 	return canCount
