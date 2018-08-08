@@ -19,17 +19,25 @@
 package client_test
 
 import (
+	"fmt"
+	"io/ioutil"
+	"math/rand"
+	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
+	"github.com/docker/docker/pkg/namesgenerator"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
 var autherr error
+var testingNamespace string
 
 func init() {
 	tc = client.Kubernetesp{}
@@ -37,10 +45,14 @@ func init() {
 	if autherr != nil {
 		panic(autherr)
 	}
-	_ = tc.CreateNewNamespace("wr-testing")
+
+	rand.Seed(time.Now().UnixNano())
+	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
+
+	_ = tc.CreateNewNamespace(testingNamespace)
 	// Use the default namesace to avoid mess when testing on
 	// non ephemeral clusters
-	autherr = tc.Initialize(clientset, "wr-testing")
+	autherr = tc.Initialize(clientset, testingNamespace)
 	if autherr != nil {
 		panic(autherr)
 	}
@@ -71,3 +83,187 @@ func TestCreateNewNamespace(t *testing.T) {
 	}
 }
 
+// Test that the Deploy() call returns without error.
+func TestDeploy(t *testing.T) {
+	cases := []struct {
+		containerImage  string
+		tempMountPath   string
+		cmdArgs         []string
+		configMountPath string
+		configMapData   string
+		requiredPorts   []int
+	}{
+		{
+			containerImage:  "ubuntu:latest",
+			tempMountPath:   "/wr-tmp/",
+			cmdArgs:         []string{"tail", "-f", "/dev/null"},
+			configMountPath: "/scripts/",
+			configMapData:   "echo \"hello world\"",
+			requiredPorts:   []int{80, 8080},
+		},
+	}
+	for _, c := range cases {
+
+		// Test the creation of config maps (2 birds one stone)
+		// We won't delete this now so we can use it later.
+		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
+		if err != nil {
+			t.Error(err.Error())
+		}
+
+		expectedData := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"" +
+			"\necho \"hello world\"\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+
+		if configmap.Data[client.DefaultScriptName] != expectedData {
+			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
+		}
+
+		// Create the deployment
+		// we run the init script created from wherever we've
+		// decided to mount it.
+		err = tc.Deploy(c.containerImage, c.tempMountPath,
+			c.configMountPath+client.DefaultScriptName,
+			c.cmdArgs, configmap.ObjectMeta.Name,
+			c.configMountPath, c.requiredPorts)
+		if err != nil {
+			t.Error(err.Error())
+		}
+
+	}
+
+}
+
+func TestSpawn(t *testing.T) {
+	cases := []struct {
+		containerImage  string
+		tempMountPath   string
+		cmdArgs         []string
+		configMountPath string
+		configMapData   string
+		resourceReq     *client.ResourceRequest
+	}{
+		{
+			containerImage:  "ubuntu:latest",
+			tempMountPath:   "/wr-tmp/",
+			cmdArgs:         []string{"tail", "-f", "/dev/null"},
+			configMountPath: "/scripts/",
+			configMapData:   "echo \"hello world\"",
+			resourceReq: &client.ResourceRequest{
+				Cores: 1,
+				Disk:  0,
+				RAM:   1,
+			},
+		},
+	}
+	for _, c := range cases {
+
+		// Test the creation of config maps (2 birds one stone)
+		// We won't delete this now so we can use it later.
+		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
+		if err != nil {
+			t.Error(err.Error())
+		}
+
+		expectedData := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"" +
+			"\necho \"hello world\"\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+
+		if configmap.Data[client.DefaultScriptName] != expectedData {
+			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
+		}
+
+		// create spawn request
+		// we run the init script created from wherever we've
+		// decided to mount it.
+
+		pod, err := tc.Spawn(c.containerImage, c.tempMountPath,
+			c.configMountPath+client.DefaultScriptName,
+			c.cmdArgs, configmap.ObjectMeta.Name,
+			c.configMountPath, c.resourceReq)
+		if err != nil {
+			t.Error(err.Error())
+		}
+
+		// wait on the status to be running or pending
+		err = wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
+			pod, err = clientset.CoreV1().Pods(testingNamespace).Get(pod.ObjectMeta.Name, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			if pod.Status.Phase == "Pending" || pod.Status.Phase == "Running" {
+				return true, nil
+			}
+			return false, nil
+		})
+
+		if err != nil {
+			t.Error(fmt.Errorf("Spawn failed: %s", err))
+		}
+
+		// Now delete it
+		err = tc.DestroyPod(pod.ObjectMeta.Name)
+		if err != nil {
+			t.Error(fmt.Errorf("Deleting pod failed: %s", err))
+		}
+
+	}
+
+}
+
+func TestInWrPod(t *testing.T) {
+	// These tests are not run inside a wr pod. Expect false
+	inwr := client.InWRPod()
+	if inwr {
+		t.Error("This test is not run inside a pod WR controlls, should return false.")
+	}
+}
+
+func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
+	cases := []struct {
+		fileData string
+		filePath string
+	}{
+		{
+			fileData: "echo \"hello world\"",
+			filePath: "/tmp/d1",
+		},
+	}
+
+	for _, c := range cases {
+		err := ioutil.WriteFile(c.filePath, []byte(c.fileData), 0644)
+		if err != nil {
+			t.Error(fmt.Errorf("Failed to write file to %s: %s", c.filePath, err))
+		}
+		cmap, err := tc.CreateInitScriptConfigMapFromFile(c.filePath)
+
+		expectedData := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"" +
+			"\necho \"hello world\"\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+
+		if cmap.Data[client.DefaultScriptName] != expectedData {
+			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", cmap.Data[client.DefaultScriptName], expectedData))
+		}
+
+	}
+
+}
+
+// Must be called after deploy()
+func TestTearDown(t *testing.T) {
+	cases := []struct {
+		namespaceName string
+	}{
+		{
+			namespaceName: testingNamespace,
+		},
+	}
+	for _, c := range cases {
+		err := tc.TearDown(c.namespaceName)
+		if err != nil {
+			t.Error(err.Error())
+		}
+		err = tc.TearDown(c.namespaceName)
+		if err == nil {
+			t.Error("TearDown should fail if called twice with the same input.")
+		}
+
+	}
+}
