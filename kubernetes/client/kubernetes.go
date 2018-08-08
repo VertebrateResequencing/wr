@@ -62,6 +62,9 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
+// DefaultScriptName is the name
+// to use as the default script in
+// the create configmap functions.
 const DefaultScriptName = "wr-boot"
 
 // Kubernetesp is the implementation for the kubernetes
@@ -291,7 +294,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-cluster-role-binding-",
-			Labels:       map[string]string{"wr": "ClusterRoleBinding"},
+			Labels:       map[string]string{"wr-" + p.NewNamespaceName: "ClusterRoleBinding"},
 		},
 		Subjects: []rbacapi.Subject{
 			{
@@ -601,7 +604,7 @@ func (p *Kubernetesp) TearDown(namespace string) error {
 	}
 
 	crbl, err := p.clientset.RbacV1().ClusterRoleBindings().List(metav1.ListOptions{
-		LabelSelector: "wr",
+		LabelSelector: "wr-" + namespace,
 	})
 	if err != nil {
 		p.Logger.Error("getting ClusterRoleBindings", "err", err)
@@ -626,27 +629,28 @@ func (p *Kubernetesp) DestroyPod(podName string) error {
 	return nil
 }
 
-// CheckPod checks a given pod exists. If it does, return the status
-func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
-	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
-	if err != nil {
-		return false, err
-	}
-	switch {
-	case pod.Status.Phase == "Running":
-		return true, nil
-	case pod.Status.Phase == "Pending":
-		return true, nil
-	case pod.Status.Phase == "Succeeded":
-		return false, nil
-	case pod.Status.Phase == "Failed":
-		return false, nil
-	case pod.Status.Phase == "Unknown":
-		return false, nil
-	default:
-		return false, nil
-	}
-}
+// CheckPod checks a given pod exists. If it does, return the status.
+// Currently not used anywhere
+// func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
+// 	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
+// 	if err != nil {
+// 		return false, err
+// 	}
+// 	switch {
+// 	case pod.Status.Phase == "Running":
+// 		return true, nil
+// 	case pod.Status.Phase == "Pending":
+// 		return true, nil
+// 	case pod.Status.Phase == "Succeeded":
+// 		return false, nil
+// 	case pod.Status.Phase == "Failed":
+// 		return false, nil
+// 	case pod.Status.Phase == "Unknown":
+// 		return false, nil
+// 	default:
+// 		return false, nil
+// 	}
+// }
 
 // NewConfigMap creates a new configMap
 // Kubernetes 1.10 (Released Late March 2018)
