@@ -17,13 +17,26 @@ echo ''
 
 # Test kubeCmd
 # Test kubeDeployCmd
-/tmp/wr kubernetes deploy --debug || (cat ~/.wr_production/{kube,}log; /bin/false)
-/tmp/wr kubernetes teardown
+/tmp/wr kubernetes deploy --debug || (cat ~/.wr_development/kubelog; /bin/false)
+
+# Test kubeTeardownCmd
+/tmp/wr kubernetes teardown || (cat ~/.wr_development/kubeScheduler{,Controller}log; /bin/false)
 
 # Test deployment controller.
 echo '- Testing wr kubernetes deployment:'
+
 # Run Go tests.
 echo '* Running client tests'
 GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/client/...
+
+echo '* Running deployment controller tests'
+GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/deployment/...
+
+# Test kubeCmd
+# Test kubeDeployCmd
+/tmp/wr kubernetes deploy --debug || (cat ~/.wr_development/kubelog; /bin/false)
+
+# Test kubeTeardownCmd
+/tmp/wr kubernetes teardown || (cat ~/.wr_development/kubeScheduler{,Controller}log; /bin/false)
 
 echo -e '- Tests completed successfully!\n'
