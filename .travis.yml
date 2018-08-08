@@ -42,7 +42,12 @@ jobs:
     - stage: Compile for k8s e2e
       script: make compile_k8s_tmp
 
-    - stage: E2E Tests
+    # Minikube has discontinued the --vm-driver=none option, and is no longer supported after 1.10
+    # Currently this is not a problem, but this should be moved to https://github.com/kubernetes-sigs/kubeadm-dind-cluster 
+    # within the next year or so. The Minikube implementation also is limited as it only provides a single node. Currently
+    # this is not a problem. Minikube has the advantage of supporting PV's out of the box, whereas dind does not. Dind also
+    # adds another layer of turtles.
+    - stage: e2e Tests
       script: make test-e2e
       before_script:
         # Make root rshared in order to fix kube-dns problems.
