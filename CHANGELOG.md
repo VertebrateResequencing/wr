@@ -27,6 +27,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   have a maximum length.
 - Fix a case of a manager panic leading to unexpected death.
 
+
 ## [0.13.1] - 2018-05-30
 ### Added
 - `wr cloud deploy` has new --resource_name option, allowing for a single user
