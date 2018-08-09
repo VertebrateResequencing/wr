@@ -2,6 +2,8 @@ language: go
 sudo: false
 go:
   - "1.10.3"
+# import forks to the correct location
+go_import_path: github.com/VertebrateResequencing/wr
 before_install:
   - go get github.com/modocache/gover
   - go get github.com/mattn/goveralls
