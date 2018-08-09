@@ -40,6 +40,10 @@ var dc kubedeployment.Controller
 var autherr error
 var testingNamespace string
 
+// Just test that the call to Deploy() works, and that when configured as
+// expected, the deployment controller will copy the tarball, and that the
+// manager can be connected to.
+
 func init() {
 
 	dc = kubedeployment.Controller{
@@ -54,8 +58,7 @@ func init() {
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
 	_ = dc.Client.CreateNewNamespace(testingNamespace)
-	// Use the default namesace to avoid mess when testing on
-	// non ephemeral clusters
+
 	autherr = dc.Client.Initialize(dc.Clientset, testingNamespace)
 	if autherr != nil {
 		panic(autherr)

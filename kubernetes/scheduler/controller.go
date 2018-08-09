@@ -473,26 +473,29 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		}
 	}
-	// Handle individual container failures.
-	if len(pod.Status.ContainerStatuses) != 0 {
-		switch {
-		case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
-			// Get logs
-			logs, err := c.libclient.GetLog(pod, 25)
-			if err != nil {
-				c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
-			}
-			c.sendErrChan(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v\n %s",
-				pod.ObjectMeta.Name,
-				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
-				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode,
-				logs))
-			c.logger.Info(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v",
-				pod.ObjectMeta.Name,
-				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
-				pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode))
-		}
-	}
+	// This is commented out as It ~should~ not be needed. It checks the
+	// last termination state, which is only relevant when the container restart
+	// policy is set to !never.
+	// // Handle individual container failures.
+	// if len(pod.Status.ContainerStatuses) != 0 {
+	// 	switch {
+	// 	case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
+	// 		// Get logs
+	// 		logs, err := c.libclient.GetLog(pod, 25)
+	// 		if err != nil {
+	// 			c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
+	// 		}
+	// 		c.sendErrChan(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v\n %s",
+	// 			pod.ObjectMeta.Name,
+	// 			pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
+	// 			pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode,
+	// 			logs))
+	// 		c.logger.Info(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v",
+	// 			pod.ObjectMeta.Name,
+	// 			pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
+	// 			pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode))
+	// 	}
+	// }
 	return nil
 }
 
