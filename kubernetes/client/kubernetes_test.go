@@ -50,8 +50,7 @@ func init() {
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
 	_ = tc.CreateNewNamespace(testingNamespace)
-	// Use the default namesace to avoid mess when testing on
-	// non ephemeral clusters
+
 	autherr = tc.Initialize(clientset, testingNamespace)
 	if autherr != nil {
 		panic(autherr)
