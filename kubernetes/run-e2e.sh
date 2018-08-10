@@ -13,7 +13,7 @@ export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
 echo ''
 echo -e 'kubernetes version:\t' $(kubectl version -o json | jq .serverVersion.gitVersion)
 echo -e 'wr version:\t' $(git rev-parse --verify HEAD)
-echo '''
+echo ''
 
 # Test deployment controller.
 echo '- Testing wr kubernetes deployment:'
@@ -25,6 +25,10 @@ GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/client/...
 echo '* Running deployment controller tests'
 GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/deployment/...
 
+echo '* Running scheduler controller tests'
+GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/scheduler/...
+
+
 # Test kubeCmd
 # Test kubeDeployCmd
 /tmp/wr kubernetes deploy --debug || (cat ~/.wr_development/kubelog; /bin/false)
@@ -32,4 +36,4 @@ GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/deployment/...
 # Test kubeTeardownCmd
 /tmp/wr kubernetes teardown || (cat ~/.wr_development/kubeScheduler{,Controller}log; /bin/false)
 
-echo -e '- Tests completed successfully!\n'
+echo -e '- Tests completed successfully!'
