@@ -26,7 +26,7 @@ scheduleri implementation in ../../jobqueue/scheduler/kubernetes.go, and
 provides answers to questions that require up to date information about
 what is going on inside a cluster.
 
-This package uses client-go: https://github.com/kubernetes/client-g
+This package uses client-go: https://github.com/kubernetes/client-go
 Reading on controllers:
 
 	1. https://engineering.bitnami.com/articles/a-deep-dive-into-kubernetes-controllers.html

@@ -243,10 +243,14 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 	}
 
 	// Exec the command in the pod
+
+	// If the exec call failed, return the error
 	_, _, err := p.ExecCmd(opts, namespace)
 	if err != nil {
 		return "", "", err
 	}
+
+	// If the exec call succeded, but the cmd failed, also error
 	if len(stdErr.Str) != 0 {
 		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command returned non zero: %s", stdErr.Str)
 	}
