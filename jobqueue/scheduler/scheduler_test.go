@@ -59,7 +59,7 @@ func TestLocal(t *testing.T) {
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 1 second", func() {
-			So(s.ReserveTimeout(), ShouldEqual, 1)
+			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
 		})
 
 		Convey("MaxQueueTime() always returns 0", func() {
@@ -378,7 +378,7 @@ func TestLSF(t *testing.T) {
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
-			So(s.ReserveTimeout(), ShouldEqual, 1)
+			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
 		})
 
 		// author specific tests, based on hostname, where we know what the
@@ -574,7 +574,7 @@ func TestOpenstack(t *testing.T) {
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
 		Convey("ReserveTimeout() returns 25 seconds", func() {
-			So(s.ReserveTimeout(), ShouldEqual, 1)
+			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
 		})
 
 		// author specific tests, based on hostname, where we know what the
