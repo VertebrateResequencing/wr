@@ -57,7 +57,7 @@ type k8s struct {
 	podAliveChan    chan *kubescheduler.PodAlive
 	msgCB           MessageCallBack
 	badServerCB     BadServerCallBack
-	es              bool
+	es              bool // Does the cluster support ephemeral storage reporting?
 	esmutex         *sync.RWMutex
 	logger          log15.Logger
 }
@@ -482,10 +482,9 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		s.Logger.Error(fmt.Sprintf("error with pod: %s", pod.ObjectMeta.Name), "err", err)
 		return err
 	}
-
-	// s.Logger.Debug(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
 	// Delete terminated pod if no error thrown.
-	// err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
+	s.Logger.Debug(fmt.Sprintf("Deleting pod %s", pod.ObjectMeta.Name))
+	err = s.libclient.DestroyPod(pod.ObjectMeta.Name)
 	s.Logger.Debug("Returning at end of runCmd()")
 
 	return err
