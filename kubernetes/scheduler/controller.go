@@ -406,7 +406,9 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			c.logger.Debug(fmt.Sprintf("InitContainer for pod %s Running", pod.ObjectMeta.Name))
 			c.logger.Debug(fmt.Sprintf("Calling CopyTar for pod %s Running", pod.ObjectMeta.Name))
 			err := c.libclient.CopyTar(c.opts.Files, pod)
+			// If this errors the controller will not die. It will just be logged.
 			if err != nil {
+				c.sendErrChan(fmt.Sprintf("CopyTar for pod %s failed: %s", pod.ObjectMeta.Name, err))
 				return err
 			}
 		default:
