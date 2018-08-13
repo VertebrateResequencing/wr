@@ -84,6 +84,7 @@ type JobViaJSON struct {
 	CloudFlavor      string            `json:"cloud_flavor"`
 	CloudShared      bool              `json:"cloud_shared"`
 	BsubMode         string            `json:"bsub_mode"`
+	RTimeout         *int              `json:"rtimeout"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -129,6 +130,7 @@ type JobDefaults struct {
 	BsubMode      string
 	compressedEnv []byte
 	osRAM         string
+	RTimeout      int
 }
 
 // DefaultCwd returns the Cwd value, defaulting to /tmp.
@@ -412,6 +414,13 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 
 	if jvj.CloudShared || jd.CloudShared {
 		other["cloud_shared"] = "true"
+	}
+
+	if jvj.RTimeout != nil {
+		rtimeout := *jvj.RTimeout
+		other["rtimeout"] = strconv.Itoa(rtimeout)
+	} else if jd.RTimeout != 0 {
+		other["rtimeout"] = strconv.Itoa(jd.RTimeout)
 	}
 
 	return &Job{

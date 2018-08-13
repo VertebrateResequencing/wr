@@ -141,7 +141,7 @@ type scheduleri interface {
 	initialize(config interface{}, logger log15.Logger) error // do any initial set up to be able to use the job scheduler
 	schedule(cmd string, req *Requirements, count int) error  // achieve the aims of Schedule()
 	busy() bool                                               // achieve the aims of Busy()
-	reserveTimeout() int                                      // achieve the aims of ReserveTimeout()
+	reserveTimeout(req *Requirements) int                     // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration             // achieve the aims of MaxQueueTime()
 	hostToID(host string) string                              // achieve the aims of HostToID()
 	setMessageCallBack(MessageCallBack)                       // achieve the aims of SetMessageCallBack()
@@ -278,8 +278,8 @@ func (s *Scheduler) Busy() bool {
 
 // ReserveTimeout returns the number of seconds that runners spawned in this
 // scheduler should wait for new jobs to appear in the manager's queue.
-func (s *Scheduler) ReserveTimeout() int {
-	return s.impl.reserveTimeout()
+func (s *Scheduler) ReserveTimeout(req *Requirements) int {
+	return s.impl.reserveTimeout(req)
 }
 
 // MaxQueueTime returns the maximum amount of time that jobs with the given

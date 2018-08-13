@@ -23,9 +23,11 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
+	"fmt"
 	"math"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -183,8 +185,19 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
-func (s *local) reserveTimeout() int {
-	return localReserveTimeout
+func (s *local) reserveTimeout(req *Requirements) int {
+	if val, defined := req.Other["rtimeout"]; defined {
+		timeout, err := strconv.Atoi(val)
+		if err != nil {
+			s.Logger.Error(fmt.Sprintf("Failed to convert rtimeout to integer: %s", err))
+			return localReserveTimeout
+		}
+		s.Logger.Debug(fmt.Sprintf("setting runner rtimeout to %v", timeout))
+		return timeout
+	} else {
+		return localReserveTimeout
+	}
+
 }
 
 // maxQueueTime achieves the aims of MaxQueueTime().
