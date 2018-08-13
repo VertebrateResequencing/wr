@@ -62,6 +62,7 @@ var cmdCloudConfigs string
 var cmdCloudSharedDisk bool
 var cmdFlavor string
 var cmdMonitorDocker string
+var rtimeoutint int
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -359,6 +360,7 @@ func init() {
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	addCmd.Flags().IntVar(&rtimeoutint, "rtimeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
 }
 
 // convert cmd,cwd columns in to Dependency.
@@ -428,6 +430,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		CloudFlavor:      cmdFlavor,
 		CloudShared:      cmdCloudSharedDisk,
 		BsubMode:         bsubMode,
+		RTimeout:         rtimeoutint,
 	}
 
 	if jd.RepGrp == "" {
