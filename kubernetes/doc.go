@@ -20,7 +20,10 @@ package kubedoc
 
 /*
 This is intended as a high level overview of all kubernetes related code in the WR codebase
-and explanation of how it fits together.
+and explanation of how it fits together. A general understanding of kubernetes concepts is
+assumed, along with an understanding of client-go (https://github.com/kubernetes/client-go).
+
+See the links in the deployment and scheduler controller docs for information on controllers.
 
 Below is a diagram showing the packages each step of the deployment and operation.
 It is also the order in which I would recommend reading each package's documentation.
@@ -54,8 +57,6 @@ It is also the order in which I would recommend reading each package's documenta
 |    +-----------------------------------------------+         |
 +--------------------------------------------------------------+
 
-
-
 The client package is used by all of the packages to authenticate, and
 for interacting with kuberenetes with basic tasks (Create a pod or service,
 execute a command in a container or port forwarding)
@@ -76,5 +77,7 @@ The manager command contains the options for the k8s driver (../jobqueue/schedul
 controller, these are passed through to the driver, where upon calling initialize() the scheduling controller is
 started. The scheduling controller and k8s driver together work to implement scheduleri, the interface wr requires
 to be satisfied in order to implement a new scheduler.
+
+The overall design is similar to: https://github.com/GoogleCloudPlatform/spark-on-k8s-operator/blob/master/docs/design.md
 
 */
