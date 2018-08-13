@@ -301,14 +301,19 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	p.Logger.Info(fmt.Sprintf("copyTar Called with files %#v on pod %s", files, pod.ObjectMeta.Name))
 	//Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
+
+	var err error
 	go func() {
 		defer pipeWriter.Close()
 		tarErr := makeTar(files, pipeWriter)
 		if tarErr != nil {
 			p.Logger.Error("error writing tar", "err", tarErr)
-			panic(tarErr)
+			err = tarErr
 		}
 	}()
+	if err != nil {
+		return err
+	}
 
 	stdOut := new(Writer)
 	stdErr := new(Writer)
@@ -323,7 +328,7 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		},
 	}
 
-	_, _, err := p.AttachCmd(opts)
+	_, _, err = p.AttachCmd(opts)
 	if err != nil {
 		p.Logger.Error("error running AttachCmd for CopyTar", "err", err)
 	}
