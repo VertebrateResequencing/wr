@@ -289,7 +289,7 @@ func TestRunCmd(t *testing.T) {
 	}
 	for _, c := range failCases {
 		configMountPath := "/scripts"
-		cmd := []string{"sleep 5"}
+		cmd := []string{"echo 42"}
 		requirements := &client.ResourceRequest{
 			Cores: c.cores,
 			Disk:  c.disk,
