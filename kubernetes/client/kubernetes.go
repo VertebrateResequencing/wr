@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,8 +53,6 @@ import (
 	typedappsv1beta1 "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
-
-	"math/rand"
 
 	// Allow auth against gcp cluster
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
