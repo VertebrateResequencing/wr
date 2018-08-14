@@ -32,7 +32,7 @@ install: vendor
 compile_k8s_tmp: /tmp/wr
 /tmp/wr:
 	export CGO_ENABLED=0	&& \
-	go build -o /tmp/wr
+	go build -i -o /tmp/wr
 
 test: export CGO_ENABLED = 0
 test:

@@ -16,6 +16,10 @@ env:
     # Move Kubernetes config files to the appropriate place and adjust permissions.
     - CHANGE_MINIKUBE_NONE_USER=true
 
+cache:
+  directories:
+    - $GOPATH/pkg/
+
 before_install:
   # - go get github.com/modocache/gover
   # - go get github.com/mattn/goveralls
@@ -65,6 +69,8 @@ jobs:
         - kubectl create clusterrolebinding add-on-cluster-admin --clusterrole=cluster-admin --serviceaccount=kube-system:default
         # Wait for kube-dns to become ready.
         - JSONPATH='{range .items[*]}{@.metadata.name}:{range @.status.conditions[*]}{@.type}={@.status};{end}{end}'; until kubectl -n kube-system get pods -lk8s-app=kube-dns -o jsonpath="$JSONPATH" 2>&1 | grep -q "Ready=True"; do sleep 1;echo "waiting for kube-dns to be available"; kubectl get pods --all-namespaces; done
+          # Install nsenter so port forwarding works
+        - git clone https://github.com/jetstack/ubuntu-nsenter && docker build -t ubuntu-nsenter ubuntu-nsenter/. && docker run -v /usr/local/bin:/hostbin ubuntu-nsenter cp /nsenter /hostbin/nsenter
         # Build the binary to use
         - make compile_k8s_tmp
 
