@@ -35,6 +35,8 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
+	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 )
@@ -196,6 +198,79 @@ func TestFileCreation(t *testing.T) {
 
 		if md5 != expectedMd5 {
 			t.Errorf("MD5 do not match expected : %s, got: %s", expectedMd5, md5)
+		}
+
+	}
+
+}
+
+func TestContainerImage(t *testing.T) {
+	cases := []struct {
+		cmd            string
+		containerImage string
+	}{
+		{
+			cmd:            "echo golang:latest",
+			containerImage: "golang:latest",
+		},
+		{
+			cmd:            "echo genomicpariscentre/samtools",
+			containerImage: "genomicpariscentre/samtools",
+		},
+	}
+	for _, c := range cases {
+		// Check the job can be found in the system, and that it has
+		// exited succesfully.
+		var job *jobqueue.Job
+		var err error
+		// The job may take some time to complete, so we need to poll.
+		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
+
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
+			if err != nil {
+				return false, err
+			}
+			if job == nil {
+				return false, nil
+			}
+			if job.Exited && job.Exitcode != 1 {
+				return true, nil
+			}
+			if job.Exited && job.Exitcode == 1 {
+				t.Errorf("cmd %s failed", c.cmd)
+				return false, fmt.Errorf("cmd failed")
+			}
+
+			return false, nil
+		})
+		if errr != nil {
+			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
+		}
+
+		// Now the job has completed succesfully we heck that the image used is
+		// as expected
+		pod, err := clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
+		if err != nil {
+			t.Errorf("Getting pod failed %s", err)
+		}
+
+		if pod.Status.Phase == apiv1.PodFailed {
+			t.Errorf("Pod %s failed", pod.ObjectMeta.Name)
+		}
+
+		var runnercontainer *apiv1.Container
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "wr-runner" {
+				runnercontainer = &container
+			}
+		}
+
+		if runnercontainer == nil {
+			t.Errorf("Failed to find runner container in pod %s", pod.ObjectMeta.Name)
+		}
+
+		if runnercontainer.Image != c.containerImage {
+			t.Errorf("Unexpected container image for runner %s, expected %s got %s", pod.ObjectMeta.Name, c.containerImage, runnercontainer.Image)
 		}
 
 	}
