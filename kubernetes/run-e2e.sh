@@ -19,6 +19,10 @@ echo ''
 # Test we can reach the manager
 [ $(/tmp/wr manager status)  == started ] || (echo "unable to talk to manager"; /bin/false)
 
+
+# As all of these will default to request 1 cpu, we must allow time for them to pend,
+# and clean up as quickly as possible.
+
 # Test 4 + simple commands execute without fail 
 echo 'apt-get update && apt-get upgrade -y && apt-get install -y curl' > /tmp/curl.sh
 echo {42,24,mice,test} | xargs -n 1  echo echo | /tmp/wr add

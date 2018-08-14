@@ -95,7 +95,6 @@ func init() {
 }
 
 func TestEchoes(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		cmd string
 	}{
@@ -156,7 +155,6 @@ func TestEchoes(t *testing.T) {
 // Go's byte -> str conversion causes the md5 to differ from
 // the one on the OVH website. So long as it remains constant we are happy
 func TestFileCreation(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		cmd string
 	}{
@@ -170,7 +168,7 @@ func TestFileCreation(t *testing.T) {
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
-		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
+		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
 
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
@@ -211,12 +209,18 @@ func TestFileCreation(t *testing.T) {
 			t.Errorf("MD5 do not match expected : %s, got: %s", expectedMd5, md5)
 		}
 
+		// Clean up manually. This is because we have a limited number of cores in CI, and everything
+		// will time out if we don't.
+		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
+		if err != nil {
+			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
+		}
+
 	}
 
 }
 
 func TestContainerImage(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		cmd            string
 		containerImage string
@@ -284,6 +288,13 @@ func TestContainerImage(t *testing.T) {
 
 		if runnercontainer.Image != c.containerImage {
 			t.Errorf("Unexpected container image for runner %s, expected %s got %s", pod.ObjectMeta.Name, c.containerImage, runnercontainer.Image)
+		}
+
+		// Clean up manually. This is because we have a limited number of cores in CI, and everything
+		// will time out if we don't.
+		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
+		if err != nil {
+			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
 		}
 
 	}
