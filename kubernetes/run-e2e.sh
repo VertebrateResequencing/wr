@@ -55,7 +55,7 @@ echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscen
 
 
 echo '* Running e2e tests'
-GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/e2e/...
+GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/...
 
 # Test kubeTeardownCmd
 /tmp/wr kubernetes teardown || (cat ~/.wr_development/kubeScheduler{,Controller}log; /bin/false)
