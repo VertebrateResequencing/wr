@@ -38,12 +38,20 @@ GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/scheduler/...
 # Test we can reach the manager
 [ $(/tmp/wr manager status)  == started ] || (echo "unable to talk to manager"; /bin/false)
 
-# The e2e tests can all be run in parallel 
+# Test 4 + simple commands execute without fail 
 echo 'apt-get update && apt-get upgrade -y && apt-get install -y curl' > /tmp/curl.sh
 echo {42,24,mice,test} | xargs -n 1  echo echo | /tmp/wr add
+
 # Test we can run configmaps and create files
-#rtimeout instructs the runner pod to stay alive for long enough to verify the file.
+# rtimeout instructs the runner pod to stay alive for long enough to verify the file.
 echo 'curl http://ovh.net/files/1Mio.dat -o /tmp/1Mio.dat' | /tmp/wr add --cloud_script /tmp/curl.sh --rtimeout 10
+
+# Test different can support the runner deployment method
+echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --rtimeout 100
+echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --rtimeout 100
+
+
+
 
 
 echo '* Running e2e tests'
