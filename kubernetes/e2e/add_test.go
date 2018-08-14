@@ -145,7 +145,7 @@ func TestEchoes(t *testing.T) {
 		// They are kept if they error.
 		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
-			t.Logf("Success, pod %s deleted.", job.Host)
+			t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
 		} else if err != nil {
 			t.Errorf("Pod %s was not deleted: %s", job.Host, err)
 		}
@@ -161,7 +161,7 @@ func TestFileCreation(t *testing.T) {
 		cmd string
 	}{
 		{
-			cmd: "curl http://ovh.net/files/1Mio.dat -o /tmp/1Mio.dat",
+			cmd: "echo hello world > /tmp/hw",
 		},
 	}
 	for _, c := range cases {
@@ -194,16 +194,16 @@ func TestFileCreation(t *testing.T) {
 			return false, nil
 		})
 		if errr != nil {
-			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
+			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
 		// Now we get the host, and exec to gain the md5 of the file. (Verification step
-		stdout, _, err := tc.ExecInPod(job.Host, "wr-runner", tc.NewNamespaceName, []string{"cat", "/tmp/1Mio.dat"})
+		stdout, _, err := tc.ExecInPod(job.Host, "wr-runner", tc.NewNamespaceName, []string{"cat", "/tmp/hw"})
 		if err != nil {
 			t.Errorf("Failed to get file from container: %s", err)
 		}
 
-		expectedMd5 := "79b3494340afa0d42f27a21885684b37"
+		expectedMd5 := "6f5902ac237024bdd0c176cb93063dc4"
 
 		md5 := fmt.Sprintf("%x", md5.Sum([]byte(stdout)))
 
@@ -256,7 +256,8 @@ func TestContainerImage(t *testing.T) {
 			return false, nil
 		})
 		if errr != nil {
-			t.Errorf("wait on cmd '%s' completion failed: %s", c.cmd, errr)
+
+			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
 		// Now the job has completed succesfully we heck that the image used is
