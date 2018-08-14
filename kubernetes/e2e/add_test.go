@@ -36,6 +36,7 @@ import (
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -94,6 +95,7 @@ func init() {
 }
 
 func TestEchoes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		cmd string
 	}{
@@ -139,6 +141,14 @@ func TestEchoes(t *testing.T) {
 			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
 		}
 
+		// Now check the pods are deleted after succesful completion.
+		// They are kept if they error.
+		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
+		if err != nil && errors.IsNotFound(err) {
+			t.Logf("Success, pod %s deleted.", job.Host)
+		} else if err != nil {
+			t.Errorf("Pod %s was not deleted: %s", job.Host, err)
+		}
 	}
 
 }
@@ -146,6 +156,7 @@ func TestEchoes(t *testing.T) {
 // Go's byte -> str conversion causes the md5 to differ from
 // the one on the OVH website. So long as it remains constant we are happy
 func TestFileCreation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		cmd string
 	}{
@@ -205,6 +216,7 @@ func TestFileCreation(t *testing.T) {
 }
 
 func TestContainerImage(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		cmd            string
 		containerImage string
