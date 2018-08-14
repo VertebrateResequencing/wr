@@ -25,7 +25,7 @@ echo {42,24,mice,test} | xargs -n 1  echo echo | /tmp/wr add
 
 # Test we can run configmaps and create files
 # rtimeout instructs the runner pod to stay alive for long enough to verify the file.
-echo 'curl http://ovh.net/files/1Mio.dat -o /tmp/1Mio.dat' | /tmp/wr add --cloud_script /tmp/curl.sh --rtimeout 10
+echo 'curl http://ovh.net/files/1Mio.dat -o /tmp/1Mio.dat' | /tmp/wr add --cloud_script /tmp/curl.sh --rtimeout 250
 
 # Test different can support the runner deployment method
 echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --rtimeout 250
