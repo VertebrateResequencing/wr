@@ -28,8 +28,8 @@ echo {42,24,mice,test} | xargs -n 1  echo echo | /tmp/wr add
 echo 'curl http://ovh.net/files/1Mio.dat -o /tmp/1Mio.dat' | /tmp/wr add --cloud_script /tmp/curl.sh --rtimeout 10
 
 # Test different can support the runner deployment method
-echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --rtimeout 10
-echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --rtimeout 10
+echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --rtimeout 250
+echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --rtimeout 250
 
 echo '* Running e2e tests'
 GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/...
