@@ -146,6 +146,7 @@ func TestReqCheck(t *testing.T) {
 		ram := resource.NewQuantity(int64(c.ram)*1024*1024, resource.BinarySI)
 		disk := resource.NewQuantity(int64(c.disk)*1024*1024*1024, resource.BinarySI)
 
+		// Create the request.
 		r := &kubescheduler.Request{
 			RAM:    *ram,
 			Time:   5 * time.Second,
@@ -155,6 +156,7 @@ func TestReqCheck(t *testing.T) {
 			CbChan: make(chan kubescheduler.Response),
 		}
 
+		// Send and wait
 		go func() {
 			reqChan <- r
 		}()
@@ -162,7 +164,7 @@ func TestReqCheck(t *testing.T) {
 		resp := <-r.CbChan
 
 		if resp.Error != nil {
-			t.Errorf("A test that should've passed errored: %s", resp.Error)
+			t.Errorf("A test that should've passed errored: %s with case %+v", resp.Error, c)
 		}
 
 		// We are testing on 1.10, so ephemeral should always return true
@@ -178,9 +180,9 @@ func TestReqCheck(t *testing.T) {
 		disk  int
 	}{
 		{
-			cores: 42,
-			ram:   42,
-			disk:  0,
+			cores: 9999999,
+			ram:   9999999,
+			disk:  9999999,
 		},
 	}
 	for _, c := range failCases {
@@ -226,14 +228,16 @@ func TestRunCmd(t *testing.T) {
 	}{
 		{
 			cores:         1,
-			ram:           25,
+			ram:           250,
 			disk:          0,
 			configMapData: " ",
 		},
 	}
 	for _, c := range passCases {
 		configMountPath := "/scripts"
-		cmd := []string{"sleep 5"}
+		cmd := []string{"echo testing runcmd"}
+
+		// Package the requirements
 		requirements := &client.ResourceRequest{
 			Cores: c.cores,
 			Disk:  c.disk,
@@ -268,12 +272,15 @@ func TestRunCmd(t *testing.T) {
 			podAliveChan <- req
 		}()
 
+		// Wait on the error.
 		err = <-errChan
 		if err != nil {
 			t.Errorf("errChan recived error: %s", err)
 		}
 
 	}
+	// This fail case emulates a configmap (cloud script)
+	// failing.
 	failCases := []struct {
 		cores         int
 		ram           int
@@ -282,14 +289,14 @@ func TestRunCmd(t *testing.T) {
 	}{
 		{
 			cores:         1,
-			ram:           25,
+			ram:           250,
 			disk:          0,
 			configMapData: "/bin/false",
 		},
 	}
 	for _, c := range failCases {
 		configMountPath := "/scripts"
-		cmd := []string{"echo 42"}
+		cmd := []string{"echo testing runcmd fails"}
 		requirements := &client.ResourceRequest{
 			Cores: c.cores,
 			Disk:  c.disk,

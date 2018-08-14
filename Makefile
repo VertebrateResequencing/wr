@@ -41,6 +41,10 @@ test:
 test-e2e: ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
 	./kubernetes/run-e2e.sh
 
+
+test-k8s-unit: ## Run the unit and integration tests for the kubernetes driver
+	./kubernetes/run-unit.sh
+
 race: export CGO_ENABLED = 1
 race:
 	@go test -p 1 -tags netgo -race -v --count 1 ./queue

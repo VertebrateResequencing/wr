@@ -224,7 +224,7 @@ func TestContainerImage(t *testing.T) {
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
-		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
+		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
 
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
@@ -237,14 +237,14 @@ func TestContainerImage(t *testing.T) {
 				return true, nil
 			}
 			if job.Exited && job.Exitcode == 1 {
-				t.Errorf("cmd %s failed", c.cmd)
+				t.Errorf("cmd '%s' failed", c.cmd)
 				return false, fmt.Errorf("cmd failed")
 			}
 
 			return false, nil
 		})
 		if errr != nil {
-			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
+			t.Errorf("wait on cmd '%s' completion failed: %s", c.cmd, errr)
 		}
 
 		// Now the job has completed succesfully we heck that the image used is
