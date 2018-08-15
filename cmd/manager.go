@@ -554,6 +554,7 @@ func startJQ(postCreation []byte) {
 			LocalBinaryPath:    exe,
 			Namespace:          kubeNamespace,
 			ManagerDir:         config.ManagerDir,
+			Debug:              managerDebug,
 		}
 
 	}

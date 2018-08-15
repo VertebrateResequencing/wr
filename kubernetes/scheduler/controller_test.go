@@ -33,6 +33,7 @@ import (
 	kubescheduler "github.com/VertebrateResequencing/wr/kubernetes/scheduler"
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/inconshreveable/log15"
+	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
@@ -111,7 +112,8 @@ func init() {
 }
 
 // This test tests that the nodes are correctly being reported,
-// and that Resource requests are being handled correctly
+// and that Resource requests are being handled correctly.TestReqCheck
+// In the testing environment (Travis CI the VM has 2 vcpus and ~7gb ram)
 func TestReqCheck(t *testing.T) {
 	// Resources are limited in CI.
 	passCases := []struct {
@@ -221,28 +223,27 @@ func TestReqCheck(t *testing.T) {
 // something might've blown up.
 func TestRunCmd(t *testing.T) {
 	passCases := []struct {
-		cores         int
-		ram           int
-		disk          int
+		resourceReq   apiv1.ResourceRequirements
 		configMapData string
 	}{
 		{
-			cores:         1,
-			ram:           250,
-			disk:          0,
+			resourceReq: apiv1.ResourceRequirements{
+				Requests: apiv1.ResourceList{
+					apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(1)*100, resource.DecimalSI),
+					apiv1.ResourceMemory:           *resource.NewQuantity(int64(250)*1024*1024, resource.BinarySI),
+					apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(0)*1024*1024*1024, resource.BinarySI),
+				},
+				Limits: apiv1.ResourceList{
+					apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(1)*100, resource.DecimalSI),
+					apiv1.ResourceMemory: *resource.NewQuantity(int64(250)*1024*1024, resource.BinarySI),
+				},
+			},
 			configMapData: " ",
 		},
 	}
 	for _, c := range passCases {
 		configMountPath := "/scripts"
 		cmd := []string{"echo testing runcmd"}
-
-		// Package the requirements
-		requirements := &client.ResourceRequest{
-			Cores: c.cores,
-			Disk:  c.disk,
-			RAM:   c.ram,
-		}
 
 		configmap, err := lc.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
@@ -255,7 +256,7 @@ func TestRunCmd(t *testing.T) {
 			cmd,
 			configmap.ObjectMeta.Name,
 			configMountPath,
-			requirements)
+			c.resourceReq)
 
 		if err != nil {
 			t.Errorf("Spawn failed: %s", err)
@@ -280,28 +281,29 @@ func TestRunCmd(t *testing.T) {
 
 	}
 	// This fail case emulates a configmap (cloud script)
-	// failing.
+	// failing. (call /bin/false)
 	failCases := []struct {
-		cores         int
-		ram           int
-		disk          int
+		resourceReq   apiv1.ResourceRequirements
 		configMapData string
 	}{
 		{
-			cores:         1,
-			ram:           250,
-			disk:          0,
+			resourceReq: apiv1.ResourceRequirements{
+				Requests: apiv1.ResourceList{
+					apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(1)*100, resource.DecimalSI),
+					apiv1.ResourceMemory:           *resource.NewQuantity(int64(250)*1024*1024, resource.BinarySI),
+					apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(0)*1024*1024*1024, resource.BinarySI),
+				},
+				Limits: apiv1.ResourceList{
+					apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(1)*100, resource.DecimalSI),
+					apiv1.ResourceMemory: *resource.NewQuantity(int64(250)*1024*1024, resource.BinarySI),
+				},
+			},
 			configMapData: "/bin/false",
 		},
 	}
 	for _, c := range failCases {
 		configMountPath := "/scripts"
 		cmd := []string{"echo testing runcmd fails"}
-		requirements := &client.ResourceRequest{
-			Cores: c.cores,
-			Disk:  c.disk,
-			RAM:   c.ram,
-		}
 
 		configmap, err := lc.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
@@ -314,7 +316,7 @@ func TestRunCmd(t *testing.T) {
 			cmd,
 			configmap.ObjectMeta.Name,
 			configMountPath,
-			requirements)
+			c.resourceReq)
 
 		if err != nil {
 			t.Errorf("Spawn failed: %s", err)

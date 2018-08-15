@@ -30,6 +30,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
+	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
@@ -136,6 +137,10 @@ type ConfigKubernetes struct {
 
 	// Manager Directory to log to
 	ManagerDir string
+
+	// Debug mode sets requested resources at 1/10th the integer value.
+	// useful for testing.
+	Debug bool
 }
 
 // AddConfigFile takes a value as per the ConfigFiles property, and appends it
@@ -277,9 +282,19 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	s.Logger.Info(fmt.Sprintf("reqCheck called with requirements %#v", req))
 
 	// Rewrite *Requirements to a kubescheduler.Request
-	cores := resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
-	ram := resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
-	disk := resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI)
+	// Adjust values if debug enabled.
+	var cores *resource.Quantity
+	var ram *resource.Quantity
+	var disk *resource.Quantity
+	if s.config.Debug {
+		cores = resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI)
+		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
+		disk = resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI)
+	} else {
+		cores = resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
+		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
+		disk = resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI)
+	}
 
 	r := &kubescheduler.Request{
 		RAM:    *ram,
@@ -418,32 +433,55 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	cmd = strings.Replace(cmd, "'", "", -1)
 	binaryArgs := []string{cmd}
 
-	// Create requirements struct
-	requirements := &client.ResourceRequest{
-		Cores: req.Cores,
-		Disk:  req.Disk,
-		RAM:   req.RAM,
+	// build ResourceRequirements for Spawn()
+	// Adjust values if debug enabled.
+	var resources apiv1.ResourceRequirements
+	if s.config.Debug {
+		resources = apiv1.ResourceRequirements{
+			Requests: apiv1.ResourceList{
+				apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI),
+				apiv1.ResourceMemory:           *resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI),
+				apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI),
+			},
+			Limits: apiv1.ResourceList{
+				apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*100, resource.DecimalSI),
+				apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
+			},
+		}
+
+	} else {
+		resources = apiv1.ResourceRequirements{
+			Requests: apiv1.ResourceList{
+				apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI),
+				apiv1.ResourceMemory:           *resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI),
+				apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI),
+			},
+			Limits: apiv1.ResourceList{
+				apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*1000, resource.DecimalSI),
+				apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
+			},
+		}
 	}
 
 	// If ephemeral storage is not enabled on the cluster
 	// don't request any
 	s.esmutex.RLock()
 	if !s.es {
-		requirements.Disk = 0
+		resources.Requests[apiv1.ResourceEphemeralStorage] = *resource.NewQuantity(int64(0)*1024*1024*1024, resource.BinarySI)
 	}
 	s.esmutex.RUnlock()
 
 	//DEBUG:
 	//binaryArgs = []string{"tail", "-f", "/dev/null"}
 
-	s.Logger.Debug(fmt.Sprintf("Spawning pod with requirements %#v", requirements))
+	s.Logger.Debug(fmt.Sprintf("Spawning pod with requirements %#v", resources))
 	pod, err := s.libclient.Spawn(containerImage,
 		s.config.TempMountPath,
 		configMountPath+"/"+scriptName,
 		binaryArgs,
 		configMapName,
 		configMountPath,
-		requirements)
+		resources)
 
 	if err != nil {
 		s.Logger.Error("error spawning runner pod", "err", err)
