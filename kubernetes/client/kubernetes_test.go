@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
@@ -139,7 +141,7 @@ func TestSpawn(t *testing.T) {
 		cmdArgs         []string
 		configMountPath string
 		configMapData   string
-		resourceReq     *client.ResourceRequest
+		resourceReq     apiv1.ResourceRequirements
 	}{
 		{
 			containerImage:  "ubuntu:latest",
@@ -147,10 +149,16 @@ func TestSpawn(t *testing.T) {
 			cmdArgs:         []string{"tail", "-f", "/dev/null"},
 			configMountPath: "/scripts/",
 			configMapData:   "echo \"hello world\"",
-			resourceReq: &client.ResourceRequest{
-				Cores: 1,
-				Disk:  0,
-				RAM:   1,
+			resourceReq: apiv1.ResourceRequirements{
+				Requests: apiv1.ResourceList{
+					apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(1)*1000, resource.DecimalSI),
+					apiv1.ResourceMemory:           *resource.NewQuantity(int64(1)*1024*1024, resource.BinarySI),
+					apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(0)*1024*1024*1024, resource.BinarySI),
+				},
+				Limits: apiv1.ResourceList{
+					apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(1)*1000, resource.DecimalSI),
+					apiv1.ResourceMemory: *resource.NewQuantity(int64(1)*1024*1024, resource.BinarySI),
+				},
 			},
 		},
 	}

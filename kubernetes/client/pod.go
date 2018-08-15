@@ -23,6 +23,8 @@ package client
 import (
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
@@ -57,9 +59,9 @@ type Pod struct {
 // ResourceRequest specifies a
 // request for resources. Used in Spawn()
 type ResourceRequest struct {
-	Cores int
-	Disk  int
-	RAM   int
+	Cores *resource.Quantity
+	Disk  *resource.Quantity
+	RAM   *resource.Quantity
 }
 
 // CmdOptions contains StreamOptions for use in AttachCmd()
