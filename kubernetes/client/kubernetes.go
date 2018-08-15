@@ -46,7 +46,6 @@ import (
 	appsv1beta1 "k8s.io/api/apps/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	rbacapi "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -484,7 +483,7 @@ func InWRPod() bool {
 }
 
 // Spawn a new pod that contains a runner. Return the name.
-func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources *ResourceRequest) (*apiv1.Pod, error) {
+func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources apiv1.ResourceRequirements) (*apiv1.Pod, error) {
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-runner-",
@@ -540,17 +539,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 							Value: "root",
 						},
 					},
-					Resources: apiv1.ResourceRequirements{
-						Requests: apiv1.ResourceList{
-							apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(resources.Cores)*1000, resource.DecimalSI),
-							apiv1.ResourceMemory:           *resource.NewQuantity(int64(resources.RAM)*1024*1024, resource.BinarySI),
-							apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(resources.Disk)*1024*1024*1024, resource.BinarySI),
-						},
-						Limits: apiv1.ResourceList{
-							apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(resources.Cores+1)*1000, resource.DecimalSI),
-							apiv1.ResourceMemory: *resource.NewQuantity(int64(resources.RAM+(resources.RAM/5))*1024*1024, resource.BinarySI),
-						},
-					},
+					Resources: resources,
 					SecurityContext: &apiv1.SecurityContext{
 						Privileged: boolPtr(true),
 						Capabilities: &apiv1.Capabilities{

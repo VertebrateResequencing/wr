@@ -611,7 +611,7 @@ func (c *Controller) reqCheckHandler() bool {
 				return true
 			}
 		}
-	} else {
+	} else { // Otherwise turn it on
 		for _, n := range c.nodeResources {
 			// A Node should always have equal or more resource than the request.
 			// (The  .Cmp function works:  1 = '>', 0 = '==', -1 = '<'),
