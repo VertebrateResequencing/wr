@@ -78,6 +78,7 @@ type Controller struct {
 	workqueue         workqueue.RateLimitingInterface
 	opts              ScheduleOpts // Options for the scheduler
 	nodeResources     map[nodeName]corev1.ResourceList
+	nodeResourcesLen  *int
 	nodeResourceMutex *sync.RWMutex
 	podAliveMap       *sync.Map
 	logger            log15.Logger
@@ -556,9 +557,21 @@ func (c *Controller) sendBadServer(server *cloud.Server) {
 
 func (c *Controller) runReqCheck() {
 	c.logger.Debug("runReqCheck() called")
-	for c.reqCheckHandler() {
-		c.logger.Debug("Inside loop whilst reqCheckHandler is true")
+	// If nodeResources is not initialised, wait.
+	if c.nodeResourcesLen == nil || *c.nodeResourcesLen == 0 {
+		c.logger.Debug("node resources not initialised. Waiting")
+		c.logger.Debug("obtaining RLock()")
+		c.nodeResourceMutex.RLock()
+		c.logger.Debug("obtained RLock()")
+		c.nodeResourcesLen = func(i int) *int { return &i }(len(c.nodeResources))
+		c.nodeResourceMutex.RUnlock()
+		c.logger.Debug("returned RLock()")
+	} else if *c.nodeResourcesLen != 0 {
+		for c.reqCheckHandler() {
+			c.logger.Debug("Inside loop whilst reqCheckHandler is true")
+		}
 	}
+
 	c.logger.Debug("runReqCheck() exiting")
 }
 
