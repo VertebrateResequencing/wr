@@ -136,7 +136,6 @@ const touchStampFormat = "200601021504.05"
 var hostNameRegex = regexp.MustCompile(`[^a-z0-9\-]+`)
 
 const openstackName = "openstack"
-const kubernetesName = "kubernetes"
 
 // Error records an error and the operation and provider caused it.
 type Error struct {
