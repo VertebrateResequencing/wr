@@ -1645,7 +1645,7 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -1760,7 +1760,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 		if err != nil {
 			s.Warn("clearSchedulerGroup failed", "err", err)
 		}

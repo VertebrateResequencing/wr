@@ -388,8 +388,18 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
-func (s *lsf) reserveTimeout() int {
-	return defaultReserveTimeout
+func (s *lsf) reserveTimeout(req *Requirements) int {
+	if val, defined := req.Other["rtimeout"]; defined {
+		timeout, err := strconv.Atoi(val)
+		if err != nil {
+			s.Logger.Error(fmt.Sprintf("Failed to convert timeout to integer: %s", err))
+			return defaultReserveTimeout
+		}
+		s.Logger.Debug(fmt.Sprintf("setting runner timeout to %v", timeout))
+		return timeout
+	} else {
+		return defaultReserveTimeout
+	}
 }
 
 // maxQueueTime achieves the aims of MaxQueueTime().
