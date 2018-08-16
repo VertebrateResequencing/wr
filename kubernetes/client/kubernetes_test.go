@@ -241,6 +241,9 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 			t.Error(fmt.Errorf("Failed to write file to %s: %s", c.filePath, err))
 		}
 		cmap, err := tc.CreateInitScriptConfigMapFromFile(c.filePath)
+		if err != nil {
+			t.Errorf("Failed to create config map: %s", err)
+		}
 
 		expectedData := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"" +
 			"\necho \"hello world\"\necho \"Init Script complete, executing arguments provided\"\nexec $@"
