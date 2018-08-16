@@ -137,7 +137,10 @@ func main() {
 			if err != nil {
 				log.Fatalln("Unable to send signal to daemon: ", err)
 			}
-			daemon.SendCommands(d)
+			err = daemon.SendCommands(d)
+			if err != nil {
+				panic(err)
+			}
 			return
 		}
 
