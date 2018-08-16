@@ -84,7 +84,7 @@ type JobViaJSON struct {
 	CloudFlavor      string            `json:"cloud_flavor"`
 	CloudShared      bool              `json:"cloud_shared"`
 	BsubMode         string            `json:"bsub_mode"`
-	RTimeout         *int              `json:"rtimeout"`
+	RTimeout         *int              `json:"reserve_timeout"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for

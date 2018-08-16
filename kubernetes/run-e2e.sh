@@ -28,12 +28,12 @@ echo 'apt-get update && apt-get upgrade -y && apt-get install -y curl' > /tmp/cu
 echo {42,24,mice,test} | xargs -n 1  echo echo | /tmp/wr add
 
 # Test we can run configmaps and create files
-# rtimeout instructs the runner pod to stay alive for long enough to verify the file.
-echo 'echo hello world > /tmp/hw' | /tmp/wr add --rtimeout 250
+# reserve_timeout instructs the runner pod to stay alive for long enough to verify the file.
+echo 'echo hello world > /tmp/hw' | /tmp/wr add --reserve_timeout 250
 
 # Test different can support the runner deployment method
-echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --rtimeout 250
-echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --rtimeout 250
+echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --reserve_timeout 250
+echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --reserve_timeout 250
 
 echo '* Running e2e tests'
 GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/add_test
@@ -41,8 +41,8 @@ GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/add_test
 # This should submit jobs that fit the entire node for each node in the cluster.
 # Submit twice to test jobs go from pending -> complete. 
 # Set rtimeout so that they pend for an amount of time
-kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="Hostname")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), rtimeout: 2 }'  | /tmp/wr add -i max \
-&& kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="InternalIP")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), rtimeout: 2 }'  | /tmp/wr add i- max
+kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="Hostname")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), reserve_timeout: 2 }'  | /tmp/wr add -i max \
+&& kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="InternalIP")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), reserve_timeout: 2 }'  | /tmp/wr add i- max
 
 echo '* Running node capacity e2e test'
 GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/max_cluster

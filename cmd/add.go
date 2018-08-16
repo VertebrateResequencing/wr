@@ -360,7 +360,7 @@ func init() {
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
-	addCmd.Flags().IntVar(&rtimeoutint, "rtimeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
+	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
 }
 
 // convert cmd,cwd columns in to Dependency.
