@@ -238,7 +238,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Rewrite config files.
 	files := s.rewriteConfigFiles(s.config.ConfigFiles)
-	files = append(files, client.FilePair{s.config.LocalBinaryPath, s.config.TempMountPath})
+	files = append(files, client.FilePair{Src: s.config.LocalBinaryPath, Dest: s.config.TempMountPath})
 
 	// Initialise scheduler opts
 	opts := kubescheduler.ScheduleOpts{
@@ -611,10 +611,10 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 			st := strings.TrimPrefix(path, "~/")
 			st = hDir + st
 
-			filePairs = append(filePairs, client.FilePair{st, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: st, Dest: dests[i]})
 		} else {
 			// The source must exist, so tar won't fail. Add it anyway.
-			filePairs = append(filePairs, client.FilePair{path, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: path, Dest: dests[i]})
 		}
 	}
 
@@ -629,10 +629,10 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 			st := strings.TrimPrefix(path, "~/")
 			st = hDir + st
 
-			filePairs = append(filePairs, client.FilePair{st, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: st, Dest: dests[i]})
 		} else {
 			// The source must exist, so tar won't fail. Add it anyway.
-			filePairs = append(filePairs, client.FilePair{path, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: path, Dest: dests[i]})
 		}
 	}
 
