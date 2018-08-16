@@ -42,7 +42,7 @@ GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/add_test
 # Submit twice to test jobs go from pending -> complete. 
 # Set rtimeout so that they pend for an amount of time
 kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="Hostname")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), reserve_timeout: 2 }'  | /tmp/wr add -i max \
-&& kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="InternalIP")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), reserve_timeout: 2 }'  | /tmp/wr add i- max
+&& kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="InternalIP")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), reserve_timeout: 2 }'  | /tmp/wr add -i max
 
 echo '* Running node capacity e2e test'
 GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/max_cluster

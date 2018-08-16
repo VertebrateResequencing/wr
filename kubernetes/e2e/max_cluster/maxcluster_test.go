@@ -117,6 +117,18 @@ func TestClusterPend(t *testing.T) {
 			if jobs == nil {
 				return false, nil
 			} else {
+				// If there arent
+				nodeList, err := clientset.CoreV1().Nodes().List(metav1.ListOptions{})
+				if err != nil {
+					t.Errorf("Failed to list nodes: %s", err)
+				}
+
+				// There should always be 2 * nodes jobs
+				// If not wait until they're all in the list
+				if len(jobs) != 2*len(nodeList.Items) {
+					return false, nil
+				}
+
 				// For each job, ensure it runs & exits succesfully.
 				for _, job := range jobs {
 					if job.Exited && job.Exitcode != 1 {
