@@ -266,7 +266,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 
 		// If a namespace is passed it takes priority.
 		if len(kubeNamespace) != 0 {
-			_, err = c.Clientset.Apps().Deployments(kubeNamespace).Get("wr-manager", metav1.GetOptions{})
+			_, err = c.Clientset.AppsV1().Deployments(kubeNamespace).Get("wr-manager", metav1.GetOptions{})
 			if err != nil {
 				if errors.IsNotFound(err) {
 					// set the flag that tells the daemon to redeploy.
@@ -296,7 +296,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
 				// check for a healthy deployment
-				_, err = c.Clientset.Apps().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+				_, err = c.Clientset.AppsV1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
 				if err != nil {
 					if errors.IsNotFound(err) {
 						// set the flag that tells the daemon to redeploy.
