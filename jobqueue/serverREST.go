@@ -650,6 +650,10 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 			return nil, http.StatusBadRequest, err
 		}
 	}
+	var rerun bool
+	if r.Form.Get("rerun") == restFormTrue {
+		rerun = true
+	}
 	defaultDeps := urlStringToSlice(r.Form.Get("deps"))
 	if len(defaultDeps) > 0 {
 		for _, depgroup := range defaultDeps {
@@ -719,7 +723,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		return nil, http.StatusInternalServerError, err
 	}
 
-	_, _, _, _, err = s.createJobs(inputJobs, envkey, true)
+	_, _, _, _, err = s.createJobs(inputJobs, envkey, !rerun)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
