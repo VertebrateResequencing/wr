@@ -95,6 +95,7 @@ func init() {
 }
 
 func TestEchoes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		cmd string
 	}{
@@ -155,6 +156,7 @@ func TestEchoes(t *testing.T) {
 // Go's byte -> str conversion causes the md5 to differ from
 // the one on the OVH website. So long as it remains constant we are happy
 func TestFileCreation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		cmd string
 	}{
@@ -221,6 +223,7 @@ func TestFileCreation(t *testing.T) {
 }
 
 func TestContainerImage(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		cmd            string
 		containerImage string
