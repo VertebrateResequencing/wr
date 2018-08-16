@@ -89,7 +89,6 @@ func StartController(binaryPath string, scriptPath string, stopCh chan struct{})
 
 	c.Run(stopCh)
 
-	return
 }
 
 func main() {

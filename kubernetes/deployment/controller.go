@@ -291,5 +291,4 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 	} else {
 		c.Opts.Logger.Debug(fmt.Sprintf("InitContainerStatuses not initialised yet"))
 	}
-	return
 }

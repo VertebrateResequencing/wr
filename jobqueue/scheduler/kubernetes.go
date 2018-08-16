@@ -383,7 +383,6 @@ func (s *k8s) cleanup() {
 		s.Warn("cleanup queue destruction failed", "err", err)
 	}
 
-	return
 }
 
 // Work out how many pods with given resource requests can be scheduled based on resource requests on the
