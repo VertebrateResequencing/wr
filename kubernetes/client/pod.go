@@ -39,7 +39,6 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/inconshreveable/log15"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
@@ -53,7 +52,6 @@ type Pod struct {
 	ID        string
 	Name      string
 	Resources *ResourceRequest
-	logger    log15.Logger
 }
 
 // ResourceRequest specifies a

@@ -42,7 +42,6 @@ import (
 
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/inconshreveable/log15"
-	"github.com/sevlyar/go-daemon"
 	appsv1beta1 "k8s.io/api/apps/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	rbacapi "k8s.io/api/rbac/v1"
@@ -72,7 +71,6 @@ type Kubernetesp struct {
 	clientset         kubernetes.Interface
 	clusterConfig     *rest.Config
 	RESTClient        rest.Interface
-	namespaceClient   typedv1.NamespaceInterface
 	deploymentsClient typedappsv1beta1.DeploymentInterface
 	serviceClient     typedv1.ServiceInterface
 	podClient         typedv1.PodInterface
@@ -81,9 +79,7 @@ type Kubernetesp struct {
 	StopChannel       chan struct{}
 	ReadyChannel      chan struct{}
 	cmdOut, cmdErr    io.Writer
-	kubeconfig        *string
 	NewNamespaceName  string
-	context           *daemon.Context
 	Logger            log15.Logger
 }
 

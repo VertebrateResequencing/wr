@@ -73,7 +73,6 @@ var kubeNamespace string
 var maxPods int
 var scriptName string
 var configMapName string
-var kubeConfigMap string
 
 // cloudCmd represents the cloud command
 var kubeCmd = &cobra.Command{
