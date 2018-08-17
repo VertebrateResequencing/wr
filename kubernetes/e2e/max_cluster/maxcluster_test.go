@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limite
+// Copyright © 2018 Genome Research Limite
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
