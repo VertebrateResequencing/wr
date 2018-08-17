@@ -25,8 +25,6 @@ env:
 before_install:
   - go get github.com/modocache/gover
   - go get github.com/mattn/goveralls
-  - go get github.com/Masterminds/glide
-  - $HOME/gopath/bin/glide -q install
   # Download the binary to bin folder in $GOPATH
   - curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
   # Make the binary executable
