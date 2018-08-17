@@ -65,7 +65,6 @@ const kubeLogFileName = "kubelog"
 // options for this cmd
 var podPostCreationScript string
 var containerImage string
-var podDNS string
 var podConfigFiles string
 var kubeDebug bool
 var kubeNamespace string
@@ -463,8 +462,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			remoteExe := filepath.Join(podBinDir, linuxBinaryName)
 			m := maxPods - 1
 
-			mCmd := fmt.Sprintf("%s manager start -f --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --cloud_dns '%s' --timeout %d%s --local_username %s",
-				remoteExe, config.Deployment, kubeNamespace, serverKeepAlive, m, configMapName, containerImage, podConfigFiles, podDNS, managerTimeoutSeconds, debugStr, realUsername())
+			mCmd := fmt.Sprintf("%s manager start -f --deployment %s --scheduler kubernetes --namespace %s --cloud_keepalive %d  --cloud_servers %d --config_map %s --cloud_os %s --cloud_config_files '%s' --timeout %d%s --local_username %s",
+				remoteExe, config.Deployment, kubeNamespace, serverKeepAlive, m, configMapName, containerImage, podConfigFiles, managerTimeoutSeconds, debugStr, realUsername())
 
 			mCmd = strings.Replace(mCmd, "'", "", -1)
 			if kubeDebug {
@@ -734,7 +733,6 @@ func init() {
 	kubeDeployCmd.Flags().StringVarP(&podPostCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each pod created")
 	kubeDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
-	kubeDeployCmd.Flags().StringVar(&podDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to on the created pods")
 	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
 	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "image to use for spawned pods")
 	kubeDeployCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
