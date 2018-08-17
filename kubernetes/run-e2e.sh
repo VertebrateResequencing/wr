@@ -29,11 +29,11 @@ echo {42,24,mice,test} | xargs -n 1  echo echo | /tmp/wr add
 
 # Test we can run configmaps and create files
 # reserve_timeout instructs the runner pod to stay alive for long enough to verify the file.
-echo 'echo hello world > /tmp/hw' | /tmp/wr add --reserve_timeout 250
+echo 'echo hello world > /tmp/hw' | /tmp/wr add --reserve_timeout 20
 
 # Test different can support the runner deployment method
-echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --reserve_timeout 250
-echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --reserve_timeout 250
+echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --reserve_timeout 20
+echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --reserve_timeout 20
 
 echo '* Running e2e tests'
 GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/add_test
