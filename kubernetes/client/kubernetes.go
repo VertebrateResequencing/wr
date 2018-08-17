@@ -226,12 +226,11 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	} else {
 		rand.Seed(time.Now().UnixNano())
 		p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
-		fmt.Printf("NewNamespaceName: %v \n", p.NewNamespaceName)
+		p.Logger.Info(fmt.Sprintf("NewNamespaceName: %v \n", p.NewNamespaceName))
 		// Retry if namespace taken
 		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			nsErr := p.CreateNewNamespace(p.NewNamespaceName)
 			if nsErr != nil {
-				fmt.Printf("Failed to create new namespace, %s. Trying again. Error: %v", p.NewNamespaceName, nsErr)
 				p.Logger.Warn("failed to create new namespace. Trying again.", "namespace", p.NewNamespaceName, "err", nsErr)
 				p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
 			}
@@ -418,13 +417,13 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 	}
 
 	// Create Deployment
-	fmt.Println("Creating deployment...")
+	p.Logger.Info(fmt.Sprintf("Creating deployment..."))
 	result, err := p.deploymentsClient.Create(deployment)
 	if err != nil {
 		p.Logger.Error("creating deployment", "err", err)
 		return err
 	}
-	fmt.Printf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.NewNamespaceName)
+	p.Logger.Info(fmt.Sprintf("Created deployment %q in namespace %v.\n", result.GetObjectMeta().GetName(), p.NewNamespaceName))
 	// specify service so wr-manager can be resolved using kubedns if needed
 	svcOpts := ServiceOpts{
 		Name: "wr-manager",
