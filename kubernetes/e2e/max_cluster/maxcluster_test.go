@@ -151,6 +151,9 @@ func TestClusterPend(t *testing.T) {
 		// Now check the pods are deleted after succesful completion.
 		// They are kept if they error.
 		for _, job := range jobs {
+			if len(job.Host) == 0 {
+				t.Errorf("job %+v has no host.", job)
+			}
 			_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 			if err != nil && errors.IsNotFound(err) {
 				t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
