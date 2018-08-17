@@ -135,14 +135,11 @@ func makeTar(files []FilePair, writer io.Writer) error {
 	tarWriter := tar.NewWriter(writer)
 	defer tarWriter.Close()
 	// Add each file to the tarball
-	fmt.Println(len(files))
 	for i := range files {
-		fmt.Printf("Adding file %v \n", files[i])
 		if err := addFile(tarWriter, path.Clean(files[i].Src), files[i].Dest); err != nil {
 			return err
 		}
 	}
-	fmt.Println("Done adding files to tar")
 	return nil
 }
 
@@ -180,8 +177,8 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 		Tty:    false,
 	})
 	if err != nil {
-		fmt.Printf("StdErr: %v\n", opts.Err)
-		panic(fmt.Errorf("Error executing remote command: %v", err))
+		p.Logger.Error(fmt.Sprintf("AttachCmd StdErr: %v\n", opts.Err))
+		return "", "", fmt.Errorf("Error executing remote command: %v", err)
 	}
 	return "", "", nil
 }
@@ -277,15 +274,12 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	for i, port := range requiredPorts {
 		ports[i] = strconv.Itoa(port)
 	}
-	fmt.Println(ports)
-	fmt.Println("returning at end of portForward")
 
 	return p.forwardPorts("POST", req.URL(), ports)
 
 }
 
 func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
-	fmt.Println("In ForwardPorts")
 	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
 	if err != nil {
 		return err
