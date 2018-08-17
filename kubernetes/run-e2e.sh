@@ -14,7 +14,7 @@ echo ''
 
 # Test the compiled binary as the end user would run it. 
 # Test kubeDeployCmd
-/tmp/wr kubernetes deploy --debug || (cat ~/.wr_development/kubelog; /bin/false)
+/tmp/wr k8s deploy --debug || (cat ~/.wr_development/kubelog; /bin/false)
 
 # Test we can reach the manager
 [ $(/tmp/wr manager status)  == started ] || (echo "unable to talk to manager"; /bin/false)
@@ -48,6 +48,6 @@ GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/max_cluster
 
 
 # Test kubeTeardownCmd
-/tmp/wr kubernetes teardown || (cat ~/.wr_development/kubeScheduler{,Controller}log; /bin/false)
+/tmp/wr k8s teardown || (cat ~/.wr_development/kubeScheduler{,Controller}log; /bin/false)
 
 echo -e '- Tests completed successfully!'

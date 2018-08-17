@@ -19,7 +19,6 @@
 package cmd
 
 import (
-	// "bufio"
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
@@ -74,9 +73,9 @@ var maxPods int
 var scriptName string
 var configMapName string
 
-// cloudCmd represents the cloud command
+// kubeCmd represents the cloud command
 var kubeCmd = &cobra.Command{
-	Use:   "kubernetes",
+	Use:   "k8s",
 	Short: "Kubernetes cluster interfacing",
 	Long: `Kubernetes cluster interfacing.
 
@@ -111,7 +110,7 @@ variables of the server the command is run on.
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created pod before any commands run on them. You
 might install some software for example. Note that the script is run by default
-as root. If  your bash script has commands with 'sudo' you may need to install sudo. 
+as root. If your bash script has commands with 'sudo' you may need to install sudo. 
 This is usually when the image does not include it (e.g the ubuntu images).
 For debian based images this may look like 'apt-get -y install sudo'.
 
@@ -138,7 +137,7 @@ already have user_allow_other set or at least be present and commented out
 (wr will enable it). 
 
 By default the 'ubuntu:latest' image is used. Currently any container registry
-natively supported by kubernetes should work, currently there is no support for
+natively supported by kubernetes should work, though there is no support for
 secrets so some private registries may not work (Node authentication should).
 
 See https://kubernetes.io/docs/concepts/containers/images/ for more details.
@@ -814,5 +813,4 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 	return filePairs
-
 }
