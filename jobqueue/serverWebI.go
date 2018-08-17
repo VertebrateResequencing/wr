@@ -82,7 +82,7 @@ type JStatus struct {
 	// RequestedDisk is in Gigabytes.
 	RequestedDisk int
 	OtherRequests []string
-	Cores         int
+	Cores         float64
 	PeakRAM       int
 	PeakDisk      int64 // MBs
 	Exited        bool

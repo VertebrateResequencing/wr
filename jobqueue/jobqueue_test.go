@@ -2843,6 +2843,166 @@ func TestJobqueue(t *testing.T) {
 			})
 		})
 
+		Convey("You can connect, and add some jobs with fractional CPU requirements", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			var jobs []*Job
+			count := maxCPU * 2
+			for i := 0; i < count; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0.5}, Retries: uint8(0), RepGroup: "manually_added"})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the jobs get automatically run", func() {
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				var simultaneous int
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							running, errj := jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+							if errj == nil && len(running) > simultaneous {
+								simultaneous = len(running)
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue) // we shouldn't have hit our time limit
+				So(simultaneous, ShouldBeGreaterThan, maxCPU)
+
+				jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, count)
+				ran := 0
+				for _, job := range jobs {
+					files, err := ioutil.ReadDir(job.ActualCwd)
+					if err != nil {
+						log.Fatal(err)
+					}
+					for range files {
+						ran++
+					}
+				}
+				So(ran, ShouldEqual, count)
+
+				files, err := ioutil.ReadDir(runnertmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ranClean := 0
+				for range files {
+					ranClean++
+				}
+				So(ranClean, ShouldEqual, count+1) // +1 for the runner exe
+			})
+		})
+
+		Convey("You can connect, and add some 0 CPU jobs, which are limited by memory", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			maxMem, errp := internal.ProcMeminfoMBs()
+			So(errp, ShouldBeNil)
+
+			var jobs []*Job
+			jobMB := int(math.Floor(float64(maxMem) / float64(maxCPU*2)))
+			count := maxCPU * 3
+			for i := 0; i < count; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "manually_added"})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the jobs get automatically run", func() {
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				var simultaneous int
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							running, errj := jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+							if errj == nil && len(running) > simultaneous {
+								simultaneous = len(running)
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue) // we shouldn't have hit our time limit
+				So(simultaneous, ShouldBeBetweenOrEqual, maxCPU, maxCPU*2)
+
+				jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, count)
+				ran := 0
+				for _, job := range jobs {
+					files, err := ioutil.ReadDir(job.ActualCwd)
+					if err != nil {
+						log.Fatal(err)
+					}
+					for range files {
+						ran++
+					}
+				}
+				So(ran, ShouldEqual, count)
+
+				files, err := ioutil.ReadDir(runnertmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ranClean := 0
+				for range files {
+					ranClean++
+				}
+				So(ranClean, ShouldEqual, count+1) // +1 for the runner exe
+			})
+		})
+
 		Convey("You can connect, and add a job that buries with no retries", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -3533,6 +3693,46 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
+			Convey("You can run cmds that have fractional or 0 CPU requirements simultaneously on 1 CPU", func() {
+				var jobs []*Job
+				jobs = append(jobs, &Job{Cmd: "sleep 2", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.9, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 3", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.1, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 4", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 3)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				var simultaneous int
+				go func() {
+					limit := time.After(10 * time.Second)
+					ticker := time.NewTicker(50 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							running, errj := jq.GetByRepGroup("fraction", false, 0, JobStateRunning, false, false)
+							if errj == nil && len(running) > simultaneous {
+								simultaneous = len(running)
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+				So(simultaneous, ShouldEqual, 3)
+			})
+
 			Convey("You can run cmds that start docker containers and get correct memory and cpu usage", func() {
 				var jobs []*Job
 				other := make(map[string]string)
@@ -3733,8 +3933,8 @@ sudo usermod -aG docker ` + osUser
 				server.scheduler.SetBadServerCallBack(badServerCB)
 
 				var jobs []*Job
-				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: cores, Disk: 0}
-				schedGrp := fmt.Sprintf("%d:60:%d:0", flavor.RAM, cores)
+				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: float64(cores), Disk: 0}
+				schedGrp := fmt.Sprintf("%d:60:%f:0", flavor.RAM, float64(cores))
 				jobs = append(jobs, &Job{Cmd: "sleep 300", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 				jobs = append(jobs, &Job{Cmd: "sleep 301", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 				inserts, already, err := jq.Add(jobs, envVars, true)
@@ -3752,6 +3952,11 @@ sudo usermod -aG docker ` + osUser
 						case <-ticker.C:
 							if server.HasRunners() {
 								running, errf := jq.GetByRepGroup("sleep", false, 0, JobStateRunning, false, false)
+								if errf != nil {
+									ticker.Stop()
+									started <- false
+									return
+								}
 								complete, errf := jq.GetByRepGroup("sleep", false, 0, JobStateComplete, false, false)
 								if errf != nil {
 									ticker.Stop()

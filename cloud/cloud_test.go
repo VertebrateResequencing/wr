@@ -212,11 +212,11 @@ func TestOpenStack(t *testing.T) {
 					n := server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, flavor.Cores)
 
-					server.Allocate(flavor.Cores, 100, 0)
+					server.Allocate(float64(flavor.Cores), 100, 0)
 					n = server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, 0)
 
-					server.Release(flavor.Cores, 100, 0)
+					server.Release(float64(flavor.Cores), 100, 0)
 					n = server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, flavor.Cores)
 

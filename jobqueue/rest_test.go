@@ -151,7 +151,7 @@ func TestREST(t *testing.T) {
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1"})
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
 			pri := 2
-			cpus := 2
+			cpus := float64(2)
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 3 && false", CwdMatters: true, RepGrp: "rp1", Memory: "50M", CPUs: &cpus, Time: "2m", Priority: &pri, Env: []string{"foo=bar", "test=case"}})
 			jsonValue, err := json.Marshal(inputJobs)
 			So(err, ShouldBeNil)
@@ -175,7 +175,7 @@ func TestREST(t *testing.T) {
 			So(jstati[0].RepGroup, ShouldEqual, "rp1")
 			So(jstati[0].ExpectedRAM, ShouldEqual, 1000)
 			So(jstati[0].ExpectedTime, ShouldEqual, 3600)
-			So(jstati[0].Cores, ShouldEqual, 1)
+			So(jstati[0].Cores, ShouldEqual, 0)
 			So(jstati[1].Key, ShouldEqual, "f5c0d6240167a6e0b803e23f74e3a085")
 			So(jstati[1].RepGroup, ShouldEqual, "rp2")
 			So(jstati[1].CwdBase, ShouldEqual, "/tmp/foo")

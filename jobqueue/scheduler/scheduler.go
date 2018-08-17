@@ -43,6 +43,7 @@ import (
 	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -82,7 +83,7 @@ func (e Error) Error() string {
 type Requirements struct {
 	RAM   int               // the expected peak RAM in MB Cmd will use while running
 	Time  time.Duration     // the expected time Cmd will take to run
-	Cores int               // how many processor cores the Cmd will use
+	Cores float64           // how many processor cores the Cmd will use
 	Disk  int               // the required local disk space in GB the Cmd needs to run
 	Other map[string]string // a map that will be passed through to the job scheduler, defining further arbitrary resource requirements
 }
@@ -109,7 +110,7 @@ func (req *Requirements) Stringify() string {
 		other = fmt.Sprintf(":%x", md5.Sum([]byte(other))) // #nosec
 	}
 
-	return fmt.Sprintf("%d:%.0f:%d:%d%s", req.RAM, req.Time.Minutes(), req.Cores, req.Disk, other)
+	return fmt.Sprintf("%d:%.0f:%s:%d%s", req.RAM, req.Time.Minutes(), strconv.FormatFloat(req.Cores, 'f', -1, 64), req.Disk, other)
 }
 
 // CmdStatus lets you describe how many of a given cmd are already in the job
