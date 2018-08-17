@@ -477,11 +477,11 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			// Add the configFiles passed to the deploy cmd
 			files := rewriteConfigFiles(podConfigFiles)
 			// Copy the wr-linux binary
-			files = append(files, client.FilePair{exe, podBinDir})
+			files = append(files, client.FilePair{Src: exe, Dest: podBinDir})
 			// Copy cert, key & ca files
-			files = append(files, client.FilePair{filepath.Join(config.ManagerDir + "/key.pem"), podBinDir + ".wr_" + config.Deployment + "/"})
-			files = append(files, client.FilePair{filepath.Join(config.ManagerDir + "/ca.pem"), podBinDir + ".wr_" + config.Deployment + "/"})
-			files = append(files, client.FilePair{filepath.Join(config.ManagerDir + "/cert.pem"), podBinDir + ".wr_" + config.Deployment + "/"})
+			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/key.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
+			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/ca.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
+			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/cert.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
 
 			info(fmt.Sprintf("podConfigFiles: %#v", podConfigFiles))
 
@@ -810,7 +810,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 			src := strings.TrimPrefix(path, "~/")
 			src = hDir + "/" + src
 
-			filePairs = append(filePairs, client.FilePair{src, dests[i]})
+			filePairs = append(filePairs, client.FilePair{Src: src, Dest: dests[i]})
 		}
 	}
 	return filePairs
