@@ -199,31 +199,18 @@ func (c *Controller) processItem(key string) error {
 
 	if !exists {
 		c.Opts.Logger.Debug(fmt.Sprintf("Object with key %s deleted. \n\nObj: %v", key, obj))
-		fmt.Printf("\n\n")
-		fmt.Println("====================")
-		fmt.Printf("\n\n")
 		return nil
 	}
 	err = c.processObj(obj)
-	//jsonObj, err := json.Marshal(obj)
-	//fmt.Printf(string(jsonObj))
-	//fmt.Printf("Object with key %s created. \n\nObj: %v", key, obj)
-	fmt.Printf("\n\n")
-	fmt.Println("====================")
-	fmt.Printf("\n\n")
 	return err
 }
 
 // Process a generic object
 func (c *Controller) processObj(obj interface{}) error {
-	fmt.Println("processObj called")
-	fmt.Printf("Object has type %T\n", obj)
 	switch v := obj.(type) {
 	case *apiv1.Pod:
-		fmt.Println("Case pod. Calling processPod")
 		c.processPod(v)
 	default:
-		fmt.Println("Default case executed, throwing error")
 		return error(fmt.Errorf("obj is not a pod"))
 	}
 	return nil
@@ -233,7 +220,6 @@ func (c *Controller) processObj(obj interface{}) error {
 // in an observed state.
 // Assumes there is only 1 initcontainer
 func (c *Controller) processPod(obj *apiv1.Pod) {
-	fmt.Println("processPod Called")
 	if len(obj.Status.InitContainerStatuses) != 0 {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
@@ -284,6 +270,7 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			go func() {
 				err := c.Client.PortForward(obj, c.Opts.RequiredPorts)
 				if err != nil {
+					c.Opts.Logger.Error(fmt.Sprintf("Port forwarding error: %s", err))
 				}
 			}()
 		default:
