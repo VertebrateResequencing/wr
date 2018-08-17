@@ -65,6 +65,7 @@ clean:
 	@rm -f ./wr
 	@rm -f ./dist.zip
 	@rm -fr ./vendor
+	@rm -f ./tmp/wr
 
 dist: export CGO_ENABLED = 0
 
@@ -78,4 +79,4 @@ dist:
 	github-release upload --tag ${TAG} --name wr-macos-x86-64.zip --file darwin-dist.zip
 	@rm -f wr linux-dist.zip darwin-dist.zip
 
-.PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e
+.PHONY: build test race lint lintextra install clean dist compile_k8s_tmp test-e2e test-k8s-unit
