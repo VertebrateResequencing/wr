@@ -69,9 +69,9 @@ var scriptName string
 
 const kubeSchedulerLog = "kubeSchedulerLog"
 
-// ConfigKubernetes holds the configuration options for the kubernetes WR driver
+// ConfigKubernetes holds the configuration options for the kubernetes wr driver
 type ConfigKubernetes struct {
-	// The image name (Docker Hub) to pull to run WR Runners with. Defaults to
+	// The image name (Docker Hub) to pull to run wr Runners with. Defaults to
 	// 'ubuntu:latest'
 	Image string
 

@@ -218,7 +218,7 @@ func TestInWrPod(t *testing.T) {
 	// These tests are not run inside a wr pod. Expect false
 	inwr := client.InWRPod()
 	if inwr {
-		t.Error("This test is not run inside a pod WR controlls, should return false.")
+		t.Error("This test is not run inside a pod wr controlls, should return false.")
 	}
 }
 

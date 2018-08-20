@@ -468,7 +468,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 
 			// Create the deployment if an existing one does not exist
 			if kubeDeploy {
-				info("creating WR deployment")
+				info("creating wr deployment")
 				err = c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 				if err != nil {
 					die("failed to create deployment: %s", err)
