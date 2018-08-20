@@ -280,18 +280,12 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				kubeDeploy = true
 			} else {
 				// Read the namespace resource file
-				file, err := os.Open(resourcePath)
+				resources, err = openResources(resourcePath)
 				if err != nil {
-					die("could not open resource file with path: %s", err)
-				}
-				decoder := gob.NewDecoder(file)
-				err = decoder.Decode(resources)
-				if err != nil {
-					die("error decoding resource file: %s", err)
+					die("failed to open resource file with path %s: %s", resourcePath, err)
 				}
 
 				namespace := resources.Details["namespace"]
-				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
 				// check for a healthy deployment
 				_, err = c.Clientset.AppsV1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
@@ -327,26 +321,18 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			// of the pod to fetch the client.token from.
 
 			// Read the manager pod's name from resource file
-			file, err := os.Open(resourcePath)
+			resources, err = openResources(resourcePath)
 			if err != nil {
-				die("Could not open resource file with path: %s", err)
-			}
-			decoder := gob.NewDecoder(file)
-			err = decoder.Decode(resources)
-			if err != nil {
-				die("Error decoding resource file: %s", err)
+				die("failed to open resource file with path %s: %s", resourcePath, err)
 			}
 			managerPodName := resources.Details["manager-pod"]
 			namespace := resources.Details["namespace"]
 
-			internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
-
 			// cat the contents of the client.token in the running manager, so we can
 			// write them to disk locally, and provide the URL for accessing the web interface
 			stdOut, _, err := c.Client.ExecInPod(managerPodName, "wr-manager", namespace, []string{"cat", podBinDir + ".wr_" + config.Deployment + "/client.token"})
-
 			if err != nil {
-				die("something went executing the command to retrieve the token: %s", err)
+				die("something went wrong executing the command to retrieve the token: %s", err)
 			}
 			token := stdOut
 
@@ -374,7 +360,6 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 					warn("daemon release failed: %s", err)
 				}
 			}()
-			info("In daemon")
 
 			debugStr := ""
 			if cloudDebug {
@@ -383,7 +368,6 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 
 			// Look for a set of resources in the manager directory
 			// If found, load them else use a new empty set.
-			info("Checking resources")
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
 				resources = &cloud.Resources{
@@ -393,18 +377,14 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 					Servers:      make(map[string]*cloud.Server)}
 
 				// Populate the rest of Kubernetesp
-				info("Initialising clients.")
 				// If there is a predefined namespace set, use it.
 				if len(kubeNamespace) != 0 {
 					err = c.Client.Initialize(c.Clientset, kubeNamespace)
-					if err != nil {
-						die("Failed to initialise clients: %s", err)
-					}
 				} else {
 					err = c.Client.Initialize(c.Clientset)
-					if err != nil {
-						die("Failed to initialise clients: %s", err)
-					}
+				}
+				if err != nil {
+					die("Failed to initialise clients: %s", err)
 				}
 
 				// Create the configMap
@@ -435,16 +415,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
 			} else {
-				info("opening resource file with path: %s", resourcePath)
-				file, err := os.Open(resourcePath)
+				resources, err = openResources(resourcePath)
 				if err != nil {
-					die("Could not open resource file with path: %s", err)
-				}
-				decoder := gob.NewDecoder(file)
-				err = decoder.Decode(resources)
-				if err != nil {
-					die("error decoding resource file: %s", err)
-
+					die("failed to open resource file with path %s: %s", resourcePath, err)
 				}
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
@@ -456,7 +429,6 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				if err != nil {
 					die("Failed to initialise client to namespace %s", kubeNamespace)
 				}
-				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 			}
 
 			remoteExe := filepath.Join(podBinDir, linuxBinaryName)
@@ -499,14 +471,12 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 
 			// Create the deployment if an existing one does not exist
 			if kubeDeploy {
-
 				info("creating WR deployment")
 				err = c.Client.Deploy(c.Opts.ContainerImage, c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 				if err != nil {
-					die(fmt.Sprintf("failed to create deployment: %s", err))
+					die("failed to create deployment: %s", err)
 				}
 			}
-
 			// Start Controller
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -556,15 +526,9 @@ and accessible.`,
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
 		resources := &cloud.Resources{}
 
-		info("opening resource file with path: %s", resourcePath)
-		file, err := os.Open(resourcePath)
+		resources, err = openResources(resourcePath)
 		if err != nil {
-			die("could not open resource file with path: %s", err)
-		}
-		decoder := gob.NewDecoder(file)
-		err = decoder.Decode(resources)
-		if err != nil {
-			die("error decoding resource file: %s", err)
+			die("failed to open resource file with path %s: %s", resourcePath, err)
 		}
 
 		// now check if the ssh forwarding is up
@@ -643,7 +607,6 @@ and accessible.`,
 			warn("Problems were had")
 		}
 
-		info("retrieving logs")
 		// cat logfiles and write to disk.
 		log, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
 		if err != nil {
@@ -811,4 +774,21 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 	return filePairs
+}
+
+func openResources(resourcePath string) (*cloud.Resources, error) {
+	resources := &cloud.Resources{}
+	file, err := os.Open(resourcePath)
+	if err != nil {
+		die("could not open resource file with path %s: %s", resourcePath, err)
+	}
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(resources)
+	if err != nil {
+		die("error decoding resource file %s: %s", resourcePath, err)
+	}
+
+	internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
+
+	return resources, err
 }
