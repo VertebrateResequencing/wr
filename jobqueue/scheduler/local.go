@@ -38,6 +38,7 @@ const (
 	localPlace          = "localhost"
 	localReserveTimeout = 1
 	priorityScaler      = float64(255) / float64(100)
+	maxZeroCoreJobs     = 1000000 // the maxmimum number of jobs to run when cpu request is 0
 )
 
 // reqCheckers are functions used by schedule() to see if it is at all possible
@@ -84,7 +85,7 @@ type local struct {
 	maxRAM           int
 	maxCores         int
 	ram              int
-	cores            int
+	cores            float64
 	rcount           int
 	mutex            sync.Mutex
 	resourceMutex    sync.RWMutex
@@ -218,7 +219,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	maxMem := s.maxMemFunc()
 	maxCPU := s.maxCPUFunc()
 	percentMemNeeded := (float64(req.RAM) / float64(maxMem)) * float64(100)
-	percentCPUNeeded := (float64(req.Cores) / float64(maxCPU)) * float64(100)
+	percentCPUNeeded := (req.Cores / float64(maxCPU)) * float64(100)
 	percentMachineNeeded := percentMemNeeded
 	if percentCPUNeeded > percentMachineNeeded {
 		percentMachineNeeded = percentCPUNeeded
@@ -257,7 +258,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met.
 func (s *local) reqCheck(req *Requirements) error {
-	if req.RAM > s.maxRAM || req.Cores > s.maxCores {
+	if req.RAM > s.maxRAM || int(math.Ceil(req.Cores)) > s.maxCores {
 		return Error{"local", "schedule", ErrImpossible}
 	}
 	return nil
@@ -457,7 +458,12 @@ func (s *local) canCount(req *Requirements) int {
 		canCount = 0
 	}
 	if canCount >= 1 {
-		canCount2 := int(math.Floor(float64(s.maxCores-s.cores) / float64(req.Cores)))
+		var canCount2 int
+		if req.Cores > 0 {
+			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
+		} else {
+			canCount2 = maxZeroCoreJobs
+		}
 		if canCount2 < canCount {
 			canCount = canCount2
 			if canCount < 0 {

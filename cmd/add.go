@@ -36,7 +36,7 @@ import (
 var reqGroup string
 var cmdTime string
 var cmdMem string
-var cmdCPUs int
+var cmdCPUs float64
 var cmdDisk int
 var cmdOvr int
 var cmdPri int
@@ -334,7 +334,7 @@ func init() {
 	addCmd.Flags().StringVarP(&reqGroup, "req_grp", "g", "", "group name for commands with similar reqs")
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
-	addCmd.Flags().IntVar(&cmdCPUs, "cpus", 1, "cpu cores needed")
+	addCmd.Flags().Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
 	addCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required [0 means do not check disk space] (default 0)")
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
@@ -401,6 +401,10 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	bsubMode := ""
 	if cmdBsubMode {
 		bsubMode = deployment
+	}
+
+	if cmdCPUs < 0 {
+		die("--cpus can't be negative")
 	}
 
 	jd := &jobqueue.JobDefaults{
@@ -561,6 +565,10 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 			die("line %d had a problem with the JSON: %s", lineNum, jsonErr)
 		}
 
+		if jvj.CPUs != nil && *jvj.CPUs < 0 {
+			die("line %d has a negative cpus count", lineNum)
+		}
+
 		if jvj.Cwd == "" && jd.Cwd == "" {
 			if remoteWarning {
 				warn("command working directories defaulting to %s since the manager is running remotely", pwd)
@@ -578,7 +586,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
-			die("line %d had a problem: %s\n", lineNum, errf)
+			die("line %d had a problem: %s", lineNum, errf)
 		}
 
 		jobs = append(jobs, job)
