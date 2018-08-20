@@ -94,9 +94,9 @@ deploy -h' for the details of which environment variables you need to use the
 OpenStack scheduler.
 
 Similarly, If using the Kubernetes scheduler you must already be running in a 
-pod. Be sure to pass a namespace for WR to use that will not have another WR 
+pod. Be sure to pass a namespace for wr to use that will not have another wr 
 user attempting to use it.
-Instead it is recommended to use 'wr kubernetes deploy' to bootstrap WR to a 
+Instead it is recommended to use 'wr kubernetes deploy' to bootstrap wr to a 
 cluster. 
 
 If you want to start multiple managers up in different OpenStack networks that
