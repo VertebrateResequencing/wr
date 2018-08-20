@@ -355,7 +355,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			if err != nil {
 				warn("Failed to write token to file: %s", err)
 			}
-			info("wr manager remotely started in pod %s (%s) in namespace %s", managerPodName, sAddr(jq.ServerInfo), namespace)
+			info("wr manager remotely started in namespace, pod: %s %s (%s)", namespace, managerPodName, sAddr(jq.ServerInfo))
 			info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, token)
 		} else {
 			// daemonized child, that will run until signalled to stop
