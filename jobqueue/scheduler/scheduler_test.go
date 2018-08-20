@@ -247,11 +247,11 @@ func TestLocal(t *testing.T) {
 				defer os.RemoveAll(bigTmpdir)
 
 				blockCmd := "sleep 0.25"
-				blockReq := &Requirements{1, 1 * time.Second, maxCPU, 0, otherReqs}
+				blockReq := &Requirements{1, 1 * time.Second, float64(maxCPU), 0, otherReqs}
 				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
 				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
 				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
-				bigReq := &Requirements{1, 1 * time.Second, maxCPU - 1, 0, otherReqs}
+				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU - 1), 0, otherReqs}
 
 				// schedule 2 big cmds and then a small one to prove the small
 				// one fits the gap and runs before the second big one
@@ -759,7 +759,7 @@ func TestOpenstack(t *testing.T) {
 
 				flavor, err := oss.determineFlavor(r)
 				So(err, ShouldBeNil)
-				testReq := &Requirements{flavor.RAM, 1 * time.Minute, flavor.Cores, 0, otherReqs}
+				testReq := &Requirements{flavor.RAM, 1 * time.Minute, float64(flavor.Cores), 0, otherReqs}
 				can := oss.canCount(testReq)
 
 				done := make(chan bool, 1)
@@ -1034,7 +1034,7 @@ func TestOpenstack(t *testing.T) {
 
 				numCores := 5
 				oReqsm := make(map[string]string)
-				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, numCores, 0, oReqsm})
+				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, float64(numCores), 0, oReqsm})
 				if err == nil && multiCoreFlavor.Cores >= numCores {
 					oReqs := make(map[string]string)
 					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
