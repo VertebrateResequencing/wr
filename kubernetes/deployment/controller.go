@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -19,9 +19,9 @@
 package deployment
 
 /*
-Package deployment a kubernetes controller to oversee the deployment
-of the wr scheduler controller into a kubernetes cluster. It handles
-copying configuration files and binaries as well as port forwarding.
+Package deployment a kubernetes controller to oversee the deployment of the wr
+scheduler controller into a kubernetes cluster. It handles copying configuration
+files and binaries as well as port forwarding.
 */
 
 import (
@@ -47,8 +47,7 @@ import (
 
 const maxRetries = 5
 
-// Controller defines a deployment controller
-// and it's options
+// Controller defines a deployment controller and it's options
 type Controller struct {
 	Client     *client.Kubernetesp
 	Clientset  kubernetes.Interface
@@ -127,8 +126,8 @@ func (c *Controller) HasSynced() bool {
 	return c.informer.HasSynced()
 }
 
-// Run starts SharedInformer watching for pods, and sends their keys to workqueue
-// StopCh used to send interrupt
+// Run starts SharedInformer watching for pods, and sends their keys to
+// workqueue StopCh used to send interrupt
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	c.createQueueAndInformer()
 	c.addEventHandlers()
@@ -144,8 +143,8 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		return
 	}
 
-	// runWorker loops until 'bad thing'. '.Until' will
-	// restart the worker after a second
+	// runWorker loops until 'bad thing'. '.Until' will restart the worker after
+	// a second
 	wait.Until(c.runWorker, time.Second, stopCh)
 }
 
@@ -157,8 +156,7 @@ func (c *Controller) runWorker() {
 }
 
 func (c *Controller) processNextItem() bool {
-	// pull next key from queue.
-	// look up key in cache
+	// pull next key from queue. look up key in cache
 	key, quit := c.queue.Get()
 	if quit {
 		return false
@@ -187,8 +185,8 @@ func (c *Controller) processNextItem() bool {
 	return true
 }
 
-// processItem(key) is where we define how to react to an item coming
-// off the work queue
+// processItem(key) is where we define how to react to an item coming off the
+// work queue
 func (c *Controller) processItem(key string) error {
 	c.Opts.Logger.Debug(fmt.Sprintf("Processing change to Pod %s", key))
 
@@ -216,9 +214,8 @@ func (c *Controller) processObj(obj interface{}) error {
 	return nil
 }
 
-// processPod defines how to react to a pod coming off the workqueue
-// in an observed state.
-// Assumes there is only 1 initcontainer
+// processPod defines how to react to a pod coming off the workqueue in an
+// observed state. Assumes there is only 1 initcontainer
 func (c *Controller) processPod(obj *apiv1.Pod) {
 	if len(obj.Status.InitContainerStatuses) != 0 {
 		switch {
@@ -233,8 +230,8 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 				c.Opts.Logger.Error(fmt.Sprintf("Error copying tarball: %s", err))
 			}
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
-			// Write the pod name, name to the resources file.
-			// This allows us to retrieve it to obtain the client.token
+			// Write the pod name, name to the resources file. This allows us to
+			// retrieve it to obtain the client.token
 			resources := &cloud.Resources{}
 			file, err := os.OpenFile(c.Opts.ResourcePath, os.O_RDONLY, 0600)
 			if err != nil {

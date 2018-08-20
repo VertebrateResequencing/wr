@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limite
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limite Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -41,9 +41,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// Assumes that there is a wr deployment in existence
-// in development mode. It then pulls the namespace from the
-// resource file and runs the tests against the cluster there.
+// Assumes that there is a wr deployment in existence in development mode. It
+// then pulls the namespace from the resource file and runs the tests against
+// the cluster there.
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
@@ -102,8 +102,8 @@ func TestClusterPend(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var jobs []*jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -123,8 +123,8 @@ func TestClusterPend(t *testing.T) {
 					t.Errorf("Failed to list nodes: %s", err)
 				}
 
-				// There should always be 2 * nodes jobs
-				// If not wait until they're all in the list
+				// There should always be 2 * nodes jobs If not wait until
+				// they're all in the list
 				if len(jobs) != 2*len(nodeList.Items) {
 					return false, nil
 				}
@@ -148,8 +148,8 @@ func TestClusterPend(t *testing.T) {
 			t.Errorf("wait on jobs in rep group %s  failed: %s", c.repgrp, errr)
 		}
 
-		// Now check the pods are deleted after succesful completion.
-		// They are kept if they error.
+		// Now check the pods are deleted after succesful completion. They are
+		// kept if they error.
 		for _, job := range jobs {
 			if len(job.Host) == 0 {
 				t.Errorf("job %+v has no host.", job)
