@@ -444,7 +444,9 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{
 				JobKey: cmdIDStatus,
 			}, showStd, showEnv)
-			jobs = append(jobs, job)
+			if job != nil {
+				jobs = append(jobs, job)
+			}
 		} else {
 			// get all jobs with this identifier (repgroup)
 			jobs, err = jq.GetByRepGroup(cmdIDStatus, cmdIDIsSubStr, statusLimit, cmdState, showStd, showEnv)
