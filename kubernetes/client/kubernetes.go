@@ -45,6 +45,7 @@ import (
 	appsv1beta1 "k8s.io/api/apps/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	rbacapi "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -220,9 +221,20 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 // Optionally pass a namespace as a string.
 func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...string) error {
 
-	// Create a unique namespace if one isn't passed
+	// If a namespace is passed, check it exists.
+	// If it does not, create it. If no namespace
+	// passed, create a random one.
 	if len(namespace) == 1 {
 		p.NewNamespaceName = namespace[0]
+		_, err := clientset.CoreV1().Namespaces().Get(p.NewNamespaceName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				err = p.CreateNewNamespace(p.NewNamespaceName)
+				if err != nil {
+					p.Logger.Crit(fmt.Sprintf("failed to create provided namespace: %s", err))
+				}
+			}
+		}
 	} else {
 		rand.Seed(time.Now().UnixNano())
 		p.NewNamespaceName = strings.Replace(namesgenerator.GetRandomName(0), "_", "-", -1) + "-wr"
