@@ -27,7 +27,6 @@
 # files, so either define them in environment variables or put the config files
 # on a disc that is mounted and shared across all your compute nodes.
 
-
 # managerport: What port should the wr manager listen on?
 # This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 0 if
 # production or + 2 if development. Note, this is a string (quoted). The
@@ -381,6 +380,13 @@ clouddns: "8.8.4.4,8.8.8.8"
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
 cloudos: "Ubuntu Xenial"
+
+# containerimage:  What container image should be used for spawned pods? This
+# defaults to "ubuntu:latest". It is overridden by the --container_image option
+# to `wr k8s deploy` and the --cloud_os option of `wr manager start`.
+#
+# This option is only relevant when you are using the kubernetes scheduler
+containerimage: "ubuntu:latest"
 
 # clouduser: What username should be used to log in to cloudos images?
 # This defaults to "ubuntu". It is overridden by the --username option to
