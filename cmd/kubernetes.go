@@ -244,9 +244,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 		c := kubedeployment.Controller{
 			Client: &client.Kubernetesp{},
 		}
-
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
-		resources := &cloud.Resources{}
 
 		// Authenticate and populate Kubernetesp with clientset and restconfig.
 		c.Clientset, c.Restconfig, err = c.Client.Authenticate(kubeLogger)
@@ -280,7 +278,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				kubeDeploy = true
 			} else {
 				// Read the namespace resource file
-				resources, err = openResources(resourcePath)
+				resources, err := openResources(resourcePath)
 				if err != nil {
 					die("failed to open resource file with path %s: %s", resourcePath, err)
 				}
@@ -321,7 +319,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			// of the pod to fetch the client.token from.
 
 			// Read the manager pod's name from resource file
-			resources, err = openResources(resourcePath)
+			resources, err := openResources(resourcePath)
 			if err != nil {
 				die("failed to open resource file with path %s: %s", resourcePath, err)
 			}
@@ -370,7 +368,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			// If found, load them else use a new empty set.
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
-				resources = &cloud.Resources{
+				resources := &cloud.Resources{
 					ResourceName: "Kubernetes",
 					Details:      make(map[string]string),
 					PrivateKey:   "",
@@ -415,7 +413,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
 			} else {
-				resources, err = openResources(resourcePath)
+				resources, err := openResources(resourcePath)
 				if err != nil {
 					die("failed to open resource file with path %s: %s", resourcePath, err)
 				}
@@ -524,9 +522,8 @@ and accessible.`,
 		}
 
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
-		resources := &cloud.Resources{}
 
-		resources, err = openResources(resourcePath)
+		resources, err := openResources(resourcePath)
 		if err != nil {
 			die("failed to open resource file with path %s: %s", resourcePath, err)
 		}
