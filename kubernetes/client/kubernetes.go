@@ -281,7 +281,7 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 // Deploy creates the wr-manager deployment and service. Creates
 // ClusterRoleBinding to allow the default service account in the namespace
 // rights to manage cluster. (ToDo: Write own ClusterRole that allows fewer
-// permissions) Copying of WR to initcontainer done by Controller when ready
+// permissions) Copying of wr to initcontainer done by Controller when ready
 // (Assumes tar is available). Portforwarding done by controller when ready.
 // ContainerImage is the Image used for the manager pod tempMountPath is the
 // path at which the 'wr-tmp' directory is set to. It is also set to $HOME
@@ -466,7 +466,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 	return nil
 }
 
-// InWRPod() checks if we are in a WR pod. As we control the hostname, just
+// InWRPod() checks if we are in a wr pod. As we control the hostname, just
 // check if the hostname contains 'wr' in addition to the standard environment
 // variables.
 func InWRPod() bool {

@@ -263,7 +263,7 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			}
 
 			c.Opts.Logger.Info(fmt.Sprintf("Stored manager pod name %s in resource file", obj.ObjectMeta.Name))
-			c.Opts.Logger.Info(fmt.Sprintf("WR manager container is running, calling PortForward with ports %v", c.Opts.RequiredPorts))
+			c.Opts.Logger.Info(fmt.Sprintf("wr manager container is running, calling PortForward with ports %v", c.Opts.RequiredPorts))
 			go func() {
 				err := c.Client.PortForward(obj, c.Opts.RequiredPorts)
 				if err != nil {
@@ -271,7 +271,7 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 				}
 			}()
 		default:
-			c.Opts.Logger.Debug(fmt.Sprintf("Not InitContainer or WR Manager container related"))
+			c.Opts.Logger.Debug(fmt.Sprintf("Not InitContainer or wr Manager container related"))
 		}
 	} else {
 		c.Opts.Logger.Debug(fmt.Sprintf("InitContainerStatuses not initialised yet"))
