@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -74,8 +74,8 @@ func init() {
 	reqChan = make(chan *kubescheduler.Request)
 	podAliveChan = make(chan *kubescheduler.PodAlive)
 
-	// Initialise the informer factory
-	// Confine all informers to the provided namespace
+	// Initialise the informer factory Confine all informers to the provided
+	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(clientset, time.Second*15, testingNamespace, func(listopts *metav1.ListOptions) {
 		listopts.IncludeUninitialized = true
 	})
@@ -111,9 +111,9 @@ func init() {
 	}()
 }
 
-// This test tests that the nodes are correctly being reported,
-// and that Resource requests are being handled correctly.TestReqCheck
-// In the testing environment (Travis CI the VM has 2 vcpus and ~7gb ram)
+// This test tests that the nodes are correctly being reported, and that
+// Resource requests are being handled correctly.TestReqCheck In the testing
+// environment (Travis CI the VM has 2 vcpus and ~7gb ram)
 func TestReqCheck(t *testing.T) {
 	t.Parallel()
 	// Resources are limited in CI.
@@ -220,8 +220,7 @@ func TestReqCheck(t *testing.T) {
 	}
 }
 
-// This test is really to test reporting of why
-// something might've blown up.
+// This test is really to test reporting of why something might've blown up.
 func TestRunCmd(t *testing.T) {
 	t.Parallel()
 	passCases := []struct {
@@ -282,8 +281,8 @@ func TestRunCmd(t *testing.T) {
 		}
 
 	}
-	// This fail case emulates a configmap (cloud script)
-	// failing. (call /bin/false)
+	// This fail case emulates a configmap (cloud script) failing. (call
+	// /bin/false)
 	failCases := []struct {
 		resourceReq   apiv1.ResourceRequirements
 		configMapData string

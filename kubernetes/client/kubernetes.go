@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -20,10 +20,10 @@ package client
 
 /*
 Package client provides functions to interact with a kubernetes cluster, used to
-create resources so that you can spawn runners, then delete those
-resources when you're done. Everything is centred around a Kubernetesp struct.
-Calling Authenticate() will allow AttachCmd and ExecCmd to work without needing
-to Initialize()
+create resources so that you can spawn runners, then delete those resources when
+you're done. Everything is centred around a Kubernetesp struct. Calling
+Authenticate() will allow AttachCmd and ExecCmd to work without needing to
+Initialize()
 */
 
 import (
@@ -60,14 +60,12 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-// DefaultScriptName is the name
-// to use as the default script in
-// the create configmap functions.
+// DefaultScriptName is the name to use as the default script in the create
+// configmap functions.
 const DefaultScriptName = "wr-boot"
 
-// Kubernetesp is the implementation for the kubernetes
-// cluster provider. It provides access to all methods
-// defined in this package
+// Kubernetesp is the implementation for the kubernetes cluster provider. It
+// provides access to all methods defined in this package
 type Kubernetesp struct {
 	clientset         kubernetes.Interface
 	clusterConfig     *rest.Config
@@ -84,8 +82,8 @@ type Kubernetesp struct {
 	Logger            log15.Logger
 }
 
-// ConfigMapOpts defines the name and Data
-// (Binary, or strings) to store in a ConfigMap
+// ConfigMapOpts defines the name and Data (Binary, or strings) to store in a
+// ConfigMap
 type ConfigMapOpts struct {
 	// BinaryData for potential later use
 	BinaryData []byte
@@ -93,8 +91,7 @@ type ConfigMapOpts struct {
 	Name       string
 }
 
-// ServiceOpts defines basic options
-// for a kubernetes service
+// ServiceOpts defines basic options for a kubernetes service
 type ServiceOpts struct {
 	Name      string
 	Labels    map[string]string
@@ -120,9 +117,9 @@ func (p *Kubernetesp) CreateNewNamespace(name string) error {
 	return nil
 }
 
-// Authenticate with cluster, return clientset and RESTConfig.
-// Can be called from within or outside of a cluster, should still work.
-// Optionally supply a logger
+// Authenticate with cluster, return clientset and RESTConfig. Can be called
+// from within or outside of a cluster, should still work. Optionally supply a
+// logger
 func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
 	var l log15.Logger
 	if len(logger) == 1 {
@@ -140,7 +137,8 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 	case (len(host) == 0 || len(port) == 0) && len(kubevar) == 0:
 		p.Logger.Info("authenticating using information from user's home directory")
 		var kubeconfig *string
-		//Obtain cluster authentication information from users home directory, or fall back to user input.
+		//Obtain cluster authentication information from users home directory,
+		//or fall back to user input.
 		if home := homedir.HomeDir(); home != "" {
 			kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
 		} else {
@@ -215,15 +213,13 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 
 }
 
-// Initialize uses the passed clientset to
-// create some authenticated clients used in other methods.
-// Creates a new namespace for wr to work in.
-// Optionally pass a namespace as a string.
+// Initialize uses the passed clientset to create some authenticated clients
+// used in other methods. Creates a new namespace for wr to work in. Optionally
+// pass a namespace as a string.
 func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...string) error {
 
-	// If a namespace is passed, check it exists.
-	// If it does not, create it. If no namespace
-	// passed, create a random one.
+	// If a namespace is passed, check it exists. If it does not, create it. If
+	// no namespace passed, create a random one.
 	if len(namespace) == 1 {
 		p.NewNamespaceName = namespace[0]
 		_, err := clientset.CoreV1().Namespaces().Get(p.NewNamespaceName, metav1.GetOptions{})
@@ -254,7 +250,8 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 		}
 	}
 
-	// Create client for deployments that is authenticated against the given cluster. Use default namsespace.
+	// Create client for deployments that is authenticated against the given
+	// cluster. Use default namsespace.
 	p.deploymentsClient = clientset.AppsV1beta1().Deployments(p.NewNamespaceName)
 
 	// Create client for services
@@ -266,13 +263,13 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	// Create configMap client
 	p.configMapClient = clientset.CoreV1().ConfigMaps(p.NewNamespaceName)
 
-	// Store md5 hashes of the data in each configMap.
-	// used when calling newConfigMap().
+	// Store md5 hashes of the data in each configMap. used when calling
+	// newConfigMap().
 	p.configMapHashes = map[string][16]byte{}
 
-	// ToDO: This assumes one portforward per namespaced deployment
-	// This should probably go in pod and the channels be created in an options struct
-	// to better isolate the logic
+	// ToDO: This assumes one portforward per namespaced deployment This should
+	// probably go in pod and the channels be created in an options struct to
+	// better isolate the logic
 
 	// Make channels for port forwarding
 	p.StopChannel = make(chan struct{}, 1)
@@ -281,21 +278,18 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	return nil
 }
 
-// Deploy creates the wr-manager deployment and service.
-// Creates ClusterRoleBinding to allow the default service account
-// in the namespace rights to manage cluster.
-// (ToDo: Write own ClusterRole that allows fewer permissions)
-// Copying of WR to initcontainer done by Controller when ready
-// (Assumes tar is available).
-// Portforwarding done by controller when ready.
-// ContainerImage is the Image used for the manager pod
-// tempMountPath is the path at which the 'wr-tmp' directory is set to. It is also set to $HOME
-// command is the command to be executed in the container
-// cmdArgs are the arguments to pass to the supplied command
-// configMapName is the name of the configmap to mount at the configMountPath provided. Usually this contains the
+// Deploy creates the wr-manager deployment and service. Creates
+// ClusterRoleBinding to allow the default service account in the namespace
+// rights to manage cluster. (ToDo: Write own ClusterRole that allows fewer
+// permissions) Copying of WR to initcontainer done by Controller when ready
+// (Assumes tar is available). Portforwarding done by controller when ready.
+// ContainerImage is the Image used for the manager pod tempMountPath is the
+// path at which the 'wr-tmp' directory is set to. It is also set to $HOME
+// command is the command to be executed in the container cmdArgs are the
+// arguments to pass to the supplied command configMapName is the name of the
+// configmap to mount at the configMountPath provided. Usually this contains the
 func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, command string, cmdArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
-	// Patch the default cluster role for to allow
-	// pods and nodes to be viewed.
+	// Patch the default cluster role for to allow pods and nodes to be viewed.
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-cluster-role-binding-",
@@ -463,20 +457,18 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 	}
 
 	/*
-	   No longer copying tarball to pod here,
-	   instead the deployment controller waits on the
-	   status of the InitContainer to be running, then
-	   runs CopyTar, found in pod.go
+	   No longer copying tarball to pod here, instead the deployment controller
+	   waits on the status of the InitContainer to be running, then runs
+	   CopyTar, found in pod.go
 
 	*/
 
 	return nil
 }
 
-// InWRPod() checks if we are in a WR pod.
-// As we control the hostname, just check if
-// the hostname contains 'wr' in addition to the
-// standard environment variables.
+// InWRPod() checks if we are in a WR pod. As we control the hostname, just
+// check if the hostname contains 'wr' in addition to the standard environment
+// variables.
 func InWRPod() bool {
 	hostname, err := os.Hostname()
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
@@ -580,10 +572,9 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 	}
 
 	/*
-	   No longer copying tarball to pod here,
-	   instead the deployment controller waits on the
-	   status of the InitContainer to be running, then
-	   runs CopyTar, found in pod.go
+	   No longer copying tarball to pod here, instead the deployment controller
+	   waits on the status of the InitContainer to be running, then runs
+	   CopyTar, found in pod.go
 
 	*/
 
@@ -624,37 +615,36 @@ func (p *Kubernetesp) DestroyPod(podName string) error {
 	return nil
 }
 
-// CheckPod checks a given pod exists. If it does, return the status.
-// Currently not used anywhere
-// func (p *Kubernetesp) CheckPod(podName string) (working bool, err error) {
-// 	pod, err := p.podClient.Get(podName, metav1.GetOptions{})
-// 	if err != nil {
-// 		return false, err
-// 	}
-// 	switch {
-// 	case pod.Status.Phase == "Running":
-// 		return true, nil
-// 	case pod.Status.Phase == "Pending":
-// 		return true, nil
-// 	case pod.Status.Phase == "Succeeded":
-// 		return false, nil
-// 	case pod.Status.Phase == "Failed":
-// 		return false, nil
-// 	case pod.Status.Phase == "Unknown":
-// 		return false, nil
-// 	default:
-// 		return false, nil
-// 	}
+// CheckPod checks a given pod exists. If it does, return the status. Currently
+// not used anywhere func (p *Kubernetesp) CheckPod(podName string) (working
+// bool, err error) {
+//  pod, err := p.podClient.Get(podName, metav1.GetOptions{})
+//  if err != nil {
+//      return false, err
+//  }
+//  switch {
+//  case pod.Status.Phase == "Running":
+//      return true, nil
+//  case pod.Status.Phase == "Pending":
+//      return true, nil
+//  case pod.Status.Phase == "Succeeded":
+//      return false, nil
+//  case pod.Status.Phase == "Failed":
+//      return false, nil
+//  case pod.Status.Phase == "Unknown":
+//      return false, nil
+//  default:
+//      return false, nil
+//  }
 // }
 
-// NewConfigMap creates a new configMap
-// Kubernetes 1.10 (Released Late March 2018)
-// provides a BinaryData field that could be used to
-// replace the initContainer method for copying the executable.
-// At the moment is not appropriate as it's not likely most users are
-// running 1.10
+// NewConfigMap creates a new configMap Kubernetes 1.10 (Released Late March
+// 2018) provides a BinaryData field that could be used to replace the
+// initContainer method for copying the executable. At the moment is not
+// appropriate as it's not likely most users are running 1.10
 func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
-	//Check if we have already created a config map with a script with the same hash.
+	//Check if we have already created a config map with a script with the same
+	//hash.
 
 	// Calculate hash of opts.Data, json stringify it first.
 	jsonData, err := json.Marshal(opts.Data)
@@ -712,8 +702,8 @@ func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(scriptPath string) (*api
 
 }
 
-// CreateInitScriptConfigMap performs very basic string fudging.
-// This allows a wr pod to execute some arbitrary script before starting the runner / manager.
+// CreateInitScriptConfigMap performs very basic string fudging. This allows a
+// wr pod to execute some arbitrary script before starting the runner / manager.
 // So far it appears to work
 func (p *Kubernetesp) CreateInitScriptConfigMap(script string) (*apiv1.ConfigMap, error) {
 
@@ -729,8 +719,7 @@ func (p *Kubernetesp) CreateInitScriptConfigMap(script string) (*apiv1.ConfigMap
 
 }
 
-// CreateService Creates a service with the defined options from
-// ServiceOpts
+// CreateService Creates a service with the defined options from ServiceOpts
 func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
 	service := &apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{

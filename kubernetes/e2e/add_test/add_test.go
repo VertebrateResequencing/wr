@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -42,9 +42,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// Assumes that there is a wr deployment in existence
-// in development mode. It then pulls the namespace from the
-// resource file and runs the tests against the cluster there.
+// Assumes that there is a wr deployment in existence in development mode. It
+// then pulls the namespace from the resource file and runs the tests against
+// the cluster there.
 
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
@@ -113,8 +113,8 @@ func TestEchoes(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -141,8 +141,8 @@ func TestEchoes(t *testing.T) {
 			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
 		}
 
-		// Now check the pods are deleted after succesful completion.
-		// They are kept if they error.
+		// Now check the pods are deleted after succesful completion. They are
+		// kept if they error.
 		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
@@ -153,8 +153,8 @@ func TestEchoes(t *testing.T) {
 
 }
 
-// Go's byte -> str conversion causes the md5 to differ from
-// the one on the OVH website. So long as it remains constant we are happy
+// Go's byte -> str conversion causes the md5 to differ from the one on the OVH
+// website. So long as it remains constant we are happy
 func TestFileCreation(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -165,8 +165,8 @@ func TestFileCreation(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -197,7 +197,8 @@ func TestFileCreation(t *testing.T) {
 			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
-		// Now we get the host, and exec to gain the md5 of the file. (Verification step
+		// Now we get the host, and exec to gain the md5 of the file.
+		// (Verification step
 		stdout, _, err := tc.ExecInPod(job.Host, "wr-runner", tc.NewNamespaceName, []string{"cat", "/tmp/hw"})
 		if err != nil {
 			t.Errorf("Failed to get file from container: %s", err)
@@ -211,8 +212,8 @@ func TestFileCreation(t *testing.T) {
 			t.Errorf("MD5 do not match expected : %s, got: %s", expectedMd5, md5)
 		}
 
-		// Clean up manually. This is because we have a limited number of cores in CI, and everything
-		// will time out if we don't.
+		// Clean up manually. This is because we have a limited number of cores
+		// in CI, and everything will time out if we don't.
 		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
@@ -238,8 +239,8 @@ func TestContainerImage(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		// Check the job can be found in the system, and that it has
-		// exited succesfully.
+		// Check the job can be found in the system, and that it has exited
+		// succesfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -293,8 +294,8 @@ func TestContainerImage(t *testing.T) {
 			t.Errorf("Unexpected container image for runner %s, expected %s got %s", pod.ObjectMeta.Name, c.containerImage, runnercontainer.Image)
 		}
 
-		// Clean up manually. This is because we have a limited number of cores in CI, and everything
-		// will time out if we don't.
+		// Clean up manually. This is because we have a limited number of cores
+		// in CI, and everything will time out if we don't.
 		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)

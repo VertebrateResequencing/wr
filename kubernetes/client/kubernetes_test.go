@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -105,8 +105,8 @@ func TestDeploy(t *testing.T) {
 	}
 	for _, c := range cases {
 
-		// Test the creation of config maps (2 birds one stone)
-		// We won't delete this now so we can use it later.
+		// Test the creation of config maps (2 birds one stone) We won't delete
+		// this now so we can use it later.
 		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
 			t.Error(err.Error())
@@ -119,9 +119,8 @@ func TestDeploy(t *testing.T) {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
 		}
 
-		// Create the deployment
-		// we run the init script created from wherever we've
-		// decided to mount it.
+		// Create the deployment we run the init script created from wherever
+		// we've decided to mount it.
 		err = tc.Deploy(c.containerImage, c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,
 			c.cmdArgs, configmap.ObjectMeta.Name,
@@ -164,8 +163,8 @@ func TestSpawn(t *testing.T) {
 	}
 	for _, c := range cases {
 
-		// Test the creation of config maps (2 birds one stone)
-		// We won't delete this now so we can use it later.
+		// Test the creation of config maps (2 birds one stone) We won't delete
+		// this now so we can use it later.
 		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
 			t.Error(err.Error())
@@ -178,9 +177,8 @@ func TestSpawn(t *testing.T) {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", configmap.Data[client.DefaultScriptName], expectedData))
 		}
 
-		// create spawn request
-		// we run the init script created from wherever we've
-		// decided to mount it.
+		// create spawn request we run the init script created from wherever
+		// we've decided to mount it.
 
 		pod, err := tc.Spawn(c.containerImage, c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,

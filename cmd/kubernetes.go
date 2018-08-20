@@ -1,5 +1,5 @@
-// Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
+// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -41,23 +41,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// podBinDir is where we will upload executables to our created pod.
-// it is a volume mount added to the init container and the container that will
-// run wr. As defining a volume mount overwrites whatever is in that directory
-// we want this to be unique. This is also what $HOME is set to, allowing paths
-// of the form '~/' to still work. Anything not copied into podBinDir will be lost
-// when the init container completes. This is why all files to be copied over are
-// rewritten into the form ~/foo/bar (Or in special cases, hard coded to podBinDir)
+// podBinDir is where we will upload executables to our created pod. it is a
+// volume mount added to the init container and the container that will run wr.
+// As defining a volume mount overwrites whatever is in that directory we want
+// this to be unique. This is also what $HOME is set to, allowing paths of the
+// form '~/' to still work. Anything not copied into podBinDir will be lost when
+// the init container completes. This is why all files to be copied over are
+// rewritten into the form ~/foo/bar (Or in special cases, hard coded to
+// podBinDir)
 const podBinDir = "/wr-tmp/"
 
 // podScriptDir is where the configMap will be mounted.
 const podScriptDir = "/scripts/"
 
-// The name of the wr linux binary to be expected.
-// This is passed to the config map that is set as the
-// entry point for the chosen container. This way we can
-// ensure the users post creation script starts before the main
-// command
+// The name of the wr linux binary to be expected. This is passed to the config
+// map that is set as the entry point for the chosen container. This way we can
+// ensure the users post creation script starts before the main command
 const linuxBinaryName = "/wr"
 
 const kubeLogFileName = "k8sDeployLog"
@@ -187,10 +186,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			die("wr manager on port %s is already running (pid %d); please stop it before trying again.", config.ManagerPort, jq.ServerInfo.PID)
 		}
 
-		// now check if there's a daemon running.
-		// If it is the forwarding must've died. (Closed laptop?)
-		// If so kill the now useless daemon. This avoids the 'resource unavaliable'
-		// daemonising error.
+		// now check if there's a daemon running. If it is the forwarding
+		// must've died. (Closed laptop?) If so kill the now useless daemon.
+		// This avoids the 'resource unavaliable' daemonising error.
 		fmPidFile := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
@@ -206,8 +204,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			}
 		}
 
-		// later we will copy our server cert and key to the manager pod;
-		// if we don't have any, generate them now
+		// later we will copy our server cert and key to the manager pod; if we
+		// don't have any, generate them now
 		err := internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
 		if err != nil {
 			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile, config.ManagerCertDomain)
@@ -225,8 +223,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			die("could not get the path to wr: %s", err)
 		}
 
-		// we then  need to rewrite it to always use the 'wr-linux'
-		// binary, in case we are deploying from a mac.
+		// we then  need to rewrite it to always use the 'wr-linux' binary, in
+		// case we are deploying from a mac.
 		exe = filepath.Dir(exe) + linuxBinaryName
 
 		// get all necessary cloud resources in place
@@ -252,11 +250,11 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			die("Could not authenticate against the cluster: %s", err)
 		}
 
-		// Check if an existing deployment with the label 'app=wr-manager' exists.
-		// Read in namespace from resource file, if no file exists and no namespace
-		// is passed as a flag create new namespace and redeploy.
-		// If a resource file exists or a namespace is passed as a flag check to see if
-		// there is an existing manager deployment to reconnect to
+		// Check if an existing deployment with the label 'app=wr-manager'
+		// exists. Read in namespace from resource file, if no file exists and
+		// no namespace is passed as a flag create new namespace and redeploy.
+		// If a resource file exists or a namespace is passed as a flag check to
+		// see if there is an existing manager deployment to reconnect to
 
 		var kubeDeploy bool //defaults false
 
@@ -272,8 +270,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				}
 			}
 		} else {
-			// Look for a set of resources in the manager directory
-			// If found, load them, otherwise use a new empty set.
+			// Look for a set of resources in the manager directory If found,
+			// load them, otherwise use a new empty set.
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				kubeDeploy = true
 			} else {
@@ -315,8 +313,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				die("could not talk to wr manager after 120s")
 			}
 
-			// The remote manager is running, read the resource file to determine the name
-			// of the pod to fetch the client.token from.
+			// The remote manager is running, read the resource file to
+			// determine the name of the pod to fetch the client.token from.
 
 			// Read the manager pod's name from resource file
 			resources, err := openResources(resourcePath)
@@ -326,8 +324,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			managerPodName := resources.Details["manager-pod"]
 			namespace := resources.Details["namespace"]
 
-			// cat the contents of the client.token in the running manager, so we can
-			// write them to disk locally, and provide the URL for accessing the web interface
+			// cat the contents of the client.token in the running manager, so
+			// we can write them to disk locally, and provide the URL for
+			// accessing the web interface
 			stdOut, _, err := c.Client.ExecInPod(managerPodName, "wr-manager", namespace, []string{"cat", podBinDir + ".wr_" + config.Deployment + "/client.token"})
 			if err != nil {
 				die("something went wrong executing the command to retrieve the token: %s", err)
@@ -342,8 +341,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			info("wr manager remotely started in namespace, pod: %s %s (%s)", namespace, managerPodName, sAddr(jq.ServerInfo))
 			info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, token)
 		} else {
-			// daemonized child, that will run until signalled to stop
-			// Set up logging to file
+			// daemonized child, that will run until signalled to stop Set up
+			// logging to file
 			kubeLogFile := filepath.Join(config.ManagerDir, kubeLogFileName)
 			fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
 			if err != nil {
@@ -364,8 +363,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				debugStr = " --debug"
 			}
 
-			// Look for a set of resources in the manager directory
-			// If found, load them else use a new empty set.
+			// Look for a set of resources in the manager directory If found,
+			// load them else use a new empty set.
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
 				info("Using new set of resources, none found.")
 				resources := &cloud.Resources{
@@ -374,8 +373,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 					PrivateKey:   "",
 					Servers:      make(map[string]*cloud.Server)}
 
-				// Populate the rest of Kubernetesp
-				// If there is a predefined namespace set, use it.
+				// Populate the rest of Kubernetesp. If there is a predefined
+				// namespace set, use it.
 				if len(kubeNamespace) != 0 {
 					err = c.Client.Initialize(c.Clientset, kubeNamespace)
 				} else {
@@ -485,8 +484,8 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 	},
 }
 
-// teardown sub-command deletes all kubernetes resources we created and then stops
-// the daemon by killing it's pid.
+// teardown sub-command deletes all kubernetes resources we created and then
+// stops the daemon by killing it's pid.
 var kubeTearDownCmd = &cobra.Command{
 	Use:   "teardown",
 	Short: "Delete all kubernetes resources that deploy created",
@@ -514,7 +513,7 @@ and accessible.`,
 		}
 		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 		// before stopping the manager, make sure we can interact with the
-		// cluster - that our credentials are correct
+		// cluster - that our credentials are correct.
 		client := &client.Kubernetesp{}
 		_, _, err := client.Authenticate(kubeLogger)
 		if err != nil {
@@ -542,9 +541,10 @@ and accessible.`,
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
 					if _, errf := os.Stat(config.ManagerDbFile); !os.IsNotExist(errf) {
-						// move aside the local database so that if the manager is
-						// started locally, the database will be restored from S3
-						// and have the history of what was run in the cloud
+						// move aside the local database so that if the manager
+						// is started locally, the database will be restored
+						// from S3 and have the history of what was run in the
+						// cloud
 						if errf = os.Rename(config.ManagerDbFile, config.ManagerDbFile+".old"); err == nil {
 							syncMsg = "; the local database will be updated from S3 if manager started locally"
 						} else {
@@ -703,15 +703,13 @@ func init() {
 	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
 }
 
-// rewrite any relative path to replace '~/' with podBinDir
-// returning []client.FilePair to be copied to the manager.
-// the comma separated list is then passed again, and the
-// same function called on the manager so all the filepaths
-// should match up when the manager calls Spawn().
-// currently only relative paths are allowed, any path not
-// starting '~/' is dropped as everything ultimately needs
-// to go into podBinDir as that's the volume that gets
-// preserved across containers.
+// rewrite any relative path to replace '~/' with podBinDir returning
+// []client.FilePair to be copied to the manager. the comma separated list is
+// then passed again, and the same function called on the manager so all the
+// filepaths should match up when the manager calls Spawn(). currently only
+// relative paths are allowed, any path not starting '~/' is dropped as
+// everything ultimately needs to go into podBinDir as that's the volume that
+// gets preserved across containers.
 func rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory
 	hDir := os.Getenv("HOME")
@@ -722,8 +720,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get a slice of paths.
 	split := strings.Split(configFiles, ",")
 
-	// Loop over all paths in split, if any don't exist
-	// silently remove them.
+	// Loop over all paths in split, if any don't exist silently remove them.
 	for _, path := range split {
 		localPath := internal.TildaToHome(path)
 		_, err := os.Stat(localPath)
@@ -734,11 +731,9 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 
-	// remove the '~/' prefix as tar will
-	// create a ~/.. file. We don't want this.
-	// replace '~/' with podBinDir which we define
-	// as $HOME. Remove the file name, just
-	// returning the directory it is in.
+	// remove the '~/' prefix as tar will create a ~/.. file. We don't want
+	// this. replace '~/' with podBinDir which we define as $HOME. Remove the
+	// file name, just returning the directory it is in.
 	dests := []string{}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "~/") {
@@ -748,9 +743,8 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 				warn(fmt.Sprintf("Could not convert path %s to relative path.", path))
 			}
 			dir := filepath.Dir(rel)
-			// Trim prefix
-			// dir = strings.TrimPrefix(dir, "~")
-			// Add podBinDir as new prefix
+			// Trim prefix dir = strings.TrimPrefix(dir, "~") Add podBinDir as
+			// new prefix
 			dir = podBinDir + dir + "/"
 			dests = append(dests, dir)
 		} else {
@@ -758,9 +752,8 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 
-	// create []client.FilePair to pass in to the
-	// deploy options. Replace '~/' with the current
-	// user's $HOME
+	// create []client.FilePair to pass in to the deploy options. Replace '~/'
+	// with the current user's $HOME
 	for i, path := range paths {
 		if strings.HasPrefix(path, "~/") {
 			// rewrite ~/ to hDir
@@ -773,6 +766,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	return filePairs
 }
 
+// open a resource file with the provided path
 func openResources(resourcePath string) (*cloud.Resources, error) {
 	resources := &cloud.Resources{}
 	file, err := os.Open(resourcePath)
@@ -789,3 +783,24 @@ func openResources(resourcePath string) (*cloud.Resources, error) {
 
 	return resources, err
 }
+
+// func getLog(command []string, podName string, containerName string, namespace
+// string) {
+//  stdOut := new(client.Writer)
+//  stdErr := new(client.Writer)
+//  opts := &client.CmdOptions{
+//      Command: command,
+//      StreamOptions: client.StreamOptions{
+//          PodName:       podName,
+//          ContainerName: containerName,
+//          Out:           stdOut,
+//          Err:           stdErr,
+//      },
+//  }
+
+// 	// Exec the command in the pod
+
+// 	// If the exec call failed, return the error _, _, err := p.ExecCmd(opts,
+// 	namespace) if err != nil {
+
+// 	}}
