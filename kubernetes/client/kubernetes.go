@@ -480,7 +480,12 @@ func InWRPod() bool {
 	return inPod
 }
 
-// Spawn a new pod that contains a runner. Return the name.
+// Spawn a new pod that expects an 'attach' command to tar some files across
+// (Init container). It also names the pod 'wr-runner-xxxx', mounts the provided
+// config map at the path provided. The directory named 'wr-tmp' persists
+// between the two containers, so any files that you want to survive the tar
+// step should untar to this path only. This path is also set as $HOME. This
+// path is set with the tempMountPath variable.
 func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources apiv1.ResourceRequirements) (*apiv1.Pod, error) {
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -492,7 +497,6 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 		Spec: apiv1.PodSpec{
 			RestartPolicy: apiv1.RestartPolicyNever,
 			Volumes: []apiv1.Volume{
-
 				{
 					Name: "wr-temp",
 					VolumeSource: apiv1.VolumeSource{
