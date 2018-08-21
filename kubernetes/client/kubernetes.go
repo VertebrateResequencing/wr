@@ -64,6 +64,11 @@ import (
 // configmap functions.
 const DefaultScriptName = "wr-boot"
 
+// ScriptTop and ScriptBottom sandwich the user's script when creating a config
+// map to boot from
+const ScriptTop = "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
+const ScriptBottom = "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+
 // Kubernetesp is the implementation for the kubernetes cluster provider. It
 // provides access to all methods defined in this package
 type Kubernetesp struct {
@@ -111,10 +116,7 @@ func (p *Kubernetesp) CreateNewNamespace(name string) error {
 			Name: name,
 		},
 	})
-	if nsErr != nil {
-		return nsErr
-	}
-	return nil
+	return nsErr
 }
 
 // Authenticate with cluster, return clientset and RESTConfig. Can be called
@@ -635,10 +637,12 @@ func (p *Kubernetesp) DestroyPod(podName string) error {
 //  }
 // }
 
-// NewConfigMap creates a new configMap Kubernetes 1.10 (Released Late March
-// 2018) provides a BinaryData field that could be used to replace the
-// initContainer method for copying the executable. At the moment is not
-// appropriate as it's not likely most users are running 1.10.
+// NewConfigMap creates a new configMap. It checks the contents are not
+// identical to a previously created config map by comparing hashes of the data.
+// Kubernetes 1.10 (Released Late March 2018) provides a BinaryData field that
+// could be used to replace the initContainer method for copying the executable.
+// At the moment is not appropriate as it's not likely most users are running
+// 1.10.
 func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
 	//Check if we have already created a config map with a script with the same
 	//hash.
@@ -688,15 +692,11 @@ func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(scriptPath string) (*api
 	script := string(buf)
 
 	// Insert script into template
-	top := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
-	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
-
 	cmap, err := p.NewConfigMap(&ConfigMapOpts{
-		Data: map[string]string{DefaultScriptName: top + script + bottom},
+		Data: map[string]string{DefaultScriptName: ScriptTop + script + ScriptBottom},
 	})
 
 	return cmap, err
-
 }
 
 // CreateInitScriptConfigMap performs very basic string fudging. This allows a
@@ -705,11 +705,8 @@ func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(scriptPath string) (*api
 func (p *Kubernetesp) CreateInitScriptConfigMap(script string) (*apiv1.ConfigMap, error) {
 
 	// Insert script into template
-	top := "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
-	bottom := "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
-
 	cmap, err := p.NewConfigMap(&ConfigMapOpts{
-		Data: map[string]string{DefaultScriptName: top + script + bottom},
+		Data: map[string]string{DefaultScriptName: ScriptTop + script + ScriptBottom},
 	})
 
 	return cmap, err
