@@ -618,29 +618,6 @@ func (p *Kubernetesp) DestroyPod(podName string) error {
 	return nil
 }
 
-// CheckPod checks a given pod exists. If it does, return the status. Currently
-// not used anywhere func (p *Kubernetesp) CheckPod(podName string) (working
-// bool, err error) {
-//  pod, err := p.podClient.Get(podName, metav1.GetOptions{})
-//  if err != nil {
-//      return false, err
-//  }
-//  switch {
-//  case pod.Status.Phase == "Running":
-//      return true, nil
-//  case pod.Status.Phase == "Pending":
-//      return true, nil
-//  case pod.Status.Phase == "Succeeded":
-//      return false, nil
-//  case pod.Status.Phase == "Failed":
-//      return false, nil
-//  case pod.Status.Phase == "Unknown":
-//      return false, nil
-//  default:
-//      return false, nil
-//  }
-// }
-
 // NewConfigMap creates a new configMap. It checks the contents are not
 // identical to a previously created config map by comparing hashes of the data.
 // Kubernetes 1.10 (Released Late March 2018) provides a BinaryData field that
