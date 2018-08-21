@@ -473,7 +473,7 @@ func InWRPod() bool {
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	inPod := false
 	if err == nil && len(host) != 0 && len(port) != 0 {
-		if strings.Contains(hostname, "wr") {
+		if strings.Contains(hostname, "wr-") {
 			inPod = true
 		}
 	}
