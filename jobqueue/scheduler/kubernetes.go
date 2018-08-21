@@ -282,20 +282,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 func (s *k8s) reqCheck(req *Requirements) error {
 	s.Debug("reqCheck called with requirements", "requirements", req)
 
-	// Rewrite *Requirements to a kubescheduler.Request Adjust values if debug
-	// enabled.
-	var cores *resource.Quantity
-	var ram *resource.Quantity
-	var disk *resource.Quantity
-	if s.config.Debug {
-		cores = resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI)
-		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
-		disk = resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI)
-	} else {
-		cores = resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI)
-		ram = resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
-		disk = resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI)
-	}
+	cores, ram, disk := s.generateResourceRequests(req)
 
 	r := &kubescheduler.Request{
 		RAM:    *ram,
@@ -427,34 +414,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	cmd = strings.Replace(cmd, "'", "", -1)
 	binaryArgs := []string{cmd}
 
-	// build ResourceRequirements for Spawn() Adjust values if debug enabled.
-	var resources apiv1.ResourceRequirements
-	if s.config.Debug {
-		resources = apiv1.ResourceRequirements{
-			Requests: apiv1.ResourceList{
-				apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(req.Cores)*100, resource.DecimalSI),
-				apiv1.ResourceMemory:           *resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI),
-				apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(req.Disk)*1024*1024, resource.BinarySI),
-			},
-			Limits: apiv1.ResourceList{
-				apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*100, resource.DecimalSI),
-				apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
-			},
-		}
-
-	} else {
-		resources = apiv1.ResourceRequirements{
-			Requests: apiv1.ResourceList{
-				apiv1.ResourceCPU:              *resource.NewMilliQuantity(int64(req.Cores)*1000, resource.DecimalSI),
-				apiv1.ResourceMemory:           *resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI),
-				apiv1.ResourceEphemeralStorage: *resource.NewQuantity(int64(req.Disk)*1024*1024*1024, resource.BinarySI),
-			},
-			Limits: apiv1.ResourceList{
-				apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*1000, resource.DecimalSI),
-				apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
-			},
-		}
-	}
+	resources := s.generateResourceRequirements(req)
 
 	// If ephemeral storage is not enabled on the cluster don't request any
 	s.esmutex.RLock()
@@ -659,4 +619,51 @@ func (s *k8s) maxMem() int {
 
 func (s *k8s) maxCPU() int {
 	return 0
+}
+
+// Rewrite *Requirements to a kubescheduler.Request Adjust values if debug
+// enabled.
+func (s *k8s) generateResourceRequests(req *Requirements) (*resource.Quantity, *resource.Quantity, *resource.Quantity) {
+	var coreMult int64
+	var diskMult int64
+
+	coreMult = 1000
+	diskMult = 1024
+
+	if s.config.Debug {
+		coreMult = 100
+		diskMult = 1
+	}
+
+	cores := resource.NewMilliQuantity(int64(req.Cores)*coreMult, resource.DecimalSI)
+	ram := resource.NewQuantity(int64(req.RAM)*1024*1024, resource.BinarySI)
+	disk := resource.NewQuantity(int64(req.Disk)*1024*1024*diskMult, resource.BinarySI)
+
+	return cores, ram, disk
+}
+
+// Build ResourceRequirements for Spawn() Adjust values if debug enabled.
+func (s *k8s) generateResourceRequirements(req *Requirements) apiv1.ResourceRequirements {
+	var coreMult int64
+
+	coreMult = 1000
+
+	if s.config.Debug {
+		coreMult = 100
+	}
+
+	cores, ram, disk := s.generateResourceRequests(req)
+
+	resources := apiv1.ResourceRequirements{
+		Requests: apiv1.ResourceList{
+			apiv1.ResourceCPU:              *cores,
+			apiv1.ResourceMemory:           *ram,
+			apiv1.ResourceEphemeralStorage: *disk,
+		},
+		Limits: apiv1.ResourceList{
+			apiv1.ResourceCPU:    *resource.NewMilliQuantity(int64(req.Cores+1)*coreMult, resource.DecimalSI),
+			apiv1.ResourceMemory: *resource.NewQuantity(int64(req.RAM+(req.RAM/5))*1024*1024, resource.BinarySI),
+		},
+	}
+	return resources
 }
