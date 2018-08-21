@@ -644,8 +644,6 @@ func (s *k8s) generateResourceRequests(req *Requirements) (*resource.Quantity, *
 
 // Build ResourceRequirements for Spawn() Adjust values if debug enabled.
 func (s *k8s) generateResourceRequirements(req *Requirements) apiv1.ResourceRequirements {
-	// var coreMult int64
-
 	coreMult := int64(1000)
 
 	if s.config.Debug {
