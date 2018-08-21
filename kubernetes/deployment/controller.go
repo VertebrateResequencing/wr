@@ -55,6 +55,7 @@ type Controller struct {
 	Opts       *DeployOpts
 	queue      workqueue.RateLimitingInterface
 	informer   cache.SharedIndexInformer
+	log15.Logger
 }
 
 // DeployOpts specify the options for the deployment
@@ -129,6 +130,7 @@ func (c *Controller) HasSynced() bool {
 // Run starts SharedInformer watching for pods, and sends their keys to
 // workqueue StopCh used to send interrupt
 func (c *Controller) Run(stopCh <-chan struct{}) {
+	c.Logger = c.Opts.Logger.New("deployment", "kubernetes")
 	c.createQueueAndInformer()
 	c.addEventHandlers()
 	// don't let panics crash the process
@@ -172,12 +174,12 @@ func (c *Controller) processNextItem() bool {
 		// No error => queue stop tracking history
 		c.queue.Forget(key)
 	} else if c.queue.NumRequeues(key) < maxRetries {
-		c.Opts.Logger.Error(fmt.Sprintf("Error processing %s, will retry: %v\n", key, err))
+		c.Error("processing queue item, will retry", "key", key, "error", err)
 		// requeue
 		c.queue.AddRateLimited(key)
 	} else {
 		// err != nil and too many retries
-		c.Opts.Logger.Error(fmt.Sprintf("Error processing %s, giving up: %v\n", key, err))
+		c.Error("processing queue item failed", "key", key, "error", err)
 		c.queue.Forget(key)
 		utilruntime.HandleError(err)
 	}
@@ -188,7 +190,7 @@ func (c *Controller) processNextItem() bool {
 // processItem(key) is where we define how to react to an item coming off the
 // work queue
 func (c *Controller) processItem(key string) error {
-	c.Opts.Logger.Debug(fmt.Sprintf("Processing change to Pod %s", key))
+	c.Debug("processing change to pod", "pod", key)
 
 	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
@@ -196,7 +198,7 @@ func (c *Controller) processItem(key string) error {
 	}
 
 	if !exists {
-		c.Opts.Logger.Debug(fmt.Sprintf("Object with key %s deleted. \n\nObj: %v", key, obj))
+		c.Debug("object deleted", "key", key, "obj", obj)
 		return nil
 	}
 	err = c.processObj(obj)
@@ -220,14 +222,14 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 	if len(obj.Status.InitContainerStatuses) != 0 {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
-			c.Opts.Logger.Debug(fmt.Sprintf("InitContainer Waiting!"))
+			c.Debug("init container waiting!")
 
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
-			c.Opts.Logger.Debug(fmt.Sprintf("InitContainer Running!"))
-			c.Opts.Logger.Info(fmt.Sprintf("Calling CopyTar with files: %+v", c.Opts.Files))
+			c.Debug("init container running!")
+			c.Debug("calling CopyTar", "files", c.Opts.Files)
 			err := c.Client.CopyTar(c.Opts.Files, obj)
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Error copying tarball: %s", err))
+				c.Error("copying tarball", "error", err)
 			}
 		case obj.Status.ContainerStatuses[0].State.Running != nil:
 			// Write the pod name, name to the resources file. This allows us to
@@ -235,45 +237,45 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			resources := &cloud.Resources{}
 			file, err := os.OpenFile(c.Opts.ResourcePath, os.O_RDONLY, 0600)
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Could not open resource file with path: %s", err))
+				c.Error("could not open resource file", "path", c.Opts.ResourcePath, "error", err)
 			}
-			c.Opts.Logger.Info(fmt.Sprintf("Opened resource file with path %s", c.Opts.ResourcePath))
+			c.Debug("opened resource file", "path", c.Opts.ResourcePath)
 			decoder := gob.NewDecoder(file)
 			err = decoder.Decode(resources)
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Error decoding resource file: %s", err))
+				c.Error("decoding resource file", "error", err)
 			}
 			err = file.Close()
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Failed to close resource file: %s", err))
+				c.Error("failed to close resource file", "error", err)
 			}
 			file2, err := os.OpenFile(c.Opts.ResourcePath, os.O_WRONLY, 0600)
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Failed to open file2 %s", err))
+				c.Error("failed to open file2", "error", err)
 			}
 			resources.Details["manager-pod"] = obj.ObjectMeta.Name
 			encoder := gob.NewEncoder(file2)
 			err = encoder.Encode(resources)
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Failed to encode resource file: %s", err))
+				c.Error("failed to encode resource file", "error", err)
 			}
 			err = file2.Close()
 			if err != nil {
-				c.Opts.Logger.Error(fmt.Sprintf("Failed to close resource file2: %s", err))
+				c.Error("failed to close resource file2", "error", err)
 			}
 
-			c.Opts.Logger.Info(fmt.Sprintf("Stored manager pod name %s in resource file", obj.ObjectMeta.Name))
-			c.Opts.Logger.Info(fmt.Sprintf("wr manager container is running, calling PortForward with ports %v", c.Opts.RequiredPorts))
+			c.Debug("stored manager pod name in resource file", "name", obj.ObjectMeta.Name)
+			c.Info("wr manager container is running, calling PortForward", "ports", c.Opts.RequiredPorts)
 			go func() {
 				err := c.Client.PortForward(obj, c.Opts.RequiredPorts)
 				if err != nil {
-					c.Opts.Logger.Error(fmt.Sprintf("Port forwarding error: %s", err))
+					c.Error("Port forwarding error", "error", err)
 				}
 			}()
 		default:
-			c.Opts.Logger.Debug(fmt.Sprintf("Not InitContainer or wr Manager container related"))
+			c.Debug("not InitContainer or wr Manager container related")
 		}
 	} else {
-		c.Opts.Logger.Debug(fmt.Sprintf("InitContainerStatuses not initialised yet"))
+		c.Debug("initContainerStatuses not initialised yet")
 	}
 }

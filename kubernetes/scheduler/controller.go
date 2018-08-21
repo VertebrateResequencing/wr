@@ -83,7 +83,7 @@ type Controller struct {
 	nodeResourcesLen  *int
 	nodeResourceMutex *sync.RWMutex
 	podAliveMap       *sync.Map
-	logger            log15.Logger
+	log15.Logger
 }
 
 // ScheduleOpts stores options  for the scheduler
@@ -192,7 +192,7 @@ func NewController(
 						utilruntime.HandleError(fmt.Errorf("Couldn't cast object to pod for object %#v", obj))
 						return
 					}
-					controller.logger.Debug("Pod %s deleted", "pod", pod.ObjectMeta.Name)
+					controller.Debug("pod deleted", "pod", pod.ObjectMeta.Name)
 				},
 			},
 		})
@@ -248,30 +248,30 @@ func NewController(
 // until stopCh is closed, at which point it'll shut down workqueue and wait for
 // workers to finish processing.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
-	c.logger = c.opts.Logger.New("schedulerController", "kubernetes")
+	c.Logger = c.opts.Logger.New("schedulerController", "kubernetes")
 	kubeLogFile := filepath.Join(c.opts.ManagerDir, kubeSchedulerControllerLog)
 	fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
 	if err != nil {
 		return fmt.Errorf("wr kubernetes scheduler could not log to %s: %s", kubeLogFile, err)
 	}
 
-	l15h.AddHandler(c.logger, fh)
-	c.logger.Debug("In Run()")
+	l15h.AddHandler(c.Logger, fh)
+	c.Debug("In Run()")
 	defer runtime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
 	// Start informer factories, begin populating informer caches.
 
 	// Wait for caches to sync before starting workers
-	c.logger.Debug("Waiting for caches to sync")
+	c.Debug("Waiting for caches to sync")
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
-		c.logger.Crit("failed to wait for caches to sync")
+		c.Crit("failed to wait for caches to sync")
 		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
-	c.logger.Debug("Caches synced")
+	c.Debug("Caches synced")
 
-	c.logger.Debug("In Run(), starting workers")
+	c.Debug("In Run(), starting workers")
 	// start workers
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runReqCheck, time.Second, stopCh)
@@ -390,16 +390,16 @@ func (c *Controller) processItem(key string) error {
 // with a waiting initcontainer, and returns errors status updates and logs via
 // the pod's ErrChan that is stored in c.podAliveMap.
 func (c *Controller) processPod(pod *corev1.Pod) error {
-	c.logger.Debug(fmt.Sprintf("processPod called on %s", pod.ObjectMeta.Name))
+	c.Debug("processPod called", "pod", pod.ObjectMeta.Name)
 	// Assume only 1 init container Given we control this (Deploy() / Spawn()
 	// this is ok)
 	if len(pod.Status.InitContainerStatuses) != 0 {
 		switch {
 		case pod.Status.InitContainerStatuses[0].State.Waiting != nil:
-			c.logger.Debug(fmt.Sprintf("InitContainer for pod %s Waiting", pod.ObjectMeta.Name))
+			c.Debug("init container waiting", "pod", pod.ObjectMeta.Name)
 		case pod.Status.InitContainerStatuses[0].State.Running != nil:
-			c.logger.Debug(fmt.Sprintf("InitContainer for pod %s Running", pod.ObjectMeta.Name))
-			c.logger.Debug(fmt.Sprintf("Calling CopyTar for pod %s Running", pod.ObjectMeta.Name))
+			c.Debug("init container running", "pod", pod.ObjectMeta.Name)
+			c.Debug("calling CopyTar", "pod", pod.ObjectMeta.Name, "files", c.opts.Files)
 			err := c.libclient.CopyTar(c.opts.Files, pod)
 			// If this errors the controller will not die. It will just be
 			// logged.
@@ -412,9 +412,9 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 	}
 	// Error handling
 	if pod.Status.Phase == corev1.PodSucceeded {
-		c.logger.Debug(fmt.Sprintf("Pod %s exited succesfully, notifying", pod.ObjectMeta.Name))
-		//jsonObj, _ := json.Marshal(pod) c.logger.Info(fmt.Sprintf("Contents of
-		//pod %s", jsonObj))
+		c.Debug("pod exited succesfully, notifying", "pod", pod.ObjectMeta.Name)
+		//jsonObj, _ := json.Marshal(pod) c.Info(fmt.Sprintf("Contents of pod
+		//%s", jsonObj))
 		// Get the pod's errChan, return nil signifying that the pod
 		// (runner) exited succesfully.
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
@@ -423,13 +423,13 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 				req := result.(*PodAlive)
 				if !req.Done {
 					req.Done = true
-					c.logger.Info(fmt.Sprintf("Sending nil on ec for %s", pod.ObjectMeta.Name))
+					c.Info("sending nil on error chan", "pod", pod.ObjectMeta.Name)
 					req.ErrChan <- nil
 					close(req.ErrChan)
 				}
 			}()
 		} else {
-			c.logger.Error(fmt.Sprintf("Could not find return error channel for pod %s", pod.ObjectMeta.Name))
+			c.Error("could not find return error channel", "pod", pod.ObjectMeta.Name)
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 	}
@@ -441,22 +441,22 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 				req := result.(*PodAlive)
 				if !req.Done {
 					req.Done = true
-					c.logger.Error(fmt.Sprintf("Sending err on ec for %s", pod.ObjectMeta.Name))
+					c.Error("sending error on error chan", "pod", pod.ObjectMeta.Name, "error", "pod failed")
 					req.ErrChan <- fmt.Errorf("Pod %s failed", pod.ObjectMeta.Name)
 					close(req.ErrChan)
 				}
 			}()
 		} else {
-			c.logger.Error(fmt.Sprintf("Could not find return error channel for pod %s", pod.ObjectMeta.Name))
+			c.Error("could not find return error channel", "pod", pod.ObjectMeta.Name)
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 		// Get logs
 		logs, err := c.libclient.GetLog(pod, 25)
 		if err != nil {
-			c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
+			c.Error("failed to get logs", "pod", pod.ObjectMeta.Name, "err", err)
 		}
 		// Callback to user, trying to give an informative error.
-		c.logger.Error(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason))
+		c.Error("Pod failed", "pod", pod.ObjectMeta.Name, "message", pod.Status.Message, "reason", pod.Status.Reason)
 		c.sendErrChan(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s\n Logs: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason, logs))
 		c.sendBadServer(&cloud.Server{
 			Name: pod.ObjectMeta.Name,
@@ -474,21 +474,21 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 	}
 	// This is commented out as It ~should~ not be needed. It checks the last
 	// termination state, which is only relevant when the container restart
-	// policy is set to !never. // Handle individual container failures. if
-	// len(pod.Status.ContainerStatuses) != 0 {
+	// policy !never. Handle individual container failures.
+	// if len(pod.Status.ContainerStatuses) != 0 {
 	//  switch {
 	//  case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
 	//      // Get logs
 	//      logs, err := c.libclient.GetLog(pod, 25)
 	//      if err != nil {
-	//          c.logger.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
+	//          c.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
 	//      }
 	//      c.sendErrChan(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v\n %s",
 	//          pod.ObjectMeta.Name,
 	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
 	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode,
 	//          logs))
-	//      c.logger.Info(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v",
+	//      c.Info(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v",
 	//          pod.ObjectMeta.Name,
 	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
 	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode))
@@ -501,15 +501,14 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 func (c *Controller) processNode(node *corev1.Node) error {
 	// Keep a running total of the total allocatable resources. Adds information
 	// to a map[nodeName]resourcelist.
-	c.logger.Debug(fmt.Sprintf("processNode called on %s", node.ObjectMeta.Name))
-	c.logger.Debug(fmt.Sprintf("Adding node %s with allocatable resources %v", node.ObjectMeta.Name, node.Status.Allocatable))
-	c.logger.Debug("obtaining resourcemutex Lock()")
+	c.Debug("adding node to resource map", "node", node.ObjectMeta.Name, "resources", node.Status.Allocatable)
+	c.Debug("obtaining resourcemutex Lock()")
 	c.nodeResourceMutex.Lock()
-	c.logger.Debug("obtained resourcemutex Lock()")
+	c.Debug("obtained resourcemutex Lock()")
 	// Set the allocatable resource amount
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
 	c.nodeResourceMutex.Unlock()
-	c.logger.Debug("returned resourcemutex Lock()")
+	c.Debug("returned resourcemutex Lock()")
 	return nil
 }
 
@@ -521,21 +520,21 @@ func (c *Controller) handleErr(err error, key interface{}) {
 	}
 
 	if c.workqueue.NumRequeues(key) < maxRetries {
-		c.logger.Error(fmt.Sprintf("Error processing key %v: %v", key, err.Error()))
+		c.Error("error processing key", "key", key, "error", err.Error())
 		c.sendErrChan(fmt.Sprintf("Error processing key %v: %v", key, err.Error()))
 		c.workqueue.AddRateLimited(key)
 		return
 	}
 
 	utilruntime.HandleError(err)
-	c.logger.Error(fmt.Sprintf("Dropping key %q out of queue %v", key, err.Error()))
+	c.Error("dropping key out of queue", "key", key, "error", err.Error())
 	c.sendErrChan(fmt.Sprintf("Dropping key %q out of queue %v", key, err.Error()))
 	c.workqueue.Forget(key)
 }
 
 // Send a string of the provided error to the callback channel
 func (c *Controller) sendErrChan(err string) {
-	c.logger.Debug("sendErrChan called with error", "err", err)
+	c.Debug("sendErrChan called", "error", err)
 	go func() {
 		c.opts.CbChan <- err
 	}()
@@ -543,30 +542,30 @@ func (c *Controller) sendErrChan(err string) {
 
 // Send a *cloud.Server to wr that's gone bad.
 func (c *Controller) sendBadServer(server *cloud.Server) {
-	c.logger.Debug("sendBadServer called")
+	c.Debug("sendBadServer called")
 	go func() {
 		c.opts.BadCbChan <- server
 	}()
 }
 
 func (c *Controller) runReqCheck() {
-	c.logger.Debug("runReqCheck() called")
+	c.Debug("runReqCheck() called")
 	// If nodeResources is not initialised, wait.
 	if c.nodeResourcesLen == nil || *c.nodeResourcesLen == 0 {
-		c.logger.Debug("node resources not initialised. Waiting")
-		c.logger.Debug("obtaining RLock()")
+		c.Debug("node resources not initialised. Waiting")
+		c.Debug("obtaining RLock()")
 		c.nodeResourceMutex.RLock()
-		c.logger.Debug("obtained RLock()")
+		c.Debug("obtained RLock()")
 		c.nodeResourcesLen = func(i int) *int { return &i }(len(c.nodeResources))
 		c.nodeResourceMutex.RUnlock()
-		c.logger.Debug("returned RLock()")
+		c.Debug("returned RLock()")
 	} else if *c.nodeResourcesLen != 0 {
 		for c.reqCheckHandler() {
-			c.logger.Debug("Inside loop whilst reqCheckHandler is true")
+			c.Debug("inside loop whilst reqCheckHandler is true")
 		}
 	}
 
-	c.logger.Debug("runReqCheck() exiting")
+	c.Debug("runReqCheck() exiting")
 }
 
 // For now ignore that you can set quotas on a k8s cluster. Assume that the user
@@ -574,15 +573,15 @@ func (c *Controller) runReqCheck() {
 // no way to catastrophically fail, if that were to happen, this func should
 // return falses ToDO: Multiple PV/Not PV types.
 func (c *Controller) reqCheckHandler() bool {
-	c.logger.Debug("reqCheckHandler() called.")
+	c.Debug("reqCheckHandler() called.")
 	req := <-c.opts.ReqChan
-	c.logger.Debug("reqCheckHandler() recieved req.")
-	c.logger.Debug("obtaining RLock()")
+	c.Debug("reqCheckHandler() recieved req.")
+	c.Debug("obtaining RLock()")
 	c.nodeResourceMutex.RLock()
-	c.logger.Debug("obtained RLock()")
+	c.Debug("obtained RLock()")
 
 	defer c.nodeResourceMutex.RUnlock()
-	defer c.logger.Debug("returned RLock()")
+	defer c.Debug("returned RLock()")
 
 	StorageEphemeralEnabled := false
 
@@ -602,7 +601,7 @@ func (c *Controller) reqCheckHandler() bool {
 			// '<'), return when the first node that meets the requirements is
 			// found.
 			if n.Cpu().Cmp(req.Cores) != -1 && n.Memory().Cmp(req.RAM) != -1 {
-				c.logger.Debug(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+				c.Debug("returning schedulable from reqCheckHandler", "req", req)
 				req.CbChan <- Response{
 					Error:     nil, // It is possible to eventually schedule
 					Ephemeral: StorageEphemeralEnabled,
@@ -626,7 +625,7 @@ func (c *Controller) reqCheckHandler() bool {
 			if n.Cpu().Cmp(req.Cores) != -1 &&
 				n.StorageEphemeral().Cmp(req.Disk) != -1 &&
 				n.Memory().Cmp(req.RAM) != -1 {
-				c.logger.Debug(fmt.Sprintf("Returning schedulable from reqCheckHandler with req %#v", req))
+				c.Debug("returning schedulable from reqCheckHandler", "req", req)
 				req.CbChan <- Response{
 					Error:     nil, // It is possible to eventually schedule
 					Ephemeral: StorageEphemeralEnabled,
@@ -637,7 +636,7 @@ func (c *Controller) reqCheckHandler() bool {
 		}
 	}
 
-	c.logger.Error(fmt.Sprintf("reqCheck for %#v failed. No node has capacity for request.", req))
+	c.Error("reqCheck failed. No node has capacity for request", "req", req)
 	req.CbChan <- Response{
 		Error:     fmt.Errorf("No node has the capacity to schedule the current job"),
 		Ephemeral: StorageEphemeralEnabled}
@@ -647,22 +646,22 @@ func (c *Controller) reqCheckHandler() bool {
 }
 
 func (c *Controller) runPodAlive() {
-	c.logger.Debug("runPodAlive() called")
+	c.Debug("runPodAlive() called")
 	for c.podAliveHandler() {
-		c.logger.Debug("podAliveHandler() returned true")
+		c.Debug("podAliveHandler() returned true")
 	}
-	c.logger.Debug("runPodAlive() exiting")
+	c.Debug("runPodAlive() exiting")
 }
 
 // podAliveHandler recieves a request and adds the channel in that request to
 // the podAliveMap with the key being the UID of the pod.
 func (c *Controller) podAliveHandler() bool {
-	c.logger.Debug("podAliveHandler() called")
+	c.Debug("podAliveHandler() called")
 	req := <-c.opts.PodAliveChan
-	c.logger.Debug(fmt.Sprintf("Recieved PodAlive Request for pod %s", req.Pod.ObjectMeta.Name))
+	c.Debug("recieved PodAlive Request", "pod", req.Pod.ObjectMeta.Name)
 	// Store the error channel in the map.
 	c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req)
-	c.logger.Debug(fmt.Sprintf("Stored req for pod %s in map, returning true", req.Pod.ObjectMeta.Name))
+	c.Debug("Stored alive request for pod in map, returning true", "pod", req.Pod.ObjectMeta.Name)
 
 	return true
 }

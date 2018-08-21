@@ -140,7 +140,7 @@ secrets so some private registries may not work (Node authentication should).
 
 See https://kubernetes.io/docs/concepts/containers/images/ for more details.
 
-Currently authenticating against the cluster will be attempted with configuration
+Authenticating against the cluster will be attempted with configuration
 files found in ~/.kube, or with the $KUBECONFIG variable.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// for debug purposes, set up logging to STDERR
@@ -449,8 +449,6 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/key.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
 			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/ca.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
 			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/cert.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
-
-			info(fmt.Sprintf("podConfigFiles: %#v", podConfigFiles))
 
 			// Specify deployment options
 			c.Opts = &kubedeployment.DeployOpts{

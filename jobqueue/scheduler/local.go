@@ -23,7 +23,6 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
-	"fmt"
 	"math"
 	"os/exec"
 	"runtime"
@@ -190,10 +189,10 @@ func (s *local) reserveTimeout(req *Requirements) int {
 	if val, defined := req.Other["rtimeout"]; defined {
 		timeout, err := strconv.Atoi(val)
 		if err != nil {
-			s.Logger.Error(fmt.Sprintf("Failed to convert rtimeout to integer: %s", err))
+			s.Error("Failed to convert rtimeout to integer", "error", err)
 			return localReserveTimeout
 		}
-		s.Logger.Debug(fmt.Sprintf("setting runner rtimeout to %v", timeout))
+		s.Debug("setting runner rtimeout", "timeout", timeout)
 		return timeout
 	} else {
 		return localReserveTimeout
