@@ -41,27 +41,41 @@ import (
 var tc client.Kubernetesp
 var clientset kubernetes.Interface
 var autherr error
+var nsErr error
 var testingNamespace string
+var skip bool
 
 func init() {
 	tc = client.Kubernetesp{}
 	clientset, _, autherr = tc.Authenticate()
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
 	rand.Seed(time.Now().UnixNano())
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
-	_ = tc.CreateNewNamespace(testingNamespace)
+	nsErr = tc.CreateNewNamespace(testingNamespace)
+	if nsErr != nil {
+		fmt.Printf("Failed to create namespace: %s", nsErr)
+		skip = true
+		return
+	}
 
 	autherr = tc.Initialize(clientset, testingNamespace)
+
+	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
 	}
 }
 
 func TestCreateNewNamespace(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		namespaceName string
 	}{
@@ -88,6 +102,9 @@ func TestCreateNewNamespace(t *testing.T) {
 
 // Test that the Deploy() call returns without error.
 func TestDeploy(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string
@@ -134,6 +151,9 @@ func TestDeploy(t *testing.T) {
 }
 
 func TestSpawn(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string
@@ -215,6 +235,9 @@ func TestSpawn(t *testing.T) {
 }
 
 func TestInWrPod(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	// These tests are not run inside a wr pod. Expect false
 	inwr := client.InWRPod()
 	if inwr {
@@ -223,6 +246,9 @@ func TestInWrPod(t *testing.T) {
 }
 
 func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		fileData string
 		filePath string
@@ -261,6 +287,9 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 
 // Must be called after deploy()
 func TestTearDown(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		namespaceName string
 	}{

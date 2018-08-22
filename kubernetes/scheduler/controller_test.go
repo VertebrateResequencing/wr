@@ -42,6 +42,7 @@ import (
 
 var lc *client.Kubernetesp
 var autherr error
+var nsErr error
 var testingNamespace string
 var callBackChan chan string
 var badCallBackChan chan *cloud.Server
@@ -49,6 +50,7 @@ var reqChan chan *kubescheduler.Request
 var podAliveChan chan *kubescheduler.PodAlive
 var clientset kubernetes.Interface
 var restConfig *rest.Config
+var skip bool
 
 func init() {
 
@@ -56,17 +58,30 @@ func init() {
 
 	clientset, restConfig, autherr = lc.Authenticate()
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
 	rand.Seed(time.Now().UnixNano())
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
-	_ = lc.CreateNewNamespace(testingNamespace)
+	nsErr = lc.CreateNewNamespace(testingNamespace)
+	if nsErr != nil {
+		fmt.Printf("Failed to create namespace: %s", nsErr)
+		skip = true
+		return
+	}
 
 	autherr = lc.Initialize(clientset, testingNamespace)
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
+	}
+
+	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
 	}
 
 	// Set up message notifier & request channels
@@ -104,7 +119,8 @@ func init() {
 
 	go kubeInformerFactory.Start(stopCh)
 
-	// Start the scheduling controller
+	// Start the scheduling controller. Keep this panic, if we've got this far
+	// then we should not be failing.
 	go func() {
 		if err := controller.Run(2, stopCh); err != nil {
 			panic(fmt.Errorf("Controller failed: %s", err))
@@ -116,6 +132,9 @@ func init() {
 // Resource requests are being handled correctly. This test is specific to the
 // testing environment (Travis CI the VM has 2 vcpus and ~7gb ram).
 func TestReqCheck(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	// Resources are limited in CI.
 	passCases := []struct {
@@ -223,6 +242,9 @@ func TestReqCheck(t *testing.T) {
 
 // This test is really to test reporting of why something might've blown up.
 func TestRunCmd(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	passCases := []struct {
 		resourceReq   apiv1.ResourceRequirements
