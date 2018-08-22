@@ -218,7 +218,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Prerequisites to start the controller
 	s.libclient = &client.Kubernetesp{}
-	kubeClient, restConfig, err := s.libclient.Authenticate(s) // Authenticate against the cluster.
+	kubeClient, restConfig, err := s.libclient.Authenticate(client.AuthConfig{}) // Authenticate against the cluster.
 	if err != nil {
 		return err
 	}

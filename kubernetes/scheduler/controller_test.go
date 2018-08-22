@@ -56,7 +56,7 @@ func init() {
 
 	lc = &client.Kubernetesp{}
 
-	clientset, restConfig, autherr = lc.Authenticate()
+	clientset, restConfig, autherr = lc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
 		skip = true
 		return

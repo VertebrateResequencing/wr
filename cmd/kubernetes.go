@@ -72,6 +72,7 @@ var kubeNamespace string
 var maxPods int
 var scriptName string
 var configMapName string
+var kubeConfig string
 
 // kubeCmd represents the cloud command
 var kubeCmd = &cobra.Command{
@@ -247,7 +248,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
 
 		// Authenticate and populate Kubernetesp with clientset and restconfig.
-		c.Clientset, c.Restconfig, err = c.Client.Authenticate(kubeLogger)
+		c.Clientset, c.Restconfig, err = c.Client.Authenticate(client.AuthConfig{Logger: kubeLogger, KubeConfigPath: kubeConfig})
 		if err != nil {
 			die("Could not authenticate against the cluster: %s", err)
 		}
@@ -514,8 +515,8 @@ and accessible.`,
 		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 		// before stopping the manager, make sure we can interact with the
 		// cluster - that our credentials are correct.
-		client := &client.Kubernetesp{}
-		_, _, err := client.Authenticate(kubeLogger)
+		Client := &client.Kubernetesp{}
+		_, _, err := Client.Authenticate(client.AuthConfig{Logger: kubeLogger, KubeConfigPath: kubeConfig})
 		if err != nil {
 			die("could not authenticate against the cluster: %s", err)
 		}
@@ -605,15 +606,15 @@ and accessible.`,
 		}
 
 		// cat logfiles and write to disk.
-		log, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
+		log, _, err := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
 		if err != nil {
 			warn("error retrieving log file: %s", err)
 		}
-		kubeSchedulerLog, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerLog"})
+		kubeSchedulerLog, _, err := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerLog"})
 		if err != nil {
 			warn("error retrieving kubeSchedulerLog file: %s", err)
 		}
-		kubeSchedulerControllerLog, _, err := client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerControllerLog"})
+		kubeSchedulerControllerLog, _, err := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerControllerLog"})
 		if err != nil {
 			warn("error retrieving kubeSchedulerControllerLog file: %s", err)
 		}
@@ -635,13 +636,13 @@ and accessible.`,
 		// teardown kubernetes resources we created
 		if len(kubeNamespace) != 0 {
 			info("deleting namespace %s", kubeNamespace)
-			err = client.TearDown(kubeNamespace)
+			err = Client.TearDown(kubeNamespace)
 			if err != nil {
 				die("failed to delete the kubernetes resources previously created: %s", err)
 			}
 		} else {
 			info("deleting namespace %s", resources.Details["namespace"])
-			err = client.TearDown(resources.Details["namespace"])
+			err = Client.TearDown(resources.Details["namespace"])
 			if err != nil {
 				die("failed to delete the kubernetes resources previously created: %s", err)
 			}
@@ -697,10 +698,13 @@ func init() {
 	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "image to use for spawned pods")
 	kubeDeployCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
+	kubeDeployCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
+	kubeTearDownCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
+
 }
 
 // Rewrite any relative path to replace '~/' with podBinDir returning a
