@@ -35,11 +35,14 @@ import (
 	kubedeployment "github.com/VertebrateResequencing/wr/kubernetes/deployment"
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/inconshreveable/log15"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var dc kubedeployment.Controller
 var autherr error
+var nsErr error
 var testingNamespace string
+var skip bool
 
 // Just test that the call to Deploy() works, and that when configured as
 // expected, the deployment controller will copy the tarball, and that the
@@ -52,22 +55,38 @@ func init() {
 	}
 	dc.Clientset, dc.Restconfig, autherr = dc.Client.Authenticate()
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 
 	rand.Seed(time.Now().UnixNano())
 	testingNamespace = strings.Replace(namesgenerator.GetRandomName(1), "_", "-", -1) + "-wr-testing"
 
-	_ = dc.Client.CreateNewNamespace(testingNamespace)
+	nsErr = dc.Client.CreateNewNamespace(testingNamespace)
+	if nsErr != nil {
+		fmt.Printf("Failed to create namespace: %s", nsErr)
+		skip = true
+		return
+	}
 
 	autherr = dc.Client.Initialize(dc.Clientset, testingNamespace)
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
+	}
+
+	_, autherr := dc.Clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
 	}
 
 }
 
 func TestDeploy(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string

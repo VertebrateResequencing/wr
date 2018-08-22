@@ -54,6 +54,7 @@ var config internal.Config
 var logger log15.Logger
 var token []byte
 var jq *jobqueue.Client
+var skip bool
 
 func init() {
 	logger = log15.New()
@@ -61,7 +62,15 @@ func init() {
 	tc = client.Kubernetesp{}
 	clientset, _, autherr = tc.Authenticate()
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
+	}
+
+	_, autherr := clientset.CoreV1().Endpoints("default").List(metav1.ListOptions{})
+	if autherr != nil {
+		skip = true
+		fmt.Printf("Failed to list endpoints for default namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
+		return
 	}
 
 	config = internal.ConfigLoad(internal.Development, false, logger)
@@ -70,7 +79,9 @@ func init() {
 
 	file, err := os.Open(resourcePath)
 	if err != nil {
-		panic(err)
+		fmt.Printf("No resource file found at %s, skipping tests.", resourcePath)
+		skip = true
+		return
 	}
 
 	decoder := gob.NewDecoder(file)
@@ -86,16 +97,22 @@ func init() {
 
 	jq, err = jobqueue.Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile, config.ManagerCertDomain, token, 15*time.Second)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to connect to jobqueue, skipping.")
+		skip = true
+		return
 	}
 
 	autherr = tc.Initialize(clientset, resources.Details["namespace"])
 	if autherr != nil {
-		panic(autherr)
+		skip = true
+		return
 	}
 }
 
 func TestEchoes(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	cases := []struct {
 		cmd string
@@ -155,6 +172,9 @@ func TestEchoes(t *testing.T) {
 }
 
 func TestFileCreation(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	cases := []struct {
 		cmd string
@@ -223,6 +243,9 @@ func TestFileCreation(t *testing.T) {
 }
 
 func TestContainerImage(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
+	}
 	t.Parallel()
 	cases := []struct {
 		cmd            string
