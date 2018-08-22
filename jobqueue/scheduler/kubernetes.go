@@ -465,12 +465,14 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 
 	// Wait for the response, if there is an error (e.g CrashBackLoopoff)
 	// suggesting the post create script is throwing an error, return it here.
-	// Don't delete the pod if some error is thrown.
+	// Don't delete the pod if some error is thrown and debug is enabled.
 	s.Debug("Waiting on status of pod", "pod", pod.ObjectMeta.Name)
 	err = <-errChan
 	if err != nil {
 		s.Error("error with pod", "pod", pod.ObjectMeta.Name, "err", err)
-		return err
+		if s.config.Debug {
+			return err
+		}
 	}
 	// Delete terminated pod if no error thrown.
 	s.Debug("Deleting pod", "pod", pod.ObjectMeta.Name)
