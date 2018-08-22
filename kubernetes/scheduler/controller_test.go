@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -112,8 +113,8 @@ func init() {
 }
 
 // This test tests that the nodes are correctly being reported, and that
-// Resource requests are being handled correctly.TestReqCheck In the testing
-// environment (Travis CI the VM has 2 vcpus and ~7gb ram)
+// Resource requests are being handled correctly. This test is specific to the
+// testing environment (Travis CI the VM has 2 vcpus and ~7gb ram).
 func TestReqCheck(t *testing.T) {
 	t.Parallel()
 	// Resources are limited in CI.

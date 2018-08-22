@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -128,9 +129,7 @@ func TestDeploy(t *testing.T) {
 		if err != nil {
 			t.Error(err.Error())
 		}
-
 	}
-
 }
 
 func TestSpawn(t *testing.T) {
@@ -249,9 +248,7 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 		if cmap.Data[client.DefaultScriptName] != expectedData {
 			t.Error(fmt.Errorf("Unexpected contents of config map, got:\n%s \nexpect:\n%s", cmap.Data[client.DefaultScriptName], expectedData))
 		}
-
 	}
-
 }
 
 // Must be called after deploy()
@@ -272,6 +269,5 @@ func TestTearDown(t *testing.T) {
 		if err == nil {
 			t.Error("TearDown should fail if called twice with the same input.")
 		}
-
 	}
 }

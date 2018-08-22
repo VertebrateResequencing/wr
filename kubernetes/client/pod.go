@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -131,9 +132,9 @@ func makeTar(files []FilePair, writer io.Writer) error {
 	return nil
 }
 
-// AttachCmd attaches to a running container, pipes StdIn to the command running
-// on that container if StdIn is supplied. Should work after only calling
-// Authenticate().
+// AttachCmd attaches to a running container and pipes StdIn to the command
+// running on that container if StdIn is supplied. Should work after only
+// calling Authenticate().
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
 	// Make a request to the APIServer for an 'attach'. Open Stdin and Stderr
 	// for use by the client
@@ -211,7 +212,7 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 }
 
 // ExecInPod is a convenience function to call ExecCmd without needing to set up
-// writers for stdOut/Err Accepts a pod name, container name, namespace and
+// writers for stdOut/Err. Accepts a pod name, container name, namespace and
 // command. If you want to pass StdIn or have a need for a reader / writer then
 // you'll need to use ExecCmd. If the command executes in the container and
 // stdErr is not nil, the command will return an error containing the contents

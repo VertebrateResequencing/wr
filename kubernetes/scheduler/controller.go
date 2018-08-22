@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -19,13 +20,11 @@
 package scheduler
 
 /*
-
 Package scheduler a kubernetes controller to oversee the scheduling of wr-runner
 pods to a kubernetes cluster, It is an adapter that communicates wit the
 scheduleri implementation in ../../jobqueue/scheduler/kubernetes.go, and
 provides answers to questions that require up to date information about what is
 going on inside a cluster.
-
 */
 
 import (
@@ -234,19 +233,19 @@ func NewController(
 		},
 	})
 
-	// Set up the map[pod.ObjectMeta.UID]errChan where errChan is a unique
-	// channel for handling errors related to the passed pod. Uses the sync.Map
-	// as it fits use case 1 exactly: "The Map type is optimized for two common
-	// use cases: (1) when the entry for a given key is only ever written once
-	// but read many times.."
+	// Set up the map[pod.ObjectMeta.UID] errChan,  a unique channel for
+	// handling errors related to the passed pod. Uses the sync.Map as it fits
+	// use case 1 exactly: "The Map type is optimized for two common use cases:
+	// (1) when the entry for a given key is only ever written once but read
+	// many times.."
 	controller.podAliveMap = new(sync.Map)
 
 	return controller
 }
 
-// Run sets up event handlers, synces informer caches and starts workers blocks
-// until stopCh is closed, at which point it'll shut down workqueue and wait for
-// workers to finish processing.
+// Run sets up event handlers, synces informer caches and starts workers. It
+// blocks until stopCh is closed, at which point it'll shut down workqueue and
+// wait for workers to finish processing.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	c.Logger = c.opts.Logger.New("schedulerController", "kubernetes")
 	kubeLogFile := filepath.Join(c.opts.ManagerDir, kubeSchedulerControllerLog)
@@ -472,9 +471,11 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		}
 	}
-	// This is commented out as It ~should~ not be needed. It checks the last
+	// This is commented out as It ~should~ not be needed. If the wr
+	// functionality changes in the future, it may be useful. It checks the last
 	// termination state, which is only relevant when the container restart
-	// policy !never. Handle individual container failures.
+	// policy !never. It Handles individual container failures.
+
 	// if len(pod.Status.ContainerStatuses) != 0 {
 	//  switch {
 	//  case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:

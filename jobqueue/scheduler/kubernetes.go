@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -40,7 +41,7 @@ import (
 	"time"
 )
 
-// k8s is the implementer of scheduleri. it is a wrapper to implement scheduleri
+// k8s is the implementer of scheduleri. It is a wrapper to implement scheduleri
 // by sending requests to the controller
 
 // maxQueueTime(), reserveTimeout(), hostToID(), busy(), schedule() are
@@ -73,7 +74,7 @@ type ConfigKubernetes struct {
 	// 'ubuntu:latest'
 	Image string
 
-	// By default, containers in pods run as root, to run as a different user,
+	// By default, containers in pods run as root. To run as a different user,
 	// specify here.
 	User string
 
@@ -81,8 +82,7 @@ type ConfigKubernetes struct {
 	// limit
 	RAM int
 
-	// Requested Disk space, in GB Currently not implemented: Exploiting node
-	// ephemeral storage
+	// Requested Disk space, in GB
 	Disk int
 
 	// PostCreationScript is the []byte content of a script you want executed
@@ -94,8 +94,7 @@ type ConfigKubernetes struct {
 	ConfigMap string
 
 	// ConfigFiles is a comma separated list of paths to config files that
-	// should be copied over to all spawned servers. Absolute paths are copied
-	// over to the same absolute path on the new server. To handle a config file
+	// should be copied over to all spawned pods. To handle a config file
 	// that should remain relative to the home directory (and where the spawned
 	// server may have a different username and thus home directory path
 	// compared to the current server), use the prefix ~/ to signify the home
@@ -275,7 +274,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 // Send a request to see if a cmd with the provided requirements can ever be
 // scheduled. If the request can be scheduled, errChan returns nil then is
-// closed If it can't ever be sheduled an error is sent on errChan and returned.
+// closed. If it can't ever be sheduled an error is sent on errChan and returned.
 // TODO: OCC if error: What if a node is added shortly after? (Deals with
 // autoscaling?)
 // https://godoc.org/k8s.io/apimachinery/pkg/util/wait#ExponentialBackoff
@@ -333,7 +332,7 @@ func (s *k8s) setBadServerCallBack(cb BadServerCallBack) {
 }
 
 // The controller is passed a callback channel. notifyMessage recieves on the
-// channel if anything is recieved call s.msgCB(msg).
+// channel. If anything is recieved call s.msgCB(msg).
 func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *cloud.Server) {
 	s.Debug("notifyCallBack handler started")
 	for {
@@ -367,22 +366,25 @@ func (s *k8s) cleanup() {
 
 }
 
-// Work out how many pods with given resource requests can be scheduled based on
-// resource requests on the nodes in the cluster.
+// This should work out how many pods with given resource requests can be
+// scheduled based on resource requests on the nodes in the cluster. However at
+// the time of writing this was overly complicated, and started to replicate
+// code from the controller manager and kubelet. I'm returning yes in blocks of
+// 100. ToDO: If any job is pending with the given requirements, return 0 until
+// that pend fails. This should reduce overall load on the cluster when adding
+// lots of jobs at once.
 func (s *k8s) canCount(req *Requirements) (canCount int) {
 	s.Debug("canCount Called, returning 100")
 	// 100 is  a big enough block for anyone...
 	return 100
 }
 
-// RunFunc calls spawn() and exits with an error = nil when pod has terminated.
-// (Runner exited) Or an error if there was a problem. Use deletefunc in
-// controller to send message? (based on some sort of channel communication?)
+// RunFunc calls spawn() and exits with an error = nil when pod has terminated
+// (Runner exited). Or an error if there was a problem.
 func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
 	s.Debug("RunCmd Called", "cmd", cmd, "requirements", req)
 	// The first 'argument' to cmd will be the absolute path to the manager's
 	// executable. Work out the local binary's name from localBinaryPath.
-	// binaryName := filepath.Base(s.config.localBinaryPath)
 
 	configMountPath := "/scripts"
 
@@ -444,10 +446,10 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	reservedCh <- true
 	s.Debug("Spawn request succeded", "pod", pod.ObjectMeta.Name)
 
-	// We need to know when the pod we've created (the runner) terminates there
+	// We need to know when the pod we've created (the runner) terminates. There
 	// is a listener in the controller that will notify when a pod passed to it
-	// as a request containing a name and channel is deleted. The notification
-	// is the channel being closed.
+	// terminates. This is done as a request containing the pod and an error
+	// channel. The notification is the channel returning an error (or nil).
 
 	// Send the request to the listener.
 	s.Debug("Sending request to the podAliveChan", "pod", pod.ObjectMeta.Name)
@@ -461,7 +463,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 		s.podAliveChan <- req
 	}()
 
-	// Wait for the response, if there is an error e.g CrashBackLoopoff
+	// Wait for the response, if there is an error (e.g CrashBackLoopoff)
 	// suggesting the post create script is throwing an error, return it here.
 	// Don't delete the pod if some error is thrown.
 	s.Debug("Waiting on status of pod", "pod", pod.ObjectMeta.Name)
@@ -478,12 +480,12 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	return err
 }
 
-// This is ugly, I'm sorry. * Run on the manager, inside the cluster * Rewrite
-// any relative path to replace '~/' with TempMountPath returning
-// []client.FilePair to be copied to the runner. currently only relative paths
-// are allowed, any path not starting '~/' is dropped as everything ultimately
-// needs to go into TempMountPath as that's the volume that gets preserved
-// across containers.
+//  * Run on the manager, inside the cluster * This is ugly, I'm sorry.
+//  Rewrite any relative path to replace '~/' with TempMountPath returning
+//  []client.FilePair to be copied to the runner. currently only relative paths
+//  are allowed, any path not starting '~/' is dropped as everything ultimately
+//  needs to go into TempMountPath as that's the volume that gets preserved
+//  across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory os.user.Current() was failing in a pod.
 	// https://github.com/mitchellh/go-homedir ?
@@ -585,7 +587,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 }
 
 // remove the '~/' prefix as tar will create a ~/.. file. We don't want this as
-// the files will be lost in the initcontainers filesystem. replace '~/' with
+// the files will be lost in the initcontainers filesystem. Replace '~/' with
 // TempMountPath which we define as $HOME in the created pods. Remove the file
 // name, just returning the directory it is in.
 func (s *k8s) rewriteDests(paths []string) []string {
@@ -621,7 +623,7 @@ func (s *k8s) maxCPU() int {
 	return 0
 }
 
-// Rewrite *Requirements to a kubescheduler.Request Adjust values if debug
+// Rewrite *Requirements to a kubeschedule.Request. Scale down values if debug
 // enabled.
 func (s *k8s) generateResourceRequests(req *Requirements) (*resource.Quantity, *resource.Quantity, *resource.Quantity) {
 	var coreMult int64
