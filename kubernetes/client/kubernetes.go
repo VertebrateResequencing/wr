@@ -30,7 +30,6 @@ Initialize()
 import (
 	"crypto/md5"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -108,6 +107,34 @@ type ServiceOpts struct {
 	Ports     []apiv1.ServicePort
 }
 
+// AuthConfig holds configuration information nessecary for using the client
+// library.
+type AuthConfig struct {
+	KubeConfigPath string
+	Logger         log15.Logger
+}
+
+// ConfigPath returns the set KubeConfigPath, or a default otherwise.
+func (ac AuthConfig) ConfigPath() string {
+	if len(ac.KubeConfigPath) == 0 {
+		if home := homedir.HomeDir(); home != "" {
+			return filepath.Join(home, ".kube", "config")
+		}
+	}
+	return ac.KubeConfigPath
+}
+
+// GetLogger returns the Logger if one is provided, otherwise provides a new one
+func (ac AuthConfig) GetLogger() log15.Logger {
+	if ac.Logger != nil {
+		return ac.Logger
+	}
+	l := log15.New("clientlib")
+	l.SetHandler(log15.DiscardHandler())
+	return l
+
+}
+
 func int32Ptr(i int32) *int32 { return &i }
 
 func boolPtr(b bool) *bool { return &b }
@@ -125,15 +152,9 @@ func (p *Kubernetesp) CreateNewNamespace(name string) error {
 // Authenticate with cluster, return clientset and RESTConfig. Can be called
 // from within or outside of a cluster, should still work. Optionally supply a
 // logger.
-func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface, *rest.Config, error) {
-	var l log15.Logger
-	if len(logger) == 1 {
-		l = logger[0].New("clientlib", "true")
-	} else {
-		l = log15.New("clientlib")
-		l.SetHandler(log15.DiscardHandler())
-	}
-	p.Logger = l
+func (p *Kubernetesp) Authenticate(config AuthConfig) (kubernetes.Interface, *rest.Config, error) {
+	kubeconfig := config.ConfigPath()
+	p.Logger = config.GetLogger()
 
 	//Determine if in cluster.
 	host, port, kubevar := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT"), os.Getenv("KUBECONFIG")
@@ -141,18 +162,8 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 	switch {
 	case (len(host) == 0 || len(port) == 0) && len(kubevar) == 0:
 		p.Debug("authenticating using information from user's home directory")
-		var kubeconfig *string
-		//Obtain cluster authentication information from users home directory,
-		//or fall back to user input.
-		if home := homedir.HomeDir(); home != "" {
-			kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-		} else {
-			kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-		}
-		flag.Parse()
-
 		var err error
-		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+		clusterConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
 			p.Error("failed to build cluster configuration from ~/.kube", "err", err)
 			return nil, nil, fmt.Errorf("failed to build configuration from ~/.kube")
@@ -172,11 +183,9 @@ func (p *Kubernetesp) Authenticate(logger ...log15.Logger) (kubernetes.Interface
 		return clientset, clusterConfig, nil
 	case len(kubevar) != 0:
 		p.Debug("authenticating using $KUBECONFIG", "path", kubevar)
-		var kubeconfig *string
-		kubeconfig = &kubevar
+		kubeconfig = kubevar
 
-		var err error
-		clusterConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+		clusterConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
 			p.Error("failed to build cluster configuration", "path", kubevar, "err", err)
 

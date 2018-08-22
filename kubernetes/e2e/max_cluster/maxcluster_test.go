@@ -59,7 +59,7 @@ func init() {
 	logger = log15.New()
 
 	tc = client.Kubernetesp{}
-	clientset, _, autherr = tc.Authenticate()
+	clientset, _, autherr = tc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
 		skip = true
 		return

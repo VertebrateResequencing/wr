@@ -53,7 +53,7 @@ func init() {
 	dc = kubedeployment.Controller{
 		Client: &client.Kubernetesp{},
 	}
-	dc.Clientset, dc.Restconfig, autherr = dc.Client.Authenticate()
+	dc.Clientset, dc.Restconfig, autherr = dc.Client.Authenticate(client.AuthConfig{})
 	if autherr != nil {
 		skip = true
 		return

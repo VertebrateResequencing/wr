@@ -47,7 +47,7 @@ var skip bool
 
 func init() {
 	tc = client.Kubernetesp{}
-	clientset, _, autherr = tc.Authenticate()
+	clientset, _, autherr = tc.Authenticate(client.AuthConfig{})
 	if autherr != nil {
 		skip = true
 		return
