@@ -20,9 +20,9 @@
 package deployment
 
 /*
-Package deployment a kubernetes controller to oversee the deployment of the wr
-scheduler controller into a kubernetes cluster. It handles copying configuration
-files and binaries as well as port forwarding.
+Package deployment is a kubernetes controller to oversee the deployment of the
+wr scheduler controller into a kubernetes cluster. It handles copying
+configuration files and binaries as well as port forwarding.
 */
 
 import (
@@ -239,12 +239,14 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 			file, err := os.OpenFile(c.Opts.ResourcePath, os.O_RDONLY, 0600)
 			if err != nil {
 				c.Error("could not open resource file", "path", c.Opts.ResourcePath, "error", err)
+				return
 			}
 			c.Debug("opened resource file", "path", c.Opts.ResourcePath)
 			decoder := gob.NewDecoder(file)
 			err = decoder.Decode(resources)
 			if err != nil {
 				c.Error("decoding resource file", "error", err)
+				return
 			}
 			err = file.Close()
 			if err != nil {
@@ -265,7 +267,11 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 				c.Error("failed to close resource file2", "error", err)
 			}
 
-			c.Debug("stored manager pod name in resource file", "name", obj.ObjectMeta.Name)
+			// If everything went well, log.
+			if err == nil {
+				c.Debug("stored manager pod name in resource file", "name", obj.ObjectMeta.Name)
+			}
+
 			c.Info("wr manager container is running, calling PortForward", "ports", c.Opts.RequiredPorts)
 			go func() {
 				err := c.Client.PortForward(obj, c.Opts.RequiredPorts)

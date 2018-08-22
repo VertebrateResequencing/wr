@@ -133,8 +133,8 @@ func makeTar(files []FilePair, writer io.Writer) error {
 // running on that container if StdIn is supplied. Should work after only
 // calling Authenticate().
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
-	// Make a request to the APIServer for an 'attach'. Open Stdin and Stderr
-	// for use by the client
+	// Make a request to the APIServer for an 'attach' action. Open Stdin and
+	// Stderr for use by the client.
 	execRequest := p.RESTClient.Post().
 		Resource("pods").
 		Name(opts.PodName).
@@ -152,7 +152,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	// multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
-		panic(fmt.Errorf("Error creating SPDYExecutor: %v", err))
+		return "", "", fmt.Errorf("Error creating SPDYExecutor: %s", err.Error())
 	}
 	// Execute the command, with Std(in,out,err) pointing to the above readers
 	// and writers
@@ -235,11 +235,10 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 
 	// If the exec call succeded, but the cmd failed, also error
 	if len(stdErr.Str) != 0 {
-		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command returned non zero: %s", stdErr.Str)
+		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command produced STDERR: %s", stdErr.Str)
 	}
 
 	return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), nil
-
 }
 
 // PortForward sets up port forwarding to the manager that is running inside the
@@ -263,7 +262,6 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 	}
 
 	return p.forwardPorts("POST", req.URL(), ports)
-
 }
 
 func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
@@ -321,7 +319,6 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	p.Debug("contents of stdOut", stdOut.Str)
 	p.Debug("contents of stdErr", stdErr.Str)
 	return err
-
 }
 
 // GetLog Gets the logs from a container with the name 'wr-runner' Returns the
