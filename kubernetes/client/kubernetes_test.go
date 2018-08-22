@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -228,16 +229,23 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 	}{
 		{
 			fileData: "echo \"hello world\"",
-			filePath: "/tmp/d1",
+			filePath: "d1",
 		},
 	}
 
+	dir, err := ioutil.TempDir("", "configMapFromFileTest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer os.RemoveAll(dir) // clean up
+
 	for _, c := range cases {
-		err := ioutil.WriteFile(c.filePath, []byte(c.fileData), 0644)
+		err := ioutil.WriteFile(dir+c.filePath, []byte(c.fileData), 0644)
 		if err != nil {
-			t.Error(fmt.Errorf("Failed to write file to %s: %s", c.filePath, err))
+			t.Error(fmt.Errorf("Failed to write file to %s: %s", dir+c.filePath, err))
 		}
-		cmap, err := tc.CreateInitScriptConfigMapFromFile(c.filePath)
+		cmap, err := tc.CreateInitScriptConfigMapFromFile(dir + c.filePath)
 		if err != nil {
 			t.Errorf("Failed to create config map: %s", err)
 		}
