@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+//  Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -128,7 +129,7 @@ func (c *Controller) HasSynced() bool {
 }
 
 // Run starts SharedInformer watching for pods, and sends their keys to
-// workqueue StopCh used to send interrupt
+// workqueue StopCh used to send interrupt.
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	c.Logger = c.Opts.Logger.New("deployment", "kubernetes")
 	c.createQueueAndInformer()
@@ -158,7 +159,7 @@ func (c *Controller) runWorker() {
 }
 
 func (c *Controller) processNextItem() bool {
-	// pull next key from queue. look up key in cache
+	// pull next key from queue. Look up key in cache.
 	key, quit := c.queue.Get()
 	if quit {
 		return false
@@ -188,7 +189,7 @@ func (c *Controller) processNextItem() bool {
 }
 
 // processItem(key) is where we define how to react to an item coming off the
-// work queue
+// work queue.
 func (c *Controller) processItem(key string) error {
 	c.Debug("processing change to pod", "pod", key)
 
@@ -205,7 +206,7 @@ func (c *Controller) processItem(key string) error {
 	return err
 }
 
-// Process a generic object
+// Process a generic object.
 func (c *Controller) processObj(obj interface{}) error {
 	switch v := obj.(type) {
 	case *apiv1.Pod:
@@ -217,7 +218,7 @@ func (c *Controller) processObj(obj interface{}) error {
 }
 
 // processPod defines how to react to a pod coming off the workqueue in an
-// observed state. Assumes there is only 1 initcontainer
+// observed state. Assumes there is only 1 initcontainer.
 func (c *Controller) processPod(obj *apiv1.Pod) {
 	if len(obj.Status.InitContainerStatuses) != 0 {
 		switch {

@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -41,7 +42,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// podBinDir is where we will upload executables to our created pod. it is a
+// podBinDir is where we will upload executables to our created pod. It is a
 // volume mount added to the init container and the container that will run wr.
 // As defining a volume mount overwrites whatever is in that directory we want
 // this to be unique. This is also what $HOME is set to, allowing paths of the
@@ -54,9 +55,10 @@ const podBinDir = "/wr-tmp/"
 // podScriptDir is where the configMap will be mounted.
 const podScriptDir = "/scripts/"
 
-// The name of the wr linux binary to be expected. This is passed to the config
-// map that is set as the entry point for the chosen container. This way we can
-// ensure the users post creation script starts before the main command
+// linuxBinaryName, the name of the wr linux binary to be expected. This is
+// passed to the config map that is set as the entry point for the chosen
+// container. This way we can ensure the users post creation script starts
+// before the main command.
 const linuxBinaryName = "/wr"
 
 const kubeLogFileName = "k8sDeployLog"
@@ -539,10 +541,10 @@ and accessible.`,
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
 					if _, errf := os.Stat(config.ManagerDbFile); !os.IsNotExist(errf) {
-						// move aside the local database so that if the manager
+						// Move aside the local database so that if the manager
 						// is started locally, the database will be restored
 						// from S3 and have the history of what was run in the
-						// cloud
+						// cloud.
 						if errf = os.Rename(config.ManagerDbFile, config.ManagerDbFile+".old"); err == nil {
 							syncMsg = "; the local database will be updated from S3 if manager started locally"
 						} else {
@@ -550,7 +552,7 @@ and accessible.`,
 						}
 					}
 				} else {
-					// copy the remote database locally, so if the manager is
+					// Copy the remote database locally, so if the manager is
 					// started locally we have the history of what was run in
 					// the cloud. The gap between backing up and shutting down
 					// is "fine"; though some db writes may occur, the user
@@ -701,10 +703,10 @@ func init() {
 	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
 }
 
-// rewrite any relative path to replace '~/' with podBinDir returning
-// []client.FilePair to be copied to the manager. the comma separated list is
+// Rewrite any relative path to replace '~/' with podBinDir returning a
+// []client.FilePair to be copied to the manager. The comma separated list is
 // then passed again, and the same function called on the manager so all the
-// filepaths should match up when the manager calls Spawn(). currently only
+// filepaths should match up when the manager calls Spawn(). Currently only
 // relative paths are allowed, any path not starting '~/' is dropped as
 // everything ultimately needs to go into podBinDir as that's the volume that
 // gets preserved across containers.
@@ -729,8 +731,8 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 
-	// remove the '~/' prefix as tar will create a ~/.. file. We don't want
-	// this. replace '~/' with podBinDir which we define as $HOME. Remove the
+	// Remove the '~/' prefix as tar will create a ~/.. file. We don't want
+	// this. Replace '~/' with podBinDir which we define as $HOME. Remove the
 	// file name, just returning the directory it is in.
 	dests := []string{}
 	for _, path := range paths {
@@ -750,7 +752,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 
-	// create []client.FilePair to pass in to the deploy options. Replace '~/'
+	// Create []client.FilePair to pass in to the deploy options. Replace '~/'
 	// with the current user's $HOME
 	for i, path := range paths {
 		if strings.HasPrefix(path, "~/") {
@@ -764,7 +766,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	return filePairs
 }
 
-// open a resource file with the provided path
+// Open a resource file with the provided path
 func openResources(resourcePath string) (*cloud.Resources, error) {
 	resources := &cloud.Resources{}
 	file, err := os.Open(resourcePath)

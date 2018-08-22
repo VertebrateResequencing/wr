@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -66,10 +67,12 @@ const DefaultScriptName = "wr-boot"
 
 // ScriptTop and ScriptBottom sandwich the user's script when creating a config
 // map to boot from
-const ScriptTop = "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
-const ScriptBottom = "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+const (
+	ScriptTop    = "#!/usr/bin/env bash\nset -euo pipefail\necho \"Running init script\"\n"
+	ScriptBottom = "\necho \"Init Script complete, executing arguments provided\"\nexec $@"
+)
 
-// Kubernetesp is the implementation for the kubernetes cluster provider. It
+// Kubernetesp is the implementation for the kubernetes client library. It
 // provides access to all methods defined in this package
 type Kubernetesp struct {
 	clientset         kubernetes.Interface
@@ -278,16 +281,16 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 	return nil
 }
 
-// Deploy creates the wr-manager deployment and service. Creates
+// Deploy creates the wr-manager deployment and service. It creates a
 // ClusterRoleBinding to allow the default service account in the namespace
-// rights to manage cluster. (ToDo: Write own ClusterRole  / Role) that allows
-// fewer permissions) Copying of wr to initcontainer done by Controller when
-// ready (Assumes tar is available). Portforwarding done by controller when
-// ready. ContainerImage is the Image used for the manager pod tempMountPath is
-// the path at which the 'wr-tmp' directory is set to. It is also set to $HOME.
-// Command is the command to be executed in the container. cmdArgs are the
-// arguments to pass to the supplied command. configMapName is the name of the
-// configmap to mount at the configMountPath provided.
+// rights to manage cluster. (ToDo: Write own ClusterRole  / Role) This allows
+// copying of wr to initcontainer, done by controller when ready (assumes tar is
+// available). Portforwarding done by controller when ready. ContainerImage is
+// the image used for the manager pod. TempMountPath is the path at which the
+// 'wr-tmp' directory is set to. It is also set to $HOME. Command is the command
+// to be executed in the container. CmdArgs are the arguments to pass to the
+// supplied command. ConfigMapName is the name of the configmap to mount at the
+// configMountPath provided.
 func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, command string, cmdArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	// Patch the default cluster role for to allow pods and nodes to be viewed.
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
@@ -466,7 +469,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 }
 
 // InWRPod checks if we are in a wr pod. As we control the hostname, just check
-// if the hostname contains 'wr' in addition to the standard environment
+// if the hostname contains 'wr-' in addition to the standard environment
 // variables.
 func InWRPod() bool {
 	hostname, err := os.Hostname()
@@ -481,11 +484,11 @@ func InWRPod() bool {
 }
 
 // Spawn a new pod that expects an 'attach' command to tar some files across
-// (Init container). It also names the pod 'wr-runner-xxxx', mounts the provided
-// config map at the path provided. The directory named 'wr-tmp' persists
-// between the two containers, so any files that you want to survive the tar
-// step should untar to this path only. This path is also set as $HOME. This
-// path is set with the tempMountPath variable.
+// (Init container). It also names the pod 'wr-runner-xxxx' and mounts the
+// provided config map at the path provided. The directory named 'wr-tmp'
+// persists between the two containers, so any files that you want to survive
+// the tar step should untar to this path only. This path is also set as $HOME.
+// This path is set with the tempMountPath variable.
 func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, binaryPath string, binaryArgs []string, configMapName string, configMountPath string, resources apiv1.ResourceRequirements) (*apiv1.Pod, error) {
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -623,7 +626,8 @@ func (p *Kubernetesp) DestroyPod(podName string) error {
 // Kubernetes 1.10 (Released Late March 2018) provides a BinaryData field that
 // could be used to replace the initContainer method for copying the executable.
 // At the moment is not appropriate as it's not likely most users are running
-// 1.10.
+// 1.10. It's a good idea once enough users are using 1.10+ as it simplifies the
+// copy step considerably, and removes much complexity.
 func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
 	//Check if we have already created a config map with a script with the same
 	//hash.

@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -153,8 +154,6 @@ func TestEchoes(t *testing.T) {
 
 }
 
-// Go's byte -> str conversion causes the md5 to differ from the one on the OVH
-// website. So long as it remains constant we are happy
 func TestFileCreation(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

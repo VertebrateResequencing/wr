@@ -1,4 +1,5 @@
-// Copyright © 2018 Genome Research Limited Author: Theo Barber-Bany
+// Copyright © 2018 Genome Research Limited
+// Author: Theo Barber-Bany
 // <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -88,7 +89,7 @@ func TestDeploy(t *testing.T) {
 	}
 	for _, c := range cases {
 
-		// Test the creation of config maps (2 birds one stone) We won't delete
+		// Test the creation of config maps (2 birds one stone). We won't delete
 		// this now so we can use it later.
 		configmap, err := dc.Client.CreateInitScriptConfigMap(c.configMapData)
 		if err != nil {
