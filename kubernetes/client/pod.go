@@ -29,7 +29,6 @@ import (
 
 	"archive/tar"
 	"net/url"
-	//"errors"
 
 	"fmt"
 	"io"
@@ -40,10 +39,8 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // Allow GCP Auth
 	"k8s.io/client-go/tools/remotecommand"
-	// Uncomment the following line to load the gcp plugin (only required to
-	// authenticate against GKE clusters).
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
 // ResourceRequest specifies a request for resources. Used in Spawn().
@@ -58,7 +55,6 @@ type ResourceRequest struct {
 // following will be arguments.
 type CmdOptions struct {
 	StreamOptions
-
 	Command []string
 }
 
@@ -98,7 +94,8 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 		return err
 	}
 	defer file.Close()
-	if stat, err := file.Stat(); err == nil {
+	stat, err := file.Stat()
+	if err == nil {
 		// now lets create the header as needed for this file within the tarball
 		header := new(tar.Header)
 		header.Name = dest + path.Base(fpath)
@@ -114,7 +111,7 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 			return err
 		}
 	}
-	return nil
+	return err
 }
 
 // Writes tarball to an io.writer Takes a slice of FilePair(s), format source,
