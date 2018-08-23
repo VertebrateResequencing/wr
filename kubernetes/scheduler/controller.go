@@ -294,44 +294,33 @@ func (c *Controller) runWorker() {
 // to process it, by calling the syncHandler.
 func (c *Controller) processNextWorkItem() bool {
 	obj, shutdown := c.workqueue.Get()
-
 	if shutdown {
 		return false
 	}
 
-	// Wrap this block in func so can defer c.workqueue.Done.
-	err := func(obj interface{}) error {
-		// Call done so workqueue knows we have finished processing this item
-		// Must also call forget if we don't want the item re-queued.
-		defer c.workqueue.Done(obj)
-		var key string
-		var ok bool
-		// strings come off workqueue: namespace/name. delayed nature of wq
-		// means items in informer cache may be more up to date than the item
-		// initially put in the wq.
-		if key, ok = obj.(string); !ok {
-			// As item in workqueue is invalid, call forget else would loop
-			// attempting to process an invalid work item.
-			c.workqueue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-			return nil
-		}
-
-		// Run syncHandler, passing it the namespace/name key of the resource to
-		// be synced
-		err := c.processItem(key)
-		// handleErr will handle adding to the queue again.
-		c.handleErr(err, key)
-		// Finally, if no error occurs forget the item so it's not queued again
+	// Call done so workqueue knows we have finished processing this item
+	// Must also call forget if we don't want the item re-queued.
+	defer c.workqueue.Done(obj)
+	var key string
+	var ok bool
+	// strings come off workqueue: namespace/name. delayed nature of wq
+	// means items in informer cache may be more up to date than the item
+	// initially put in the wq.
+	if key, ok = obj.(string); !ok {
+		// As item in workqueue is invalid, call forget else would loop
+		// attempting to process an invalid work item.
 		c.workqueue.Forget(obj)
-		return nil
-
-	}(obj)
-
-	if err != nil {
-		utilruntime.HandleError(err)
+		utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 		return true
 	}
+
+	// Run syncHandler, passing it the namespace/name key of the resource to
+	// be synced
+	err := c.processItem(key)
+	// handleErr will handle adding to the queue again if retries are not
+	// exceeded. If there is no error, it will forget the key.
+	c.handleErr(err, key)
+
 	return true
 }
 
@@ -345,18 +334,14 @@ func (c *Controller) processItem(key string) error {
 
 	// Check if it's something without a namespace. If it is, it must be a Node.
 	if len(namespace) == 0 {
-
 		// Currently nodes are the only thing without a namespace listened for.
 		node, err := c.nodeLister.Get(name)
-
 		if err != nil {
 			// The Node  may no longer exist, in which case we stop processing.
-
 			if errors.IsNotFound(err) {
 				utilruntime.HandleError(fmt.Errorf("node '%s' in work queue no longer exists", key))
 				return nil
 			}
-
 			return err
 		}
 
@@ -367,14 +352,12 @@ func (c *Controller) processItem(key string) error {
 
 	// It has a namespace, it must be a pod.
 	pod, err := c.podLister.Pods(namespace).Get(name)
-
 	if err != nil {
 		// The pod  may no longer exist, in which case we stop processing.
 		if errors.IsNotFound(err) {
 			utilruntime.HandleError(fmt.Errorf("pod '%s' in work queue no longer exists", key))
 			return nil
 		}
-
 		return err
 	}
 
@@ -406,14 +389,11 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 				c.sendErrChan(fmt.Sprintf("CopyTar for pod %s failed: %s", pod.ObjectMeta.Name, err))
 				return err
 			}
-		default:
 		}
 	}
 	// Error handling
 	if pod.Status.Phase == corev1.PodSucceeded {
 		c.Debug("pod exited succesfully, notifying", "pod", pod.ObjectMeta.Name)
-		//jsonObj, _ := json.Marshal(pod) c.Info(fmt.Sprintf("Contents of pod
-		//%s", jsonObj))
 		// Get the pod's errChan, return nil signifying that the pod
 		// (runner) exited succesfully.
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
