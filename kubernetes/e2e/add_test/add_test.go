@@ -143,15 +143,7 @@ func TestEchoes(t *testing.T) {
 			if job == nil {
 				return false, nil
 			}
-			if job.Exited && job.Exitcode != 1 {
-				return true, nil
-			}
-			if job.Exited && job.Exitcode == 1 {
-				t.Errorf("cmd %s failed", c.cmd)
-				return false, fmt.Errorf("cmd failed")
-			}
-
-			return false, nil
+			return checkJob(job)
 		})
 		if errr != nil {
 			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
@@ -193,19 +185,7 @@ func TestFileCreation(t *testing.T) {
 			if job == nil {
 				return false, nil
 			}
-			if job.Exited && job.Exitcode != 1 {
-				return true, nil
-			}
-			if job.Exited && job.Exitcode == 1 {
-				stdErr, err := job.StdErr()
-				if err != nil {
-					t.Errorf("Job failed, and failed to get stderr")
-				}
-				t.Errorf("cmd %s failed: %s", c.cmd, stdErr)
-				return false, fmt.Errorf("cmd failed (timeout?)")
-			}
-
-			return false, nil
+			return checkJob(job)
 		})
 		if errr != nil {
 			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
@@ -269,15 +249,7 @@ func TestContainerImage(t *testing.T) {
 			if job == nil {
 				return false, nil
 			}
-			if job.Exited && job.Exitcode != 1 {
-				return true, nil
-			}
-			if job.Exited && job.Exitcode == 1 {
-				t.Errorf("cmd '%s' failed", c.cmd)
-				return false, fmt.Errorf("cmd failed")
-			}
-
-			return false, nil
+			return checkJob(job)
 		})
 		if errr != nil {
 
@@ -320,4 +292,21 @@ func TestContainerImage(t *testing.T) {
 
 	}
 
+}
+
+// checkJob checks if the passed job has exited 0. If it has not it gets the
+// STDERR of the job and returns it.
+func checkJob(job *jobqueue.Job) (bool, error) {
+	if job.Exited && job.Exitcode != 1 {
+		return true, nil
+	}
+	if job.Exited && job.Exitcode == 1 {
+		stdErr, err := job.StdErr()
+		if err != nil {
+			return false, fmt.Errorf("Job failed, and failed to get stderr")
+		}
+
+		return false, fmt.Errorf("cmd cmd %s failed: %s", job.Cmd, stdErr)
+	}
+	return false, nil
 }

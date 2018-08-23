@@ -20,7 +20,7 @@ package scheduler
 
 /*
 Package scheduler a kubernetes controller to oversee the scheduling of wr-runner
-pods to a kubernetes cluster, It is an adapter that communicates wit the
+pods to a kubernetes cluster. It is an adapter that communicates with the
 scheduleri implementation in ../../jobqueue/scheduler/kubernetes.go, and
 provides answers to questions that require up to date information about what is
 going on inside a cluster.
@@ -64,7 +64,12 @@ const (
 	kubeSchedulerControllerLog = "kubeSchedulerControllerLog"
 )
 
-// Controller stores everything the controller needs
+// Controller struct stores everything the controller needs in order to
+// function. It contains the functions needed to populate and operate on the
+// work queue. It also provides the relevant helper functions to resource and
+// pod alive requests from the k8s scheduleri implementation. A controller is an
+// active reconsiliation process that attempts operates on items in it's work
+// queue.
 type Controller struct {
 	libclient         *client.Kubernetesp // Our client library
 	kubeclientset     kubernetes.Interface
@@ -78,8 +83,7 @@ type Controller struct {
 	nodeResources     map[nodeName]corev1.ResourceList
 	nodeResourcesSet  bool
 	nodeResourceMutex *sync.RWMutex
-	// nodeResourceSetMutex *sync.RWMutex
-	podAliveMap *sync.Map
+	podAliveMap       *sync.Map
 	log15.Logger
 }
 
@@ -110,7 +114,6 @@ type Request struct {
 type Response struct {
 	Error     error
 	Ephemeral bool // indicate if ephemeral storage is enabled
-
 }
 
 // PodAlive contains a pod, and a chan error that is notified when the pod
@@ -130,7 +133,6 @@ func NewController(
 	libclient *client.Kubernetesp,
 	kubeInformerFactory kubeinformers.SharedInformerFactory,
 	opts ScheduleOpts,
-
 ) *Controller {
 	// obtain references to shared index informers for the pod and node types.
 	podInformer := kubeInformerFactory.Core().V1().Pods()
@@ -148,7 +150,6 @@ func NewController(
 		opts:              opts,
 		nodeResources:     make(map[nodeName]corev1.ResourceList),
 		nodeResourceMutex: new(sync.RWMutex),
-		// nodeResourceSetMutex: new(sync.RWMutex),
 	}
 
 	// Set up event handlers Only watch pods with the label 'app=wr-runner'
@@ -259,7 +260,6 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer c.workqueue.ShutDown()
 
 	// Start informer factories, begin populating informer caches.
-
 	// Wait for caches to sync before starting workers
 	c.Debug("Waiting for caches to sync")
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
@@ -462,12 +462,7 @@ func (c *Controller) processNode(node *corev1.Node) error {
 	c.Debug("obtained resourcemutex Lock()")
 	// Set the allocatable resource amount
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
-
-	// c.nodeResourceSetMutex.Lock()
-	// c.Debug("got nodeResourceSetMutex Lock")
 	c.nodeResourcesSet = true
-	// c.nodeResourceSetMutex.Unlock()
-	// c.Debug("got nodeResourceSetMutex Lock")
 	c.nodeResourceMutex.Unlock()
 	c.Debug("returned resourcemutex Lock()")
 	return nil
