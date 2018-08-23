@@ -76,9 +76,10 @@ type Controller struct {
 	workqueue         workqueue.RateLimitingInterface
 	opts              ScheduleOpts // Options for the scheduler
 	nodeResources     map[nodeName]corev1.ResourceList
-	nodeResourcesLen  *int
+	nodeResourcesSet  bool
 	nodeResourceMutex *sync.RWMutex
-	podAliveMap       *sync.Map
+	// nodeResourceSetMutex *sync.RWMutex
+	podAliveMap *sync.Map
 	log15.Logger
 }
 
@@ -147,6 +148,7 @@ func NewController(
 		opts:              opts,
 		nodeResources:     make(map[nodeName]corev1.ResourceList),
 		nodeResourceMutex: new(sync.RWMutex),
+		// nodeResourceSetMutex: new(sync.RWMutex),
 	}
 
 	// Set up event handlers Only watch pods with the label 'app=wr-runner'
@@ -266,9 +268,8 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 	c.Debug("Caches synced")
-
 	c.Debug("In Run(), starting workers")
-	// start workers
+
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runReqCheck, time.Second, stopCh)
 		go wait.Until(c.runPodAlive, time.Second, stopCh)
@@ -448,30 +449,6 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		}
 	}
-	// This is commented out as It ~should~ not be needed. If the wr
-	// functionality changes in the future, it may be useful. It checks the last
-	// termination state, which is only relevant when the container restart
-	// policy !never. It Handles individual container failures.
-
-	// if len(pod.Status.ContainerStatuses) != 0 {
-	//  switch {
-	//  case pod.Status.ContainerStatuses[0].LastTerminationState.Terminated != nil:
-	//      // Get logs
-	//      logs, err := c.libclient.GetLog(pod, 25)
-	//      if err != nil {
-	//          c.Error(fmt.Sprintf("Failed to get logs for pod %s", pod.ObjectMeta.Name), "err", err)
-	//      }
-	//      c.sendErrChan(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v\n %s",
-	//          pod.ObjectMeta.Name,
-	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
-	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode,
-	//          logs))
-	//      c.Info(fmt.Sprintf("Pod %s container terminated. Reason: %s, Exit code: %v",
-	//          pod.ObjectMeta.Name,
-	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.Reason,
-	//          pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.ExitCode))
-	//  }
-	// }
 	return nil
 }
 
@@ -485,6 +462,12 @@ func (c *Controller) processNode(node *corev1.Node) error {
 	c.Debug("obtained resourcemutex Lock()")
 	// Set the allocatable resource amount
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
+
+	// c.nodeResourceSetMutex.Lock()
+	// c.Debug("got nodeResourceSetMutex Lock")
+	c.nodeResourcesSet = true
+	// c.nodeResourceSetMutex.Unlock()
+	// c.Debug("got nodeResourceSetMutex Lock")
 	c.nodeResourceMutex.Unlock()
 	c.Debug("returned resourcemutex Lock()")
 	return nil
@@ -528,21 +511,16 @@ func (c *Controller) sendBadServer(server *cloud.Server) {
 
 func (c *Controller) runReqCheck() {
 	c.Debug("runReqCheck() called")
-	// If nodeResources is not initialised, wait.
-	if c.nodeResourcesLen == nil || *c.nodeResourcesLen == 0 {
-		c.Debug("node resources not initialised. Waiting")
-		c.Debug("obtaining RLock()")
-		c.nodeResourceMutex.RLock()
-		c.Debug("obtained RLock()")
-		c.nodeResourcesLen = func(i int) *int { return &i }(len(c.nodeResources))
+	c.nodeResourceMutex.RLock()
+	if c.nodeResourcesSet {
 		c.nodeResourceMutex.RUnlock()
-		c.Debug("returned RLock()")
-	} else if *c.nodeResourcesLen != 0 {
 		for c.reqCheckHandler() {
 			c.Debug("inside loop whilst reqCheckHandler is true")
 		}
+	} else {
+		c.nodeResourceMutex.RUnlock()
+		c.Debug("Waiting for node resources to be set")
 	}
-
 	c.Debug("runReqCheck() exiting")
 }
 
