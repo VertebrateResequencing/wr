@@ -153,17 +153,17 @@ func (p *Kubernetesp) Authenticate(config AuthConfig) (kubernetes.Interface, *re
 	kubeconfig := config.ConfigPath()
 	p.Logger = config.GetLogger()
 
-	//Determine if in cluster.
+	//Determine if in cluster
 	host, port, kubevar := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT"), os.Getenv("KUBECONFIG")
 
 	switch {
 	case (len(host) == 0 || len(port) == 0) && len(kubevar) == 0:
-		p.Debug("authenticating using information from user's home directory")
+		p.Debug("getting authentication information", "path", kubeconfig)
 		var err error
 		clusterConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			p.Error("failed to build cluster configuration from ~/.kube", "err", err)
-			return nil, nil, fmt.Errorf("failed to build configuration from ~/.kube")
+			p.Error("failed to build cluster configuration", "err", err, "path", kubeconfig)
+			return nil, nil, fmt.Errorf("failed to build configuration from %s", kubeconfig)
 		}
 		//Create authenticated clientset
 		clientset, err := kubernetes.NewForConfig(clusterConfig)
@@ -172,7 +172,7 @@ func (p *Kubernetesp) Authenticate(config AuthConfig) (kubernetes.Interface, *re
 			return nil, nil, fmt.Errorf("failed to create authenticated clientset")
 		}
 		// Set up internal clientset and clusterConfig
-		p.Debug("succesfully authenticated using information from user's home directory")
+		p.Debug("succesfully read authentication information", "path", kubeconfig)
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
 		// Create REST client
@@ -194,7 +194,7 @@ func (p *Kubernetesp) Authenticate(config AuthConfig) (kubernetes.Interface, *re
 			return nil, nil, fmt.Errorf("failed to create authenticated clientset")
 		}
 		// Set up internal clientset and clusterConfig
-		p.Debug("succesfully authenticated")
+		p.Debug("succesfully read authentication information", "path", kubevar)
 		p.clientset = clientset
 		p.clusterConfig = clusterConfig
 		// Create REST client

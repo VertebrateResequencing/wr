@@ -219,7 +219,7 @@ func (c *Controller) processObj(obj interface{}) error {
 // processPod defines how to react to a pod coming off the workqueue in an
 // observed state. Assumes there is only 1 initcontainer.
 func (c *Controller) processPod(obj *apiv1.Pod) {
-	if len(obj.Status.InitContainerStatuses) != 0 {
+	if len(obj.Status.InitContainerStatuses) >= 1 {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
 			c.Debug("init container waiting!")

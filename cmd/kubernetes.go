@@ -244,7 +244,12 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 		// Authenticate and populate Kubernetesp with clientset and restconfig.
 		c.Clientset, c.Restconfig, err = c.Client.Authenticate(client.AuthConfig{Logger: kubeLogger, KubeConfigPath: kubeConfig})
 		if err != nil {
-			die("Could not authenticate against the cluster: %s", err)
+			die("could not get authentication details for the cluster: %s", err)
+		}
+
+		_, err = c.Clientset.CoreV1().Namespaces().List(metav1.ListOptions{})
+		if err != nil {
+			die("could not connect to the cluster: %s", err)
 		}
 
 		// Check if an existing deployment with the label 'app=wr-manager'
@@ -506,9 +511,13 @@ and accessible.`,
 		// before stopping the manager, make sure we can interact with the
 		// cluster - that our credentials are correct.
 		Client := &client.Kubernetesp{}
-		_, _, err := Client.Authenticate(client.AuthConfig{Logger: kubeLogger, KubeConfigPath: kubeConfig})
+		clientset, _, err := Client.Authenticate(client.AuthConfig{Logger: kubeLogger, KubeConfigPath: kubeConfig})
 		if err != nil {
-			die("could not authenticate against the cluster: %s", err)
+			die("could not get authentication details for the cluster: %s", err)
+		}
+		_, err = clientset.CoreV1().Namespaces().List(metav1.ListOptions{})
+		if err != nil {
+			die("could not connect to the cluster: %s", err)
 		}
 
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")

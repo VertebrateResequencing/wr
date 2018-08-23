@@ -373,7 +373,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 	c.Debug("processPod called", "pod", pod.ObjectMeta.Name)
 	// Assume only 1 init container Given we control this (Deploy() / Spawn()
 	// this is ok)
-	if len(pod.Status.InitContainerStatuses) != 0 {
+	if len(pod.Status.InitContainerStatuses) >= 1 {
 		switch {
 		case pod.Status.InitContainerStatuses[0].State.Waiting != nil:
 			c.Debug("init container waiting", "pod", pod.ObjectMeta.Name)
