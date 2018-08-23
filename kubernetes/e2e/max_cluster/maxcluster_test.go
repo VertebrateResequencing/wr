@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -34,10 +33,9 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/inconshreveable/log15"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 )

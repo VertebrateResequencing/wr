@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -33,23 +32,21 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	kubeinformers "k8s.io/client-go/informers"
-
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-
 	"k8s.io/client-go/util/workqueue"
 )
 
