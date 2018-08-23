@@ -63,8 +63,6 @@ const linuxBinaryName = "/wr"
 // kubeLogFileName is the name of the file to write the deployment logs to.
 const kubeLogFileName = "k8sDeployLog"
 
-var kubeLogger log15.Logger
-
 // options for this cmd
 var podPostCreationScript string
 var containerImage string
