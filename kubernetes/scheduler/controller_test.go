@@ -72,6 +72,7 @@ func init() {
 
 	autherr = lc.Initialize(clientset, testingNamespace)
 	if autherr != nil {
+		fmt.Printf("Failed initialise clients: %s", autherr)
 		skip = true
 		return
 	}
@@ -80,6 +81,7 @@ func init() {
 	if autherr != nil {
 		skip = true
 		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
+		return
 	}
 
 	// Set up message notifier & request channels
