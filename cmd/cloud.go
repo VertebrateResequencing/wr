@@ -33,9 +33,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/fatih/color"
-	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
-	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
 )
 
@@ -233,12 +231,7 @@ within OpenStack.`,
 		}
 
 		// for debug purposes, set up logging to STDERR
-		cloudLogger := log15.New()
-		logLevel := log15.LvlWarn
-		if cloudDebug {
-			logLevel = log15.LvlDebug
-		}
-		cloudLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+		cloudLogger := setupLogging(kubeDebug)
 
 		// get all necessary cloud resources in place
 		mp, err := strconv.Atoi(config.ManagerPort)
@@ -429,12 +422,8 @@ and accessible.`,
 
 		// before stopping the manager, make sure we can interact with the
 		// provider - that our credentials are correct
-		var logger = log15.New()
-		if cloudDebug {
-			logger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, log15.StderrHandler))
-		} else {
-			logger.SetHandler(log15.DiscardHandler())
-		}
+		logger := setupLogging(kubeDebug)
+
 		provider, err := cloud.New(providerName, cloudResourceName(cloudResourceNameUniquer), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), logger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
