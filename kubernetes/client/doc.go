@@ -92,7 +92,7 @@ Kubespray deployment method (that we use on our internal openstack) only
 supports up to 1.9.5. The tar method of bootstrapping should work on clusters
 going back to very early versions of kubernetes.
 
-Mutltiple directories copied for the tar step? (See above)
+Multiple directories copied for the tar step? (See above)
 
 A different way to deal with privileged = true needing to be set for FUSE to
 work. See: https://github.com/kubernetes/kubernetes/issues/7890. Currently I can

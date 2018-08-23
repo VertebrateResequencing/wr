@@ -26,9 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	kubescheduler "github.com/VertebrateResequencing/wr/kubernetes/scheduler"
@@ -38,6 +35,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 var lc *client.Kubernetesp
@@ -53,7 +52,6 @@ var restConfig *rest.Config
 var skip bool
 
 func init() {
-
 	lc = &client.Kubernetesp{}
 
 	clientset, restConfig, autherr = lc.Authenticate(client.AuthConfig{})
