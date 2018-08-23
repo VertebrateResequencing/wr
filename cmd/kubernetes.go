@@ -31,7 +31,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
-
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	kubedeployment "github.com/VertebrateResequencing/wr/kubernetes/deployment"
 	"github.com/inconshreveable/log15"
@@ -61,7 +60,10 @@ const podScriptDir = "/scripts/"
 // before the main command.
 const linuxBinaryName = "/wr"
 
+// kubeLogFileName is the name of the file to write the deployment logs to.
 const kubeLogFileName = "k8sDeployLog"
+
+var kubeLogger log15.Logger
 
 // options for this cmd
 var podPostCreationScript string
@@ -146,13 +148,7 @@ See https://kubernetes.io/docs/concepts/containers/images/ for more details.
 Authenticating against the cluster will be attempted with configuration
 files found in ~/.kube, or with the $KUBECONFIG variable.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// for debug purposes, set up logging to STDERR
-		kubeLogger := log15.New()
-		logLevel := log15.LvlWarn
-		if kubeDebug {
-			logLevel = log15.LvlDebug
-		}
-		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+		kubeLogger := setupLogging(kubeDebug)
 
 		// Read in post creation script
 		var postCreation []byte
@@ -507,12 +503,8 @@ If you don't back up to S3, the teardown command tries to copy the remote
 database locally, which is only possible while the remote server is still up
 and accessible.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		kubeLogger := log15.New()
-		logLevel := log15.LvlWarn
-		if kubeDebug {
-			logLevel = log15.LvlDebug
-		}
-		kubeLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+		kubeLogger := setupLogging(kubeDebug)
+
 		// before stopping the manager, make sure we can interact with the
 		// cluster - that our credentials are correct.
 		Client := &client.Kubernetesp{}
@@ -704,6 +696,7 @@ func init() {
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
 	kubeTearDownCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
+	kubeTearDownCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 }
 
