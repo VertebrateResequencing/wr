@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -28,14 +27,13 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/kubernetes"
-
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
 	"github.com/docker/docker/pkg/namesgenerator"
+	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 )
 
 var tc client.Kubernetesp

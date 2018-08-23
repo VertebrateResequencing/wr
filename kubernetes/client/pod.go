@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -20,27 +19,23 @@
 package client
 
 import (
-	"strings"
-
-	"k8s.io/apimachinery/pkg/api/resource"
-
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
-
 	"archive/tar"
-	"net/url"
-
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
+	"strings"
 
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // Allow GCP Auth
+	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/client-go/transport/spdy"
 )
 
 // ResourceRequest specifies a request for resources. Used in Spawn().

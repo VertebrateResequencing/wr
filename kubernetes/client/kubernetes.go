@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -51,10 +50,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	typedappsv1beta1 "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // Allow gcp auth.
 	"k8s.io/client-go/rest"
-
-	// Allow auth against gcp cluster
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	"k8s.io/client-go/util/retry"
