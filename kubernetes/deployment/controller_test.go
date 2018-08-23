@@ -49,7 +49,6 @@ var skip bool
 // manager can be connected to.
 
 func init() {
-
 	dc = kubedeployment.Controller{
 		Client: &client.Kubernetesp{},
 	}
@@ -80,7 +79,6 @@ func init() {
 		skip = true
 		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
 	}
-
 }
 
 func TestDeploy(t *testing.T) {
@@ -185,7 +183,12 @@ func TestDeploy(t *testing.T) {
 
 		t.Logf("jobqueue server mode: %s", jq.ServerInfo.Mode)
 		t.Logf("Deployment Controller test passed")
+	}
+}
 
+func TestJQMode(t *testing.T) {
+	if skip {
+		t.Skip("skipping test; failed to access cluster")
 	}
 
 }

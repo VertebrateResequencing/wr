@@ -137,7 +137,6 @@ func TestEchoes(t *testing.T) {
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
 				return false, err
@@ -168,9 +167,7 @@ func TestEchoes(t *testing.T) {
 			t.Errorf("Pod %s was not deleted: %s", job.Host, err)
 		}
 	}
-
 }
-
 func TestFileCreation(t *testing.T) {
 	if skip {
 		t.Skip("skipping test; failed to access cluster")
@@ -190,7 +187,6 @@ func TestFileCreation(t *testing.T) {
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
-
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
 				return false, err
@@ -216,8 +212,8 @@ func TestFileCreation(t *testing.T) {
 			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
-		// Now we get the host, and exec to gain the md5 of the file.
-		// (Verification step
+		// Now we get the host, and copy the file to memory. Then calculate the
+		// md5 of the file. (Verification step)
 		stdout, _, err := tc.ExecInPod(job.Host, "wr-runner", tc.NewNamespaceName, []string{"cat", "/tmp/hw"})
 		if err != nil {
 			t.Errorf("Failed to get file from container: %s", err)
@@ -267,7 +263,6 @@ func TestContainerImage(t *testing.T) {
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
-
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
 			if err != nil {
 				return false, err
@@ -290,7 +285,7 @@ func TestContainerImage(t *testing.T) {
 			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
 		}
 
-		// Now the job has completed succesfully we heck that the image used is
+		// Now the job has completed succesfully we check that the image used is
 		// as expected
 		pod, err := clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil {
@@ -305,6 +300,7 @@ func TestContainerImage(t *testing.T) {
 		for _, container := range pod.Spec.Containers {
 			if container.Name == "wr-runner" {
 				runnercontainer = &container
+				continue
 			}
 		}
 

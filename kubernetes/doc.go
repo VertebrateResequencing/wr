@@ -20,17 +20,17 @@
 package kubedoc
 
 /*
-This is intended as a high level overview of all kubernetes related code in the
-WR codebase and explanation of how it fits together. A general understanding of
-kubernetes concepts is assumed, along with an understanding of client-go
-(https://github.com/kubernetes/client-go).
+This is intended as a high-level overview of all kubernetes related code in the
+wr codebase, and an explanation of how it fits together. A general understanding
+of kubernetes concepts is assumed, along with an understanding of client-go.
+(https://github.com/kubernetes/client-go)
 
 See the links in the deployment and scheduler controller docs for information on
-controllers.
+controllers. (Also commonly referred to operators)
 
-Below is a diagram showing the packages each step of the deployment and
-operation. It is also the order in which I would recommend reading each
-package's documentation.
+Below is a diagram showing the packages involved in each step of the deployment
+and operation of the wr kubernetes scheduler. It is also the recommended reading
+order for each package's documentation.
 
                    +--------------+
                    |client package|
@@ -62,8 +62,8 @@ package's documentation.
 +--------------------------------------------------------------+
 
 The client package is used by all of the packages to authenticate, and for
-interacting with kuberenetes with basic tasks (Create a pod or service, execute
-a command in a container or port forwarding)
+interacting with kuberenetes with basic tasks (create a pod or service, execute
+a command in a container or port forwarding).
 
 When a user first starts wr in kubernetes mode the kubeDeployCmd
 (../cmd/kubernetes.go) will attempt to connect to a manager on the configured
@@ -74,15 +74,15 @@ The child creates a resource file and rewrites any config files passed to be
 able to tar them across to the init container. It then specifies the requested
 configuration in a DeployOpts struct, that is passed to the deployment
 controller, which is then run. It also generates the options that are passed to
-the manager command  inside the cluster.
+the manager command inside the cluster.
 
-The deployment controller calls Deploy() in  the client package to create the
-deployment in cluster and then bootstraps that deployment by copying the
-requested files. Once complete it starts port forwarding
+The deployment controller calls Deploy() in the client package to create the
+deployment in the cluster and then bootstraps that deployment by copying the
+requested files. Once complete it starts port forwarding.
 
 The manager command contains the options for the k8s driver
-(../jobqueue/scheduler/kubernetes.go) and scheduling controller, these are
-passed through to the driver, where upon calling initialize() the scheduling
+(../jobqueue/scheduler/kubernetes.go) and scheduling controller. These are
+passed through to the driver, whereupon calling initialize() the scheduling
 controller is started. The scheduling controller and k8s driver together work to
 implement scheduleri, the interface wr requires to be satisfied in order to
 implement a new scheduler.

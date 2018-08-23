@@ -21,9 +21,9 @@ package deployment
 
 /*
 
-Package deployment a kubernetes controller to oversee the deployment of the wr
-scheduler controller into a kubernetes cluster, copying configuration files,
-binaries and port forwarding.
+Package deployment is a kubernetes controller that oversees the deployment of
+the wr scheduler controller and manager into a kubernetes cluster. It copies
+configuration files, binaries and handles port forwarding.
 
 This package uses client-go: https://github.com/kubernetes/client-go Reading on
 controllers:
@@ -39,23 +39,23 @@ controllers:
         * https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/controller-ref.md
 
 The Deployment controller calls client.Deploy() in order to create the
-deployment of the wr manager and then bootstraps it. If an existing deployment
-is found (another pod running, with the label "app=wr-manager" it skips this
+deployment for the wr manager and then bootstraps it. If an existing deployment
+is found (another pod running, with the label "app=wr-manager") it skips this
 Deploy() and just runs the controller, which will update the resource file and
-start port forwarding.)
+start port forwarding.
 
-At a high level, this controller for a pod in the provided namespace with the
-label "app=wr-manager", when it sees a pod with an init container in the running
-state calls CopyTar (in ../client/pod.go) with the files provided to it when it
-starts, that are set in kubeDeployCmd (../../cmd/kubernetes.go). CopyTar
+This controller watches for a pod in the provided namespace with the label
+"app=wr-manager", when it sees a pod with an init container in the running state
+it calls CopyTar() (in ../client/pod.go) with the files provided to it when it
+starts. (That are set in kubeDeployCmd (../../cmd/kubernetes.go). CopyTar
 (io.)Pipes a tarball with the requested files to the container and disconnects
-once complete. This triggers tar to exit, the init container completes. The main
-(wr-manager) container then starts, and runs the wr binary that is copied in the
-previous step. A current limitation to this step is that we are only attaching
-one folder (see client doc.go).
+once complete. This triggers tar to exit and the init container completes. The
+main (wr-manager) container then starts, and runs the wr binary that is copied
+in the previous step. A current limitation to this step is that we are only
+attaching one folder (see client doc.go).
 
 Once the wr-manager container is seen to be running (success!) the name of the
-pod containing it is stored to the resources file for later use, (pod to
+pod containing it is stored in the resources file for later use, (it is used to
 retrieve logs and client.token from) then PortForward is called on the required
 ports set in the deployment options, this will be a port for the web ui and
 another to communicate for the manager.
