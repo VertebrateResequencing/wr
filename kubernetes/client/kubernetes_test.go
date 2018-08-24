@@ -253,7 +253,7 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 	}{
 		{
 			fileData: "echo \"hello world\"",
-			filePath: "d1",
+			filePath: "/d1",
 		},
 	}
 

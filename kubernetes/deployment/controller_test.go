@@ -21,6 +21,7 @@ package deployment_test
 import (
 	"encoding/gob"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"strings"
@@ -42,6 +43,7 @@ var autherr error
 var nsErr error
 var testingNamespace string
 var skip bool
+var dir string
 
 // Just test that the call to Deploy() works, and that when configured as
 // expected, the deployment controller will copy the tarball, and that the
@@ -150,10 +152,17 @@ func TestDeploy(t *testing.T) {
 			t.Error(fmt.Errorf("Failed to encode resource file: %s", err))
 		}
 
+		dir, err = ioutil.TempDir("", "deploy")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		defer os.RemoveAll(dir) // clean up
+
 		// Generate certs
-		caFile := "/tmp/ca.pem"
-		certFile := "/tmp/cert.pem"
-		keyFile := "/tmp/key.pem"
+		caFile := dir + "/ca.pem"
+		certFile := dir + "/cert.pem"
+		keyFile := dir + "/key.pem"
 		wrDir := "/wr-tmp/.wr_production/"
 		err = internal.GenerateCerts(caFile, certFile, keyFile, "localhost")
 		if err != nil {
@@ -174,20 +183,18 @@ func TestDeploy(t *testing.T) {
 			dc.Run(stopCh)
 		}()
 
-		// Test if the manager is up.
+		// Don't move this to a new test, the call to connect() waits and keeps
+		// the controller running, this allows time for the manager to be bootstrapped.
 		jq, err := jobqueue.Connect("localhost:8080", caFile, "localhost", []byte{}, 27*time.Second)
 		if err != nil {
 			t.Errorf("Failed to connect to jobqueue: %s", err)
 		}
+		if jq.ServerInfo.Mode != "started" {
+			t.Errorf("Jobqueue not started, current mode : %s", jq.ServerInfo.Mode)
+		} else {
+			t.Logf("jobqueue server mode: %s", jq.ServerInfo.Mode)
+		}
 
-		t.Logf("jobqueue server mode: %s", jq.ServerInfo.Mode)
 		t.Logf("Deployment Controller test passed")
 	}
-}
-
-func TestJQMode(t *testing.T) {
-	if skip {
-		t.Skip("skipping test; failed to access cluster")
-	}
-
 }
