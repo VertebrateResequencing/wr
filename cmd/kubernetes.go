@@ -20,6 +20,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
@@ -600,15 +601,7 @@ and accessible.`,
 			}
 		}
 
-		if serverHadProblems {
-			warn("Problems were had")
-		}
-
 		// cat logfiles and write to disk.
-		log, _, err := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
-		if err != nil {
-			warn("error retrieving log file: %s", err)
-		}
 		kubeSchedulerLog, _, err := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/kubeSchedulerLog"})
 		if err != nil {
 			warn("error retrieving kubeSchedulerLog file: %s", err)
@@ -619,10 +612,6 @@ and accessible.`,
 		}
 
 		// Write logs to file
-		err = ioutil.WriteFile(config.ManagerDir+"/log", []byte(log), 0644)
-		if err != nil {
-			warn("failed to write log to file: %s", err)
-		}
 		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0644)
 		if err != nil {
 			warn("failed to write kubeSchedulerLog to file: %s", err)
@@ -630,6 +619,37 @@ and accessible.`,
 		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerControllerLog", []byte(kubeSchedulerControllerLog), 0644)
 		if err != nil {
 			warn("failed to write kubeSchedulerControllerLog to file: %s", err)
+		}
+
+		// Get the unified log last, so we can scan it.
+		log, _, errl := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
+		if errl != nil {
+			warn("error retrieving log file: %s", errl)
+		}
+		errf := ioutil.WriteFile(config.ManagerDir+"/log", []byte(log), 0644)
+		if errf != nil {
+			warn("failed to write log to file: %s", errf)
+		}
+		// Scan the log file for critical errors
+		if errf == nil && errl == nil {
+			f, errfo := os.Open(config.ManagerDir + "/log")
+			if errfo == nil {
+				explained := false
+				scanner := bufio.NewScanner(f)
+				for scanner.Scan() {
+					line := scanner.Text()
+					if strings.Contains(line, "lvl=crit") {
+						if !explained {
+							warn("looks like the manager on the remote server suffered critical errors:")
+							explained = true
+						}
+						fmt.Println(line)
+					}
+				}
+				if serverHadProblems {
+					info("the remote manager log has been saved to %s", config.ManagerDir+"/log")
+				}
+			}
 		}
 
 		// teardown kubernetes resources we created
@@ -787,24 +807,3 @@ func openResources(resourcePath string) (*cloud.Resources, error) {
 
 	return resources, err
 }
-
-// func getLog(command []string, podName string, containerName string, namespace
-// string) {
-//  stdOut := new(client.Writer)
-//  stdErr := new(client.Writer)
-//  opts := &client.CmdOptions{
-//      Command: command,
-//      StreamOptions: client.StreamOptions{
-//          PodName:       podName,
-//          ContainerName: containerName,
-//          Out:           stdOut,
-//          Err:           stdErr,
-//      },
-//  }
-
-// 	// Exec the command in the pod
-
-// 	// If the exec call failed, return the error _, _, err := p.ExecCmd(opts,
-// 	namespace) if err != nil {
-
-// 	}}
