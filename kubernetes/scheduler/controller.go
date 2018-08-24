@@ -87,7 +87,7 @@ type Controller struct {
 	log15.Logger
 }
 
-// ScheduleOpts stores options  for the scheduler
+// ScheduleOpts stores options  for the scheduler.
 type ScheduleOpts struct {
 	Files        []client.FilePair  // Files to copy to each spawned runner. Potentially listen on a channel later.
 	CbChan       chan string        // Channel to send errors on
@@ -110,7 +110,7 @@ type Request struct {
 }
 
 // Response contains relevant information for responding to a Request from
-// reqCheck()
+// reqCheck().
 type Response struct {
 	Error     error
 	Ephemeral bool // indicate if ephemeral storage is enabled
@@ -126,7 +126,7 @@ type PodAlive struct {
 
 type nodeName string
 
-// NewController returns a new scheduler controller
+// NewController returns a new scheduler controller.
 func NewController(
 	kubeclientset kubernetes.Interface,
 	restconfig *rest.Config,
@@ -183,7 +183,6 @@ func NewController(
 						return
 					}
 					controller.workqueue.Add(key)
-
 				},
 				DeleteFunc: func(obj interface{}) {
 					pod, ok := obj.(*corev1.Pod)
@@ -243,9 +242,10 @@ func NewController(
 	return controller
 }
 
-// Run sets up event handlers, synces informer caches and starts workers. It
+// Run sets up event handlers, syncs informer caches and starts workers. It
 // blocks until stopCh is closed, at which point it'll shut down workqueue and
-// wait for workers to finish processing.
+// wait for workers to finish processing. Threadiness determines how many
+// workers, pod alive and req check handlers to run.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	c.Logger = c.opts.Logger.New("schedulerController", "kubernetes")
 	kubeLogFile := filepath.Join(c.opts.ManagerDir, kubeSchedulerControllerLog)
