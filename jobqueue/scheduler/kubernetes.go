@@ -59,6 +59,7 @@ type k8s struct {
 	badServerCB     BadServerCallBack
 	es              bool // Does the cluster support ephemeral storage reporting?
 	esmutex         *sync.RWMutex
+	stopCh          chan struct{}
 	log15.Logger
 }
 
@@ -257,14 +258,15 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	// Create the controller
 	controller := kubescheduler.NewController(kubeClient, restConfig, s.libclient, kubeInformerFactory, opts)
 	s.Debug("Controller contents", "contents", controller)
-	stopCh := make(chan struct{})
 
-	go kubeInformerFactory.Start(stopCh)
+	s.stopCh = make(chan struct{})
+
+	go kubeInformerFactory.Start(s.stopCh)
 
 	// Start the scheduling controller
 	s.Debug("Starting scheduling controller")
 	go func() {
-		if err = controller.Run(2, stopCh); err != nil {
+		if err = controller.Run(2, s.stopCh); err != nil {
 			s.Error("Error running controller", "error", err.Error())
 		}
 	}()
@@ -358,12 +360,14 @@ func (s *k8s) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	// Stop the job queue
 	s.cleaned = true
 	err := s.queue.Destroy()
 	if err != nil {
 		s.Warn("cleanup queue destruction failed", "err", err)
 	}
-
+	// Stop the scheduler controller
+	close(s.stopCh)
 }
 
 // This should work out how many pods with given resource requests can be
