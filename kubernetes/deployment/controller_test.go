@@ -93,7 +93,6 @@ func TestDeploy(t *testing.T) {
 		configMountPath string
 		configMapData   string
 		requiredPorts   []int
-		resourcePath    string
 	}{
 		{
 			containerImage:  "ubuntu:latest",
@@ -102,7 +101,6 @@ func TestDeploy(t *testing.T) {
 			configMountPath: "/scripts/",
 			configMapData:   "echo \"hello world\"",
 			requiredPorts:   []int{8080, 8081},
-			resourcePath:    "/tmp/resources",
 		},
 	}
 	for _, c := range cases {
@@ -134,6 +132,14 @@ func TestDeploy(t *testing.T) {
 		// Now the deployment will be waiting for an attach to copy the binary
 		// to boot from.
 
+		dir, err = ioutil.TempDir("", "deploy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(dir) // clean up
+
+		resourcepath := dir + "/resources"
+
 		// Create empty resource file:
 		resources := &cloud.Resources{
 			ResourceName: "Kubernetes",
@@ -141,9 +147,9 @@ func TestDeploy(t *testing.T) {
 			PrivateKey:   "",
 			Servers:      make(map[string]*cloud.Server)}
 
-		file, err := os.OpenFile(c.resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		file, err := os.OpenFile(resourcepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
-			t.Error(fmt.Errorf("failed to open resource file %s for writing: %s", c.resourcePath, err))
+			t.Error(fmt.Errorf("failed to open resource file %s for writing: %s", resourcepath, err))
 		}
 
 		encoder := gob.NewEncoder(file)
@@ -151,13 +157,6 @@ func TestDeploy(t *testing.T) {
 		if err != nil {
 			t.Error(fmt.Errorf("Failed to encode resource file: %s", err))
 		}
-
-		dir, err = ioutil.TempDir("", "deploy")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		defer os.RemoveAll(dir) // clean up
 
 		// Generate certs
 		caFile := dir + "/ca.pem"
@@ -172,7 +171,7 @@ func TestDeploy(t *testing.T) {
 		dc.Opts = &kubedeployment.DeployOpts{
 			Files:         []client.FilePair{{"/tmp/wr", "/wr-tmp/"}, {caFile, wrDir}, {certFile, wrDir}, {keyFile, wrDir}},
 			RequiredPorts: c.requiredPorts,
-			ResourcePath:  c.resourcePath,
+			ResourcePath:  resourcepath,
 			Logger:        log15.New(),
 		}
 
