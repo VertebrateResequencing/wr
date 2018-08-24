@@ -293,6 +293,11 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		return err
 	}
 
+	/* This needs to be in a goroutine as io.Pipe() blocks until each write has
+	been read. If I wait, p.AttachCmd(opts) will never get executed, and I've
+	got a deadlock. I could try reversing it, calling AttachCmd (that will also
+	block) in a goroutine, and then this normally? */
+
 	stdOut := new(Writer)
 	stdErr := new(Writer)
 
