@@ -53,6 +53,8 @@ var maxServers int
 var maxLocalCores int
 var maxLocalRAM int
 
+const kubernetes = "kubernetes"
+
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
 	Use:   "manager",
@@ -147,7 +149,7 @@ fully.`,
 			die("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
 		}
 
-		if scheduler == "kubernetes" {
+		if scheduler == kubernetes {
 			if len(kubeNamespace) == 0 {
 				die("namespace must be specified when using the kubernetes scheduler")
 			}
@@ -543,7 +545,7 @@ func startJQ(postCreation []byte) {
 			DNSNameServers:       strings.Split(cloudDNS, ","),
 		}
 		serverCIDR = cloudCIDR
-	case "kubernetes":
+	case kubernetes:
 		schedulerConfig = &jqs.ConfigKubernetes{
 			Image:              osPrefix,
 			PostCreationScript: postCreation,
@@ -568,7 +570,7 @@ func startJQ(postCreation []byte) {
 			cloudConfig.AddConfigFile(config.ManagerCAFile + ":~/.wr_" + config.Deployment + "/ca.pem")
 		}
 
-		if scheduler != "kubernetes" {
+		if scheduler != kubernetes {
 			// also check that we're actually in the cloud, or this is not going to
 			// work
 			provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
