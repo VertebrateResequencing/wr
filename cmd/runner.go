@@ -20,7 +20,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -88,6 +87,7 @@ complete.`,
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
 		var envOverrides []string
+		var exePath string
 		if rserver != "" {
 			hostPort := strings.Split(rserver, ":")
 			if len(hostPort) == 2 {
@@ -96,13 +96,12 @@ complete.`,
 			}
 			envOverrides = append(envOverrides, "WR_MANAGERCERTDOMAIN="+rdomain)
 
-			// add our own wr exe to the path in case its not there
+			// later we will add our own wr exe to the path if not there
 			exe, err := osext.Executable()
 			if err != nil {
 				die("%s", err)
 			}
-			exePath := filepath.Dir(exe)
-			envOverrides = append(envOverrides, "PATH="+os.Getenv("PATH")+":"+exePath)
+			exePath = filepath.Dir(exe)
 		}
 
 		// we'll stop the below loop before using up too much time
@@ -146,6 +145,26 @@ complete.`,
 
 			// actually run the cmd
 			if len(envOverrides) > 0 {
+				// add exePath to this job's PATH
+				env, erre := job.Env()
+				if erre != nil {
+					err = jq.Release(job, nil, "failed to read job's Env")
+					if err != nil {
+						warn("job release after Env() fail: %s", erre)
+					}
+					exitReason = "Env failed"
+					break
+				}
+				for _, envvar := range env {
+					pair := strings.Split(envvar, "=")
+					if pair[0] == "PATH" {
+						if !strings.Contains(pair[1], exePath) {
+							envOverrides = append(envOverrides, envvar+":"+exePath)
+						}
+						break
+					}
+				}
+
 				err = job.EnvAddOverride(envOverrides)
 				if err != nil {
 					err = jq.Release(job, nil, "failed to add env var overrides")
