@@ -628,6 +628,9 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		CloudOSRam:    urlStringToInt(r.Form.Get("cloud_ram")),
 		BsubMode:      r.Form.Get("bsub_mode"),
 	}
+	if jd.RepGrp == "" {
+		jd.RepGrp = "manually_added"
+	}
 	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true
 	}
