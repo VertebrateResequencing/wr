@@ -164,10 +164,41 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 				Accessor: accessor,
 				Write:    true,
 			}
+			muxfys.SetLogHandler(l.GetHandler())
+
+			// first do a quick 0 retries mount, write and delete to make sure
+			// the S3 credentials etc. are correct (we only really pick up an
+			// error when trying to delete a file)
 			cfg := &muxfys.Config{
 				Mount:   mnt,
-				Retries: 10,
+				Retries: 0,
 			}
+			fs, err = muxfys.New(cfg)
+			if err != nil {
+				return nil, "", err
+			}
+			err = fs.Mount(remoteConfig)
+			if err != nil {
+				return nil, "", err
+			}
+			fs.UnmountOnDeath()
+
+			testPath := bkPath + ".test"
+			f, err := os.Create(testPath)
+			if err != nil {
+				fs.Unmount(true)
+				return nil, "", fmt.Errorf("could not write to S3 backup location")
+			}
+			f.Close()
+			err = os.Remove(testPath)
+			if err != nil {
+				fs.Unmount(true)
+				return nil, "", fmt.Errorf("could not use S3 backup location")
+			}
+
+			// now remount with more retries allowed
+			fs.Unmount(true)
+			cfg.Retries = 10
 			fs, err = muxfys.New(cfg)
 			if err != nil {
 				return nil, "", err
