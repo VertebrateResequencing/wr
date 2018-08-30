@@ -4,16 +4,18 @@ go:
   - "1.10.3"
 # import forks to the correct location
 go_import_path: github.com/VertebrateResequencing/wr
+env:
+  - WR_MANAGERPORT="11301"
 before_install:
   - go get github.com/modocache/gover
   - go get github.com/mattn/goveralls
   - go get github.com/Masterminds/glide
   - $HOME/gopath/bin/glide -q install
 script:
-  - go test -tags netgo -v -coverprofile=queue.coverprofile -covermode count ./queue
-  - go test -tags netgo -v -coverprofile=sched.coverprofile -covermode count ./jobqueue/scheduler
-  - WR_MANAGERPORT="11301" go test -tags netgo -v -coverprofile=jq.coverprofile -covermode count ./jobqueue
-  - go test -tags netgo -v -coverprofile=cloud.coverprofile -covermode count ./cloud
-  - go test -tags netgo -v -coverprofile=rp.coverprofile -covermode count ./rp
-  - $HOME/gopath/bin/gover
+  - go test -tags netgo -coverprofile=queue.coverprofile -covermode count -failfast ./queue || travis_terminate 1
+  - go test -tags netgo -coverprofile=sched.coverprofile -covermode count -failfast ./jobqueue/scheduler || travis_terminate 1
+  - go test -tags netgo -coverprofile=jq.coverprofile -covermode count -failfast ./jobqueue || travis_terminate 1
+  - go test -tags netgo -coverprofile=cloud.coverprofile -covermode count -failfast ./cloud || travis_terminate 1
+  - go test -tags netgo -coverprofile=rp.coverprofile -covermode count -failfast ./rp || travis_terminate 1
+  - $HOME/gopath/bin/gover || travis_terminate 1
   - $HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci
