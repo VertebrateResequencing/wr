@@ -394,7 +394,7 @@ func TestJobqueue(t *testing.T) {
 					job.EndTime = job.StartTime.Add(time.Duration(index+1) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
 				}
-				<-time.After(100 * time.Millisecond)
+				<-time.After(200 * time.Millisecond)
 				rmem, err := server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 100)
@@ -828,7 +828,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateDelayed)
 
-					<-time.After(60 * time.Millisecond)
+					<-time.After(80 * time.Millisecond)
 					job, err = jq.Reserve(5 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
@@ -1189,7 +1189,7 @@ func TestJobqueue(t *testing.T) {
 						So(job.State, ShouldEqual, JobStateComplete)
 						So(job.Exited, ShouldBeTrue)
 						So(job.Exitcode, ShouldEqual, 0)
-						So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()+(job.WallTime()/2))
+						So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()+(job.WallTime()/4))
 					})
 				}
 
@@ -2740,7 +2740,7 @@ func TestJobqueue(t *testing.T) {
 			// wait for the job to get killed
 			killed := make(chan bool, 1)
 			go func() {
-				limit := time.After(2 * time.Second)
+				limit := time.After(20 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
