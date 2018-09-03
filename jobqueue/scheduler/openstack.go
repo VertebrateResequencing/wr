@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -192,7 +193,7 @@ type standin struct {
 	configFiles    string // in cloud.Server.CopyOver() format
 	sharedDisk     bool
 	usedRAM        int
-	usedCores      int
+	usedCores      float64
 	usedDisk       int
 	mutex          sync.RWMutex
 	alreadyFailed  bool
@@ -236,7 +237,7 @@ func (s *standin) matches(os string, script []byte, configFiles string, flavor *
 func (s *standin) allocate(req *Requirements) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.usedCores += req.Cores
+	s.usedCores = internal.FloatAdd(s.usedCores, req.Cores)
 	s.usedRAM += req.RAM
 	s.usedDisk += req.Disk
 	s.Debug("allocate", "cores", req.Cores, "RAM", req.RAM, "disk", req.Disk, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
@@ -247,13 +248,15 @@ func (s *standin) hasSpaceFor(req *Requirements) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	cores := req.Cores
-	if cores == 0 {
-		cores = 1
-	}
-	if (s.flavor.Cores-s.usedCores < cores) || (s.flavor.RAM-s.usedRAM < req.RAM) || (s.disk-s.usedDisk < req.Disk) {
+	if internal.FloatLessThan(float64(s.flavor.Cores)-s.usedCores, cores) || (s.flavor.RAM-s.usedRAM < req.RAM) || (s.disk-s.usedDisk < req.Disk) {
 		return 0
 	}
-	canDo := (s.flavor.Cores - s.usedCores) / cores
+	var canDo int
+	if cores > 0 {
+		canDo = int(math.Floor(internal.FloatSubtract(float64(s.flavor.Cores), s.usedCores) / cores))
+	} else {
+		canDo = maxZeroCoreJobs
+	}
 	if canDo > 1 {
 		var n int
 		if req.RAM > 0 {
@@ -484,9 +487,9 @@ func (s *opst) reqCheck(req *Requirements) error {
 	reqForSpawn := s.reqForSpawn(req)
 
 	// check if possible vs quota
-	if reqForSpawn.RAM > s.quotaMaxRAM || reqForSpawn.Cores > s.quotaMaxCores || reqForSpawn.Disk > s.quotaMaxVolume {
+	if reqForSpawn.RAM > s.quotaMaxRAM || int(math.Ceil(reqForSpawn.Cores)) > s.quotaMaxCores || reqForSpawn.Disk > s.quotaMaxVolume {
 		s.Warn("Requested resources are greater than max quota", "quotaCores", s.quotaMaxCores, "requiredCores", reqForSpawn.Cores, "quotaRAM", s.quotaMaxRAM, "requiredRAM", reqForSpawn.RAM, "quotaDisk", s.quotaMaxVolume, "requiredDisk", reqForSpawn.Disk)
-		s.notifyMessage(fmt.Sprintf("OpenStack: not enough quota for the job needing %d cores, %d RAM and %d Disk", reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk))
+		s.notifyMessage(fmt.Sprintf("OpenStack: not enough quota for the job needing %f cores, %d RAM and %d Disk", reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk))
 		return Error{"openstack", "schedule", ErrImpossible}
 	}
 
@@ -498,9 +501,9 @@ func (s *opst) reqCheck(req *Requirements) error {
 
 		// check that the user hasn't requested a flavor that isn't actually big
 		// enough to run their job
-		if requestedFlavor.Cores < reqForSpawn.Cores || requestedFlavor.RAM < reqForSpawn.RAM {
+		if requestedFlavor.Cores < int(math.Ceil(reqForSpawn.Cores)) || requestedFlavor.RAM < reqForSpawn.RAM {
 			s.Warn("Requested flavor is too small for the job", "flavor", requestedFlavor.Name, "flavorCores", requestedFlavor.Cores, "requiredCores", reqForSpawn.Cores, "flavorRAM", requestedFlavor.RAM, "requiredRAM", reqForSpawn.RAM)
-			s.notifyMessage(fmt.Sprintf("OpenStack: requested flavor %s is too small for the job needing %d cores and %d RAM", requestedFlavor.Name, reqForSpawn.Cores, reqForSpawn.RAM))
+			s.notifyMessage(fmt.Sprintf("OpenStack: requested flavor %s is too small for the job needing %f cores and %d RAM", requestedFlavor.Name, reqForSpawn.Cores, reqForSpawn.RAM))
 			return Error{"openstack", "schedule", ErrImpossible}
 		}
 	} else {
@@ -524,7 +527,7 @@ func (s *opst) maxCPU() int {
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
 // amongst those that are capable of running it.
 func (s *opst) determineFlavor(req *Requirements) (*cloud.Flavor, error) {
-	flavor, err := s.provider.CheapestServerFlavor(req.Cores, req.RAM, s.config.FlavorRegex)
+	flavor, err := s.provider.CheapestServerFlavor(int(math.Ceil(req.Cores)), req.RAM, s.config.FlavorRegex)
 	if err != nil {
 		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
 			err = Error{"openstack", "determineFlavor", ErrImpossible}
@@ -711,7 +714,12 @@ func (s *opst) canCount(req *Requirements) int {
 	}
 
 	// finally, calculate how many reqs we can get running on that many servers
-	perServer := flavor.Cores / req.Cores
+	var perServer int
+	if req.Cores > 0 {
+		perServer = int(math.Floor(float64(flavor.Cores) / req.Cores))
+	} else {
+		perServer = maxZeroCoreJobs
+	}
 	if perServer > 1 {
 		var n int
 		if req.RAM > 0 {

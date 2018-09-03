@@ -394,7 +394,7 @@ func TestJobqueue(t *testing.T) {
 					job.EndTime = job.StartTime.Add(time.Duration(index+1) * time.Second)
 					server.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
 				}
-				<-time.After(100 * time.Millisecond)
+				<-time.After(200 * time.Millisecond)
 				rmem, err := server.db.recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 100)
@@ -496,43 +496,45 @@ func TestJobqueue(t *testing.T) {
 				})
 			})
 
-			Convey("You can subsequently add more jobs", func() {
-				for i := 10; i < 20; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "new_group", Requirements: &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 2}, Retries: uint8(3), RepGroup: "manually_added"})
-				}
-				inserts, already, err := jq.Add(jobs, envVars, true)
-				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, 10)
-				So(already, ShouldEqual, 10)
-
-				Convey("You can reserve jobs for a particular scheduler group", func() {
+			if runtime.NumCPU() >= 2 {
+				Convey("You can subsequently add more jobs", func() {
 					for i := 10; i < 20; i++ {
-						job, err := jq.ReserveScheduled(20*time.Millisecond, "2048:60:2:0")
-						So(err, ShouldBeNil)
-						So(job, ShouldNotBeNil)
-						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
+						jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "new_group", Requirements: &jqs.Requirements{RAM: 2048, Time: 1 * time.Hour, Cores: 2}, Retries: uint8(3), RepGroup: "manually_added"})
 					}
-					job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2:0")
+					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
-					So(job, ShouldBeNil)
+					So(inserts, ShouldEqual, 10)
+					So(already, ShouldEqual, 10)
 
-					for i := 9; i >= 0; i-- {
-						jid := i
-						if i == 7 {
-							jid = 4
-						} else if i == 4 {
-							jid = 7
+					Convey("You can reserve jobs for a particular scheduler group", func() {
+						for i := 10; i < 20; i++ {
+							job, err := jq.ReserveScheduled(20*time.Millisecond, "2048:60:2:0")
+							So(err, ShouldBeNil)
+							So(job, ShouldNotBeNil)
+							So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", i))
+						}
+						job, err := jq.ReserveScheduled(10*time.Millisecond, "2048:60:2:0")
+						So(err, ShouldBeNil)
+						So(job, ShouldBeNil)
+
+						for i := 9; i >= 0; i-- {
+							jid := i
+							if i == 7 {
+								jid = 4
+							} else if i == 4 {
+								jid = 7
+							}
+							job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
+							So(err, ShouldBeNil)
+							So(job, ShouldNotBeNil)
+							So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
 						}
 						job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
 						So(err, ShouldBeNil)
-						So(job, ShouldNotBeNil)
-						So(job.Cmd, ShouldEqual, fmt.Sprintf("test cmd %d", jid))
-					}
-					job, err = jq.ReserveScheduled(10*time.Millisecond, "1024:240:1:0")
-					So(err, ShouldBeNil)
-					So(job, ShouldBeNil)
+						So(job, ShouldBeNil)
+					})
 				})
-			})
+			}
 
 			Convey("You can add more jobs, but without any environment variables", func() {
 				server.racmutex.Lock()
@@ -826,7 +828,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateDelayed)
 
-					<-time.After(60 * time.Millisecond)
+					<-time.After(80 * time.Millisecond)
 					job, err = jq.Reserve(5 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
@@ -1167,27 +1169,29 @@ func TestJobqueue(t *testing.T) {
 					So(job.PeakRAM, ShouldBeGreaterThan, 500)
 				})
 
-				Convey("Jobs that fork and change processgroup have correct CPU time reported", func() {
-					jobs = nil
-					cmd := `perl -Mstrict -we 'my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { my $a = 2; for (1..10000000) { $a *= $a } exit 0; } waitpid $subpid, 0; exit 0; } my $b = 2; for (1..10000000) { $b *= $b } waitpid $pid, 0'`
-					jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
-					inserts, already, err := jq.Add(jobs, envVars, true)
-					So(err, ShouldBeNil)
-					So(inserts, ShouldEqual, 1)
-					So(already, ShouldEqual, 0)
+				if runtime.NumCPU() >= 2 {
+					Convey("Jobs that fork and change processgroup have correct CPU time reported", func() {
+						jobs = nil
+						cmd := `perl -Mstrict -we 'my $pid = fork; if ($pid == 0) { setpgrp; my $subpid = fork; if ($subpid == 0) { my $a = 2; for (1..10000000) { $a *= $a } exit 0; } waitpid $subpid, 0; exit 0; } my $b = 2; for (1..10000000) { $b *= $b } waitpid $pid, 0'`
+						jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "forker"})
+						inserts, already, err := jq.Add(jobs, envVars, true)
+						So(err, ShouldBeNil)
+						So(inserts, ShouldEqual, 1)
+						So(already, ShouldEqual, 0)
 
-					job, err := jq.Reserve(50 * time.Millisecond)
-					So(err, ShouldBeNil)
-					So(job.Cmd, ShouldEqual, cmd)
-					So(job.State, ShouldEqual, JobStateReserved)
+						job, err := jq.Reserve(50 * time.Millisecond)
+						So(err, ShouldBeNil)
+						So(job.Cmd, ShouldEqual, cmd)
+						So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
-					So(err, ShouldBeNil)
-					So(job.State, ShouldEqual, JobStateComplete)
-					So(job.Exited, ShouldBeTrue)
-					So(job.Exitcode, ShouldEqual, 0)
-					So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()+(job.WallTime()/2))
-				})
+						err = jq.Execute(job, config.RunnerExecShell)
+						So(err, ShouldBeNil)
+						So(job.State, ShouldEqual, JobStateComplete)
+						So(job.Exited, ShouldBeTrue)
+						So(job.Exitcode, ShouldEqual, 0)
+						So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()+(job.WallTime()/4))
+					})
+				}
 
 				Convey("The stdout/err of jobs is only kept for failed jobs, and cwd&TMPDIR&HOME get set appropriately", func() {
 					jobs = nil
@@ -2736,7 +2740,7 @@ func TestJobqueue(t *testing.T) {
 			// wait for the job to get killed
 			killed := make(chan bool, 1)
 			go func() {
-				limit := time.After(2 * time.Second)
+				limit := time.After(20 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
@@ -2840,6 +2844,156 @@ func TestJobqueue(t *testing.T) {
 					ranClean++
 				}
 				So(ranClean, ShouldEqual, maxCPU+1) // +1 for the runner exe
+			})
+		})
+
+		Convey("You can connect, and add some jobs with fractional CPU requirements", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			var jobs []*Job
+			count := maxCPU * 2
+			for i := 0; i < count; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0.5}, Retries: uint8(0), RepGroup: "manually_added"})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the jobs get automatically run", func() {
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				var simultaneous int
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							running, errj := jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+							if errj == nil && len(running) > simultaneous {
+								simultaneous = len(running)
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue) // we shouldn't have hit our time limit
+				So(simultaneous, ShouldBeGreaterThan, maxCPU)
+
+				jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, count)
+				ran := 0
+				for _, job := range jobs {
+					files, err := ioutil.ReadDir(job.ActualCwd)
+					if err != nil {
+						log.Fatal(err)
+					}
+					for range files {
+						ran++
+					}
+				}
+				So(ran, ShouldEqual, count)
+
+				files, err := ioutil.ReadDir(runnertmpdir)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ranClean := 0
+				for range files {
+					ranClean++
+				}
+				So(ranClean, ShouldEqual, count+1) // +1 for the runner exe
+			})
+		})
+
+		Convey("You can connect, and add some 0 CPU jobs, which are limited by memory", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			maxMem, errp := internal.ProcMeminfoMBs()
+			So(errp, ShouldBeNil)
+
+			var jobs []*Job
+			jobMB := int(math.Floor(float64(maxMem) / float64(maxCPU*2)))
+			count := maxCPU * 3
+			for i := 0; i < count; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "manually_added"})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			Convey("After some time the jobs get automatically run", func() {
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				var simultaneous int
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							running, errj := jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+							if errj == nil && len(running) > simultaneous {
+								simultaneous = len(running)
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue) // we shouldn't have hit our time limit
+				So(simultaneous, ShouldBeBetweenOrEqual, maxCPU, maxCPU*2)
+
+				jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, count)
+				ran := 0
+				for _, job := range jobs {
+					files, err := ioutil.ReadDir(job.ActualCwd)
+					if err != nil {
+						log.Fatal(err)
+					}
+					for range files {
+						ran++
+					}
+				}
+				So(ran, ShouldEqual, count)
 			})
 		})
 
@@ -3036,113 +3190,115 @@ func TestJobqueue(t *testing.T) {
 			SkipConvey("Skipping a test that needs at least 3 cores", func() {})
 		}
 
-		Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
-			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-			So(err, ShouldBeNil)
-			defer jq.Disconnect()
+		if runtime.NumCPU() >= 2 {
+			Convey("You can connect, and add 2 real jobs with the same reqs sequentially that run simultaneously", func() {
+				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+				So(err, ShouldBeNil)
+				defer jq.Disconnect()
 
-			jobs := []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 1), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}}
+				jobs := []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 1), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}}
 
-			inserts, already, err := jq.Add(jobs, envVars, true)
-			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 1)
-			So(already, ShouldEqual, 0)
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
 
-			// wait for this first command to start running
-			running := make(chan bool, 1)
-			go func() {
-				limit := time.After(30 * time.Second)
-				ticker := time.NewTicker(500 * time.Millisecond)
-				for {
-					select {
-					case <-ticker.C:
-						pids, errf := process.Pids()
-						if errf == nil {
-							for _, pid := range pids {
-								p, errf := process.NewProcess(pid)
-								if errf == nil {
-									cmd, errf := p.Cmdline()
+				// wait for this first command to start running
+				running := make(chan bool, 1)
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							pids, errf := process.Pids()
+							if errf == nil {
+								for _, pid := range pids {
+									p, errf := process.NewProcess(pid)
 									if errf == nil {
-										if strings.Contains(cmd, runnertmpdir+"2sim") {
-											status, errf := p.Status()
-											if errf == nil && status == "S" {
-												ticker.Stop()
-												running <- true
-												return
+										cmd, errf := p.Cmdline()
+										if errf == nil {
+											if strings.Contains(cmd, runnertmpdir+"2sim") {
+												status, errf := p.Status()
+												if errf == nil && status == "S" {
+													ticker.Stop()
+													running <- true
+													return
+												}
 											}
 										}
 									}
 								}
 							}
-						}
-						if !server.HasRunners() {
+							if !server.HasRunners() {
+								ticker.Stop()
+								running <- false
+								return
+							}
+							continue
+						case <-limit:
 							ticker.Stop()
 							running <- false
 							return
 						}
-						continue
-					case <-limit:
-						ticker.Stop()
-						running <- false
-						return
 					}
-				}
-			}()
-			So(<-running, ShouldBeTrue)
+				}()
+				So(<-running, ShouldBeTrue)
 
-			jobs = []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 2), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}}
+				jobs = []*Job{{Cmd: fmt.Sprintf("perl -e 'print q[%s2sim%d]; sleep(5);'", runnertmpdir, 2), Cwd: runnertmpdir, ReqGroup: "perl2sim", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}}
 
-			inserts, already, err = jq.Add(jobs, envVars, true)
-			So(err, ShouldBeNil)
-			So(inserts, ShouldEqual, 1)
-			So(already, ShouldEqual, 0)
+				inserts, already, err = jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
 
-			// wait for the jobs to get run, and while waiting we'll check to
-			// see if we get both of our commands running at once
-			numRanSimultaneously := make(chan int, 1)
-			go func() {
-				limit := time.After(30 * time.Second)
-				ticker := time.NewTicker(500 * time.Millisecond)
-				maxSimultaneous := 0
-				for {
-					select {
-					case <-ticker.C:
-						pids, err := process.Pids()
-						if err == nil {
-							simultaneous := 0
-							for _, pid := range pids {
-								p, err := process.NewProcess(pid)
-								if err == nil {
-									cmd, err := p.Cmdline()
+				// wait for the jobs to get run, and while waiting we'll check to
+				// see if we get both of our commands running at once
+				numRanSimultaneously := make(chan int, 1)
+				go func() {
+					limit := time.After(30 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					maxSimultaneous := 0
+					for {
+						select {
+						case <-ticker.C:
+							pids, err := process.Pids()
+							if err == nil {
+								simultaneous := 0
+								for _, pid := range pids {
+									p, err := process.NewProcess(pid)
 									if err == nil {
-										if strings.Contains(cmd, runnertmpdir+"2sim") {
-											status, err := p.Status()
-											if err == nil && status == "S" {
-												simultaneous++
+										cmd, err := p.Cmdline()
+										if err == nil {
+											if strings.Contains(cmd, runnertmpdir+"2sim") {
+												status, err := p.Status()
+												if err == nil && status == "S" {
+													simultaneous++
+												}
 											}
 										}
 									}
 								}
+								if simultaneous > maxSimultaneous {
+									maxSimultaneous = simultaneous
+								}
 							}
-							if simultaneous > maxSimultaneous {
-								maxSimultaneous = simultaneous
+							if !server.HasRunners() {
+								ticker.Stop()
+								numRanSimultaneously <- maxSimultaneous
+								return
 							}
-						}
-						if !server.HasRunners() {
+							continue
+						case <-limit:
 							ticker.Stop()
 							numRanSimultaneously <- maxSimultaneous
 							return
 						}
-						continue
-					case <-limit:
-						ticker.Stop()
-						numRanSimultaneously <- maxSimultaneous
-						return
 					}
-				}
-			}()
-			So(<-numRanSimultaneously, ShouldEqual, 2)
-		})
+				}()
+				So(<-numRanSimultaneously, ShouldEqual, 2)
+			})
+		}
 
 		Convey("You can connect, and add 2 large batches of jobs sequentially", func() {
 			// if possible, we want these tests to use the LSF scheduler which
@@ -3533,6 +3689,46 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
 
+			Convey("You can run cmds that have fractional or 0 CPU requirements simultaneously on 1 CPU", func() {
+				var jobs []*Job
+				jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 1", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.9, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 2", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.1, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 3", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 3)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				var simultaneous int
+				go func() {
+					limit := time.After(10 * time.Second)
+					ticker := time.NewTicker(50 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							running, errj := jq.GetByRepGroup("fraction", false, 0, JobStateRunning, false, false)
+							if errj == nil && len(running) > simultaneous {
+								simultaneous = len(running)
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+				So(simultaneous, ShouldEqual, 3)
+			})
+
 			Convey("You can run cmds that start docker containers and get correct memory and cpu usage", func() {
 				var jobs []*Job
 				other := make(map[string]string)
@@ -3585,7 +3781,7 @@ sudo usermod -aG docker ` + osUser
 				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
-				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 15*time.Second)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
 				So(got[0].CPUtime, ShouldBeLessThan, 4*time.Second)
 
 				got, err = jq.GetByRepGroup("named_docker", false, 0, JobStateComplete, false, false)
@@ -3597,7 +3793,7 @@ sudo usermod -aG docker ` + osUser
 				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeLessThan, 100)
-				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 15*time.Second)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
 				So(got[0].CPUtime, ShouldBeGreaterThan, 5*time.Second)
 
 				// *** want to test that when we kill a running job, its docker
@@ -3733,8 +3929,8 @@ sudo usermod -aG docker ` + osUser
 				server.scheduler.SetBadServerCallBack(badServerCB)
 
 				var jobs []*Job
-				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: cores, Disk: 0}
-				schedGrp := fmt.Sprintf("%d:60:%d:0", flavor.RAM, cores)
+				req := &jqs.Requirements{RAM: flavor.RAM, Time: 1 * time.Hour, Cores: float64(cores), Disk: 0}
+				schedGrp := fmt.Sprintf("%d:60:%f:0", flavor.RAM, float64(cores))
 				jobs = append(jobs, &Job{Cmd: "sleep 300", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 				jobs = append(jobs, &Job{Cmd: "sleep 301", Cwd: "/tmp", ReqGroup: "sleep", Requirements: req, Retries: uint8(1), Override: uint8(2), RepGroup: "sleep"})
 				inserts, already, err := jq.Add(jobs, envVars, true)
@@ -3752,6 +3948,11 @@ sudo usermod -aG docker ` + osUser
 						case <-ticker.C:
 							if server.HasRunners() {
 								running, errf := jq.GetByRepGroup("sleep", false, 0, JobStateRunning, false, false)
+								if errf != nil {
+									ticker.Stop()
+									started <- false
+									return
+								}
 								complete, errf := jq.GetByRepGroup("sleep", false, 0, JobStateComplete, false, false)
 								if errf != nil {
 									ticker.Stop()

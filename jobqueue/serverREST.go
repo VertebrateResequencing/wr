@@ -60,8 +60,8 @@ type JobViaJSON struct {
 	// Memory is a number and unit suffix, eg. 1G for 1 Gigabyte.
 	Memory string `json:"memory"`
 	// Time is a duration with a unit suffix, eg. 1h for 1 hour.
-	Time string `json:"time"`
-	CPUs *int   `json:"cpus"`
+	Time string   `json:"time"`
+	CPUs *float64 `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
 	Disk             *int              `json:"disk"`
 	Override         *int              `json:"override"`
@@ -95,8 +95,8 @@ type JobDefaults struct {
 	CwdMatters bool
 	ChangeHome bool
 	ReqGrp     string
-	// CPUs is the number of CPU cores each cmd will use. Defaults to 1.
-	CPUs int
+	// CPUs is the number of CPU cores each cmd will use.
+	CPUs float64
 	// Memory is the number of Megabytes each cmd will use. Defaults to 1000.
 	Memory int
 	// Time is the amount of time each cmd will run for. Defaults to 1 hour.
@@ -139,10 +139,10 @@ func (jd *JobDefaults) DefaultCwd() string {
 	return jd.Cwd
 }
 
-// DefaultCPUs returns the CPUs value, but a minimum of 1.
-func (jd *JobDefaults) DefaultCPUs() int {
-	if jd.CPUs < 1 {
-		return 1
+// DefaultCPUs returns the CPUs value, but a minimum of 0.
+func (jd *JobDefaults) DefaultCPUs() float64 {
+	if jd.CPUs < 0 {
+		return 0
 	}
 	return jd.CPUs
 }
@@ -190,7 +190,8 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // to a method that adds jobs to the queue.
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var cmd, cwd, rg, repg, monitorDocker string
-	var mb, cpus, disk, override, priority, retries int
+	var mb, disk, override, priority, retries int
+	var cpus float64
 	var dur time.Duration
 	var envOverride []byte
 	var depGroups []string
@@ -612,7 +613,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		Cwd:           r.Form.Get("cwd"),
 		RepGrp:        r.Form.Get("rep_grp"),
 		ReqGrp:        r.Form.Get("req_grp"),
-		CPUs:          urlStringToInt(r.Form.Get("cpus")),
+		CPUs:          urlStringToFloat(r.Form.Get("cpus")),
 		Disk:          urlStringToInt(r.Form.Get("disk")),
 		Override:      urlStringToInt(r.Form.Get("override")),
 		Priority:      urlStringToInt(r.Form.Get("priority")),
@@ -626,6 +627,9 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		CloudFlavor:   r.Form.Get("cloud_flavor"),
 		CloudOSRam:    urlStringToInt(r.Form.Get("cloud_ram")),
 		BsubMode:      r.Form.Get("bsub_mode"),
+	}
+	if jd.RepGrp == "" {
+		jd.RepGrp = "manually_added"
 	}
 	if r.Form.Get("cwd_matters") == restFormTrue {
 		jd.CwdMatters = true
@@ -649,6 +653,10 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+	}
+	var rerun bool
+	if r.Form.Get("rerun") == restFormTrue {
+		rerun = true
 	}
 	defaultDeps := urlStringToSlice(r.Form.Get("deps"))
 	if len(defaultDeps) > 0 {
@@ -719,7 +727,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 		return nil, http.StatusInternalServerError, err
 	}
 
-	_, _, _, _, err = s.createJobs(inputJobs, envkey, true)
+	_, _, _, _, err = s.createJobs(inputJobs, envkey, !rerun)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
@@ -882,6 +890,20 @@ func urlStringToInt(value string) int {
 		return 0
 	}
 	num, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return num
+}
+
+// urlStringToFloat takes a possible string from a url parameter value and
+// converts it to a float64. If the value is "", or if the value isn't a number,
+// returns 0.
+func urlStringToFloat(value string) float64 {
+	if value == "" {
+		return 0
+	}
+	num, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return 0
 	}

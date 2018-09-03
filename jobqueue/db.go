@@ -38,10 +38,10 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/internal"
-	bolt "github.com/coreos/bbolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -164,6 +164,8 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 				Accessor: accessor,
 				Write:    true,
 			}
+			muxfys.SetLogHandler(l.GetHandler())
+
 			cfg := &muxfys.Config{
 				Mount:   mnt,
 				Retries: 10,

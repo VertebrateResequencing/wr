@@ -137,6 +137,9 @@ managerdbfile: "db"
 # Credential specification is as per `wr mount -h` (basically, have an ~/.s3cfg
 # file). Ensure that only you have read permission for the S3 location you
 # specify.
+# NB: for S3 backups to work, you must be able to carry out fuse mounts, which
+# means fuse-utils must be installed, and /etc/fuse.conf should have
+# user_allow_other set.
 #
 # Note that you may need quite a lot of disk space for this, as when a
 # new backup starts it is written to a temp file in the directory you specify

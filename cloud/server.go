@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,7 @@ import (
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
 const sshShortTimeOut = 5 * time.Second
+const maxZeroCoreJobs = 1000000 // the maxmimum number of jobs a server has space for when cores request is 0
 
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration
@@ -83,7 +85,7 @@ type Server struct {
 	sshClientConfig   *ssh.ClientConfig
 	sshClients        []*ssh.Client
 	sshClientState    []bool
-	usedCores         int
+	usedCores         float64
 	usedDisk          int
 	usedRAM           int
 	homeDir           string
@@ -103,10 +105,10 @@ func (s *Server) Matches(os string, script []byte, configFiles string, flavor *F
 
 // Allocate records that the given resources have now been used up on this
 // server.
-func (s *Server) Allocate(cores, ramMB, diskGB int) {
+func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.usedCores += cores
+	s.usedCores = internal.FloatAdd(s.usedCores, cores)
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
@@ -119,10 +121,10 @@ func (s *Server) Allocate(cores, ramMB, diskGB int) {
 }
 
 // Release records that the given resources have now been freed.
-func (s *Server) Release(cores, ramMB, diskGB int) {
+func (s *Server) Release(cores float64, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.usedCores -= cores
+	s.usedCores = internal.FloatSubtract(s.usedCores, cores)
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
 	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
@@ -172,13 +174,18 @@ func (s *Server) Release(cores, ramMB, diskGB int) {
 // HasSpaceFor considers the current usage (according to prior Allocation calls)
 // and tells you how many of a cmd needing the given resources can run on this
 // server.
-func (s *Server) HasSpaceFor(cores, ramMB, diskGB int) int {
+func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	if (s.Flavor.Cores-s.usedCores < cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
+	if internal.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
-	canDo := (s.Flavor.Cores - s.usedCores) / cores
+	var canDo int
+	if cores > 0 {
+		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
+	} else {
+		canDo = maxZeroCoreJobs
+	}
 	if canDo > 1 {
 		var n int
 		if ramMB > 0 {

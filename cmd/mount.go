@@ -65,6 +65,11 @@ NB: if you are writing to your mount point, it's very important to kill it
 cleanly using one of these methods once you're done, since uploads only occur
 when you do this!
 
+For mounting to work, you must be able to carry out fuse mounts, which means
+fuse-utils must be installed, and /etc/fuse.conf should have user_allow_other
+set. An easy way to enable it is to run:
+sudo perl -i -pne 's/#user_allow_other/user_allow_other/;' /etc/fuse.conf
+
 
 --mounts is a convenience option that lets you specify your mounts in the common
 case that you wish the contents of 1 or more remote directories to be accessible

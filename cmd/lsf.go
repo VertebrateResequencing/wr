@@ -140,7 +140,7 @@ var lsfBsubCmd = &cobra.Command{
 					case "J":
 						job.RepGroup = matches[2]
 					case "n":
-						if n, err := strconv.Atoi(matches[2]); err == nil {
+						if n, err := strconv.ParseFloat(matches[2], 64); err == nil {
 							job.Requirements.Cores = n
 						}
 					case "M":
