@@ -38,10 +38,10 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/internal"
-	bolt "github.com/coreos/bbolt"
 	"github.com/hashicorp/golang-lru"
 	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -166,39 +166,10 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 			}
 			muxfys.SetLogHandler(l.GetHandler())
 
-			// first do a quick 0 retries mount, write and delete to make sure
-			// the S3 credentials etc. are correct (we only really pick up an
-			// error when trying to delete a file)
 			cfg := &muxfys.Config{
 				Mount:   mnt,
-				Retries: 0,
+				Retries: 10,
 			}
-			fs, err = muxfys.New(cfg)
-			if err != nil {
-				return nil, "", err
-			}
-			err = fs.Mount(remoteConfig)
-			if err != nil {
-				return nil, "", err
-			}
-			fs.UnmountOnDeath()
-
-			testPath := bkPath + ".test"
-			f, err := os.Create(testPath)
-			if err != nil {
-				fs.Unmount(true)
-				return nil, "", fmt.Errorf("could not write to S3 backup location")
-			}
-			f.Close()
-			err = os.Remove(testPath)
-			if err != nil {
-				fs.Unmount(true)
-				return nil, "", fmt.Errorf("could not use S3 backup location")
-			}
-
-			// now remount with more retries allowed
-			fs.Unmount(true)
-			cfg.Retries = 10
 			fs, err = muxfys.New(cfg)
 			if err != nil {
 				return nil, "", err

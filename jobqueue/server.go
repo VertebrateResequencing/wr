@@ -400,10 +400,39 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		msg = certMsg
 	}
 
+	// we need to persist stuff to disk, and we do so using boltdb
+	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
+	if certMsg != "" {
+		if msg == "" {
+			msg = certMsg
+		} else {
+			msg = certMsg + ". " + msg
+		}
+	}
+	if err != nil {
+		return s, msg, token, err
+	}
+	defer func() {
+		if err != nil {
+			errc := db.close()
+			if errc != nil {
+				err = fmt.Errorf("%s; db close also failed: %s\n", err.Error(), errc.Error())
+			}
+		}
+	}()
+
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return s, msg, token, err
 	}
+	defer func() {
+		if err != nil {
+			errc := sock.Close()
+			if errc != nil {
+				err = fmt.Errorf("%s; socket close also failed: %s\n", err.Error(), errc.Error())
+			}
+		}
+	}()
 
 	// we open ourselves up to possible denial-of-service attack if a client
 	// sends us tons of data, but at least the client doesn't silently hang
@@ -470,19 +499,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// we will spawn runner clients via the requested job scheduler
 	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig, serverLogger)
-	if err != nil {
-		return s, msg, token, err
-	}
-
-	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
-	if certMsg != "" {
-		if msg == "" {
-			msg = certMsg
-		} else {
-			msg = certMsg + ". " + msg
-		}
-	}
 	if err != nil {
 		return s, msg, token, err
 	}
