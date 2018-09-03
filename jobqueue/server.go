@@ -412,11 +412,27 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	if err != nil {
 		return s, msg, token, err
 	}
+	defer func() {
+		if err != nil {
+			errc := db.close()
+			if errc != nil {
+				err = fmt.Errorf("%s; db close also failed: %s\n", err.Error(), errc.Error())
+			}
+		}
+	}()
 
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return s, msg, token, err
 	}
+	defer func() {
+		if err != nil {
+			errc := sock.Close()
+			if errc != nil {
+				err = fmt.Errorf("%s; socket close also failed: %s\n", err.Error(), errc.Error())
+			}
+		}
+	}()
 
 	// we open ourselves up to possible denial-of-service attack if a client
 	// sends us tons of data, but at least the client doesn't silently hang
