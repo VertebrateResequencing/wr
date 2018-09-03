@@ -3691,9 +3691,9 @@ sudo usermod -aG docker ` + osUser
 
 			Convey("You can run cmds that have fractional or 0 CPU requirements simultaneously on 1 CPU", func() {
 				var jobs []*Job
-				jobs = append(jobs, &Job{Cmd: "sleep 2", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.9, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
-				jobs = append(jobs, &Job{Cmd: "sleep 3", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.1, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
-				jobs = append(jobs, &Job{Cmd: "sleep 4", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 1", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.9, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 2", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0.1, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
+				jobs = append(jobs, &Job{Cmd: "sleep 4 && echo 3", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1024, Time: 1 * time.Hour, Cores: 0, Disk: 0}, Retries: uint8(0), RepGroup: "fraction"})
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
 				So(inserts, ShouldEqual, 3)
@@ -3781,7 +3781,7 @@ sudo usermod -aG docker ` + osUser
 				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
-				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 15*time.Second)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
 				So(got[0].CPUtime, ShouldBeLessThan, 4*time.Second)
 
 				got, err = jq.GetByRepGroup("named_docker", false, 0, JobStateComplete, false, false)
@@ -3793,7 +3793,7 @@ sudo usermod -aG docker ` + osUser
 				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeLessThan, 100)
-				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 15*time.Second)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
 				So(got[0].CPUtime, ShouldBeGreaterThan, 5*time.Second)
 
 				// *** want to test that when we kill a running job, its docker

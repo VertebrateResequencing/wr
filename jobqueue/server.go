@@ -400,6 +400,19 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		msg = certMsg
 	}
 
+	// we need to persist stuff to disk, and we do so using boltdb
+	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
+	if certMsg != "" {
+		if msg == "" {
+			msg = certMsg
+		} else {
+			msg = certMsg + ". " + msg
+		}
+	}
+	if err != nil {
+		return s, msg, token, err
+	}
+
 	sock, err := rep.NewSocket()
 	if err != nil {
 		return s, msg, token, err
@@ -470,19 +483,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// we will spawn runner clients via the requested job scheduler
 	sch, err := scheduler.New(config.SchedulerName, config.SchedulerConfig, serverLogger)
-	if err != nil {
-		return s, msg, token, err
-	}
-
-	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(config.DBFile, config.DBFileBackup, config.Deployment, serverLogger)
-	if certMsg != "" {
-		if msg == "" {
-			msg = certMsg
-		} else {
-			msg = certMsg + ". " + msg
-		}
-	}
 	if err != nil {
 		return s, msg, token, err
 	}
