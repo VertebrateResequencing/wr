@@ -5,6 +5,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.15.0] - 2018-09-03
+### Added
+- New rerun option when adding jobs using the REST API.
+
+### Changed
+- You can now add jobs with fractional and 0 CPU requirements. NB: this makes
+  the default CPU requirement when using the REST API 0!
+- When adding jobs using the REST API, rep_grp now defaults to 'manually_added'.
+- The manager now fails to start if your db backup location is in S3 and your
+  credentials are incorrect.
+
+### Fixed
+- Critical fix for potential read errors when using the built-in S3 mounting on
+  overloaded Ceph.
+- `wr status` crash when given non-existant internal IDs.
+- You can no longer add jobs with less than 0 CPU requirements.
+- PATH environment variable is no longer ignored when adding new jobs.
+
+
 ## [0.14.0] - 2018-08-07
 ### Added
 - Added commands will now be killed if the disk fills up.
