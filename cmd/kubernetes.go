@@ -81,11 +81,11 @@ var kubeCmd = &cobra.Command{
 	Short: "Kubernetes cluster interfacing",
 	Long: `Kubernetes cluster interfacing.
 
-To run wr on a kubernetes cluster, you need to deploy the "wr manager" to a 
+To run wr on a kubernetes cluster, you need to deploy the "wr manager" to a
 unique namespace. From there the manager will run your commands on additional
 pods spawned as demand dictates.
 
-The kubernetes sub-commands make it easy to get started, interact with that remote
+The k8s sub-commands make it easy to get started, interact with that remote
 manager, and clean up afterwards.`,
 }
 
@@ -96,7 +96,7 @@ var kubeDeployCmd = &cobra.Command{
 	Short: "Deploy a manager to a kubernetes cluster",
 	Long: `Start up 'wr manager' on a kubernetes cluster.
 
-Deploy creates a 'wr manager' pod. In a production deployment the remote manager 
+Deploy creates a 'wr manager' pod. In a production deployment the remote manager
 will use a copy of the latest version of the wr database, taken from your S3 db
 backup location, or if you don't use S3, from your local filesystem.
 
@@ -107,36 +107,36 @@ precludes starting wr manager locally as well. Also be aware that while 'wr add'
 normally associates your current environment variables and working directory
 with the cmds you want to run, with a remote deployment the working directory
 defaults to /tmp, and commands will be run with the non-login environment
-variables of the server the command is run on.
+variables of the pod the command is run on.
 
 The --script option value can be, for example, the path to a bash script that
 you want to run on any created pod before any commands run on them. You
 might install some software for example. Note that the script is run by default
-as root. If your bash script has commands with 'sudo' you may need to install sudo. 
+as root. If your bash script has commands with 'sudo' you may need to install sudo.
 This is usually when the image does not include it (e.g the ubuntu images).
 For debian based images this may look like 'apt-get -y install sudo'.
 
 The --config_files option lets you specify comma separated arbitrary text file
-paths that should be copied from your local system to any created cloud servers.
-Currently due to limitations in the way files are copied to pods, only files with 
-a destination "~/foo/bar" will be copied. For files that should be transferred 
-from your home directory to the cloud server's home directory (which could be at
-different absolute paths), prefix your path with "~/". If the local path of a 
+paths that should be copied from your local system to any created pods.
+Currently due to limitations in the way files are copied to pods, only files
+with a destination "~/foo/bar" will be copied. For files that should be
+transferred from your home directory to the pod's home directory (which could be
+at different absolute paths), prefix your path with "~/". If the local path of a
 file is unrelated to the remote path, separate the paths with a colon to specify
-source and destination, eg. "~/projectSpecific/.s3cfg:~/.s3cfg".
-Local paths that don't exist are silently ignored.
-This option is important if you want to be able to queue up commands that rely
-on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
-contain your credentials for connecting to your s3 bucket(s).
+source and destination, eg. "~/projectSpecific/.s3cfg:~/.s3cfg". Local paths
+that don't exist are silently ignored. This option is important if you want to
+be able to queue up commands that rely on the --mounts option to 'wr add': you'd
+specify your s3 config file(s) which contain your credentials for connecting to
+your s3 bucket(s).
 
 Deploy can work with most container images because it uploads wr to any pod it
 creates; your image does not have to have wr installed on it. The only
-requirements of the image are that it has tar cat and bash installed.
-(Please only use bash)
+requirements of the image are that it has tar, cat and bash installed.
+(Please only use bash.)
 
 For --mounts to work, fuse-utils must be installed, and /etc/fuse.conf should
 already have user_allow_other set or at least be present and commented out
-(wr will enable it). 
+(wr will enable it).
 
 By default the 'ubuntu:latest' image is used. Currently any container registry
 natively supported by kubernetes should work, though there is no support for
@@ -504,8 +504,8 @@ otherwise your database going forward will not reflect anything you did during
 that kubernetes deployment.
 
 If you don't back up to S3, the teardown command tries to copy the remote
-database locally, which is only possible while the remote server is still up
-and accessible.`,
+database locally, which is only possible while the pod is still up and
+accessible.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		kubeLogger := setupLogging(kubeDebug)
 
@@ -640,7 +640,7 @@ and accessible.`,
 					line := scanner.Text()
 					if strings.Contains(line, "lvl=crit") {
 						if !explained {
-							warn("looks like the manager on the remote server suffered critical errors:")
+							warn("looks like the manager in the pod suffered critical errors:")
 							explained = true
 						}
 						fmt.Println(line)
@@ -711,20 +711,19 @@ func init() {
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
 	kubeDeployCmd.Flags().StringVarP(&podPostCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each pod created")
-	kubeDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
-	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
+	kubeDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned pods alive for; 0 means forever")
+	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of pods to spawn; 0 means unlimited (default 0)")
 	kubeDeployCmd.Flags().StringVarP(&podConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned pods")
 	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "image to use for spawned pods")
-	kubeDeployCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
+	kubeDeployCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use your own namespace (default random)")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	kubeDeployCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
-	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use a predefined namespace")
+	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "operate on a specific namespace (default last deployed)")
 	kubeTearDownCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
 	kubeTearDownCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
-
 }
 
 // Rewrite any relative path to replace '~/' with podBinDir returning a
