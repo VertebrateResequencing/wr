@@ -7,16 +7,16 @@ LDFLAGS = -ldflags "-X ${PKG}/cmd.wrVersion=${VERSION}"
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
 SHELL := env PATH=${PATH} $(SHELL)
-GLIDE := $(shell command -v glide 2> /dev/null)
+DEP := $(shell command -v dep 2> /dev/null)
 
 default: install
 
-vendor: glide.lock
-ifndef GLIDE
+vendor: Gopkg.lock
+ifndef DEP
 	@mkdir -p ${GOPATH}/bin
-	@curl -s https://glide.sh/get | sh
+	@curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
 endif
-	@glide -q install
+	@dep ensure
 	@echo installed latest dependencies
 
 build: export CGO_ENABLED = 0
