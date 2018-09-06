@@ -397,7 +397,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			return s, msg, token, err
 		}
 		certMsg = "created a new key and certificate for TLS"
-		msg = certMsg
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
@@ -416,7 +415,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		if err != nil {
 			errc := db.close()
 			if errc != nil {
-				err = fmt.Errorf("%s; db close also failed: %s\n", err.Error(), errc.Error())
+				err = fmt.Errorf("%s; db close also failed: %s", err.Error(), errc.Error())
 			}
 		}
 	}()
@@ -429,7 +428,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		if err != nil {
 			errc := sock.Close()
 			if errc != nil {
-				err = fmt.Errorf("%s; socket close also failed: %s\n", err.Error(), errc.Error())
+				err = fmt.Errorf("%s; socket close also failed: %s", err.Error(), errc.Error())
 			}
 		}
 	}()

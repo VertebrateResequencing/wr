@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -192,10 +191,10 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	// byte stream does not stringify things may go horribly wrong.
 	if len(s.config.ConfigMap) == 0 {
 		if string(s.config.PostCreationScript) != "" {
-			cmap, err := s.libclient.CreateInitScriptConfigMap(string(s.config.PostCreationScript))
-			if err != nil {
+			cmap, errc := s.libclient.CreateInitScriptConfigMap(string(s.config.PostCreationScript))
+			if errc != nil {
 				s.Crit("failed to create configmap from PostCreationScript")
-				return err
+				return errc
 			}
 			configMapName = cmap.ObjectMeta.Name
 			scriptName = defaultScriptName
@@ -306,7 +305,7 @@ func (s *k8s) reqCheck(req *Requirements) error {
 	defer s.esmutex.Unlock()
 
 	if resp.Error != nil {
-		s.Error("Requirements check recieved error", "error", resp.Error)
+		s.Error("Requirements check received error", "error", resp.Error)
 		s.es = resp.Ephemeral
 		return resp.Error
 	}
@@ -333,8 +332,8 @@ func (s *k8s) setBadServerCallBack(cb BadServerCallBack) {
 	s.badServerCB = cb
 }
 
-// The controller is passed a callback channel. notifyMessage recieves on the
-// channel. If anything is recieved call s.msgCB(msg).
+// The controller is passed a callback channel. notifyMessage receives on the
+// channel. If anything is received call s.msgCB(msg).
 func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *cloud.Server) {
 	s.Debug("notifyCallBack handler started")
 	for {
@@ -351,9 +350,9 @@ func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *clo
 			}
 		}
 	}
-
 }
 
+// cleanup destroys the local queue and stops the scheduler controller.
 func (s *k8s) cleanup() {
 	s.Debug("cleanup() Called")
 
@@ -366,18 +365,19 @@ func (s *k8s) cleanup() {
 	if err != nil {
 		s.Warn("cleanup queue destruction failed", "err", err)
 	}
+
 	// Stop the scheduler controller
 	close(s.stopCh)
 }
 
-// This should work out how many pods with given resource requests can be
+// canCount should work out how many pods with given resource requests can be
 // scheduled based on resource requests on the nodes in the cluster. However at
 // the time of writing this was overly complicated, and started to replicate
 // code from the controller manager and kubelet. I'm returning yes in blocks of
 // 100. ToDO: If any job is pending with the given requirements, return 0 until
 // that pend fails. This should reduce overall load on the cluster when adding
 // lots of jobs at once.
-func (s *k8s) canCount(req *Requirements) (canCount int) {
+func (s *k8s) canCount(req *Requirements) int {
 	s.Debug("canCount Called, returning 100")
 	// 100 is  a big enough block for anyone...
 	return 100
@@ -448,7 +448,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	}
 
 	reservedCh <- true
-	s.Debug("Spawn request succeded", "pod", pod.ObjectMeta.Name)
+	s.Debug("Spawn request succeeded", "pod", pod.ObjectMeta.Name)
 
 	// We need to know when the pod we've created (the runner) terminates. There
 	// is a listener in the controller that will notify when a pod passed to it
@@ -543,7 +543,6 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 				}
 			}
 			s.Error("Source destination pair malformed", "pair", path)
-
 		} else {
 			paths = append(paths, path)
 		}
@@ -589,7 +588,6 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 		}
 	}
 	return filePairs
-
 }
 
 // remove the '~/' prefix as tar will create a ~/.. file. We don't want this as

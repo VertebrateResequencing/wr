@@ -18,7 +18,7 @@
 
 // tests echo {42,24,mice,test} | xargs -n 1 -r echo echo | wr add
 
-package add_test
+package addTest
 
 import (
 	"crypto/md5"
@@ -131,7 +131,7 @@ func TestEchoes(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Check the job can be found in the system, and that it has exited
-		// succesfully.
+		// successfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -149,7 +149,7 @@ func TestEchoes(t *testing.T) {
 			t.Errorf("wait on cmd %s completion failed: %s", c.cmd, errr)
 		}
 
-		// Now check the pods are deleted after succesful completion. They are
+		// Now check the pods are deleted after successful completion. They are
 		// kept if they error.
 		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
@@ -173,7 +173,7 @@ func TestFileCreation(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Check the job can be found in the system, and that it has exited
-		// succesfully.
+		// successfully.
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
@@ -188,7 +188,7 @@ func TestFileCreation(t *testing.T) {
 			return checkJob(job)
 		})
 		if errr != nil {
-			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
+			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If available): %s", c.cmd, errr, job.FailReason)
 		}
 
 		// Now we get the host, and copy the file to memory. Then calculate the
@@ -212,9 +212,7 @@ func TestFileCreation(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
 		}
-
 	}
-
 }
 
 func TestContainerImage(t *testing.T) {
@@ -237,9 +235,10 @@ func TestContainerImage(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Check the job can be found in the system, and that it has exited
-		// succesfully.
+		// successfully.
 		var job *jobqueue.Job
 		var err error
+
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
 			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
@@ -252,11 +251,10 @@ func TestContainerImage(t *testing.T) {
 			return checkJob(job)
 		})
 		if errr != nil {
-
-			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If avaliable): %s", c.cmd, errr, job.FailReason)
+			t.Errorf("wait on cmd '%s' completion failed: %s. WR error (If available): %s", c.cmd, errr, job.FailReason)
 		}
 
-		// Now the job has completed succesfully we check that the image used is
+		// Now the job has completed successfully we check that the image used is
 		// as expected
 		pod, err := clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
 		if err != nil {
@@ -289,9 +287,7 @@ func TestContainerImage(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
 		}
-
 	}
-
 }
 
 // checkJob checks if the passed job has exited 0. If it has not it gets the

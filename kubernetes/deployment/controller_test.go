@@ -104,7 +104,6 @@ func TestDeploy(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-
 		// Test the creation of config maps (2 birds one stone). We won't delete
 		// this now so we can use it later.
 		configmap, err := dc.Client.CreateInitScriptConfigMap(c.configMapData)
@@ -131,7 +130,6 @@ func TestDeploy(t *testing.T) {
 
 		// Now the deployment will be waiting for an attach to copy the binary
 		// to boot from.
-
 		dir, err = ioutil.TempDir("", "deploy")
 		if err != nil {
 			t.Fatal(err)
@@ -169,7 +167,7 @@ func TestDeploy(t *testing.T) {
 		}
 
 		dc.Opts = &kubedeployment.DeployOpts{
-			Files:         []client.FilePair{{"/tmp/wr", "/wr-tmp/"}, {caFile, wrDir}, {certFile, wrDir}, {keyFile, wrDir}},
+			Files:         []client.FilePair{{Src: "/tmp/wr", Dest: "/wr-tmp/"}, {Src: caFile, Dest: wrDir}, {Src: certFile, Dest: wrDir}, {Src: keyFile, Dest: wrDir}},
 			RequiredPorts: c.requiredPorts,
 			ResourcePath:  resourcepath,
 			Logger:        log15.New(),
