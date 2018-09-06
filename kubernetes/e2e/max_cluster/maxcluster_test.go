@@ -18,7 +18,7 @@
 
 // tests echo {42,24,mice,test} | xargs -n 1 -r echo echo | wr add
 
-package max_cluster
+package maxCluster
 
 import (
 	"encoding/gob"
@@ -105,6 +105,7 @@ func init() {
 		return
 	}
 }
+
 func TestClusterPend(t *testing.T) {
 	if skip {
 		t.Skip("skipping test; failed to access cluster")
@@ -118,52 +119,52 @@ func TestClusterPend(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Check the job can be found in the system, and that it has exited
-		// succesfully.
+		// successfully.
 		var jobs []*jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-
 			jobs, err = jq.GetByRepGroup(c.repgrp, false, 0, "", false, false)
 			if err != nil {
 				return false, err
 			}
+
 			// Wait for the jobs to be accepted into the queue
 			if jobs == nil {
 				return false, nil
-			} else {
-				// If there arent
-				nodeList, err := clientset.CoreV1().Nodes().List(metav1.ListOptions{})
-				if err != nil {
-					t.Errorf("Failed to list nodes: %s", err)
-				}
-
-				// There should always be 2 * nodes jobs If not wait until
-				// they're all in the list
-				if len(jobs) != 2*len(nodeList.Items) {
-					return false, nil
-				}
-
-				// For each job, ensure it runs & exits succesfully.
-				for _, job := range jobs {
-					if job.Exited && job.Exitcode != 1 {
-						t.Logf("cmd %s completed succesfully.", job.Cmd)
-					}
-					if job.Exited && job.Exitcode == 1 {
-						t.Errorf("cmd %s failed", job.Cmd)
-						return false, fmt.Errorf("cmd failed")
-					}
-				}
-				// All jobs have exited, we return true
-				return true, nil
-
 			}
+
+			// If there arent
+			nodeList, errl := clientset.CoreV1().Nodes().List(metav1.ListOptions{})
+			if errl != nil {
+				t.Errorf("Failed to list nodes: %s", errl)
+			}
+
+			// There should always be 2 * nodes jobs If not wait until
+			// they're all in the list
+			if len(jobs) != 2*len(nodeList.Items) {
+				return false, nil
+			}
+
+			// For each job, ensure it runs & exits successfully.
+			for _, job := range jobs {
+				if job.Exited && job.Exitcode != 1 {
+					t.Logf("cmd %s completed successfully.", job.Cmd)
+				}
+				if job.Exited && job.Exitcode == 1 {
+					t.Errorf("cmd %s failed", job.Cmd)
+					return false, fmt.Errorf("cmd failed")
+				}
+			}
+
+			// All jobs have exited, we return true
+			return true, nil
 		})
 		if errr != nil {
 			t.Errorf("wait on jobs in rep group %s  failed: %s", c.repgrp, errr)
 		}
 
-		// Now check the pods are deleted after succesful completion. They are
+		// Now check the pods are deleted after successful completion. They are
 		// kept if they error.
 		for _, job := range jobs {
 			if len(job.Host) == 0 {

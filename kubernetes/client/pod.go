@@ -88,24 +88,29 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		err = file.Close()
+	}()
+
 	stat, err := file.Stat()
-	if err == nil {
-		// now lets create the header as needed for this file within the tarball
-		header := new(tar.Header)
-		header.Name = dest + path.Base(fpath)
-		header.Size = stat.Size()
-		header.Mode = int64(stat.Mode())
-		header.ModTime = stat.ModTime()
-		// write the header to the tarball archive
-		if err := tw.WriteHeader(header); err != nil {
-			return err
-		}
-		// copy the file data to the tarball
-		if _, err := io.Copy(tw, file); err != nil {
-			return err
-		}
+	if err != nil {
+		return err
 	}
+
+	// now lets create the header as needed for this file within the tarball
+	header := new(tar.Header)
+	header.Name = dest + path.Base(fpath)
+	header.Size = stat.Size()
+	header.Mode = int64(stat.Mode())
+	header.ModTime = stat.ModTime()
+
+	// write the header to the tarball archive
+	if errw := tw.WriteHeader(header); errw != nil {
+		return errw
+	}
+
+	// copy the file data to the tarball
+	_, err = io.Copy(tw, file)
 	return err
 }
 
@@ -114,18 +119,22 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 func makeTar(files []FilePair, writer io.Writer) error {
 	//Set up tar writer
 	tarWriter := tar.NewWriter(writer)
-	defer tarWriter.Close()
+	var err error
+	defer func() {
+		err = tarWriter.Close()
+	}()
+
 	// Add each file to the tarball
 	for i := range files {
-		if err := addFile(tarWriter, path.Clean(files[i].Src), files[i].Dest); err != nil {
-			return err
+		if erra := addFile(tarWriter, path.Clean(files[i].Src), files[i].Dest); erra != nil {
+			return erra
 		}
 	}
-	return nil
+	return err
 }
 
 // AttachCmd attaches to a running container and pipes StdIn to the command
-// running on that container if StdIn is supplied. Should work after only
+// running on that container if StdIn is supplied. Should work only after
 // calling Authenticate().
 func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
 	// Make a request to the APIServer for an 'attach' action. Open Stdin and
@@ -144,11 +153,12 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	}, scheme.ParameterCodec)
 
 	// Create an executor to send commands / receive output. SPDY Allows
-	// multiplexed bidirectional streams to and from  the pod
+	// multiplexed bidirectional streams to and from the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
 		return "", "", fmt.Errorf("Error creating SPDYExecutor: %s", err.Error())
 	}
+
 	// Execute the command, with Std(in,out,err) pointing to the above readers
 	// and writers
 	err = exec.Stream(remotecommand.StreamOptions{
@@ -161,6 +171,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 		p.Error("AttachCmd returned error", "error", opts.Err)
 		return "", "", fmt.Errorf("Error executing remote command: %v", err)
 	}
+
 	return "", "", nil
 }
 
@@ -183,12 +194,14 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 		Stderr:    true,
 		TTY:       false,
 	}, scheme.ParameterCodec)
+
 	// Create an executor to send commands / receive output. SPDY Allows
 	// multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
 		return "", "", fmt.Errorf("Error creating SPDYExecutor: %v", err)
 	}
+
 	// Execute the command, with Std(in,out,err) pointing to the above readers
 	// and writers
 	err = exec.Stream(remotecommand.StreamOptions{
@@ -200,6 +213,7 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 	if err != nil {
 		return "", "", fmt.Errorf("Error executing remote command: %v", err)
 	}
+
 	return "", "", nil
 }
 
@@ -228,7 +242,7 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 		return "", "", err
 	}
 
-	// If the exec call succeded, but the cmd failed, also error
+	// If the exec call succeeded, but the cmd failed, also error
 	if len(stdErr.Str) != 0 {
 		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command produced STDERR: %s", stdErr.Str)
 	}
@@ -256,15 +270,16 @@ func (p *Kubernetesp) PortForward(pod *apiv1.Pod, requiredPorts []int) error {
 		ports[i] = strconv.Itoa(port)
 	}
 
-	return p.forwardPorts("POST", req.URL(), ports)
+	return p.forwardPorts(req.URL(), ports)
 }
 
-func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []string) error {
+func (p *Kubernetesp) forwardPorts(url *url.URL, requiredPorts []string) error {
 	transport, upgrader, err := spdy.RoundTripperFor(p.clusterConfig)
 	if err != nil {
 		return err
 	}
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
+
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", url)
 	fw, err := portforward.New(dialer, requiredPorts, p.StopChannel, p.ReadyChannel, p.cmdOut, p.cmdErr)
 	if err != nil {
 		return err
@@ -277,21 +292,23 @@ func (p *Kubernetesp) forwardPorts(method string, url *url.URL, requiredPorts []
 // provided. Called by controller when initContainer status is running.
 func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	p.Debug("copyTar Called", "files", files, "pod", pod.ObjectMeta.Name)
-	//Set up new pipe
+
+	// Set up new pipe
 	pipeReader, pipeWriter := io.Pipe()
 
 	var err error
+	done := make(chan struct{})
 	go func() {
-		defer pipeWriter.Close()
-		tarErr := makeTar(files, pipeWriter)
-		if tarErr != nil {
-			p.Error("error writing tar", "err", tarErr)
-			err = tarErr
+		defer func() {
+			err = pipeWriter.Close()
+		}()
+
+		err = makeTar(files, pipeWriter)
+		if err != nil {
+			p.Error("error writing tar", "err", err)
 		}
+		close(done)
 	}()
-	if err != nil {
-		return err
-	}
 
 	/* This needs to be in a goroutine as io.Pipe() blocks until each write has
 	been read. If I wait, p.AttachCmd(opts) will never get executed, and I've
@@ -316,6 +333,8 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		p.Error("error running AttachCmd for CopyTar", "err", err)
 	}
 
+	<-done
+
 	p.Debug("contents of stdOut", stdOut.Str)
 	p.Debug("contents of stdErr", stdErr.Str)
 	return err
@@ -336,14 +355,15 @@ func (p *Kubernetesp) GetLog(pod *apiv1.Pod, lines int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		err = readCloser.Close()
+	}()
 
 	out := new(Writer)
-
-	defer readCloser.Close()
 	_, err = io.Copy(out, readCloser)
 	if err != nil {
 		return "", err
 	}
 
-	return strings.Join(out.Str, " "), nil
+	return strings.Join(out.Str, " "), err
 }

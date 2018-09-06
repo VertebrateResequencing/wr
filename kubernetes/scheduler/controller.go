@@ -333,19 +333,18 @@ func (c *Controller) processItem(key string) error {
 	// Check if it's something without a namespace. If it is, it must be a Node.
 	if len(namespace) == 0 {
 		// Currently nodes are the only thing without a namespace listened for.
-		node, err := c.nodeLister.Get(name)
-		if err != nil {
+		node, errg := c.nodeLister.Get(name)
+		if errg != nil {
 			// The Node  may no longer exist, in which case we stop processing.
-			if errors.IsNotFound(err) {
+			if errors.IsNotFound(errg) {
 				utilruntime.HandleError(fmt.Errorf("node '%s' in work queue no longer exists", key))
 				return nil
 			}
-			return err
+			return errg
 		}
 
 		// Pass the node to processNode
-		err = c.processNode(node)
-		return err
+		return c.processNode(node)
 	}
 
 	// It has a namespace, it must be a pod.
@@ -360,9 +359,7 @@ func (c *Controller) processItem(key string) error {
 	}
 
 	// Pass the pod to processPod
-	err = c.processPod(pod)
-
-	return err
+	return c.processPod(pod)
 }
 
 // processPod implements the logic for how to react to observing a pod in a
@@ -389,11 +386,12 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}
 		}
 	}
+
 	// Error handling
 	if pod.Status.Phase == corev1.PodSucceeded {
-		c.Debug("pod exited succesfully, notifying", "pod", pod.ObjectMeta.Name)
+		c.Debug("pod exited successfully, notifying", "pod", pod.ObjectMeta.Name)
 		// Get the pod's errChan, return nil signifying that the pod
-		// (runner) exited succesfully.
+		// (runner) exited successfully.
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
 		if ok {
 			go func() {
@@ -410,6 +408,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 	}
+
 	// Entire pod has failed for some reason.
 	if pod.Status.Phase == corev1.PodFailed {
 		result, ok := c.podAliveMap.Load(pod.ObjectMeta.UID)
@@ -427,11 +426,13 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			c.Error("could not find return error channel", "pod", pod.ObjectMeta.Name)
 			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
+
 		// Get logs
 		logs, err := c.libclient.GetLog(pod, 25)
 		if err != nil {
 			c.Error("failed to get logs", "pod", pod.ObjectMeta.Name, "err", err)
 		}
+
 		// Callback to user, trying to give an informative error.
 		c.Error("Pod failed", "pod", pod.ObjectMeta.Name, "message", pod.Status.Message, "reason", pod.Status.Reason)
 		c.sendErrChan(fmt.Sprintf("Pod %s failed. Reason: %s, Message: %s\n Logs: %s", pod.ObjectMeta.Name, pod.Status.Message, pod.Status.Reason, logs))
@@ -439,6 +440,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			Name: pod.ObjectMeta.Name,
 		})
 	}
+
 	// Pod is pending (cluster has not got enough capacity.)
 	if pod.Status.Phase == corev1.PodPending {
 		// If the request on the container is currently not possible, send a
@@ -526,7 +528,7 @@ func (c *Controller) runReqCheck() {
 func (c *Controller) reqCheckHandler() bool {
 	c.Debug("reqCheckHandler() called.")
 	req := <-c.opts.ReqChan
-	c.Debug("reqCheckHandler() recieved req.")
+	c.Debug("reqCheckHandler() received req.")
 	c.Debug("obtaining RLock()")
 	c.nodeResourceMutex.RLock()
 	c.Debug("obtained RLock()")
@@ -560,8 +562,8 @@ func (c *Controller) reqCheckHandler() bool {
 
 				// If disk was requested, warn.
 				if resource.NewQuantity(int64(0), resource.DecimalSI).Cmp(req.Disk) != 0 {
-					c.sendErrChan(`The cluster is not reporting node ephemeral storage. 
-				If your command requires more storage than is avaliable on the node or there are competing requests it may fail.`)
+					c.sendErrChan(`The cluster is not reporting node ephemeral storage.
+				If your command requires more storage than is available on the node or there are competing requests it may fail.`)
 				}
 
 				return true
@@ -604,15 +606,14 @@ func (c *Controller) runPodAlive() {
 	c.Debug("runPodAlive() exiting")
 }
 
-// podAliveHandler recieves a request and adds the channel in that request to
+// podAliveHandler receives a request and adds the channel in that request to
 // the podAliveMap with the key being the UID of the pod.
 func (c *Controller) podAliveHandler() bool {
 	c.Debug("podAliveHandler() called")
 	req := <-c.opts.PodAliveChan
-	c.Debug("recieved PodAlive Request", "pod", req.Pod.ObjectMeta.Name)
+	c.Debug("received PodAlive Request", "pod", req.Pod.ObjectMeta.Name)
 	// Store the error channel in the map.
 	c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req)
 	c.Debug("Stored alive request for pod in map, returning true", "pod", req.Pod.ObjectMeta.Name)
-
 	return true
 }

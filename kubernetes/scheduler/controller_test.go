@@ -103,7 +103,7 @@ func init() {
 	wrLogDir := "/tmp/"
 
 	opts := kubescheduler.ScheduleOpts{
-		Files:        []client.FilePair{{"/tmp/wr", "/wr-tmp/"}, {caFile, wrDir}, {certFile, wrDir}, {keyFile, wrDir}},
+		Files:        []client.FilePair{{Src: "/tmp/wr", Dest: "/wr-tmp/"}, {Src: caFile, Dest: wrDir}, {Src: certFile, Dest: wrDir}, {Src: keyFile, Dest: wrDir}},
 		CbChan:       callBackChan,
 		BadCbChan:    badCallBackChan,
 		ReqChan:      reqChan,
@@ -162,6 +162,7 @@ func TestReqCheck(t *testing.T) {
 			disk:  0,
 		},
 	}
+
 	for _, c := range passCases {
 		// Rewrite *Requirements to a kubescheduler.Request
 		cores := resource.NewMilliQuantity(int64(c.cores)*1000, resource.DecimalSI)
@@ -207,6 +208,7 @@ func TestReqCheck(t *testing.T) {
 			disk:  9999999,
 		},
 	}
+
 	for _, c := range failCases {
 		// Rewrite *Requirements to a kubescheduler.Request
 		cores := resource.NewMilliQuantity(int64(c.cores)*1000, resource.DecimalSI)
@@ -264,6 +266,7 @@ func TestRunCmd(t *testing.T) {
 			configMapData: " ",
 		},
 	}
+
 	for _, c := range passCases {
 		configMountPath := "/scripts"
 		cmd := []string{"echo testing runcmd"}
@@ -299,10 +302,11 @@ func TestRunCmd(t *testing.T) {
 		// Wait on the error.
 		err = <-errChan
 		if err != nil {
-			t.Errorf("errChan recived error: %s", err)
+			t.Errorf("errChan received error: %s", err)
 		}
 
 	}
+
 	// This fail case emulates a configmap (cloud script) failing. (call
 	// /bin/false)
 	failCases := []struct {
@@ -324,6 +328,7 @@ func TestRunCmd(t *testing.T) {
 			configMapData: "/bin/false",
 		},
 	}
+
 	for _, c := range failCases {
 		configMountPath := "/scripts"
 		cmd := []string{"echo testing runcmd fails"}
@@ -358,9 +363,8 @@ func TestRunCmd(t *testing.T) {
 
 		err = <-errChan
 		if err == nil {
-			t.Errorf("errChan recived no error")
+			t.Errorf("errChan received no error")
 		}
-		t.Logf("errChan recieved error: %s", err)
-
+		t.Logf("errChan received error: %s", err)
 	}
 }

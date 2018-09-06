@@ -221,8 +221,14 @@ func LogPanic(logger log15.Logger, desc string, die bool) {
 // found first in the set of $PATH directories, ignoring any path that is
 // actually a symlink to ourselves.
 func Which(exeName string) string {
-	self, _ := os.Executable()
-	self, _ = filepath.EvalSymlinks(self)
+	self, err := os.Executable()
+	if err != nil {
+		self = ""
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		self = ""
+	}
 
 	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
 		stat, err := os.Stat(dir)

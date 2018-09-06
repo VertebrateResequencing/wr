@@ -194,10 +194,8 @@ func (s *local) reserveTimeout(req *Requirements) int {
 		}
 		s.Debug("setting runner rtimeout", "timeout", timeout)
 		return timeout
-	} else {
-		return localReserveTimeout
 	}
-
+	return localReserveTimeout
 }
 
 // maxQueueTime achieves the aims of MaxQueueTime().

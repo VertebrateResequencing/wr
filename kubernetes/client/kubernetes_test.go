@@ -121,7 +121,6 @@ func TestDeploy(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-
 		// Test the creation of config maps (2 birds one stone) We won't delete
 		// this now so we can use it later.
 		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
@@ -179,8 +178,8 @@ func TestSpawn(t *testing.T) {
 			},
 		},
 	}
-	for _, c := range cases {
 
+	for _, c := range cases {
 		// Test the creation of config maps (2 birds one stone) We won't delete
 		// this now so we can use it later.
 		configmap, err := tc.CreateInitScriptConfigMap(c.configMapData)
@@ -197,7 +196,6 @@ func TestSpawn(t *testing.T) {
 
 		// create spawn request we run the init script created from wherever
 		// we've decided to mount it.
-
 		pod, err := tc.Spawn(c.containerImage, c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,
 			c.cmdArgs, configmap.ObjectMeta.Name,
@@ -227,19 +225,18 @@ func TestSpawn(t *testing.T) {
 		if err != nil {
 			t.Error(fmt.Errorf("Deleting pod failed: %s", err))
 		}
-
 	}
-
 }
 
 func TestInWrPod(t *testing.T) {
 	if skip {
 		t.Skip("skipping test; failed to access cluster")
 	}
+
 	// These tests are not run inside a wr pod. Expect false
 	inwr := client.InWRPod()
 	if inwr {
-		t.Error("This test is not run inside a pod wr controlls, should return false.")
+		t.Error("This test is not run inside a pod wr controls, should return false.")
 	}
 }
 
@@ -262,7 +259,7 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defer os.RemoveAll(dir) // clean up
+	defer os.RemoveAll(dir)
 
 	for _, c := range cases {
 		err := ioutil.WriteFile(dir+c.filePath, []byte(c.fileData), 0644)

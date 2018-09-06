@@ -397,9 +397,8 @@ func (s *lsf) reserveTimeout(req *Requirements) int {
 		}
 		s.Logger.Debug(fmt.Sprintf("setting runner timeout to %v", timeout))
 		return timeout
-	} else {
-		return defaultReserveTimeout
 	}
+	return defaultReserveTimeout
 }
 
 // maxQueueTime achieves the aims of MaxQueueTime().

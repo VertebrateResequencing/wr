@@ -211,7 +211,7 @@ func (c *Controller) processObj(obj interface{}) error {
 	case *apiv1.Pod:
 		c.processPod(v)
 	default:
-		return error(fmt.Errorf("obj is not a pod"))
+		return fmt.Errorf("obj is not a pod")
 	}
 	return nil
 }

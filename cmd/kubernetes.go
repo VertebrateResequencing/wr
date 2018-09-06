@@ -1,6 +1,5 @@
 // Copyright © 2018 Genome Research Limited
-// Author: Theo Barber-Bany
-// <tb15@sanger.ac.uk>.
+// Author: Theo Barber-Ban <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
 //
@@ -355,9 +354,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 			}
 
 			defer func() {
-				err := context.Release()
-				if err != nil {
-					warn("daemon release failed: %s", err)
+				errr := context.Release()
+				if errr != nil {
+					warn("daemon release failed: %s", errr)
 				}
 			}()
 
@@ -388,9 +387,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				}
 
 				// Create the configMap
-				cmap, err := c.Client.CreateInitScriptConfigMap(string(postCreation))
-				if err != nil {
-					die("Failed to create config map: %s", err)
+				cmap, errc := c.Client.CreateInitScriptConfigMap(string(postCreation))
+				if errc != nil {
+					die("Failed to create config map: %s", errc)
 				}
 				scriptName = client.DefaultScriptName
 				configMapName = cmap.ObjectMeta.Name
@@ -403,9 +402,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				resources.Details["scriptName"] = scriptName
 
 				// Save resources.
-				file, err := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-				if err != nil {
-					warn("failed to open resource file %s for writing: %s", resourcePath, err)
+				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+				if erro != nil {
+					warn("failed to open resource file %s for writing: %s", resourcePath, erro)
 				}
 				encoder := gob.NewEncoder(file)
 				err = encoder.Encode(resources)
@@ -415,9 +414,9 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
 
 			} else {
-				resources, err := openResources(resourcePath)
-				if err != nil {
-					die("failed to open resource file with path %s: %s", resourcePath, err)
+				resources, erro := openResources(resourcePath)
+				if erro != nil {
+					die("failed to open resource file with path %s: %s", resourcePath, erro)
 				}
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
@@ -427,7 +426,7 @@ files found in ~/.kube, or with the $KUBECONFIG variable.`,
 				info("initialising to namespace %s", kubeNamespace)
 				err = c.Client.Initialize(c.Clientset, kubeNamespace)
 				if err != nil {
-					die("Failed to initialise client to namespace %s", kubeNamespace)
+					die("Failed to initialise client to namespace %s: %s", kubeNamespace, err)
 				}
 			}
 
@@ -611,7 +610,7 @@ accessible.`,
 			warn("error retrieving kubeSchedulerControllerLog file: %s", err)
 		}
 
-		// Write logs to file
+		// write logs to file
 		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0644)
 		if err != nil {
 			warn("failed to write kubeSchedulerLog to file: %s", err)
@@ -621,7 +620,7 @@ accessible.`,
 			warn("failed to write kubeSchedulerControllerLog to file: %s", err)
 		}
 
-		// Get the unified log last, so we can scan it.
+		// get the unified log last, so we can scan it.
 		log, _, errl := Client.ExecInPod(resources.Details["manager-pod"], "wr-manager", resources.Details["namespace"], []string{"cat", podBinDir + ".wr_" + config.Deployment + "/log"})
 		if errl != nil {
 			warn("error retrieving log file: %s", errl)
@@ -630,7 +629,8 @@ accessible.`,
 		if errf != nil {
 			warn("failed to write log to file: %s", errf)
 		}
-		// Scan the log file for critical errors
+
+		// scan the log file for critical errors
 		if errf == nil && errl == nil {
 			f, errfo := os.Open(config.ManagerDir + "/log")
 			if errfo == nil {
