@@ -22,9 +22,12 @@ dependencies enabling easy automation of on-going projects.
 
 Furthermore, wr has best-in-class support for OpenStack, providing incredibly
 easy deployment and auto-scaling without you having to know anything about
-OpenStack. And it has built-in support for mounting S3-like object stores,
-providing an easy way of running commands against remote files whilst enjoying
-[high performance](https://github.com/VertebrateResequencing/muxfys).
+OpenStack. For use in clouds such as AWS, GCP and others, wr also has the
+built-in ability to self-deploy to any Kubernetes cluster. And it has built-in
+support for mounting S3-like object stores, providing an easy way of running
+commands against remote files whilst enjoying [high
+performance](https://github.com/VertebrateResequencing/muxfys).
+
 
 ***Current Status***
 
@@ -68,8 +71,8 @@ installation in your home directory would be:
 If you don't have `make` installed and don't mind if `wr version` will not work,
 you can instead replace `make` above with:
 
-    curl -s https://glide.sh/get | sh
-    $GOPATH/bin/glide install
+    curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
+    $GOPATH/bin/dep ensure
     go install -tags netgo
 
 Usage instructions
@@ -127,6 +130,13 @@ to:
 
 This way, you don't have to directly interact with OpenStack at all, or even
 know how it works.
+
+For usage in a Kubernetes cluster, you can similarly:
+
+* wr k8s deploy [options]
+* wr add [options]
+* [view status on the web interface]
+* wr k8s teardown
 
 If you have any problems getting things to start up, check out the
 [wiki](https://github.com/VertebrateResequencing/wr/wiki) for additional
