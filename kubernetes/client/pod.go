@@ -136,7 +136,7 @@ func makeTar(files []FilePair, writer io.Writer) error {
 // AttachCmd attaches to a running container and pipes StdIn to the command
 // running on that container if StdIn is supplied. Should work only after
 // calling Authenticate().
-func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err error) {
+func (p *Kubernetesp) AttachCmd(opts *CmdOptions) error {
 	// Make a request to the APIServer for an 'attach' action. Open Stdin and
 	// Stderr for use by the client.
 	execRequest := p.RESTClient.Post().
@@ -156,7 +156,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	// multiplexed bidirectional streams to and from the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
-		return "", "", fmt.Errorf("Error creating SPDYExecutor: %s", err.Error())
+		return fmt.Errorf("Error creating SPDYExecutor: %s", err.Error())
 	}
 
 	// Execute the command, with Std(in,out,err) pointing to the above readers
@@ -169,16 +169,16 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) (stdOut, stdErr string, err er
 	})
 	if err != nil {
 		p.Error("AttachCmd returned error", "error", opts.Err)
-		return "", "", fmt.Errorf("Error executing remote command: %v", err)
+		return fmt.Errorf("Error executing remote command: %v", err)
 	}
 
-	return "", "", nil
+	return nil
 }
 
 // ExecCmd executes the provided command inside a running container, if StdIn is
 // supplied pipes StdIn to the command. Should work after only calling
 // Authenticate().
-func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdErr string, err error) {
+func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) error {
 	// Make Request to APISever to 'exec' a command
 	execRequest := p.RESTClient.Post().
 		Resource("pods").
@@ -199,7 +199,7 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 	// multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
-		return "", "", fmt.Errorf("Error creating SPDYExecutor: %v", err)
+		return fmt.Errorf("Error creating SPDYExecutor: %v", err)
 	}
 
 	// Execute the command, with Std(in,out,err) pointing to the above readers
@@ -211,10 +211,10 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) (stdOut, stdEr
 		Tty:    false,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("Error executing remote command: %v", err)
+		return fmt.Errorf("Error executing remote command: %v", err)
 	}
 
-	return "", "", nil
+	return nil
 }
 
 // ExecInPod is a convenience function to call ExecCmd without needing to set up
@@ -237,7 +237,7 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 	}
 
 	// Exec the command in the pod. If the exec call failed, return the error
-	_, _, err := p.ExecCmd(opts, namespace)
+	err := p.ExecCmd(opts, namespace)
 	if err != nil {
 		return "", "", err
 	}
@@ -328,7 +328,7 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 		},
 	}
 
-	_, _, err = p.AttachCmd(opts)
+	err = p.AttachCmd(opts)
 	if err != nil {
 		p.Error("error running AttachCmd for CopyTar", "err", err)
 	}
