@@ -116,6 +116,10 @@ type AuthConfig struct {
 // ConfigPath returns the set KubeConfigPath, or a default otherwise.
 func (ac AuthConfig) ConfigPath() string {
 	if len(ac.KubeConfigPath) == 0 {
+		if kc := os.Getenv("KUBECONFIG"); kc != "" {
+			return kc
+		}
+
 		if home := homedir.HomeDir(); home != "" {
 			return filepath.Join(home, ".kube", "config")
 		}
