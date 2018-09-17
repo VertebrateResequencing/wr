@@ -21,6 +21,7 @@ package scheduler_test
 import (
 	"fmt"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,11 @@ var reqChan chan *kubescheduler.Request
 var podAliveChan chan *kubescheduler.PodAlive
 var clientset kubernetes.Interface
 var restConfig *rest.Config
+var serverSupportsEphemeralStorage bool
 var skip bool
+
+const minMajorForEphemeralStorage = 1
+const minMinorForEphemeralStorage = 10
 
 func init() {
 	lc = &client.Kubernetesp{}
@@ -57,6 +62,25 @@ func init() {
 	if autherr != nil {
 		skip = true
 		return
+	}
+
+	sv, errs := clientset.Discovery().ServerVersion()
+	if errs != nil {
+		skip = true
+		return
+	}
+	sMajor, erra := strconv.Atoi(sv.Major)
+	if erra != nil {
+		skip = true
+		return
+	}
+	sMinor, erra := strconv.Atoi(sv.Minor)
+	if erra != nil {
+		skip = true
+		return
+	}
+	if sMajor > minMajorForEphemeralStorage || (sMajor == minMajorForEphemeralStorage && sMinor >= minMinorForEphemeralStorage) {
+		serverSupportsEphemeralStorage = true
 	}
 
 	rand.Seed(time.Now().UnixNano())
@@ -191,7 +215,7 @@ func TestReqCheck(t *testing.T) {
 		}
 
 		// We are testing on 1.10, so ephemeral should always return true
-		if !resp.Ephemeral {
+		if serverSupportsEphemeralStorage && !resp.Ephemeral {
 			t.Errorf("Ephemeral check failed, should return true. (Are you running kubernetes 1.10+?)")
 		}
 	}
@@ -235,7 +259,7 @@ func TestReqCheck(t *testing.T) {
 		}
 
 		// We are testing on 1.10, so ephemeral should always return true
-		if !resp.Ephemeral {
+		if serverSupportsEphemeralStorage && !resp.Ephemeral {
 			t.Errorf("Ephemeral check failed, should return true. (Are you running kubernetes 1.10+?)")
 		}
 	}
