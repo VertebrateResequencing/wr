@@ -143,8 +143,8 @@ secrets so some private registries may not work (Node authentication should).
 
 See https://kubernetes.io/docs/concepts/containers/images/ for more details.
 
-Authenticating against the cluster will be attempted with configuration
-files found in ~/.kube, or with the $KUBECONFIG variable.`,
+Authenticating against the cluster will be attempted, by default, with the file
+pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		kubeLogger := setupLogging(kubeDebug)
 
@@ -710,6 +710,7 @@ func init() {
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
+	defaultKubeConfig := client.AuthConfig{}.ConfigPath()
 	kubeDeployCmd.Flags().StringVarP(&podPostCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each pod created")
 	kubeDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned pods alive for; 0 means forever")
 	kubeDeployCmd.Flags().IntVarP(&maxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of pods to spawn; 0 means unlimited (default 0)")
@@ -717,12 +718,12 @@ func init() {
 	kubeDeployCmd.Flags().StringVarP(&containerImage, "container_image", "i", defaultConfig.ContainerImage, "image to use for spawned pods")
 	kubeDeployCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "use your own namespace (default random)")
 	kubeDeployCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
-	kubeDeployCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
+	kubeDeployCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", defaultKubeConfig, "the path to a kubeconfig file to authenticate with")
 	kubeDeployCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 
 	kubeTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	kubeTearDownCmd.Flags().StringVarP(&kubeNamespace, "namespace", "n", "", "operate on a specific namespace (default last deployed)")
-	kubeTearDownCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", "", "the path to a kubeconfig file to authenticate with")
+	kubeTearDownCmd.Flags().StringVarP(&kubeConfig, "kube_config", "", defaultKubeConfig, "the path to a kubeconfig file to authenticate with")
 	kubeTearDownCmd.Flags().BoolVar(&kubeDebug, "debug", false, "include extra debugging information in the logs")
 }
 
