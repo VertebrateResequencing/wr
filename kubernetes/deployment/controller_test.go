@@ -120,7 +120,7 @@ func TestDeploy(t *testing.T) {
 
 		// Create the deployment we run the init script created from wherever
 		// we've decided to mount it.
-		err = dc.Client.Deploy(c.containerImage, c.tempMountPath,
+		err = dc.Client.Deploy(c.tempMountPath,
 			c.configMountPath+client.DefaultScriptName,
 			c.cmdArgs, configmap.ObjectMeta.Name,
 			c.configMountPath, c.requiredPorts)
