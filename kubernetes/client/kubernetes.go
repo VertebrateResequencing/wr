@@ -61,6 +61,8 @@ import (
 // configmap functions.
 const DefaultScriptName = "wr-boot"
 
+// ManagerImage is the image to use when deploying wr manager. It does not run
+// user jobs. It needs tar, cat, bash and other basic things.
 const ManagerImage = "ubuntu:latest"
 
 // ScriptTop and ScriptBottom sandwich the user's script when creating a config
