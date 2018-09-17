@@ -22,3 +22,5 @@ echo '* Running scheduler controller tests'
 GOCACHE=off go test -v ${SCRIPT_ROOT}/kubernetes/scheduler/...
 
 echo -e '- Tests completed successfully!'
+
+rm /tmp/kubeSchedulerControllerLog /tmp/deployment.test.* /tmp/wr
