@@ -408,15 +408,6 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 							SecurityContext: &apiv1.SecurityContext{
 								Privileged: boolTrue(),
 							},
-							Lifecycle: &apiv1.Lifecycle{
-								PreStop: &apiv1.Handler{
-									Exec: &apiv1.ExecAction{
-										Command: []string{"cat", tempMountPath + ".wr_development/log",
-											"cat", tempMountPath + ".wr_development/kubeSchedulerLog",
-											"cat", tempMountPath + ".wr_development/kubeSchedulerControllerLog"},
-									},
-								},
-							},
 						},
 					},
 					InitContainers: []apiv1.Container{
