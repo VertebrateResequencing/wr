@@ -61,6 +61,8 @@ import (
 // configmap functions.
 const DefaultScriptName = "wr-boot"
 
+const ManagerImage = "ubuntu:latest"
+
 // ScriptTop and ScriptBottom sandwich the user's script when creating a config
 // map to boot from
 const (
@@ -300,12 +302,11 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 // rights to manage the cluster. (ToDo: Write own ClusterRole  / Role) This
 // allows copying of wr to initcontainer, done by controller when ready (assumes
 // tar is available). Portforwarding done by controller when ready.
-// ContainerImage is the image used for the manager pod. TempMountPath is the
-// path at which the 'wr-tmp' directory is set to. It is also set to $HOME.
-// Command is the command to be executed in the container. CmdArgs are the
-// arguments to pass to the supplied command. ConfigMapName is the name of the
-// configmap to mount at the configMountPath provided.
-func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, command string, cmdArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
+// TempMountPath is the path at which the 'wr-tmp' directory is set to. It is
+// also set to $HOME. Command is the command to be executed in the container.
+// CmdArgs are the arguments to pass to the supplied command. ConfigMapName is
+// the name of the configmap to mount at the configMountPath provided.
+func (p *Kubernetesp) Deploy(tempMountPath string, command string, cmdArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	// Patch the default cluster role to allow pods and nodes to be viewed.
 	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -366,7 +367,7 @@ func (p *Kubernetesp) Deploy(containerImage string, tempMountPath string, comman
 					Containers: []apiv1.Container{
 						{
 							Name:  "wr-manager",
-							Image: containerImage,
+							Image: ManagerImage,
 							Ports: []apiv1.ContainerPort{
 								{
 									Name:          "wr-manager",
