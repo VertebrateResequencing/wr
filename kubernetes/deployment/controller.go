@@ -223,10 +223,8 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 		switch {
 		case obj.Status.InitContainerStatuses[0].State.Waiting != nil:
 			c.Debug("init container waiting!")
-
 		case obj.Status.InitContainerStatuses[0].State.Running != nil:
-			c.Debug("init container running!")
-			c.Debug("calling CopyTar", "files", c.Opts.Files)
+			c.Debug("init container running, calling CopyTar", "files", c.Opts.Files)
 			err := c.Client.CopyTar(c.Opts.Files, obj)
 			if err != nil {
 				c.Error("copying tarball", "error", err)
@@ -278,8 +276,6 @@ func (c *Controller) processPod(obj *apiv1.Pod) {
 					c.Error("Port forwarding error", "error", err)
 				}
 			}()
-		default:
-			c.Debug("not InitContainer or wr Manager container related")
 		}
 	} else {
 		c.Debug("initContainerStatuses not initialised yet")
