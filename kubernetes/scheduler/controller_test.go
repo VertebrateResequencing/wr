@@ -127,7 +127,7 @@ func init() {
 	wrLogDir := "/tmp/"
 
 	opts := kubescheduler.ScheduleOpts{
-		Files:        []client.FilePair{{Src: "/tmp/wr", Dest: "/wr-tmp/"}, {Src: caFile, Dest: wrDir}, {Src: certFile, Dest: wrDir}, {Src: keyFile, Dest: wrDir}},
+		Files:        []client.FilePair{{Src: "/tmp/wr", Dest: "/wr-tmp/wr"}, {Src: caFile, Dest: wrDir + "ca.pem"}, {Src: certFile, Dest: wrDir + "cert.pem"}, {Src: keyFile, Dest: wrDir + "key.pem"}},
 		CbChan:       callBackChan,
 		BadCbChan:    badCallBackChan,
 		ReqChan:      reqChan,

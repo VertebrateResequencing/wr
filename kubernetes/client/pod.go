@@ -99,7 +99,11 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 
 	// now lets create the header as needed for this file within the tarball
 	header := new(tar.Header)
-	header.Name = dest + path.Base(fpath)
+	if strings.HasSuffix(dest, "/") {
+		header.Name = dest + path.Base(fpath)
+	} else {
+		header.Name = dest
+	}
 	header.Size = stat.Size()
 	header.Mode = int64(stat.Mode())
 	header.ModTime = stat.ModTime()
