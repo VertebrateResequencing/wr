@@ -70,7 +70,6 @@ var podConfigFiles string
 var kubeDebug bool
 var kubeNamespace string
 var maxPods int
-var scriptName string
 var configMapName string
 var kubeConfig string
 
@@ -109,11 +108,11 @@ defaults to /tmp, and commands will be run with the non-login environment
 variables of the pod the command is run on.
 
 The --script option value can be, for example, the path to a bash script that
-you want to run on any created pod before any commands run on them. You
-might install some software for example. Note that the script is run by default
-as root. If your bash script has commands with 'sudo' you may need to install sudo.
-This is usually when the image does not include it (e.g the ubuntu images).
-For debian based images this may look like 'apt-get -y install sudo'.
+you want to run on any created pod before any commands run on them. You might
+install some software for example. Note that the script is run by default as
+root. If your bash script has commands with 'sudo' you may need to install sudo.
+This is usually when the image does not include it (e.g the ubuntu images). For
+debian based images this may look like 'apt-get -y install sudo'.
 
 The --config_files option lets you specify comma separated arbitrary text file
 paths that should be copied from your local system to any created pods.
@@ -130,12 +129,15 @@ your s3 bucket(s).
 
 Deploy can work with most container images because it uploads wr to any pod it
 creates; your image does not have to have wr installed on it. The only
-requirements of the image are that it has tar, cat and bash installed.
-(Please only use bash.)
+requirements of the image are that it has tar, cat and bash installed. (Please
+only use bash for your shell.)
 
 For --mounts to work, fuse-utils must be installed, and /etc/fuse.conf should
-already have user_allow_other set or at least be present and commented out
-(wr will enable it).
+already have user_allow_other set. If using a minimal ubuntu image (such as the
+default), you might therefore supply a --script file that contains:
+apt-get update && apt-get install -y ca-certificates fuse
+(If all your jobs will use mounts, it makes more sense to specify a
+--container_image that has fuse pre-installed.)
 
 By default the 'ubuntu:latest' image is used. Currently any container registry
 natively supported by kubernetes should work, though there is no support for
@@ -199,6 +201,11 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			if errr != nil {
 				warn("Killing process returned error", "err", errr)
 			}
+		}
+
+		// *** can't figure out how to get non-localhost certs to work
+		if config.ManagerCertDomain != "" && config.ManagerCertDomain != "localhost" {
+			die("non-localhost domains are not currently supported with kubernetes deployments; reconfigure wr to use its own self-generated SSL certficate for localhost")
 		}
 
 		// later we will copy our server cert and key to the manager pod; if we
@@ -304,6 +311,27 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			info("please wait while wr is deployed to the cluster")
 		}
 
+		// later we will copy a file that configures wr with the correct ports
+		// and db backup; create that as a temp file now
+		tmpConfigFile, errt := ioutil.TempFile("", ".wr_k8s_config")
+		if errt != nil {
+			die("cannot create temporary config file: %s", errt)
+		}
+		defer func() {
+			errr := os.Remove(tmpConfigFile.Name())
+			if errr != nil {
+				warn("failed to remove temporary config file: %s", errr)
+			}
+		}()
+		_, errt = tmpConfigFile.Write([]byte(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\n", mp, wp, config.ManagerDbBkFile)))
+		if errt != nil {
+			die("failed to write to temporary config file: %s", errt)
+		}
+		errc := tmpConfigFile.Close()
+		if errc != nil {
+			die("failed to close temporary config file: %s", errc)
+		}
+
 		// Daemonise
 		fwPidPath := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
 		umask := 007
@@ -365,6 +393,11 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				debugStr = " --debug"
 			}
 
+			// we will have 2 configMaps, one for the manager pod that is
+			// hard-coded to be ubuntu where we will install certs and fuse,
+			// and one as the default for spawned runner pods
+			var managerConfigMapName string
+
 			// Look for a set of resources in the manager directory If found,
 			// load them else use a new empty set.
 			if _, serr := os.Stat(resourcePath); os.IsNotExist(serr) {
@@ -387,19 +420,26 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				}
 
 				// Create the configMap
-				cmap, errc := c.Client.CreateInitScriptConfigMap(string(postCreation))
+				pc := string(postCreation)
+				cmap, errc := c.Client.CreateInitScriptConfigMap(pc)
 				if errc != nil {
 					die("Failed to create config map: %s", errc)
 				}
-				scriptName = client.DefaultScriptName
 				configMapName = cmap.ObjectMeta.Name
+
+				pc = "apt-get update\napt-get install -y ca-certificates fuse\n"
+				cmap, errc = c.Client.CreateInitScriptConfigMap(pc)
+				if errc != nil {
+					die("Failed to create config map: %s", errc)
+				}
+				managerConfigMapName = cmap.ObjectMeta.Name
 
 				kubeNamespace = c.Client.NewNamespaceName
 
 				// Store the namespace and configMapName for fun and profit.
 				resources.Details["namespace"] = kubeNamespace
 				resources.Details["configMapName"] = configMapName
-				resources.Details["scriptName"] = scriptName
+				resources.Details["managerConfigMapName"] = managerConfigMapName
 
 				// Save resources.
 				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
@@ -412,7 +452,6 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 					warn("Failed to encode resource file: %s", err)
 				}
 				internal.LogClose(appLogger, file, "resource file", "path", resourcePath)
-
 			} else {
 				resources, erro := openResources(resourcePath)
 				if erro != nil {
@@ -420,7 +459,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				}
 				kubeNamespace = resources.Details["namespace"]
 				configMapName = resources.Details["configMapName"]
-				scriptName = resources.Details["scriptName"]
+				managerConfigMapName = resources.Details["managerConfigMapName"]
 
 				// Populate the rest of Kubernetesp
 				info("initialising to namespace %s", kubeNamespace)
@@ -448,16 +487,18 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			// Copy the wr-linux binary
 			files = append(files, client.FilePair{Src: exe, Dest: podBinDir})
 			// Copy cert, key & ca files
-			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/key.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
-			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/ca.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
-			files = append(files, client.FilePair{Src: filepath.Join(config.ManagerDir + "/cert.pem"), Dest: podBinDir + ".wr_" + config.Deployment + "/"})
+			files = append(files, client.FilePair{Src: config.ManagerKeyFile, Dest: podBinDir + ".wr_" + config.Deployment + "/key.pem"})
+			files = append(files, client.FilePair{Src: config.ManagerCAFile, Dest: podBinDir + ".wr_" + config.Deployment + "/ca.pem"})
+			files = append(files, client.FilePair{Src: config.ManagerCertFile, Dest: podBinDir + ".wr_" + config.Deployment + "/cert.pem"})
+			// Copy the temp config file for configuring wr
+			files = append(files, client.FilePair{Src: tmpConfigFile.Name(), Dest: podBinDir + ".wr_config.yml"})
 
 			// Specify deployment options
 			c.Opts = &kubedeployment.DeployOpts{
 				ContainerImage:  containerImage,
 				TempMountPath:   podBinDir,
 				Files:           files,
-				BinaryPath:      podScriptDir + scriptName,
+				BinaryPath:      podScriptDir + client.DefaultScriptName,
 				BinaryArgs:      binaryArgs,
 				ConfigMapName:   configMapName,
 				ConfigMountPath: podScriptDir,
@@ -469,18 +510,18 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			// Create the deployment if an existing one does not exist
 			if kubeDeploy {
 				info("creating wr deployment")
-				err = c.Client.Deploy(c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, c.Opts.ConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
+				err = c.Client.Deploy(c.Opts.TempMountPath, c.Opts.BinaryPath, c.Opts.BinaryArgs, managerConfigMapName, c.Opts.ConfigMountPath, c.Opts.RequiredPorts)
 				if err != nil {
 					die("failed to create deployment: %s", err)
 				}
 			}
+
 			// Start Controller
 			stopCh := make(chan struct{})
 			defer close(stopCh)
 			info("starting controller")
 			c.Run(stopCh)
 		}
-
 	},
 }
 
@@ -653,38 +694,22 @@ accessible.`,
 		}
 
 		// teardown kubernetes resources we created
-		if len(kubeNamespace) != 0 {
-			info("deleting namespace %s", kubeNamespace)
-			err = Client.TearDown(kubeNamespace)
-			if err != nil {
-				die("failed to delete the kubernetes resources previously created: %s", err)
-			}
-		} else {
-			info("deleting namespace %s", resources.Details["namespace"])
-			err = Client.TearDown(resources.Details["namespace"])
-			if err != nil {
-				die("failed to delete the kubernetes resources previously created: %s", err)
-			}
+		nameSpace := kubeNamespace
+		if nameSpace == "" {
+			nameSpace = resources.Details["namespace"]
+		}
+		info("deleting namespace %s", nameSpace)
+		err = Client.TearDown(nameSpace)
+		if err != nil {
+			die("failed to delete the kubernetes resources previously created: %s", err)
 		}
 
 		err = os.Remove(filepath.Join(config.ManagerDir, "kubernetes_resources"))
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			warn("failed to delete the kubernetes resources file: %s", err)
 		}
-		err = os.Remove(filepath.Join(config.ManagerDir + "/key.pem"))
-		if err != nil {
-			warn("failed to delete key.pem: %s", err)
-		}
-		err = os.Remove(filepath.Join(config.ManagerDir + "/cert.pem"))
-		if err != nil {
-			warn("failed to delete cert.pem: %s", err)
-		}
-		err = os.Remove(filepath.Join(config.ManagerDir + "/ca.pem"))
-		if err != nil {
-			warn("failed to delete ca.pem: %s", err)
-		}
 		err = os.Remove(filepath.Join(config.ManagerDir + "/client.token"))
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			warn("failed to delete the client token : %s", err)
 		}
 
@@ -756,8 +781,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	}
 
 	// Remove the '~/' prefix as tar will create a ~/.. file. We don't want
-	// this. Replace '~/' with podBinDir which we define as $HOME. Remove the
-	// file name, just returning the directory it is in.
+	// this. Replace '~/' with podBinDir which we define as $HOME.
 	dests := []string{}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "~/") {
@@ -770,7 +794,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 			// Trim prefix dir = strings.TrimPrefix(dir, "~") Add podBinDir as
 			// new prefix
 			dir = podBinDir + dir + "/"
-			dests = append(dests, dir)
+			dests = append(dests, dir+filepath.Base(path))
 		} else {
 			warn("File with path %s is being ignored as it does not have prefix '~/'", path)
 		}

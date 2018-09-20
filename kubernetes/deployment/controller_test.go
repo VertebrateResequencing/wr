@@ -167,7 +167,7 @@ func TestDeploy(t *testing.T) {
 		}
 
 		dc.Opts = &kubedeployment.DeployOpts{
-			Files:         []client.FilePair{{Src: "/tmp/wr", Dest: "/wr-tmp/"}, {Src: caFile, Dest: wrDir}, {Src: certFile, Dest: wrDir}, {Src: keyFile, Dest: wrDir}},
+			Files:         []client.FilePair{{Src: "/tmp/wr", Dest: "/wr-tmp/wr"}, {Src: caFile, Dest: wrDir + "ca.pem"}, {Src: certFile, Dest: wrDir + "cert.pem"}, {Src: keyFile, Dest: wrDir + "key.pem"}},
 			RequiredPorts: c.requiredPorts,
 			ResourcePath:  resourcepath,
 			Logger:        log15.New(),
@@ -185,6 +185,7 @@ func TestDeploy(t *testing.T) {
 		jq, err := jobqueue.Connect("localhost:8080", caFile, "localhost", []byte{}, 27*time.Second)
 		if err != nil {
 			t.Errorf("Failed to connect to jobqueue: %s", err)
+			continue
 		}
 		if jq.ServerInfo.Mode != "started" {
 			t.Errorf("Jobqueue not started, current mode : %s", jq.ServerInfo.Mode)

@@ -61,9 +61,10 @@ import (
 // configmap functions.
 const DefaultScriptName = "wr-boot"
 
-// ManagerImage is the image to use when deploying wr manager. It does not run
-// user jobs. It needs tar, cat, bash and other basic things.
-const ManagerImage = "ubuntu:latest"
+// MinimalImage is the image to use when deploying wr manager and for init
+// containers. It does not run user jobs. It needs tar, cat, bash,
+// ca-certificates, fuse and other basic things.
+const MinimalImage = "ubuntu:17.10"
 
 // ScriptTop and ScriptBottom sandwich the user's script when creating a config
 // map to boot from
@@ -373,7 +374,7 @@ func (p *Kubernetesp) Deploy(tempMountPath string, command string, cmdArgs []str
 					Containers: []apiv1.Container{
 						{
 							Name:  "wr-manager",
-							Image: ManagerImage,
+							Image: MinimalImage,
 							Ports: []apiv1.ContainerPort{
 								{
 									Name:          "wr-manager",
@@ -411,6 +412,10 @@ func (p *Kubernetesp) Deploy(tempMountPath string, command string, cmdArgs []str
 									Name:  "HOME",
 									Value: tempMountPath,
 								},
+								{
+									Name:  "USER",
+									Value: "root",
+								},
 							},
 							SecurityContext: &apiv1.SecurityContext{
 								Privileged: boolTrue(),
@@ -420,7 +425,7 @@ func (p *Kubernetesp) Deploy(tempMountPath string, command string, cmdArgs []str
 					InitContainers: []apiv1.Container{
 						{
 							Name:      "init-container",
-							Image:     "ubuntu:17.10",
+							Image:     MinimalImage,
 							Command:   []string{"/bin/tar", "-xf", "-"},
 							Stdin:     true,
 							StdinOnce: true,
@@ -562,7 +567,7 @@ func (p *Kubernetesp) Spawn(baseContainerImage string, tempMountPath string, bin
 			InitContainers: []apiv1.Container{
 				{
 					Name:      "runner-init-container",
-					Image:     "ubuntu:latest",
+					Image:     MinimalImage,
 					Command:   []string{"/bin/tar", "-xf", "-"},
 					Stdin:     true,
 					StdinOnce: true,
@@ -644,7 +649,6 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 		if v == md5 {
 			match = k
 		}
-
 	}
 	if len(match) != 0 {
 		return p.configMapClient.Get(match, metav1.GetOptions{})

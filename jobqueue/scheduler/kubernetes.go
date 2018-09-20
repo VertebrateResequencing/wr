@@ -238,7 +238,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 
 	// Rewrite config files.
 	files := s.rewriteConfigFiles(s.config.ConfigFiles)
-	files = append(files, client.FilePair{Src: s.config.LocalBinaryPath, Dest: s.config.TempMountPath})
+	files = append(files, client.FilePair{Src: s.config.LocalBinaryPath, Dest: s.config.TempMountPath + filepath.Base(s.config.LocalBinaryPath)})
 
 	// Initialise scheduler opts
 	opts := kubescheduler.ScheduleOpts{
@@ -344,7 +344,7 @@ func (s *k8s) notifyCallBack(callBackChan chan string, badCallBackChan chan *clo
 				go s.msgCB(msg)
 			}
 		case badServer := <-badCallBackChan:
-			s.Debug("Bad server callback notification", "msg", badServer)
+			s.Debug("Bad server callback notification", "name", badServer.Name, "problem", badServer.PermanentProblem())
 			if s.badServerCB != nil {
 				go s.badServerCB(badServer)
 			}
@@ -592,8 +592,7 @@ func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 
 // remove the '~/' prefix as tar will create a ~/.. file. We don't want this as
 // the files will be lost in the initcontainers filesystem. Replace '~/' with
-// TempMountPath which we define as $HOME in the created pods. Remove the file
-// name, just returning the directory it is in.
+// TempMountPath which we define as $HOME in the created pods.
 func (s *k8s) rewriteDests(paths []string) []string {
 	dests := []string{}
 	for _, path := range paths {
@@ -607,7 +606,7 @@ func (s *k8s) rewriteDests(paths []string) []string {
 			// Trim prefix dir = strings.TrimPrefix(dir, "~") Add podBinDir as
 			// new prefix
 			dir = s.config.TempMountPath + dir + "/"
-			dests = append(dests, dir)
+			dests = append(dests, dir+filepath.Base(path))
 		} else {
 			s.Warn("File may be lost as it does not have prefix '~/'", "file", path)
 			dests = append(dests, path)
