@@ -24,9 +24,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -371,8 +373,9 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			info("wr manager remotely started in namespace, pod: %s %s (%s)", namespace, managerPodName, sAddr(jq.ServerInfo))
 			info("wr's web interface can be reached locally at https://%s:%s/?token=%s", jq.ServerInfo.Host, jq.ServerInfo.WebPort, token)
 		} else {
-			// daemonized child, that will run until signalled to stop Set up
-			// logging to file
+			// daemonized child, that will run until signalled to stop
+
+			// Set up logging to file
 			kubeLogFile := filepath.Join(config.ManagerDir, kubeLogFileName)
 			fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())
 			if err != nil {
@@ -516,11 +519,15 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				}
 			}
 
-			// Start Controller
+			// Start Controller running, stopping it on signal
+			sigs := make(chan os.Signal, 2)
+			signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 			stopCh := make(chan struct{})
-			defer close(stopCh)
 			info("starting controller")
-			c.Run(stopCh)
+			go c.Run(stopCh)
+			<-sigs
+			close(stopCh)
+			info("gracefully stopped controller after receiving signal")
 		}
 	},
 }
