@@ -304,7 +304,10 @@ func (p *Kubernetesp) CopyTar(files []FilePair, pod *apiv1.Pod) error {
 	done := make(chan struct{})
 	go func() {
 		defer func() {
-			err = pipeWriter.Close()
+			errc := pipeWriter.Close()
+			if errc != nil {
+				p.Error("error closing tar pipe", "err", errc)
+			}
 		}()
 
 		err = makeTar(files, pipeWriter)

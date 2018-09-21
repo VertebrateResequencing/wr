@@ -41,7 +41,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -81,7 +80,6 @@ type Controller struct {
 	workqueue         workqueue.RateLimitingInterface
 	opts              ScheduleOpts // Options for the scheduler
 	nodeResources     map[nodeName]corev1.ResourceList
-	nodeResourcesSet  bool
 	nodeResourceMutex *sync.RWMutex
 	podAliveMap       *sync.Map
 	log15.Logger
@@ -271,9 +269,10 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	c.Debug("In Run(), starting workers")
 
 	for i := 0; i < threadiness; i++ {
-		go wait.Until(c.runReqCheck, time.Second, stopCh)
-		go wait.Until(c.runPodAlive, time.Second, stopCh)
-		go wait.Until(c.runWorker, time.Second, stopCh)
+		go c.reqCheckHandler(stopCh)
+		go c.podAliveHandler(stopCh)
+		go c.processItems(stopCh)
+		time.Sleep(1 * time.Second)
 	}
 
 	<-stopCh
@@ -281,19 +280,25 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	return nil
 }
 
-// continually call processNextWorkItem to read and process the next message on
-// the workqueue
-func (c *Controller) runWorker() {
-	for c.processNextWorkItem() {
+// processItems calls processNextWorkItem() repeatedly until the given chan
+// is closed.
+func (c *Controller) processItems(stopCh <-chan struct{}) {
+	for {
+		select {
+		case <-stopCh:
+			return
+		default:
+			c.processNextWorkItem()
+		}
 	}
 }
 
 // processNextWorkItem reads a single work item off the workqueue and attempts
 // to process it, by calling the syncHandler.
-func (c *Controller) processNextWorkItem() bool {
-	obj, shutdown := c.workqueue.Get()
+func (c *Controller) processNextWorkItem() {
+	obj, shutdown := c.workqueue.Get() // this blocks until there's something to get
 	if shutdown {
-		return false
+		return
 	}
 
 	// Call done so workqueue knows we have finished processing this item
@@ -309,7 +314,7 @@ func (c *Controller) processNextWorkItem() bool {
 		// attempting to process an invalid work item.
 		c.workqueue.Forget(obj)
 		utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-		return true
+		return
 	}
 
 	// Run syncHandler, passing it the namespace/name key of the resource to
@@ -318,8 +323,6 @@ func (c *Controller) processNextWorkItem() bool {
 	// handleErr will handle adding to the queue again if retries are not
 	// exceeded. If there is no error, it will forget the key.
 	c.handleErr(err, key)
-
-	return true
 }
 
 func (c *Controller) processItem(key string) error {
@@ -344,7 +347,8 @@ func (c *Controller) processItem(key string) error {
 		}
 
 		// Pass the node to processNode
-		return c.processNode(node)
+		c.processNode(node)
+		return nil
 	}
 
 	// It has a namespace, it must be a pod.
@@ -455,19 +459,14 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 }
 
 // processNode is called whenever an informer encounters a changed node.
-func (c *Controller) processNode(node *corev1.Node) error {
+func (c *Controller) processNode(node *corev1.Node) {
 	// Keep a running total of the total allocatable resources. Adds information
 	// to a map[nodeName]resourcelist.
-	c.Debug("adding node to resource map", "node", node.ObjectMeta.Name, "resources", node.Status.Allocatable)
-	c.Debug("obtaining resourcemutex Lock()")
+	// c.Debug("adding node to resource map", "node", node.ObjectMeta.Name, "resources", node.Status.Allocatable)
 	c.nodeResourceMutex.Lock()
-	c.Debug("obtained resourcemutex Lock()")
 	// Set the allocatable resource amount
 	c.nodeResources[nodeName(node.ObjectMeta.Name)] = node.Status.Allocatable
-	c.nodeResourcesSet = true
 	c.nodeResourceMutex.Unlock()
-	c.Debug("returned resourcemutex Lock()")
-	return nil
 }
 
 // Nice unified error handling
@@ -506,114 +505,109 @@ func (c *Controller) sendBadServer(server *cloud.Server) {
 	}()
 }
 
-func (c *Controller) runReqCheck() {
-	c.Debug("runReqCheck() called")
-	c.nodeResourceMutex.RLock()
-	if c.nodeResourcesSet {
-		c.nodeResourceMutex.RUnlock()
-		for c.reqCheckHandler() {
-			c.Debug("inside loop whilst reqCheckHandler is true")
-		}
-	} else {
-		c.nodeResourceMutex.RUnlock()
-		c.Debug("Waiting for node resources to be set")
-	}
-	c.Debug("runReqCheck() exiting")
-}
-
 // For now ignore that you can set quotas on a k8s cluster. Assume that the user
 // can schedule an entire node. Not using PV's at all here. Currently there is
 // no way to catastrophically fail, if that were to happen, this func should
 // return falses ToDO: Multiple PV/Not PV types.
-func (c *Controller) reqCheckHandler() bool {
+func (c *Controller) reqCheckHandler(stopCh <-chan struct{}) {
 	c.Debug("reqCheckHandler() called.")
-	req := <-c.opts.ReqChan
-	c.Debug("reqCheckHandler() received req.")
-	c.Debug("obtaining RLock()")
-	c.nodeResourceMutex.RLock()
-	c.Debug("obtained RLock()")
 
-	defer c.nodeResourceMutex.RUnlock()
-	defer c.Debug("returned RLock()")
+REQS:
+	for {
+		select {
+		case req := <-c.opts.ReqChan:
+			c.Debug("reqCheckHandler() received req.")
+			c.nodeResourceMutex.RLock()
 
-	StorageEphemeralEnabled := false
-
-	// Check if any node reports ephemeral storage
-	for _, n := range c.nodeResources {
-		if _, ok := n["ephemeral-storage"]; ok {
-			StorageEphemeralEnabled = true
-		}
-	}
-
-	// If no node reports ephemeral storage, turn off the check. Disk requests
-	// will silently ignored
-	if !StorageEphemeralEnabled {
-		for _, n := range c.nodeResources {
-			// A Node should always have equal or more resource than the
-			// request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 =
-			// '<'), return when the first node that meets the requirements is
-			// found.
-			if n.Cpu().Cmp(req.Cores) != -1 && n.Memory().Cmp(req.RAM) != -1 {
-				c.Debug("returning schedulable from reqCheckHandler", "req", req)
-				req.CbChan <- Response{
-					Error:     nil, // It is possible to eventually schedule
-					Ephemeral: StorageEphemeralEnabled,
-				}
-
-				// If disk was requested, warn.
-				if resource.NewQuantity(int64(0), resource.DecimalSI).Cmp(req.Disk) != 0 {
-					c.sendErrChan(`The cluster is not reporting node ephemeral storage.
-				If your command requires more storage than is available on the node or there are competing requests it may fail.`)
-				}
-
-				return true
+			if len(c.nodeResources) == 0 {
+				c.nodeResourceMutex.RUnlock()
+				c.Debug("reqCheckHandler() has no node resources yet")
+				time.Sleep(100 * time.Millisecond)
+				c.opts.ReqChan <- req
+				continue REQS
 			}
-		}
-	} else { // Otherwise turn it on
-		for _, n := range c.nodeResources {
-			// A Node should always have equal or more resource than the
-			// request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 =
-			// '<'), return when the first node that meets the requirements is
-			// found.
-			if n.Cpu().Cmp(req.Cores) != -1 &&
-				n.StorageEphemeral().Cmp(req.Disk) != -1 &&
-				n.Memory().Cmp(req.RAM) != -1 {
-				c.Debug("returning schedulable from reqCheckHandler", "req", req)
-				req.CbChan <- Response{
-					Error:     nil, // It is possible to eventually schedule
-					Ephemeral: StorageEphemeralEnabled,
+
+			StorageEphemeralEnabled := false
+
+			// Check if any node reports ephemeral storage
+			for _, n := range c.nodeResources {
+				if _, ok := n["ephemeral-storage"]; ok {
+					StorageEphemeralEnabled = true
 				}
-
-				return true
 			}
+
+			// If no node reports ephemeral storage, turn off the check. Disk requests
+			// will silently ignored
+			if !StorageEphemeralEnabled {
+				for _, n := range c.nodeResources {
+					// A Node should always have equal or more resource than the
+					// request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 =
+					// '<'), return when the first node that meets the requirements is
+					// found.
+					if n.Cpu().Cmp(req.Cores) != -1 && n.Memory().Cmp(req.RAM) != -1 {
+						c.Debug("returning schedulable from reqCheckHandler", "req", req)
+						req.CbChan <- Response{
+							Error:     nil, // It is possible to eventually schedule
+							Ephemeral: StorageEphemeralEnabled,
+						}
+
+						// If disk was requested, warn.
+						if resource.NewQuantity(int64(0), resource.DecimalSI).Cmp(req.Disk) != 0 {
+							c.sendErrChan(`The cluster is not reporting node ephemeral storage.
+						If your command requires more storage than is available on the node or there are competing requests it may fail.`)
+						}
+
+						c.nodeResourceMutex.RUnlock()
+						continue REQS
+					}
+				}
+			} else { // Otherwise turn it on
+				for _, n := range c.nodeResources {
+					// A Node should always have equal or more resource than the
+					// request. (The  .Cmp function works:  1 = '>', 0 = '==', -1 =
+					// '<'), return when the first node that meets the requirements is
+					// found.
+					if n.Cpu().Cmp(req.Cores) != -1 &&
+						n.StorageEphemeral().Cmp(req.Disk) != -1 &&
+						n.Memory().Cmp(req.RAM) != -1 {
+						c.Debug("returning schedulable from reqCheckHandler", "req", req)
+						req.CbChan <- Response{
+							Error:     nil, // It is possible to eventually schedule
+							Ephemeral: StorageEphemeralEnabled,
+						}
+
+						c.nodeResourceMutex.RUnlock()
+						continue REQS
+					}
+				}
+			}
+			c.nodeResourceMutex.RUnlock()
+
+			c.Error("reqCheck failed. No node has capacity for request", "req", req)
+			req.CbChan <- Response{
+				Error:     fmt.Errorf("No node has the capacity to schedule the current job"),
+				Ephemeral: StorageEphemeralEnabled}
+			c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
+		case <-stopCh:
+			return
 		}
 	}
-
-	c.Error("reqCheck failed. No node has capacity for request", "req", req)
-	req.CbChan <- Response{
-		Error:     fmt.Errorf("No node has the capacity to schedule the current job"),
-		Ephemeral: StorageEphemeralEnabled}
-	c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
-
-	return true
-}
-
-func (c *Controller) runPodAlive() {
-	c.Debug("runPodAlive() called")
-	for c.podAliveHandler() {
-		c.Debug("podAliveHandler() returned true")
-	}
-	c.Debug("runPodAlive() exiting")
 }
 
 // podAliveHandler receives a request and adds the channel in that request to
 // the podAliveMap with the key being the UID of the pod.
-func (c *Controller) podAliveHandler() bool {
+func (c *Controller) podAliveHandler(stopCh <-chan struct{}) {
 	c.Debug("podAliveHandler() called")
-	req := <-c.opts.PodAliveChan
-	c.Debug("received PodAlive Request", "pod", req.Pod.ObjectMeta.Name)
-	// Store the error channel in the map.
-	c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req)
-	c.Debug("Stored alive request for pod in map, returning true", "pod", req.Pod.ObjectMeta.Name)
-	return true
+
+	for {
+		select {
+		case req := <-c.opts.PodAliveChan:
+			c.Debug("received PodAlive Request", "pod", req.Pod.ObjectMeta.Name)
+			// Store the error channel in the map.
+			c.podAliveMap.Store(req.Pod.ObjectMeta.UID, req)
+			c.Debug("Stored alive request for pod in map", "pod", req.Pod.ObjectMeta.Name)
+		case <-stopCh:
+			return
+		}
+	}
 }
