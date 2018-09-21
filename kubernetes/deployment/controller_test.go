@@ -182,6 +182,8 @@ func TestDeploy(t *testing.T) {
 
 		// Don't move this to a new test, the call to connect() waits and keeps
 		// the controller running, this allows time for the manager to be bootstrapped.
+		// *** for unknown reason, we never manage to connect when testing under
+		//      race...
 		jq, err := jobqueue.Connect("localhost:8080", caFile, "localhost", []byte{}, 27*time.Second)
 		if err != nil {
 			t.Errorf("Failed to connect to jobqueue: %s", err)
