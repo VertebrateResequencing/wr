@@ -220,7 +220,6 @@ func TestReqCheck(t *testing.T) {
 		}
 	}
 
-	// Assume the CI VM won't have 42 cores, ram or disk.
 	failCases := []struct {
 		cores int
 		ram   int
@@ -389,6 +388,5 @@ func TestRunCmd(t *testing.T) {
 		if err == nil {
 			t.Errorf("errChan received no error")
 		}
-		t.Logf("errChan received error: %s", err)
 	}
 }
