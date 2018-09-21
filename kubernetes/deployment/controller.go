@@ -28,7 +28,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/kubernetes/client"
@@ -37,7 +36,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -128,7 +126,7 @@ func (c *Controller) HasSynced() bool {
 }
 
 // Run starts SharedInformer watching for pods, and sends their keys to
-// workqueue StopCh used to send interrupt.
+// workqueue. StopCh used to send interrupt.
 func (c *Controller) Run(stopCh <-chan struct{}) {
 	c.Logger = c.Opts.Logger.New("deployment", "kubernetes")
 	c.createQueueAndInformer()
@@ -145,23 +143,32 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 		return
 	}
 
-	// runWorker loops until 'bad thing'. '.Until' will restart the worker after
-	// a second
-	wait.Until(c.runWorker, time.Second, stopCh)
+	// keep processing items until we are stopped
+	go c.processItems(stopCh)
+	<-stopCh
 }
 
-func (c *Controller) runWorker() {
-	// processNextWorkItem automatically waits for work
-	for c.processNextItem() {
-		// loop
+// processItems calls processNextItem() repeatedly until the given chan is
+// closed.
+func (c *Controller) processItems(stopCh <-chan struct{}) {
+	for {
+		select {
+		case <-stopCh:
+			return
+		default:
+			c.processNextItem()
+		}
 	}
 }
 
-func (c *Controller) processNextItem() bool {
+func (c *Controller) processNextItem() {
 	// pull next key from queue. Look up key in cache.
 	key, quit := c.queue.Get()
 	if quit {
-		return false
+		// *** currently we don't care about this and just keep calling this
+		// method during processItems(); don't know if this is correct, but
+		// seemed to be the original author's intent
+		return
 	}
 
 	// Indicate to queue key has been processed
@@ -183,8 +190,6 @@ func (c *Controller) processNextItem() bool {
 		c.queue.Forget(key)
 		utilruntime.HandleError(err)
 	}
-
-	return true
 }
 
 // processItem(key) is where we define how to react to an item coming off the
