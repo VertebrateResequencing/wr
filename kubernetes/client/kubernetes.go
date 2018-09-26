@@ -709,3 +709,41 @@ func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
 	_, err := p.serviceClient.Create(service)
 	return err
 }
+
+// CheckWRDeploymentExists checks  if a wr deployment exists in a given namespace. If
+// the deployment exists, it returns true. If no deployment is found it returns
+// false and silences the not found error. If the deployment exists but an error is
+// returned it returns true with the error.
+func (p *Kubernetesp) CheckWRDeploymentExists(namespace string) (bool, error) {
+	_, err := p.clientset.AppsV1beta1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// The deployment was not found, therefore it is not healthy.
+			return false, nil
+		}
+	}
+	// Some error may, the deployment exists. Return true and the possible error
+	return true, err
+}
+
+// CheckWRDeploymentHealthy checks if the wr deployment in a given namespace is
+// healthy. It does this by getting the deployment object for 'wr-manager' and
+// checking the DeploymentAvailable condition is true.
+func (p *Kubernetesp) CheckWRDeploymentHealthy(namespace string) (bool, error) {
+	deployment, err := p.clientset.AppsV1beta1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+	// We've succesfully got the deployment, lets check the Available condition
+	// and make sure its active. If it's not active, it may be in the
+	// CrashLoopBackOff cycle.
+	for _, condition := range deployment.Status.Conditions {
+		if condition.Type == appsv1beta1.DeploymentAvailable {
+			if condition.Status == apiv1.ConditionFalse {
+				return false, fmt.Errorf("Deployment Unhealthy: %s", condition.Message)
+			}
+		}
+	}
+	return true, nil
+
+}
