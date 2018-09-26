@@ -39,7 +39,6 @@ import (
 	"github.com/kardianos/osext"
 	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -194,7 +193,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
 		if fmRunning {
-			info("killing stale daemon with PID %s.", fmPid)
+			info("killing stale daemon with PID", fmPid)
 			stale, err := os.FindProcess(fmPid)
 			if err != nil {
 				warn("Failed to find process", "err", err)
@@ -269,14 +268,19 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 
 		var kubeDeploy bool //defaults false
 
-		// If a namespace is passed it takes priority.
+		// A namespace is passed, it takes priority.
 		if len(kubeNamespace) != 0 {
-			_, err = c.Clientset.AppsV1().Deployments(kubeNamespace).Get("wr-manager", metav1.GetOptions{})
+			// Check if a previous deployment exists
+			exists, err := c.Client.CheckWRDeploymentExists(kubeNamespace)
 			if err != nil {
-				if errors.IsNotFound(err) {
-					// set the flag that tells the daemon to redeploy.
-					kubeDeploy = true
-				} else {
+				die("wr-manager deployment found but an error occured: %s", err)
+			}
+			// If no previous deployment exists, create one. If a deployment exists, check its health.
+			if !exists {
+				kubeDeploy = true
+			} else {
+				healthy, err := c.Client.CheckWRDeploymentHealthy(kubeNamespace)
+				if !healthy {
 					die("wr-manager deployment found but not healthy: %s", err)
 				}
 			}
@@ -294,13 +298,17 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 
 				namespace := resources.Details["namespace"]
 
-				// check for a healthy deployment
-				_, err = c.Clientset.AppsV1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+				// Check if a previous deployment exists
+				exists, err := c.Client.CheckWRDeploymentExists(namespace)
 				if err != nil {
-					if errors.IsNotFound(err) {
-						// set the flag that tells the daemon to redeploy.
-						kubeDeploy = true
-					} else {
+					die("wr-manager deployment found but an error occured: %s", err)
+				}
+				// If no previous deployment exists, create one. If a deployment exists, check its health.
+				if !exists {
+					kubeDeploy = true
+				} else {
+					healthy, err := c.Client.CheckWRDeploymentHealthy(namespace)
+					if !healthy {
 						die("wr-manager deployment found but not healthy: %s", err)
 					}
 				}
