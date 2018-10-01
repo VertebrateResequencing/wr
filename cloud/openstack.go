@@ -150,6 +150,9 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	if err != nil {
 		return err
 	}
+	if opts.TenantID == "" {
+		return fmt.Errorf("either OS_TENANT_ID or OS_PROJECT_ID must be set")
+	}
 	p.tenantID = opts.TenantID
 	opts.AllowReauth = true
 	provider, err := openstack.AuthenticatedClient(opts)
