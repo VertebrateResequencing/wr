@@ -44,6 +44,7 @@ const (
 	restWarningsEndpoint   = "/rest/v1/warnings/"
 	restBadServersEndpoint = "/rest/v1/servers/"
 	restFileUploadEndpoint = "/rest/v1/upload/"
+	restInfoEndpoint       = "/rest/v1/info/"
 	restFormTrue           = "true"
 	bearerSchema           = "Bearer "
 )
@@ -878,6 +879,32 @@ func restFileUpload(s *Server) http.HandlerFunc {
 		err = encoder.Encode(msg)
 		if err != nil {
 			s.Warn("restFileUpload failed to encode success msg", "err", err)
+		}
+	}
+}
+
+// restInfo lets you get info on self.
+func restInfo(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue server status", false)
+
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		err := encoder.Encode(s.ServerInfo)
+		if err != nil {
+			s.Warn("restStatus failed to encode ServerInfo", "err", err)
 		}
 	}
 }
