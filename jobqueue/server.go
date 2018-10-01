@@ -645,6 +645,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		mux.HandleFunc(restFileUploadEndpoint, restFileUpload(s))
+		mux.HandleFunc(restInfoEndpoint, restInfo(s))
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
