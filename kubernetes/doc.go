@@ -25,7 +25,7 @@ of kubernetes concepts is assumed, along with an understanding of client-go.
 (https://github.com/kubernetes/client-go)
 
 See the links in the deployment and scheduler controller docs for information on
-controllers. (Also commonly referred to operators)
+controllers. (Also commonly referred to operators.)
 
 Below is a diagram showing the packages involved in each step of the deployment
 and operation of the wr kubernetes scheduler. It is also the recommended reading
