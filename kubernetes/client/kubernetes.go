@@ -254,7 +254,10 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 				err = p.CreateNewNamespace(p.NewNamespaceName)
 				if err != nil {
 					p.Crit("failed to create provided namespace", "namespace", p.NewNamespaceName, "error", err)
+					return err
 				}
+			} else {
+				return err
 			}
 		}
 	} else {
