@@ -108,7 +108,8 @@ type ConfigKubernetes struct {
 	// for more details
 	DNSNameServers []string
 
-	// Please only use bash for now!
+	// Shell is the name of the shell to use, but only 'bash' is really
+	// guaranteed to work.
 	Shell string
 
 	// StateUpdateFrequency is the frequency at which to check spawned servers
@@ -222,11 +223,12 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Initialise all internal clients on  the provided namespace
+
+	// Initialise all internal clients on the provided namespace
 	err = s.libclient.Initialize(kubeClient, s.config.Namespace)
 	if err != nil {
 		s.Crit("failed to initialise the internal clients to namespace", "namespace", s.config.Namespace, "error", err)
-		panic(err)
+		return err
 	}
 
 	// Initialise the informer factory Confine all informers to the provided
