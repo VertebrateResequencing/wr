@@ -361,9 +361,11 @@ func init() {
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
-	//nolint
-	addCmd.Flags().MarkHidden("reserve_timeout")
 
+	err := addCmd.Flags().MarkHidden("reserve_timeout")
+	if err != nil {
+		die("cloud not hide reserver_timeout option: %s", err)
+	}
 }
 
 // convert cmd,cwd columns in to Dependency.
