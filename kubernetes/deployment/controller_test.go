@@ -24,6 +24,8 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +88,36 @@ func TestDeploy(t *testing.T) {
 	if skip {
 		t.Skip("skipping test; failed to access cluster")
 	}
+
+	testLogger := log15.New()
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+	config := internal.ConfigLoad("development", true, testLogger)
+	mPort, err := strconv.Atoi(config.ManagerPort)
+	if err != nil {
+		t.Fatal("could not determine manager port")
+	}
+	wPort, err := strconv.Atoi(config.ManagerWeb)
+	if err != nil {
+		t.Fatal("could not determine web port")
+	}
+
+	// this test needs the wr executable to be compiled
+	wrExe := "/tmp/wr"
+	if _, err := os.Stat(wrExe); os.IsNotExist(err) {
+		if err := exec.Command("bash", "-c", "CGO_ENABLED=0 go build -i -o "+wrExe+" github.com/VertebrateResequencing/wr").Run(); err != nil {
+			t.Fatalf("could not build wr: %s", err)
+		}
+		defer func() {
+			errr := os.Remove(wrExe)
+			if errr != nil {
+				t.Logf("removal of temp wr exe failed: %s\n", errr)
+			}
+		}()
+	}
+	if _, err := os.Stat(wrExe); os.IsNotExist(err) {
+		t.Fatal("/tmp/wr missing")
+	}
+
 	cases := []struct {
 		containerImage  string
 		tempMountPath   string
@@ -100,7 +132,7 @@ func TestDeploy(t *testing.T) {
 			cmdArgs:         []string{"/wr-tmp/wr", "manager", "start", "-f"},
 			configMountPath: "/scripts/",
 			configMapData:   "echo \"hello world\"",
-			requiredPorts:   []int{8080, 8081},
+			requiredPorts:   []int{mPort, wPort},
 		},
 	}
 	for _, c := range cases {
@@ -184,7 +216,7 @@ func TestDeploy(t *testing.T) {
 		// the controller running, this allows time for the manager to be bootstrapped.
 		// *** for unknown reason, we never manage to connect when testing under
 		//      race...
-		jq, err := jobqueue.Connect("localhost:8080", caFile, "localhost", []byte{}, 27*time.Second)
+		jq, err := jobqueue.Connect(fmt.Sprintf("localhost:%s", config.ManagerPort), caFile, "localhost", []byte{}, 27*time.Second)
 		if err != nil {
 			t.Errorf("Failed to connect to jobqueue: %s", err)
 			continue
