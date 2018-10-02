@@ -269,7 +269,7 @@ func TestContainerImage(t *testing.T) {
 		for _, container := range pod.Spec.Containers {
 			if container.Name == "wr-runner" {
 				runnercontainer = &container
-				continue
+				break
 			}
 		}
 
