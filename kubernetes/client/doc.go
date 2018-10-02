@@ -80,25 +80,4 @@ It also contains the code for creating the tarball copied by the deployment
 controller, and getting the last n lines of logs from a wr-runner container in a
 pod.
 
-Possible Improvements:
-
-As of kubernetes 1.10 (March 2018) config maps now allow binary data to be
-stored in them, as well as strings. Exploiting this to copy the wr binaries and
-configuration files to the manager and runners will be more simple, less
-restrictive and quicker. However, at the time of writing (July 2018), most
-leading kubernetes providers are still running 1.9.X as default, and the
-Kubespray deployment method (that we use on our internal openstack) only
-supports up to 1.9.5. The tar method of bootstrapping should work on clusters
-going back to very early versions of kubernetes.
-
-Multiple directories copied for the tar step? (See above)
-
-A different way to deal with privileged = true needing to be set for FUSE to
-work. See: https://github.com/kubernetes/kubernetes/issues/7890. Currently I can
-only see this being an issue if a cluster is being shared by multiple users
-(managed service such as OpenShift?)
-
-A rough timeline / overview of the tasks I've undertaken to get to here can be
-found: https://trello.com/b/JoKK4lXo/kanban-work
-
 */

@@ -39,13 +39,11 @@ controllers:
     API Discussion, interesting but not crucial:
         * https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/controller-ref.md
 
-
-
 The scheduling controller is initialised in
 ../../jobqueue/scheduler/kubernetes.go (initialize()), where the ScheduleOpts is
 populated (from the manager cmd). This sets the default files to copy to all
 runners, and defines the call back channels for communication between the
-controller and the scheduleri implementation
+controller and the scheduleri implementation.
 
 The controller monitors pods and nodes in the cluster.
 
