@@ -39,7 +39,7 @@ echo 'echo golang:latest' | /tmp/wr add --cloud_os golang:latest --reserve_timeo
 echo 'echo genomicpariscentre/samtools' | /tmp/wr add --cloud_os genomicpariscentre/samtools --reserve_timeout 60
 
 echo '* Running e2e tests'
-GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/add_test
+go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/add_test
 
 # This should submit jobs that fit the entire node for each node in the cluster.
 # Submit twice to test jobs go from pending -> complete.
@@ -48,7 +48,7 @@ kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addre
 && kubectl get nodes -o json | jq -c -r '.items[] | .status | {cmd: " echo \(.addresses[] | select(.type=="InternalIP")| .address)", cpus: (((.capacity.cpu | tonumber)*10)-5), reserve_timeout: 10 }'  | /tmp/wr add -i max
 
 echo '* Running node capacity e2e test'
-GOCACHE=off go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/max_cluster
+go test -v -timeout 500s ${SCRIPT_ROOT}/kubernetes/e2e/max_cluster
 
 
 # Test kubeTeardownCmd
