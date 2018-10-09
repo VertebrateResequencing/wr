@@ -44,35 +44,28 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.10 of go is required):
+Alternatively, build it yourself (at least v1.11 of go is required):
 
-1. Install go on your machine and setup the environment according to:
+1. Install go on your machine according to:
 [golang.org/doc/install](https://golang.org/doc/install)
-(make sure to set your `$GOPATH`). An example way of setting up a personal Go
-installation in your home directory would be:
+An example way of setting up a personal Go installation in your home directory
+would be:
 
-        wget "https://dl.google.com/go/go1.10.3.linux-amd64.tar.gz"
-        tar -xvzf go1.10.3.linux-amd64.tar.gz && rm go1.10.3.linux-amd64.tar.gz
-        export GOROOT=$HOME/go
-        export PATH=$PATH:$GOROOT/bin
-        mkdir work
-        export GOPATH=$HOME/work
-        mkdir $GOPATH/bin
-        export PATH=$GOPATH/bin:$PATH
+        wget https://dl.google.com/go/go1.11.1.linux-amd64.tar.gz
+        tar -xvzf go1.11.1.linux-amd64.tar.gz && rm go1.11.1.linux-amd64.tar.gz
+        export PATH=$PATH:$HOME/go/bin
 
 2. Download, compile, and install wr:
 
-        go get -u -d -tags netgo github.com/VertebrateResequencing/wr
-        cd $GOPATH/src/github.com/VertebrateResequencing/wr
+        git clone https://github.com/VertebrateResequencing/wr.git
+        cd wr
         make
 
-3. The `wr` executable should now be in `$GOPATH/bin`
+3. The `wr` executable should now be in `$HOME/go/bin`
 
 If you don't have `make` installed and don't mind if `wr version` will not work,
 you can instead replace `make` above with:
 
-    curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-    $GOPATH/bin/dep ensure
     go install -tags netgo
 
 Usage instructions

@@ -1,26 +1,25 @@
---- 
-before_install: 
+---
+before_install:
   - "go get github.com/modocache/gover"
   - "go get github.com/mattn/goveralls"
-  - "curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh"
-cache: 
-  directories: 
-    - $GOPATH/pkg/
+cache:
+  directories:
+    - $HOME/go/pkg/
 dist: trusty
-env: 
-  global: 
+env:
+  global:
     - KUBERNETES_VERSION=v1.10.0
     - CHANGE_MINIKUBE_NONE_USER=true
     - WR_MANAGERPORT="11301"
-go: 
-  - "1.10.3"
+go:
+  - "1.11.1"
 go_import_path: github.com/VertebrateResequencing/wr
-install: 
-  - "dep ensure"
-jobs: 
-  include: 
-    - 
-      script: 
+install:
+  - "go get ./..."
+jobs:
+  include:
+    -
+      script:
         - "go test -tags netgo -coverprofile=queue.coverprofile -covermode count -failfast ./queue || travis_terminate 1"
         - "go test -tags netgo -coverprofile=sched.coverprofile -covermode count -failfast ./jobqueue/scheduler || travis_terminate 1"
         - "go test -tags netgo -coverprofile=jq.coverprofile -covermode count -failfast ./jobqueue || travis_terminate 1"
@@ -29,8 +28,8 @@ jobs:
         - "$HOME/gopath/bin/gover || travis_terminate 1"
         - "$HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci"
       stage: Tests
-    - 
-      before_script: 
+    -
+      before_script:
         - "sudo mount --make-rshared /"
         - "curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl && sudo mv kubectl /usr/local/bin/"
         - "curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 && chmod +x minikube && sudo mv minikube /usr/local/bin/"
@@ -42,8 +41,8 @@ jobs:
         - "git clone https://github.com/jetstack/ubuntu-nsenter && docker build -t ubuntu-nsenter ubuntu-nsenter/. && docker run -v /usr/local/bin:/hostbin ubuntu-nsenter cp /nsenter /hostbin/nsenter"
       script: "make test-k8s-unit"
       stage: "Kubernetes unit & Integration tests"
-    - 
-      before_script: 
+    -
+      before_script:
         - "sudo mount --make-rshared /"
         - "curl -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl && sudo mv kubectl /usr/local/bin/"
         - "curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 && chmod +x minikube && sudo mv minikube /usr/local/bin/"
@@ -56,6 +55,6 @@ jobs:
       script: "make test-e2e"
       stage: "e2e Tests"
 language: go
-services: 
+services:
   - docker
 sudo: required
