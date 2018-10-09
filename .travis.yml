@@ -15,7 +15,7 @@ go:
   - "1.11.1"
 go_import_path: github.com/VertebrateResequencing/wr
 install:
-  - "go get ./..."
+  - "go mod verify"
 jobs:
   include:
     -
