@@ -6,25 +6,15 @@ TAG := $(shell git describe --abbrev=0 --tags)
 LDFLAGS = -ldflags "-X ${PKG}/cmd.wrVersion=${VERSION}"
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
-SHELL := env PATH=${PATH} $(SHELL)
-DEP := $(shell command -v dep 2> /dev/null)
 
 default: install
 
-vendor: Gopkg.lock
-ifndef DEP
-	@mkdir -p ${GOPATH}/bin
-	@curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-endif
-	@dep ensure
-	@echo installed latest dependencies
-
 build: export CGO_ENABLED = 0
-build: vendor
+build:
 	go build -tags netgo ${LDFLAGS}
 
 install: export CGO_ENABLED = 0
-install: vendor
+install:
 	@rm -f ${GOPATH}/bin/wr
 	@go install -tags netgo ${LDFLAGS}
 	@echo installed to ${GOPATH}/bin/wr
