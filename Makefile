@@ -42,13 +42,20 @@ race:
 	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./cloud
 	@go test -p 1 -tags netgo -race -v --count 1 ./rp
 
-# go get -u gopkg.in/alecthomas/gometalinter.v2
-# gometalinter.v2 --install
+# cd $HOME/go && curl -L https://git.io/vp6lP | sh
+# until all go tools have module support:
+# mkdir -p $HOME/go/src
+# go mod vendor
+# rsync -a vendor/ ~/go/src/
+# rm -fr vendor
+# ln -s $PWD $HOME/go/src/github.com/VertebrateResequencing/wr
+lint: export GO111MODULE = off
 lint:
-	@gometalinter.v2 --vendor --aggregate --deadline=120s ./... | sort
+	@gometalinter --vendor --aggregate --deadline=120s ./... | sort
 
+lintextra: export GO111MODULE = off
 lintextra:
-	@gometalinter.v2 --vendor --aggregate --deadline=120s --disable-all --enable=gocyclo --enable=dupl ./... | sort
+	@gometalinter --vendor --aggregate --deadline=120s --disable-all --enable=gocyclo --enable=dupl ./... | sort
 
 clean:
 	@rm -f ./wr
