@@ -64,6 +64,8 @@ github.com/googleapis/gnostic v0.0.0-20170729233727-0c5108395e2d h1:7XGaL1e6bYS1
 github.com/googleapis/gnostic v0.0.0-20170729233727-0c5108395e2d/go.mod h1:sJBsCZ4ayReDTBIg8b9dl28c5xFWyhBTVRp3pOg5EKY=
 github.com/gophercloud/gophercloud v0.0.0-20181006170026-546f1f72e004 h1:SQYCwLS0pNAAOnpGNnoS+C1YINpEE7p0PQYAubJAsb4=
 github.com/gophercloud/gophercloud v0.0.0-20181006170026-546f1f72e004/go.mod h1:3WdhXV3rUYy9p6AUW8d94kr+HS62Y4VL9mBnFxsD8q4=
+github.com/gophercloud/gophercloud v0.0.0-20181009192228-f2f15d653e07 h1:tqvhHvbpc+m52nj1NxOBSvtPgf2iptPt39p/7U7GRZQ=
+github.com/gophercloud/gophercloud v0.0.0-20181009192228-f2f15d653e07/go.mod h1:3WdhXV3rUYy9p6AUW8d94kr+HS62Y4VL9mBnFxsD8q4=
 github.com/gopherjs/gopherjs v0.0.0-20180825215210-0210a2f0f73c h1:16eHWuMGvCjSfgRJKqIzapE78onvvTbdi1rMkU00lZw=
 github.com/gopherjs/gopherjs v0.0.0-20180825215210-0210a2f0f73c/go.mod h1:wJfORRmW1u3UXTncJ5qlYoELFm8eSnnEO6hX4iZ3EWY=
 github.com/gorilla/websocket v1.4.0 h1:WDFjx/TMzVgy9VdMMQi2K2Emtwi2QcUQsztZ/zLaH/Q=
