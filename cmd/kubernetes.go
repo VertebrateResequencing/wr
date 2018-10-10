@@ -193,14 +193,14 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 		fmPid, fmRunning := checkProcess(fmPidFile)
 
 		if fmRunning {
-			info("killing stale daemon with PID", fmPid)
+			info("killing stale daemon with PID %d", fmPid)
 			stale, err := os.FindProcess(fmPid)
 			if err != nil {
-				warn("Failed to find process", "err", err)
+				warn("Failed to find process: %s", err)
 			}
 			errr := stale.Kill()
 			if errr != nil {
-				warn("Killing process returned error", "err", errr)
+				warn("Killing process returned error: %s", errr)
 			}
 		}
 
