@@ -22,7 +22,7 @@
     "--enable=deadcode",
     "--enable=unparam",
     "--enable=goimports",
-    "--enable=gas",
+    "--enable=gosec",
     "--json",
     "--fast",
     "--deadline",
