@@ -444,7 +444,7 @@ func init() {
 
 	goflag.BoolVar(&lsfNoHeader, "noheader", false, "disable header output")
 	if err := goflag.CommandLine.Parse(lsfArgs); err != nil {
-		die("error parsing LSF args: ", err)
+		die("error parsing LSF args: %s", err)
 	}
 
 	RootCmd.AddCommand(lsfCmd)

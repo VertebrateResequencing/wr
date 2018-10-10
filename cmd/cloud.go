@@ -276,11 +276,11 @@ within OpenStack.`,
 				// due to temporary networking issues
 				err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
 				if err != nil {
-					warn("could not reestablish port forwarding to server %s, port %s", server.IP, mp)
+					warn("could not reestablish port forwarding to server %s, port %d", server.IP, mp)
 				}
 				err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 				if err != nil {
-					warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
+					warn("could not reestablish port forwarding to server %s, port %d", server.IP, wp)
 				}
 				jq = connect(2*time.Second, true)
 				if jq != nil {
