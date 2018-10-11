@@ -273,7 +273,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			// Check if a previous deployment exists
 			exists, err := c.Client.CheckWRDeploymentExists(kubeNamespace)
 			if err != nil {
-				die("wr-manager deployment found but an error occured: %s", err)
+				die("wr-manager deployment found but an error occurred: %s", err)
 			}
 			// If no previous deployment exists, create one. If a deployment exists, check its health.
 			if !exists {
@@ -301,7 +301,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				// Check if a previous deployment exists
 				exists, err := c.Client.CheckWRDeploymentExists(namespace)
 				if err != nil {
-					die("wr-manager deployment found but an error occured: %s", err)
+					die("wr-manager deployment found but an error occurred: %s", err)
 				}
 				// If no previous deployment exists, create one. If a deployment exists, check its health.
 				if !exists {
