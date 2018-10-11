@@ -9,4 +9,4 @@ includes:
 excludes:
   - \.git
 script:
-  - CGO_ENABLED=0 go build -tags netgo -ldflags "-X github.com/VertebrateResequencing/wr/cmd.wrVersion=`git describe --tags --always --long --dirty`"
+  - CGO_ENABLED=0 go build -tags netgo -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"

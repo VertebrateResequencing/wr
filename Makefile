@@ -3,7 +3,7 @@ PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
 GO_FILES := $(shell find . -name '*.go' | grep -v /vendor/)
 VERSION := $(shell git describe --tags --always --long --dirty)
 TAG := $(shell git describe --abbrev=0 --tags)
-LDFLAGS = -ldflags "-X ${PKG}/cmd.wrVersion=${VERSION}"
+LDFLAGS = -ldflags "-X ${PKG}/jobqueue.ServerVersion=${VERSION}"
 export GOPATH := $(shell go env GOPATH)
 PATH := $(PATH):${GOPATH}/bin
 

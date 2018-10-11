@@ -40,11 +40,13 @@ import (
 )
 
 const (
-	restJobsEndpoint       = "/rest/v1/jobs/"
-	restWarningsEndpoint   = "/rest/v1/warnings/"
-	restBadServersEndpoint = "/rest/v1/servers/"
-	restFileUploadEndpoint = "/rest/v1/upload/"
-	restInfoEndpoint       = "/rest/v1/info/"
+	restAPIVersion         = "1"
+	restVersionEndpoint    = "/rest/version/"
+	restJobsEndpoint       = "/rest/v" + restAPIVersion + "/jobs/"
+	restWarningsEndpoint   = "/rest/v" + restAPIVersion + "/warnings/"
+	restBadServersEndpoint = "/rest/v" + restAPIVersion + "/servers/"
+	restFileUploadEndpoint = "/rest/v" + restAPIVersion + "/upload/"
+	restInfoEndpoint       = "/rest/v" + restAPIVersion + "/info/"
 	restFormTrue           = "true"
 	bearerSchema           = "Bearer "
 )
@@ -913,7 +915,30 @@ func restInfo(s *Server) http.HandlerFunc {
 		encoder.SetEscapeHTML(false)
 		err := encoder.Encode(s.ServerInfo)
 		if err != nil {
-			s.Warn("restStatus failed to encode ServerInfo", "err", err)
+			s.Warn("restInfo failed to encode ServerInfo", "err", err)
+		}
+	}
+}
+
+// restVersion lets you get info on the version of the server and the supported
+// API version (we only support 1 API version at a time). This is the only
+// end point that doesn't need authentication.
+func restVersion(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue server version", false)
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		err := encoder.Encode(s.ServerVersions)
+		if err != nil {
+			s.Warn("restVersion failed to encode ServerVersions", "err", err)
 		}
 	}
 }
