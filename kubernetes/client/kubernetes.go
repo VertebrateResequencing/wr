@@ -737,7 +737,7 @@ func (p *Kubernetesp) CheckWRDeploymentHealthy(namespace string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// We've succesfully got the deployment, lets check the Available condition
+	// We've successfully got the deployment, lets check the Available condition
 	// and make sure its active. If it's not active, it may be in the
 	// CrashLoopBackOff cycle.
 	for _, condition := range deployment.Status.Conditions {
