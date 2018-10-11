@@ -829,7 +829,10 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// now teardown and die, once the user confirms
 			warn("Once you're done debugging, hit return to teardown")
 			var response string
-			fmt.Scanln(&response)
+			_, errs := fmt.Scanln(&response)
+			if errs != nil {
+				warn("failed to read your response: %s", errs)
+			}
 			teardown(provider)
 			die("toredown following failure to start the manager remotely")
 		}
