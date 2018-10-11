@@ -828,7 +828,7 @@ func TestJobqueue(t *testing.T) {
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateDelayed)
 
-					<-time.After(80 * time.Millisecond)
+					<-time.After(100 * time.Millisecond)
 					job, err = jq.Reserve(20 * time.Millisecond)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
