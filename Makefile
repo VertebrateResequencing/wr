@@ -51,11 +51,11 @@ race:
 # ln -s $PWD $HOME/go/src/github.com/VertebrateResequencing/wr
 lint: export GO111MODULE = off
 lint:
-	@gometalinter --vendor --aggregate --deadline=120s ./... | sort
+	@gometalinter --vendor --aggregate --deadline=240s ./... | sort
 
 lintextra: export GO111MODULE = off
 lintextra:
-	@gometalinter --vendor --aggregate --deadline=120s --disable-all --enable=gocyclo --enable=dupl ./... | sort
+	@gometalinter --vendor --aggregate --deadline=240s --disable-all --enable=gocyclo --enable=dupl ./... | sort
 
 clean:
 	@rm -f ./wr
