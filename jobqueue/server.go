@@ -77,6 +77,10 @@ const (
 	ServerModeDrain     = "draining"
 )
 
+// ServerVersion gets set during build:
+// go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
+var ServerVersion string
+
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
@@ -137,6 +141,12 @@ type ServerInfo struct {
 	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
 }
 
+// ServerVersions holds the server version (git tag) and API version supported.
+type ServerVersions struct {
+	Version string
+	API     string
+}
+
 // ServerStats holds information about the jobqueue server for sending to
 // clients.
 type ServerStats struct {
@@ -185,6 +195,7 @@ type schedulerIssue struct {
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo         *ServerInfo
+	ServerVersions     *ServerVersions
 	token              []byte
 	uploadDir          string
 	sock               mangos.Socket
@@ -509,6 +520,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		ServerVersions:     &ServerVersions{Version: ServerVersion, API: restAPIVersion},
 		token:              token,
 		uploadDir:          uploadDir,
 		sock:               sock,
@@ -645,6 +657,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		mux.HandleFunc(restFileUploadEndpoint, restFileUpload(s))
 		mux.HandleFunc(restInfoEndpoint, restInfo(s))
+		mux.HandleFunc(restVersionEndpoint, restVersion(s))
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
