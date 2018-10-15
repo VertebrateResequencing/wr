@@ -266,6 +266,8 @@ func TestJobqueueSignal(t *testing.T) {
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == JobStateBuried && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
 							j2worked <- true
+						} else {
+							fmt.Printf("\njob2 didn't behave correctly: %s, %s, %v, %d, %s\n", jqerr.Err, job2.State, job2.Exited, job2.Exitcode, job2.FailReason)
 						}
 					}
 					j2worked <- false
