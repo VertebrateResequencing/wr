@@ -2421,7 +2421,7 @@ func TestJobqueueHighMem(t *testing.T) {
 			So(deleted, ShouldEqual, 1)
 		})
 	} else {
-		SkipConvey("Skipping test that uses most of machine memory", func() {})
+		SkipConvey("Skipping test that uses most of machine memory", t, func() {})
 	}
 }
 
