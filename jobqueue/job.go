@@ -22,7 +22,6 @@ package jobqueue
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -668,37 +667,6 @@ func (j *Job) updateAfterExit(jes *JobEndState) {
 		j.ActualCwd = jes.Cwd
 	}
 	j.Unlock()
-}
-
-// updateRecsAfterFailure checks the FailReason and bumps RAM or Time as
-// appropriate.
-func (j *Job) updateRecsAfterFailure() {
-	switch j.FailReason {
-	case FailReasonRAM:
-		// increase by 1GB or [100% if under 8GB, 30% if over], whichever is
-		// greater, and round up to nearest 100
-		// *** increase to greater than max seen for jobs in our ReqGroup?
-		updatedMB := float64(j.PeakRAM)
-		if updatedMB <= RAMIncreaseMultBreakpoint {
-			updatedMB *= RAMIncreaseMultLow
-		} else {
-			updatedMB *= RAMIncreaseMultHigh
-		}
-		if updatedMB < float64(j.PeakRAM)+RAMIncreaseMin {
-			updatedMB = float64(j.PeakRAM) + RAMIncreaseMin
-		}
-		j.Requirements.RAM = int(math.Ceil(updatedMB/100) * 100)
-		j.Override = uint8(1)
-	case FailReasonDisk:
-		// flat increase of 30%
-		updatedMB := float64(j.PeakDisk) / float64(1024)
-		updatedMB *= RAMIncreaseMultHigh
-		j.Requirements.Disk = int(math.Ceil(updatedMB/100) * 100)
-		j.Override = uint8(1)
-	case FailReasonTime:
-		j.Requirements.Time += 1 * time.Hour
-		j.Override = uint8(1)
-	}
 }
 
 // Key calculates a unique key to describe the job.

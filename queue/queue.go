@@ -195,6 +195,7 @@ type ItemDef struct {
 	Priority     uint8 // highest priority is 255
 	Delay        time.Duration
 	TTR          time.Duration
+	StartQueue   SubQueue // blank, or one of SubQueueRun or SubQueueBury
 	Dependencies []string
 }
 
@@ -353,20 +354,35 @@ func (queue *Queue) Stats() *Stats {
 	}
 }
 
-// Add is a thread-safe way to add new items to the queue. After delay they will
-// switch to the ready sub-queue from where they can be Reserve()d. Once
-// reserved, they have ttr to Remove() the item, otherwise it gets released back
-// to the ready sub-queue. The priority determines which item will be next to be
-// Reserve()d, with priority 255 (the max) items coming before lower priority
-// ones (with 0 being the lowest). Items with the same priority number are
-// Reserve()d on a fifo basis. reserveGroup can be left as an empty string, but
-// specifying it then lets you provide the same to Reserve() to get the next
-// item with the given reserveGroup. The final argument to Add() is an optional
-// slice of item ids on which this item depends: this item will first enter the
-// dependency sub-queue and only transfer to the ready sub-queue when items with
-// these ids get Remove()d from the queue. Add() returns an item, which may have
-// already existed (in which case, nothing was actually added or changed).
-func (queue *Queue) Add(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) (*Item, error) {
+// Add is a thread-safe way to add new items to the queue.
+//
+// After delay they will switch to the ready sub-queue from where they can be
+// Reserve()d. Once reserved, they have ttr to Remove() the item, otherwise it
+// gets released back to the ready sub-queue.
+//
+// The priority determines which item will be next to be Reserve()d, with
+// priority 255 (the max) items coming before lower priority ones (with 0 being
+// the lowest). Items with the same priority number are Reserve()d on a fifo
+// basis.
+//
+// reserveGroup can be left as an empty string, but specifying it then lets you
+// provide the same to Reserve() to get the next item with the given
+// reserveGroup.
+//
+// startQueue should normally be supplied as an empty string, meaning the item
+// will start in the delay or ready sub-queue as described above. For the
+// purpose of recovering a queue following a crash, however, you can supply
+// either SubQueueRun or SubQueueBury to start the item in one of those
+// sub-queues. If the item has unmet dependencies, startQueue is ignored.
+//
+// The final argument to Add() is an optional slice of item ids on which this
+// item depends: this item will first enter the dependency sub-queue and only
+// transfer to the ready sub-queue when items with these ids get Remove()d from
+// the queue.
+//
+// Add() returns an item, which may have already existed (in which case, nothing
+// was actually added or changed).
+func (queue *Queue) Add(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -391,18 +407,35 @@ func (queue *Queue) Add(key string, reserveGroup string, data interface{}, prior
 		return item, nil
 	}
 
-	if delay.Nanoseconds() == 0 {
-		// put it directly on the ready queue
+	switch startQueue {
+	case SubQueueRun:
 		item.switchDelayReady()
-		queue.readyQueue.push(item)
+		item.touch()
+		queue.runQueue.push(item)
+		item.switchReadyRun()
 		queue.mutex.Unlock()
-		queue.changed(SubQueueNew, SubQueueReady, []*Item{item})
-		queue.readyAdded()
-	} else {
-		queue.delayQueue.push(item)
+		queue.ttrNotificationTrigger(item)
+		queue.changed(SubQueueNew, SubQueueRun, []*Item{item})
+	case SubQueueBury:
+		item.switchDelayReady()
+		queue.buryQueue.push(item)
+		item.switchRunBury()
 		queue.mutex.Unlock()
-		queue.changed(SubQueueNew, SubQueueDelay, []*Item{item})
-		queue.delayNotificationTrigger(item)
+		queue.changed(SubQueueNew, SubQueueBury, []*Item{item})
+	default:
+		if delay.Nanoseconds() == 0 {
+			// put it directly on the ready queue
+			item.switchDelayReady()
+			queue.readyQueue.push(item)
+			queue.mutex.Unlock()
+			queue.changed(SubQueueNew, SubQueueReady, []*Item{item})
+			queue.readyAdded()
+		} else {
+			queue.delayQueue.push(item)
+			queue.mutex.Unlock()
+			queue.changed(SubQueueNew, SubQueueDelay, []*Item{item})
+			queue.delayNotificationTrigger(item)
+		}
 	}
 
 	return item, nil
@@ -455,10 +488,13 @@ func (queue *Queue) AddMany(items []*ItemDef) (added, dups int, err error) {
 		return 0, 0, Error{queue.Name, "AddMany", "", ErrQueueClosed}
 	}
 
-	deferredTrigger := false
+	deferredDelayTrigger := false
+	deferredTTRTrigger := false
 	var addedReadyItems []*Item
 	var addedDelayItems []*Item
 	var addedDepItems []*Item
+	var addedRunItems []*Item
+	var addedBuryItems []*Item
 	for _, def := range items {
 		_, existed := queue.items[def.Key]
 		if existed {
@@ -472,17 +508,38 @@ func (queue *Queue) AddMany(items []*ItemDef) (added, dups int, err error) {
 		if len(def.Dependencies) > 0 {
 			queue.setItemDependencies(item, def.Dependencies)
 			addedDepItems = append(addedDepItems, item)
-		} else if def.Delay.Nanoseconds() == 0 {
-			// put it directly on the ready queue
-			item.switchDelayReady()
-			queue.readyQueue.push(item)
-			addedReadyItems = append(addedReadyItems, item)
 		} else {
-			queue.delayQueue.push(item)
-			addedDelayItems = append(addedDelayItems, item)
-			if !deferredTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
-				defer queue.delayNotificationTrigger(item)
-				deferredTrigger = true
+			switch def.StartQueue {
+			case SubQueueRun:
+				item.switchDelayReady()
+				item.touch()
+				queue.runQueue.push(item)
+				item.switchReadyRun()
+				addedRunItems = append(addedRunItems, item)
+				if !deferredTTRTrigger && queue.ttrTime.After(time.Now().Add(item.ttr)) {
+					defer queue.ttrNotificationTrigger(item)
+					deferredTTRTrigger = true
+				}
+			case SubQueueBury:
+				item.switchDelayReady()
+				queue.buryQueue.push(item)
+				item.switchReadyRun()
+				item.switchRunBury()
+				addedBuryItems = append(addedBuryItems, item)
+			default:
+				if def.Delay.Nanoseconds() == 0 {
+					// put it directly on the ready queue
+					item.switchDelayReady()
+					queue.readyQueue.push(item)
+					addedReadyItems = append(addedReadyItems, item)
+				} else {
+					queue.delayQueue.push(item)
+					addedDelayItems = append(addedDelayItems, item)
+					if !deferredDelayTrigger && queue.delayTime.After(time.Now().Add(item.delay)) {
+						defer queue.delayNotificationTrigger(item)
+						deferredDelayTrigger = true
+					}
+				}
 			}
 		}
 
@@ -500,6 +557,13 @@ func (queue *Queue) AddMany(items []*ItemDef) (added, dups int, err error) {
 	if len(addedDepItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueDependent, addedDepItems)
 	}
+	if len(addedRunItems) > 0 {
+		queue.changed(SubQueueNew, SubQueueRun, addedRunItems)
+	}
+	if len(addedBuryItems) > 0 {
+		queue.changed(SubQueueNew, SubQueueBury, addedBuryItems)
+	}
+
 	return added, dups, err
 }
 

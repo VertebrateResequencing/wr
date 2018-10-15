@@ -255,6 +255,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Lock()
 				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
 					srerr = ErrBadRequest
+					job.Unlock()
 				} else {
 					job.Host = cr.Job.Host
 					if job.Host != "" {
@@ -268,8 +269,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					job.Attempts++
 					job.killCalled = false
 					job.Lost = false
+					job.State = JobStateRunning
+
+					job.Unlock()
+					// *** when recovery of running jobs following a server
+					// crash is implemented, we'll save-to-disk that we started
+					// running this job
+					//s.db.updateJobAfterChange(job)
 				}
-				job.Unlock()
 			}
 		case "jtouch":
 			var job *Job
@@ -375,33 +382,27 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					// client reserved this job and started to run the job's cmd
 					job.UntilBuried--
 				}
-				if job.Exited && job.Exitcode != 0 {
-					job.updateRecsAfterFailure()
-				}
+
+				sgroup := job.schedulerGroup
+				job.Unlock()
+				var errq error
+				var msg string
 				if job.UntilBuried <= 0 {
-					sgroup := job.schedulerGroup
-					job.Unlock()
-					err := s.q.Bury(item.Key)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					} else {
-						s.decrementGroupCount(job.getSchedulerGroup())
-						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-						s.Debug("buried job", "cmd", job.Cmd, "schedGrp", sgroup)
-					}
+					errq = s.q.Bury(item.Key)
+					job.State = JobStateBuried
+					msg = "buried job"
 				} else {
-					sgroup := job.schedulerGroup
-					job.Unlock()
-					err := s.q.Release(item.Key)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					} else {
-						s.decrementGroupCount(job.getSchedulerGroup())
-						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-						s.Debug("released job", "cmd", job.Cmd, "schedGrp", sgroup)
-					}
+					errq = s.q.Release(item.Key)
+					job.State = JobStateDelayed
+					msg = "released job"
+				}
+				if errq != nil {
+					srerr = ErrInternalError
+					qerr = errq.Error()
+				} else {
+					s.decrementGroupCount(job.getSchedulerGroup())
+					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
+					s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
 				}
 			}
 		case "jbury":
@@ -414,6 +415,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Lock()
 				job.FailReason = cr.Job.FailReason
 				sgroup := job.schedulerGroup
+				job.State = JobStateBuried
 				job.Unlock()
 				err := s.q.Bury(item.Key)
 				if err != nil {
@@ -444,8 +446,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
 						s.Debug("unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
+						job.State = JobStateReady
 						job.Unlock()
 						kicked++
+
+						s.db.updateJobAfterChange(job)
 					}
 				}
 				sr = &serverResponse{Existed: kicked}

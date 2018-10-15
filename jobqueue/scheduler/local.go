@@ -245,7 +245,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 	s.mutex.Lock()
 
-	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
+	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
 			// update the job's count (only)
