@@ -757,6 +757,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	dockerCPU := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
+	machineRAM := 0
 	ranoutMem := false
 	ranoutTime := false
 	ranoutDisk := false
@@ -958,14 +959,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 					peakmem = mem
 
 					if peakmem > job.Requirements.RAM {
-						maxRAM, errp := internal.ProcMeminfoMBs()
+						// if we later fail we'll assume it's because we used
+						// too much memory, but won't kill the cmd unless...
+						ranoutMem = true
 
-						// we don't allow cmds to use both more than exepected
-						// and more than 90% of physical memory, or we could
-						// screw up the machine we're running on
-						if errp == nil && peakmem >= ((maxRAM/100)*ClientPercentMemoryKill) {
+						// ... it both uses more than exepected and more than
+						// 90% of physical memory, since we could screw up the
+						// machine we're running on
+						if machineRAM == 0 {
+							ram, errp := internal.ProcMeminfoMBs()
+							if errp == nil {
+								machineRAM = ram
+							}
+						}
+						if machineRAM > 0 && peakmem >= ((machineRAM/100)*ClientPercentMemoryKill) {
 							killErr = killCmd()
-							ranoutMem = true
 							stateMutex.Unlock()
 							break CHECKING
 						}
@@ -1423,7 +1431,6 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	// update our process with what the server would have done
 	if job.Exited && job.Exitcode != 0 {
 		job.UntilBuried--
-		job.updateRecsAfterFailure()
 	}
 	if job.UntilBuried <= 0 {
 		job.State = JobStateBuried
