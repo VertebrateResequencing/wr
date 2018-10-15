@@ -50,7 +50,10 @@ func TestQueue(t *testing.T) {
 				for i := 0; i < 10; i++ {
 					key := fmt.Sprintf("key_%d", i)
 					t := time.Duration((i+1)*100) * time.Millisecond
-					queue.Add(key, "", "data", 0, t, 0*time.Millisecond, "")
+					_, erra := queue.Add(key, "", "data", 0, t, 0*time.Millisecond, "")
+					if erra != nil {
+						done <- false
+					}
 				}
 				queue.Destroy()
 			}
@@ -71,7 +74,10 @@ func TestQueue(t *testing.T) {
 				for i := 0; i < 10; i++ {
 					key := fmt.Sprintf("key_%d", i)
 					t := time.Duration((i+1)*100) * time.Millisecond
-					queue.Add(key, "", "data", 0, 0*time.Millisecond, t, "")
+					_, erra := queue.Add(key, "", "data", 0, 0*time.Millisecond, t, "")
+					if erra != nil {
+						done <- false
+					}
 				}
 				for i := 0; i < 10; i++ {
 					queue.Reserve()
@@ -582,8 +588,10 @@ func TestQueue(t *testing.T) {
 				Convey("Touching doesn't mess with the correct queue order", func() {
 					queue = New("new queue")
 					defer queue.Destroy()
-					queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond, "")
-					queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond, "")
+					_, erra := queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond, "")
+					So(erra, ShouldBeNil)
+					_, erra = queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond, "")
+					So(erra, ShouldBeNil)
 					<-time.After(1 * time.Millisecond)
 					item1, _ := queue.Reserve()
 					So(item1.Key, ShouldEqual, "item1")
@@ -884,7 +892,10 @@ func TestQueue(t *testing.T) {
 
 	Convey("You can add items to the queue that start in the run or bury sub-queues", t, func() {
 		queue := New("run/bury queue")
-		defer queue.Destroy()
+		defer func() {
+			errd := queue.Destroy()
+			So(errd, ShouldBeNil)
+		}()
 
 		_, err := queue.Add("key_run", "", "data", 0, 100*time.Millisecond, 100*time.Millisecond, SubQueueRun)
 		So(err, ShouldBeNil)
@@ -1152,7 +1163,10 @@ func TestQueue(t *testing.T) {
 
 	Convey("You can add many items to the queue that start in the run or bury sub-queues, all in one go", t, func() {
 		queue := New("run/bury queue")
-		defer queue.Destroy()
+		defer func() {
+			errd := queue.Destroy()
+			So(errd, ShouldBeNil)
+		}()
 
 		queues := []SubQueue{SubQueueRun, SubQueueBury}
 		var itemdefs []*ItemDef
