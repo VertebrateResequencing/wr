@@ -325,6 +325,8 @@ func TestJobqueueBasics(t *testing.T) {
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
 	var server *Server
 	var token []byte
 	var errs error
@@ -741,6 +743,8 @@ func TestJobqueueMedium(t *testing.T) {
 		return
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	// start these tests anew because I don't want to mess with the timings in
 	// the above tests
@@ -2346,6 +2350,8 @@ func TestJobqueueHighMem(t *testing.T) {
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
 	// start these tests anew because they need a long TTR
 	maxRAM, errp := internal.ProcMeminfoMBs()
 	if errp == nil && maxRAM > 80000 { // authors high memory system
@@ -2422,6 +2428,9 @@ func TestJobqueueProduction(t *testing.T) {
 		return
 	}
 	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
 	managerDBBkFile := serverConfig.DBFileBackup
 
 	// start these tests anew because I need to disable dev-mode wiping of the
@@ -2830,6 +2839,8 @@ func TestJobqueueRunners(t *testing.T) {
 		return
 	}
 	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
