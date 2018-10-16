@@ -3585,7 +3585,7 @@ func TestJobqueueRunners(t *testing.T) {
 			done = make(chan bool, 1)
 			twoHundredCount := 0
 			go func() {
-				limit := time.After(240 * time.Second)
+				limit := time.After(180 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
@@ -3595,6 +3595,7 @@ func TestJobqueueRunners(t *testing.T) {
 							// switch to a new job array could leave us with no
 							// runners temporarily
 							jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateComplete, false, false)
+							fmt.Printf("\nno runners, %d jobs, err %s, expected %d\n", len(jobs), err, count+count2)
 							if err == nil && len(jobs) == count+count2 {
 								ticker.Stop()
 								done <- true
@@ -3604,6 +3605,7 @@ func TestJobqueueRunners(t *testing.T) {
 							server.sgcmutex.Lock()
 							if countg, existed := server.sgroupcounts["200:30:1:0"]; existed {
 								twoHundredCount = countg
+								fmt.Printf("\ntwoHundredCount: %d\n", countg)
 							}
 							server.sgcmutex.Unlock()
 						}
