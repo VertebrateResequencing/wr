@@ -370,39 +370,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "jrelease":
 			// move the job from the run queue to the delay queue, unless it has
 			// failed too many times, in which case bury
-			var item *queue.Item
 			var job *Job
-			item, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr)
 			if srerr == "" {
-				job.updateAfterExit(cr.JobEndState)
-				job.Lock()
-				job.FailReason = cr.Job.FailReason
-				if !job.StartTime.IsZero() {
-					// obey jobs's Retries count by adjusting UntilBuried if a
-					// client reserved this job and started to run the job's cmd
-					job.UntilBuried--
-				}
-
-				sgroup := job.schedulerGroup
-				job.Unlock()
-				var errq error
-				var msg string
-				if job.UntilBuried <= 0 {
-					errq = s.q.Bury(item.Key)
-					job.State = JobStateBuried
-					msg = "buried job"
-				} else {
-					errq = s.q.Release(item.Key)
-					job.State = JobStateDelayed
-					msg = "released job"
-				}
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason)
 				if errq != nil {
 					srerr = ErrInternalError
 					qerr = errq.Error()
-				} else {
-					s.decrementGroupCount(job.getSchedulerGroup())
-					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-					s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
 				}
 			}
 		case "jbury":

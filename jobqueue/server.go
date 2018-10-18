@@ -1176,24 +1176,32 @@ func (s *Server) createQueue() {
 		if s.rc != "" {
 			// clear out groups we no longer need
 			s.sgcmutex.Lock()
-			stillRunning := make(map[string]bool)
+			stillRunning := make(map[string]int)
 			for _, inter := range q.GetRunningData() {
 				job := inter.(*Job)
-				stillRunning[job.getSchedulerGroup()] = true
+				stillRunning[job.getSchedulerGroup()]++
 			}
 			for group := range s.sgroupcounts {
-				if _, needed := groups[group]; !needed && !stillRunning[group] {
-					s.sgroupcounts[group] = 0
-					s.wg.Add(1)
-					go func(group string) {
-						defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
-						defer s.wg.Done()
-						s.clearSchedulerGroup(group)
-					}(group)
+				running, still := stillRunning[group]
+				if _, needed := groups[group]; !needed {
+					if !still {
+						s.sgroupcounts[group] = 0
+						s.wg.Add(1)
+						go func(group string) {
+							defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
+							defer s.wg.Done()
+							s.clearSchedulerGroup(group)
+						}(group)
+					} else {
+						s.sgroupcounts[group] = running
+						// when the last of these finishes running, a clear will
+						// be triggered
+					}
 				}
 			}
 			for group := range s.sgrouptrigs {
-				if _, needed := groups[group]; !needed && !stillRunning[group] {
+				_, still := stillRunning[group]
+				if _, needed := groups[group]; !needed && !still {
 					delete(s.sgrouptrigs, group)
 				}
 			}
@@ -1465,6 +1473,41 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 	return added, dups, alreadyComplete, srerr, qerr
 }
 
+// releaseJob either releases or buries a job as per its retries, and updates
+// our scheduling counts as appropriate.
+func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string) error {
+	job.updateAfterExit(endState)
+	job.Lock()
+	job.FailReason = failReason
+	if !job.StartTime.IsZero() {
+		// obey jobs's Retries count by adjusting UntilBuried if a
+		// client reserved this job and started to run the job's cmd
+		job.UntilBuried--
+	}
+
+	sgroup := job.schedulerGroup
+	var errq error
+	var msg string
+	if job.UntilBuried <= 0 {
+		errq = s.q.Bury(job.Key())
+		job.State = JobStateBuried
+		msg = "buried job"
+	} else {
+		errq = s.q.Release(job.Key())
+		job.State = JobStateDelayed
+		msg = "released job"
+	}
+	job.Unlock()
+	if errq != nil {
+		return errq
+	}
+
+	s.decrementGroupCount(job.getSchedulerGroup())
+	s.db.updateJobAfterExit(job, job.StdOutC, job.StdErrC, true)
+	s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
+	return nil
+}
+
 // killJob sets the killCalled property on a job, to change the subsequent
 // behaviour of touching, which should result in an executing job killing
 // itself.
@@ -1486,28 +1529,8 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 	job.killCalled = true
 
 	if job.Lost {
-		job.UntilBuried--
-		ub := job.UntilBuried
-		job.Exited = true
-		job.Exitcode = -1
-		job.EndTime = time.Now()
-		job.FailReason = FailReasonLost
 		job.Unlock()
-		s.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
-
-		if ub <= 0 {
-			err = s.q.Bury(item.Key)
-			if err != nil {
-				return true, err
-			}
-			s.decrementGroupCount(job.getSchedulerGroup())
-			return true, err
-		}
-		err = s.q.Release(item.Key)
-		if err != nil {
-			return true, err
-		}
-		s.decrementGroupCount(job.getSchedulerGroup())
+		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost)
 		return true, err
 	}
 
@@ -1922,6 +1945,10 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 
 	if stopSigHandling {
 		close(s.stopSigHandling)
+	}
+
+	for group := range s.sgroupcounts {
+		s.clearSchedulerGroup(group)
 	}
 
 	// change touch to always return a kill signal
