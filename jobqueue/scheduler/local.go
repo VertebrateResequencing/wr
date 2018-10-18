@@ -89,6 +89,7 @@ type local struct {
 	cores            float64
 	rcount           int
 	mutex            sync.Mutex
+	rcMutex          sync.RWMutex
 	resourceMutex    sync.RWMutex
 	queue            *queue.Queue
 	running          map[string]int
@@ -288,6 +289,9 @@ func (s *local) maxCPU() int {
 // that key. If this results in an empty queue, stops autoProcessing. You must
 // hold the lock on s before calling this!
 func (s *local) removeKey(key string) {
+	if s.cleaned {
+		return
+	}
 	err := s.queue.Remove(key)
 	if err != nil {
 		// warn unless we've already removed this key
@@ -423,15 +427,17 @@ func (s *local) processQueue() error {
 			}()
 		}
 
-		// before allowing this function to be called again, wait for all the
-		// above runCmdFuncs to at least get as far as reserving their
-		// resources, so subsequent calls to canCountFunc will be accurate
+		// before allowing this function to be called again, or looping again,
+		// wait for all the above runCmdFuncs to at least get as far as
+		// reserving their resources, so subsequent calls to canCountFunc will
+		// be accurate
 		s.processing = true
-		go func() {
-			for i := 0; i < canCount; i++ {
-				<-reserved
-			}
 
+		for i := 0; i < canCount; i++ {
+			<-reserved
+		}
+
+		go func() {
 			s.mutex.Lock()
 			defer s.mutex.Unlock()
 			s.processing = false
@@ -498,9 +504,9 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) erro
 		return err
 	}
 
-	s.mutex.Lock()
+	s.rcMutex.Lock()
 	s.rcount++
-	s.mutex.Unlock()
+	s.rcMutex.Unlock()
 
 	s.resourceMutex.Lock()
 	s.ram += req.RAM
@@ -516,12 +522,12 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) erro
 		s.Error("runCmd wait", "cmd", cmd, "err", err)
 	}
 
-	s.mutex.Lock()
+	s.rcMutex.Lock()
 	s.rcount--
 	if s.rcount < 0 {
 		s.rcount = 0
 	}
-	s.mutex.Unlock()
+	s.rcMutex.Unlock()
 
 	return nil // do not return error running the command
 }
@@ -546,7 +552,7 @@ func (s *local) startAutoProcessing() {
 		return
 	}
 
-	s.stopAuto = make(chan bool)
+	s.stopAuto = make(chan bool, 100)
 	go func() {
 		defer internal.LogPanic(s.Logger, "auto processQueue", false)
 
@@ -589,6 +595,8 @@ func (s *local) busy() bool {
 	if s.cleaned {
 		return false
 	}
+	s.rcMutex.RLock()
+	defer s.rcMutex.RUnlock()
 	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
 		return false
 	}
