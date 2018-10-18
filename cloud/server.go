@@ -85,6 +85,7 @@ type Server struct {
 	sshClientConfig   *ssh.ClientConfig
 	sshClients        []*ssh.Client
 	sshClientState    []bool
+	sshStarted        bool
 	usedCores         float64
 	usedDisk          int
 	usedRAM           int
@@ -275,7 +276,15 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 			select {
 			case <-ticker.C:
 				client, err = sshDial(hostAndPort, s.sshClientConfig)
+
+				// if it's a known "ssh still starting up" error, wait until the
+				// timeout, unless ssh had worked previously, in which case
+				// bail immediatly if it's "no route to host"
 				if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
+					if s.sshStarted && strings.HasSuffix(err.Error(), "no route to host") {
+						err = errors.New("ssh used to work, but now there's no route to host")
+						break DIAL
+					}
 					continue DIAL
 				}
 
@@ -304,6 +313,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 
 	s.sshClients = append(s.sshClients, client)
 	s.sshClientState = append(s.sshClientState, true)
+	s.sshStarted = true
 
 	return client, len(s.sshClients) - 1, nil
 }
@@ -389,7 +399,7 @@ func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
 // good, on the assumption there is now "space" for a new session.
 func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
 	err := session.Close()
-	if err != nil && err.Error() != "EOF" {
+	if err != nil && err.Error() != "EOF" && !strings.Contains(err.Error(), "use of closed network connection") {
 		s.logger.Warn("failed to close ssh session", "err", err)
 	}
 
