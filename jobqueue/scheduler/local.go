@@ -552,6 +552,10 @@ func (s *local) startAutoProcessing() {
 		return
 	}
 
+	// processQueue() calls removeKey() which calls stopAutoProcessing() which
+	// can wait to send on stopAuto, but we only read from stopAuto when our
+	// processQueue() call is not running; solve the deadlock potential by
+	// buffering stopAuto
 	s.stopAuto = make(chan bool, 100)
 	go func() {
 		defer internal.LogPanic(s.Logger, "auto processQueue", false)
