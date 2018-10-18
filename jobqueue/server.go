@@ -1475,7 +1475,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
-func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string) error {
+func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool) error {
 	job.updateAfterExit(endState)
 	job.Lock()
 	job.FailReason = failReason
@@ -1503,7 +1503,7 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string) 
 	}
 
 	s.decrementGroupCount(job.getSchedulerGroup())
-	s.db.updateJobAfterExit(job, job.StdOutC, job.StdErrC, true)
+	s.db.updateJobAfterExit(job, endState.Stdout, endState.Stderr, forceStorage)
 	s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
 	return nil
 }
@@ -1530,7 +1530,7 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 
 	if job.Lost {
 		job.Unlock()
-		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost)
+		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false)
 		return true, err
 	}
 

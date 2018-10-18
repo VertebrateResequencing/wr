@@ -624,6 +624,13 @@ func TestJobqueueBasics(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(stdout, ShouldEqual, "b")
 
+				// make sure the stdout is actually stored in the database
+				retrieved, err := jq.GetByEssence(job.ToEssense(), true, false)
+				So(err, ShouldBeNil)
+				stdout, err = retrieved.StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "b")
+
 				// by comparison, compare normal behaviour, where the initial
 				// value of the envvar gets used for the job
 				os.Setenv("wr_jobqueue_test_no_envvar", "a")

@@ -373,7 +373,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			var job *Job
 			_, job, srerr = s.getij(cr)
 			if srerr == "" {
-				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason)
+				cr.JobEndState.Stdout = cr.Job.StdOutC
+				cr.JobEndState.Stderr = cr.Job.StdErrC
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true)
 				if errq != nil {
 					srerr = ErrInternalError
 					qerr = errq.Error()
