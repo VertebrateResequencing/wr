@@ -781,29 +781,35 @@ func TestOpenstack(t *testing.T) {
 
 				<-time.After(3000 * time.Millisecond)
 
-				oss.mutex.Lock()
+				oss.runMutex.Lock()
+				oss.serversMutex.RLock()
 				So(len(oss.servers)+len(oss.standins), ShouldEqual, numServers+1)
-				oss.mutex.Unlock()
+				oss.serversMutex.RUnlock()
+				oss.runMutex.Unlock()
 				So(oss.canCount(testReq), ShouldEqual, can-1)
 
 				<-done
 
+				oss.serversMutex.Lock()
 				for sid, server := range oss.servers {
 					if server.Destroyed() {
 						delete(oss.servers, sid)
 					}
 				}
 				So(len(oss.servers), ShouldEqual, numServers+1)
+				oss.serversMutex.Unlock()
 				So(oss.canCount(testReq), ShouldEqual, can)
 
 				<-time.After(20 * time.Second)
 
+				oss.serversMutex.Lock()
 				for sid, server := range oss.servers {
 					if server.Destroyed() {
 						delete(oss.servers, sid)
 					}
 				}
 				So(len(oss.servers), ShouldEqual, numServers)
+				oss.serversMutex.Unlock()
 				So(oss.canCount(testReq), ShouldEqual, can)
 			})
 
