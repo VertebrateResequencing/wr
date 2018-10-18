@@ -3589,10 +3589,12 @@ func TestJobqueueRunners(t *testing.T) {
 									done <- true
 									return
 								}
+								fmt.Printf("got %d complete jobs\n", len(jobs))
 							} else if twoHundredCount == 0 {
 								server.sgcmutex.Lock()
 								if countg, existed := server.sgroupcounts["200:30:1:0"]; existed {
 									twoHundredCount = countg
+									fmt.Printf("twoHundredCount now %d\n", countg)
 								}
 								server.sgcmutex.Unlock()
 							}
