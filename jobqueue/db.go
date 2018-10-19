@@ -1083,6 +1083,8 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		return 0, err
 	}
 
+	fmt.Printf("final max is %d; recommendation %d\n", max, recommendation)
+
 	if recommendation == 0 {
 		if max == 0 {
 			return recommendation, err
@@ -1094,8 +1096,10 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		recommendation = max
 	}
 
+	fmt.Printf("pre-round recommendation is %d vs rountAmount %d\n", recommendation, roundAmount)
 	if recommendation < roundAmount {
 		recommendation = roundAmount
+		fmt.Printf("set recommendation to roundamount\n")
 	}
 
 	if recommendation%roundAmount > 0 {
