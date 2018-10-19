@@ -982,12 +982,14 @@ func (s *Server) createQueue() {
 		}
 		s.ssmutex.RUnlock()
 
+		fmt.Printf("\nReadyAddedCallback got %d items\n", len(allitemdata))
+
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
 		groupsScheduledCounts := make(map[string]int)
 		noRecGroups := make(map[string]bool)
-		for _, inter := range allitemdata {
+		for i, inter := range allitemdata {
 			job := inter.(*Job)
 
 			// depending on job.Override, get memory, disk and time
@@ -999,6 +1001,9 @@ func (s *Server) createQueue() {
 				recommendedReq = rec
 			} else {
 				recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
+				if i == 0 {
+					fmt.Printf("\nrecm: %v\n", recm)
+				}
 				recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
 				recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
 				if errm != nil || errd != nil || errs != nil {
@@ -1044,6 +1049,9 @@ func (s *Server) createQueue() {
 					} else {
 						job.Requirements.RAM = recommendedReq.RAM
 					}
+				}
+				if i == 0 {
+					fmt.Printf("\njob.Requirements.RAM now: %v\n", job.Requirements.RAM)
 				}
 
 				if recommendedReq.Disk > 0 {
@@ -1094,6 +1102,7 @@ func (s *Server) createQueue() {
 					newRAM := int(math.Ceil(updatedMB/100) * 100)
 					if newRAM > job.Requirements.RAM {
 						job.Requirements.RAM = newRAM
+						fmt.Printf("\ndue to failure, job.Requirements.RAM now: %v\n", job.Requirements.RAM)
 					}
 				case FailReasonDisk:
 					// flat increase of 30%
@@ -1135,6 +1144,9 @@ func (s *Server) createQueue() {
 
 			prevSchedGroup := job.getSchedulerGroup()
 			schedulerGroup := req.Stringify()
+			if i == 0 {
+				fmt.Printf("\njob.Requirements.RAM finally %v, == group %s\n", req.RAM, schedulerGroup)
+			}
 			if prevSchedGroup != schedulerGroup {
 				job.setSchedulerGroup(schedulerGroup)
 				if prevSchedGroup != "" {
@@ -1160,6 +1172,9 @@ func (s *Server) createQueue() {
 					job.setScheduledRunner(true)
 				}
 				groups[schedulerGroup]++
+				if groups[schedulerGroup] == 1 || i == 0 || i == len(allitemdata)-1 {
+					fmt.Printf("groups[%s] now %d\n", schedulerGroup, groups[schedulerGroup])
+				}
 
 				if noRec {
 					noRecGroups[schedulerGroup] = true
@@ -1223,6 +1238,7 @@ func (s *Server) createQueue() {
 					countIncRunning -= groupsScheduledCounts[group]
 				}
 				s.sgroupcounts[group] = countIncRunning
+				fmt.Printf("set s.sgroupcounts[%s] = %d\n", group, countIncRunning)
 
 				// if we got no resource requirement recommendations for
 				// this group, we'll set up a retrigger of this ready
