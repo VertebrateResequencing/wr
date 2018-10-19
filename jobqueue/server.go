@@ -982,6 +982,8 @@ func (s *Server) createQueue() {
 		}
 		s.ssmutex.RUnlock()
 
+		fmt.Printf("\nReadyAddedCallback got %d items\n", len(allitemdata))
+
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
@@ -1160,6 +1162,7 @@ func (s *Server) createQueue() {
 					job.setScheduledRunner(true)
 				}
 				groups[schedulerGroup]++
+				fmt.Printf("groups[%s] now %d\n", schedulerGroup, groups[schedulerGroup])
 
 				if noRec {
 					noRecGroups[schedulerGroup] = true
@@ -1223,6 +1226,7 @@ func (s *Server) createQueue() {
 					countIncRunning -= groupsScheduledCounts[group]
 				}
 				s.sgroupcounts[group] = countIncRunning
+				fmt.Printf("set s.sgroupcounts[%s] = %d\n", group, countIncRunning)
 
 				// if we got no resource requirement recommendations for
 				// this group, we'll set up a retrigger of this ready
