@@ -1062,18 +1062,15 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		var prev []int
 		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
 			max, _ = strconv.Atoi(string(v))
-			fmt.Printf("max now %d\n", max)
 
 			count++
 			if count > 100 {
 				window = (float32(count) / 100) * jobStatWindowPercent
-				fmt.Printf("window now %f (%d /100 * %f)\n", window, count, jobStatWindowPercent)
 			}
 
 			prev = append(prev, max)
 			if float32(len(prev)) > window {
 				recommendation, prev = prev[0], prev[1:]
-				fmt.Printf("len(prev) %d > window %f, recommendation now %d\n", len(prev), window, recommendation)
 			}
 		}
 
@@ -1082,8 +1079,6 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 	if err != nil {
 		return 0, err
 	}
-
-	fmt.Printf("final max is %d; recommendation %d\n", max, recommendation)
 
 	if recommendation == 0 {
 		if max == 0 {
@@ -1096,14 +1091,11 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		recommendation = max
 	}
 
-	fmt.Printf("pre-round recommendation is %d vs rountAmount %d\n", recommendation, roundAmount)
 	if recommendation < roundAmount {
 		recommendation = roundAmount
-		fmt.Printf("set recommendation to roundamount\n")
 	}
 
 	if recommendation%roundAmount > 0 {
-		fmt.Printf("recommendation = ceil(%d / %d) * %d\n", recommendation, roundAmount, roundAmount)
 		recommendation = int(math.Ceil(float64(recommendation)/float64(roundAmount))) * roundAmount
 	}
 
