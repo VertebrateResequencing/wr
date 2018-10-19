@@ -1154,6 +1154,9 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 // cancelRun fails standins for the given cmd. Only call when you have the lock!
 func (s *opst) cancelRun(cmd string, desiredCount int) {
+	s.runMutex.Lock()
+	defer s.runMutex.Unlock()
+
 	if lookup, existed := s.cmdToStandins[cmd]; existed {
 		numStandins := len(lookup)
 		cancelCount := numStandins - desiredCount

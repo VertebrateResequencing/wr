@@ -261,7 +261,9 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 	s.mutex.Unlock()
 
-	s.startAutoProcessing()
+	if count > 0 {
+		s.startAutoProcessing()
+	}
 
 	// try and run the jobs in the queue
 	return s.processQueue()
