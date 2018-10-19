@@ -3601,6 +3601,12 @@ func TestJobqueueRunners(t *testing.T) {
 							continue
 						case <-limit:
 							ticker.Stop()
+							fmt.Printf("\nhit limit, sgroupcounts:\n")
+							server.sgcmutex.Lock()
+							for key, val := range server.sgroupcounts {
+								fmt.Printf(" %s => %d\n", key, val)
+							}
+							server.sgcmutex.Unlock()
 							done <- false
 							return
 						}
