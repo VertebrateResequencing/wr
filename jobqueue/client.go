@@ -1134,7 +1134,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 	}
 
-	if closeErr != nil {
+	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
 		if myerr != nil {
 			myerr = fmt.Errorf("%s; closing stderr/out of the cmd also failed: %s", myerr.Error(), closeErr.Error())
 		} else {
