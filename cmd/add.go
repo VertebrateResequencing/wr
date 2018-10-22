@@ -32,6 +32,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// maxScanTokenSize defines the size of bufio scan's buffer, enabling us to
+// parse very long lines - longer than the max length of a command supported by
+// shells such as bash.
+const maxScanTokenSize = 4096 * 1024
+
 // options for this cmd
 var reqGroup string
 var cmdTime string
@@ -540,6 +545,8 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	// of Jobs and Add() them in one go afterwards
 	var jobs []*jobqueue.Job
 	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, maxScanTokenSize)
+	scanner.Buffer(buf, maxScanTokenSize)
 	defaultedRepG := false
 	lineNum := 0
 	for scanner.Scan() {
@@ -598,6 +605,11 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		}
 
 		jobs = append(jobs, job)
+	}
+
+	serr := scanner.Err()
+	if serr != nil {
+		die("failed to read whole file: %s", serr.Error())
 	}
 
 	return jobs, isLocal, defaultedRepG
