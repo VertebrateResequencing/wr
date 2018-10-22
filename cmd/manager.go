@@ -444,9 +444,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", " for the kubernetes scheduler, provide an existing config map to initialise with all pods with. To be used instead of --cloud_script")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
-	managerStartCmd.Flags().StringVar(&cloudGatewayIP, "cloud_gateway_ip", defaultConfig.CloudGateway, "for cloud schedulers, gateway IP for the created subnet")
-	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the created subnet")
-	managerStartCmd.Flags().StringVar(&cloudDNS, "cloud_dns", defaultConfig.CloudDNS, "for cloud schedulers, comma separated DNS name server IPs to use in the created subnet")
+	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the subnet to spawn servers in")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
@@ -542,9 +540,7 @@ func startJQ(postCreation []byte) {
 			MaxLocalCores:        &maxLocalCores,
 			MaxLocalRAM:          &maxLocalRAM,
 			Shell:                config.RunnerExecShell,
-			GatewayIP:            cloudGatewayIP,
 			CIDR:                 cloudCIDR,
-			DNSNameServers:       strings.Split(cloudDNS, ","),
 		}
 		serverCIDR = cloudCIDR
 	case kubernetes:

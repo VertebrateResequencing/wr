@@ -94,6 +94,7 @@ type openstackp struct {
 	networkName       string
 	networkUUID       string
 	ownName           string
+	ownServer         *servers.Server
 	poolName          string
 	securityGroup     string
 	spawnFailed       bool
@@ -361,13 +362,6 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	}
 	resources.Details["keypair"] = kp.Name
 
-	// don't create any more resources if we're already running in OpenStack
-	//*** actually, if in cloud, we should create a security group that allows
-	// the given ports, only accessible by things in the current security group
-	if p.inCloud() {
-		return err
-	}
-
 	// get/create security group, and see if there's a default group
 	pager := secgroups.List(p.computeClient)
 	var group *secgroups.SecurityGroup
@@ -437,6 +431,40 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	resources.Details["secgroup"] = group.ID
 	p.securityGroup = resources.ResourceName
 	p.hasDefaultGroup = defaultGroupExists
+
+	// don't create any more resources if we're already running in OpenStack
+	if p.inCloud() {
+		// work out our network uuid, needed for spawning later
+	NETWORKS:
+		for networkName := range p.ownServer.Addresses {
+			networkUUID, erri := networks.IDFromName(p.networkClient, networkName)
+			if erri != nil {
+				return erri
+			}
+			if networkUUID != "" {
+				network, errg := networks.Get(p.networkClient, networkUUID).Extract()
+				if errg != nil {
+					return errg
+				}
+				for _, subnetID := range network.Subnets {
+					subnet, errg := subnets.Get(p.networkClient, subnetID).Extract()
+					if errg != nil {
+						return errg
+					}
+					if subnet.CIDR == cidr {
+						p.networkName = networkName
+						p.networkUUID = networkUUID
+						break NETWORKS
+					}
+				}
+			}
+		}
+
+		if p.networkUUID == "" {
+			return Error{"openstack", "deploy", ErrBadCIDR}
+		}
+		return nil
+	}
 
 	// get/create network
 	var network *networks.Network
@@ -553,40 +581,9 @@ func (p *openstackp) inCloud() bool {
 			for _, server := range serverList {
 				if nameToHostName(server.Name) == hostname {
 					p.ownName = hostname
-
-					// get the first networkUUID we come across *** not sure
-					// what the other possibilities are and what else we can do
-					// instead
-					for networkName := range server.Addresses {
-						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
-						if networkUUID != "" {
-							p.networkName = networkName
-							p.networkUUID = networkUUID
-							break
-						}
-					}
-
-					// get the first security group *** again, not sure how to
-					// pick the "best" if more than one
-					foundNonDefault := false
-					for _, smap := range server.SecurityGroups {
-						if value, found := smap["name"]; found && value.(string) != "" {
-							if value.(string) == "default" {
-								p.hasDefaultGroup = true
-							} else if !foundNonDefault {
-								p.securityGroup = value.(string)
-								foundNonDefault = true
-							}
-							if p.hasDefaultGroup && foundNonDefault {
-								break
-							}
-						}
-					}
-
-					if p.networkUUID != "" && p.securityGroup != "" {
-						inCloud = true
-						return false, nil
-					}
+					p.ownServer = &server
+					inCloud = true
+					return false, nil
 				}
 			}
 
