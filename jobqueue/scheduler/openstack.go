@@ -156,6 +156,20 @@ type ConfigOpenStack struct {
 	// same instance the manager is running on).
 	MaxInstances int
 
+	// MaxLocalCores is the maximum number of cores that can be used to run
+	// commands on the same instance the manager is running on. -1 (the default)
+	// means all cores can be used. 0 disables running commands on the manager's
+	// instance. To distinguish "not defined" from 0, the value is a reference
+	// to an int.
+	MaxLocalCores *int
+
+	// MaxLocalRAM is the maximum number of MB of memory that can be used to run
+	// commands on the same instance the manager is running on. -1 (the default)
+	// means all memory can be used. 0 disables running commands on the
+	// manager's instance. To distinguish "not defined" from 0, the value is a
+	// reference to an int.
+	MaxLocalRAM *int
+
 	// Shell is the shell to use to run your commands with; 'bash' is
 	// recommended.
 	Shell string
@@ -457,6 +471,16 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript, s.config.ConfigFiles, s.config.CIDR)
 	if err != nil {
 		return err
+	}
+	if s.config.MaxLocalCores != nil {
+		if *s.config.MaxLocalCores >= 0 && *s.config.MaxLocalCores < localhost.Flavor.Cores {
+			localhost.Flavor.Cores = *s.config.MaxLocalCores
+		}
+	}
+	if s.config.MaxLocalRAM != nil {
+		if *s.config.MaxLocalRAM >= 0 && *s.config.MaxLocalRAM < localhost.Flavor.RAM {
+			localhost.Flavor.RAM = *s.config.MaxLocalRAM
+		}
 	}
 	s.servers["localhost"] = localhost
 
