@@ -76,6 +76,7 @@ type opst struct {
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
 	runMutex          sync.Mutex
+	stopRunning       bool
 	log15.Logger
 }
 
@@ -821,6 +822,12 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 	s.runMutex.Lock()
 
+	if s.stopRunning {
+		s.runMutex.Unlock()
+		reservedCh <- false
+		return nil
+	}
+
 	// *** we need a better way for our test script to prove the bugs that rely
 	// on debugEffect, that doesn't affect non-testing code. Probably have to
 	// mock OpenStack instead at some point...
@@ -1329,6 +1336,7 @@ func (s *opst) cleanup() {
 	// prevent any further scheduling and queue processing, and destroy the
 	// queue
 	s.cleaned = true
+	s.stopRunning = true
 	err := s.queue.Destroy()
 	if err != nil {
 		s.Warn("cleanup queue destruction failed", "err", err)
@@ -1342,8 +1350,8 @@ func (s *opst) cleanup() {
 		}
 	}
 	s.waitingToSpawn = 0
-	s.cmdToStandins = nil
-	s.standinToCmd = nil
+	s.cmdToStandins = make(map[string]map[string]bool)
+	s.standinToCmd = make(map[string]map[string]bool)
 
 	// wait for any ongoing state update to complete
 	for {
