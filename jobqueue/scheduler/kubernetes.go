@@ -399,6 +399,7 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error 
 	if val, defined := req.Other["cloud_script"]; defined {
 		cmap, err := s.libclient.CreateInitScriptConfigMap(val)
 		if err != nil {
+			reservedCh <- false
 			return err
 		}
 		configMapName = cmap.ObjectMeta.Name
