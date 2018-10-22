@@ -95,11 +95,11 @@ on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
 OpenStack scheduler.
 
-Similarly, If using the Kubernetes scheduler you must already be running in a 
-pod. Be sure to pass a namespace for wr to use that will not have another wr 
+Similarly, If using the Kubernetes scheduler you must already be running in a
+pod. Be sure to pass a namespace for wr to use that will not have another wr
 user attempting to use it.
-Instead it is recommended to use 'wr kubernetes deploy' to bootstrap wr to a 
-cluster. 
+Instead it is recommended to use 'wr kubernetes deploy' to bootstrap wr to a
+cluster.
 
 If you want to start multiple managers up in different OpenStack networks that
 you've created yourself, note that --local_username will need to be globally
@@ -431,8 +431,8 @@ func init() {
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
 	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
-	managerStartCmd.Flags().IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(), "for local scheduler, maximum number of cores to use; 0 means unlimited")
-	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "for local scheduler, maximum MB of memory to use; 0 means unlimited")
+	managerStartCmd.Flags().IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(), "maximum number of local cores to use to run cmds; -1 means unlimited")
+	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "maximum MB of local memory to use to run cmds; -1 means unlimited")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
@@ -539,6 +539,8 @@ func startJQ(postCreation []byte) {
 			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
 			StateUpdateFrequency: 1 * time.Minute,
 			MaxInstances:         maxServers,
+			MaxLocalCores:        &maxLocalCores,
+			MaxLocalRAM:          &maxLocalRAM,
 			Shell:                config.RunnerExecShell,
 			GatewayIP:            cloudGatewayIP,
 			CIDR:                 cloudCIDR,

@@ -71,6 +71,8 @@ var setDomainIP bool
 var cloudDebug bool
 var cloudManagerTimeoutSeconds int
 var cloudResourceNameUniquer string
+var maxManagerCores int
+var maxManagerRAM int
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -126,6 +128,11 @@ Local paths that don't exist are silently ignored.
 This option is important if you want to be able to queue up commands that rely
 on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
 contain your credentials for connecting to your s3 bucket(s).
+
+The --max_local_cores and --max_local_memory options specify how much of the
+cloud server that runs wr manager itself should also be used to run commands.
+To have an uncontended manager, you could set --max_local_cores to 0, and wr
+will run all commands on additional spawned cloud servers.
 
 The --on_success optional value is the path to some executable that you want to
 run locally after the deployment is successful. The executable will be run with
@@ -591,6 +598,8 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")
+	cloudDeployCmd.Flags().IntVar(&maxManagerRAM, "max_local_ram", -1, "maximum MB of manager memory to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().StringVarP(&postDeploymentScript, "on_success", "x", defaultConfig.DeploySuccessScript, "path to a script to run locally after a successful deployment")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	cloudDeployCmd.Flags().IntVarP(&cloudMaxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
@@ -783,7 +792,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if cloudDebug {
 			debugStr = " --debug"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, cloudResourceNameUniquer, cloudManagerTimeoutSeconds, debugStr, wrEnvFileName)
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --max_cores %d --max_ram %d --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, cloudResourceNameUniquer, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, debugStr, wrEnvFileName)
 
 		var e string
 		_, e, err = server.RunCmd(mCmd, false)
