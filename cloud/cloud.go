@@ -99,6 +99,7 @@ var (
 	ErrNoFlavor        = "no server flavor can meet your resource requirements"
 	ErrBadFlavor       = "no server flavor with that id/name exists"
 	ErrBadRegex        = "your flavor regular expression was not valid"
+	ErrBadCIDR         = "no subnet matches your supplied CIDR"
 )
 
 // sshTimeOut is how long we wait for ssh to work when an ssh request is made to
