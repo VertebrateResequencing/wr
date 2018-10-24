@@ -193,7 +193,6 @@ func (s *local) reserveTimeout(req *Requirements) int {
 			s.Error("Failed to convert rtimeout to integer", "error", err)
 			return localReserveTimeout
 		}
-		s.Debug("setting runner rtimeout", "timeout", timeout)
 		return timeout
 	}
 	return localReserveTimeout
