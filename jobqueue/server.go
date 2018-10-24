@@ -1824,18 +1824,29 @@ func (s *Server) scheduleRunners(group string) {
 }
 
 // adjust our count of how many jobs with this schedulerGroup we need in the job
-// scheduler.
-func (s *Server) decrementGroupCount(schedulerGroup string) {
+// scheduler. Optionally supply the number to decrement by (default 1).
+func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int) {
+	drop := 1
+	if len(optionalDrop) == 1 {
+		drop = optionalDrop[0]
+	}
 	if s.rc != "" {
 		doSchedule := false
 		doTrigger := false
 		s.sgcmutex.Lock()
 		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
-			s.sgroupcounts[schedulerGroup]--
+			s.sgroupcounts[schedulerGroup] -= drop
+
+			if s.sgroupcounts[schedulerGroup] <= 0 {
+				s.sgcmutex.Unlock()
+				s.clearSchedulerGroup(schedulerGroup)
+				return
+			}
+
 			doSchedule = true
-			if count, set := s.sgrouptrigs[schedulerGroup]; set {
-				s.sgrouptrigs[schedulerGroup]++
-				if count >= 100 {
+			if _, set := s.sgrouptrigs[schedulerGroup]; set {
+				s.sgrouptrigs[schedulerGroup] += drop
+				if s.sgrouptrigs[schedulerGroup] >= 100 {
 					delete(s.sgrouptrigs, schedulerGroup)
 					if s.sgroupcounts[schedulerGroup] > 10 {
 						doTrigger = true

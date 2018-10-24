@@ -441,7 +441,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				keys := cr.Keys
 				for {
 					var skippedDeps []string
-					removedJobs := false
+					var toDelete []string
+					schedGroups := make(map[string]int)
+					var repGroups []string
 					for _, jobkey := range keys {
 						item, err := s.q.Get(jobkey)
 						if err != nil || item == nil {
@@ -465,17 +467,44 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						err = s.q.Remove(jobkey)
 						if err == nil {
 							deleted++
-							removedJobs = true
-							s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
+							toDelete = append(toDelete, jobkey)
+
+							job := item.Data.(*Job)
+							if job.getScheduledRunner() {
+								schedGroups[job.getSchedulerGroup()]++
+							}
+							repGroups = append(repGroups, job.RepGroup)
+							s.Debug("removed job", "cmd", job.Cmd)
 						}
 					}
 
-					// if we removed at least 1 job, and skipped any due to
-					// deps, repeat and see if we can remove everything desired
-					// by going down the dependency tree
-					if len(skippedDeps) > 0 && removedJobs {
-						keys = skippedDeps
-						continue
+					if len(toDelete) > 0 {
+						// delete from db live bucket all in one go
+						errd := s.db.deleteLiveJobs(toDelete)
+						if errd != nil {
+							s.Error("job deletion from database failed", "err", errd)
+						}
+
+						// decrement scheduler group counts, in one big go per
+						// group
+						for sg, count := range schedGroups {
+							s.decrementGroupCount(sg, count)
+						}
+
+						// clean up rpl lookups
+						s.rpl.Lock()
+						for i, rg := range repGroups {
+							delete(s.rpl.lookup[rg], toDelete[i])
+						}
+						s.rpl.Unlock()
+
+						// if any were skipped any due to deps, repeat and see
+						// if we can remove everything desired by going down
+						// the dependency tree
+						if len(skippedDeps) > 0 {
+							keys = skippedDeps
+							continue
+						}
 					}
 					break
 				}
