@@ -618,6 +618,29 @@ func (db *db) deleteLiveJob(key string) {
 	//*** we're not removing the lookup entries from the bucket*TK buckets...
 }
 
+// deleteLiveJobs remove multiple jobs from the live bucket.
+func (db *db) deleteLiveJobs(keys []string) error {
+	err := db.bolt.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsLive)
+		for _, key := range keys {
+			errd := b.Delete([]byte(key))
+			if errd != nil {
+				return errd
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	db.backgroundBackup()
+	//*** we're not removing the lookup entries from the bucket*TK buckets...
+
+	return nil
+}
+
 // recoverIncompleteJobs returns all jobs in the live bucket, for use when
 // restarting the server, allowing you start working on any jobs that were
 // stored with storeNewJobs() but not yet archived with archiveJob().
