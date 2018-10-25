@@ -348,9 +348,9 @@ type ServerConfig struct {
 // handles those clients.
 //
 // It returns a *Server that you will typically call Block() on to block until
-// until your executable receives a SIGINT or SIGTERM, or you call Stop(), at
-// which point the queues will be safely closed (you'd probably just exit at
-// that point).
+// your executable receives a SIGINT or SIGTERM, or you call Stop(), at which
+// point the queues will be safely closed (you'd probably just exit at that
+// point).
 //
 // If it creates a db file or recreates one from backup, and if it creates TLS
 // certificates, it will say what it did in the returned msg string.
@@ -359,7 +359,9 @@ type ServerConfig struct {
 // is a single user system, so there is only 1 token kept for its entire
 // lifetime. If config.TokenFile has been set, the token will also be written to
 // that file, potentially making it easier for any CLI clients to authenticate
-// with this returned Server.
+// with this returned Server. If that file already exists prior to calling this,
+// the token in that file will be re-used, allowing reconnection of existing
+// clients if this server dies ungracefully.
 //
 // The possible errors from Serve() will be related to not being able to start
 // up at the supplied address; errors encountered while dealing with clients are
@@ -384,7 +386,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	defer internal.LogPanic(serverLogger, "jobqueue serve", true)
 
 	// generate a secure token for clients to authenticate with
-	token, err = generateToken()
+	token, err = generateToken(config.TokenFile)
 	if err != nil {
 		return s, msg, token, err
 	}

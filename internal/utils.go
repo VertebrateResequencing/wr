@@ -263,16 +263,18 @@ func Which(exeName string) string {
 	return ""
 }
 
-// WaitForFile waits as long as timeout for the given file to exist. When it
-// exists, returns true. Otherwise false.
-func WaitForFile(file string, timeout time.Duration) bool {
+// WaitForFile waits as long as timeout for the given file to exist. If the file
+// has a timestamp from before the given after, however, waits until the file
+// is touched to have a timestamp after after. When it exists with the right
+// timestamp, returns true. Otherwise false.
+func WaitForFile(file string, after time.Time, timeout time.Duration) bool {
 	limit := time.After(timeout)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	for {
 		select {
 		case <-ticker.C:
-			_, err := os.Stat(file)
-			if err == nil {
+			info, err := os.Stat(file)
+			if err == nil && info.ModTime().After(after) {
 				ticker.Stop()
 				return true
 			}

@@ -61,8 +61,13 @@ var ellipses = []byte("[...]\n")
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
 // encoded string 43 bytes long. Used by the server to create a token passed to
-// to the caller for subsequent client authentication.
-func generateToken() ([]byte, error) {
+// to the caller for subsequent client authentication. If the given file exists
+// and contains a single 43 byte string, then that is used as the token instead.
+func generateToken(tokenFile string) ([]byte, error) {
+	if token, err := ioutil.ReadFile(tokenFile); err == nil && len(token) == tokenLength {
+		return token, nil
+	}
+
 	b := make([]byte, 32)
 	_, err := rand.Read(b)
 	if err != nil {
