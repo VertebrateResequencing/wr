@@ -92,15 +92,38 @@ func TestJobqueueUtils(t *testing.T) {
 	})
 
 	Convey("generateToken() and tokenMatches() work", t, func() {
-		token, err := generateToken()
+		tokenFile, err := ioutil.TempFile("", "wr.test.token")
+		So(err, ShouldBeNil)
+		tokenFile.Close()
+		tokenPath := tokenFile.Name()
+		defer func() {
+			err = os.Remove(tokenPath)
+			So(err, ShouldBeNil)
+		}()
+
+		err = os.Remove(tokenPath)
+		So(err, ShouldBeNil)
+		token, err := generateToken(tokenPath)
 		So(err, ShouldBeNil)
 		So(len(token), ShouldEqual, tokenLength)
-		token2, err := generateToken()
+
+		token2, err := generateToken(tokenPath)
 		So(err, ShouldBeNil)
 		So(len(token2), ShouldEqual, tokenLength)
-		So(token, ShouldNotEqual, token2)
+		So(token, ShouldNotResemble, token2)
 		So(tokenMatches(token, token2), ShouldBeFalse)
 		So(tokenMatches(token, token), ShouldBeTrue)
+
+		// if tokenPath is a file that contains a token, generateToken doesn't
+		// generate a new token, but returns that one
+		err = ioutil.WriteFile(tokenPath, token2, 0600)
+		So(err, ShouldBeNil)
+
+		token3, err := generateToken(tokenPath)
+		So(err, ShouldBeNil)
+		So(len(token3), ShouldEqual, tokenLength)
+		So(token3, ShouldResemble, token2)
+		So(tokenMatches(token2, token3), ShouldBeTrue)
 	})
 }
 
@@ -163,6 +186,8 @@ func TestJobqueueSignal(t *testing.T) {
 		errr := os.Remove(config.ManagerTokenFile)
 		So(errr == nil || os.IsNotExist(errr), ShouldBeTrue)
 
+		preStart := time.Now()
+
 		context := &daemon.Context{
 			PidFileName: config.ManagerPidFile,
 			PidFilePerm: 0644,
@@ -211,7 +236,7 @@ func TestJobqueueSignal(t *testing.T) {
 		defer syscall.Kill(child.Pid, syscall.SIGTERM)
 
 		mTimeout := 10 * time.Second
-		internal.WaitForFile(config.ManagerTokenFile, mTimeout)
+		internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 		token, err := ioutil.ReadFile(config.ManagerTokenFile)
 		So(err, ShouldBeNil)
 		So(token, ShouldNotBeNil)

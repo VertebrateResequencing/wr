@@ -144,13 +144,6 @@ fully.`,
 			}
 		}
 
-		// delete any old token file, so that we later know when the manager has
-		// created a new one
-		err := os.Remove(config.ManagerTokenFile)
-		if err != nil && !os.IsNotExist(err) {
-			die("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
-		}
-
 		if scheduler == kubernetes {
 			if len(kubeNamespace) == 0 {
 				die("namespace must be specified when using the kubernetes scheduler")
@@ -158,6 +151,16 @@ fully.`,
 			if len(configMapName) == 0 && len(postCreationScript) == 0 {
 				die("either a config map name or path to a post creation script is required")
 			}
+		}
+
+		// later, we will wait for the daemonized manager to either create a new
+		// token file, or if we already have one, to touch it, so we store the
+		// time now to know when the touch happens
+		preStart := time.Now()
+
+		// if we already have a token file, warn the user
+		if _, errs := os.Stat(config.ManagerTokenFile); errs == nil {
+			warn("will re-use the existing token in %s", config.ManagerTokenFile)
 		}
 
 		// now daemonize unless in foreground mode
@@ -170,7 +173,7 @@ fully.`,
 				// parent; wait a while for our child to bring up the manager
 				// before exiting
 				mTimeout := time.Duration(managerTimeoutSeconds) * time.Second
-				internal.WaitForFile(config.ManagerTokenFile, mTimeout)
+				internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 				jq := connect(mTimeout, true)
 				if jq == nil {
 					// display any error or crit lines in the log
@@ -239,10 +242,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
-				err = os.Remove(config.ManagerTokenFile)
-				if err != nil {
-					warn("failed to remove token file: %s", err)
-				}
+				deleteToken()
 				return
 			}
 		} else {
@@ -287,10 +287,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
-			err = os.Remove(config.ManagerTokenFile)
-			if err != nil {
-				warn("failed to remove token file: %s", err)
-			}
+			deleteToken()
 		} else {
 			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
@@ -321,6 +318,10 @@ down will be lost.`,
 		jq := connect(5*time.Second, true)
 		if jq == nil {
 			die("could not connect to the manager on port %s, so could not initiate a drain; has it already been stopped?", config.ManagerPort)
+			// *** this would happen after calling drain a few times and the
+			// manager has finally stopped itself, but we don't know if the
+			// the manager stopped cleanly in response to our drain, or if it
+			// crashed and there are still runners, so we can't deleteToken()...
 		}
 
 		// we managed to connect to the daemon; ask it to go in to drain mode
@@ -331,6 +332,7 @@ down will be lost.`,
 
 		if numLeft == 0 {
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
+			deleteToken()
 		} else if numLeft == 1 {
 			info("wr manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
 		} else {
@@ -644,5 +646,16 @@ func startJQ(postCreation []byte) {
 		default:
 			warn("wr manager on %s exited unexpectedly: %s", saddr, err)
 		}
+	}
+}
+
+// deleteToken should be called on successful, known clean stop of the manager,
+// so that the next time the manager is started it will create a new token.
+// For un-clean exits of the manager, we should keep the token so the manager
+// re-uses it, allowing any runners to reconnect.
+func deleteToken() {
+	err := os.Remove(config.ManagerTokenFile)
+	if err != nil && !os.IsNotExist(err) {
+		warn("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
 	}
 }
