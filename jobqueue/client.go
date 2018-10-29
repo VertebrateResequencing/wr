@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -85,6 +86,7 @@ var (
 	ClientTouchInterval               = 15 * time.Second
 	ClientReleaseDelay                = 30 * time.Second
 	ClientPercentMemoryKill           = 90
+	ClientRetryWait                   = 15 * time.Second
 	RAMIncreaseMin            float64 = 1000
 	RAMIncreaseMultLow                = 2.0
 	RAMIncreaseMultHigh               = 1.3
@@ -129,6 +131,7 @@ type Client struct {
 	ServerInfo *ServerInfo
 	host       string
 	port       string
+	args       []string // allowing internal reconnects
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -202,6 +205,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		clientid: u,
 		host:     addrParts[0],
 		port:     addrParts[1],
+		args:     []string{addr, caFile, certDomain},
 	}
 
 	// Dial succeeds even when there's no server up, so we test the connection
@@ -1208,11 +1212,12 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// though we may have had some problem, we always try and update our job end
 	// state, and we try many times to avoid having to repeat jobs unnecessarily
-	// (we keep retying for ~12+ hrs, giving plenty of time for issues to be
+	// (we keep retrying for 24hrs, giving plenty of time for issues to be
 	// fixed and potentially a new manager to be brought online for us to
 	// connect to and succeed)
-	maxRetries := 300
+	retryEnd := time.Now().Add(24 * time.Hour)
 	worked := false
+	disconnected := false
 	jes := &JobEndState{
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
@@ -1223,7 +1228,28 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Stderr:   finalStdErr,
 		Exited:   true,
 	}
-	for retryNum := 0; retryNum < maxRetries; retryNum++ {
+	for {
+		if disconnected {
+			// we've previously failed to contact the server
+			if time.Now().After(retryEnd) {
+				break
+			}
+
+			// try a quick connect attempt
+			newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
+			if errc != nil {
+				// keep retrying after a jittered sleep
+				wait := ClientRetryWait + time.Duration(rand.Float64()*0.5*float64(ClientRetryWait))
+				<-time.After(wait)
+				continue
+			}
+
+			// server is back, update ourselves and continue (we keep the quick
+			// timeout, but that should be good enough just to get through this)
+			disconnected = false
+			c.sock = newC.sock
+		}
+
 		// update the database with our final state
 		if dobury {
 			err = c.Bury(job, jes, failreason)
@@ -1233,7 +1259,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
-			<-time.After(time.Duration(retryNum*100) * time.Millisecond)
+			if !disconnected {
+				c.Disconnect()
+				disconnected = true
+			}
+			<-time.After(ClientRetryWait)
 			continue
 		}
 		worked = true
