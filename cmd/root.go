@@ -201,7 +201,16 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	child, err := context.Reborn()
 	if err != nil {
-		die("failed to daemonize: %s", err)
+		// try again, deleting the pidFile first
+		errr := os.Remove(pidFile)
+		if errr != nil && !os.IsNotExist(errr) {
+			warn("failed to delete existing pid file: %s", errr)
+		}
+
+		child, err = context.Reborn()
+		if err != nil {
+			die("failed to daemonize: %s", err)
+		}
 	}
 	return child, context
 }
