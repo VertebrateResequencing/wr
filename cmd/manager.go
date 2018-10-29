@@ -72,9 +72,18 @@ the queue, it makes sure to spawn sufficient 'wr runner' agents to get them all
 run.
 
 You'll need to start this daemon with the 'start' sub-command before you can
-achieve anything useful with the other wr commands. If the background
-process that is spawned when you run this dies, your workflows will become
-stalled until you run the 'start' sub-command again.`,
+achieve anything useful with the other wr commands.
+
+If the background process that is spawned when you run this dies, any commands
+from your workflows that were running at the time will continue to run. If
+they're still running when you start the manager again, the new manager will
+pick them up and things will continue normally. If they finish running while the
+manager is dead, you have 24hrs to start the manager again; if you do so then
+their completed state will be recorded and things will continue normally. If
+more than 24hrs pass, however, the fact that the commands completed will not be
+known by the new manager, and they will eventually appear in "lost contact"
+state. You will have to then confirm them as dead and retry them from the start
+(even though they had actually completed).`,
 }
 
 // start sub-command starts the daemon

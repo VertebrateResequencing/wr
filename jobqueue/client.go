@@ -87,6 +87,7 @@ var (
 	ClientReleaseDelay                = 30 * time.Second
 	ClientPercentMemoryKill           = 90
 	ClientRetryWait                   = 15 * time.Second
+	ClientRetryTime                   = 24 * time.Hour
 	RAMIncreaseMin            float64 = 1000
 	RAMIncreaseMultLow                = 2.0
 	RAMIncreaseMultHigh               = 1.3
@@ -1216,7 +1217,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// (we keep retrying for 24hrs, giving plenty of time for issues to be
 	// fixed and potentially a new manager to be brought online for us to
 	// connect to and succeed)
-	retryEnd := time.Now().Add(24 * time.Hour)
+	retryEnd := time.Now().Add(ClientRetryTime)
 	worked := false
 	disconnected := false
 	jes := &JobEndState{
