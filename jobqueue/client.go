@@ -1005,6 +1005,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	stopChecking <- true
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
+	endTime := time.Now()
 
 	// though we have tried to track peak memory while the cmd ran (mainly to
 	// know if we use too much memory and kill during a run), our method might
@@ -1224,6 +1225,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		PeakRAM:  peakmem,
 		PeakDisk: peakdisk,
 		CPUtime:  cmd.ProcessState.SystemTime() + cmd.ProcessState.UserTime() + time.Duration(dockerCPU)*time.Second,
+		EndTime:  endTime,
 		Stdout:   finalStdOut,
 		Stderr:   finalStdErr,
 		Exited:   true,
@@ -1381,6 +1383,7 @@ type JobEndState struct {
 	PeakRAM  int
 	PeakDisk int64
 	CPUtime  time.Duration
+	EndTime  time.Time
 	Stdout   []byte
 	Stderr   []byte
 	Exited   bool
@@ -1400,6 +1403,7 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
+	job.EndTime = jes.EndTime
 	if jes.Cwd != "" {
 		job.ActualCwd = jes.Cwd
 	}
