@@ -662,7 +662,7 @@ func (j *Job) updateAfterExit(jes *JobEndState) {
 	j.PeakRAM = jes.PeakRAM
 	j.PeakDisk = jes.PeakDisk
 	j.CPUtime = jes.CPUtime
-	j.EndTime = time.Now()
+	j.EndTime = jes.EndTime
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}

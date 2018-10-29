@@ -272,10 +272,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					job.State = JobStateRunning
 
 					job.Unlock()
-					// *** when recovery of running jobs following a server
-					// crash is implemented, we'll save-to-disk that we started
-					// running this job
-					//s.db.updateJobAfterChange(job)
+
+					// we'll save-to-disk that we started running this job, so
+					// recovery is possible after a crash
+					s.db.updateJobAfterChange(job)
 				}
 			}
 		case "jtouch":
