@@ -180,9 +180,14 @@ complete.`,
 			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {
 				warn("%s", err)
-				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {
-					exitReason = "we received a signal to stop"
-					break
+				if jqerr, ok := err.(jobqueue.Error); ok {
+					if strings.Contains(jqerr.Err, jobqueue.FailReasonSignal) {
+						exitReason = "we received a signal to stop"
+						break
+					} else if strings.Contains(jqerr.Err, jobqueue.ErrStopReserving) {
+						exitReason = "we reconnected to a new server"
+						break
+					}
 				}
 			} else {
 				info("command [%s] ran OK (exit code %d)", job.Cmd, job.Exitcode)
