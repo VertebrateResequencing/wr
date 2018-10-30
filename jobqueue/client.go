@@ -1220,6 +1220,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	retryEnd := time.Now().Add(ClientRetryTime)
 	worked := false
 	disconnected := false
+	hadProblems := false
 	jes := &JobEndState{
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
@@ -1262,6 +1263,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
+			hadProblems = true
 			if !disconnected {
 				c.Disconnect()
 				disconnected = true
@@ -1280,6 +1282,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			extra = fmt.Sprintf(" (and triggering behaviours failed: %s)", errt)
 		}
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s%s", job.Cmd, err, extra)
+	}
+
+	if hadProblems {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; %s", myerr.Error(), ErrStopReserving)
+		} else {
+			myerr = Error{"Execute", job.Key(), ErrStopReserving}
+		}
 	}
 
 	return myerr
