@@ -54,6 +54,7 @@ var maxLocalCores int
 var maxLocalRAM int
 var cloudNoSecurityGroups bool
 var cloudUseConfigDrive bool
+var useCertDomain bool
 
 const kubernetes = "kubernetes"
 
@@ -99,8 +100,7 @@ are by default found in ~/.wr_[deployment]/log.
 If using the openstack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
 cloud, so that resources created will not conflict with anyone else in your
-tenant (project) also running wr. Your server's security group must also allow
-the ports that wr will use (see wr's config file).
+tenant (project) also running wr.
 Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
 on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
@@ -111,6 +111,13 @@ pod. Be sure to pass a namespace for wr to use that will not have another wr
 user attempting to use it.
 Instead it is recommended to use 'wr kubernetes deploy' to bootstrap wr to a
 cluster.
+
+The --use_cert_domain option is intended for use when you have configured your
+own security certificates and want the manager to be reachable at a given
+domain name, because there is a risk of the manager's server going down and you
+want to be able to bring a new server up (at potentially a different IP address)
+and have clients on other servers be able to reconnect to the new manager (after
+you set the domain to point to the new manager's server's IP).
 
 If you want to start multiple managers up in different OpenStack networks that
 you've created yourself, note that --local_username will need to be globally
@@ -462,6 +469,7 @@ func init() {
 	managerStartCmd.Flags().BoolVar(&cloudNoSecurityGroups, "cloud_disable_security_groups", false, "for cloud schedulers, disable the use of security groups on spawned servers")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
+	managerStartCmd.Flags().BoolVar(&useCertDomain, "use_cert_domain", false, "if cert domain is configured, provide it to spawned clients instead of our IP address")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
@@ -624,6 +632,7 @@ func startJQ(postCreation []byte) {
 		CertFile:        config.ManagerCertFile,
 		KeyFile:         config.ManagerKeyFile,
 		CertDomain:      config.ManagerCertDomain,
+		DomainMatchesIP: useCertDomain,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
 		Logger:          serverLogger,

@@ -21,7 +21,7 @@ Package scheduler lets the jobqueue server interact with the configured job
 scheduler (if any) to submit jobqueue runner clients and have them run on a
 compute cluster (or local machine).
 
-Currently implemented schedulers are local, LSF and OpenStack. The
+Currently implemented schedulers are local, LSF, OpenStack and Kubernetes. The
 implementation of each supported scheduler type is in its own .go file.
 
 It's a pseudo plug-in system in that it is designed so that you can easily add a
@@ -136,27 +136,46 @@ type MessageCallBack func(msg string)
 // manually check).
 type BadServerCallBack func(server *cloud.Server)
 
+// RecoveredHostDetails lets you describe a host for supplying to Recover(). Not
+// all fields are relevant for all schedulers. Some might use none, so a nil
+// RecoveredHostDetails might be valid. Cloud schedulers need all fields
+// specified.
+type RecoveredHostDetails struct {
+	Host     string        // host's hostname
+	UserName string        // username needed to ssh log in to host
+	TTD      time.Duration // frequency to check if the host is idle, and if so destroy it
+}
+
 // scheduleri interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
-	initialize(config interface{}, logger log15.Logger) error // do any initial set up to be able to use the job scheduler
-	schedule(cmd string, req *Requirements, count int) error  // achieve the aims of Schedule()
-	busy() bool                                               // achieve the aims of Busy()
-	reserveTimeout(req *Requirements) int                     // achieve the aims of ReserveTimeout()
-	maxQueueTime(req *Requirements) time.Duration             // achieve the aims of MaxQueueTime()
-	hostToID(host string) string                              // achieve the aims of HostToID()
-	setMessageCallBack(MessageCallBack)                       // achieve the aims of SetMessageCallBack()
-	setBadServerCallBack(BadServerCallBack)                   // achieve the aims of SetBadServerCallBack()
-	cleanup()                                                 // do any clean up once you've finished using the job scheduler
+	initialize(config interface{}, logger log15.Logger) error                // do any initial set up to be able to use the job scheduler
+	schedule(cmd string, req *Requirements, count int) error                 // achieve the aims of Schedule()
+	recover(cmd string, req *Requirements, host *RecoveredHostDetails) error // achieve the aims of Recover()
+	busy() bool                                                              // achieve the aims of Busy()
+	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
+	maxQueueTime(req *Requirements) time.Duration                            // achieve the aims of MaxQueueTime()
+	hostToID(host string) string                                             // achieve the aims of HostToID()
+	setMessageCallBack(MessageCallBack)                                      // achieve the aims of SetMessageCallBack()
+	setBadServerCallBack(BadServerCallBack)                                  // achieve the aims of SetBadServerCallBack()
+	cleanup()                                                                // do any clean up once you've finished using the job scheduler
 }
 
 // CloudConfig interface could be satisfied by the config option taken by cloud
-// schedulers which have a ConfigFiles property.
+// schedulers which have a ConfigFiles property, a property for configuring a
+// default ssh login username, and a property for determining how long to keep
+// idle servers.
 type CloudConfig interface {
 	// AddConfigFile takes a value like that of the ConfigFiles property of the
 	// struct implementing this interface, and appends this value to what is
 	// in ConfigFiles, or sets it if unset.
 	AddConfigFile(spec string)
+
+	// GetOSUser returns the default ssh login username for servers.
+	GetOSUser() string
+
+	// GetServerKeepTime returns the time to keep idle servers alive for.
+	GetServerKeepTime() time.Duration
 }
 
 // Scheduler gives you access to all of the methods you'll need to interact with
@@ -170,9 +189,9 @@ type Scheduler struct {
 }
 
 // New creates a new Scheduler to interact with the given job scheduler.
-// Possible names so far are "lsf", "local" and "openstack". You must also
-// provide a config struct appropriate for your chosen scheduler, eg. for the
-// local scheduler you will provide a ConfigLocal.
+// Possible names so far are "lsf", "local", "openstack" and "kubernetes". You
+// must also provide a config struct appropriate for your chosen scheduler, eg.
+// for the local scheduler you will provide a ConfigLocal.
 //
 // Providing a logger allows for debug messages to be logged somewhere, along
 // with any "harmless" or unreturnable errors. If not supplied, we use a default
@@ -267,6 +286,19 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	s.Unlock()
 
 	return err
+}
+
+// Recover is used if you had Scheduled some cmds, then you crashed, and now
+// you're starting up again and want the scheduler to take in to account the
+// fact that you still have some commands running on certain hosts. Doing this
+// may allow us to avoid overcommitting resources or terminate unneeded hosts,
+// if relevant for the scheduler in question. (For some schedulers, this does
+// nothing.)
+//
+// The cmd and req ought to exactly match those previously supplied to
+// Schedule() before your crash.
+func (s *Scheduler) Recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	return s.impl.recover(cmd, req, host)
 }
 
 // Busy reports true if there are any Schedule()d cmds still in the job
