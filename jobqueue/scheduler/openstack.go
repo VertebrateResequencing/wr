@@ -1306,7 +1306,7 @@ func (s *opst) stateUpdate() {
 func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
 	server := s.provider.GetServerByName(host.Host)
 	if server == nil {
-		s.Warn("recover called for non-existant server", "host", host)
+		s.Warn("recover called for non-existent server", "host", host)
 		return nil
 	}
 

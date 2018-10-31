@@ -598,7 +598,10 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				itemdef.StartQueue = queue.SubQueueRun
 
 				req := reqForScheduler(job.Requirements)
-				s.scheduler.Recover(fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
+				errr := s.scheduler.Recover(fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
+				if errr != nil {
+					s.Warn("recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host)
+				}
 			case JobStateBuried:
 				itemdef.StartQueue = queue.SubQueueBury
 			}

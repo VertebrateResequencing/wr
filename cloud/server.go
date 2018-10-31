@@ -279,7 +279,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 
 				// if it's a known "ssh still starting up" error, wait until the
 				// timeout, unless ssh had worked previously, in which case
-				// bail immediatly if it's "no route to host"
+				// bail immediately if it's "no route to host"
 				if err != nil && (strings.HasSuffix(err.Error(), "connection timed out") || strings.HasSuffix(err.Error(), "no route to host") || strings.HasSuffix(err.Error(), "connection refused") || (s.created && strings.HasSuffix(err.Error(), "connection could not be established"))) {
 					if s.sshStarted && strings.HasSuffix(err.Error(), "no route to host") {
 						err = errors.New("ssh used to work, but now there's no route to host")

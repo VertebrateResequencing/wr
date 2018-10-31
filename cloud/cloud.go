@@ -403,6 +403,9 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 
 	// save updated resources to disk
 	err = p.saveResources()
+	if err != nil {
+		return err
+	}
 
 	p.Lock()
 	defer p.Unlock()

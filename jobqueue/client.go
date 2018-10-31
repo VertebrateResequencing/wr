@@ -1265,8 +1265,10 @@ func (c *Client) Execute(job *Job, shell string) error {
 		if err != nil {
 			hadProblems = true
 			if !disconnected {
-				c.Disconnect()
-				disconnected = true
+				errd := c.Disconnect()
+				if errd == nil {
+					disconnected = true
+				}
 			}
 			<-time.After(ClientRetryWait)
 			continue
