@@ -651,6 +651,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
 
+	// copy over our token file, if we're in a recovery situation
+	if _, errf := os.Stat(config.ManagerTokenFile); errf == nil {
+		if errf = server.UploadFile(config.ManagerTokenFile, filepath.Join("./.wr_"+config.Deployment, "client.token")); errf == nil {
+			info("copied existing client.token to remote server")
+		}
+	}
+
 	if _, _, err = server.RunCmd("chmod u+x "+remoteExe, false); err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to make remote wr executable: %s", err)
