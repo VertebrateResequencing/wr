@@ -507,6 +507,12 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	return err
 }
 
+// recover achieves the aims of Recover(). We don't have to do anything, since
+// when the cmd finishes running, LSF itself will clean up.
+func (s *lsf) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	return nil
+}
+
 // busy returns true if there are any jobs with our jobName() prefix in any
 // queue. It also returns true if the most recently submitted job is pending or
 // running

@@ -185,6 +185,9 @@ type provideri interface {
 	deploy(resources *Resources, requiredPorts []int, useConfigDrive bool, gatewayIP, cidr string, dnsNameServers []string) error
 	// achieve the aims of InCloud()
 	inCloud() bool
+	// return the details of any existing servers, as a slice of the details
+	// returned by spawn
+	getCurrentServers(resources *Resources) ([][]string, error)
 	// achieve the aims of GetQuota()
 	getQuota() (*Quota, error)
 	// return a map of all server flavors, with their flavor ids as keys
@@ -358,15 +361,24 @@ func New(name string, resourceName string, savePath string, logger ...log15.Logg
 
 // Deploy triggers the creation of required cloud resources such as networks,
 // ssh keys, security profiles and so on, such that you can subsequently Spawn()
-// and ssh to your created server successfully.  If a resource we need already
-// exists with the resourceName you supplied to New(), we assume it belongs to
-// us and we don't create another (so it is safe to call Deploy multiple times
-// with the same args to New() and Deploy(): you don't need to check if you have
-// already deployed). Deploy() saves the resources it created to disk, which are
+// and ssh to your created server successfully.
+//
+// If a resource we need already exists with the resourceName you supplied to
+// New(), we assume it belongs to us and we don't create another (so it is safe
+// to call Deploy multiple times with the same args to New() and Deploy(): you
+// don't need to check if you have already deployed).
+//
+// Deploy() saves the resources it created to disk, which are
 // what TearDown() will delete when you call it. (They are saved to disk so that
 // TearDown() can work if you call it in a different session to when you
 // Deploy()ed, and so that PrivateKey() can work if you call it in a different
 // session to the Deploy() call that actually created the ssh key.)
+//
+// If servers already seem to exist with a name prefix matching resourceName, we
+// assume that they are from a prior deployment that crashed and you are now
+// recovering the sitution; these servers can be retrieved with
+// GetServerByName() and Destroy()ed. Note, however, that they aren't fully
+// useable since we don't know the username needed to ssh to them.
 func (p *Provider) Deploy(config *DeployConfig) error {
 	gatewayIP := config.GatewayIP
 	if gatewayIP == "" {
@@ -396,6 +408,28 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 	defer p.Unlock()
 	if len(p.resources.Servers) > 0 {
 		p.madeHeadNode = true
+	}
+
+	// record any existing servers that we may have spawned previously, then we
+	// crashed, and now we're recovering. These server objects cannot be used
+	// fully; you can't ssh without setting the UserName first. Intended just to
+	// terminate
+	sdetails, err := p.impl.getCurrentServers(p.resources)
+	if err != nil {
+		return err
+	}
+
+	for _, details := range sdetails {
+		p.servers[details[2]] = &Server{
+			ID:           details[0],
+			Name:         details[2],
+			IP:           details[1],
+			AdminPass:    details[3],
+			provider:     p,
+			cancelRunCmd: make(map[int]chan bool),
+			logger:       p.Logger.New("server", details[0]),
+			created:      false,
+		}
 	}
 
 	return err

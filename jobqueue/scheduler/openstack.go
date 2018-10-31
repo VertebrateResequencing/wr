@@ -77,6 +77,9 @@ type opst struct {
 	badServerCB       BadServerCallBack
 	runMutex          sync.Mutex
 	stopRunning       bool
+	recoveredServers  map[string]bool
+	rsMutex           sync.Mutex
+	stopRSMonitoring  chan struct{}
 	log15.Logger
 }
 
@@ -207,6 +210,16 @@ func (c *ConfigOpenStack) AddConfigFile(configFile string) {
 	} else {
 		c.ConfigFiles += "," + configFile
 	}
+}
+
+// GetOSUser returns OSUser, to meet the CloudConfig interface.
+func (c *ConfigOpenStack) GetOSUser() string {
+	return c.OSUser
+}
+
+// GetServerKeepTime returns ServerKeepTime, to meet the CloudConfig interface.
+func (c *ConfigOpenStack) GetServerKeepTime() time.Duration {
+	return c.ServerKeepTime
 }
 
 // standin describes a server that we're in the middle of spawning (or intend to
@@ -515,6 +528,9 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	s.standins = make(map[string]*standin)
 	s.cmdToStandins = make(map[string]map[string]bool)
 	s.standinToCmd = make(map[string]map[string]bool)
+
+	s.recoveredServers = make(map[string]bool)
+	s.stopRSMonitoring = make(chan struct{})
 
 	return err
 }
@@ -1281,6 +1297,96 @@ func (s *opst) stateUpdate() {
 	}()
 }
 
+// recover achieves the aims of Recover(). Here we find the given host, and
+// start tracking it to know when it is no longer running any of the given cmds
+// for it, at which point we destroy it. If the supplied UserName for the host
+// is wrong, or we otherwise can't ssh to it, the host will be destroyed
+// immediately. NB: the host checking only works on machines with the 'pgrep'
+// command, such as linux etc.
+func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	server := s.provider.GetServerByName(host.Host)
+	if server == nil {
+		s.Warn("recover called for non-existant server", "host", host)
+		return nil
+	}
+
+	if host.TTD == 0 {
+		// we keep servers for ever, so no need to monitor it
+		return nil
+	}
+
+	server.UserName = host.UserName
+	if !server.Alive(true) {
+		s.Warn("recover called for server that is not alive (or username was wrong?)", "host", host.Host)
+		errd := server.Destroy()
+		if errd != nil {
+			s.Warn("recovered server destruction failed", "server", server.ID, "err", errd)
+		}
+		return nil
+	}
+
+	s.rsMutex.Lock()
+	defer s.rsMutex.Unlock()
+
+	if s.recoveredServers[host.Host] {
+		return nil
+	}
+
+	// *** we will only check against the first 2 words of cmd, which for our
+	// purposes of wr will be 'wr runner'. This lets us do a single check per
+	// server, and reduces possible issues with trying to get a process name
+	// match on a long, complex command line. However it might not work properly
+	// with the arbitrary commands that people could in theory schedule
+	cmdSplit := strings.Split(cmd, " ")
+	cmd = cmdSplit[0]
+	if len(cmdSplit) > 1 {
+		cmd += " " + cmdSplit[1]
+	}
+
+	go func() {
+		// periodically check on this server; when it is no longer running
+		// anything, destroy it
+		ticker := time.NewTicker(host.TTD)
+		for {
+			select {
+			case <-ticker.C:
+				active := true
+				_, _, errr := server.RunCmd("pgrep -f '"+cmd+"'", false)
+				if errr != nil {
+					// *** assume the error is because a process with cmd
+					// doesn't exist, not because prgrep failed for some other
+					// reason
+					active = false
+				}
+
+				if !active {
+					ticker.Stop()
+
+					errd := server.Destroy()
+					if errd != nil {
+						s.Warn("recovered server destruction failed", "server", server.ID, "err", errd)
+					} else {
+						s.Debug("recovered server was destroyed after going idle")
+					}
+
+					errp := s.processQueue()
+					if errp != nil {
+						s.Error("processQueue call after recovery failed", "err", errp)
+					}
+
+					return
+				}
+			case <-s.stopRSMonitoring:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	s.recoveredServers[host.Host] = true
+	return nil
+}
+
 // recordStandin stores some lookups for the given standin. Only call when you
 // have the lock!
 func (s *opst) recordStandin(standinServer *standin, cmd string) {
@@ -1399,6 +1505,7 @@ func (s *opst) cleanup() {
 	}
 
 	// bring down all our servers
+	close(s.stopRSMonitoring)
 	for sid, server := range s.servers {
 		if sid == "localhost" {
 			continue

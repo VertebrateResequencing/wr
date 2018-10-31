@@ -673,3 +673,9 @@ func (s *k8s) generateResourceRequirements(req *Requirements) apiv1.ResourceRequ
 	}
 	return resources
 }
+
+// recover achieves the aims of Recover(). We don't have to do anything, since
+// when the cmd finishes running, Kubernetes itself will clean up.
+func (s *k8s) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	return nil
+}

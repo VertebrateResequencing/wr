@@ -24,15 +24,19 @@ package scheduler
 
 import (
 	"math"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/inconshreveable/log15"
+	"github.com/shirou/gopsutil/process"
 )
 
 const (
@@ -41,6 +45,10 @@ const (
 	priorityScaler      = float64(255) / float64(100)
 	maxZeroCoreJobs     = 1000000 // the maxmimum number of jobs to run when cpu request is 0
 )
+
+// cmdProcessSanitiser is used to make cmds look like their process
+// representation
+var cmdProcessSanitiser = strings.NewReplacer("'", "")
 
 // reqCheckers are functions used by schedule() to see if it is at all possible
 // to ever run a job with the given resource requirements. (We make use of this
@@ -82,30 +90,33 @@ type cancelCmdRunner func(cmd string, desiredNumber int)
 
 // local is our implementer of scheduleri.
 type local struct {
-	config           *ConfigLocal
-	maxRAM           int
-	maxCores         int
-	ram              int
-	cores            float64
-	rcount           int
-	mutex            sync.Mutex
-	rcMutex          sync.RWMutex
-	resourceMutex    sync.RWMutex
-	queue            *queue.Queue
-	running          map[string]int
-	cleaned          bool
-	reqCheckFunc     reqChecker
-	maxMemFunc       maxResourceGetter
-	maxCPUFunc       maxResourceGetter
-	canCountFunc     canCounter
-	stateUpdateFunc  stateUpdater
-	stateUpdateFreq  time.Duration
-	runCmdFunc       cmdRunner
-	cancelRunCmdFunc cancelCmdRunner
-	autoProcessing   bool
-	stopAuto         chan bool
-	processing       bool
-	recall           bool
+	config            *ConfigLocal
+	maxRAM            int
+	maxCores          int
+	ram               int
+	cores             float64
+	rcount            int
+	mutex             sync.Mutex
+	rcMutex           sync.RWMutex
+	resourceMutex     sync.RWMutex
+	queue             *queue.Queue
+	running           map[string]int
+	cleaned           bool
+	reqCheckFunc      reqChecker
+	maxMemFunc        maxResourceGetter
+	maxCPUFunc        maxResourceGetter
+	canCountFunc      canCounter
+	stateUpdateFunc   stateUpdater
+	stateUpdateFreq   time.Duration
+	runCmdFunc        cmdRunner
+	cancelRunCmdFunc  cancelCmdRunner
+	autoProcessing    bool
+	stopAuto          chan bool
+	processing        bool
+	recall            bool
+	recoveredPids     map[int]bool
+	rpMutex           sync.Mutex
+	stopPidMonitoring chan struct{}
 	log15.Logger
 }
 
@@ -181,6 +192,9 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 	if s.stateUpdateFreq == 0 {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
+
+	s.recoveredPids = make(map[int]bool)
+	s.stopPidMonitoring = make(chan struct{})
 
 	return err
 }
@@ -266,6 +280,81 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 	// try and run the jobs in the queue
 	return s.processQueue()
+}
+
+// recover achieves the aims of Recover(). Here we find an untracked pid
+// corresponding to the given cmd, note that the resources are in use, and
+// start tracking the pid to know when it exits to release those resources.
+func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	processes, err := process.Processes()
+	if err != nil {
+		return err
+	}
+
+	cmd = cmdProcessSanitiser.Replace(cmd)
+	s.rpMutex.Lock()
+	defer s.rpMutex.Unlock()
+	for _, p := range processes {
+		thisCmd, err := p.Cmdline()
+		if err != nil {
+			return err
+		}
+		if cmd == thisCmd {
+			pid := int(p.Pid)
+			if s.recoveredPids[pid] {
+				continue
+			}
+
+			s.resourceMutex.Lock()
+			s.ram += req.RAM
+			s.cores += req.Cores
+			s.resourceMutex.Unlock()
+
+			go func() {
+				// periodically check on this pid; when it has exited, update
+				// our resource usage
+				ticker := time.NewTicker(1 * time.Second)
+				for {
+					select {
+					case <-ticker.C:
+						process, errf := os.FindProcess(pid)
+						alive := true
+						if errf != nil {
+							alive = false
+						} else {
+							errs := process.Signal(syscall.Signal(0))
+							if errs != nil {
+								alive = false
+							}
+						}
+
+						if !alive {
+							ticker.Stop()
+
+							s.resourceMutex.Lock()
+							s.ram -= req.RAM
+							s.cores -= req.Cores
+							s.resourceMutex.Unlock()
+
+							errp := s.processQueue()
+							if errp != nil {
+								s.Error("processQueue call after recovery failed", "err", errp)
+							}
+
+							return
+						}
+					case <-s.stopPidMonitoring:
+						ticker.Stop()
+						return
+					}
+				}
+			}()
+
+			s.recoveredPids[pid] = true
+			break
+		}
+	}
+	return nil
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met.
@@ -625,6 +714,7 @@ func (s *local) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.stopAutoProcessing()
+	close(s.stopPidMonitoring)
 	s.cleaned = true
 	err := s.queue.Destroy()
 	if err != nil {

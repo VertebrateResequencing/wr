@@ -572,6 +572,34 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 	return err
 }
 
+// getCurrentServers returns details of other servers with the given resource
+// name prefix.
+func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error) {
+	var sdetails [][]string
+	pager := servers.List(p.computeClient, servers.ListOpts{})
+	err := pager.EachPage(func(page pagination.Page) (bool, error) {
+		serverList, err := servers.ExtractServers(page)
+		if err != nil {
+			return false, err
+		}
+
+		for _, server := range serverList {
+			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
+				serverIP, errg := p.getServerIP(server.ID)
+				if errg != nil {
+					continue
+				}
+
+				details := []string{server.ID, serverIP, server.Name, server.AdminPass}
+				sdetails = append(sdetails, details)
+			}
+		}
+
+		return true, nil
+	})
+	return sdetails, err
+}
+
 // inCloud checks if we're currently running on an OpenStack server based on our
 // hostname matching a host in OpenStack.
 func (p *openstackp) inCloud() bool {
@@ -856,38 +884,43 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 		serverIP = floatingIP
 	} else {
-		// find its auto-assigned internal ip *** there must be a better way of
-		// doing this...
-		allNetworkAddressPages, errf := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
-		if errf != nil {
+		var errg error
+		serverIP, errg = p.getServerIP(serverID)
+		if errg != nil {
 			errd := p.destroyServer(serverID)
 			if errd != nil {
-				p.Warn("server destruction after not finding networks failed", "server", serverID, "err", errd)
+				p.Warn("server destruction after not finding ip", "server", serverID, "err", errd)
 			}
-			return serverID, serverIP, serverName, adminPass, errf
-		}
-		allNetworkAddresses, errf := servers.ExtractNetworkAddresses(allNetworkAddressPages)
-		if errf != nil {
-			errd := p.destroyServer(serverID)
-			if errd != nil {
-				p.Warn("server destruction after not getting network address failed", "server", serverID, "err", errd)
-			}
-			return serverID, serverIP, serverName, adminPass, errf
-		}
-		for _, address := range allNetworkAddresses {
-			if address.Version == 4 {
-				ip := net.ParseIP(address.Address)
-				if ip != nil {
-					if p.ipNet.Contains(ip) {
-						serverIP = address.Address
-						break
-					}
-				}
-			}
+			return serverID, serverIP, serverName, adminPass, errg
 		}
 	}
 
 	return serverID, serverIP, serverName, adminPass, err
+}
+
+// getServerIP tries to find the auto-assigned internal ip address of the server
+// with the given ID.
+func (p *openstackp) getServerIP(serverID string) (string, error) {
+	// *** there must be a better way of doing this...
+	allNetworkAddressPages, err := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
+	if err != nil {
+		return "", err
+	}
+	allNetworkAddresses, err := servers.ExtractNetworkAddresses(allNetworkAddressPages)
+	if err != nil {
+		return "", err
+	}
+	for _, address := range allNetworkAddresses {
+		if address.Version == 4 {
+			ip := net.ParseIP(address.Address)
+			if ip != nil {
+				if p.ipNet.Contains(ip) {
+					return address.Address, nil
+				}
+			}
+		}
+	}
+	return "", nil
 }
 
 // checkServer achieves the aims of CheckServer()

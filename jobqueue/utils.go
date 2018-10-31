@@ -37,6 +37,7 @@ import (
 	"strings"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/dgryski/go-farm"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/shirou/gopsutil/process"
@@ -598,4 +599,25 @@ func compressFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(content)
+}
+
+// reqForScheduler takes a job's Requirements and returns a possibly modified
+// version if using less than 924MB memory to have +100MB memory to allow some
+// leeway in case the job scheduler calculates used memory differently, and for
+// other memory usage vagaries.
+func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
+	if req.RAM < 924 {
+		// our req will be like the jobs but with memory + 100 to
+		// allow some leeway in case the job scheduler calculates
+		// used memory differently, and for other memory usage
+		// vagaries
+		req = &scheduler.Requirements{
+			RAM:   req.RAM + 100,
+			Time:  req.Time,
+			Cores: req.Cores,
+			Disk:  req.Disk,
+			Other: req.Other,
+		}
+	}
+	return req
 }
