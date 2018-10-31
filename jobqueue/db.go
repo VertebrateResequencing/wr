@@ -993,7 +993,9 @@ func (db *db) updateJobAfterChange(job *Job) {
 		})
 		if err != nil {
 			db.Error("Database operation updateJobAfterChange failed", "err", err)
+			return
 		}
+		db.backgroundBackup()
 	}()
 }
 
