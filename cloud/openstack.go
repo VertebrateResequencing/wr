@@ -89,6 +89,7 @@ type openstackp struct {
 	imap              map[string]*images.Image
 	imapMutex         sync.RWMutex
 	createdKeyPair    bool
+	useConfigDrive    bool
 	hasDefaultGroup   bool
 	ipNet             *net.IPNet
 	networkClient     *gophercloud.ServiceClient
@@ -315,7 +316,7 @@ func (p *openstackp) getImageFromCache(prefix string) *images.Image {
 }
 
 // deploy achieves the aims of Deploy().
-func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error {
+func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfigDrive bool, gatewayIP, cidr string, dnsNameServers []string) error {
 	// the resource name can only contain letters, numbers, underscores,
 	// spaces and hyphens
 	if !openstackValidResourceNameRegexp.MatchString(resources.ResourceName) {
@@ -329,6 +330,8 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	if err != nil {
 		return err
 	}
+
+	p.useConfigDrive = useConfigDrive
 
 	// get/create key pair
 	kp, err := keypairs.Get(p.computeClient, resources.ResourceName).Extract()
@@ -364,75 +367,77 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	}
 	resources.Details["keypair"] = kp.Name
 
-	// get/create security group, and see if there's a default group
-	pager := secgroups.List(p.computeClient)
-	var group *secgroups.SecurityGroup
-	defaultGroupExists := false
-	foundGroup := false
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		groupList, errf := secgroups.ExtractSecurityGroups(page)
-		if errf != nil {
-			return false, errf
-		}
+	if len(requiredPorts) > 0 {
+		// get/create security group, and see if there's a default group
+		pager := secgroups.List(p.computeClient)
+		var group *secgroups.SecurityGroup
+		defaultGroupExists := false
+		foundGroup := false
+		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+			groupList, errf := secgroups.ExtractSecurityGroups(page)
+			if errf != nil {
+				return false, errf
+			}
 
-		for _, g := range groupList {
-			if g.Name == resources.ResourceName {
-				group = &g
-				foundGroup = true
-				if defaultGroupExists {
-					return false, nil
+			for _, g := range groupList {
+				if g.Name == resources.ResourceName {
+					group = &g
+					foundGroup = true
+					if defaultGroupExists {
+						return false, nil
+					}
+				}
+				if g.Name == "default" {
+					defaultGroupExists = true
+					if foundGroup {
+						return false, nil
+					}
 				}
 			}
-			if g.Name == "default" {
-				defaultGroupExists = true
-				if foundGroup {
-					return false, nil
-				}
-			}
-		}
 
-		return true, nil
-	})
-	if err != nil {
-		return err
-	}
-	if !foundGroup {
-		// create a new security group with rules allowing the desired ports
-		group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.ResourceName, Description: "access amongst wr-spawned nodes"}).Extract()
+			return true, nil
+		})
 		if err != nil {
 			return err
 		}
+		if !foundGroup {
+			// create a new security group with rules allowing the desired ports
+			group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.ResourceName, Description: "access amongst wr-spawned nodes"}).Extract()
+			if err != nil {
+				return err
+			}
 
-		//*** check if the rules are already there, in case we previously died
-		// between previous line and this one
-		for _, port := range requiredPorts {
+			//*** check if the rules are already there, in case we previously died
+			// between previous line and this one
+			for _, port := range requiredPorts {
+				_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
+					ParentGroupID: group.ID,
+					FromPort:      port,
+					ToPort:        port,
+					IPProtocol:    "TCP",
+					CIDR:          "0.0.0.0/0", // FromGroupID: group.ID if we were creating a head node and then wanted a rule for all worker nodes...
+				}).Extract()
+				if err != nil {
+					return err
+				}
+			}
+
+			// ICMP may help networking work as expected
 			_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
 				ParentGroupID: group.ID,
-				FromPort:      port,
-				ToPort:        port,
-				IPProtocol:    "TCP",
-				CIDR:          "0.0.0.0/0", // FromGroupID: group.ID if we were creating a head node and then wanted a rule for all worker nodes...
+				FromPort:      -1,
+				ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
+				IPProtocol:    "ICMP",
+				CIDR:          "0.0.0.0/0",
 			}).Extract()
 			if err != nil {
 				return err
 			}
 		}
-
-		// ICMP may help networking work as expected
-		_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
-			ParentGroupID: group.ID,
-			FromPort:      -1,
-			ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
-			IPProtocol:    "ICMP",
-			CIDR:          "0.0.0.0/0",
-		}).Extract()
-		if err != nil {
-			return err
-		}
+		resources.Details["secgroup"] = group.ID
+		p.securityGroup = resources.ResourceName
+		p.hasDefaultGroup = defaultGroupExists
 	}
-	resources.Details["secgroup"] = group.ID
-	p.securityGroup = resources.ResourceName
-	p.hasDefaultGroup = defaultGroupExists
 
 	// don't create any more resources if we're already running in OpenStack
 	if p.inCloud() {
@@ -519,7 +524,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 
 	// get/create router
 	var routerID string
-	pager = routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
+	pager := routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		routerList, errf := routers.ExtractRouters(page)
 		if errf != nil {
@@ -693,9 +698,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// we'll use the security group we created, and the "default" one if it
 	// exists
-	secGroups := []string{p.securityGroup}
-	if p.hasDefaultGroup {
-		secGroups = append(secGroups, "default")
+	var secGroups []string
+	if p.securityGroup != "" {
+		secGroups = append(secGroups, p.securityGroup)
+		if p.hasDefaultGroup {
+			secGroups = append(secGroups, "default")
+		}
 	}
 
 	// create the server with a unique name
@@ -707,6 +715,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		ImageRef:       image.ID,
 		SecurityGroups: secGroups,
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
+		ConfigDrive:    &p.useConfigDrive,
 		UserData:       sentinelInitScript,
 	}
 	var createdVolume bool

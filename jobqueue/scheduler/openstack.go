@@ -132,11 +132,6 @@ type ConfigOpenStack struct {
 	// Requirements.Other["cloud_config_files"] value.)
 	ConfigFiles string
 
-	// ServerPorts are the TCP port numbers you need to be open for
-	// communication with any spawned servers. At a minimum you will need to
-	// specify []int{22}.
-	ServerPorts []int
-
 	// SavePath is an absolute path to a file on disk where details of any
 	// created resources can be read from and written to.
 	SavePath string
@@ -174,10 +169,25 @@ type ConfigOpenStack struct {
 	// recommended.
 	Shell string
 
+	// ServerPorts are the TCP port numbers you need to be open for
+	// communication with any spawned servers. At a minimum you will need to
+	// specify []int{22}, unless the network you use has all ports open and does
+	// not support applying security groups to servers, in which case you must
+	// supply an empty slice.
+	ServerPorts []int
+
+	// UseConfigDrive, if set to true (default false), will cause all newly
+	// spawned servers to mount a configuration drive, which is typically needed
+	// for a network without DHCP.
+	UseConfigDrive bool
+
 	// CIDR describes the range of network ips that can be used to spawn
 	// OpenStack servers on which to run our commands. The default is
 	// "192.168.0.0/18", which allows for 16381 servers to be spawned. This
-	// range ends at 192.168.63.254.
+	// range ends at 192.168.63.254. If already in OpenStack, this chooses which
+	// existing network (that the current host is attached to) to use.
+	// Otherwise, this results in the creation of an appropriately configured
+	// network and subnet.
 	CIDR string
 
 	// GatewayIP is the gateway ip address for the subnet that will be created
@@ -417,6 +427,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 
 	err = provider.Deploy(&cloud.DeployConfig{
 		RequiredPorts:  s.config.ServerPorts,
+		UseConfigDrive: s.config.UseConfigDrive,
 		GatewayIP:      s.config.GatewayIP,
 		CIDR:           s.config.CIDR,
 		DNSNameServers: s.config.DNSNameServers,

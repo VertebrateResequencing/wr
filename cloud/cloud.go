@@ -182,7 +182,7 @@ type provideri interface {
 	// do any initial config set up such as authentication
 	initialize(logger log15.Logger) error
 	// achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error
+	deploy(resources *Resources, requiredPorts []int, useConfigDrive bool, gatewayIP, cidr string, dnsNameServers []string) error
 	// achieve the aims of InCloud()
 	inCloud() bool
 	// achieve the aims of GetQuota()
@@ -217,17 +217,33 @@ type Provider struct {
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
-// RequiredPorts is the slice of port numbers that your application needs to be
-// able to communicate to any servers you spawn (eg. [22] for ssh) through. If a
-// network and subnet need to be created, the GatewayIP and CIDR options will be
-// used; they default to 192.168.0.1 and 192.168.0.0:18 respectively, allowing
-// for 16381 servers to be Spawn()d later, with a maximum ip of 192.168.63.254.
-// DNSNameServers is a slice of DNS name server IPs. It defaults to Google's:
-// []string{"8.8.4.4", "8.8.8.8"}.
 type DeployConfig struct {
-	RequiredPorts  []int
-	GatewayIP      string
-	CIDR           string
+	// RequiredPorts is the slice of port numbers that your application needs to
+	// be able to communicate to any servers you spawn (eg. [22] for ssh)
+	// through. This will typically translate to the creation of security groups
+	// that open up these ports. If your cloud network has all ports open and
+	// does not allow the application of security groups to created servers,
+	// then provide an empty slice.
+	RequiredPorts []int
+
+	// UseConfigDrive, if set to true (default false), will cause all newly
+	// spawned servers to mount a configuration drive, which is typically needed
+	// for a network without DHCP.
+	UseConfigDrive bool
+
+	// CIDR is used to either determine which existing network (that the current
+	// cloud host is attached to) to spawn new servers on, or to define the
+	// properties of the network and subnet if those need to be created. CIDR
+	// defaults to 192.168.0.0:18, allowing for 16381 servers to be Spawn()d
+	// later, with a maximum ip of 192.168.63.254.
+	CIDR string
+
+	// GatewayIP is used if a network and subnet needed to be created, and is
+	// the gateway IP address of the created subnet. It defaults to 192.168.0.1.
+	GatewayIP string
+
+	// DNSNameServers is a slice of DNS name server IPs. It defaults to
+	// Google's: []string{"8.8.4.4", "8.8.8.8"}.
 	DNSNameServers []string
 }
 
@@ -368,7 +384,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 	// impl.deploy should overwrite any existing values in p.resources with
 	// updated values, but should leave other things - such as an existing
 	// PrivateKey when we have not just made a new one - alone
-	err := p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr, dnsNameServers)
+	err := p.impl.deploy(p.resources, config.RequiredPorts, config.UseConfigDrive, gatewayIP, cidr, dnsNameServers)
 	if err != nil {
 		return err
 	}
