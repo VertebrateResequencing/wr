@@ -88,6 +88,7 @@ type openstackp struct {
 	lastFlavorCache   time.Time
 	imap              map[string]*images.Image
 	imapMutex         sync.RWMutex
+	createdKeyPair    bool
 	hasDefaultGroup   bool
 	ipNet             *net.IPNet
 	networkClient     *gophercloud.ServiceClient
@@ -352,6 +353,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			if err != nil {
 				return err
 			}
+			p.createdKeyPair = true
 
 			resources.PrivateKey = string(privateKeyPEMBytes)
 			// NB: reliant on err now being nil here, hence errk above, since we
@@ -999,9 +1001,10 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 	// delete keypair, unless we're running in OpenStack and securityGroup and
 	// keypair have the same resourcename, indicating our current server needs
-	// the same keypair we used to spawn our servers
+	// the same keypair we used to spawn our servers. Bypass the exception if
+	// we definitely created the key pair this session
 	if id := resources.Details["keypair"]; id != "" {
-		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
+		if p.createdKeyPair || p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
 			t = time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
