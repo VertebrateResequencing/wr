@@ -424,26 +424,7 @@ func CurrentIP(cidr string) (string, error) {
 		// if the above fails, fall back on manually going through all our
 		// network interfaces
 		if ip == "" {
-			var addrs []net.Addr
-			addrs, err = net.InterfaceAddrs()
-			if err != nil {
-				return "", err
-			}
-			for _, address := range addrs {
-				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
-					if thisIPNet.IP.To4() != nil {
-						if ipNet != nil {
-							if ipNet.Contains(thisIPNet.IP) {
-								ip = thisIPNet.IP.String()
-								break
-							}
-						} else {
-							ip = thisIPNet.IP.String()
-							break
-						}
-					}
-				}
-			}
+			ip, err = currentIPFallback(ipNet)
 		}
 
 		return ip, nil
@@ -463,5 +444,33 @@ func CurrentIP(cidr string) (string, error) {
 	} else {
 		return ip.String(), err
 	}
-	return "", err
+
+	return currentIPFallback(ipNet)
+}
+
+// currentIPFallback is an older fallback method for figuring out our IP
+// address by going through all our network interfaces.
+func currentIPFallback(ipNet *net.IPNet) (string, error) {
+	var addrs []net.Addr
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+	var ip string
+	for _, address := range addrs {
+		if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
+			if thisIPNet.IP.To4() != nil {
+				if ipNet != nil {
+					if ipNet.Contains(thisIPNet.IP) {
+						ip = thisIPNet.IP.String()
+						break
+					}
+				} else {
+					ip = thisIPNet.IP.String()
+					break
+				}
+			}
+		}
+	}
+	return ip, nil
 }
