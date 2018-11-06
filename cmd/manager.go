@@ -52,6 +52,8 @@ var managerDebug bool
 var maxServers int
 var maxLocalCores int
 var maxLocalRAM int
+var cloudNoSecurityGroups bool
+var cloudUseConfigDrive bool
 
 const kubernetes = "kubernetes"
 
@@ -441,10 +443,12 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
-	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", " for the kubernetes scheduler, provide an existing config map to initialise with all pods with. To be used instead of --cloud_script")
+	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", "for the kubernetes scheduler, provide an existing config map to initialise all pods with. To be used instead of --cloud_script")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the subnet to spawn servers in")
+	managerStartCmd.Flags().BoolVar(&cloudUseConfigDrive, "cloud_use_config_drives", false, "for cloud schedulers, spawn servers with configuration drives")
+	managerStartCmd.Flags().BoolVar(&cloudNoSecurityGroups, "cloud_disable_security_groups", false, "for cloud schedulers, disable the use of security groups on spawned servers")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
@@ -523,10 +527,16 @@ func startJQ(postCreation []byte) {
 			die("wr manager failed to start : %s\n", errf)
 		}
 
+		var serverPorts []int
+		if !cloudNoSecurityGroups {
+			serverPorts = []int{22, mport}
+		}
+
 		schedulerConfig = &jqs.ConfigOpenStack{
 			ResourceName:         cloudResourceName(localUsername),
 			SavePath:             filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
-			ServerPorts:          []int{22, mport},
+			ServerPorts:          serverPorts,
+			UseConfigDrive:       cloudUseConfigDrive,
 			OSPrefix:             osPrefix,
 			OSUser:               osUsername,
 			OSRAM:                osRAM,
