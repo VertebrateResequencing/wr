@@ -269,6 +269,7 @@ func serve(config ServerConfig) (*Server, string, []byte, error) {
 	if err != nil {
 		limit := time.After(5 * time.Second)
 		ticker := time.NewTicker(500 * time.Millisecond)
+	RETRY:
 		for {
 			select {
 			case <-ticker.C:
@@ -277,10 +278,10 @@ func serve(config ServerConfig) (*Server, string, []byte, error) {
 					continue
 				}
 				ticker.Stop()
-				break
+				break RETRY
 			case <-limit:
 				ticker.Stop()
-				break
+				break RETRY
 			}
 		}
 	}
@@ -486,13 +487,13 @@ func TestJobqueueSignal(t *testing.T) {
 					errch <- jq.Execute(job, config.RunnerExecShell)
 				}()
 				select {
-				case err := <-errch:
-					if err != nil {
+				case erre := <-errch:
+					if erre != nil {
 						// we expect that we lost the connection when we killed
 						// the server, then reconnected to the new server and
 						// therefore got ErrStopReserving, but otherwise
 						// everything was fine
-						jqerr, ok := err.(Error)
+						jqerr, ok := erre.(Error)
 						if !ok || jqerr.Err != ErrStopReserving {
 							j1worked <- false
 							return
@@ -513,8 +514,8 @@ func TestJobqueueSignal(t *testing.T) {
 					errch <- jq.Execute(job2, config.RunnerExecShell)
 				}()
 				select {
-				case err := <-errch:
-					if err != nil && strings.Contains(err.Error(), "exited with code -1") {
+				case erre := <-errch:
+					if erre != nil && strings.Contains(erre.Error(), "exited with code -1") {
 						j2worked <- true
 						return
 					}
@@ -568,8 +569,8 @@ func TestJobqueueSignal(t *testing.T) {
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: float64(runtime.NumCPU())}, Retries: uint8(0), RepGroup: "recover"})
 			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "lost"})
-			inserts, already, err := jq.Add(jobs, envVars, true)
-			So(err, ShouldBeNil)
+			inserts, already, erra := jq.Add(jobs, envVars, true)
+			So(erra, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
 			So(already, ShouldEqual, 0)
 
@@ -580,8 +581,8 @@ func TestJobqueueSignal(t *testing.T) {
 			runnerPids := make(map[int]bool)
 			var runnerPidToKill int
 			for _, p := range processes {
-				thisCmd, err := p.Cmdline()
-				if err != nil {
+				thisCmd, errc := p.Cmdline()
+				if errc != nil {
 					continue
 				}
 				if strings.Contains(thisCmd, "sleep") {
@@ -625,7 +626,7 @@ func TestJobqueueSignal(t *testing.T) {
 			// add a new job which should wait until job 1 completes, since it
 			// uses all CPUs
 			cmd3 := "echo 1"
-			jobs = []*Job{&Job{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
+			jobs = []*Job{{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
 			inserts, already, err = jq.Add(jobs, envVars, true)
 			jq.Disconnect()
 			So(err, ShouldBeNil)
@@ -635,12 +636,12 @@ func TestJobqueueSignal(t *testing.T) {
 			// wait for runner pids to no longer exist
 			for i := 0; i < 16; i++ {
 				for pid := range runnerPids {
-					process, err := os.FindProcess(pid)
-					if err != nil && process == nil {
+					process, errf := os.FindProcess(pid)
+					if errf != nil && process == nil {
 						delete(runnerPids, pid)
 					}
-					err = process.Signal(syscall.Signal(0))
-					if err != nil {
+					errs := process.Signal(syscall.Signal(0))
+					if errs != nil {
 						delete(runnerPids, pid)
 					}
 				}
