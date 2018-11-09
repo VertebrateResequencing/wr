@@ -191,7 +191,7 @@ k8s.io/api v0.0.0-20180828232432-12444147eb11 h1:aqrPN6pTxewBPHq/Z9myS4rmJ9lty8O
 k8s.io/api v0.0.0-20180828232432-12444147eb11/go.mod h1:iuAfoD4hCxJ8Onx9kaTIt30j7jUFS00AXQi6QMi99vA=
 k8s.io/apimachinery v0.0.0-20180619225948-e386b2658ed2 h1:NJEj7o7SKxpURej3uJ1QZJZCeRlRj21EatnCK65nrB4=
 k8s.io/apimachinery v0.0.0-20180619225948-e386b2658ed2/go.mod h1:ccL7Eh7zubPUSh9A3USN90/OzHNSVN6zxzde07TDCL0=
-k8s.io/client-go v7.0.0+incompatible h1:gokIETH5yPpln/LuXmg1TLVH5bMSaVQTVxuRizwjWwU=
+k8s.io/client-go v7.0.0+incompatible h1:kiH+Y6hn+pc78QS/mtBfMJAMIIaWevHi++JvOGEEQp4=
 k8s.io/client-go v7.0.0+incompatible/go.mod h1:7vJpHMYJwNQCWgzmNV+VYUl1zCObLyodBc8nIyt8L5s=
 nanomsg.org/go-mangos v0.0.0-20180815160134-b7ff4263f0d7 h1:YoN/xdkGc4gHoWWP0AeF8J25mJMl2Vn/6+EvPPIc0gM=
 nanomsg.org/go-mangos v0.0.0-20180815160134-b7ff4263f0d7/go.mod h1:MOor8xUIgwsRMPpLr9xQxe7bT7rciibScOqVyztNxHQ=
