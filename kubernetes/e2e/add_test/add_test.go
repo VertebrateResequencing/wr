@@ -274,7 +274,7 @@ func TestContainerImage(t *testing.T) {
 		}
 
 		if runnercontainer == nil {
-			t.Errorf("Failed to find runner container in pod %s", pod.ObjectMeta.Name)
+			t.Fatalf("Failed to find runner container in pod %s", pod.ObjectMeta.Name)
 		}
 
 		if runnercontainer.Image != c.containerImage {
