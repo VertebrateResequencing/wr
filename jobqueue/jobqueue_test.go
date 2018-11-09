@@ -177,7 +177,7 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 // that server, along with the client token and the server's pid.
 // If keepDB is true, the exe will be run with --keepdb arg as well. Same idea
 // with enableRunners
-func startServer(serverExe string, keepDB, enableRunners bool, config internal.Config, addr string) (*Client, []byte, int, error) {
+func startServer(serverExe string, keepDB, enableRunners bool, config internal.Config, addr string) (*Client, []byte, *exec.Cmd, error) {
 	preStart := time.Now()
 
 	args := []string{"--servermode"}
@@ -200,10 +200,10 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 	internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 	token, err := ioutil.ReadFile(config.ManagerTokenFile)
 	if err != nil || len(token) == 0 {
-		return nil, nil, cmd.Process.Pid, err
+		return nil, nil, cmd, err
 	}
 	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, 2*time.Second)
-	return jq, token, cmd.Process.Pid, err
+	return jq, token, cmd, err
 }
 
 // runServer starts a jobqueue server, and is what calling this test script in
@@ -288,6 +288,29 @@ func serve(config ServerConfig) (*Server, string, []byte, error) {
 	return server, msg, token, err
 }
 
+// waitUntilPidsAreGone waits up to the given number of seconds for the pids in
+// the map to not exist. The pids are deleted from the map when they no longer
+// exist. Returns true if all pids gone (and the map will be empty).
+func waitUntilPidsAreGone(pids map[int]bool, seconds int) bool {
+	for i := 0; i < seconds; i++ {
+		for pid := range pids {
+			process, errf := os.FindProcess(pid)
+			if errf != nil && process == nil {
+				delete(pids, pid)
+			}
+			errs := process.Signal(syscall.Signal(0))
+			if errs != nil {
+				delete(pids, pid)
+			}
+		}
+		if len(pids) == 0 {
+			break
+		}
+		<-time.After(1 * time.Second)
+	}
+	return len(pids) == 0
+}
+
 func TestJobqueueSignal(t *testing.T) {
 	if runnermode {
 		return
@@ -314,8 +337,8 @@ func TestJobqueueSignal(t *testing.T) {
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client. Our server will be ourself in --servermode, so
 	// first we'll compile ourselves to the tmpdir
-	serverCmd := filepath.Join(servertmpdir, "server")
-	cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", serverCmd)
+	serverExe := filepath.Join(servertmpdir, "server")
+	cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", serverExe)
 	err = cmd.Run()
 	if err != nil {
 		log.Fatal(err)
@@ -336,10 +359,12 @@ func TestJobqueueSignal(t *testing.T) {
 	ClientRetryWait = 1 * time.Second
 
 	Convey("Once a jobqueue server is up as a daemon", t, func() {
-		jq, token, serverPid, errf := startServer(serverCmd, false, false, config, addr)
+		jq, token, serverCmd, errf := startServer(serverExe, false, false, config, addr)
+		serverPid := serverCmd.Process.Pid
 		So(errf, ShouldBeNil)
 		defer func() {
 			syscall.Kill(serverPid, syscall.SIGTERM)
+			serverCmd.Wait()
 		}()
 		defer jq.Disconnect()
 
@@ -458,7 +483,7 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job2.Cmd, ShouldEqual, cmd2)
 			So(job2.State, ShouldEqual, JobStateReserved)
 
-			serverPidCh := make(chan int)
+			serverCmdCh := make(chan *exec.Cmd)
 			go func() {
 				<-time.After(2 * time.Second)
 				gotJob, errg := jq.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
@@ -470,13 +495,13 @@ func TestJobqueueSignal(t *testing.T) {
 					log.Printf("failed to get job: %s\n", errg)
 				}
 				<-time.After(4 * time.Second)
-				newJQ, _, newServerPid, errf := startServer(serverCmd, true, false, config, addr)
+				newJQ, _, newServerCmd, errf := startServer(serverExe, true, false, config, addr)
 				if errf != nil {
 					log.Printf("failed to start new server: %s\n", errf)
 				} else if newJQ != nil {
 					newJQ.Disconnect()
 				}
-				serverPidCh <- newServerPid
+				serverCmdCh <- newServerCmd
 			}()
 
 			j1worked := make(chan bool)
@@ -526,7 +551,8 @@ func TestJobqueueSignal(t *testing.T) {
 				}
 			}()
 
-			serverPid = <-serverPidCh
+			serverCmd = <-serverCmdCh
+			serverPid = serverCmd.Process.Pid
 			So(<-j1worked, ShouldBeTrue)
 			So(<-j2worked, ShouldBeTrue)
 
@@ -554,10 +580,12 @@ func TestJobqueueSignal(t *testing.T) {
 	// the next tests will have runners enabled so that we can see what happens
 	// when we force kill both the server and a runner
 	Convey("Once a jobqueue server using local scheduler is up as a daemon", t, func() {
-		jq, token, serverPid, errf := startServer(serverCmd, false, true, config, addr)
+		jq, token, serverCmd, errf := startServer(serverExe, false, true, config, addr)
+		serverPid := serverCmd.Process.Pid
 		So(errf, ShouldBeNil)
 		defer func() {
 			syscall.Kill(serverPid, syscall.SIGTERM)
+			serverCmd.Wait()
 		}()
 		defer jq.Disconnect()
 
@@ -594,7 +622,7 @@ func TestJobqueueSignal(t *testing.T) {
 					if err != nil {
 						continue
 					}
-					if strings.Contains(parentCmd, serverCmd) {
+					if strings.Contains(parentCmd, serverExe) {
 						pid := int(parent.Pid)
 
 						if strings.Contains(thisCmd, "perl") {
@@ -618,7 +646,8 @@ func TestJobqueueSignal(t *testing.T) {
 			syscall.Kill(runnerPidToKill, syscall.SIGKILL)
 			<-time.After(4 * time.Second)
 			var errf error
-			jq, _, serverPid, errf = startServer(serverCmd, true, true, config, addr)
+			jq, _, serverCmd, errf = startServer(serverExe, true, true, config, addr)
+			serverPid = serverCmd.Process.Pid
 			So(errf, ShouldBeNil)
 			So(jq, ShouldNotBeNil)
 			newServerStartedAt := time.Now()
@@ -634,22 +663,7 @@ func TestJobqueueSignal(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			// wait for runner pids to no longer exist
-			for i := 0; i < 16; i++ {
-				for pid := range runnerPids {
-					process, errf := os.FindProcess(pid)
-					if errf != nil && process == nil {
-						delete(runnerPids, pid)
-					}
-					errs := process.Signal(syscall.Signal(0))
-					if errs != nil {
-						delete(runnerPids, pid)
-					}
-				}
-				if len(runnerPids) == 0 {
-					break
-				}
-				<-time.After(1 * time.Second)
-			}
+			waitUntilPidsAreGone(runnerPids, 16)
 			So(len(runnerPids), ShouldEqual, 0)
 
 			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -682,6 +696,12 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job3.Cmd, ShouldEqual, cmd3)
 			So(job3.State, ShouldEqual, JobStateComplete)
 			So(job3.StartTime, ShouldHappenAfter, job.EndTime)
+
+			// for subsequent tests to work, we need to wait for the server to
+			// really be gone
+			syscall.Kill(serverPid, syscall.SIGTERM)
+			serverCmd.Wait()
+			So(waitUntilPidsAreGone(map[int]bool{serverPid: true}, 5), ShouldBeTrue)
 		})
 
 		Reset(func() {
@@ -710,7 +730,7 @@ func TestJobqueueBasics(t *testing.T) {
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
-		server, _, token, errs = Serve(serverConfig)
+		server, _, token, errs = serve(serverConfig)
 		So(errs, ShouldBeNil)
 
 		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
@@ -1079,7 +1099,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(jqerr.Err, ShouldEqual, ErrNoServer)
 
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -2885,7 +2905,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(info3.Size(), ShouldEqual, 32768)
 
 				server.Stop(true)
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -2900,7 +2920,7 @@ func TestJobqueueProduction(t *testing.T) {
 				defer func() {
 					wipeDevDBOnInit = true
 				}()
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -2920,7 +2940,7 @@ func TestJobqueueProduction(t *testing.T) {
 				defer func() {
 					wipeDevDBOnInit = true
 				}()
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -2936,7 +2956,7 @@ func TestJobqueueProduction(t *testing.T) {
 				_, err = os.Stat(managerDBBkFile)
 				So(err, ShouldBeNil)
 
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 
 				info, err = os.Stat(config.ManagerDbFile)
@@ -2960,7 +2980,7 @@ func TestJobqueueProduction(t *testing.T) {
 				f.Sync()
 				f.Close()
 
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 
 				info, err = os.Stat(config.ManagerDbFile)
@@ -2990,7 +3010,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				server.Stop(true)
 				wipeDevDBOnInit = false
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -3036,7 +3056,7 @@ func TestJobqueueProduction(t *testing.T) {
 				}()
 				errr := os.Remove(config.ManagerDbFile)
 				So(errr, ShouldBeNil)
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -3052,7 +3072,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				errr = os.Remove(config.ManagerDbFile)
 				So(errr, ShouldBeNil)
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
@@ -3103,7 +3123,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldNotBeNil)
 
 				wipeDevDBOnInit = false
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -3148,7 +3168,7 @@ func TestJobqueueProduction(t *testing.T) {
 				jq.Disconnect() // user must always Disconnect before connecting again!
 
 				wipeDevDBOnInit = false
-				server, _, token, errs = Serve(serverConfig)
+				server, _, token, errs = serve(serverConfig)
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -3191,7 +3211,7 @@ func TestJobqueueProduction(t *testing.T) {
 			jq.Disconnect()
 
 			wipeDevDBOnInit = false
-			server, _, token, errs = Serve(serverConfig)
+			server, _, token, errs = serve(serverConfig)
 			wipeDevDBOnInit = true
 			So(errs, ShouldBeNil)
 			jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -4027,7 +4047,7 @@ func TestJobqueueRunners(t *testing.T) {
 				lsfConfig.SchedulerName = "lsf"
 				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing"}
 				server.Stop(true)
-				server, _, token, errs = Serve(lsfConfig)
+				server, _, token, errs = serve(lsfConfig)
 				So(errs, ShouldBeNil)
 
 				batchtest()
@@ -4245,7 +4265,7 @@ sudo apt-get -y install docker-ce
 sudo usermod -aG docker ` + osUser
 
 		Convey("You can connect with an OpenStack scheduler", t, func() {
-			server, _, token, errs = Serve(osConfig)
+			server, _, token, errs = serve(osConfig)
 			So(errs, ShouldBeNil)
 			defer server.Stop(true)
 
@@ -4774,7 +4794,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				defer func() {
 					wipeDevDBOnInit = true
 				}()
-				server, _, token, errs = Serve(s3ServerConfig)
+				server, _, token, errs = serve(s3ServerConfig)
 				So(errs, ShouldBeNil)
 				defer server.Stop(true)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -4791,7 +4811,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				_, err = os.Stat(localBkPath)
 				So(err, ShouldNotBeNil)
 
-				server, _, token, errs = Serve(s3ServerConfig)
+				server, _, token, errs = serve(s3ServerConfig)
 				So(errs, ShouldBeNil)
 				defer server.Stop(true)
 
