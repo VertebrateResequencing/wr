@@ -149,6 +149,17 @@ func (c *ConfigKubernetes) AddConfigFile(configFile string) {
 	}
 }
 
+// GetOSUser returns User, to meet the CloudConfig interface.
+func (c *ConfigKubernetes) GetOSUser() string {
+	return c.User
+}
+
+// GetServerKeepTime exists to meet the CloudConfig interface, but is not
+// relevant here, so always returns 0 value.
+func (c *ConfigKubernetes) GetServerKeepTime() time.Duration {
+	return 0 * time.Second
+}
+
 // Set up prerequisites, call Run() Create channels to pass requests to the
 // controller. Create queue.
 func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
