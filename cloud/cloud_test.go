@@ -118,7 +118,7 @@ func TestOpenStack(t *testing.T) {
 
 				So(p.resources.Details["keypair"], ShouldEqual, resourceName)
 				if inCloud {
-					So(p.resources.Details["secgroup"], ShouldBeBlank)
+					So(p.resources.Details["secgroup"], ShouldNotBeBlank)
 					So(p.resources.Details["network"], ShouldBeBlank)
 					So(p.resources.Details["subnet"], ShouldBeBlank)
 					So(p.resources.Details["router"], ShouldBeBlank)
