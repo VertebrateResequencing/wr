@@ -363,8 +363,14 @@ func TestJobqueueSignal(t *testing.T) {
 		serverPid := serverCmd.Process.Pid
 		So(errf, ShouldBeNil)
 		defer func() {
-			syscall.Kill(serverPid, syscall.SIGTERM)
-			serverCmd.Wait()
+			errk := syscall.Kill(serverPid, syscall.SIGTERM)
+			if errk != nil {
+				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
+			}
+			errw := serverCmd.Wait()
+			if errw != nil {
+				fmt.Printf("failed to reap server pid: %s\n", errw)
+			}
 		}()
 		defer jq.Disconnect()
 
@@ -399,7 +405,10 @@ func TestJobqueueSignal(t *testing.T) {
 			Convey("Signals are handled during execution, and we can see when jobs take too long", func() {
 				go func() {
 					<-time.After(2 * time.Second)
-					syscall.Kill(os.Getpid(), syscall.SIGTERM)
+					errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
+					if errk != nil {
+						fmt.Printf("failed to send SIGTERM: %s\n", errk)
+					}
 				}()
 
 				j1worked := make(chan bool)
@@ -487,10 +496,16 @@ func TestJobqueueSignal(t *testing.T) {
 			go func() {
 				<-time.After(2 * time.Second)
 				gotJob, errg := jq.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
-				syscall.Kill(serverPid, syscall.SIGKILL)
+				errk := syscall.Kill(serverPid, syscall.SIGKILL)
+				if errk != nil {
+					fmt.Printf("failed to send SIGKILL to server: %s\n", errk)
+				}
 				if errg == nil && gotJob != nil {
 					<-time.After(2 * time.Second)
-					syscall.Kill(gotJob.Pid, syscall.SIGKILL)
+					errk = syscall.Kill(gotJob.Pid, syscall.SIGKILL)
+					if errk != nil {
+						fmt.Printf("failed to send SIGKILL to job: %s\n", errk)
+					}
 				} else {
 					log.Printf("failed to get job: %s\n", errg)
 				}
@@ -499,7 +514,10 @@ func TestJobqueueSignal(t *testing.T) {
 				if errf != nil {
 					log.Printf("failed to start new server: %s\n", errf)
 				} else if newJQ != nil {
-					newJQ.Disconnect()
+					errd := newJQ.Disconnect()
+					if errd != nil {
+						fmt.Printf("failed to disconnect after making a new server: %s\n", errd)
+					}
 				}
 				serverCmdCh <- newServerCmd
 			}()
@@ -558,7 +576,12 @@ func TestJobqueueSignal(t *testing.T) {
 
 			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
-			defer jq2.Disconnect()
+			defer func() {
+				errd := jq2.Disconnect()
+				if errd != nil {
+					fmt.Printf("failed to disconnect: %s\n", errd)
+				}
+			}()
 			job, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
 			So(err, ShouldBeNil)
 			So(job, ShouldNotBeNil)
@@ -573,7 +596,10 @@ func TestJobqueueSignal(t *testing.T) {
 		})
 
 		Reset(func() {
-			syscall.Kill(serverPid, syscall.SIGTERM)
+			errk := syscall.Kill(serverPid, syscall.SIGTERM)
+			if errk != nil && !strings.HasSuffix(errk.Error(), "no such process") {
+				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
+			}
 		})
 	})
 
@@ -584,10 +610,21 @@ func TestJobqueueSignal(t *testing.T) {
 		serverPid := serverCmd.Process.Pid
 		So(errf, ShouldBeNil)
 		defer func() {
-			syscall.Kill(serverPid, syscall.SIGTERM)
-			serverCmd.Wait()
+			errk := syscall.Kill(serverPid, syscall.SIGTERM)
+			if errk != nil && !strings.HasSuffix(errk.Error(), "no such process") {
+				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
+			}
+			errw := serverCmd.Wait()
+			if errw != nil && !strings.HasSuffix(errw.Error(), "was already called") {
+				fmt.Printf("failed to reap server pid: %s\n", errw)
+			}
 		}()
-		defer jq.Disconnect()
+		defer func() {
+			errd := jq.Disconnect()
+			if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+				fmt.Printf("failed to disconnect: %s\n", errd)
+			}
+		}()
 
 		So(jq.ServerInfo.PID, ShouldEqual, serverPid)
 
@@ -641,9 +678,15 @@ func TestJobqueueSignal(t *testing.T) {
 
 			// kill server and then second runner, then wait before starting new
 			// server
-			syscall.Kill(serverPid, syscall.SIGKILL)
+			errk := syscall.Kill(serverPid, syscall.SIGKILL)
+			if errk != nil {
+				fmt.Printf("failed to send SIGKILL to server: %s\n", errk)
+			}
 			<-time.After(2 * time.Second)
-			syscall.Kill(runnerPidToKill, syscall.SIGKILL)
+			errk = syscall.Kill(runnerPidToKill, syscall.SIGKILL)
+			if errk != nil {
+				fmt.Printf("failed to send SIGKILL to runner: %s\n", errk)
+			}
 			<-time.After(4 * time.Second)
 			var errf error
 			jq, _, serverCmd, errf = startServer(serverExe, true, true, config, addr)
@@ -657,7 +700,10 @@ func TestJobqueueSignal(t *testing.T) {
 			cmd3 := "echo 1"
 			jobs = []*Job{{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
 			inserts, already, err = jq.Add(jobs, envVars, true)
-			jq.Disconnect()
+			errd := jq.Disconnect()
+			if errd != nil {
+				fmt.Printf("failed to disconnect: %s\n", errd)
+			}
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
@@ -668,7 +714,12 @@ func TestJobqueueSignal(t *testing.T) {
 
 			jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
-			defer jq2.Disconnect()
+			defer func() {
+				errd := jq2.Disconnect()
+				if errd != nil {
+					fmt.Printf("failed to disconnect: %s\n", errd)
+				}
+			}()
 			job, err := jq2.GetByEssence(&JobEssence{Cmd: cmd}, false, false)
 			So(err, ShouldBeNil)
 			So(job, ShouldNotBeNil)
@@ -699,13 +750,22 @@ func TestJobqueueSignal(t *testing.T) {
 
 			// for subsequent tests to work, we need to wait for the server to
 			// really be gone
-			syscall.Kill(serverPid, syscall.SIGTERM)
-			serverCmd.Wait()
+			errk = syscall.Kill(serverPid, syscall.SIGTERM)
+			if errk != nil {
+				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
+			}
+			errw := serverCmd.Wait()
+			if errw != nil {
+				fmt.Printf("failed to reap server pid: %s\n", errw)
+			}
 			So(waitUntilPidsAreGone(map[int]bool{serverPid: true}, 5), ShouldBeTrue)
 		})
 
 		Reset(func() {
-			syscall.Kill(serverPid, syscall.SIGTERM)
+			errk := syscall.Kill(serverPid, syscall.SIGTERM)
+			if errk != nil && !strings.HasSuffix(errk.Error(), "no such process") {
+				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
+			}
 		})
 	})
 }
@@ -1090,7 +1150,10 @@ func TestJobqueueBasics(t *testing.T) {
 			Convey("You can stop the server by sending it a SIGTERM or SIGINT", func() {
 				jq.Disconnect()
 
-				syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				errk := syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				if errk != nil {
+					fmt.Printf("failed to send SIGTERM: %s\n", errk)
+				}
 				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
 				_, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -1106,7 +1169,10 @@ func TestJobqueueBasics(t *testing.T) {
 				So(err, ShouldBeNil)
 				jq.Disconnect()
 
-				syscall.Kill(os.Getpid(), syscall.SIGINT)
+				errk = syscall.Kill(os.Getpid(), syscall.SIGINT)
+				if errk != nil {
+					fmt.Printf("failed to send SIGINT: %s\n", errk)
+				}
 				<-time.After(ClientTouchInterval)
 				<-time.After(ClientTouchInterval)
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
