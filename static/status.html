@@ -70,26 +70,31 @@
                 </div>
             </div>
 
-            <div id="messages" data-bind="foreach: messages">
+            <!-- ko if: messages().length > 1 -->
+                <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessages">Dismiss All</button>
+            <!-- /ko -->
+            <!-- ko if: messages().length > 0 -->
                 <div class="alert alert-danger fade in">
-                    <div class="panel panel-warning">
-                        <div class="panel-heading">
-                            Scheduler Issue
+                    <div id="messages" data-bind="foreach: messages">
+                        <div class="panel panel-warning">
+                            <div class="panel-heading">
+                                Scheduler Issue
+                                    <!-- ko if: Count() > 1 -->
+                                        [first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
+                                    <!-- /ko -->
+                            </div>
+                            <div class="panel-body">
+                                <span data-bind="text: Msg"></span><br>
+                                Reported at: <span data-bind="text: LastDate().toDate()"></span>
                                 <!-- ko if: Count() > 1 -->
-                                    [first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
+                                    <br>Reported: <span data-bind="text: Count"></span> times
                                 <!-- /ko -->
-                        </div>
-                        <div class="panel-body">
-                            <span data-bind="text: Msg"></span><br>
-                            Reported at: <span data-bind="text: LastDate().toDate()"></span>
-                            <!-- ko if: Count() > 1 -->
-                                <br>Reported: <span data-bind="text: Count"></span> times
-                            <!-- /ko -->
-                            <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessage">Dismiss</button>
+                                <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessage">Dismiss</button>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
+            <!-- /ko -->
 
             <div style="width: 100%;" class="well well-sm top-margin">
                 <div style="margin: 0 auto;">
@@ -1093,6 +1098,10 @@
                 self.dismissMessage = function(si) {
                     self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));
                     self.removeMessage(si.Msg)
+                };
+                self.dismissMessages = function(si) {
+                    self.ws.send(JSON.stringify({ Request: 'dismissMsgs' }));
+                    self.messages([])
                 };
             }
             var svm = new StatusViewModel();
