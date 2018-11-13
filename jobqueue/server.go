@@ -128,6 +128,7 @@ type serverResponse struct {
 	SStats     *ServerStats
 	DB         []byte
 	Path       string
+	BadServers []*BadServer
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -172,10 +173,10 @@ type jstateCount struct {
 	Count     int // num in FromState drop by this much, num in ToState rise by this much
 }
 
-// badServer is the details of servers that have gone bad that we send to the
+// BadServer is the details of servers that have gone bad that we send to the
 // status webpage. Previously bad servers can also be sent if they become good
 // again, hence the IsBad boolean.
-type badServer struct {
+type BadServer struct {
 	ID      string
 	Name    string
 	IP      string
@@ -746,7 +747,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			s.bsmutex.Unlock()
 
 			if !skip {
-				s.badServerCaster.Send(&badServer{
+				s.badServerCaster.Send(&BadServer{
 					ID:      server.ID,
 					Name:    server.Name,
 					IP:      server.IP,
@@ -1912,11 +1913,11 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 
 // getBadServers converts the slice of cloud.Server objects we hold in to a
 // slice of badServer structs.
-func (s *Server) getBadServers() []*badServer {
+func (s *Server) getBadServers() []*BadServer {
 	s.bsmutex.RLock()
-	var bs []*badServer
+	var bs []*BadServer
 	for _, server := range s.badServers {
-		bs = append(bs, &badServer{
+		bs = append(bs, &BadServer{
 			ID:      server.ID,
 			Name:    server.Name,
 			IP:      server.IP,

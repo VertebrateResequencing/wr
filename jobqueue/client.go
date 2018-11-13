@@ -98,25 +98,27 @@ var (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
-	ClientID       uuid.UUID
-	Env            []byte // compressed binc encoding of []string
-	FirstReserve   bool
-	GetEnv         bool
-	GetStd         bool
-	IgnoreComplete bool
-	Job            *Job
-	JobEndState    *JobEndState
-	Jobs           []*Job
-	Keys           []string
-	Search         bool
-	Limit          int
-	Method         string
-	SchedulerGroup string
-	State          JobState
-	File           []byte // compressed bytes of file content
-	Path           string // desired path File should be stored at, can be blank
-	Timeout        time.Duration
-	Token          []byte
+	ClientID                uuid.UUID
+	Env                     []byte // compressed binc encoding of []string
+	FirstReserve            bool
+	GetEnv                  bool
+	GetStd                  bool
+	IgnoreComplete          bool
+	Job                     *Job
+	JobEndState             *JobEndState
+	Jobs                    []*Job
+	Keys                    []string
+	Search                  bool
+	Limit                   int
+	Method                  string
+	SchedulerGroup          string
+	State                   JobState
+	File                    []byte // compressed bytes of file content
+	Path                    string // desired path File should be stored at, can be blank
+	Timeout                 time.Duration
+	Token                   []byte
+	ConfirmDeadCloudServers bool
+	CloudServerID           string
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -1651,6 +1653,29 @@ func (c *Client) UploadFile(local, remote string) (string, error) {
 		return "", err
 	}
 	return resp.Path, err
+}
+
+// GetBadCloudServers, if the server is running with a cloud scheduler, returns
+// servers that are currently non-responsive and might be dead.
+func (c *Client) GetBadCloudServers() ([]*BadServer, error) {
+	resp, err := c.request(&clientRequest{Method: "getbcs"})
+	if err != nil {
+		return nil, err
+	}
+	return resp.BadServers, err
+}
+
+// ConfirmCloudServersDead will confirm that currently non-responsive cloud
+// servers (that would be returned by GetBadCloudServers()) are dead, triggering
+// their destruction. If id is an empty string, applies to all such servers. If
+// it is the ID of a server returned by GetBadCloudServers(), applies to just
+// that server. Returns the servers that were successfully confirmed dead.
+func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, error) {
+	resp, err := c.request(&clientRequest{Method: "getbcs", ConfirmDeadCloudServers: true, CloudServerID: id})
+	if err != nil {
+		return nil, err
+	}
+	return resp.BadServers, err
 }
 
 // request the server do something and get back its response. We can only cope
