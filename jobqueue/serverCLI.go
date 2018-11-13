@@ -560,6 +560,33 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
+		case "getbcs":
+			servers := s.getBadServers()
+			if cr.ConfirmDeadCloudServers {
+				var confirmed []*BadServer
+				s.bsmutex.Lock()
+				for _, badServer := range servers {
+					if !badServer.IsBad {
+						continue
+					}
+					if cr.CloudServerID != "" && cr.CloudServerID != badServer.ID {
+						continue
+					}
+					server := s.badServers[badServer.ID]
+					delete(s.badServers, badServer.ID)
+					if server != nil && server.IsBad() {
+						errd := server.Destroy()
+						if errd != nil {
+							s.Warn("Server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
+						}
+					}
+					confirmed = append(confirmed, badServer)
+				}
+				s.bsmutex.Unlock()
+				sr = &serverResponse{BadServers: confirmed}
+			} else {
+				sr = &serverResponse{BadServers: servers}
+			}
 		default:
 			srerr = ErrUnknownCommand
 		}

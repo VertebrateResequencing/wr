@@ -32,6 +32,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/fatih/color"
 	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
@@ -73,6 +74,9 @@ var cloudManagerTimeoutSeconds int
 var cloudResourceNameUniquer string
 var maxManagerCores int
 var maxManagerRAM int
+var cloudServersAll bool
+var cloudServerID string
+var cloudServersConfirmDead bool
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -584,10 +588,74 @@ and accessible.`,
 	},
 }
 
+// servers sub-command currently lets you view "server might be dead" warnings,
+// and to confirm that they're dead.
+var cloudServersCmd = &cobra.Command{
+	Use:   "servers",
+	Short: "View cloud servers that might be dead and confirm if they're dead",
+	Long: `View cloud servers that might be dead and confirm if they're dead.
+
+When running your workflow jobs, the manager may spawn cloud servers on which
+the jobs can be run. If these become unresponsive, this command can be used to
+see which have issues.
+
+After investigating the servers with the appropriate tools you have that can
+interegate your cloud, if the servers are definitley never going to be useable
+(eg. they have been destroyed and no longer exist), you can use this command to
+confirm they are dead, which means the manager will no longer think those server
+resources are in use. If the servers still exist, confirming they are dead will
+result in the manager trying to destroy them.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if cloudServersConfirmDead && (!cloudServersAll && cloudServerID == "") {
+			die("in --confirmdead mode, either --all or --identifier must be specified")
+		}
+
+		jq := connect(time.Duration(timeoutint)*time.Second, false)
+
+		var badServers []*jobqueue.BadServer
+		var err error
+		if cloudServersConfirmDead {
+			badServers, err = jq.ConfirmCloudServersDead(cloudServerID)
+			if err != nil {
+				die("%s", err)
+			}
+
+			if len(badServers) == 0 {
+				info("no cloud servers were eligible to be confirmed dead")
+				return
+			}
+			info("these cloud servers were confirmed dead:")
+		} else {
+			badServers, err = jq.GetBadCloudServers()
+			if err != nil {
+				die("%s", err)
+			}
+
+			if len(badServers) == 0 {
+				info("no cloud servers might be dead right now")
+				return
+			}
+			info("these cloud servers might be dead:")
+		}
+
+		for _, server := range badServers {
+			if !server.IsBad {
+				continue
+			}
+			var problem string
+			if server.Problem != "" {
+				problem = "; " + server.Problem
+			}
+			fmt.Printf(" ID: %s; IP: %s; Name: %s%s\n", server.ID, server.IP, server.Name, problem)
+		}
+	},
+}
+
 func init() {
 	RootCmd.AddCommand(cloudCmd)
 	cloudCmd.AddCommand(cloudDeployCmd)
 	cloudCmd.AddCommand(cloudTearDownCmd)
+	cloudCmd.AddCommand(cloudServersCmd)
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
@@ -616,6 +684,11 @@ func init() {
 	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name you set during deploy")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	cloudTearDownCmd.Flags().BoolVar(&cloudDebug, "debug", false, "show details of the teardown process")
+
+	cloudServersCmd.Flags().BoolVarP(&cloudServersAll, "all", "a", false, "confirm all maybe dead servers as dead")
+	cloudServersCmd.Flags().StringVarP(&cloudServerID, "identifier", "i", "", "identifier of a server to confirm as dead")
+	cloudServersCmd.Flags().BoolVarP(&cloudServersConfirmDead, "confirmdead", "d", false, "confirm that 1 (-i) or all (-a) servers are dead [default: just list possibly dead servers]")
+	cloudServersCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) {

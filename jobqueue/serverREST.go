@@ -818,7 +818,7 @@ func restBadServers(s *Server) http.HandlerFunc {
 		case http.MethodGet:
 			servers := s.getBadServers()
 			if len(servers) == 0 {
-				servers = []*badServer{}
+				servers = []*BadServer{}
 			}
 			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 			w.WriteHeader(http.StatusOK)
