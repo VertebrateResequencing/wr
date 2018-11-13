@@ -25,6 +25,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// options for this cmd
+var confirmDead bool
+
 // killCmd represents the kill command
 var killCmd = &cobra.Command{
 	Use:   "kill",
@@ -37,7 +40,8 @@ have been killed and actually stop running. At that point they will become
 buried and you can "wr remove" them if desired.
 
 Specify one of the flags -f, -l, -i or -a to choose which commands you want to
-remove. Amongst those, only running jobs will be affected.
+remove. Amongst those, only running jobs will be affected. If the --confirmdead
+option is specified, only "lost contact" jobs will be affected.
 
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want to now kill. Combining with -z lets you kill jobs in multiple report
@@ -70,7 +74,11 @@ same file you gave to "wr add" in -f mode.`,
 			}
 		}()
 
-		jobs := getJobs(jq, jobqueue.JobStateRunning, cmdAll, 0, false, false)
+		jstate := jobqueue.JobStateRunning
+		if confirmDead {
+			jstate = jobqueue.JobStateLost
+		}
+		jobs := getJobs(jq, jstate, cmdAll, 0, false, false)
 
 		if len(jobs) == 0 {
 			die("No matching jobs found")
@@ -98,6 +106,7 @@ func init() {
 	killCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
 	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	killCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	killCmd.Flags().BoolVar(&confirmDead, "confirmdead", false, "only confirm that lost contact jobs are dead")
 
 	killCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
