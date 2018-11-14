@@ -600,7 +600,7 @@ the jobs can be run. If these become unresponsive, this command can be used to
 see which have issues.
 
 After investigating the servers with the appropriate tools you have that can
-interegate your cloud, if the servers are definitley never going to be useable
+interegate your cloud, if the servers are definitely never going to be useable
 (eg. they have been destroyed and no longer exist), you can use this command to
 confirm they are dead, which means the manager will no longer think those server
 resources are in use. If the servers still exist, confirming they are dead will
