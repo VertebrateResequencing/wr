@@ -1655,7 +1655,7 @@ func (c *Client) UploadFile(local, remote string) (string, error) {
 	return resp.Path, err
 }
 
-// GetBadCloudServers, if the server is running with a cloud scheduler, returns
+// GetBadCloudServers (if the server is running with a cloud scheduler) returns
 // servers that are currently non-responsive and might be dead.
 func (c *Client) GetBadCloudServers() ([]*BadServer, error) {
 	resp, err := c.request(&clientRequest{Method: "getbcs"})

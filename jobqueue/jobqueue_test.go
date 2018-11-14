@@ -651,12 +651,12 @@ func TestJobqueueSignal(t *testing.T) {
 					continue
 				}
 				if strings.Contains(thisCmd, "sleep") {
-					parent, err := p.Parent()
-					if err != nil {
+					parent, errp := p.Parent()
+					if errp != nil {
 						continue
 					}
-					parentCmd, err := parent.Cmdline()
-					if err != nil {
+					parentCmd, errp := parent.Cmdline()
+					if errp != nil {
 						continue
 					}
 					if strings.Contains(parentCmd, serverExe) {
