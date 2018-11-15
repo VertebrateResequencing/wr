@@ -64,6 +64,9 @@ import (
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
 
+// invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
+const invalidFlavorIDMsg = "invalid flavor ID"
+
 // openstack only allows certain chars in resource names, so we have a regexp to
 // check.
 var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
@@ -251,7 +254,7 @@ func (p *openstackp) getFlavor(flavorID string) (*Flavor, error) {
 		flavor, found = p.fmap[flavorID]
 		p.fmapMutex.RUnlock()
 		if !found {
-			return nil, errors.New("invalid flavor ID: " + flavorID)
+			return nil, errors.New(invalidFlavorIDMsg + ": " + flavorID)
 		}
 	}
 	return flavor, nil
@@ -683,10 +686,17 @@ func (p *openstackp) getQuota() (*Quota, error) {
 		for _, server := range serverList {
 			quota.UsedInstances++
 			f, errf := p.getFlavor(server.Flavor["id"].(string))
+			// since we're going through all servers, not just ones we created
+			// ourselves, it's possible that there is an old server with a
+			// flavor that no longer exists, so we allow invalid flavor errors
 			if errf != nil {
-				return false, errf
+				if strings.HasPrefix(errf.Error(), invalidFlavorIDMsg) {
+					p.Warn("an old server has a flavor that no longer exists; our remaining quota estimation will be off", "server", server.ID, "flavor", server.Flavor["id"].(string))
+				} else {
+					return false, errf
+				}
 			}
-			if f != nil { // should always be found...
+			if f != nil {
 				quota.UsedCores += f.Cores
 				quota.UsedRAM += f.RAM
 			}
