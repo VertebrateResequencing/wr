@@ -55,7 +55,7 @@ would be:
         tar -xvzf go1.11.1.linux-amd64.tar.gz && rm go1.11.1.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin
 
-2. Download, compile, and install wr:
+2. Download, compile, and install wr (not inside $GOPATH, if you set that):
 
         git clone https://github.com/VertebrateResequencing/wr.git
         cd wr
