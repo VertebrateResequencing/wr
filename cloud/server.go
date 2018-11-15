@@ -44,6 +44,18 @@ const sharePath = "/shared" // mount point for the *SharedDisk methods
 const sshShortTimeOut = 5 * time.Second
 const maxZeroCoreJobs = 1000000 // the maxmimum number of jobs a server has space for when cores request is 0
 
+// maxSSHSessions is the maximum number of sessions we will try and multiplex on
+// each ssh client we make for a server. It doesn't matter if this is lower than
+// the server is configured for in /etc/ssh/sshd_config (MaxSessions); we create
+// more clients than stricly needed, but this is harmless? If it's higher than
+// the configured MaxSessions, there doesn't seem to be much we can do about it.
+// MaxSessions can't be queried ahead of time, and we can't discover the correct
+// value because if we go over it, then all sessions fail, not just the ones
+// over the max (and all failures appear at the ~same time if sessions were
+// made at the ~same time). The best we can do for now is to set this to sshd's
+// default MaxSessions, which is 10. *** can we do better?
+const maxSSHSessions = 10
+
 // Flavor describes a "flavor" of server, which is a certain (virtual) hardware
 // configuration
 type Flavor struct {
@@ -84,7 +96,7 @@ type Server struct {
 	provider          *Provider
 	sshClientConfig   *ssh.ClientConfig
 	sshClients        []*ssh.Client
-	sshClientState    []bool
+	sshClientSessions []int
 	sshStarted        bool
 	usedCores         float64
 	usedDisk          int
@@ -240,12 +252,13 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 
 	// return a client that is still good (most likely to be a more recent
 	// client)
-	numClients := len(s.sshClientState)
+	numClients := len(s.sshClients)
 	var client *ssh.Client
 	var index int
 	for i := numClients - 1; i >= 0; i-- {
-		if s.sshClientState[i] {
+		if s.sshClientSessions[i] < maxSSHSessions {
 			client = s.sshClients[i]
+			s.sshClientSessions[i]++
 			index = i
 			break
 		}
@@ -312,7 +325,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 	}
 
 	s.sshClients = append(s.sshClients, client)
-	s.sshClientState = append(s.sshClientState, true)
+	s.sshClientSessions = append(s.sshClientSessions, 1)
 	s.sshStarted = true
 
 	return client, len(s.sshClients) - 1, nil
@@ -341,9 +354,8 @@ func sshDial(addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
 // ssh on the server. Will time out and return an error if the session can't be
 // created within 5s. Also returns the index of the client this session came
 // from, so that when you can call CloseSSHSession() when you're done with the
-// returned session. The retry argument is optional and should not be
-// supplied by you; it is used to limit recursion when retrying on failure.
-func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
+// returned session.
+func (s *Server) SSHSession() (*ssh.Session, int, error) {
 	sshClient, clientIndex, err := s.SSHClient()
 	if err != nil {
 		s.logger.Debug("server ssh could not be established", "err", err)
@@ -360,7 +372,7 @@ func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
 	go func() {
 		select {
 		case <-time.After(sshShortTimeOut):
-			s.logger.Debug("server ssh timed out")
+			s.logger.Debug("server ssh timed out", "clientindex", clientIndex)
 			done <- fmt.Errorf("cloud SSHSession() timed out")
 		case <-worked:
 			return
@@ -370,7 +382,7 @@ func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
 		defer internal.LogPanic(s.logger, "server sshsession", false)
 		session, errf := sshClient.NewSession()
 		if errf != nil {
-			s.logger.Debug("server ssh failed", "err", errf)
+			s.logger.Debug("server ssh failed", "err", errf, "clientindex", clientIndex)
 			done <- fmt.Errorf("cloud SSHSession() failed to esatablish a session: %s", errf.Error())
 			return
 		}
@@ -382,14 +394,14 @@ func (s *Server) SSHSession(retry ...bool) (*ssh.Session, int, error) {
 	err = <-done
 	if err != nil {
 		s.mutex.Lock()
-		s.sshClientState[clientIndex] = false
+		// pretend we're now at max sessions, so this client won't be used again
+		// in the future, at least until sessions get closed, when it might
+		// start working again
+		s.sshClientSessions[clientIndex] = maxSSHSessions
 		s.mutex.Unlock()
-
-		if len(retry) == 1 && retry[0] {
-			return nil, clientIndex, err
-		}
-		return s.SSHSession(true)
+		return nil, clientIndex, err
 	}
+
 	return <-sessionCh, clientIndex, nil
 }
 
@@ -405,7 +417,7 @@ func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.sshClientState[clientIndex] = true
+	s.sshClientSessions[clientIndex]--
 }
 
 // RunCmd runs the given command on the server, optionally in the background.

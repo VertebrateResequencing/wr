@@ -300,6 +300,25 @@ func TestOpenStack(t *testing.T) {
 								So(<-results, ShouldBeTrue)
 							}
 						})
+
+						Convey("You can run many commands at once without hitting ssh problems", func() {
+							num := 30
+							results := make(chan bool, num)
+							for i := 1; i <= num; i++ {
+								go func() {
+									_, _, err := server.RunCmd("sleep 3", false)
+									if err != nil {
+										results <- false
+									} else {
+										results <- true
+									}
+								}()
+							}
+
+							for i := 1; i <= num; i++ {
+								So(<-results, ShouldBeTrue)
+							}
+						})
 					})
 				})
 
