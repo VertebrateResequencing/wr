@@ -713,7 +713,7 @@ SENTINEL:
 			}
 		}
 		s.sshClients = []*ssh.Client{}
-		s.sshClientState = []bool{}
+		s.sshClientSessions = []int{}
 	}
 
 	return nil
