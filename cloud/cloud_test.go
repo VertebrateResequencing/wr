@@ -118,7 +118,7 @@ func TestOpenStack(t *testing.T) {
 
 				So(p.resources.Details["keypair"], ShouldEqual, resourceName)
 				if inCloud {
-					So(p.resources.Details["secgroup"], ShouldBeBlank)
+					So(p.resources.Details["secgroup"], ShouldNotBeBlank)
 					So(p.resources.Details["network"], ShouldBeBlank)
 					So(p.resources.Details["subnet"], ShouldBeBlank)
 					So(p.resources.Details["router"], ShouldBeBlank)
@@ -294,6 +294,25 @@ func TestOpenStack(t *testing.T) {
 										results <- false
 									}
 								}(i)
+							}
+
+							for i := 1; i <= num; i++ {
+								So(<-results, ShouldBeTrue)
+							}
+						})
+
+						Convey("You can run many commands at once without hitting ssh problems", func() {
+							num := 30
+							results := make(chan bool, num)
+							for i := 1; i <= num; i++ {
+								go func() {
+									_, _, err := server.RunCmd("sleep 3", false)
+									if err != nil {
+										results <- false
+									} else {
+										results <- true
+									}
+								}()
 							}
 
 							for i := 1; i <= num; i++ {

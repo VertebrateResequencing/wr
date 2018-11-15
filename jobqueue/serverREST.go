@@ -40,10 +40,13 @@ import (
 )
 
 const (
-	restJobsEndpoint       = "/rest/v1/jobs/"
-	restWarningsEndpoint   = "/rest/v1/warnings/"
-	restBadServersEndpoint = "/rest/v1/servers/"
-	restFileUploadEndpoint = "/rest/v1/upload/"
+	restAPIVersion         = "1"
+	restVersionEndpoint    = "/rest/version/"
+	restJobsEndpoint       = "/rest/v" + restAPIVersion + "/jobs/"
+	restWarningsEndpoint   = "/rest/v" + restAPIVersion + "/warnings/"
+	restBadServersEndpoint = "/rest/v" + restAPIVersion + "/servers/"
+	restFileUploadEndpoint = "/rest/v" + restAPIVersion + "/upload/"
+	restInfoEndpoint       = "/rest/v" + restAPIVersion + "/info/"
 	restFormTrue           = "true"
 	bearerSchema           = "Bearer "
 )
@@ -84,6 +87,7 @@ type JobViaJSON struct {
 	CloudFlavor      string            `json:"cloud_flavor"`
 	CloudShared      bool              `json:"cloud_shared"`
 	BsubMode         string            `json:"bsub_mode"`
+	RTimeout         *int              `json:"reserve_timeout"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -129,6 +133,7 @@ type JobDefaults struct {
 	BsubMode      string
 	compressedEnv []byte
 	osRAM         string
+	RTimeout      int
 }
 
 // DefaultCwd returns the Cwd value, defaulting to /tmp.
@@ -413,6 +418,13 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 
 	if jvj.CloudShared || jd.CloudShared {
 		other["cloud_shared"] = "true"
+	}
+
+	if jvj.RTimeout != nil {
+		rtimeout := *jvj.RTimeout
+		other["rtimeout"] = strconv.Itoa(rtimeout)
+	} else if jd.RTimeout != 0 {
+		other["rtimeout"] = strconv.Itoa(jd.RTimeout)
 	}
 
 	return &Job{
@@ -806,7 +818,7 @@ func restBadServers(s *Server) http.HandlerFunc {
 		case http.MethodGet:
 			servers := s.getBadServers()
 			if len(servers) == 0 {
-				servers = []*badServer{}
+				servers = []*BadServer{}
 			}
 			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 			w.WriteHeader(http.StatusOK)
@@ -878,6 +890,55 @@ func restFileUpload(s *Server) http.HandlerFunc {
 		err = encoder.Encode(msg)
 		if err != nil {
 			s.Warn("restFileUpload failed to encode success msg", "err", err)
+		}
+	}
+}
+
+// restInfo lets you get info on self.
+func restInfo(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue server status", false)
+
+		ok := s.httpAuthorized(w, r)
+		if !ok {
+			return
+		}
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		err := encoder.Encode(s.ServerInfo)
+		if err != nil {
+			s.Warn("restInfo failed to encode ServerInfo", "err", err)
+		}
+	}
+}
+
+// restVersion lets you get info on the version of the server and the supported
+// API version (we only support 1 API version at a time). This is the only
+// end point that doesn't need authentication.
+func restVersion(s *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer internal.LogPanic(s.Logger, "jobqueue server version", false)
+
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET is supported", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(false)
+		err := encoder.Encode(s.ServerVersions)
+		if err != nil {
+			s.Warn("restVersion failed to encode ServerVersions", "err", err)
 		}
 	}
 }

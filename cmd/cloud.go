@@ -32,10 +32,9 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/fatih/color"
-	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
-	"github.com/sb10/l15h"
 	"github.com/spf13/cobra"
 )
 
@@ -73,6 +72,11 @@ var setDomainIP bool
 var cloudDebug bool
 var cloudManagerTimeoutSeconds int
 var cloudResourceNameUniquer string
+var maxManagerCores int
+var maxManagerRAM int
+var cloudServersAll bool
+var cloudServerID string
+var cloudServersConfirmDead bool
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -128,6 +132,11 @@ Local paths that don't exist are silently ignored.
 This option is important if you want to be able to queue up commands that rely
 on the --mounts option to 'wr add': you'd specify your s3 config file(s) which
 contain your credentials for connecting to your s3 bucket(s).
+
+The --max_local_cores and --max_local_memory options specify how much of the
+cloud server that runs wr manager itself should also be used to run commands.
+To have an uncontended manager, you could set --max_local_cores to 0, and wr
+will run all commands on additional spawned cloud servers.
 
 The --on_success optional value is the path to some executable that you want to
 run locally after the deployment is successful. The executable will be run with
@@ -233,12 +242,7 @@ within OpenStack.`,
 		}
 
 		// for debug purposes, set up logging to STDERR
-		cloudLogger := log15.New()
-		logLevel := log15.LvlWarn
-		if cloudDebug {
-			logLevel = log15.LvlDebug
-		}
-		cloudLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+		cloudLogger := setupLogging(kubeDebug)
 
 		// get all necessary cloud resources in place
 		mp, err := strconv.Atoi(config.ManagerPort)
@@ -283,11 +287,11 @@ within OpenStack.`,
 				// due to temporary networking issues
 				err = startForwarding(server.IP, osUsername, keyPath, mp, fmPidPath)
 				if err != nil {
-					warn("could not reestablish port forwarding to server %s, port %s", server.IP, mp)
+					warn("could not reestablish port forwarding to server %s, port %d", server.IP, mp)
 				}
 				err = startForwarding(server.IP, osUsername, keyPath, wp, fwPidPath)
 				if err != nil {
-					warn("could not reestablish port forwarding to server %s, port %s", server.IP, wp)
+					warn("could not reestablish port forwarding to server %s, port %d", server.IP, wp)
 				}
 				jq = connect(2*time.Second, true)
 				if jq != nil {
@@ -341,11 +345,21 @@ within OpenStack.`,
 			}
 		}
 
+		if setDomainIP {
+			err = internal.InfobloxSetDomainIP(config.ManagerCertDomain, server.IP)
+			if err != nil {
+				warn("failed to set domain IP: %s", err)
+				setDomainIP = false
+			} else {
+				info("set IP of %s to %s", config.ManagerCertDomain, server.IP)
+			}
+		}
+
 		// ssh to the server, copy over our exe, and start running wr manager
 		// there
 		if !alreadyUp {
 			info("please wait while I start 'wr manager' on the %s server at %s...", providerName, server.IP)
-			bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer)
+			bootstrapOnRemote(provider, server, exe, mp, wp, keyPath, usingExistingServer, setDomainIP)
 
 			// rather than daemonize and use a go ssh forwarding library or
 			// implement myself using the net package, since I couldn't get them
@@ -388,15 +402,6 @@ within OpenStack.`,
 				warn("--on_success executable [%s] failed: %s", postDeploymentScript, err)
 			}
 		}
-
-		if setDomainIP {
-			err = internal.InfobloxSetDomainIP(jq.ServerInfo.Host, server.IP)
-			if err != nil {
-				warn("failed to set domain IP: %s", err)
-			} else {
-				info("set IP of %s to %s", jq.ServerInfo.Host, server.IP)
-			}
-		}
 	},
 }
 
@@ -429,12 +434,8 @@ and accessible.`,
 
 		// before stopping the manager, make sure we can interact with the
 		// provider - that our credentials are correct
-		var logger = log15.New()
-		if cloudDebug {
-			logger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, log15.StderrHandler))
-		} else {
-			logger.SetHandler(log15.DiscardHandler())
-		}
+		logger := setupLogging(kubeDebug)
+
 		provider, err := cloud.New(providerName, cloudResourceName(cloudResourceNameUniquer), filepath.Join(config.ManagerDir, "cloud_resources."+providerName), logger)
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
@@ -587,10 +588,74 @@ and accessible.`,
 	},
 }
 
+// servers sub-command currently lets you view "server might be dead" warnings,
+// and to confirm that they're dead.
+var cloudServersCmd = &cobra.Command{
+	Use:   "servers",
+	Short: "View cloud servers that might be dead and confirm if they're dead",
+	Long: `View cloud servers that might be dead and confirm if they're dead.
+
+When running your workflow jobs, the manager may spawn cloud servers on which
+the jobs can be run. If these become unresponsive, this command can be used to
+see which have issues.
+
+After investigating the servers with the appropriate tools you have that can
+interegate your cloud, if the servers are definitely never going to be useable
+(eg. they have been destroyed and no longer exist), you can use this command to
+confirm they are dead, which means the manager will no longer think those server
+resources are in use. If the servers still exist, confirming they are dead will
+result in the manager trying to destroy them.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if cloudServersConfirmDead && (!cloudServersAll && cloudServerID == "") {
+			die("in --confirmdead mode, either --all or --identifier must be specified")
+		}
+
+		jq := connect(time.Duration(timeoutint)*time.Second, false)
+
+		var badServers []*jobqueue.BadServer
+		var err error
+		if cloudServersConfirmDead {
+			badServers, err = jq.ConfirmCloudServersDead(cloudServerID)
+			if err != nil {
+				die("%s", err)
+			}
+
+			if len(badServers) == 0 {
+				info("no cloud servers were eligible to be confirmed dead")
+				return
+			}
+			info("these cloud servers were confirmed dead:")
+		} else {
+			badServers, err = jq.GetBadCloudServers()
+			if err != nil {
+				die("%s", err)
+			}
+
+			if len(badServers) == 0 {
+				info("no cloud servers might be dead right now")
+				return
+			}
+			info("these cloud servers might be dead:")
+		}
+
+		for _, server := range badServers {
+			if !server.IsBad {
+				continue
+			}
+			var problem string
+			if server.Problem != "" {
+				problem = "; " + server.Problem
+			}
+			fmt.Printf(" ID: %s; IP: %s; Name: %s%s\n", server.ID, server.IP, server.Name, problem)
+		}
+	},
+}
+
 func init() {
 	RootCmd.AddCommand(cloudCmd)
 	cloudCmd.AddCommand(cloudDeployCmd)
 	cloudCmd.AddCommand(cloudTearDownCmd)
+	cloudCmd.AddCommand(cloudServersCmd)
 
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
@@ -602,6 +667,8 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")
+	cloudDeployCmd.Flags().IntVar(&maxManagerRAM, "max_local_ram", -1, "maximum MB of manager memory to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().StringVarP(&postDeploymentScript, "on_success", "x", defaultConfig.DeploySuccessScript, "path to a script to run locally after a successful deployment")
 	cloudDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned servers alive for; 0 means forever")
 	cloudDeployCmd.Flags().IntVarP(&cloudMaxServers, "max_servers", "m", defaultConfig.CloudServers+1, "maximum number of servers to spawn; 0 means unlimited (default 0)")
@@ -617,9 +684,14 @@ func init() {
 	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name you set during deploy")
 	cloudTearDownCmd.Flags().BoolVarP(&forceTearDown, "force", "f", false, "force teardown even when the remote manager cannot be accessed")
 	cloudTearDownCmd.Flags().BoolVar(&cloudDebug, "debug", false, "show details of the teardown process")
+
+	cloudServersCmd.Flags().BoolVarP(&cloudServersAll, "all", "a", false, "confirm all maybe dead servers as dead")
+	cloudServersCmd.Flags().StringVarP(&cloudServerID, "identifier", "i", "", "identifier of a server to confirm as dead")
+	cloudServersCmd.Flags().BoolVarP(&cloudServersConfirmDead, "confirmdead", "d", false, "confirm that 1 (-i) or all (-a) servers are dead [default: just list possibly dead servers]")
+	cloudServersCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
-func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool) {
+func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) {
 	// upload ourselves to /tmp
 	remoteExe := filepath.Join(cloudBinDir, "wr")
 	err := server.UploadFile(exe, remoteExe)
@@ -651,6 +723,13 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\n", mp, wp, dbBk, config.ManagerCertDomain), wrConfigFileName); err != nil {
 		teardown(provider)
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
+	}
+
+	// copy over our token file, if we're in a recovery situation
+	if _, errf := os.Stat(config.ManagerTokenFile); errf == nil {
+		if errf = server.UploadFile(config.ManagerTokenFile, filepath.Join("./.wr_"+config.Deployment, "client.token")); errf == nil {
+			info("copied existing client.token to remote server")
+		}
 	}
 
 	if _, _, err = server.RunCmd("chmod u+x "+remoteExe, false); err != nil && !wrMayHaveStarted {
@@ -794,7 +873,11 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if cloudDebug {
 			debugStr = " --debug"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s --cloud_gateway_ip '%s' --cloud_cidr '%s' --cloud_dns '%s' --local_username '%s' --timeout %d%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudGatewayIP, cloudCIDR, cloudDNS, cloudResourceNameUniquer, cloudManagerTimeoutSeconds, debugStr, wrEnvFileName)
+		useCertDomainStr := ""
+		if domainMatchesIP {
+			useCertDomainStr = " --use_cert_domain"
+		}
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --max_cores %d --max_ram %d --timeout %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, useCertDomainStr, debugStr, wrEnvFileName)
 
 		var e string
 		_, e, err = server.RunCmd(mCmd, false)
@@ -840,7 +923,10 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// now teardown and die, once the user confirms
 			warn("Once you're done debugging, hit return to teardown")
 			var response string
-			fmt.Scanln(&response)
+			_, errs := fmt.Scanln(&response)
+			if errs != nil {
+				warn("failed to read your response: %s", errs)
+			}
 			teardown(provider)
 			die("toredown following failure to start the manager remotely")
 		}

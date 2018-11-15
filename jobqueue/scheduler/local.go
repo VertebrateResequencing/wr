@@ -24,14 +24,19 @@ package scheduler
 
 import (
 	"math"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/inconshreveable/log15"
+	"github.com/shirou/gopsutil/process"
 )
 
 const (
@@ -40,6 +45,10 @@ const (
 	priorityScaler      = float64(255) / float64(100)
 	maxZeroCoreJobs     = 1000000 // the maxmimum number of jobs to run when cpu request is 0
 )
+
+// cmdProcessSanitiser is used to make cmds look like their process
+// representation
+var cmdProcessSanitiser = strings.NewReplacer("'", "")
 
 // reqCheckers are functions used by schedule() to see if it is at all possible
 // to ever run a job with the given resource requirements. (We make use of this
@@ -81,29 +90,33 @@ type cancelCmdRunner func(cmd string, desiredNumber int)
 
 // local is our implementer of scheduleri.
 type local struct {
-	config           *ConfigLocal
-	maxRAM           int
-	maxCores         int
-	ram              int
-	cores            float64
-	rcount           int
-	mutex            sync.Mutex
-	resourceMutex    sync.RWMutex
-	queue            *queue.Queue
-	running          map[string]int
-	cleaned          bool
-	reqCheckFunc     reqChecker
-	maxMemFunc       maxResourceGetter
-	maxCPUFunc       maxResourceGetter
-	canCountFunc     canCounter
-	stateUpdateFunc  stateUpdater
-	stateUpdateFreq  time.Duration
-	runCmdFunc       cmdRunner
-	cancelRunCmdFunc cancelCmdRunner
-	autoProcessing   bool
-	stopAuto         chan bool
-	processing       bool
-	recall           bool
+	config            *ConfigLocal
+	maxRAM            int
+	maxCores          int
+	ram               int
+	cores             float64
+	rcount            int
+	mutex             sync.Mutex
+	rcMutex           sync.RWMutex
+	resourceMutex     sync.RWMutex
+	queue             *queue.Queue
+	running           map[string]int
+	cleaned           bool
+	reqCheckFunc      reqChecker
+	maxMemFunc        maxResourceGetter
+	maxCPUFunc        maxResourceGetter
+	canCountFunc      canCounter
+	stateUpdateFunc   stateUpdater
+	stateUpdateFreq   time.Duration
+	runCmdFunc        cmdRunner
+	cancelRunCmdFunc  cancelCmdRunner
+	autoProcessing    bool
+	stopAuto          chan bool
+	processing        bool
+	recall            bool
+	recoveredPids     map[int]bool
+	rpMutex           sync.Mutex
+	stopPidMonitoring chan struct{}
 	log15.Logger
 }
 
@@ -180,11 +193,22 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 
+	s.recoveredPids = make(map[int]bool)
+	s.stopPidMonitoring = make(chan struct{})
+
 	return err
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
-func (s *local) reserveTimeout() int {
+func (s *local) reserveTimeout(req *Requirements) int {
+	if val, defined := req.Other["rtimeout"]; defined {
+		timeout, err := strconv.Atoi(val)
+		if err != nil {
+			s.Error("Failed to convert rtimeout to integer", "error", err)
+			return localReserveTimeout
+		}
+		return timeout
+	}
 	return localReserveTimeout
 }
 
@@ -235,7 +259,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 	s.mutex.Lock()
 
-	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second) // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
+	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
 			// update the job's count (only)
@@ -250,10 +274,87 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	}
 	s.mutex.Unlock()
 
-	s.startAutoProcessing()
+	if count > 0 {
+		s.startAutoProcessing()
+	}
 
 	// try and run the jobs in the queue
 	return s.processQueue()
+}
+
+// recover achieves the aims of Recover(). Here we find an untracked pid
+// corresponding to the given cmd, note that the resources are in use, and
+// start tracking the pid to know when it exits to release those resources.
+func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	processes, err := process.Processes()
+	if err != nil {
+		return err
+	}
+
+	cmd = cmdProcessSanitiser.Replace(cmd)
+	s.rpMutex.Lock()
+	defer s.rpMutex.Unlock()
+	for _, p := range processes {
+		thisCmd, err := p.Cmdline()
+		if err != nil {
+			return err
+		}
+		if cmd == thisCmd {
+			pid := int(p.Pid)
+			if s.recoveredPids[pid] {
+				continue
+			}
+
+			s.resourceMutex.Lock()
+			s.ram += req.RAM
+			s.cores += req.Cores
+			s.resourceMutex.Unlock()
+
+			go func() {
+				// periodically check on this pid; when it has exited, update
+				// our resource usage
+				ticker := time.NewTicker(1 * time.Second)
+				for {
+					select {
+					case <-ticker.C:
+						process, errf := os.FindProcess(pid)
+						alive := true
+						if errf != nil {
+							alive = false
+						} else {
+							errs := process.Signal(syscall.Signal(0))
+							if errs != nil {
+								alive = false
+							}
+						}
+
+						if !alive {
+							ticker.Stop()
+
+							s.resourceMutex.Lock()
+							s.ram -= req.RAM
+							s.cores -= req.Cores
+							s.resourceMutex.Unlock()
+
+							errp := s.processQueue()
+							if errp != nil {
+								s.Error("processQueue call after recovery failed", "err", errp)
+							}
+
+							return
+						}
+					case <-s.stopPidMonitoring:
+						ticker.Stop()
+						return
+					}
+				}
+			}()
+
+			s.recoveredPids[pid] = true
+			break
+		}
+	}
+	return nil
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met.
@@ -278,6 +379,9 @@ func (s *local) maxCPU() int {
 // that key. If this results in an empty queue, stops autoProcessing. You must
 // hold the lock on s before calling this!
 func (s *local) removeKey(key string) {
+	if s.cleaned {
+		return
+	}
 	err := s.queue.Remove(key)
 	if err != nil {
 		// warn unless we've already removed this key
@@ -413,15 +517,17 @@ func (s *local) processQueue() error {
 			}()
 		}
 
-		// before allowing this function to be called again, wait for all the
-		// above runCmdFuncs to at least get as far as reserving their
-		// resources, so subsequent calls to canCountFunc will be accurate
+		// before allowing this function to be called again, or looping again,
+		// wait for all the above runCmdFuncs to at least get as far as
+		// reserving their resources, so subsequent calls to canCountFunc will
+		// be accurate
 		s.processing = true
-		go func() {
-			for i := 0; i < canCount; i++ {
-				<-reserved
-			}
 
+		for i := 0; i < canCount; i++ {
+			<-reserved
+		}
+
+		go func() {
 			s.mutex.Lock()
 			defer s.mutex.Unlock()
 			s.processing = false
@@ -488,9 +594,9 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) erro
 		return err
 	}
 
-	s.mutex.Lock()
+	s.rcMutex.Lock()
 	s.rcount++
-	s.mutex.Unlock()
+	s.rcMutex.Unlock()
 
 	s.resourceMutex.Lock()
 	s.ram += req.RAM
@@ -506,12 +612,12 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) erro
 		s.Error("runCmd wait", "cmd", cmd, "err", err)
 	}
 
-	s.mutex.Lock()
+	s.rcMutex.Lock()
 	s.rcount--
 	if s.rcount < 0 {
 		s.rcount = 0
 	}
-	s.mutex.Unlock()
+	s.rcMutex.Unlock()
 
 	return nil // do not return error running the command
 }
@@ -536,7 +642,11 @@ func (s *local) startAutoProcessing() {
 		return
 	}
 
-	s.stopAuto = make(chan bool)
+	// processQueue() calls removeKey() which calls stopAutoProcessing() which
+	// can wait to send on stopAuto, but we only read from stopAuto when our
+	// processQueue() call is not running; solve the deadlock potential by
+	// buffering stopAuto
+	s.stopAuto = make(chan bool, 100)
 	go func() {
 		defer internal.LogPanic(s.Logger, "auto processQueue", false)
 
@@ -579,6 +689,8 @@ func (s *local) busy() bool {
 	if s.cleaned {
 		return false
 	}
+	s.rcMutex.RLock()
+	defer s.rcMutex.RUnlock()
 	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
 		return false
 	}
@@ -602,9 +714,10 @@ func (s *local) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.stopAutoProcessing()
+	close(s.stopPidMonitoring)
 	s.cleaned = true
 	err := s.queue.Destroy()
 	if err != nil {
-		s.Warn("local schedular cleanup failed", "err", err)
+		s.Warn("local scheduler cleanup failed", "err", err)
 	}
 }

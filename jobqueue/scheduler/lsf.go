@@ -388,7 +388,16 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 }
 
 // reserveTimeout achieves the aims of ReserveTimeout().
-func (s *lsf) reserveTimeout() int {
+func (s *lsf) reserveTimeout(req *Requirements) int {
+	if val, defined := req.Other["rtimeout"]; defined {
+		timeout, err := strconv.Atoi(val)
+		if err != nil {
+			s.Logger.Error(fmt.Sprintf("Failed to convert timeout to integer: %s", err))
+			return defaultReserveTimeout
+		}
+		s.Logger.Debug(fmt.Sprintf("setting runner timeout to %v", timeout))
+		return timeout
+	}
 	return defaultReserveTimeout
 }
 
@@ -496,6 +505,12 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	}
 
 	return err
+}
+
+// recover achieves the aims of Recover(). We don't have to do anything, since
+// when the cmd finishes running, LSF itself will clean up.
+func (s *lsf) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	return nil
 }
 
 // busy returns true if there are any jobs with our jobName() prefix in any

@@ -64,6 +64,9 @@ import (
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
 
+// invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
+const invalidFlavorIDMsg = "invalid flavor ID"
+
 // openstack only allows certain chars in resource names, so we have a regexp to
 // check.
 var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
@@ -88,12 +91,15 @@ type openstackp struct {
 	lastFlavorCache   time.Time
 	imap              map[string]*images.Image
 	imapMutex         sync.RWMutex
+	createdKeyPair    bool
+	useConfigDrive    bool
 	hasDefaultGroup   bool
 	ipNet             *net.IPNet
 	networkClient     *gophercloud.ServiceClient
 	networkName       string
 	networkUUID       string
 	ownName           string
+	ownServer         *servers.Server
 	poolName          string
 	securityGroup     string
 	spawnFailed       bool
@@ -149,6 +155,9 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	opts, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
 		return err
+	}
+	if opts.TenantID == "" {
+		return fmt.Errorf("either OS_TENANT_ID or OS_PROJECT_ID must be set")
 	}
 	p.tenantID = opts.TenantID
 	opts.AllowReauth = true
@@ -245,7 +254,7 @@ func (p *openstackp) getFlavor(flavorID string) (*Flavor, error) {
 		flavor, found = p.fmap[flavorID]
 		p.fmapMutex.RUnlock()
 		if !found {
-			return nil, errors.New("invalid flavor ID: " + flavorID)
+			return nil, errors.New(invalidFlavorIDMsg + ": " + flavorID)
 		}
 	}
 	return flavor, nil
@@ -310,7 +319,7 @@ func (p *openstackp) getImageFromCache(prefix string) *images.Image {
 }
 
 // deploy achieves the aims of Deploy().
-func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error {
+func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfigDrive bool, gatewayIP, cidr string, dnsNameServers []string) error {
 	// the resource name can only contain letters, numbers, underscores,
 	// spaces and hyphens
 	if !openstackValidResourceNameRegexp.MatchString(resources.ResourceName) {
@@ -324,6 +333,8 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	if err != nil {
 		return err
 	}
+
+	p.useConfigDrive = useConfigDrive
 
 	// get/create key pair
 	kp, err := keypairs.Get(p.computeClient, resources.ResourceName).Extract()
@@ -348,6 +359,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 			if err != nil {
 				return err
 			}
+			p.createdKeyPair = true
 
 			resources.PrivateKey = string(privateKeyPEMBytes)
 			// NB: reliant on err now being nil here, hence errk above, since we
@@ -358,82 +370,111 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	}
 	resources.Details["keypair"] = kp.Name
 
-	// don't create any more resources if we're already running in OpenStack
-	//*** actually, if in cloud, we should create a security group that allows
-	// the given ports, only accessible by things in the current security group
-	if p.inCloud() {
-		return err
-	}
+	if len(requiredPorts) > 0 {
+		// get/create security group, and see if there's a default group
+		pager := secgroups.List(p.computeClient)
+		var group *secgroups.SecurityGroup
+		defaultGroupExists := false
+		foundGroup := false
+		err = pager.EachPage(func(page pagination.Page) (bool, error) {
+			groupList, errf := secgroups.ExtractSecurityGroups(page)
+			if errf != nil {
+				return false, errf
+			}
 
-	// get/create security group, and see if there's a default group
-	pager := secgroups.List(p.computeClient)
-	var group *secgroups.SecurityGroup
-	defaultGroupExists := false
-	foundGroup := false
-	err = pager.EachPage(func(page pagination.Page) (bool, error) {
-		groupList, errf := secgroups.ExtractSecurityGroups(page)
-		if errf != nil {
-			return false, errf
-		}
-
-		for _, g := range groupList {
-			if g.Name == resources.ResourceName {
-				group = &g
-				foundGroup = true
-				if defaultGroupExists {
-					return false, nil
+			for _, g := range groupList {
+				if g.Name == resources.ResourceName {
+					group = &g
+					foundGroup = true
+					if defaultGroupExists {
+						return false, nil
+					}
+				}
+				if g.Name == "default" {
+					defaultGroupExists = true
+					if foundGroup {
+						return false, nil
+					}
 				}
 			}
-			if g.Name == "default" {
-				defaultGroupExists = true
-				if foundGroup {
-					return false, nil
-				}
-			}
-		}
 
-		return true, nil
-	})
-	if err != nil {
-		return err
-	}
-	if !foundGroup {
-		// create a new security group with rules allowing the desired ports
-		group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.ResourceName, Description: "access amongst wr-spawned nodes"}).Extract()
+			return true, nil
+		})
 		if err != nil {
 			return err
 		}
+		if !foundGroup {
+			// create a new security group with rules allowing the desired ports
+			group, err = secgroups.Create(p.computeClient, secgroups.CreateOpts{Name: resources.ResourceName, Description: "access amongst wr-spawned nodes"}).Extract()
+			if err != nil {
+				return err
+			}
 
-		//*** check if the rules are already there, in case we previously died
-		// between previous line and this one
-		for _, port := range requiredPorts {
+			//*** check if the rules are already there, in case we previously died
+			// between previous line and this one
+			for _, port := range requiredPorts {
+				_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
+					ParentGroupID: group.ID,
+					FromPort:      port,
+					ToPort:        port,
+					IPProtocol:    "TCP",
+					CIDR:          "0.0.0.0/0", // FromGroupID: group.ID if we were creating a head node and then wanted a rule for all worker nodes...
+				}).Extract()
+				if err != nil {
+					return err
+				}
+			}
+
+			// ICMP may help networking work as expected
 			_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
 				ParentGroupID: group.ID,
-				FromPort:      port,
-				ToPort:        port,
-				IPProtocol:    "TCP",
-				CIDR:          "0.0.0.0/0", // FromGroupID: group.ID if we were creating a head node and then wanted a rule for all worker nodes...
+				FromPort:      -1,
+				ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
+				IPProtocol:    "ICMP",
+				CIDR:          "0.0.0.0/0",
 			}).Extract()
 			if err != nil {
 				return err
 			}
 		}
-
-		// ICMP may help networking work as expected
-		_, err = secgroups.CreateRule(p.computeClient, secgroups.CreateRuleOpts{
-			ParentGroupID: group.ID,
-			FromPort:      -1,
-			ToPort:        -1, // -1 results in "Any", the same as "ALL ICMP" in Horizon
-			IPProtocol:    "ICMP",
-			CIDR:          "0.0.0.0/0",
-		}).Extract()
-		if err != nil {
-			return err
-		}
+		resources.Details["secgroup"] = group.ID
+		p.securityGroup = resources.ResourceName
+		p.hasDefaultGroup = defaultGroupExists
 	}
-	resources.Details["secgroup"] = group.ID
-	p.securityGroup = resources.ResourceName
-	p.hasDefaultGroup = defaultGroupExists
+
+	// don't create any more resources if we're already running in OpenStack
+	if p.inCloud() {
+		// work out our network uuid, needed for spawning later
+	NETWORKS:
+		for networkName := range p.ownServer.Addresses {
+			networkUUID, erri := networks.IDFromName(p.networkClient, networkName)
+			if erri != nil {
+				return erri
+			}
+			if networkUUID != "" {
+				network, errg := networks.Get(p.networkClient, networkUUID).Extract()
+				if errg != nil {
+					return errg
+				}
+				for _, subnetID := range network.Subnets {
+					subnet, errg := subnets.Get(p.networkClient, subnetID).Extract()
+					if errg != nil {
+						return errg
+					}
+					if subnet.CIDR == cidr {
+						p.networkName = networkName
+						p.networkUUID = networkUUID
+						break NETWORKS
+					}
+				}
+			}
+		}
+
+		if p.networkUUID == "" {
+			return Error{"openstack", "deploy", ErrBadCIDR}
+		}
+		return nil
+	}
 
 	// get/create network
 	var network *networks.Network
@@ -486,7 +527,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 
 	// get/create router
 	var routerID string
-	pager = routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
+	pager := routers.List(p.networkClient, routers.ListOpts{Name: resources.ResourceName})
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		routerList, errf := routers.ExtractRouters(page)
 		if errf != nil {
@@ -534,6 +575,34 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, gatewayIP
 	return err
 }
 
+// getCurrentServers returns details of other servers with the given resource
+// name prefix.
+func (p *openstackp) getCurrentServers(resources *Resources) ([][]string, error) {
+	var sdetails [][]string
+	pager := servers.List(p.computeClient, servers.ListOpts{})
+	err := pager.EachPage(func(page pagination.Page) (bool, error) {
+		serverList, err := servers.ExtractServers(page)
+		if err != nil {
+			return false, err
+		}
+
+		for _, server := range serverList {
+			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
+				serverIP, errg := p.getServerIP(server.ID)
+				if errg != nil {
+					continue
+				}
+
+				details := []string{server.ID, serverIP, server.Name, server.AdminPass}
+				sdetails = append(sdetails, details)
+			}
+		}
+
+		return true, nil
+	})
+	return sdetails, err
+}
+
 // inCloud checks if we're currently running on an OpenStack server based on our
 // hostname matching a host in OpenStack.
 func (p *openstackp) inCloud() bool {
@@ -550,40 +619,9 @@ func (p *openstackp) inCloud() bool {
 			for _, server := range serverList {
 				if nameToHostName(server.Name) == hostname {
 					p.ownName = hostname
-
-					// get the first networkUUID we come across *** not sure
-					// what the other possibilities are and what else we can do
-					// instead
-					for networkName := range server.Addresses {
-						networkUUID, _ := networks.IDFromName(p.networkClient, networkName)
-						if networkUUID != "" {
-							p.networkName = networkName
-							p.networkUUID = networkUUID
-							break
-						}
-					}
-
-					// get the first security group *** again, not sure how to
-					// pick the "best" if more than one
-					foundNonDefault := false
-					for _, smap := range server.SecurityGroups {
-						if value, found := smap["name"]; found && value.(string) != "" {
-							if value.(string) == "default" {
-								p.hasDefaultGroup = true
-							} else if !foundNonDefault {
-								p.securityGroup = value.(string)
-								foundNonDefault = true
-							}
-							if p.hasDefaultGroup && foundNonDefault {
-								break
-							}
-						}
-					}
-
-					if p.networkUUID != "" && p.securityGroup != "" {
-						inCloud = true
-						return false, nil
-					}
+					p.ownServer = &server
+					inCloud = true
+					return false, nil
 				}
 			}
 
@@ -648,10 +686,17 @@ func (p *openstackp) getQuota() (*Quota, error) {
 		for _, server := range serverList {
 			quota.UsedInstances++
 			f, errf := p.getFlavor(server.Flavor["id"].(string))
+			// since we're going through all servers, not just ones we created
+			// ourselves, it's possible that there is an old server with a
+			// flavor that no longer exists, so we allow invalid flavor errors
 			if errf != nil {
-				return false, errf
+				if strings.HasPrefix(errf.Error(), invalidFlavorIDMsg) {
+					p.Warn("an old server has a flavor that no longer exists; our remaining quota estimation will be off", "server", server.ID, "flavor", server.Flavor["id"].(string))
+				} else {
+					return false, errf
+				}
 			}
-			if f != nil { // should always be found...
+			if f != nil {
 				quota.UsedCores += f.Cores
 				quota.UsedRAM += f.RAM
 			}
@@ -691,9 +736,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// we'll use the security group we created, and the "default" one if it
 	// exists
-	secGroups := []string{p.securityGroup}
-	if p.hasDefaultGroup {
-		secGroups = append(secGroups, "default")
+	var secGroups []string
+	if p.securityGroup != "" {
+		secGroups = append(secGroups, p.securityGroup)
+		if p.hasDefaultGroup {
+			secGroups = append(secGroups, "default")
+		}
 	}
 
 	// create the server with a unique name
@@ -705,6 +753,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		ImageRef:       image.ID,
 		SecurityGroups: secGroups,
 		Networks:       []servers.Network{{UUID: p.networkUUID}},
+		ConfigDrive:    &p.useConfigDrive,
 		UserData:       sentinelInitScript,
 	}
 	var createdVolume bool
@@ -845,38 +894,43 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 		serverIP = floatingIP
 	} else {
-		// find its auto-assigned internal ip *** there must be a better way of
-		// doing this...
-		allNetworkAddressPages, errf := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
-		if errf != nil {
+		var errg error
+		serverIP, errg = p.getServerIP(serverID)
+		if errg != nil {
 			errd := p.destroyServer(serverID)
 			if errd != nil {
-				p.Warn("server destruction after not finding networks failed", "server", serverID, "err", errd)
+				p.Warn("server destruction after not finding ip", "server", serverID, "err", errd)
 			}
-			return serverID, serverIP, serverName, adminPass, errf
-		}
-		allNetworkAddresses, errf := servers.ExtractNetworkAddresses(allNetworkAddressPages)
-		if errf != nil {
-			errd := p.destroyServer(serverID)
-			if errd != nil {
-				p.Warn("server destruction after not getting network address failed", "server", serverID, "err", errd)
-			}
-			return serverID, serverIP, serverName, adminPass, errf
-		}
-		for _, address := range allNetworkAddresses {
-			if address.Version == 4 {
-				ip := net.ParseIP(address.Address)
-				if ip != nil {
-					if p.ipNet.Contains(ip) {
-						serverIP = address.Address
-						break
-					}
-				}
-			}
+			return serverID, serverIP, serverName, adminPass, errg
 		}
 	}
 
 	return serverID, serverIP, serverName, adminPass, err
+}
+
+// getServerIP tries to find the auto-assigned internal ip address of the server
+// with the given ID.
+func (p *openstackp) getServerIP(serverID string) (string, error) {
+	// *** there must be a better way of doing this...
+	allNetworkAddressPages, err := servers.ListAddressesByNetwork(p.computeClient, serverID, p.networkName).AllPages()
+	if err != nil {
+		return "", err
+	}
+	allNetworkAddresses, err := servers.ExtractNetworkAddresses(allNetworkAddressPages)
+	if err != nil {
+		return "", err
+	}
+	for _, address := range allNetworkAddresses {
+		if address.Version == 4 {
+			ip := net.ParseIP(address.Address)
+			if ip != nil {
+				if p.ipNet.Contains(ip) {
+					return address.Address, nil
+				}
+			}
+		}
+	}
+	return "", nil
 }
 
 // checkServer achieves the aims of CheckServer()
@@ -999,9 +1053,10 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 	// delete keypair, unless we're running in OpenStack and securityGroup and
 	// keypair have the same resourcename, indicating our current server needs
-	// the same keypair we used to spawn our servers
+	// the same keypair we used to spawn our servers. Bypass the exception if
+	// we definitely created the key pair this session
 	if id := resources.Details["keypair"]; id != "" {
-		if p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
+		if p.createdKeyPair || p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
 			t = time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)

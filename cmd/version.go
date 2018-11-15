@@ -21,12 +21,9 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/spf13/cobra"
 )
-
-// wrVersion gets set during build:
-// go build -ldflags "-X github.com/VertebrateResequencing/wr/cmd.wrVersion=`git describe --tags --always --long --dirty`"
-var wrVersion string
 
 // versionCmd represents the version command
 var versionCmd = &cobra.Command{
@@ -34,7 +31,7 @@ var versionCmd = &cobra.Command{
 	Short: "Print wr version",
 	Long:  `Print wr version.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(wrVersion)
+		fmt.Println(jobqueue.ServerVersion)
 	},
 }
 

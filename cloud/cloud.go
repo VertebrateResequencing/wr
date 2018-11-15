@@ -99,6 +99,7 @@ var (
 	ErrNoFlavor        = "no server flavor can meet your resource requirements"
 	ErrBadFlavor       = "no server flavor with that id/name exists"
 	ErrBadRegex        = "your flavor regular expression was not valid"
+	ErrBadCIDR         = "no subnet matches your supplied CIDR"
 )
 
 // sshTimeOut is how long we wait for ssh to work when an ssh request is made to
@@ -181,9 +182,12 @@ type provideri interface {
 	// do any initial config set up such as authentication
 	initialize(logger log15.Logger) error
 	// achieve the aims of Deploy(), recording what you create in resources.Details and resources.PrivateKey
-	deploy(resources *Resources, requiredPorts []int, gatewayIP, cidr string, dnsNameServers []string) error
+	deploy(resources *Resources, requiredPorts []int, useConfigDrive bool, gatewayIP, cidr string, dnsNameServers []string) error
 	// achieve the aims of InCloud()
 	inCloud() bool
+	// return the details of any existing servers, as a slice of the details
+	// returned by spawn
+	getCurrentServers(resources *Resources) ([][]string, error)
 	// achieve the aims of GetQuota()
 	getQuota() (*Quota, error)
 	// return a map of all server flavors, with their flavor ids as keys
@@ -216,17 +220,33 @@ type Provider struct {
 }
 
 // DeployConfig are the configuration options that you supply to Deploy().
-// RequiredPorts is the slice of port numbers that your application needs to be
-// able to communicate to any servers you spawn (eg. [22] for ssh) through. If a
-// network and subnet need to be created, the GatewayIP and CIDR options will be
-// used; they default to 192.168.0.1 and 192.168.0.0:18 respectively, allowing
-// for 16381 servers to be Spawn()d later, with a maximum ip of 192.168.63.254.
-// DNSNameServers is a slice of DNS name server IPs. It defaults to Google's:
-// []string{"8.8.4.4", "8.8.8.8"}.
 type DeployConfig struct {
-	RequiredPorts  []int
-	GatewayIP      string
-	CIDR           string
+	// RequiredPorts is the slice of port numbers that your application needs to
+	// be able to communicate to any servers you spawn (eg. [22] for ssh)
+	// through. This will typically translate to the creation of security groups
+	// that open up these ports. If your cloud network has all ports open and
+	// does not allow the application of security groups to created servers,
+	// then provide an empty slice.
+	RequiredPorts []int
+
+	// UseConfigDrive, if set to true (default false), will cause all newly
+	// spawned servers to mount a configuration drive, which is typically needed
+	// for a network without DHCP.
+	UseConfigDrive bool
+
+	// CIDR is used to either determine which existing network (that the current
+	// cloud host is attached to) to spawn new servers on, or to define the
+	// properties of the network and subnet if those need to be created. CIDR
+	// defaults to 192.168.0.0:18, allowing for 16381 servers to be Spawn()d
+	// later, with a maximum ip of 192.168.63.254.
+	CIDR string
+
+	// GatewayIP is used if a network and subnet needed to be created, and is
+	// the gateway IP address of the created subnet. It defaults to 192.168.0.1.
+	GatewayIP string
+
+	// DNSNameServers is a slice of DNS name server IPs. It defaults to
+	// Google's: []string{"8.8.4.4", "8.8.8.8"}.
 	DNSNameServers []string
 }
 
@@ -341,15 +361,24 @@ func New(name string, resourceName string, savePath string, logger ...log15.Logg
 
 // Deploy triggers the creation of required cloud resources such as networks,
 // ssh keys, security profiles and so on, such that you can subsequently Spawn()
-// and ssh to your created server successfully.  If a resource we need already
-// exists with the resourceName you supplied to New(), we assume it belongs to
-// us and we don't create another (so it is safe to call Deploy multiple times
-// with the same args to New() and Deploy(): you don't need to check if you have
-// already deployed). Deploy() saves the resources it created to disk, which are
+// and ssh to your created server successfully.
+//
+// If a resource we need already exists with the resourceName you supplied to
+// New(), we assume it belongs to us and we don't create another (so it is safe
+// to call Deploy multiple times with the same args to New() and Deploy(): you
+// don't need to check if you have already deployed).
+//
+// Deploy() saves the resources it created to disk, which are
 // what TearDown() will delete when you call it. (They are saved to disk so that
 // TearDown() can work if you call it in a different session to when you
 // Deploy()ed, and so that PrivateKey() can work if you call it in a different
 // session to the Deploy() call that actually created the ssh key.)
+//
+// If servers already seem to exist with a name prefix matching resourceName, we
+// assume that they are from a prior deployment that crashed and you are now
+// recovering the sitution; these servers can be retrieved with
+// GetServerByName() and Destroy()ed. Note, however, that they aren't fully
+// useable since we don't know the username needed to ssh to them.
 func (p *Provider) Deploy(config *DeployConfig) error {
 	gatewayIP := config.GatewayIP
 	if gatewayIP == "" {
@@ -367,18 +396,43 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 	// impl.deploy should overwrite any existing values in p.resources with
 	// updated values, but should leave other things - such as an existing
 	// PrivateKey when we have not just made a new one - alone
-	err := p.impl.deploy(p.resources, config.RequiredPorts, gatewayIP, cidr, dnsNameServers)
+	err := p.impl.deploy(p.resources, config.RequiredPorts, config.UseConfigDrive, gatewayIP, cidr, dnsNameServers)
 	if err != nil {
 		return err
 	}
 
 	// save updated resources to disk
 	err = p.saveResources()
+	if err != nil {
+		return err
+	}
 
 	p.Lock()
 	defer p.Unlock()
 	if len(p.resources.Servers) > 0 {
 		p.madeHeadNode = true
+	}
+
+	// record any existing servers that we may have spawned previously, then we
+	// crashed, and now we're recovering. These server objects cannot be used
+	// fully; you can't ssh without setting the UserName first. Intended just to
+	// terminate
+	sdetails, err := p.impl.getCurrentServers(p.resources)
+	if err != nil {
+		return err
+	}
+
+	for _, details := range sdetails {
+		p.servers[details[2]] = &Server{
+			ID:           details[0],
+			Name:         details[2],
+			IP:           details[1],
+			AdminPass:    details[3],
+			provider:     p,
+			cancelRunCmd: make(map[int]chan bool),
+			logger:       p.Logger.New("server", details[0]),
+			created:      false,
+		}
 	}
 
 	return err
@@ -659,7 +713,7 @@ SENTINEL:
 			}
 		}
 		s.sshClients = []*ssh.Client{}
-		s.sshClientState = []bool{}
+		s.sshClientSessions = []int{}
 	}
 
 	return nil

@@ -33,6 +33,7 @@ import (
 
 // options for this cmd
 var schedgrp string
+var timeoutintRunner int
 var reserveint int
 var rserver string
 var rdomain string
@@ -61,10 +62,10 @@ complete.`,
 
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
-		if timeoutint < (reserveint + 5) {
-			timeoutint = reserveint + 5
+		if timeoutintRunner < (reserveint + 5) {
+			timeoutintRunner = reserveint + 5
 		}
-		timeout := time.Duration(timeoutint) * time.Second
+		timeout := time.Duration(timeoutintRunner) * time.Second
 		rtimeout := time.Duration(reserveint) * time.Second
 
 		jobqueue.AppName = "wr"
@@ -179,9 +180,14 @@ complete.`,
 			err = jq.Execute(job, config.RunnerExecShell)
 			if err != nil {
 				warn("%s", err)
-				if jqerr, ok := err.(jobqueue.Error); ok && jqerr.Err == jobqueue.FailReasonSignal {
-					exitReason = "we received a signal to stop"
-					break
+				if jqerr, ok := err.(jobqueue.Error); ok {
+					if strings.Contains(jqerr.Err, jobqueue.FailReasonSignal) {
+						exitReason = "we received a signal to stop"
+						break
+					} else if strings.Contains(jqerr.Err, jobqueue.ErrStopReserving) {
+						exitReason = "we reconnected to a new server"
+						break
+					}
 				}
 			} else {
 				info("command [%s] ran OK (exit code %d)", job.Cmd, job.Exitcode)
@@ -199,7 +205,7 @@ func init() {
 
 	// flags specific to this sub-command
 	runnerCmd.Flags().StringVarP(&schedgrp, "scheduler_group", "s", "", "specify the scheduler group to limit which commands can be acted on")
-	runnerCmd.Flags().IntVar(&timeoutint, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
+	runnerCmd.Flags().IntVar(&timeoutintRunner, "timeout", 30, "how long (seconds) to wait to get a reply from 'wr manager'")
 	runnerCmd.Flags().IntVarP(&reserveint, "reserve_timeout", "r", 2, "how long (seconds) to wait for there to be a command in the queue, before exiting")
 	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(appLogger), "ip:port of wr manager")

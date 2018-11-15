@@ -30,6 +30,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/inconshreveable/log15"
+	"github.com/sb10/l15h"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
@@ -200,7 +201,16 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	child, err := context.Reborn()
 	if err != nil {
-		die("failed to daemonize: %s", err)
+		// try again, deleting the pidFile first
+		errr := os.Remove(pidFile)
+		if errr != nil && !os.IsNotExist(errr) {
+			warn("failed to delete existing pid file: %s", errr)
+		}
+
+		child, err = context.Reborn()
+		if err != nil {
+			die("failed to daemonize: %s", err)
+		}
 	}
 	return child, context
 }
@@ -276,4 +286,18 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 		die("%s", err)
 	}
 	return jq
+}
+
+// setupLogging is a function to provide a new logger who's logging depends on
+// debug.
+func setupLogging(debug bool) log15.Logger {
+	// Set up logging for both commands
+	// for debug purposes, set up logging to STDERR
+	myLogger := log15.New()
+	logLevel := log15.LvlWarn
+	if debug {
+		logLevel = log15.LvlDebug
+	}
+	myLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
+	return myLogger
 }

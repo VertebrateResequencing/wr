@@ -37,6 +37,7 @@ import (
 	"strings"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/dgryski/go-farm"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/shirou/gopsutil/process"
@@ -61,8 +62,13 @@ var ellipses = []byte("[...]\n")
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
 // encoded string 43 bytes long. Used by the server to create a token passed to
-// to the caller for subsequent client authentication.
-func generateToken() ([]byte, error) {
+// to the caller for subsequent client authentication. If the given file exists
+// and contains a single 43 byte string, then that is used as the token instead.
+func generateToken(tokenFile string) ([]byte, error) {
+	if token, err := ioutil.ReadFile(tokenFile); err == nil && len(token) == tokenLength {
+		return token, nil
+	}
+
 	b := make([]byte, 32)
 	_, err := rand.Read(b)
 	if err != nil {
@@ -593,4 +599,25 @@ func compressFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	return compress(content)
+}
+
+// reqForScheduler takes a job's Requirements and returns a possibly modified
+// version if using less than 924MB memory to have +100MB memory to allow some
+// leeway in case the job scheduler calculates used memory differently, and for
+// other memory usage vagaries.
+func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
+	if req.RAM < 924 {
+		// our req will be like the jobs but with memory + 100 to
+		// allow some leeway in case the job scheduler calculates
+		// used memory differently, and for other memory usage
+		// vagaries
+		req = &scheduler.Requirements{
+			RAM:   req.RAM + 100,
+			Time:  req.Time,
+			Cores: req.Cores,
+			Disk:  req.Disk,
+			Other: req.Other,
+		}
+	}
+	return req
 }

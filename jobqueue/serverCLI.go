@@ -255,6 +255,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Lock()
 				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
 					srerr = ErrBadRequest
+					job.Unlock()
 				} else {
 					job.Host = cr.Job.Host
 					if job.Host != "" {
@@ -268,8 +269,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					job.Attempts++
 					job.killCalled = false
 					job.Lost = false
+					job.State = JobStateRunning
+
+					job.Unlock()
+
+					// we'll save-to-disk that we started running this job, so
+					// recovery is possible after a crash
+					s.db.updateJobAfterChange(job)
 				}
-				job.Unlock()
 			}
 		case "jtouch":
 			var job *Job
@@ -363,45 +370,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "jrelease":
 			// move the job from the run queue to the delay queue, unless it has
 			// failed too many times, in which case bury
-			var item *queue.Item
 			var job *Job
-			item, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr)
 			if srerr == "" {
-				job.updateAfterExit(cr.JobEndState)
-				job.Lock()
-				job.FailReason = cr.Job.FailReason
-				if !job.StartTime.IsZero() {
-					// obey jobs's Retries count by adjusting UntilBuried if a
-					// client reserved this job and started to run the job's cmd
-					job.UntilBuried--
-				}
-				if job.Exited && job.Exitcode != 0 {
-					job.updateRecsAfterFailure()
-				}
-				if job.UntilBuried <= 0 {
-					sgroup := job.schedulerGroup
-					job.Unlock()
-					err := s.q.Bury(item.Key)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					} else {
-						s.decrementGroupCount(job.getSchedulerGroup())
-						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-						s.Debug("buried job", "cmd", job.Cmd, "schedGrp", sgroup)
-					}
-				} else {
-					sgroup := job.schedulerGroup
-					job.Unlock()
-					err := s.q.Release(item.Key)
-					if err != nil {
-						srerr = ErrInternalError
-						qerr = err.Error()
-					} else {
-						s.decrementGroupCount(job.getSchedulerGroup())
-						s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-						s.Debug("released job", "cmd", job.Cmd, "schedGrp", sgroup)
-					}
+				cr.JobEndState.Stdout = cr.Job.StdOutC
+				cr.JobEndState.Stderr = cr.Job.StdErrC
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true)
+				if errq != nil {
+					srerr = ErrInternalError
+					qerr = errq.Error()
 				}
 			}
 		case "jbury":
@@ -414,6 +391,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Lock()
 				job.FailReason = cr.Job.FailReason
 				sgroup := job.schedulerGroup
+				job.State = JobStateBuried
 				job.Unlock()
 				err := s.q.Bury(item.Key)
 				if err != nil {
@@ -444,8 +422,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
 						s.Debug("unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
+						job.State = JobStateReady
 						job.Unlock()
 						kicked++
+
+						s.db.updateJobAfterChange(job)
 					}
 				}
 				sr = &serverResponse{Existed: kicked}
@@ -460,7 +441,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				keys := cr.Keys
 				for {
 					var skippedDeps []string
-					removedJobs := false
+					var toDelete []string
+					schedGroups := make(map[string]int)
+					var repGroups []string
 					for _, jobkey := range keys {
 						item, err := s.q.Get(jobkey)
 						if err != nil || item == nil {
@@ -484,17 +467,44 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						err = s.q.Remove(jobkey)
 						if err == nil {
 							deleted++
-							removedJobs = true
-							s.db.deleteLiveJob(jobkey) //*** probably want to batch this up to delete many at once
+							toDelete = append(toDelete, jobkey)
+
+							job := item.Data.(*Job)
+							if job.getScheduledRunner() {
+								schedGroups[job.getSchedulerGroup()]++
+							}
+							repGroups = append(repGroups, job.RepGroup)
+							s.Debug("removed job", "cmd", job.Cmd)
 						}
 					}
 
-					// if we removed at least 1 job, and skipped any due to
-					// deps, repeat and see if we can remove everything desired
-					// by going down the dependency tree
-					if len(skippedDeps) > 0 && removedJobs {
-						keys = skippedDeps
-						continue
+					if len(toDelete) > 0 {
+						// delete from db live bucket all in one go
+						errd := s.db.deleteLiveJobs(toDelete)
+						if errd != nil {
+							s.Error("job deletion from database failed", "err", errd)
+						}
+
+						// decrement scheduler group counts, in one big go per
+						// group
+						for sg, count := range schedGroups {
+							s.decrementGroupCount(sg, count)
+						}
+
+						// clean up rpl lookups
+						s.rpl.Lock()
+						for i, rg := range repGroups {
+							delete(s.rpl.lookup[rg], toDelete[i])
+						}
+						s.rpl.Unlock()
+
+						// if any were skipped any due to deps, repeat and see
+						// if we can remove everything desired by going down
+						// the dependency tree
+						if len(skippedDeps) > 0 {
+							keys = skippedDeps
+							continue
+						}
 					}
 					break
 				}
@@ -549,6 +559,33 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			jobs := s.getJobsCurrent(cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
+			}
+		case "getbcs":
+			servers := s.getBadServers()
+			if cr.ConfirmDeadCloudServers {
+				var confirmed []*BadServer
+				s.bsmutex.Lock()
+				for _, badServer := range servers {
+					if !badServer.IsBad {
+						continue
+					}
+					if cr.CloudServerID != "" && cr.CloudServerID != badServer.ID {
+						continue
+					}
+					server := s.badServers[badServer.ID]
+					delete(s.badServers, badServer.ID)
+					if server != nil && server.IsBad() {
+						errd := server.Destroy()
+						if errd != nil {
+							s.Warn("Server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
+						}
+					}
+					confirmed = append(confirmed, badServer)
+				}
+				s.bsmutex.Unlock()
+				sr = &serverResponse{BadServers: confirmed}
+			} else {
+				sr = &serverResponse{BadServers: servers}
 			}
 		default:
 			srerr = ErrUnknownCommand

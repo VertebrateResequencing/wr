@@ -5,6 +5,60 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.16.0] - 2018-11-15
+### Added
+- New `wr k8s` commands to self-deploy to kubernetes clusters. See:
+  https://github.com/VertebrateResequencing/wr/wiki/Kubernetes
+- Complete recovery of state is now possible following the loss of the manager,
+  even when jobs are still running. See the wiki for details:
+  https://github.com/VertebrateResequencing/wr/wiki/Recovery
+- New /info/ and /rest/version endpoints for the REST API, to get manager status
+  and REST API version respectively.
+- New `--max_local_cores` option to `wr cloud deploy`, and `--max_cores` option
+  to `wr manager start` (and likewise for ram), lets you control how much of the
+  machine that the manager is running on is also used for running jobs.
+- The --cloud_cidr option to `wr manager start` now not only determines which
+  network to get an IP address from, but also which network to spawn new servers
+  in.
+- New --cloud_disable_security_groups option to `wr manager start` allows new
+  cloud servers to be spawned in networks that do not allow security groups.
+- For the dismissible scheduler warnings that can appear on the web interface,
+  there is now a "Dismiss all" button.
+- New `--confirmdead` option to `wr kill` to provide a way of confirming jobs
+  in "lost contact" state are dead, using the CLI.
+- New `wr cloud servers` command to view and confirm dead cloud servers that
+  have become unresponsive, using the CLI.
+
+### Changed
+- Switched to using go modules for dependency management, so requiring go
+  v1.11+. See the README.md for new build instructions. If not working on any
+  other go projects, recommend deleting all existing go-related files, unsetting
+  go environment variables, and starting from scratch.
+- Manager's token file is now only automatically deleted on graceful stop. If
+  the token file is present on manager start, it will be reused, allowing
+  existing runners to reconnect to the new manager. See the wiki for notes on
+  this: https://github.com/VertebrateResequencing/wr/wiki/Security
+- If a keypair was created by a manager instance in the cloud, then it will be
+  deleted on manager stop. (Previously keys would remain on the assumption they
+  might be necessary to access the manager's cloud instance.)
+- Various breaking API changes in most sub-packages.
+
+### Fixed
+- Buried jobs stay buried after a manager restart.
+- Deleting jobs properly clears out the scheduler in all cases, so that
+  schedulers don't endlessly try and schedule runners when there are no jobs to
+  run.
+- Fixed a case of the local scheduler overcommiting on resources, running too
+  many jobs at once.
+- Adding very long commands used to silently fail. Now commands longer than
+  typical shells can cope with can be added, and incredibly long commands result
+  in a failure to add.
+- Starting many jobs at once on cloud servers should no longer result in that
+  server being considered "dead".
+- OpenStack scheduler no longer fails to start up if there are existing servers
+  in OpenStack with flavors that no longer exist.
+
+
 ## [0.15.0] - 2018-09-03
 ### Added
 - New rerun option when adding jobs using the REST API.

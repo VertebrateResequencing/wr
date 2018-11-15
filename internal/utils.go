@@ -221,8 +221,14 @@ func LogPanic(logger log15.Logger, desc string, die bool) {
 // found first in the set of $PATH directories, ignoring any path that is
 // actually a symlink to ourselves.
 func Which(exeName string) string {
-	self, _ := os.Executable()
-	self, _ = filepath.EvalSymlinks(self)
+	self, err := os.Executable()
+	if err != nil {
+		self = ""
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		self = ""
+	}
 
 	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
 		stat, err := os.Stat(dir)
@@ -257,16 +263,18 @@ func Which(exeName string) string {
 	return ""
 }
 
-// WaitForFile waits as long as timeout for the given file to exist. When it
-// exists, returns true. Otherwise false.
-func WaitForFile(file string, timeout time.Duration) bool {
+// WaitForFile waits as long as timeout for the given file to exist. If the file
+// has a timestamp from before the given after, however, waits until the file
+// is touched to have a timestamp after after. When it exists with the right
+// timestamp, returns true. Otherwise false.
+func WaitForFile(file string, after time.Time, timeout time.Duration) bool {
 	limit := time.After(timeout)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	for {
 		select {
 		case <-ticker.C:
-			_, err := os.Stat(file)
-			if err == nil {
+			info, err := os.Stat(file)
+			if err == nil && info.ModTime().After(after) {
 				ticker.Stop()
 				return true
 			}
@@ -418,26 +426,7 @@ func CurrentIP(cidr string) (string, error) {
 		// if the above fails, fall back on manually going through all our
 		// network interfaces
 		if ip == "" {
-			var addrs []net.Addr
-			addrs, err = net.InterfaceAddrs()
-			if err != nil {
-				return "", err
-			}
-			for _, address := range addrs {
-				if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
-					if thisIPNet.IP.To4() != nil {
-						if ipNet != nil {
-							if ipNet.Contains(thisIPNet.IP) {
-								ip = thisIPNet.IP.String()
-								break
-							}
-						} else {
-							ip = thisIPNet.IP.String()
-							break
-						}
-					}
-				}
-			}
+			ip, err = currentIPFallback(ipNet)
 		}
 
 		return ip, nil
@@ -457,5 +446,33 @@ func CurrentIP(cidr string) (string, error) {
 	} else {
 		return ip.String(), err
 	}
-	return "", err
+
+	return currentIPFallback(ipNet)
+}
+
+// currentIPFallback is an older fallback method for figuring out our IP
+// address by going through all our network interfaces.
+func currentIPFallback(ipNet *net.IPNet) (string, error) {
+	var addrs []net.Addr
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+	var ip string
+	for _, address := range addrs {
+		if thisIPNet, ok := address.(*net.IPNet); ok && !thisIPNet.IP.IsLoopback() {
+			if thisIPNet.IP.To4() != nil {
+				if ipNet != nil {
+					if ipNet.Contains(thisIPNet.IP) {
+						ip = thisIPNet.IP.String()
+						break
+					}
+				} else {
+					ip = thisIPNet.IP.String()
+					break
+				}
+			}
+		}
+	}
+	return ip, nil
 }

@@ -32,6 +32,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// maxScanTokenSize defines the size of bufio scan's buffer, enabling us to
+// parse very long lines - longer than the max length of a command supported by
+// shells such as bash.
+const maxScanTokenSize = 4096 * 1024
+
 // options for this cmd
 var reqGroup string
 var cmdTime string
@@ -62,6 +67,7 @@ var cmdCloudConfigs string
 var cmdCloudSharedDisk bool
 var cmdFlavor string
 var cmdMonitorDocker string
+var rtimeoutint int
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -345,8 +351,8 @@ func init() {
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
-	addCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format")
-	addCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]")
+	addCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount, in JSON format; see 'wr mount -h'")
+	addCmd.Flags().StringVar(&mountSimple, "mounts", "", "remote file systems to mount, as a ,-separated list of [c|u][r|w]:bucket[/path]; see 'wr mount -h'")
 	addCmd.Flags().StringVar(&cmdOsPrefix, "cloud_os", "", "in the cloud, prefix name of the OS image servers that run the commands must use")
 	addCmd.Flags().StringVar(&cmdOsUsername, "cloud_username", "", "in the cloud, username needed to log in to the OS image specified by --cloud_os")
 	addCmd.Flags().IntVar(&cmdOsRAM, "cloud_ram", 0, "in the cloud, ram (MB) needed by the OS image specified by --cloud_os")
@@ -359,6 +365,12 @@ func init() {
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
+	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
+
+	err := addCmd.Flags().MarkHidden("reserve_timeout")
+	if err != nil {
+		die("cloud not hide reserver_timeout option: %s", err)
+	}
 }
 
 // convert cmd,cwd columns in to Dependency.
@@ -428,6 +440,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		CloudFlavor:      cmdFlavor,
 		CloudShared:      cmdCloudSharedDisk,
 		BsubMode:         bsubMode,
+		RTimeout:         rtimeoutint,
 	}
 
 	if jd.RepGrp == "" {
@@ -532,6 +545,8 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 	// of Jobs and Add() them in one go afterwards
 	var jobs []*jobqueue.Job
 	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, maxScanTokenSize)
+	scanner.Buffer(buf, maxScanTokenSize)
 	defaultedRepG := false
 	lineNum := 0
 	for scanner.Scan() {
@@ -590,6 +605,11 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		}
 
 		jobs = append(jobs, job)
+	}
+
+	serr := scanner.Err()
+	if serr != nil {
+		die("failed to read whole file: %s", serr.Error())
 	}
 
 	return jobs, isLocal, defaultedRepG

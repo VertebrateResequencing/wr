@@ -73,9 +73,14 @@ const (
 	ErrMustReserve      = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError          = "failed to use database"
 	ErrPermissionDenied = "bad token: permission denied"
+	ErrStopReserving    = "recovered on a new server; you should stop reserving"
 	ServerModeNormal    = "started"
 	ServerModeDrain     = "draining"
 )
+
+// ServerVersion gets set during build:
+// go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
+var ServerVersion string
 
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
@@ -123,6 +128,7 @@ type serverResponse struct {
 	SStats     *ServerStats
 	DB         []byte
 	Path       string
+	BadServers []*BadServer
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -135,6 +141,12 @@ type ServerInfo struct {
 	Deployment string // deployment the server is running under
 	Scheduler  string // the name of the scheduler that jobs are being submitted to
 	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
+}
+
+// ServerVersions holds the server version (git tag) and API version supported.
+type ServerVersions struct {
+	Version string
+	API     string
 }
 
 // ServerStats holds information about the jobqueue server for sending to
@@ -161,10 +173,10 @@ type jstateCount struct {
 	Count     int // num in FromState drop by this much, num in ToState rise by this much
 }
 
-// badServer is the details of servers that have gone bad that we send to the
+// BadServer is the details of servers that have gone bad that we send to the
 // status webpage. Previously bad servers can also be sent if they become good
 // again, hence the IsBad boolean.
-type badServer struct {
+type BadServer struct {
 	ID      string
 	Name    string
 	IP      string
@@ -185,6 +197,7 @@ type schedulerIssue struct {
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	ServerInfo         *ServerInfo
+	ServerVersions     *ServerVersions
 	token              []byte
 	uploadDir          string
 	sock               mangos.Socket
@@ -298,6 +311,15 @@ type ServerConfig struct {
 	// running your server.
 	CertDomain string
 
+	// If using a CertDomain, and if you have (or very soon will) set the domain
+	// to point to the server's IP address, set this to true. This will result
+	// in runner clients spawned by the server being told to access the server
+	// at CertDomain (instead of the current IP address), which means if the
+	// server's host is lost and you bring it back at a different IP address and
+	// update the domain again, those clients will be able to reconnect and
+	// continue running.
+	DomainMatchesIP bool
+
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
 	Deployment string
@@ -337,9 +359,9 @@ type ServerConfig struct {
 // handles those clients.
 //
 // It returns a *Server that you will typically call Block() on to block until
-// until your executable receives a SIGINT or SIGTERM, or you call Stop(), at
-// which point the queues will be safely closed (you'd probably just exit at
-// that point).
+// your executable receives a SIGINT or SIGTERM, or you call Stop(), at which
+// point the queues will be safely closed (you'd probably just exit at that
+// point).
 //
 // If it creates a db file or recreates one from backup, and if it creates TLS
 // certificates, it will say what it did in the returned msg string.
@@ -348,7 +370,9 @@ type ServerConfig struct {
 // is a single user system, so there is only 1 token kept for its entire
 // lifetime. If config.TokenFile has been set, the token will also be written to
 // that file, potentially making it easier for any CLI clients to authenticate
-// with this returned Server.
+// with this returned Server. If that file already exists prior to calling this,
+// the token in that file will be re-used, allowing reconnection of existing
+// clients if this server dies ungracefully.
 //
 // The possible errors from Serve() will be related to not being able to start
 // up at the supplied address; errors encountered while dealing with clients are
@@ -373,7 +397,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	defer internal.LogPanic(serverLogger, "jobqueue serve", true)
 
 	// generate a secure token for clients to authenticate with
-	token, err = generateToken()
+	token, err = generateToken(config.TokenFile)
 	if err != nil {
 		return s, msg, token, err
 	}
@@ -397,7 +421,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			return s, msg, token, err
 		}
 		certMsg = "created a new key and certificate for TLS"
-		msg = certMsg
 	}
 
 	// we need to persist stuff to disk, and we do so using boltdb
@@ -416,7 +439,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		if err != nil {
 			errc := db.close()
 			if errc != nil {
-				err = fmt.Errorf("%s; db close also failed: %s\n", err.Error(), errc.Error())
+				err = fmt.Errorf("%s; db close also failed: %s", err.Error(), errc.Error())
 			}
 		}
 	}()
@@ -429,7 +452,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		if err != nil {
 			errc := sock.Close()
 			if errc != nil {
-				err = fmt.Errorf("%s; socket close also failed: %s\n", err.Error(), errc.Error())
+				err = fmt.Errorf("%s; socket close also failed: %s", err.Error(), errc.Error())
 			}
 		}
 	}()
@@ -489,12 +512,17 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
-	ip, err := internal.CurrentIP(config.CIDR)
-	if err != nil {
-		serverLogger.Error("getting current IP failed", "err", err)
-	}
-	if ip == "" {
-		return s, msg, token, Error{"Serve", "", ErrNoHost}
+	var ip string
+	if config.DomainMatchesIP {
+		ip = config.CertDomain
+	} else {
+		ip, err = internal.CurrentIP(config.CIDR)
+		if err != nil {
+			serverLogger.Error("getting current IP failed", "err", err)
+		}
+		if ip == "" {
+			return s, msg, token, Error{"Serve", "", ErrNoHost}
+		}
 	}
 
 	// we will spawn runner clients via the requested job scheduler
@@ -510,6 +538,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
+		ServerVersions:     &ServerVersions{Version: ServerVersion, API: restAPIVersion},
 		token:              token,
 		uploadDir:          uploadDir,
 		sock:               sock,
@@ -544,6 +573,17 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		return nil, msg, token, err
 	}
 	if len(priorJobs) > 0 {
+		var loginUser string
+		var ttd time.Duration
+		if cloudConfig, ok := config.SchedulerConfig.(scheduler.CloudConfig); ok {
+			// *** for server recovery purposes, which involves ssh'ing to
+			// existing servers and monitoring them, we need to know the login
+			// username, but we don't. The best we can do is hope the configured
+			// default username is the right one
+			loginUser = cloudConfig.GetOSUser()
+			ttd = cloudConfig.GetServerKeepTime()
+		}
+
 		var itemdefs []*queue.ItemDef
 		for _, job := range priorJobs {
 			var deps []string
@@ -551,7 +591,23 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			if err != nil {
 				return nil, msg, token, err
 			}
-			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
+
+			itemdef := &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps}
+
+			switch job.State {
+			case JobStateRunning:
+				itemdef.StartQueue = queue.SubQueueRun
+
+				req := reqForScheduler(job.Requirements)
+				errr := s.scheduler.Recover(fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
+				if errr != nil {
+					s.Warn("recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host)
+				}
+			case JobStateBuried:
+				itemdef.StartQueue = queue.SubQueueBury
+			}
+
+			itemdefs = append(itemdefs, itemdef)
 		}
 		_, _, err = s.enqueueItems(itemdefs)
 		if err != nil {
@@ -645,6 +701,8 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		mux.HandleFunc(restWarningsEndpoint, restWarnings(s))
 		mux.HandleFunc(restBadServersEndpoint, restBadServers(s))
 		mux.HandleFunc(restFileUploadEndpoint, restFileUpload(s))
+		mux.HandleFunc(restInfoEndpoint, restInfo(s))
+		mux.HandleFunc(restVersionEndpoint, restVersion(s))
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
@@ -689,7 +747,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			s.bsmutex.Unlock()
 
 			if !skip {
-				s.badServerCaster.Send(&badServer{
+				s.badServerCaster.Send(&BadServer{
 					ID:      server.ID,
 					Name:    server.Name,
 					IP:      server.IP,
@@ -978,19 +1036,27 @@ func (s *Server) createQueue() {
 				recm, errm := s.db.recommendedReqGroupMemory(job.ReqGroup)
 				recd, errd := s.db.recommendedReqGroupDisk(job.ReqGroup)
 				recs, errs := s.db.recommendedReqGroupTime(job.ReqGroup)
-				if recm == 0 || recs == 0 || errm != nil || errd != nil || errs != nil {
+				if errm != nil || errd != nil || errs != nil {
 					groupToReqs[job.ReqGroup] = nil
 				} else {
+					recmMBs := 0
+					if recm > 0 {
+						recmMBs = recm
+					}
 					recdGBs := 0
-					if recd > 0 { // not all jobs collect disk usage, so this can be 0
+					if recd > 0 {
 						recdGBs = int(math.Ceil(float64(recd) / float64(1024)))
 					}
-					recommendedReq = &scheduler.Requirements{RAM: recm, Disk: recdGBs, Time: time.Duration(recs) * time.Second}
+					recsSecs := 0
+					if recs > 0 {
+						recsSecs = recs
+					}
+					recommendedReq = &scheduler.Requirements{RAM: recmMBs, Disk: recdGBs, Time: time.Duration(recsSecs) * time.Second}
 					groupToReqs[job.ReqGroup] = recommendedReq
 				}
 			}
 
-			if recommendedReq != nil {
+			if recommendedReq != nil || job.FailReason == FailReasonRAM || job.FailReason == FailReasonDisk || job.FailReason == FailReasonTime {
 				job.Lock()
 				if job.RequirementsOrig == nil {
 					job.RequirementsOrig = &scheduler.Requirements{
@@ -999,65 +1065,93 @@ func (s *Server) createQueue() {
 						Disk: job.Requirements.Disk,
 					}
 				}
-				if job.RequirementsOrig.RAM > 0 {
-					switch job.Override {
-					case 0:
-						job.Requirements.RAM = recommendedReq.RAM
-					case 1:
-						if recommendedReq.RAM > job.Requirements.RAM {
+
+				if recommendedReq.RAM > 0 {
+					if job.RequirementsOrig.RAM > 0 {
+						switch job.Override {
+						case 0:
 							job.Requirements.RAM = recommendedReq.RAM
+						case 1:
+							if recommendedReq.RAM > job.Requirements.RAM {
+								job.Requirements.RAM = recommendedReq.RAM
+							}
 						}
+					} else {
+						job.Requirements.RAM = recommendedReq.RAM
 					}
-				} else {
-					job.Requirements.RAM = recommendedReq.RAM
 				}
 
-				if job.RequirementsOrig.Disk > 0 {
-					switch job.Override {
-					case 0:
-						job.Requirements.Disk = recommendedReq.Disk
-					case 1:
-						if recommendedReq.Disk > job.Requirements.Disk {
+				if recommendedReq.Disk > 0 {
+					if job.RequirementsOrig.Disk > 0 {
+						switch job.Override {
+						case 0:
 							job.Requirements.Disk = recommendedReq.Disk
+						case 1:
+							if recommendedReq.Disk > job.Requirements.Disk {
+								job.Requirements.Disk = recommendedReq.Disk
+							}
 						}
+					} else {
+						job.Requirements.Disk = recommendedReq.Disk
 					}
-				} else {
-					job.Requirements.Disk = recommendedReq.Disk
 				}
 
-				if job.RequirementsOrig.Time > 0 {
-					switch job.Override {
-					case 0:
-						job.Requirements.Time = recommendedReq.Time
-					case 1:
-						if recommendedReq.Time > job.Requirements.Time {
+				if recommendedReq.Time.Seconds() > 0 {
+					if job.RequirementsOrig.Time > 0 {
+						switch job.Override {
+						case 0:
 							job.Requirements.Time = recommendedReq.Time
+						case 1:
+							if recommendedReq.Time > job.Requirements.Time {
+								job.Requirements.Time = recommendedReq.Time
+							}
 						}
+					} else {
+						job.Requirements.Time = recommendedReq.Time
 					}
-				} else {
-					job.Requirements.Time = recommendedReq.Time
 				}
+
+				switch job.FailReason {
+				case FailReasonRAM:
+					// increase by 1GB or [100% if under 8GB, 30% if over],
+					// whichever is greater, and round up to nearest 100 ***
+					// increase to greater than max seen for jobs in our
+					// ReqGroup?
+					updatedMB := float64(job.PeakRAM)
+					if updatedMB <= RAMIncreaseMultBreakpoint {
+						updatedMB *= RAMIncreaseMultLow
+					} else {
+						updatedMB *= RAMIncreaseMultHigh
+					}
+					if updatedMB < float64(job.PeakRAM)+RAMIncreaseMin {
+						updatedMB = float64(job.PeakRAM) + RAMIncreaseMin
+					}
+					newRAM := int(math.Ceil(updatedMB/100) * 100)
+					if newRAM > job.Requirements.RAM {
+						job.Requirements.RAM = newRAM
+					}
+				case FailReasonDisk:
+					// flat increase of 30%
+					updatedMB := float64(job.PeakDisk) / float64(1024)
+					updatedMB *= RAMIncreaseMultHigh
+					newDisk := int(math.Ceil(updatedMB/100) * 100)
+					if newDisk > job.Requirements.Disk {
+						job.Requirements.Disk = newDisk
+					}
+				case FailReasonTime:
+					// flat increase of 1 hour
+					newTime := job.EndTime.Sub(job.StartTime) + (1 * time.Hour)
+					if newTime > job.Requirements.Time {
+						job.Requirements.Time = newTime
+					}
+				}
+
 				job.Unlock()
 			} else {
 				noRec = true
 			}
 
-			var req *scheduler.Requirements
-			if job.Requirements.RAM < 924 {
-				// our req will be like the jobs but with memory + 100 to
-				// allow some leeway in case the job scheduler calculates
-				// used memory differently, and for other memory usage
-				// vagaries
-				req = &scheduler.Requirements{
-					RAM:   job.Requirements.RAM + 100,
-					Time:  job.Requirements.Time,
-					Cores: job.Requirements.Cores,
-					Disk:  job.Requirements.Disk,
-					Other: job.Requirements.Other,
-				}
-			} else {
-				req = job.Requirements
-			}
+			req := reqForScheduler(job.Requirements)
 
 			prevSchedGroup := job.getSchedulerGroup()
 			schedulerGroup := req.Stringify()
@@ -1102,24 +1196,32 @@ func (s *Server) createQueue() {
 		if s.rc != "" {
 			// clear out groups we no longer need
 			s.sgcmutex.Lock()
-			stillRunning := make(map[string]bool)
+			stillRunning := make(map[string]int)
 			for _, inter := range q.GetRunningData() {
 				job := inter.(*Job)
-				stillRunning[job.getSchedulerGroup()] = true
+				stillRunning[job.getSchedulerGroup()]++
 			}
 			for group := range s.sgroupcounts {
-				if _, needed := groups[group]; !needed && !stillRunning[group] {
-					s.sgroupcounts[group] = 0
-					s.wg.Add(1)
-					go func(group string) {
-						defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
-						defer s.wg.Done()
-						s.clearSchedulerGroup(group)
-					}(group)
+				running, still := stillRunning[group]
+				if _, needed := groups[group]; !needed {
+					if !still {
+						s.sgroupcounts[group] = 0
+						s.wg.Add(1)
+						go func(group string) {
+							defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
+							defer s.wg.Done()
+							s.clearSchedulerGroup(group)
+						}(group)
+					} else {
+						s.sgroupcounts[group] = running
+						// when the last of these finishes running, a clear will
+						// be triggered
+					}
 				}
 			}
 			for group := range s.sgrouptrigs {
-				if _, needed := groups[group]; !needed && !stillRunning[group] {
+				_, still := stillRunning[group]
+				if _, needed := groups[group]; !needed && !still {
 					delete(s.sgrouptrigs, group)
 				}
 			}
@@ -1391,6 +1493,41 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 	return added, dups, alreadyComplete, srerr, qerr
 }
 
+// releaseJob either releases or buries a job as per its retries, and updates
+// our scheduling counts as appropriate.
+func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool) error {
+	job.updateAfterExit(endState)
+	job.Lock()
+	job.FailReason = failReason
+	if !job.StartTime.IsZero() {
+		// obey jobs's Retries count by adjusting UntilBuried if a
+		// client reserved this job and started to run the job's cmd
+		job.UntilBuried--
+	}
+
+	sgroup := job.schedulerGroup
+	var errq error
+	var msg string
+	if job.UntilBuried <= 0 {
+		errq = s.q.Bury(job.Key())
+		job.State = JobStateBuried
+		msg = "buried job"
+	} else {
+		errq = s.q.Release(job.Key())
+		job.State = JobStateDelayed
+		msg = "released job"
+	}
+	job.Unlock()
+	if errq != nil {
+		return errq
+	}
+
+	s.decrementGroupCount(job.getSchedulerGroup())
+	s.db.updateJobAfterExit(job, endState.Stdout, endState.Stderr, forceStorage)
+	s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
+	return nil
+}
+
 // killJob sets the killCalled property on a job, to change the subsequent
 // behaviour of touching, which should result in an executing job killing
 // itself.
@@ -1412,28 +1549,8 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 	job.killCalled = true
 
 	if job.Lost {
-		job.UntilBuried--
-		ub := job.UntilBuried
-		job.Exited = true
-		job.Exitcode = -1
-		job.EndTime = time.Now()
-		job.FailReason = FailReasonLost
 		job.Unlock()
-		s.db.updateJobAfterExit(job, []byte{}, []byte{}, false)
-
-		if ub <= 0 {
-			err = s.q.Bury(item.Key)
-			if err != nil {
-				return true, err
-			}
-			s.decrementGroupCount(job.getSchedulerGroup())
-			return true, err
-		}
-		err = s.q.Release(item.Key)
-		if err != nil {
-			return true, err
-		}
-		s.decrementGroupCount(job.getSchedulerGroup())
+		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false)
 		return true, err
 	}
 
@@ -1661,7 +1778,7 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -1727,18 +1844,29 @@ func (s *Server) scheduleRunners(group string) {
 }
 
 // adjust our count of how many jobs with this schedulerGroup we need in the job
-// scheduler.
-func (s *Server) decrementGroupCount(schedulerGroup string) {
+// scheduler. Optionally supply the number to decrement by (default 1).
+func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int) {
+	drop := 1
+	if len(optionalDrop) == 1 {
+		drop = optionalDrop[0]
+	}
 	if s.rc != "" {
 		doSchedule := false
 		doTrigger := false
 		s.sgcmutex.Lock()
 		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
-			s.sgroupcounts[schedulerGroup]--
+			s.sgroupcounts[schedulerGroup] -= drop
+
+			if s.sgroupcounts[schedulerGroup] <= 0 {
+				s.sgcmutex.Unlock()
+				s.clearSchedulerGroup(schedulerGroup)
+				return
+			}
+
 			doSchedule = true
-			if count, set := s.sgrouptrigs[schedulerGroup]; set {
-				s.sgrouptrigs[schedulerGroup]++
-				if count >= 100 {
+			if _, set := s.sgrouptrigs[schedulerGroup]; set {
+				s.sgrouptrigs[schedulerGroup] += drop
+				if s.sgrouptrigs[schedulerGroup] >= 100 {
 					delete(s.sgrouptrigs, schedulerGroup)
 					if s.sgroupcounts[schedulerGroup] > 10 {
 						doTrigger = true
@@ -1776,7 +1904,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
 		if err != nil {
 			s.Warn("clearSchedulerGroup failed", "err", err)
 		}
@@ -1785,11 +1913,11 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 
 // getBadServers converts the slice of cloud.Server objects we hold in to a
 // slice of badServer structs.
-func (s *Server) getBadServers() []*badServer {
+func (s *Server) getBadServers() []*BadServer {
 	s.bsmutex.RLock()
-	var bs []*badServer
+	var bs []*BadServer
 	for _, server := range s.badServers {
-		bs = append(bs, &badServer{
+		bs = append(bs, &BadServer{
 			ID:      server.ID,
 			Name:    server.Name,
 			IP:      server.IP,
@@ -1848,6 +1976,10 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 
 	if stopSigHandling {
 		close(s.stopSigHandling)
+	}
+
+	for group := range s.sgroupcounts {
+		s.clearSchedulerGroup(group)
 	}
 
 	// change touch to always return a kill signal

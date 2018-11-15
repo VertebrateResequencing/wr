@@ -623,7 +623,7 @@ func TestREST(t *testing.T) {
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 
-			var servers []*badServer
+			var servers []*BadServer
 			err = json.Unmarshal(responseData, &servers)
 			So(err, ShouldBeNil)
 			So(len(servers), ShouldEqual, 0)
@@ -648,7 +648,7 @@ func TestREST(t *testing.T) {
 				responseData, err := ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
-				var servers []*badServer
+				var servers []*BadServer
 				err = json.Unmarshal(responseData, &servers)
 				So(err, ShouldBeNil)
 				So(len(servers), ShouldEqual, 1)

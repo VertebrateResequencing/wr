@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -85,6 +86,8 @@ var (
 	ClientTouchInterval               = 15 * time.Second
 	ClientReleaseDelay                = 30 * time.Second
 	ClientPercentMemoryKill           = 90
+	ClientRetryWait                   = 15 * time.Second
+	ClientRetryTime                   = 24 * time.Hour
 	RAMIncreaseMin            float64 = 1000
 	RAMIncreaseMultLow                = 2.0
 	RAMIncreaseMultHigh               = 1.3
@@ -95,25 +98,27 @@ var (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
-	ClientID       uuid.UUID
-	Env            []byte // compressed binc encoding of []string
-	FirstReserve   bool
-	GetEnv         bool
-	GetStd         bool
-	IgnoreComplete bool
-	Job            *Job
-	JobEndState    *JobEndState
-	Jobs           []*Job
-	Keys           []string
-	Search         bool
-	Limit          int
-	Method         string
-	SchedulerGroup string
-	State          JobState
-	File           []byte // compressed bytes of file content
-	Path           string // desired path File should be stored at, can be blank
-	Timeout        time.Duration
-	Token          []byte
+	ClientID                uuid.UUID
+	Env                     []byte // compressed binc encoding of []string
+	FirstReserve            bool
+	GetEnv                  bool
+	GetStd                  bool
+	IgnoreComplete          bool
+	Job                     *Job
+	JobEndState             *JobEndState
+	Jobs                    []*Job
+	Keys                    []string
+	Search                  bool
+	Limit                   int
+	Method                  string
+	SchedulerGroup          string
+	State                   JobState
+	File                    []byte // compressed bytes of file content
+	Path                    string // desired path File should be stored at, can be blank
+	Timeout                 time.Duration
+	Token                   []byte
+	ConfirmDeadCloudServers bool
+	CloudServerID           string
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -129,6 +134,7 @@ type Client struct {
 	ServerInfo *ServerInfo
 	host       string
 	port       string
+	args       []string // allowing internal reconnects
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -202,6 +208,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		clientid: u,
 		host:     addrParts[0],
 		port:     addrParts[1],
+		args:     []string{addr, caFile, certDomain},
 	}
 
 	// Dial succeeds even when there's no server up, so we test the connection
@@ -757,6 +764,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	dockerCPU := 0
 	ticker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 	memTicker := time.NewTicker(1 * time.Second)  // we need to check on memory usage frequently
+	machineRAM := 0
 	ranoutMem := false
 	ranoutTime := false
 	ranoutDisk := false
@@ -958,14 +966,21 @@ func (c *Client) Execute(job *Job, shell string) error {
 					peakmem = mem
 
 					if peakmem > job.Requirements.RAM {
-						maxRAM, errp := internal.ProcMeminfoMBs()
+						// if we later fail we'll assume it's because we used
+						// too much memory, but won't kill the cmd unless...
+						ranoutMem = true
 
-						// we don't allow cmds to use both more than exepected
-						// and more than 90% of physical memory, or we could
-						// screw up the machine we're running on
-						if errp == nil && peakmem >= ((maxRAM/100)*ClientPercentMemoryKill) {
+						// ... it both uses more than exepected and more than
+						// 90% of physical memory, since we could screw up the
+						// machine we're running on
+						if machineRAM == 0 {
+							ram, errp := internal.ProcMeminfoMBs()
+							if errp == nil {
+								machineRAM = ram
+							}
+						}
+						if machineRAM > 0 && peakmem >= ((machineRAM/100)*ClientPercentMemoryKill) {
 							killErr = killCmd()
-							ranoutMem = true
 							stateMutex.Unlock()
 							break CHECKING
 						}
@@ -993,6 +1008,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	stopChecking <- true
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
+	endTime := time.Now()
 
 	// though we have tried to track peak memory while the cmd ran (mainly to
 	// know if we use too much memory and kill during a run), our method might
@@ -1126,7 +1142,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 	}
 
-	if closeErr != nil {
+	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
 		if myerr != nil {
 			myerr = fmt.Errorf("%s; closing stderr/out of the cmd also failed: %s", myerr.Error(), closeErr.Error())
 		} else {
@@ -1200,22 +1216,46 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// though we may have had some problem, we always try and update our job end
 	// state, and we try many times to avoid having to repeat jobs unnecessarily
-	// (we keep retying for ~12+ hrs, giving plenty of time for issues to be
+	// (we keep retrying for 24hrs, giving plenty of time for issues to be
 	// fixed and potentially a new manager to be brought online for us to
 	// connect to and succeed)
-	maxRetries := 300
+	retryEnd := time.Now().Add(ClientRetryTime)
 	worked := false
+	disconnected := false
+	hadProblems := false
 	jes := &JobEndState{
 		Cwd:      actualCwd,
 		Exitcode: exitcode,
 		PeakRAM:  peakmem,
 		PeakDisk: peakdisk,
 		CPUtime:  cmd.ProcessState.SystemTime() + cmd.ProcessState.UserTime() + time.Duration(dockerCPU)*time.Second,
+		EndTime:  endTime,
 		Stdout:   finalStdOut,
 		Stderr:   finalStdErr,
 		Exited:   true,
 	}
-	for retryNum := 0; retryNum < maxRetries; retryNum++ {
+	for {
+		if disconnected {
+			// we've previously failed to contact the server
+			if time.Now().After(retryEnd) {
+				break
+			}
+
+			// try a quick connect attempt
+			newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
+			if errc != nil {
+				// keep retrying after a jittered sleep
+				wait := ClientRetryWait + time.Duration(rand.Float64()*0.5*float64(ClientRetryWait))
+				<-time.After(wait)
+				continue
+			}
+
+			// server is back, update ourselves and continue (we keep the quick
+			// timeout, but that should be good enough just to get through this)
+			disconnected = false
+			c.sock = newC.sock
+		}
+
 		// update the database with our final state
 		if dobury {
 			err = c.Bury(job, jes, failreason)
@@ -1225,7 +1265,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
-			<-time.After(time.Duration(retryNum*100) * time.Millisecond)
+			hadProblems = true
+			if !disconnected {
+				errd := c.Disconnect()
+				if errd == nil {
+					disconnected = true
+				}
+			}
+			<-time.After(ClientRetryWait)
 			continue
 		}
 		worked = true
@@ -1239,6 +1286,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			extra = fmt.Sprintf(" (and triggering behaviours failed: %s)", errt)
 		}
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %s%s", job.Cmd, err, extra)
+	}
+
+	if hadProblems {
+		if myerr != nil {
+			myerr = fmt.Errorf("%s; %s", myerr.Error(), ErrStopReserving)
+		} else {
+			myerr = Error{"Execute", job.Key(), ErrStopReserving}
+		}
 	}
 
 	return myerr
@@ -1343,6 +1398,7 @@ type JobEndState struct {
 	PeakRAM  int
 	PeakDisk int64
 	CPUtime  time.Duration
+	EndTime  time.Time
 	Stdout   []byte
 	Stderr   []byte
 	Exited   bool
@@ -1362,6 +1418,7 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
+	job.EndTime = jes.EndTime
 	if jes.Cwd != "" {
 		job.ActualCwd = jes.Cwd
 	}
@@ -1423,7 +1480,6 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	// update our process with what the server would have done
 	if job.Exited && job.Exitcode != 0 {
 		job.UntilBuried--
-		job.updateRecsAfterFailure()
 	}
 	if job.UntilBuried <= 0 {
 		job.State = JobStateBuried
@@ -1597,6 +1653,29 @@ func (c *Client) UploadFile(local, remote string) (string, error) {
 		return "", err
 	}
 	return resp.Path, err
+}
+
+// GetBadCloudServers (if the server is running with a cloud scheduler) returns
+// servers that are currently non-responsive and might be dead.
+func (c *Client) GetBadCloudServers() ([]*BadServer, error) {
+	resp, err := c.request(&clientRequest{Method: "getbcs"})
+	if err != nil {
+		return nil, err
+	}
+	return resp.BadServers, err
+}
+
+// ConfirmCloudServersDead will confirm that currently non-responsive cloud
+// servers (that would be returned by GetBadCloudServers()) are dead, triggering
+// their destruction. If id is an empty string, applies to all such servers. If
+// it is the ID of a server returned by GetBadCloudServers(), applies to just
+// that server. Returns the servers that were successfully confirmed dead.
+func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, error) {
+	resp, err := c.request(&clientRequest{Method: "getbcs", ConfirmDeadCloudServers: true, CloudServerID: id})
+	if err != nil {
+		return nil, err
+	}
+	return resp.BadServers, err
 }
 
 // request the server do something and get back its response. We can only cope

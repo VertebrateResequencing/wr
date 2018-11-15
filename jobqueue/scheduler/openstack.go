@@ -64,15 +64,22 @@ type opst struct {
 	reservedRAM       int
 	reservedVolume    int
 	servers           map[string]*cloud.Server
+	serversMutex      sync.RWMutex
 	standins          map[string]*standin
 	spawningNow       bool
 	waitingToSpawn    int
 	cmdToStandins     map[string]map[string]bool
 	standinToCmd      map[string]map[string]bool
 	updatingState     bool
+	stateMutex        sync.Mutex
 	cbmutex           sync.RWMutex
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
+	runMutex          sync.Mutex
+	stopRunning       bool
+	recoveredServers  map[string]bool
+	rsMutex           sync.Mutex
+	stopRSMonitoring  chan struct{}
 	log15.Logger
 }
 
@@ -128,11 +135,6 @@ type ConfigOpenStack struct {
 	// Requirements.Other["cloud_config_files"] value.)
 	ConfigFiles string
 
-	// ServerPorts are the TCP port numbers you need to be open for
-	// communication with any spawned servers. At a minimum you will need to
-	// specify []int{22}.
-	ServerPorts []int
-
 	// SavePath is an absolute path to a file on disk where details of any
 	// created resources can be read from and written to.
 	SavePath string
@@ -152,14 +154,43 @@ type ConfigOpenStack struct {
 	// same instance the manager is running on).
 	MaxInstances int
 
+	// MaxLocalCores is the maximum number of cores that can be used to run
+	// commands on the same instance the manager is running on. -1 (the default)
+	// means all cores can be used. 0 disables running commands on the manager's
+	// instance. To distinguish "not defined" from 0, the value is a reference
+	// to an int.
+	MaxLocalCores *int
+
+	// MaxLocalRAM is the maximum number of MB of memory that can be used to run
+	// commands on the same instance the manager is running on. -1 (the default)
+	// means all memory can be used. 0 disables running commands on the
+	// manager's instance. To distinguish "not defined" from 0, the value is a
+	// reference to an int.
+	MaxLocalRAM *int
+
 	// Shell is the shell to use to run your commands with; 'bash' is
 	// recommended.
 	Shell string
 
+	// ServerPorts are the TCP port numbers you need to be open for
+	// communication with any spawned servers. At a minimum you will need to
+	// specify []int{22}, unless the network you use has all ports open and does
+	// not support applying security groups to servers, in which case you must
+	// supply an empty slice.
+	ServerPorts []int
+
+	// UseConfigDrive, if set to true (default false), will cause all newly
+	// spawned servers to mount a configuration drive, which is typically needed
+	// for a network without DHCP.
+	UseConfigDrive bool
+
 	// CIDR describes the range of network ips that can be used to spawn
 	// OpenStack servers on which to run our commands. The default is
 	// "192.168.0.0/18", which allows for 16381 servers to be spawned. This
-	// range ends at 192.168.63.254.
+	// range ends at 192.168.63.254. If already in OpenStack, this chooses which
+	// existing network (that the current host is attached to) to use.
+	// Otherwise, this results in the creation of an appropriately configured
+	// network and subnet.
 	CIDR string
 
 	// GatewayIP is the gateway ip address for the subnet that will be created
@@ -179,6 +210,16 @@ func (c *ConfigOpenStack) AddConfigFile(configFile string) {
 	} else {
 		c.ConfigFiles += "," + configFile
 	}
+}
+
+// GetOSUser returns OSUser, to meet the CloudConfig interface.
+func (c *ConfigOpenStack) GetOSUser() string {
+	return c.OSUser
+}
+
+// GetServerKeepTime returns ServerKeepTime, to meet the CloudConfig interface.
+func (c *ConfigOpenStack) GetServerKeepTime() time.Duration {
+	return c.ServerKeepTime
 }
 
 // standin describes a server that we're in the middle of spawning (or intend to
@@ -399,6 +440,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 
 	err = provider.Deploy(&cloud.DeployConfig{
 		RequiredPorts:  s.config.ServerPorts,
+		UseConfigDrive: s.config.UseConfigDrive,
 		GatewayIP:      s.config.GatewayIP,
 		CIDR:           s.config.CIDR,
 		DNSNameServers: s.config.DNSNameServers,
@@ -454,6 +496,16 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	if err != nil {
 		return err
 	}
+	if s.config.MaxLocalCores != nil {
+		if *s.config.MaxLocalCores >= 0 && *s.config.MaxLocalCores < localhost.Flavor.Cores {
+			localhost.Flavor.Cores = *s.config.MaxLocalCores
+		}
+	}
+	if s.config.MaxLocalRAM != nil {
+		if *s.config.MaxLocalRAM >= 0 && *s.config.MaxLocalRAM < localhost.Flavor.RAM {
+			localhost.Flavor.RAM = *s.config.MaxLocalRAM
+		}
+	}
 	s.servers["localhost"] = localhost
 
 	// set our functions for use in schedule() and processQueue()
@@ -476,6 +528,9 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	s.standins = make(map[string]*standin)
 	s.cmdToStandins = make(map[string]map[string]bool)
 	s.standinToCmd = make(map[string]map[string]bool)
+
+	s.recoveredServers = make(map[string]bool)
+	s.stopRSMonitoring = make(chan struct{})
 
 	return err
 }
@@ -586,7 +641,9 @@ func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, 
 		sharedDisk = true
 
 		// create a shared disk on our "head" node (if not already done)
+		s.serversMutex.RLock()
 		err = s.servers["localhost"].CreateSharedDisk()
+		s.serversMutex.RUnlock()
 	}
 
 	return osPrefix, osScript, osConfigFiles, flavor, sharedDisk, err
@@ -623,12 +680,15 @@ func (s *opst) canCount(req *Requirements) int {
 	// the biggest object is first and the smallest last. Insert each object one
 	// by one in to the first bin that has room for it.”
 	var canCount int
+	s.serversMutex.RLock()
+	numServers := len(s.servers)
 	for _, server := range s.servers {
 		if !server.IsBad() && server.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) {
 			space := server.HasSpaceFor(req.Cores, req.RAM, req.Disk)
 			canCount += space
 		}
 	}
+	s.serversMutex.RUnlock()
 
 	// if a specific flavor was not requested, get the smallest server type that
 	// can run our job, so we can subsequently calculate how many we could spawn
@@ -657,13 +717,13 @@ func (s *opst) canCount(req *Requirements) int {
 	}
 	if remainingInstances > 0 && s.quotaMaxInstances > -1 && s.quotaMaxInstances < quota.MaxInstances {
 		// also check that the users configured max instances hasn't been breached
-		used := len(s.servers) + s.reservedInstances
+		used := numServers + s.reservedInstances
 		remaining := s.quotaMaxInstances - used
 		if remaining < remainingInstances {
 			remainingInstances = remaining
 		}
 		if remainingInstances < 1 {
-			s.Debug("instances over configured max", "remaining", remainingInstances, "configuredMax", s.quotaMaxInstances, "usedPersonally", len(s.servers), "reserved", s.reservedInstances)
+			s.Debug("instances over configured max", "remaining", remainingInstances, "configuredMax", s.quotaMaxInstances, "usedPersonally", numServers, "reserved", s.reservedInstances)
 		}
 	}
 	remainingRAM := unquotadVal
@@ -811,9 +871,10 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		logger.Debug("using requested flavor", "flavor", requestedFlavor.Name)
 	}
 
-	s.mutex.Lock()
-	if s.cleaned {
-		s.mutex.Unlock()
+	s.runMutex.Lock()
+
+	if s.stopRunning {
+		s.runMutex.Unlock()
 		reservedCh <- false
 		return nil
 	}
@@ -827,7 +888,9 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		thisDebugCount = debugCounter
 	}
 
-	logger.Debug("runCmd", "servers", len(s.servers), "standins", len(s.standins))
+	s.serversMutex.RLock()
+	numServers := len(s.servers)
+	localhost := s.servers["localhost"]
 
 	// look through space on existing servers to see if we can run cmd on one
 	// of them
@@ -841,6 +904,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			break
 		}
 	}
+	s.serversMutex.RUnlock()
 
 	// else see if there will be space on a soon-to-be-spawned server
 	if server == nil {
@@ -848,7 +912,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			if standinServer.matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && standinServer.hasSpaceFor(req) > 0 {
 				s.recordStandin(standinServer, cmd)
 				standinServer.allocate(req)
-				s.mutex.Unlock()
+				s.runMutex.Unlock()
 				logger = logger.New("standin", standinServer.id)
 				logger.Debug("using existing standin")
 				var errw error
@@ -858,7 +922,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 					reservedCh <- false
 					return errw
 				}
-				s.mutex.Lock()
+				s.runMutex.Lock()
 				logger = logger.New("server", server.ID)
 				logger.Debug("using server from standin")
 				break
@@ -873,10 +937,10 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		// still manage to get here without a server due to timing issues? Guard
 		// against proceeding if we'd spawn more servers than configured
 		if s.quotaMaxInstances > -1 {
-			numServers := len(s.servers) + len(s.standins)
-			if numServers >= s.quotaMaxInstances {
-				s.mutex.Unlock()
-				logger.Debug("over quota", "servers", numServers, "max", s.quotaMaxInstances)
+			numServersAndStandins := numServers + len(s.standins)
+			if numServersAndStandins >= s.quotaMaxInstances {
+				s.runMutex.Unlock()
+				logger.Debug("over quota", "servers", numServersAndStandins, "max", s.quotaMaxInstances)
 				reservedCh <- false
 				return errors.New("over quota")
 			}
@@ -887,7 +951,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			var errd error
 			flavor, errd = s.determineFlavor(s.reqForSpawn(req))
 			if errd != nil {
-				s.mutex.Unlock()
+				s.runMutex.Unlock()
 				s.notifyMessage(fmt.Sprintf("OpenStack: Was unable to determine a server flavor to use for requirements %s: %s", req.Stringify(), errd))
 				reservedCh <- false
 				return errd
@@ -920,7 +984,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		// another
 		if s.spawningNow || s.waitingToSpawn > 0 {
 			s.waitingToSpawn++
-			s.mutex.Unlock()
+			s.runMutex.Unlock()
 			done := make(chan error)
 			go func() {
 				for {
@@ -943,7 +1007,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 				s.resourceMutex.Unlock()
 				return err
 			}
-			s.mutex.Lock()
+			s.runMutex.Lock()
 			logger.Debug("using the standin after waiting")
 		} else {
 			s.spawningNow = true
@@ -960,14 +1024,14 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 		logger.Debug("will spawn")
 		if debugEffect == "slowSecondSpawn" && thisDebugCount == 3 {
-			s.mutex.Unlock()
+			s.runMutex.Unlock()
 			<-time.After(10 * time.Second)
-			s.mutex.Lock()
+			s.runMutex.Lock()
 		}
 
 		// unlock before spawning, since we don't want to block here waiting for
 		// that to complete
-		s.mutex.Unlock()
+		s.runMutex.Unlock()
 
 		// immediately after the spawn request goes through (and so presumably is
 		// using up quota), but before the new server powers up, drop our
@@ -996,7 +1060,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 		// spawn completed; if we have standins that are waiting to spawn, tell
 		// one of them to go ahead
-		s.mutex.Lock()
+		s.runMutex.Lock()
 		s.spawningNow = false
 		if s.waitingToSpawn > 0 {
 			for _, otherStandinServer := range s.standins {
@@ -1015,7 +1079,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 		// unlock again prior to waiting until the server is ready and trying to
 		// check and upload our exe, since that could take quite a long time
-		s.mutex.Unlock()
+		s.runMutex.Unlock()
 		logger.Debug("waiting for server ready")
 		if err == nil {
 			// wait until boot is finished, ssh is ready and osScript has
@@ -1023,7 +1087,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			err = server.WaitUntilReady(requestedConfigFiles, requestedScript)
 
 			if err == nil && needsSharedDisk {
-				err = server.MountSharedDisk(s.servers["localhost"].IP)
+				err = server.MountSharedDisk(localhost.IP)
 			}
 
 			if err == nil {
@@ -1066,7 +1130,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			}
 		}
 
-		s.mutex.Lock()
+		s.runMutex.Lock()
 
 		if debugEffect == "failFirstSpawn" && thisDebugCount == 1 {
 			err = errors.New("forced fail")
@@ -1081,20 +1145,22 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 				logger.Debug("server also failed to destroy", "err", errd)
 			}
 			standinServer.failed(fmt.Sprintf("New server failed to spawn correctly: %s", err))
-			s.mutex.Unlock()
+			s.runMutex.Unlock()
 			s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
 			return err
 		}
 
 		logger.Debug("server ready")
 
+		s.serversMutex.Lock()
 		s.servers[server.ID] = server
+		s.serversMutex.Unlock()
 		standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
 	} else {
 		reservedCh <- true
 	}
 
-	s.mutex.Unlock()
+	s.runMutex.Unlock()
 
 	// now we have a server, ssh over and run the cmd on it
 	if server.Name == "localhost" {
@@ -1127,7 +1193,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	// having run a command, this server is now available for another; signal a
 	// runCmd call that is waiting its turn to spawn a new server to give up
 	// waiting and potentially get scheduled on us instead
-	s.mutex.Lock()
+	s.runMutex.Lock()
 	server.Release(req.Cores, req.RAM, req.Disk)
 	if s.waitingToSpawn > 0 {
 		for _, otherStandinServer := range s.standins {
@@ -1139,13 +1205,16 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			}
 		}
 	}
-	s.mutex.Unlock()
+	s.runMutex.Unlock()
 
 	return err
 }
 
 // cancelRun fails standins for the given cmd. Only call when you have the lock!
 func (s *opst) cancelRun(cmd string, desiredCount int) {
+	s.runMutex.Lock()
+	defer s.runMutex.Unlock()
+
 	if lookup, existed := s.cmdToStandins[cmd]; existed {
 		numStandins := len(lookup)
 		cancelCount := numStandins - desiredCount
@@ -1174,10 +1243,11 @@ func (s *opst) cancelRun(cmd string, desiredCount int) {
 
 // stateUpdate checks all our servers are really alive.
 func (s *opst) stateUpdate() {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.stateMutex.Lock()
+	defer s.stateMutex.Unlock()
 
 	var servers []*cloud.Server
+	s.serversMutex.Lock()
 	for _, server := range s.servers {
 		if server.ID != "" {
 			if server.Destroyed() {
@@ -1187,8 +1257,9 @@ func (s *opst) stateUpdate() {
 			servers = append(servers, server)
 		}
 	}
+	s.serversMutex.Unlock()
 
-	if s.updatingState || s.cleaned {
+	if s.updatingState {
 		return
 	}
 	s.updatingState = true
@@ -1220,10 +1291,100 @@ func (s *opst) stateUpdate() {
 			}
 		}
 
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
+		s.stateMutex.Lock()
+		defer s.stateMutex.Unlock()
 		s.updatingState = false
 	}()
+}
+
+// recover achieves the aims of Recover(). Here we find the given host, and
+// start tracking it to know when it is no longer running any of the given cmds
+// for it, at which point we destroy it. If the supplied UserName for the host
+// is wrong, or we otherwise can't ssh to it, the host will be destroyed
+// immediately. NB: the host checking only works on machines with the 'pgrep'
+// command, such as linux etc.
+func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
+	server := s.provider.GetServerByName(host.Host)
+	if server == nil {
+		s.Warn("recover called for non-existent server", "host", host)
+		return nil
+	}
+
+	if host.TTD == 0 {
+		// we keep servers for ever, so no need to monitor it
+		return nil
+	}
+
+	server.UserName = host.UserName
+	if !server.Alive(true) {
+		s.Warn("recover called for server that is not alive (or username was wrong?)", "host", host.Host)
+		errd := server.Destroy()
+		if errd != nil {
+			s.Warn("recovered server destruction failed", "server", server.ID, "err", errd)
+		}
+		return nil
+	}
+
+	s.rsMutex.Lock()
+	defer s.rsMutex.Unlock()
+
+	if s.recoveredServers[host.Host] {
+		return nil
+	}
+
+	// *** we will only check against the first 2 words of cmd, which for our
+	// purposes of wr will be 'wr runner'. This lets us do a single check per
+	// server, and reduces possible issues with trying to get a process name
+	// match on a long, complex command line. However it might not work properly
+	// with the arbitrary commands that people could in theory schedule
+	cmdSplit := strings.Split(cmd, " ")
+	cmd = cmdSplit[0]
+	if len(cmdSplit) > 1 {
+		cmd += " " + cmdSplit[1]
+	}
+
+	go func() {
+		// periodically check on this server; when it is no longer running
+		// anything, destroy it
+		ticker := time.NewTicker(host.TTD)
+		for {
+			select {
+			case <-ticker.C:
+				active := true
+				_, _, errr := server.RunCmd("pgrep -f '"+cmd+"'", false)
+				if errr != nil {
+					// *** assume the error is because a process with cmd
+					// doesn't exist, not because prgrep failed for some other
+					// reason
+					active = false
+				}
+
+				if !active {
+					ticker.Stop()
+
+					errd := server.Destroy()
+					if errd != nil {
+						s.Warn("recovered server destruction failed", "server", server.ID, "err", errd)
+					} else {
+						s.Debug("recovered server was destroyed after going idle")
+					}
+
+					errp := s.processQueue()
+					if errp != nil {
+						s.Error("processQueue call after recovery failed", "err", errp)
+					}
+
+					return
+				}
+			case <-s.stopRSMonitoring:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	s.recoveredServers[host.Host] = true
+	return nil
 }
 
 // recordStandin stores some lookups for the given standin. Only call when you
@@ -1308,10 +1469,15 @@ func (s *opst) notifyBadServer(server *cloud.Server) {
 func (s *opst) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.runMutex.Lock()
+	defer s.runMutex.Unlock()
+	s.stateMutex.Lock()
+	defer s.stateMutex.Unlock()
 
 	// prevent any further scheduling and queue processing, and destroy the
 	// queue
 	s.cleaned = true
+	s.stopRunning = true
 	err := s.queue.Destroy()
 	if err != nil {
 		s.Warn("cleanup queue destruction failed", "err", err)
@@ -1325,20 +1491,21 @@ func (s *opst) cleanup() {
 		}
 	}
 	s.waitingToSpawn = 0
-	s.cmdToStandins = nil
-	s.standinToCmd = nil
+	s.cmdToStandins = make(map[string]map[string]bool)
+	s.standinToCmd = make(map[string]map[string]bool)
 
 	// wait for any ongoing state update to complete
 	for {
 		if !s.updatingState {
 			break
 		}
-		s.mutex.Unlock()
+		s.stateMutex.Unlock()
 		<-time.After(10 * time.Millisecond)
-		s.mutex.Lock()
+		s.stateMutex.Lock()
 	}
 
 	// bring down all our servers
+	close(s.stopRSMonitoring)
 	for sid, server := range s.servers {
 		if sid == "localhost" {
 			continue

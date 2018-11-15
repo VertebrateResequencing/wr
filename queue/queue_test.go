@@ -50,7 +50,10 @@ func TestQueue(t *testing.T) {
 				for i := 0; i < 10; i++ {
 					key := fmt.Sprintf("key_%d", i)
 					t := time.Duration((i+1)*100) * time.Millisecond
-					queue.Add(key, "", "data", 0, t, 0*time.Millisecond)
+					_, erra := queue.Add(key, "", "data", 0, t, 0*time.Millisecond, "")
+					if erra != nil {
+						done <- false
+					}
 				}
 				queue.Destroy()
 			}
@@ -71,7 +74,10 @@ func TestQueue(t *testing.T) {
 				for i := 0; i < 10; i++ {
 					key := fmt.Sprintf("key_%d", i)
 					t := time.Duration((i+1)*100) * time.Millisecond
-					queue.Add(key, "", "data", 0, 0*time.Millisecond, t)
+					_, erra := queue.Add(key, "", "data", 0, 0*time.Millisecond, t, "")
+					if erra != nil {
+						done <- false
+					}
 				}
 				for i := 0; i < 10; i++ {
 					queue.Reserve()
@@ -182,7 +188,7 @@ func TestQueue(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			t := time.Duration((i+1)*100) * time.Millisecond
-			item, err := queue.Add(key, "", "data", 0, t, t)
+			item, err := queue.Add(key, "", "data", 0, t, t, "")
 			So(err, ShouldBeNil)
 			items[key] = item
 		}
@@ -221,7 +227,7 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("You can't add the same item again", func() {
-			item, err := queue.Add("key_0", "", "data new", 0, 100*time.Millisecond, 100*time.Millisecond)
+			item, err := queue.Add("key_0", "", "data new", 0, 100*time.Millisecond, 100*time.Millisecond, "")
 			qerr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
 			So(qerr.Err, ShouldEqual, ErrAlreadyExists)
@@ -582,8 +588,10 @@ func TestQueue(t *testing.T) {
 				Convey("Touching doesn't mess with the correct queue order", func() {
 					queue = New("new queue")
 					defer queue.Destroy()
-					queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond)
-					queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond)
+					_, erra := queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond, "")
+					So(erra, ShouldBeNil)
+					_, erra = queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond, "")
+					So(erra, ShouldBeNil)
 					<-time.After(1 * time.Millisecond)
 					item1, _ := queue.Reserve()
 					So(item1.Key, ShouldEqual, "item1")
@@ -617,7 +625,7 @@ func TestQueue(t *testing.T) {
 					So(stats.Running, ShouldEqual, 0)
 					So(stats.Buried, ShouldEqual, 0)
 
-					_, err = queue.Add("fake", "", "data", 0, 0*time.Second, 0*time.Second)
+					_, err = queue.Add("fake", "", "data", 0, 0*time.Second, 0*time.Second, "")
 					So(err, ShouldNotBeNil)
 					qerr, ok := err.(Error)
 					So(ok, ShouldBeTrue)
@@ -754,7 +762,7 @@ func TestQueue(t *testing.T) {
 	Convey("Once an item been added to the queue", t, func() {
 		queue := New("myqueue")
 		defer queue.Destroy()
-		item, _ := queue.Add("item1", "", "data", 0, 50*time.Millisecond, 50*time.Millisecond)
+		item, _ := queue.Add("item1", "", "data", 0, 50*time.Millisecond, 50*time.Millisecond, "")
 
 		Convey("It can be removed from the queue immediately prior to it getting switched to the ready queue", func() {
 			<-time.After(49 * time.Millisecond)
@@ -882,6 +890,35 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
+	Convey("You can add items to the queue that start in the run or bury sub-queues", t, func() {
+		queue := New("run/bury queue")
+		defer func() {
+			errd := queue.Destroy()
+			So(errd, ShouldBeNil)
+		}()
+
+		_, err := queue.Add("key_run", "", "data", 0, 100*time.Millisecond, 100*time.Millisecond, SubQueueRun)
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key_bury", "", "data", 0, 100*time.Millisecond, 100*time.Millisecond, SubQueueBury)
+		So(err, ShouldBeNil)
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 2)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 0)
+		So(stats.Running, ShouldEqual, 1)
+		So(stats.Buried, ShouldEqual, 1)
+
+		<-time.After(110 * time.Millisecond)
+
+		stats = queue.Stats()
+		So(stats.Items, ShouldEqual, 2)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 1)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 1)
+	})
+
 	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
 		queue := New("1000 queue")
 		defer queue.Destroy()
@@ -891,7 +928,7 @@ func TestQueue(t *testing.T) {
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
-			_, err := queue.Add(key, "", &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second)
+			_, err := queue.Add(key, "", &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second, "")
 			So(err, ShouldBeNil)
 		}
 
@@ -968,7 +1005,7 @@ func TestQueue(t *testing.T) {
 			key := fmt.Sprintf("key_%d", i)
 			dataid := rand.Intn(999)
 			dataids = append(dataids, dataid)
-			_, err := queue.Add(key, fmt.Sprintf("%d", dataid), &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second)
+			_, err := queue.Add(key, fmt.Sprintf("%d", dataid), &testdata{ID: dataid}, 0, 0*time.Second, 30*time.Second, "")
 			So(err, ShouldBeNil)
 		}
 
@@ -1020,7 +1057,7 @@ func TestQueue(t *testing.T) {
 		t := time.Now()
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			_, err := queue.Add(key, "", "data", 0, 100*time.Millisecond, 30*time.Second)
+			_, err := queue.Add(key, "", "data", 0, 100*time.Millisecond, 30*time.Second, "")
 			So(err, ShouldBeNil)
 		}
 		e := time.Since(t)
@@ -1124,25 +1161,74 @@ func TestQueue(t *testing.T) {
 		})
 	})
 
+	Convey("You can add many items to the queue that start in the run or bury sub-queues, all in one go", t, func() {
+		queue := New("run/bury queue")
+		defer func() {
+			errd := queue.Destroy()
+			So(errd, ShouldBeNil)
+		}()
+
+		queues := []SubQueue{SubQueueRun, SubQueueBury}
+		var itemdefs []*ItemDef
+		for i := 0; i < 10; i++ {
+			for _, subQueue := range queues {
+				itemdefs = append(itemdefs, &ItemDef{
+					Key:        fmt.Sprintf("key_%d_%s", i, subQueue),
+					Data:       "data",
+					Priority:   0,
+					Delay:      100 * time.Millisecond,
+					TTR:        100 * time.Millisecond,
+					StartQueue: subQueue,
+				})
+			}
+		}
+
+		added, dups, err := queue.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 20)
+		So(dups, ShouldEqual, 0)
+
+		added, dups, err = queue.AddMany(itemdefs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 0)
+		So(dups, ShouldEqual, 20)
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 20)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 0)
+		So(stats.Running, ShouldEqual, 10)
+		So(stats.Buried, ShouldEqual, 10)
+
+		<-time.After(110 * time.Millisecond)
+
+		stats = queue.Stats()
+		So(stats.Items, ShouldEqual, 20)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 10)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 10)
+	})
+
 	Convey("Once some items with dependencies have been added to the queue", t, func() {
 		// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
 		queue := New("dep queue")
 		defer queue.Destroy()
-		_, err := queue.Add("key_1", "", "1", 0, 0*time.Second, 30*time.Second)
+		_, err := queue.Add("key_1", "", "1", 0, 0*time.Second, 30*time.Second, "")
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_2", "", "2", 0, 0*time.Second, 30*time.Second)
+		_, err = queue.Add("key_2", "", "2", 0, 0*time.Second, 30*time.Second, "")
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_3", "", "3", 0, 0*time.Second, 30*time.Second)
+		_, err = queue.Add("key_3", "", "3", 0, 0*time.Second, 30*time.Second, "")
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_4", "", "4", 0, 0*time.Second, 30*time.Second, []string{"key_1"})
+		_, err = queue.Add("key_4", "", "4", 0, 0*time.Second, 30*time.Second, "", []string{"key_1"})
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_5", "five", "5", 0, 0*time.Second, 30*time.Second, []string{"key_1", "key_2", "key_3"})
+		_, err = queue.Add("key_5", "five", "5", 0, 0*time.Second, 30*time.Second, "", []string{"key_1", "key_2", "key_3"})
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_6", "", "6", 0, 0*time.Second, 30*time.Second, []string{"key_3", "key_4"})
+		_, err = queue.Add("key_6", "", "6", 0, 0*time.Second, 30*time.Second, "", []string{"key_3", "key_4"})
 		So(err, ShouldBeNil)
-		fivesixdep, err := queue.Add("key_7", "", "7", 0, 0*time.Second, 30*time.Second, []string{"key_5", "key_6"})
+		fivesixdep, err := queue.Add("key_7", "", "7", 0, 0*time.Second, 30*time.Second, "", []string{"key_5", "key_6"})
 		So(err, ShouldBeNil)
-		_, err = queue.Add("key_8", "", "8", 0, 0*time.Second, 30*time.Second, []string{"key_5"})
+		_, err = queue.Add("key_8", "", "8", 0, 0*time.Second, 30*time.Second, "", []string{"key_5"})
 		So(err, ShouldBeNil)
 
 		So(fivesixdep.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
@@ -1290,11 +1376,11 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("You can add dependencies on non-exist items and resolve them later", func() {
-			ten, err := queue.Add("key_10", "", "10", 0, 0*time.Second, 30*time.Second, []string{"key_9"})
+			ten, err := queue.Add("key_10", "", "10", 0, 0*time.Second, 30*time.Second, "", []string{"key_9"})
 			So(err, ShouldBeNil)
 			So(ten.Stats().State, ShouldEqual, ItemStateDependent)
 
-			_, err = queue.Add("key_9", "", "9", 0, 0*time.Second, 30*time.Second, []string{})
+			_, err = queue.Add("key_9", "", "9", 0, 0*time.Second, 30*time.Second, "", []string{})
 			So(err, ShouldBeNil)
 			So(ten.Stats().State, ShouldEqual, ItemStateDependent)
 
@@ -1322,12 +1408,12 @@ func TestQueue(t *testing.T) {
 			Data: "2",
 			TTR:  30 * time.Second,
 		})
-		itemdefs = append(itemdefs, &ItemDef{"key_3", "", "3", 0, 0 * time.Second, 30 * time.Second, []string{}})
-		itemdefs = append(itemdefs, &ItemDef{"key_4", "", "4", 0, 0 * time.Second, 30 * time.Second, []string{"key_1"}})
-		itemdefs = append(itemdefs, &ItemDef{"key_5", "", "5", 0, 0 * time.Second, 30 * time.Second, []string{"key_2", "key_3"}})
-		itemdefs = append(itemdefs, &ItemDef{"key_6", "", "6", 0, 0 * time.Second, 30 * time.Second, []string{"key_3", "key_4"}})
-		itemdefs = append(itemdefs, &ItemDef{"key_7", "", "7", 0, 0 * time.Second, 30 * time.Second, []string{"key_5", "key_6"}})
-		itemdefs = append(itemdefs, &ItemDef{"key_8", "", "8", 0, 0 * time.Second, 30 * time.Second, []string{"key_5"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_3", "", "3", 0, 0 * time.Second, 30 * time.Second, "", []string{}})
+		itemdefs = append(itemdefs, &ItemDef{"key_4", "", "4", 0, 0 * time.Second, 30 * time.Second, "", []string{"key_1"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_5", "", "5", 0, 0 * time.Second, 30 * time.Second, "", []string{"key_2", "key_3"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_6", "", "6", 0, 0 * time.Second, 30 * time.Second, "", []string{"key_3", "key_4"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_7", "", "7", 0, 0 * time.Second, 30 * time.Second, "", []string{"key_5", "key_6"}})
+		itemdefs = append(itemdefs, &ItemDef{"key_8", "", "8", 0, 0 * time.Second, 30 * time.Second, "", []string{"key_5"}})
 
 		added, dups, err := queue.AddMany(itemdefs)
 		So(err, ShouldBeNil)
@@ -1358,7 +1444,7 @@ func TestQueue(t *testing.T) {
 
 		for i := 0; i < 10; i++ {
 			key := fmt.Sprintf("key_%d", i)
-			_, err := queue.Add(key, "", "data", 0, 0*time.Millisecond, 10*time.Millisecond)
+			_, err := queue.Add(key, "", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
 			So(err, ShouldBeNil)
 			if i == 0 {
 				time.Sleep(5 * time.Millisecond)

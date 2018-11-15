@@ -322,7 +322,10 @@ other than providing compatibility with real bjobs command line args.`,
 			if !found {
 				if !lsfNoHeader {
 					// print header
-					fmt.Fprintln(w, strings.Join(fields, delimiter))
+					_, errp := fmt.Fprintln(w, strings.Join(fields, delimiter))
+					if errp != nil {
+						warn("failed to print header: %s", errp)
+					}
 				}
 				found = true
 			}
@@ -331,7 +334,10 @@ other than providing compatibility with real bjobs command line args.`,
 			for _, field := range fields {
 				vals = append(vals, fieldLookup[field](job))
 			}
-			fmt.Fprintln(w, strings.Join(vals, delimiter))
+			_, errp := fmt.Fprintln(w, strings.Join(vals, delimiter))
+			if errp != nil {
+				warn("failed to print line: %s", errp)
+			}
 		}
 
 		if lsfFormat == "" {
@@ -444,7 +450,7 @@ func init() {
 
 	goflag.BoolVar(&lsfNoHeader, "noheader", false, "disable header output")
 	if err := goflag.CommandLine.Parse(lsfArgs); err != nil {
-		die("error parsing LSF args: ", err)
+		die("error parsing LSF args: %s", err)
 	}
 
 	RootCmd.AddCommand(lsfCmd)

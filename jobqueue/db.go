@@ -618,16 +618,41 @@ func (db *db) deleteLiveJob(key string) {
 	//*** we're not removing the lookup entries from the bucket*TK buckets...
 }
 
+// deleteLiveJobs remove multiple jobs from the live bucket.
+func (db *db) deleteLiveJobs(keys []string) error {
+	err := db.bolt.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJobsLive)
+		for _, key := range keys {
+			errd := b.Delete([]byte(key))
+			if errd != nil {
+				return errd
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	db.backgroundBackup()
+	//*** we're not removing the lookup entries from the bucket*TK buckets...
+
+	return nil
+}
+
 // recoverIncompleteJobs returns all jobs in the live bucket, for use when
 // restarting the server, allowing you start working on any jobs that were
-// stored with storeNewJobs() but not yet archived with archiveJob(). Note that
-// any state changes to the Jobs that may have occurred will be lost: you get
-// back the Jobs exactly as they were when you put them in with storeNewJobs().
+// stored with storeNewJobs() but not yet archived with archiveJob().
+//
+// Note that you will get back the job as it was in its last recorded state.
+// The state is recorded when a job starts to run, when it exits, and when it
+// is kicked.
 func (db *db) recoverIncompleteJobs() ([]*Job, error) {
 	var jobs []*Job
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketJobsLive)
-		return b.ForEach(func(_, encoded []byte) error {
+		return b.ForEach(func(key, encoded []byte) error {
 			if encoded != nil {
 				dec := codec.NewDecoderBytes(encoded, db.ch)
 				job := &Job{}
@@ -836,20 +861,26 @@ func (db *db) retrieveEnv(envkey string) []byte {
 }
 
 // updateJobAfterExit stores the Job's peak RAM usage and wall time against the
-// Job's ReqGroup, allowing recommendedReqGroup*(ReqGroup) to work. It also
-// updates the stdout/err associated with a job.
+// Job's ReqGroup, but only if the job failed for using too much RAM or time,
+// allowing recommendedReqGroup*(ReqGroup) to work.
 //
-// We don't want to store these in the job, since that would waste a lot of the
-// queue's memory; we store in db instead, and only retrieve when a client needs
-// to see these. To stop the db file becoming enormous, we only store these if
-// the cmd failed (or if forceStorage is true: used when the job got buried) and
-// also delete these from db when the cmd completes successfully.
+// So that state can be restored if the server crashes and is restarted, the
+// job is rewritten in its current state in to the live bucket.
+//
+// It also updates the stdout/err associated with a job. We don't want to store
+// these in the job, since that would waste a lot of the queue's memory; we
+// store in db instead, and only retrieve when a client needs to see these. To
+// stop the db file becoming enormous, we only store these if the cmd failed (or
+// if forceStorage is true: used when the job got buried) and also delete these
+// from db when the cmd completes successfully.
 //
 // By doing the deletion upfront, we also ensure we have the latest std, which
 // may be nil even on cmd failure. Since it is not critical to the running of
 // jobs and workflows that this works 100% of the time, we ignore errors and
 // write to bolt in a goroutine, giving us a significant speed boost.
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorage bool) {
+	var encoded []byte
+	enc := codec.NewEncoderBytes(&encoded, db.ch)
 	db.RLock()
 	defer db.RUnlock()
 	if db.closed {
@@ -862,7 +893,13 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	jpr := job.PeakRAM
 	jpd := job.PeakDisk
 	jec := job.Exitcode
+	err := enc.Encode(job)
 	job.RUnlock()
+	if err != nil {
+		db.Error("Database operation updateJobAfterExit failed due to Encode failure", "err", err)
+		return
+	}
+
 	db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterExit", true)
@@ -872,10 +909,17 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 		db.updatingAfterJobExit++
 		db.Unlock()
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
+			key := []byte(jobkey)
+
+			bjl := tx.Bucket(bucketJobsLive)
+			errf := bjl.Put(key, encoded)
+			if errf != nil {
+				return errf
+			}
+
 			bo := tx.Bucket(bucketStdO)
 			be := tx.Bucket(bucketStdE)
-			key := []byte(jobkey)
-			errf := bo.Delete(key)
+			errf = bo.Delete(key)
 			if errf != nil {
 				return errf
 			}
@@ -896,18 +940,18 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 				return errf
 			}
 
-			b := tx.Bucket(bucketJobRAM)
-			errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpr)), []byte(strconv.Itoa(jpr)))
-			if errf != nil {
-				return errf
+			switch job.FailReason {
+			case FailReasonRAM:
+				b := tx.Bucket(bucketJobRAM)
+				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpr)), []byte(strconv.Itoa(jpr)))
+			case FailReasonDisk:
+				b := tx.Bucket(bucketJobDisk)
+				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpd)), []byte(strconv.Itoa(int(jpd))))
+			case FailReasonTime:
+				b := tx.Bucket(bucketJobSecs)
+				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
 			}
-			b = tx.Bucket(bucketJobDisk)
-			errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpd)), []byte(strconv.Itoa(int(jpd))))
-			if errf != nil {
-				return errf
-			}
-			b = tx.Bucket(bucketJobSecs)
-			return b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, secs)), []byte(strconv.Itoa(secs)))
+			return errf
 		})
 		if err != nil {
 			db.Error("Database operation updateJobAfterExit failed", "err", err)
@@ -915,6 +959,43 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 		db.Lock()
 		db.updatingAfterJobExit--
 		db.Unlock()
+	}()
+}
+
+// updateJobAfterChange rewrites the job's entry in the live bucket, to enable
+// complete recovery after a crash. This happens in a goroutine, since it isn't
+// essential this happens, and we benefit from the speed.
+func (db *db) updateJobAfterChange(job *Job) {
+	var encoded []byte
+	enc := codec.NewEncoderBytes(&encoded, db.ch)
+	db.RLock()
+	defer db.RUnlock()
+	if db.closed {
+		return
+	}
+	key := []byte(job.Key())
+	job.RLock()
+	err := enc.Encode(job)
+	job.RUnlock()
+	if err != nil {
+		db.Error("Database operation updateJobAfterChange failed due to Encode failure", "err", err)
+		return
+	}
+
+	db.wg.Add(1)
+	go func() {
+		defer internal.LogPanic(db.Logger, "updateJobAfterChange", true)
+		defer db.wg.Done()
+
+		err := db.bolt.Batch(func(tx *bolt.Tx) error {
+			bjl := tx.Bucket(bucketJobsLive)
+			return bjl.Put(key, encoded)
+		})
+		if err != nil {
+			db.Error("Database operation updateJobAfterChange failed", "err", err)
+			return
+		}
+		db.backgroundBackup()
 	}()
 }
 
@@ -1033,6 +1114,10 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 
 	if max-recommendation < roundAmount {
 		recommendation = max
+	}
+
+	if recommendation < roundAmount {
+		recommendation = roundAmount
 	}
 
 	if recommendation%roundAmount > 0 {

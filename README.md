@@ -22,9 +22,12 @@ dependencies enabling easy automation of on-going projects.
 
 Furthermore, wr has best-in-class support for OpenStack, providing incredibly
 easy deployment and auto-scaling without you having to know anything about
-OpenStack. And it has built-in support for mounting S3-like object stores,
-providing an easy way of running commands against remote files whilst enjoying
-[high performance](https://github.com/VertebrateResequencing/muxfys).
+OpenStack. For use in clouds such as AWS, GCP and others, wr also has the
+built-in ability to self-deploy to any Kubernetes cluster. And it has built-in
+support for mounting S3-like object stores, providing an easy way of running
+commands against remote files whilst enjoying [high
+performance](https://github.com/VertebrateResequencing/muxfys).
+
 
 ***Current Status***
 
@@ -41,35 +44,28 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.10 of go is required):
+Alternatively, build it yourself (at least v1.11 of go is required):
 
-1. Install go on your machine and setup the environment according to:
+1. Install go on your machine according to:
 [golang.org/doc/install](https://golang.org/doc/install)
-(make sure to set your `$GOPATH`). An example way of setting up a personal Go
-installation in your home directory would be:
+An example way of setting up a personal Go installation in your home directory
+would be:
 
-        wget "https://dl.google.com/go/go1.10.3.linux-amd64.tar.gz"
-        tar -xvzf go1.10.3.linux-amd64.tar.gz && rm go1.10.3.linux-amd64.tar.gz
-        export GOROOT=$HOME/go
-        export PATH=$PATH:$GOROOT/bin
-        mkdir work
-        export GOPATH=$HOME/work
-        mkdir $GOPATH/bin
-        export PATH=$GOPATH/bin:$PATH
+        wget https://dl.google.com/go/go1.11.1.linux-amd64.tar.gz
+        tar -xvzf go1.11.1.linux-amd64.tar.gz && rm go1.11.1.linux-amd64.tar.gz
+        export PATH=$PATH:$HOME/go/bin
 
-2. Download, compile, and install wr:
+2. Download, compile, and install wr (not inside $GOPATH, if you set that):
 
-        go get -u -d -tags netgo github.com/VertebrateResequencing/wr
-        cd $GOPATH/src/github.com/VertebrateResequencing/wr
+        git clone https://github.com/VertebrateResequencing/wr.git
+        cd wr
         make
 
-3. The `wr` executable should now be in `$GOPATH/bin`
+3. The `wr` executable should now be in `$HOME/go/bin`
 
 If you don't have `make` installed and don't mind if `wr version` will not work,
 you can instead replace `make` above with:
 
-    curl -s https://glide.sh/get | sh
-    $GOPATH/bin/glide install
     go install -tags netgo
 
 Usage instructions
@@ -127,6 +123,13 @@ to:
 
 This way, you don't have to directly interact with OpenStack at all, or even
 know how it works.
+
+For usage in a Kubernetes cluster, you can similarly:
+
+* wr k8s deploy [options]
+* wr add [options]
+* [view status on the web interface]
+* wr k8s teardown
 
 If you have any problems getting things to start up, check out the
 [wiki](https://github.com/VertebrateResequencing/wr/wiki) for additional

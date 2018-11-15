@@ -42,6 +42,7 @@ type jstatusReq struct {
 	// kill = kill running jobs or confirm lost jobs are dead.
 	// confirmBadServer = confirm that the server with ID ServerID is bad.
 	// dismissMsg = dismiss the given Msg.
+	// dismissMsgs = dismiss all scheduler messages.
 	Request string
 
 	// sending Key means "give me detailed info about this single job", and
@@ -122,7 +123,7 @@ func webInterfaceStatic(s *Server) http.HandlerFunc {
 
 		// during development, to avoid having to rebuild and restart manager on
 		// every change to a file in static dir, do:
-		// $ esc -pkg jobqueue -prefix $GOPATH/src/github.com/VertebrateResequencing/wr/static -private -o jobqueue/static.go $GOPATH/src/github.com/VertebrateResequencing/wr/static
+		// $ esc -pkg jobqueue -prefix $PWD/static -private -o jobqueue/static.go $PWD/static
 		// and set the boolean to true. Don't forget to rerun esc without the abs
 		// paths and change the boolean back to false before any commit!
 		doc, err := _escFSByte(false, path)
@@ -356,6 +357,10 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							delete(s.schedIssues, req.Msg)
 							s.simutex.Unlock()
 						}
+					case "dismissMsgs":
+						s.simutex.Lock()
+						s.schedIssues = make(map[string]*schedulerIssue)
+						s.simutex.Unlock()
 					default:
 						continue
 					}
