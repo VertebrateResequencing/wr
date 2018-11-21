@@ -423,7 +423,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 	}
 
 	for _, details := range sdetails {
-		p.servers[(details[2])] = &Server{
+		p.servers[nameToHostName(details[2])] = &Server{
 			ID:           details[0],
 			Name:         details[2],
 			IP:           details[1],
