@@ -337,7 +337,7 @@ func New(name string, resourceName string, savePath string, logger ...log15.Logg
 
 	p.servers = make(map[string]*Server)
 	for _, server := range p.resources.Servers {
-		p.servers[server.Name] = server
+		p.servers[nameToHostName(server.Name)] = server
 	}
 
 	var missingEnv []string
@@ -423,7 +423,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 	}
 
 	for _, details := range sdetails {
-		p.servers[details[2]] = &Server{
+		p.servers[(details[2])] = &Server{
 			ID:           details[0],
 			Name:         details[2],
 			IP:           details[1],
@@ -597,7 +597,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	p.Lock()
-	p.servers[serverName] = server
+	p.servers[nameToHostName(serverName)] = server
 
 	if err == nil && externalIP {
 		// if this is the first server created, note it is the "head node"
@@ -766,8 +766,8 @@ func (p *Provider) Servers() map[string]*Server {
 	return p.resources.Servers
 }
 
-// GetServerByName returns the Server with the given name, which corresponds to
-// its hostname. Returns nil if we did not spawn a server with that name.
+// GetServerByName returns the Server with the given hostname. Returns nil if we
+// did not spawn a server with that hostname.
 func (p *Provider) GetServerByName(name string) *Server {
 	p.RLock()
 	defer p.RUnlock()
