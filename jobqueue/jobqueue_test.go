@@ -3346,6 +3346,107 @@ func TestJobqueueRunners(t *testing.T) {
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
 
+		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 1", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "fallocate"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// run the first job by itself, so learning occurs (even when disk
+			// is 0 and override is 2)
+			waitToFinish := func() bool {
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(10 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				return <-done
+			}
+
+			waitToFinish()
+			complete, errj := jq.GetByRepGroup("fallocate", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldResemble, zeroReq)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			// add 3 similar jobs that only really differ in override behaviour
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 2", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(0), RepGroup: "learns"})
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 3", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "learnsDiskNotMem"})
+			// following is the main test: specifying Disk of 0 and override 2
+			// should result in 0 overriding learned value, even though its a
+			// zero value, if DiskSet is true
+			notOverrideReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0, Disk: 0}
+			overrideReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0, Disk: 0, DiskSet: true}
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 4", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: notOverrideReq, Retries: uint8(0), Override: uint8(2), RepGroup: "learnsDiskNotMem2"})
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 5", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: overrideReq, Retries: uint8(0), Override: uint8(2), RepGroup: "nolearning"})
+
+			inserts, already, err = jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 4)
+			So(already, ShouldEqual, 1)
+
+			waitToFinish()
+
+			complete, errj = jq.GetByRepGroup("learns", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldNotResemble, zeroReq)
+			So(complete[0].Requirements.Disk, ShouldEqual, 1)
+			So(complete[0].Requirements.RAM, ShouldEqual, 100)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			complete, errj = jq.GetByRepGroup("learnsDiskNotMem", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldNotResemble, zeroReq)
+			So(complete[0].Requirements.Disk, ShouldEqual, 1)
+			So(complete[0].Requirements.RAM, ShouldEqual, 1)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			complete, errj = jq.GetByRepGroup("learnsDiskNotMem2", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldNotResemble, zeroReq)
+			So(complete[0].Requirements.Disk, ShouldEqual, 1)
+			So(complete[0].Requirements.RAM, ShouldEqual, 1)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			complete, errj = jq.GetByRepGroup("nolearning", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldResemble, overrideReq)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+		})
+
 		Convey("You can connect, and add a job that you can kill while it's running", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
