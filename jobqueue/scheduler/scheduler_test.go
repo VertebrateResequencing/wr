@@ -55,8 +55,8 @@ func TestLocal(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, otherReqs}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
+		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, true, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, true, otherReqs}
 
 		Convey("ReserveTimeout() returns 1 second", func() {
 			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
@@ -247,11 +247,11 @@ func TestLocal(t *testing.T) {
 				defer os.RemoveAll(bigTmpdir)
 
 				blockCmd := "sleep 0.25"
-				blockReq := &Requirements{1, 1 * time.Second, float64(maxCPU), 0, otherReqs}
+				blockReq := &Requirements{1, 1 * time.Second, float64(maxCPU), 0, true, otherReqs}
 				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
-				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
+				smallReq := &Requirements{1, 1 * time.Second, 1, 0, true, otherReqs}
 				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
-				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU - 1), 0, otherReqs}
+				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU - 1), 0, true, otherReqs}
 
 				// schedule 2 big cmds and then a small one to prove the small
 				// one fits the gap and runs before the second big one
@@ -328,7 +328,7 @@ func TestLocal(t *testing.T) {
 			}
 
 			cmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.5", tmpDir)
-			sleepReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs}
+			sleepReq := &Requirements{1, 1 * time.Second, 1, 0, true, otherReqs}
 
 			err = s.Schedule(cmd, sleepReq, 2)
 			So(err, ShouldBeNil)
@@ -374,8 +374,8 @@ func TestLSF(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, true, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, true, otherReqs}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
@@ -390,30 +390,30 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, true, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs}, 10)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, true, otherReqs}, 10)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "yesterday")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, true, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal") // used to be "test" before our memory limits were removed from all queues
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, true, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, otherReqs}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, true, otherReqs}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}).Minutes(), ShouldEqual, 4320)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, true, otherReqs}).Minutes(), ShouldEqual, 4320)
 			})
 		}
 
@@ -571,8 +571,8 @@ func TestOpenstack(t *testing.T) {
 		defer s.Cleanup()
 		oss := s.impl.(*opst)
 
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs}
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, true, otherReqs}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, true, otherReqs}
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
 		})
@@ -591,7 +591,7 @@ func TestOpenstack(t *testing.T) {
 					So(flavor.Disk, ShouldEqual, 8)
 					So(flavor.Cores, ShouldEqual, 1)
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2000") // we now ignore the 20GB disk requirement
 
@@ -600,53 +600,53 @@ func TestOpenstack(t *testing.T) {
 					So(flavor.ID, ShouldEqual, "2001")
 					So(flavor.RAM, ShouldEqual, 4096)
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2001")
 					So(flavor.RAM, ShouldEqual, 4096)
 					So(flavor.Disk, ShouldEqual, 12)
 					So(flavor.Cores, ShouldEqual, 2)
 
-					flavor, err = oss.determineFlavor(&Requirements{5000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{5000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2002")
 					So(flavor.RAM, ShouldEqual, 16384)
 					So(flavor.Disk, ShouldEqual, 20)
 					So(flavor.Cores, ShouldEqual, 4)
 
-					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2003")
 					So(flavor.RAM, ShouldEqual, 65536)
 					So(flavor.Disk, ShouldEqual, 20)
 					So(flavor.Cores, ShouldEqual, 8)
 
-					flavor, err = oss.determineFlavor(&Requirements{66000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{66000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2004")
 					So(flavor.RAM, ShouldEqual, 122880)
 					So(flavor.Disk, ShouldEqual, 128)
 					So(flavor.Cores, ShouldEqual, 16)
 
-					flavor, err = oss.determineFlavor(&Requirements{261000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{261000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2005")
 					So(flavor.RAM, ShouldEqual, 262144)
 					So(flavor.Disk, ShouldEqual, 128)
 					So(flavor.Cores, ShouldEqual, 52)
 
-					flavor, err = oss.determineFlavor(&Requirements{263000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{263000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2006")
 					So(flavor.RAM, ShouldEqual, 496640)
 					So(flavor.Disk, ShouldEqual, 128)
 					So(flavor.Cores, ShouldEqual, 56)
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2002")
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2003")
 				} else {
@@ -656,7 +656,7 @@ func TestOpenstack(t *testing.T) {
 					So(flavor.Disk, ShouldEqual, 15)
 					So(flavor.Cores, ShouldEqual, 1)
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 1, 20, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2000")
 
@@ -664,39 +664,39 @@ func TestOpenstack(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2000")
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 2, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2001")
 					So(flavor.RAM, ShouldEqual, 17200)
 					So(flavor.Disk, ShouldEqual, 31)
 					So(flavor.Cores, ShouldEqual, 2)
 
-					flavor, err = oss.determineFlavor(&Requirements{30000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{30000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2002")
 					So(flavor.RAM, ShouldEqual, 34400)
 					So(flavor.Disk, ShouldEqual, 62)
 					So(flavor.Cores, ShouldEqual, 4)
 
-					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{64000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2003")
 					So(flavor.RAM, ShouldEqual, 68800)
 					So(flavor.Disk, ShouldEqual, 125)
 					So(flavor.Cores, ShouldEqual, 8)
 
-					flavor, err = oss.determineFlavor(&Requirements{120000, 1 * time.Minute, 1, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{120000, 1 * time.Minute, 1, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2004")
 					So(flavor.RAM, ShouldEqual, 137600)
 					So(flavor.Disk, ShouldEqual, 250)
 					So(flavor.Cores, ShouldEqual, 16)
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 3, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2002")
 
-					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, otherReqs})
+					flavor, err = oss.determineFlavor(&Requirements{100, 1 * time.Minute, 5, 1, true, otherReqs})
 					So(err, ShouldBeNil)
 					So(flavor.ID, ShouldEqual, "2003")
 				}
@@ -704,7 +704,7 @@ func TestOpenstack(t *testing.T) {
 
 			Convey("MaxQueueTime() always returns 'infinite'", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 0)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs}).Minutes(), ShouldEqual, 0)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, true, otherReqs}).Minutes(), ShouldEqual, 0)
 			})
 		}
 
@@ -724,7 +724,7 @@ func TestOpenstack(t *testing.T) {
 			Convey("Schedule() gives impossible error when reqs don't fit in the requested flavor", func() {
 				other := make(map[string]string)
 				other["cloud_flavor"] = "o1.tiny"
-				brokenReq := &Requirements{2000, 1 * time.Minute, 1, 1, other}
+				brokenReq := &Requirements{2000, 1 * time.Minute, 1, 1, true, other}
 				err := s.Schedule("foo", brokenReq, 1)
 				So(err, ShouldNotBeNil)
 				serr, ok := err.(Error)
@@ -759,7 +759,7 @@ func TestOpenstack(t *testing.T) {
 
 				flavor, err := oss.determineFlavor(r)
 				So(err, ShouldBeNil)
-				testReq := &Requirements{flavor.RAM, 1 * time.Minute, float64(flavor.Cores), 0, otherReqs}
+				testReq := &Requirements{flavor.RAM, 1 * time.Minute, float64(flavor.Cores), 0, true, otherReqs}
 				can := oss.canCount(testReq)
 
 				done := make(chan bool, 1)
@@ -820,7 +820,7 @@ func TestOpenstack(t *testing.T) {
 					cmd := "touch /shared/test1"
 					other := make(map[string]string)
 					other["cloud_shared"] = "true"
-					localReq := &Requirements{100, 1 * time.Minute, 1, 1, other}
+					localReq := &Requirements{100, 1 * time.Minute, 1, 1, true, other}
 					err := s.Schedule(cmd, localReq, 1)
 					So(err, ShouldBeNil)
 
@@ -854,7 +854,7 @@ func TestOpenstack(t *testing.T) {
 						cmd := "sleep 10"
 						other := make(map[string]string)
 						other["cloud_flavor"] = "o1.small"
-						thisReq := &Requirements{100, 1 * time.Minute, 1, 1, other}
+						thisReq := &Requirements{100, 1 * time.Minute, 1, 1, true, other}
 						err := s.Schedule(cmd, thisReq, 1)
 						So(err, ShouldBeNil)
 						So(s.Busy(), ShouldBeTrue)
@@ -898,7 +898,7 @@ func TestOpenstack(t *testing.T) {
 					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
 					cmd := "sleep 10"
 					oReqs := make(map[string]string)
-					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, oReqs}
+					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, true, oReqs}
 					err := s.Schedule(cmd, thisReq, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
@@ -949,7 +949,7 @@ func TestOpenstack(t *testing.T) {
 					debugCounter = 0
 					debugEffect = "failFirstSpawn"
 					oReqs := make(map[string]string)
-					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+					newReq := &Requirements{100, 1 * time.Minute, 1, 1, true, oReqs}
 					newCount := 3
 					eta := 120
 					cmd := "sleep 10"
@@ -963,7 +963,7 @@ func TestOpenstack(t *testing.T) {
 					debugCounter = 0
 					debugEffect = "slowSecondSpawn"
 					oReqs := make(map[string]string)
-					newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+					newReq := &Requirements{100, 1 * time.Minute, 1, 1, true, oReqs}
 					newCount := 3
 					eta := 120
 					cmd := "sleep 10"
@@ -989,7 +989,7 @@ func TestOpenstack(t *testing.T) {
 					oReqs["cloud_os_ram"] = "4096"
 
 					Convey("Override the default os image and ram", func() {
-						newReq := &Requirements{100, 1 * time.Minute, 1, 1, oReqs}
+						newReq := &Requirements{100, 1 * time.Minute, 1, 1, true, oReqs}
 						newCount := 3
 						eta := 120
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
@@ -1040,16 +1040,16 @@ func TestOpenstack(t *testing.T) {
 
 				numCores := 5
 				oReqsm := make(map[string]string)
-				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, float64(numCores), 0, oReqsm})
+				multiCoreFlavor, err := oss.determineFlavor(&Requirements{1024, 1 * time.Minute, float64(numCores), 0, true, oReqsm})
 				if err == nil && multiCoreFlavor.Cores >= numCores {
 					oReqs := make(map[string]string)
 					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)
-					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, oReqs}
+					jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, true, oReqs}
 					confirmFlavor, err := oss.determineFlavor(oss.reqForSpawn(jobReq))
 					if err == nil && confirmFlavor.Cores >= numCores {
 						Convey("Run multiple jobs at once on multi-core servers", func() {
 							cmd := "sleep 30"
-							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, oReqs}
+							jobReq := &Requirements{int(multiCoreFlavor.RAM / numCores), 1 * time.Minute, 1, 0, true, oReqs}
 							err = s.Schedule(cmd, jobReq, numCores)
 							So(err, ShouldBeNil)
 							So(s.Busy(), ShouldBeTrue)

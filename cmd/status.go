@@ -453,7 +453,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		}
 	case cmdFileStatus != "":
 		// parse the supplied commands
-		parsedJobs, _, _ := parseCmdFile(jq)
+		parsedJobs, _, _ := parseCmdFile(jq, false)
 
 		// round-trip via the server to get those that actually exist in
 		// the queue

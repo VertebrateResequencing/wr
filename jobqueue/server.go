@@ -1051,7 +1051,7 @@ func (s *Server) createQueue() {
 					if recs > 0 {
 						recsSecs = recs
 					}
-					recommendedReq = &scheduler.Requirements{RAM: recmMBs, Disk: recdGBs, Time: time.Duration(recsSecs) * time.Second}
+					recommendedReq = &scheduler.Requirements{RAM: recmMBs, Disk: recdGBs, DiskSet: true, Time: time.Duration(recsSecs) * time.Second}
 					groupToReqs[job.ReqGroup] = recommendedReq
 				}
 			}
@@ -1060,9 +1060,10 @@ func (s *Server) createQueue() {
 				job.Lock()
 				if job.RequirementsOrig == nil {
 					job.RequirementsOrig = &scheduler.Requirements{
-						RAM:  job.Requirements.RAM,
-						Time: job.Requirements.Time,
-						Disk: job.Requirements.Disk,
+						RAM:     job.Requirements.RAM,
+						Time:    job.Requirements.Time,
+						Disk:    job.Requirements.Disk,
+						DiskSet: job.Requirements.DiskSet,
 					}
 				}
 
@@ -1082,7 +1083,7 @@ func (s *Server) createQueue() {
 				}
 
 				if recommendedReq.Disk > 0 {
-					if job.RequirementsOrig.Disk > 0 {
+					if job.RequirementsOrig.Disk > 0 || job.RequirementsOrig.DiskSet {
 						switch job.Override {
 						case 0:
 							job.Requirements.Disk = recommendedReq.Disk

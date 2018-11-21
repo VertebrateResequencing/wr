@@ -188,20 +188,19 @@ should almost always be part of the req_grp name.)
 manager's estimate. Possible values are:
 0 = do not override wr's learned values for memory, disk and time (if any)
 1 = override if yours are higher
-2 = always override
+2 = always override specified resource(s)
 (If you choose to override eg. only disk, then the learned value for memory and
-time will be used.)
+time will be used. If you want to override all 3 resources to disable learning
+completly, you must explicitly supply non-zero values for memory and time and 0
+or more for disk.)
 
 "cpus" tells wr manager exactly how many CPU cores your command needs.
 
-"disk" tells wr manager how much free disk space (in GB) your command needs. If
-you know that where your command will store its outputs to will not run out of
-disk space, set this to 0 to avoid unnecessary disk space checks. Disk space
-reservation only applies to the OpenStack schedulers which will create temporary
-volumes of the specified size if necessary.
-Note that disk space usage checking and learning only occurs for jobs where
-cwd doesn't matter (is a unique directory), and ignores the contents of mounted
-directories.
+"disk" tells wr manager how much free disk space (in GB) your command needs.
+Disk space reservation only applies to the OpenStack schedulers which will
+create temporary volumes of the specified size if necessary. Note that disk
+space usage checking and learning only occurs for jobs where cwd doesn't matter
+(is a unique directory), and ignores the contents of mounted directories.
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
@@ -305,7 +304,7 @@ new job will have this job's mount and cloud_* options.`,
 			}
 		}()
 
-		jobs, isLocal, defaultedRepG := parseCmdFile(jq)
+		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"))
 
 		var envVars []string
 		if isLocal {
@@ -341,7 +340,7 @@ func init() {
 	addCmd.Flags().StringVarP(&cmdMem, "memory", "m", "1G", "peak mem est. [specify units such as M for Megabytes or G for Gigabytes]")
 	addCmd.Flags().StringVarP(&cmdTime, "time", "t", "1h", "max time est. [specify units such as m for minutes or h for hours]")
 	addCmd.Flags().Float64Var(&cmdCPUs, "cpus", 1, "cpu cores needed")
-	addCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required [0 means do not check disk space] (default 0)")
+	addCmd.Flags().IntVar(&cmdDisk, "disk", 0, "number of GB of disk space required (default 0)")
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
@@ -393,7 +392,7 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // defaults specified in other command line args. Returns job slice, bool for if
 // the manager is on the same host as us, and bool for if any job defaulted to
 // the default repgrp.
-func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
+func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
 	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
@@ -427,6 +426,7 @@ func parseCmdFile(jq *jobqueue.Client) ([]*jobqueue.Job, bool, bool) {
 		ChangeHome:       cmdChangeHome,
 		CPUs:             cmdCPUs,
 		Disk:             cmdDisk,
+		DiskSet:          diskSet,
 		Override:         cmdOvr,
 		Priority:         cmdPri,
 		Retries:          cmdRet,
