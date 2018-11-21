@@ -476,7 +476,7 @@ func init() {
 }
 
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
-	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
+	info("wr manager %s started on %s, pid %d", jobqueue.ServerVersion, sAddr(s), s.PID)
 
 	// go back to just stderr so we don't log token to file (this doesn't affect
 	// server logging)
