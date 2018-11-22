@@ -169,8 +169,8 @@ fully.`,
 			}
 		}
 
-		if len(localUsername) > 11 {
-			die("--local_username must be 11 characters or less")
+		if len(localUsername) > maxCloudResourceUsernameLength {
+			die("--local_username must be %d characters or less", maxCloudResourceUsernameLength)
 		}
 
 		// later, we will wait for the daemonized manager to either create a new
@@ -459,7 +459,7 @@ func init() {
 	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "maximum MB of local memory to use to run cmds; -1 means unlimited")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
-	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud (max length 11)")
+	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), fmt.Sprintf("for cloud schedulers, your local username outside of the cloud (max length %d)", maxCloudResourceUsernameLength))
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")

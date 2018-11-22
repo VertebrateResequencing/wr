@@ -40,7 +40,8 @@ than 1 process at a time.
     import "github.com/VertebrateResequencing/wr/cloud"
 
     // deploy
-    provider, err := cloud.New("openstack", "wr-production-username", "/home/username/.wr-production/created_cloud_resources")
+    provider, err := cloud.New("openstack", "wr-prod-username",
+		"/home/username/.wr-production/created_cloud_resources")
     err = provider.Deploy(&cloud.DeployConfig{
         RequiredPorts:  []int{22},
         GatewayIP:      "192.168.0.1",
