@@ -125,7 +125,11 @@ type ConfigOpenStack struct {
 	// that flavor because there is no more available hardware to back it, then
 	// the next best flavor in a different flavor set will be attempted. The
 	// value here is a string in the form f1,f2;f3,f4 where f1 and f2 are in the
-	// same set, and f3 and f4 are in a different set.
+	// same set, and f3 and f4 are in a different set. If you have many flavors
+	// in a set, you can describe them all with a regular expression, as long
+	// as it is possible to have such a regular expression that also does not
+	// match any flavors in your other sets (and that does not use commas or
+	// semicolons).
 	FlavorSets string
 
 	// PostCreationScript is the []byte content of a script you want executed
