@@ -61,6 +61,7 @@ var osUsername string
 var osRAM int
 var osDisk int
 var flavorRegex string
+var flavorSets string
 var postCreationScript string
 var postDeploymentScript string
 var cloudGatewayIP string
@@ -152,6 +153,18 @@ deployment infoblox will be used to first delete all A records for your
 configured WR_MANAGERCERTDOMAIN (which can't be localhost), and then create an
 A record for WR_MANAGERCERTDOMAIN that points to the IP address of the cloud
 server that wr manager was started on.
+
+The --flavor_sets option lets you describe how flavors relate to hardware in
+your cloud setup, and is probably only relevant to private clouds such as
+OpenStack, where hardware is limited. If some flavors can only be created on a
+subset of your hardware, and other flavors can only be created on a different
+subset of your hardware, then you should describe those flavors as being in
+different sets, using the form f1,f2;f3,f4 where f1 and f2 are in the same set
+and f3 and f4 are in a different set. Doing this will result in the following
+behaviour: if a flavor is picked to run a job (according to your --flavor
+regex), but a server of that flavor can't be created due to lack of hardware,
+then the next best flavor - excluding flavors in the initial pick's flavor set -
+will be picked and tried instead.
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
@@ -666,6 +679,7 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
+	cloudDeployCmd.Flags().StringVar(&flavorSets, "flavor_sets", defaultConfig.CloudFlavorSets, "sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
 	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().IntVar(&maxManagerRAM, "max_local_ram", -1, "maximum MB of manager memory to use to run cmds; -1 means unlimited")
@@ -860,6 +874,9 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		var flavorArg string
 		if flavorRegex != "" {
 			flavorArg = " -l '" + flavorRegex + "'"
+		}
+		if flavorSets != "" {
+			flavorArg += " --cloud_flavor_sets '" + flavorSets + "'"
 		}
 
 		var osDiskArg string
