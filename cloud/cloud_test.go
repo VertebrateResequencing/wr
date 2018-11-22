@@ -53,6 +53,19 @@ func TestOpenStack(t *testing.T) {
 	osUser := os.Getenv("OS_OS_USERNAME")
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
+	ofs := os.Getenv("OS_FLAVOR_SETS")
+	var flavorSets [][]string
+	if ofs != "" {
+		sets := strings.Split(ofs, ";")
+		for _, set := range sets {
+			flavors := strings.Split(set, ",")
+			flavorSets = append(flavorSets, flavors)
+		}
+	}
+	host, errh := os.Hostname()
+	if errh != nil {
+		t.Fatal(errh)
+	}
 	resourceName := "wr-testing-" + localUser
 
 	if osPrefix == "" || osUser == "" || localUser == "" || flavorRegex == "" {
@@ -98,7 +111,6 @@ func TestOpenStack(t *testing.T) {
 				q, err := p.GetQuota()
 				So(err, ShouldBeNil)
 				// author only tests, where I know the expected results
-				host, _ := os.Hostname()
 				if host == "vr-2-2-02" {
 					So(q.MaxCores, ShouldEqual, 446)
 					So(q.MaxInstances, ShouldEqual, 446)
@@ -108,7 +120,7 @@ func TestOpenStack(t *testing.T) {
 				}
 			})
 
-			Convey("You can deploy to OpenStack and get the cheapest server flavor", func() {
+			Convey("You can deploy to OpenStack and get the cheapest server flavors", func() {
 				err := p.Deploy(&DeployConfig{RequiredPorts: []int{22}})
 				So(err, ShouldBeNil)
 				So(p.resources, ShouldNotBeNil)
@@ -134,6 +146,15 @@ func TestOpenStack(t *testing.T) {
 				So(flavor.RAM, ShouldBeGreaterThanOrEqualTo, 2048)
 				So(flavor.Disk, ShouldBeGreaterThanOrEqualTo, 1)
 				So(flavor.Cores, ShouldBeGreaterThanOrEqualTo, 1)
+
+				// author only tests, where I know the expected results
+				if host == "vr-2-2-02" && len(flavorSets) > 1 {
+					flavors, err := p.CheapestServerFlavors(1, 2048, flavorRegex, flavorSets)
+					So(err, ShouldBeNil)
+					So(len(flavors), ShouldEqual, 2)
+					So(flavors[0].Name, ShouldEqual, "m1.tiny")
+					So(flavors[1].Name, ShouldEqual, "m2.tiny")
+				}
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
 					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, true)
