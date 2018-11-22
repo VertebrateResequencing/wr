@@ -576,6 +576,10 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}()
 	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP, usingQuota)
 
+	if err != nil && serverID == "" {
+		return nil, err
+	}
+
 	maxDisk := f.Disk
 	if diskGB > maxDisk {
 		maxDisk = diskGB
