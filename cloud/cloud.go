@@ -198,6 +198,8 @@ type provideri interface {
 	// quota (or the request fails), then create sentinelFilePath once the new
 	// server is in powered up (but not necessarily fully booted up).
 	spawn(resources *Resources, os string, flavor string, diskGB int, externalIP bool, usingQuotaCh chan bool) (serverID, serverIP, serverName, adminPass string, err error)
+	// achieve the aims of ErrIsNoHardware()
+	errIsNoHardware(err error) bool
 	// achieve the aims of CheckServer()
 	checkServer(serverID string) (bool, error)
 	// achieve the aims of DestroyServer()
@@ -462,22 +464,49 @@ func (p *Provider) GetQuota() (*Quota, error) {
 // is larger than the flavor's root disk a larger volume will be created
 // automatically.
 func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor, error) {
-	// from all available flavours, pick the one that has the lowest ram, disk
-	// and cpus that meet our minimums, and also matches the regex
-	var r *regexp.Regexp
-	var err error
-	if regex != "" {
-		r, err = regexp.Compile(regex)
-		if err != nil {
-			return nil, Error{"cloud", "CheapestServerFlavor", ErrBadRegex}
-		}
+	r, err := p.regexStrToRegexp(regex)
+	if err != nil {
+		return nil, err
 	}
 
+	f := p.pickCheapestFlavorWithExclusions(cores, ramMB, r, []*regexp.Regexp{})
+	if f == nil {
+		return nil, Error{"cloud", "CheapestServerFlavor", ErrNoFlavor}
+	}
+	return f, nil
+}
+
+// regexStrToRegexp converts a regex string to a Regexp. If regex is a blank
+// string, returns nil and no error.
+func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
+	if regex == "" {
+		return nil, nil
+	}
+	r, err := regexp.Compile(regex)
+	if err != nil {
+		return nil, Error{"cloud", "CheapestServerFlavor", ErrBadRegex}
+	}
+	return r, nil
+}
+
+// pickCheapestFlavorWithExclusions looks through p.impl.flavors() for the
+// cheapest flavor with a Name that matches the regexp, but that does not match
+// any of the exclusions. regexp can be nil to match any flavor, and exclusions
+// can be empty, but exclusion elements cannot be nil.
+func (p *Provider) pickCheapestFlavorWithExclusions(cores, ramMB int, regexp *regexp.Regexp, exclusions []*regexp.Regexp) *Flavor {
+	// from all available flavours, pick the one that has the lowest ram, disk
+	// and cpus that meet our minimums, and also matches the regex without
+	// matching exclusions
 	var fr *Flavor
+FLAVORS:
 	for _, f := range p.impl.flavors() {
-		if regex != "" {
-			if !r.MatchString(f.Name) {
-				continue
+		if regexp != nil && !regexp.MatchString(f.Name) {
+			continue
+		}
+
+		for _, r := range exclusions {
+			if r.MatchString(f.Name) {
+				continue FLAVORS
 			}
 		}
 
@@ -495,12 +524,82 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 			}
 		}
 	}
+	return fr
+}
 
-	if fr == nil {
-		return nil, Error{"cloud", "CheapestServerFlavor", ErrNoFlavor}
+// CheapestServerFlavors is like CheapestServerFlavor(), taking the same first
+// 3 arguements, but also a slice of slices that describe sets of flavors.
+// For example, [][]string{{"f1","f2"},{"f3","f4"}}. Here, flavors f1 and f2 are
+// in one set, and f3 and f4 are in another. The names are treated as regular
+// expressions so you can describe multiple flavors in a set with a single
+// entry.
+//
+// You will get back the cheapest server flavor in each set, but in the order
+// that is best overall. That is, all flavors matching regex are considered as
+// in a normal CheapestServerFlavor() call, to get the first flavor. Then this
+// is repeated, excluding flavors in the set from which the first flavor came.
+// This repeats until a matching flavor can't be found, a found flavor is not in
+// one of your sets, or there are as many output flavors as input sets.
+func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets [][]string) ([]*Flavor, error) {
+	// (because flavors can change over time, we can't cache the result of this
+	// calculation and must run it every time)
+	r, err := p.regexStrToRegexp(regex)
+	if err != nil {
+		return nil, err
 	}
 
-	return fr, nil
+	regexSets := make([][]*regexp.Regexp, len(sets))
+	for i, set := range sets {
+		regexSets[i] = make([]*regexp.Regexp, len(sets[i]))
+		for j, flavor := range set {
+			rf, err := p.regexStrToRegexp(flavor)
+			if err != nil {
+				return nil, err
+			}
+			regexSets[i][j] = rf
+		}
+	}
+
+	var matches []*Flavor
+	excludedSets := make(map[int]bool, len(sets))
+	var exclusions []*regexp.Regexp
+
+	for {
+		f := p.pickCheapestFlavorWithExclusions(cores, ramMB, r, exclusions)
+		if f == nil {
+			break
+		}
+
+		matches = append(matches, f)
+		if len(matches) == len(sets) {
+			break
+		}
+
+		// find the set that this flavor belongs to
+		var found bool
+	SETS:
+		for i, set := range regexSets {
+			if excludedSets[i] {
+				continue
+			}
+
+			for _, fr := range set {
+				if fr.MatchString(f.Name) {
+					for _, fr := range set {
+						exclusions = append(exclusions, fr)
+					}
+					excludedSets[i] = true
+					found = true
+					break SETS
+				}
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	return matches, nil
 }
 
 // GetServerFlavor returns the flavor with the given ID or name. If no flavor
@@ -542,7 +641,7 @@ type SpawnUsingQuotaCallback func()
 // will be destroyed.
 //
 // If you need an external IP so that you can ssh to the server externally,
-// supply true as the last argument.
+// supply true for externalIP.
 //
 // You can supply an optinoal callback function that will be called as soon as
 // the new server request has gone out (and so is using up your quota), but
@@ -620,6 +719,12 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}
 
 	return server, err
+}
+
+// ErrIsNoHardware return true if the given error suggests failure to spawn a
+// server due to lack of hardware.
+func (p *Provider) ErrIsNoHardware(err error) bool {
+	return p.impl.errIsNoHardware(err)
 }
 
 // WaitUntilReady waits for the server to become fully ready: the boot process

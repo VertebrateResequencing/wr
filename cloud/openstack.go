@@ -784,6 +784,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	usingQuotaCh <- true
 
 	if err != nil {
+		p.spawnFailed = true
 		return serverID, serverIP, serverName, adminPass, err
 	}
 
@@ -906,6 +907,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	}
 
 	return serverID, serverIP, serverName, adminPass, err
+}
+
+// errIsNoHardware returns true if error contains "There are not enough hosts
+// available".
+func (p *openstackp) errIsNoHardware(err error) bool {
+	return strings.Contains(err.Error(), "There are not enough hosts available")
 }
 
 // getServerIP tries to find the auto-assigned internal ip address of the server
