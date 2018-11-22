@@ -119,14 +119,13 @@ type ConfigOpenStack struct {
 	// also satisfies this regex.)
 	FlavorRegex string
 
-	// FlavorSets is a list of flavors that are "independent". That is, the
-	// flavors in different sets run on different physical hardware, meaning
-	// that if a flavor in set 1 is chosen, but OpenStack reports it isn't
-	// possible to create a server with that flavor because there is no more
-	// available hardware to back it, then the next best flavor in a different
-	// flavor set will be attempted. The value here is a string in the form
-	// f1,f2;f3,f4 where f1 and f2 are in the same set, and f3 and f4 are in a
-	// different set.
+	// FlavorSets is used to describe sets of flavors that will only run on
+	// certain subsets of your available hardware. If a flavor in set 1 is
+	// chosen, but OpenStack reports it isn't possible to create a server with
+	// that flavor because there is no more available hardware to back it, then
+	// the next best flavor in a different flavor set will be attempted. The
+	// value here is a string in the form f1,f2;f3,f4 where f1 and f2 are in the
+	// same set, and f3 and f4 are in a different set.
 	FlavorSets string
 
 	// PostCreationScript is the []byte content of a script you want executed
