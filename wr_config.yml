@@ -296,6 +296,30 @@ runnerexecshell: "bash"
 # to wr's knowledge of how much RAM and how many cores it needs to run).
 # cloudflavor: ""
 
+# cloudflavorsets: What server flavors are assigned to different hardware?
+# Without being provided, all flavors are assumed to be able to be used on all
+# available hardware. This is overridden by the --flavor_sets option to `wr
+# cloud deploy` and the --cloud_flavor_sets option of `wr manager start`.
+# Note, this takes the form f1,f2;f3,f4 to describe flavors f1 and f2 being in
+# the same set, and flavors f3 and f4 being in a different set. Flavors in the
+# same set should be those that can only be used on a certain subset of your
+# hardware, and flavors in a different set should be those that can only be
+# brought up on a diffferent subset of hardware.
+#
+# This option is only relevant when you are using a cloud scheduler such as
+# OpenStack.
+#
+# wr will pick a certain flavor to run a job on, as per the cloudflavor option.
+# If it isn't possible to create a server with that flavor due to lack of
+# physical hardware, wr will repick a flavor (again as per the cloudflavor
+# option), but this time excluding flavors in the same flavor set as the initial
+# pick. This is repeated until a flavor is found in a set where there is
+# sufficient hardware to create a new server to run the job.
+#
+# If a flavor is picked that isn't in one of your flavor sets (or if you only
+# have one set), it will never be repicked.
+# cloudflavorsets: ""
+
 # cloudkeepalive: How long should idle spawned server stay alive?
 # This defaults to 120. It is overridden by the --keepalive option to
 # `wr cloud deploy` and the --cloud_keepalive option of `wr manager start`.

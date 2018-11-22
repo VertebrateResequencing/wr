@@ -105,13 +105,13 @@ tenant (project) also running wr.
 Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
 on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
-OpenStack scheduler.
+OpenStack scheduler. That help also explains some of the --cloud* options in
+further detail.
 
 Similarly, If using the Kubernetes scheduler you must already be running in a
 pod. Be sure to pass a namespace for wr to use that will not have another wr
 user attempting to use it.
-Instead it is recommended to use 'wr kubernetes deploy' to bootstrap wr to a
-cluster.
+Instead it is recommended to use 'wr k8s deploy' to bootstrap wr to a cluster.
 
 The --use_cert_domain option is intended for use when you have configured your
 own security certificates and want the manager to be reachable at a given
@@ -538,6 +538,7 @@ func init() {
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
+	managerStartCmd.Flags().StringVar(&flavorSets, "cloud_flavor_sets", defaultConfig.CloudFlavorSets, "for cloud schedulers, sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
 	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", "for the kubernetes scheduler, provide an existing config map to initialise all pods with. To be used instead of --cloud_script")
@@ -641,6 +642,7 @@ func startJQ(postCreation []byte) {
 			OSRAM:                osRAM,
 			OSDisk:               osDisk,
 			FlavorRegex:          flavorRegex,
+			FlavorSets:           flavorSets,
 			PostCreationScript:   postCreation,
 			ConfigFiles:          cloudConfigFiles,
 			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
