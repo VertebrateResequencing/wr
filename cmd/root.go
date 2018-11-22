@@ -35,6 +35,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// maxCloudResourceUsernameLength is the maximum length that cloud username can
+// be. It is limited because it will form part of cloudResourceName(), which
+// will in turn form hostnames, which have max length 63. cloudResourceName()
+// has a fixed prefix of length up to 8, and host names will include a UUID of
+// length 36 and a prefix length 1, leaving 18 characters for the username.
+const maxCloudResourceUsernameLength = 18
+
 // appLogger is used for logging events in our commands
 var appLogger = log15.New()
 
@@ -135,7 +142,13 @@ func cloudResourceName(username string) string {
 	if username == "" {
 		username = realUsername()
 	}
-	return "wr-" + config.Deployment + "-" + username
+	var dep string
+	if config.Deployment == internal.Production {
+		dep = "prod"
+	} else {
+		dep = "dev"
+	}
+	return "wr-" + dep + "-" + username
 }
 
 // info is a convenience to log a message at the Info level.

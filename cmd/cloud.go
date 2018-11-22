@@ -208,8 +208,8 @@ within OpenStack.`,
 			}
 		}
 
-		if len(cloudResourceNameUniquer) > 11 {
-			die("--resource_name must be 11 characters or less")
+		if len(cloudResourceNameUniquer) > maxCloudResourceUsernameLength {
+			die("--resource_name must be %d characters or less", maxCloudResourceUsernameLength)
 		}
 
 		// first we need our working directory to exist
@@ -660,7 +660,7 @@ func init() {
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
-	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you, max length 11)")
+	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), fmt.Sprintf("name to be included when naming cloud resources (should be unique to you, max length %d)", maxCloudResourceUsernameLength))
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", defaultConfig.CloudOS, "prefix of name, or ID, of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", defaultConfig.CloudUser, "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
