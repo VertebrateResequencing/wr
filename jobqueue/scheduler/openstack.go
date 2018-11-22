@@ -1089,10 +1089,12 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		// unlock again prior to waiting until the server is ready and trying to
 		// check and upload our exe, since that could take quite a long time
 		s.runMutex.Unlock()
-		logger.Debug("waiting for server ready")
-		if err == nil {
+		failMsg := "server failed spawn"
+		if err == nil && server != nil {
 			// wait until boot is finished, ssh is ready and osScript has
 			// completed
+			logger.Debug("waiting for server ready")
+			failMsg = "server failed ready"
 			err = server.WaitUntilReady(requestedConfigFiles, requestedScript)
 
 			if err == nil && needsSharedDisk {
@@ -1100,6 +1102,8 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 			}
 
 			if err == nil {
+				failMsg = "server failed uploads"
+
 				// check that the exe of the cmd we're supposed to run exists on the
 				// new server, and if not, copy it over *** this is just a hack to
 				// get wr working, need to think of a better way of doing this...
@@ -1148,10 +1152,12 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 		// handle Spawn() or upload-of-exe errors now, by destroying the server
 		// and noting we failed
 		if err != nil {
-			logger.Warn("server failed ready", "err", err)
-			errd := server.Destroy()
-			if errd != nil {
-				logger.Debug("server also failed to destroy", "err", errd)
+			logger.Warn(failMsg, "err", err)
+			if server != nil {
+				errd := server.Destroy()
+				if errd != nil {
+					logger.Debug("server also failed to destroy", "err", errd)
+				}
 			}
 			standinServer.failed(fmt.Sprintf("New server failed to spawn correctly: %s", err))
 			s.runMutex.Unlock()
