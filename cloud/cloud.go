@@ -528,7 +528,7 @@ FLAVORS:
 }
 
 // CheapestServerFlavors is like CheapestServerFlavor(), taking the same first
-// 3 arguements, but also a slice of slices that describe sets of flavors.
+// 3 arguments, but also a slice of slices that describe sets of flavors.
 // For example, [][]string{{"f1","f2"},{"f3","f4"}}. Here, flavors f1 and f2 are
 // in one set, and f3 and f4 are in another. The names are treated as regular
 // expressions so you can describe multiple flavors in a set with a single
@@ -585,9 +585,7 @@ func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets []
 
 			for _, fr := range set {
 				if fr.MatchString(f.Name) {
-					for _, fr := range set {
-						exclusions = append(exclusions, fr)
-					}
+					exclusions = append(exclusions, set...)
 					excludedSets[i] = true
 					found = true
 					break SETS
