@@ -304,7 +304,9 @@ runnerexecshell: "bash"
 # the same set, and flavors f3 and f4 being in a different set. Flavors in the
 # same set should be those that can only be used on a certain subset of your
 # hardware, and flavors in a different set should be those that can only be
-# brought up on a diffferent subset of hardware.
+# brought up on a diffferent subset of hardware. The flavor names are treated
+# as regular expressions, so you can have 1 expression that matches all the
+# flavors in a set.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.

@@ -160,11 +160,12 @@ OpenStack, where hardware is limited. If some flavors can only be created on a
 subset of your hardware, and other flavors can only be created on a different
 subset of your hardware, then you should describe those flavors as being in
 different sets, using the form f1,f2;f3,f4 where f1 and f2 are in the same set
-and f3 and f4 are in a different set. Doing this will result in the following
-behaviour: if a flavor is picked to run a job (according to your --flavor
-regex), but a server of that flavor can't be created due to lack of hardware,
-then the next best flavor - excluding flavors in the initial pick's flavor set -
-will be picked and tried instead.
+and f3 and f4 are in a different set (these names are treated as regular
+expressions). Doing this will result in the following behaviour: if a flavor is
+picked to run a job (according to your --flavor regex), but a server of that
+flavor can't be created due to lack of hardware, then the next best flavor -
+excluding flavors in the initial pick's flavor set - will be picked and tried
+instead.
 
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only

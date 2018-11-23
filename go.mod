@@ -58,6 +58,7 @@ require (
 	github.com/onsi/gomega v1.4.2 // indirect
 	github.com/opencontainers/go-digest v0.0.0-20180430190053-c9281466c8b2 // indirect
 	github.com/opencontainers/image-spec v0.0.0-20180411145040-e562b0440392 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.0.0-20180311214515-816c9085562c // indirect
 	github.com/pkg/sftp v0.0.0-20180824225003-b9345f483dc3
 	github.com/pmezard/go-difflib v1.0.0 // indirect

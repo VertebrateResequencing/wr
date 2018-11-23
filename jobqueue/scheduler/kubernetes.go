@@ -390,7 +390,7 @@ func (s *k8s) cleanup() {
 // 100. ToDO: If any job is pending with the given requirements, return 0 until
 // that pend fails. This should reduce overall load on the cluster when adding
 // lots of jobs at once.
-func (s *k8s) canCount(req *Requirements) int {
+func (s *k8s) canCount(req *Requirements, call string) int {
 	s.Debug("canCount Called, returning 100")
 	// 100 is  a big enough block for anyone...
 	return 100
@@ -398,7 +398,7 @@ func (s *k8s) canCount(req *Requirements) int {
 
 // RunFunc calls spawn() and exits with an error = nil when pod has terminated
 // (Runner exited). Or an error if there was a problem.
-func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
+func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool, call string) error {
 	s.Debug("RunCmd Called", "cmd", cmd, "requirements", req)
 	// The first 'argument' to cmd will be the absolute path to the manager's
 	// executable. Work out the local binary's name from localBinaryPath.
