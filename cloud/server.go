@@ -813,7 +813,7 @@ func (s *Server) MountSharedDisk(nfsServerIP string) error {
 		return nil
 	}
 
-	_, _, err := s.RunCmd("sudo apt-get install nfs-common -y", false)
+	_, _, err := s.RunCmd("sudo apt-get update && sudo apt-get install nfs-common -y", false)
 	if err != nil {
 		return err
 	}
