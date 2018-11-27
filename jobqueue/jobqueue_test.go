@@ -4498,9 +4498,12 @@ sudo usermod -aG docker ` + osUser
 				dockerCidFile := "jobqueue_test.cidfile"
 				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
 
+				dockerCidFile = "uuid-20181127.cidfile"
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidglob_docker", MonitorDocker: "uuid-*.cidfile"})
+
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, 3)
+				So(inserts, ShouldEqual, 4)
 				So(already, ShouldEqual, 0)
 
 				// wait for the jobs to get run
@@ -4546,6 +4549,13 @@ sudo usermod -aG docker ` + osUser
 				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
 
 				got, err = jq.GetByRepGroup("cidfile_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThan, 100)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
+				So(got[0].CPUtime, ShouldBeGreaterThan, 5*time.Second)
+
+				got, err = jq.GetByRepGroup("cidglob_docker", false, 0, JobStateComplete, false, false)
 				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeLessThan, 100)

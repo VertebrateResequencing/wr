@@ -238,7 +238,11 @@ string). These are static dependencies; once resolved they do not get re-
 evaluated.
 
 "monitor_docker" turns on monitoring of a docker container identified by the
-given string, which could be the container's --name or path to its --cidfile.
+given string, which could be the container's --name or path to its --cidfile. If
+the string contains ? or * symbols and doesn't match a name or file name
+literally, those symbols will be treated as wildcards (any single character, or
+any number of any character, respectively) in a search for the first matching
+file name containing a valid container id, to be treated as the --cidfile.
 This will add the container's peak RAM and total CPU usage to the reported RAM
 and CPU usage of this job. If the special argument "?" is supplied, monitoring
 will apply to the first new docker container that appears after the command
