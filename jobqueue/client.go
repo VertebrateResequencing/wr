@@ -22,7 +22,6 @@ package jobqueue
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -41,8 +40,6 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
 	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
@@ -714,12 +711,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// if docker monitoring has been requested, try and get the docker client
 	// now and fail early if we can't
-	var dockerClient *docker.Client
-	existingDockerContainers := make(map[string]bool)
+	var dockerClient *internal.DockerClient
 	var monitorDocker, getFirstDockerContainer bool
 	if job.MonitorDocker != "" {
 		monitorDocker = true
-		dockerClient, err = docker.NewClientWithOpts(docker.FromEnv)
+		dockerClient, err = internal.NewDockerClient()
 		if err != nil {
 			buryErr := fmt.Errorf("failed to create docker client: %s", err)
 			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
@@ -729,11 +725,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 			return buryErr
 		}
 
-		// if we've been asked to monitor the first container that appears, note
-		// existing containers
+		// if we've been asked to monitor the first container that appears,
+		// remember existing containers
 		if job.MonitorDocker == "?" {
 			getFirstDockerContainer = true
-			containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+			errc := dockerClient.RememberCurrentContainerIDs()
 			if errc != nil {
 				buryErr := fmt.Errorf("failed to get docker containers: %s", errc)
 				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
@@ -741,9 +737,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 					buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
 				}
 				return buryErr
-			}
-			for _, container := range containers {
-				existingDockerContainers[container.ID] = true
 			}
 		}
 	}
@@ -847,7 +840,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 			if dockerContainerID != "" {
 				// kill the docker container as well
-				errd := dockerClient.ContainerKill(context.Background(), dockerContainerID, "SIGKILL")
+				errd := dockerClient.KillContainer(dockerContainerID)
 				if errk == nil {
 					errk = errd
 				} else {
@@ -936,55 +929,26 @@ func (c *Client) Execute(job *Job, shell string) error {
 				var cpuS int
 				if monitorDocker {
 					if dockerContainerID == "" {
+						var errg error
 						if getFirstDockerContainer {
 							// look for a new container
-							containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
-							if errc == nil {
-								for _, container := range containers {
-									if _, exists := existingDockerContainers[container.ID]; !exists {
-										dockerContainerID = container.ID
-										break
-									}
-								}
-							}
+							dockerContainerID, errg = dockerClient.GetNewDockerContainerID()
 						} else {
-							// job.MonitorDocker might be a file path
-							cidPath := job.MonitorDocker
-							if !strings.HasPrefix(cidPath, "/") {
-								cidPath = filepath.Join(cmd.Dir, cidPath)
-							}
-							_, errs := os.Stat(cidPath)
-							if errs == nil {
-								b, errr := ioutil.ReadFile(cidPath)
-								if errr == nil {
-									dockerContainerID = strings.TrimSuffix(string(b), "\n")
-								}
-							}
-
-							// or might be a name; check names of all new
-							// containers
-							if dockerContainerID == "" {
-								containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
-								if errc == nil {
-								CONTAINERS:
-									for _, container := range containers {
-										if _, exists := existingDockerContainers[container.ID]; !exists {
-											for _, name := range container.Names {
-												name = strings.TrimPrefix(name, "/")
-												if name == job.MonitorDocker {
-													dockerContainerID = container.ID
-													break CONTAINERS
-												}
-											}
-										}
-									}
-								}
+							// job.MonitorDocker might be a file path or name of
+							// a new container
+							dockerContainerID, errg = dockerClient.GetNewDockerContainerIDByName(job.MonitorDocker, cmd.Dir)
+						}
+						if errg != nil {
+							if myerr == nil {
+								myerr = errg
+							} else {
+								myerr = fmt.Errorf("%s (and finding the docker container had issues: %s)", myerr.Error(), errg)
 							}
 						}
 					}
 
 					if dockerContainerID != "" {
-						dockerMem, thisDockerCPU, errs := internal.DockerStats(dockerClient, dockerContainerID)
+						dockerMem, thisDockerCPU, errs := dockerClient.ContainerStats(dockerContainerID)
 						if errs == nil {
 							if dockerMem > mem {
 								mem = dockerMem
