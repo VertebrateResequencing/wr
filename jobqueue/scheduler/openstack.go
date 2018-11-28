@@ -1162,6 +1162,25 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 
 	s.runMutex.Unlock()
 
+	// later, after we've run the command, this server will be available for
+	// another; signal a runCmd call that is waiting its turn to spawn a new
+	// server to give up waiting and potentially get scheduled on us instead
+	defer func() {
+		s.runMutex.Lock()
+		server.Release(req.Cores, req.RAM, req.Disk)
+		if s.waitingToSpawn > 0 {
+			for _, otherStandinServer := range s.standins {
+				if otherStandinServer.isExtraneous(server) {
+					s.waitingToSpawn--
+					s.eraseStandin(otherStandinServer.id)
+					otherStandinServer.noLongerNeeded <- true
+					break
+				}
+			}
+		}
+		s.runMutex.Unlock()
+	}()
+
 	// now we have a server, ssh over and run the cmd on it
 	if server.Name == "localhost" {
 		logger.Debug("running command locally", "cmd", cmd)
@@ -1183,30 +1202,15 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 				// manually if they wish, and let them Destroy when they wish.
 				server.GoneBad(err.Error())
 				s.notifyBadServer(server)
-			}
-			logger.Warn("server went bad", "err", err)
-			return err
-		}
-	}
-	logger.Debug("ran command", "cmd", cmd)
-
-	// having run a command, this server is now available for another; signal a
-	// runCmd call that is waiting its turn to spawn a new server to give up
-	// waiting and potentially get scheduled on us instead
-	s.runMutex.Lock()
-	server.Release(req.Cores, req.RAM, req.Disk)
-	if s.waitingToSpawn > 0 {
-		for _, otherStandinServer := range s.standins {
-			if otherStandinServer.isExtraneous(server) {
-				s.waitingToSpawn--
-				s.eraseStandin(otherStandinServer.id)
-				otherStandinServer.noLongerNeeded <- true
-				break
+				logger.Warn("server went bad, won't be used again")
 			}
 		}
 	}
-	s.runMutex.Unlock()
-
+	if err == nil {
+		logger.Debug("ran command", "cmd", cmd)
+	} else {
+		logger.Warn("failed to run command", "cmd", cmd, "err", err)
+	}
 	return err
 }
 
