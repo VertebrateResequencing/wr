@@ -538,6 +538,7 @@ func TestJobqueueSignal(t *testing.T) {
 						// everything was fine
 						jqerr, ok := erre.(Error)
 						if !ok || jqerr.Err != ErrStopReserving {
+							fmt.Printf("\nexecute had err: %s\n", erre)
 							j1worked <- false
 							return
 						}
@@ -545,6 +546,7 @@ func TestJobqueueSignal(t *testing.T) {
 					j1worked <- true
 					return
 				case <-giveUp1:
+					fmt.Printf("\ngave up waiting for job to finish\n")
 					j1worked <- false
 				}
 			}()
@@ -4362,7 +4364,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	ClientTouchInterval = 50 * time.Millisecond
 
 	host, _ := os.Hostname()
-	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
+	if strings.HasPrefix(host, "wr-dev-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
 		var server *Server
 		var token []byte
 		var errs error
