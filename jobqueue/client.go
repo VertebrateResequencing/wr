@@ -44,6 +44,7 @@ import (
 	"github.com/docker/docker/api/types"
 	docker "github.com/docker/docker/client"
 	"github.com/gofrs/uuid"
+	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
 	"nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/req"
@@ -135,6 +136,7 @@ type Client struct {
 	host       string
 	port       string
 	args       []string // allowing internal reconnects
+	log15.Logger
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -211,6 +213,10 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		args:     []string{addr, caFile, certDomain},
 	}
 
+	l := log15.New()
+	l.SetHandler(log15.DiscardHandler())
+	c.Logger = l
+
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
 	si, err := c.Ping(timeout)
@@ -234,6 +240,14 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 // you call Disconnect() before calling Connect() again in the same process.
 func (c *Client) Disconnect() error {
 	return c.sock.Close()
+}
+
+// SetLogger sets the logger, if you want to get debug type messages when
+// running client methods (currently only Execute() tells you about connection
+// issues, letting you understand why it might not seem to be doing anything as
+// it tries to reconnect). By default, these messages are discarded.
+func (c *Client) SetLogger(logger log15.Logger) {
+	c.Logger = logger
 }
 
 // Ping tells you if your connection to the server is working, returning static
@@ -879,6 +893,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
+					c.Warn("could not touch", "err", errf)
 					continue
 				}
 			case <-memTicker.C:
@@ -1235,15 +1250,18 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Exited:   true,
 	}
 	for {
-		if disconnected {
-			// we've previously failed to contact the server
-			if time.Now().After(retryEnd) {
-				break
-			}
+		if time.Now().After(retryEnd) {
+			c.Warn("giving up trying to connect to server")
+			break
+		}
 
-			// try a quick connect attempt
+		if disconnected {
+			// we've previously failed to contact the server; try a quick
+			// connect attempt
 			newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
 			if errc != nil {
+				c.Warn("tried to reconnect to server but failed", "err", errc)
+
 				// keep retrying after a jittered sleep
 				wait := ClientRetryWait + time.Duration(rand.Float64()*0.5*float64(ClientRetryWait))
 				<-time.After(wait)
@@ -1252,6 +1270,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 			// server is back, update ourselves and continue (we keep the quick
 			// timeout, but that should be good enough just to get through this)
+			c.Info("reconnected to server")
 			disconnected = false
 			c.sock = newC.sock
 		}
@@ -1265,11 +1284,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
+			c.Error("failed to update server with cmd's final state", "err", err)
 			hadProblems = true
 			if !disconnected {
 				errd := c.Disconnect()
 				if errd == nil {
 					disconnected = true
+				} else {
+					c.Warn("failed to disconnect", "err", errd)
 				}
 			}
 			<-time.After(ClientRetryWait)
