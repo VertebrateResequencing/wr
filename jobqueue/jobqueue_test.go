@@ -1615,6 +1615,9 @@ func TestJobqueueMedium(t *testing.T) {
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
+					if !ok {
+						fmt.Printf("\ngot err %+v (%s)\n", err, err)
+					}
 					So(ok, ShouldBeTrue)
 					So(jqerr.Err, ShouldEqual, FailReasonKilled)
 					So(job.State, ShouldEqual, JobStateBuried)
