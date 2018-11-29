@@ -616,6 +616,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	// set up responding to command-line clients
+	ignoreClientMessages := true
 	wg.Add(1)
 	go func() {
 		// log panics and die
@@ -636,6 +637,12 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 					if !inShutdown && rerr != mangos.ErrRecvTimeout {
 						s.Error("Server socket Receive error", "err", rerr)
 					}
+					continue
+				}
+
+				// ignore messages that were waiting on the socket before we've
+				// even finished starting up
+				if ignoreClientMessages {
 					continue
 				}
 
@@ -793,6 +800,8 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			return s, msg, token, err
 		}
 	}
+
+	ignoreClientMessages = false
 
 	return s, msg, token, err
 }
