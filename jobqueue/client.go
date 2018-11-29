@@ -428,6 +428,8 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // immediately return an error. NB: the peak RAM tracking assumes we are running
 // on a modern linux system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
+	logger := c.Logger.New("job", job.Key())
+
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
 	// but in this case we want to avoid starting to execute the command before
@@ -892,7 +894,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
-					c.Warn("could not touch", "err", errf)
+					logger.Warn("could not touch", "err", errf)
 					continue
 				}
 			case <-memTicker.C:
@@ -1250,7 +1252,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	}
 	for {
 		if time.Now().After(retryEnd) {
-			c.Warn("giving up trying to connect to server")
+			logger.Warn("giving up trying to connect to server")
 			break
 		}
 
@@ -1259,7 +1261,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			// connect attempt
 			newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
 			if errc != nil {
-				c.Warn("tried to reconnect to server but failed", "err", errc)
+				logger.Warn("tried to reconnect to server but failed", "err", errc)
 
 				// keep retrying after a jittered sleep
 				wait := ClientRetryWait + time.Duration(rand.Float64()*0.5*float64(ClientRetryWait))
@@ -1269,7 +1271,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 			// server is back, update ourselves and continue (we keep the quick
 			// timeout, but that should be good enough just to get through this)
-			c.Info("reconnected to server")
+			logger.Info("reconnected to server")
 			disconnected = false
 			c.sock = newC.sock
 		}
@@ -1283,16 +1285,23 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
-			c.Error("failed to update server with cmd's final state", "err", err)
+			logger.Error("failed to update server with cmd's final state", "err", err)
 			hadProblems = true
+
 			if !disconnected {
 				errd := c.Disconnect()
-				if errd == nil {
+				if errd == nil || strings.Contains(errd.Error(), "connection closed") {
 					disconnected = true
 				} else {
-					c.Warn("failed to disconnect", "err", errd)
+					logger.Warn("failed to disconnect", "err", errd)
 				}
 			}
+
+			if strings.Contains(err.Error(), ErrBadJob) {
+				// this is a permanent error, give up
+				break
+			}
+
 			<-time.After(ClientRetryWait)
 			continue
 		}
