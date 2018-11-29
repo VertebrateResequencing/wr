@@ -523,7 +523,7 @@ func TestJobqueueSignal(t *testing.T) {
 			}()
 
 			j1worked := make(chan bool)
-			giveUp1 := time.After(20 * time.Second)
+			giveUp1 := time.After(30 * time.Second)
 			go func() {
 				errch := make(chan error)
 				go func() {
@@ -552,7 +552,7 @@ func TestJobqueueSignal(t *testing.T) {
 			}()
 
 			j2worked := make(chan bool)
-			giveUp2 := time.After(20 * time.Second)
+			giveUp2 := time.After(30 * time.Second)
 			go func() {
 				errch := make(chan error)
 				go func() {
