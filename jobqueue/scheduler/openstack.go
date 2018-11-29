@@ -1166,19 +1166,21 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool) error
 	// another; signal a runCmd call that is waiting its turn to spawn a new
 	// server to give up waiting and potentially get scheduled on us instead
 	defer func() {
-		s.runMutex.Lock()
-		server.Release(req.Cores, req.RAM, req.Disk)
-		if s.waitingToSpawn > 0 {
-			for _, otherStandinServer := range s.standins {
-				if otherStandinServer.isExtraneous(server) {
-					s.waitingToSpawn--
-					s.eraseStandin(otherStandinServer.id)
-					otherStandinServer.noLongerNeeded <- true
-					break
+		if !server.Destroyed() && server.PermanentProblem() == "" {
+			s.runMutex.Lock()
+			server.Release(req.Cores, req.RAM, req.Disk)
+			if s.waitingToSpawn > 0 {
+				for _, otherStandinServer := range s.standins {
+					if otherStandinServer.isExtraneous(server) {
+						s.waitingToSpawn--
+						s.eraseStandin(otherStandinServer.id)
+						otherStandinServer.noLongerNeeded <- true
+						break
+					}
 				}
 			}
+			s.runMutex.Unlock()
 		}
-		s.runMutex.Unlock()
 	}()
 
 	// now we have a server, ssh over and run the cmd on it
