@@ -678,7 +678,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
 	cloudDeployCmd.Flags().IntVarP(&cloudManagerTimeoutSeconds, "timeout", "t", 15, "how long to wait in seconds for the manager to start up")
 	cloudDeployCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
-	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
+	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs, and have runners log to syslog on their machines")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name you set during deploy")
@@ -871,7 +871,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		m := cloudMaxServers - 1
 		debugStr := ""
 		if cloudDebug {
-			debugStr = " --debug"
+			debugStr = " --debug --runner_debug"
 		}
 		useCertDomainStr := ""
 		if domainMatchesIP {

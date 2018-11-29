@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/syslog"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +40,7 @@ var reserveint int
 var rserver string
 var rdomain string
 var maxtime int
+var logToSyslog bool
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{
@@ -59,6 +62,17 @@ complete.`,
 			// we might lock up with only 1 proc if we mount
 			runtime.GOMAXPROCS(2)
 		}
+
+		if logToSyslog {
+			handler, err := log15.SyslogHandler(syslog.LOG_USER, "wrrunner", log15.LogfmtFormat())
+			if err != nil {
+				warn("failed to set up syslog logging: %s", err)
+			} else {
+				appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, handler))
+			}
+		}
+
+		info("wr runner started for scheduler group '%s'", schedgrp)
 
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
@@ -84,6 +98,10 @@ complete.`,
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
+
+		if logToSyslog {
+			jq.SetLogger(appLogger)
+		}
 
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
@@ -127,7 +145,7 @@ complete.`,
 			}
 
 			if err != nil {
-				die("%s", err) //*** we want this in a central log so we can know if/why our runners are failing
+				die("%s", err)
 			}
 			if job == nil {
 				break
@@ -177,7 +195,10 @@ complete.`,
 					break
 				}
 			}
+
+			info("will start executing [%s]", job.Cmd)
 			err = jq.Execute(job, config.RunnerExecShell)
+			numrun++
 			if err != nil {
 				warn("%s", err)
 				if jqerr, ok := err.(jobqueue.Error); ok {
@@ -192,8 +213,6 @@ complete.`,
 			} else {
 				info("command [%s] ran OK (exit code %d)", job.Cmd, job.Exitcode)
 			}
-
-			numrun++
 		}
 
 		info("wr runner exiting, having run %d commands, because %s", numrun, exitReason)
@@ -210,4 +229,5 @@ func init() {
 	runnerCmd.Flags().IntVarP(&maxtime, "max_time", "m", 0, "maximum time (minutes) to run for before exiting; 0 means unlimited")
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(appLogger), "ip:port of wr manager")
 	runnerCmd.Flags().StringVar(&rdomain, "domain", internal.DefaultConfig(appLogger).ManagerCertDomain, "domain the manager's cert is valid for")
+	runnerCmd.Flags().BoolVar(&logToSyslog, "debug", false, "enable logging to syslog")
 }

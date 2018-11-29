@@ -55,6 +55,7 @@ var maxLocalRAM int
 var cloudNoSecurityGroups bool
 var cloudUseConfigDrive bool
 var useCertDomain bool
+var runnerDebug bool
 
 const kubernetes = "kubernetes"
 
@@ -475,6 +476,7 @@ func init() {
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&useCertDomain, "use_cert_domain", false, "if cert domain is configured, provide it to spawned clients instead of our IP address")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
+	managerStartCmd.Flags().BoolVar(&runnerDebug, "runner_debug", false, "have runners log to syslog on their machines")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
@@ -621,13 +623,18 @@ func startJQ(postCreation []byte) {
 
 	}
 
+	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
+	if runnerDebug {
+		runnerCmd += " --debug"
+	}
+
 	// start the jobqueue server
 	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
-		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
+		RunnerCmd:       runnerCmd,
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		TokenFile:       config.ManagerTokenFile,
