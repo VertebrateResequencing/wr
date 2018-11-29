@@ -213,9 +213,8 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		args:     []string{addr, caFile, certDomain},
 	}
 
-	l := log15.New()
-	l.SetHandler(log15.DiscardHandler())
-	c.Logger = l
+	c.Logger = log15.New()
+	c.Logger.SetHandler(log15.DiscardHandler())
 
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
