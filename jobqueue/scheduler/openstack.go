@@ -982,6 +982,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
+			reservedCh <- true
 			logger = logger.New("server", sid)
 			logger.Debug("using existing server")
 			break
@@ -995,6 +996,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			if standinServer.matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && standinServer.hasSpaceFor(req) > 0 {
 				s.recordStandin(standinServer, cmd)
 				standinServer.allocate(req)
+				reservedCh <- true // it doesn't matter if we send true or false or if the follwing waitForServer() call fails
 				s.runMutex.Unlock()
 				logger = logger.New("standin", standinServer.id)
 				logger.Debug("using existing standin")
@@ -1002,7 +1004,6 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 				server, errw = standinServer.waitForServer()
 				if errw != nil || server == nil {
 					logger.Debug("giving up on standin", "err", errw)
-					reservedCh <- false
 					return errw
 				}
 				s.runMutex.Lock()
@@ -1154,13 +1155,14 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		failMsg := "server failed spawn"
 		if doSpawn {
 			logger.Debug("will spawn", "flavor", flavor.Name)
+			tSpawn := time.Now()
 			server, err = s.provider.Spawn(requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, usingQuotaCB)
+			serverID := "failed"
 			if server != nil {
-				logger = logger.New("server", server.ID)
-				logger.Debug("spawned")
-			} else {
-				logger.Debug("spawn failed")
+				serverID = server.ID
 			}
+			logger = logger.New("server", serverID)
+			logger.Debug("spawned server", "took", time.Since(tSpawn))
 		} else {
 			logger.Debug("will not spawn, since while we waited we ran out of hardware for flavor", "flavor", flavor.Name)
 			usingQuotaCB()
@@ -1196,7 +1198,9 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			// completed
 			logger.Debug("waiting for server ready")
 			failMsg = "server failed ready"
+			tReady := time.Now()
 			err = server.WaitUntilReady(requestedConfigFiles, requestedScript)
+			logger.Debug("waited for server to become ready", "took", time.Since(tReady))
 
 			if err == nil && needsSharedDisk {
 				err = server.MountSharedDisk(localhost.IP)
@@ -1285,8 +1289,6 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		s.servers[server.ID] = server
 		s.serversMutex.Unlock()
 		standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
-	} else {
-		reservedCh <- true
 	}
 
 	s.runMutex.Unlock()
