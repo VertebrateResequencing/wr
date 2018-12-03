@@ -362,7 +362,79 @@ down will be lost.`,
 
 		err = jq.Disconnect()
 		if err != nil {
-			warn("Disconnecting from the server failed: %s", err)
+			warn("disconnecting from the server failed: %s", err)
+		}
+	},
+}
+
+// pause sub-command makes the server stop spawning new runners and stops it
+// letting existing runners reserve jobs. It's like drain, but you can resume.
+var managerPauseCmd = &cobra.Command{
+	Use:   "pause",
+	Short: "Pause starting any new jobs",
+	Long: `Pause starting any new jobs; allowing running jobs to continue.
+
+While paused you can continue to add new Jobs, but nothing new will start
+running until you "resume". This is like the "drain" command, but doesn't stop
+the manager.
+
+It is safe to repeat this command to get an update on how long before your last
+running job will finish.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// first try and connect
+		jq := connect(5*time.Second, true)
+		if jq == nil {
+			die("could not connect to the manager on port %s, so could not initiate a pause", config.ManagerPort)
+		}
+
+		// we managed to connect to the daemon; ask it to go in to pause mode
+		numLeft, etc, err := jq.PauseServer()
+		if err != nil {
+			die("even though I was able to connect to the manager, it failed to enter pause mode: %s", err)
+		}
+
+		if numLeft == 0 {
+			info("wr manager running on port %s is paused: there were no jobs still running.", config.ManagerPort)
+		} else if numLeft == 1 {
+			info("wr manager running on port %s is now paused; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
+		} else {
+			info("wr manager running on port %s is now paused; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
+		}
+
+		err = jq.Disconnect()
+		if err != nil {
+			warn("disconnecting from the server failed: %s", err)
+		}
+	},
+}
+
+// resume sub-command makes the server start spawning new runners. For use after
+// a pause.
+var managerResumeCmd = &cobra.Command{
+	Use:   "resume",
+	Short: "Resume starts running queued jobs following a pause",
+	Long: `Resume starts running queued jobs following a pause.
+
+If you have used the "pause" command, running this will resume normal operation
+of the manager.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// first try and connect
+		jq := connect(5*time.Second, true)
+		if jq == nil {
+			die("could not connect to the manager on port %s, so could not initiate a pause", config.ManagerPort)
+		}
+
+		// we managed to connect to the daemon; ask it to resume
+		err := jq.ResumeServer()
+		if err != nil {
+			die("even though I was able to connect to the manager, it failed to resume: %s", err)
+		}
+
+		info("wr manager running on port %s has resumed", config.ManagerPort)
+
+		err = jq.Disconnect()
+		if err != nil {
+			warn("disconnecting from the server failed: %s", err)
 		}
 	},
 }
@@ -446,6 +518,8 @@ func init() {
 
 	RootCmd.AddCommand(managerCmd)
 	managerCmd.AddCommand(managerStartCmd)
+	managerCmd.AddCommand(managerPauseCmd)
+	managerCmd.AddCommand(managerResumeCmd)
 	managerCmd.AddCommand(managerDrainCmd)
 	managerCmd.AddCommand(managerStopCmd)
 	managerCmd.AddCommand(managerStatusCmd)
