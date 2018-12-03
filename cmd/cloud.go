@@ -615,21 +615,37 @@ see which have issues.
 
 After investigating the servers with the appropriate tools you have that can
 interegate your cloud, if the servers are definitely never going to be useable
-(eg. they have been destroyed and no longer exist), you can use this command to
-confirm they are dead, which means the manager will no longer think those server
-resources are in use. If the servers still exist, confirming they are dead will
-result in the manager trying to destroy them.`,
+(eg. they have been destroyed and no longer exist, or have had kernel panics),
+you can use this command to confirm they are dead with --confirmdead, which
+means the manager will no longer think those server resources are in use. If the
+servers still exist, confirming they are dead will result in the manager trying
+to destroy them.
+
+If --confirmdead results in wr successfully destroying servers or confirming
+they no longer exist, any jobs that were running on those servers (which most
+likley would have reached "lost contact" status) will be killed or confirmed
+dead, so that they will either become buried or retry according to their
+configured number of retries. If jobs hadn't yet reached  "lost contact" status,
+they will have a status of running until the time they would normally become
+lost, at which point they will automatically be confirmed dead.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if cloudServersConfirmDead && (!cloudServersAll && cloudServerID == "") {
 			die("in --confirmdead mode, either --all or --identifier must be specified")
 		}
 
 		jq := connect(time.Duration(timeoutint)*time.Second, false)
+		defer func() {
+			err := jq.Disconnect()
+			if err != nil {
+				warn("failed to disconnect: %s", err)
+			}
+		}()
 
 		var badServers []*jobqueue.BadServer
+		var killedJobs []*jobqueue.Job
 		var err error
 		if cloudServersConfirmDead {
-			badServers, err = jq.ConfirmCloudServersDead(cloudServerID)
+			badServers, killedJobs, err = jq.ConfirmCloudServersDead(cloudServerID)
 			if err != nil {
 				die("%s", err)
 			}
@@ -661,6 +677,27 @@ result in the manager trying to destroy them.`,
 				problem = "; " + server.Problem
 			}
 			fmt.Printf(" ID: %s; IP: %s; Name: %s%s\n", server.ID, server.IP, server.Name, problem)
+		}
+
+		if cloudServersConfirmDead {
+			if len(killedJobs) > 0 {
+				info("confirmed that %d running or lost commands on the dead server(s) were lost:", len(killedJobs))
+				for _, job := range killedJobs {
+					state := string(job.State)
+					if state == string(jobqueue.JobStateRunning) {
+						var action string
+						if job.UntilBuried <= 0 {
+							action = "buried"
+						} else {
+							action = "retried"
+						}
+						state = fmt.Sprintf("%s - will be %s", state, action)
+					}
+					fmt.Printf(" Cmd: %s\n  (from server %s, state is now %s)\n", job.Cmd, job.HostID, state)
+				}
+			} else {
+				info("there were no running or lost commands on the dead server(s)")
+			}
 		}
 	},
 }

@@ -587,7 +587,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "getbcs":
 			servers := s.getBadServers()
 			if cr.ConfirmDeadCloudServers {
+				// first destroy or confirm dead currently bad servers
 				var confirmed []*BadServer
+				serverIDs := make(map[string]bool)
 				s.bsmutex.Lock()
 				for _, badServer := range servers {
 					if !badServer.IsBad {
@@ -602,12 +604,55 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						errd := server.Destroy()
 						if errd != nil {
 							s.Warn("Server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
+							continue
 						}
 					}
 					confirmed = append(confirmed, badServer)
+					serverIDs[badServer.ID] = true
 				}
 				s.bsmutex.Unlock()
-				sr = &serverResponse{BadServers: confirmed}
+
+				s.Debug("confirmed bad servers as dead", "number", len(confirmed))
+
+				// now kill running or lost jobs on those servers. Note that
+				// the delay between destroying the servers and managing to eg.
+				// bury the affected jobs with the killJob() call below can
+				// result in scheduler churn, where it tries to bring up new
+				// servers for jobs we're seconds away from burying. *** I don't
+				// think there's much to be done about that though; we must be
+				// sure the servers are really dead before confirming jobs are
+				// dead.
+				var jobs []*Job
+				if len(serverIDs) > 0 {
+					running := s.getJobsCurrent(0, JobStateRunning, false, false)
+					lost := s.getJobsCurrent(0, JobStateLost, false, false)
+					for _, job := range append(running, lost...) {
+						if serverIDs[job.HostID] {
+							k, err := s.killJob(job.Key())
+							if err != nil {
+								s.Error("failed to kill a job after destroying its server: %s", err)
+							} else if k {
+								// try and grab the latest job state after
+								// having killed it, but still return the client
+								// version of the job
+								if item, err := s.q.Get(job.Key()); err == nil && item != nil {
+									liveJob := item.Data.(*Job)
+									job.State = liveJob.State
+									job.UntilBuried = liveJob.UntilBuried
+									if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
+										// we're going to release the job as
+										// soon as it goes from running to lost
+										job.UntilBuried--
+									}
+								}
+								jobs = append(jobs, job)
+							}
+						}
+					}
+					s.Debug("killed jobs on bad servers", "number", len(jobs))
+				}
+
+				sr = &serverResponse{BadServers: confirmed, Jobs: jobs}
 			} else {
 				sr = &serverResponse{BadServers: servers}
 			}
