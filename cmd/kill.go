@@ -87,7 +87,7 @@ same file you gave to "wr add" in -f mode.`,
 		jes := jobsToJobEssenses(jobs)
 		killed, err := jq.Kill(jes)
 		if err != nil {
-			die("failed to remove desired jobs: %s", err)
+			die("failed to kill desired jobs: %s", err)
 		}
 		info("Initiated the termination of %d running commands (out of %d eligible)", killed, len(jobs))
 	},
