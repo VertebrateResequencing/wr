@@ -1418,25 +1418,42 @@ func (s *Server) createQueue() {
 	// runner died or because of networking issues: we keep them in the
 	// running queue, but mark them up as having possibly failed, leaving it
 	// up the user if they want to confirm the jobs are dead by killing
-	// them or leaving them to spring back to life if not.
+	// them or leaving them to spring back to life if not. If they already
+	// killed it, however, we'll do normal releasing behaviour afterwards.
 	q.SetTTRCallback(func(data interface{}) queue.SubQueue {
 		job := data.(*Job)
 
 		job.Lock()
-		defer job.Unlock()
 		if !job.StartTime.IsZero() && !job.Exited {
 			job.Lost = true
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
+
+			if job.killCalled {
+				defer func() {
+					go func() {
+						// wait for the item to go back to run queue
+						<-time.After(50 * time.Millisecond)
+
+						// now release it
+						err := s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false)
+						if err != nil {
+							s.Warn("failed to release job after TTR", "err", err)
+						}
+					}()
+				}()
+			}
 
 			// since our changed callback won't be called, send out this
 			// transition from running to lost state
 			defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
 			defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
 
+			job.Unlock()
 			return queue.SubQueueRun
 		}
 
+		job.Unlock()
 		return queue.SubQueueDelay
 	})
 }

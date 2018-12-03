@@ -1721,12 +1721,21 @@ func (c *Client) GetBadCloudServers() ([]*BadServer, error) {
 // their destruction. If id is an empty string, applies to all such servers. If
 // it is the ID of a server returned by GetBadCloudServers(), applies to just
 // that server. Returns the servers that were successfully confirmed dead.
-func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, error) {
+//
+// Additionally, any jobs that were running or lost on those servers will be
+// killed or confirmed dead, meaning that they become buried or delayed, as per
+// their retry count. Jobs that were successfully killed are returned. Note that
+// if a job hadn't become lost before calling this method, it will be returned
+// with a state of "running", but as soon as it would normally be marked as
+// lost, it will be instead be treated as if you confirmed it dead. The job's
+// UntilBuried is what it will be at that future time point, so if it is 0 you
+// know this currently running job will be buried.
+func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, []*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getbcs", ConfirmDeadCloudServers: true, CloudServerID: id})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resp.BadServers, err
+	return resp.BadServers, resp.Jobs, err
 }
 
 // request the server do something and get back its response. We can only cope
