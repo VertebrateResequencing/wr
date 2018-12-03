@@ -82,6 +82,30 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				sr = &serverResponse{DB: b.Bytes()}
 			}
+		case "pause":
+			s.Debug("pause requested")
+			err := s.Pause()
+			if err != nil {
+				if jqerr, ok := err.(Error); ok {
+					srerr = jqerr.Err
+				} else {
+					srerr = ErrInternalError
+				}
+				qerr = err.Error()
+			} else {
+				sr = &serverResponse{SStats: s.GetServerStats()}
+			}
+		case "resume":
+			s.Debug("resume requested")
+			err := s.Resume()
+			if err != nil {
+				if jqerr, ok := err.(Error); ok {
+					srerr = jqerr.Err
+				} else {
+					srerr = ErrInternalError
+				}
+				qerr = err.Error()
+			}
 		case "drain":
 			s.Debug("drain requested")
 			err := s.Drain()

@@ -266,7 +266,12 @@ func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 // running. You get back a count of existing runners and and an estimated time
 // until completion for the last of those runners.
 func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
-	resp, err := c.request(&clientRequest{Method: "drain"})
+	return c.drainOrPauseServer("drain")
+}
+
+// drainOrPauseServer handles the response from drain or pause.
+func (c *Client) drainOrPauseServer(method string) (running int, etc time.Duration, err error) {
+	resp, err := c.request(&clientRequest{Method: method})
 	if err != nil {
 		return running, etc, err
 	}
@@ -274,6 +279,22 @@ func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	running = s.Running
 	etc = s.ETC
 	return running, etc, err
+}
+
+// PauseServer tells the server to stop spawning new runners and stop letting
+// existing runners reserve new jobs. (It is like DrainServer(), without
+// stopping the server). You get back a count of existing runners and and an
+// estimated time until completion for the last of those runners.
+func (c *Client) PauseServer() (running int, etc time.Duration, err error) {
+	return c.drainOrPauseServer("pause")
+}
+
+// ResumeServer tells the server to start spawning new runners and start letting
+// existing runners reserve new jobs. Use this after a PauseServer() call to
+// resume normal operation.
+func (c *Client) ResumeServer() error {
+	_, err := c.request(&clientRequest{Method: "resume"})
+	return err
 }
 
 // ShutdownServer tells the server to immediately cease all operations. Its last

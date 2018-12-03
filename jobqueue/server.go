@@ -73,8 +73,10 @@ const (
 	ErrMustReserve      = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError          = "failed to use database"
 	ErrPermissionDenied = "bad token: permission denied"
+	ErrBeingDrained     = "server is being drained"
 	ErrStopReserving    = "recovered on a new server; you should stop reserving"
 	ServerModeNormal    = "started"
+	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
 )
 
@@ -140,7 +142,7 @@ type ServerInfo struct {
 	PID        int    // process id of server
 	Deployment string // deployment the server is running under
 	Scheduler  string // the name of the scheduler that jobs are being submitted to
-	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
+	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain|Paused if draining or paused
 }
 
 // ServerVersions holds the server version (git tag) and API version supported.
@@ -831,7 +833,7 @@ func (s *Server) Drain() error {
 	if !s.up {
 		return Error{"Drain", "", ErrNoServer}
 	}
-	if s.drain {
+	if s.drain && s.ServerInfo.Mode == ServerModeDrain {
 		return nil
 	}
 
@@ -857,6 +859,43 @@ func (s *Server) Drain() error {
 			break
 		}
 	}()
+	return nil
+}
+
+// Pause is like Drain(), except that we don't Stop().
+func (s *Server) Pause() error {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+	if !s.up {
+		return Error{"Pause", "", ErrNoServer}
+	}
+	if s.drain {
+		if s.ServerInfo.Mode == ServerModeDrain {
+			return Error{"Pause", "", ErrBeingDrained}
+		}
+		return nil
+	}
+	s.drain = true
+	s.ServerInfo.Mode = ServerModePause
+	return nil
+}
+
+// Resume undoes Pause(). Does not return an error if we were not paused.
+func (s *Server) Resume() error {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+	if !s.up {
+		return Error{"Resume", "", ErrNoServer}
+	}
+	if !s.drain {
+		return nil
+	}
+	if s.ServerInfo.Mode == ServerModeDrain {
+		return Error{"Resume", "", ErrBeingDrained}
+	}
+	s.drain = false
+	s.ServerInfo.Mode = ServerModeNormal
+	s.q.TriggerReadyAddedCallback()
 	return nil
 }
 
