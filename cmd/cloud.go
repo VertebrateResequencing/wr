@@ -623,7 +623,7 @@ to destroy them.
 
 If --confirmdead results in wr successfully destroying servers or confirming
 they no longer exist, any jobs that were running on those servers (which most
-likley would have reached "lost contact" status) will be killed or confirmed
+likely would have reached "lost contact" status) will be killed or confirmed
 dead, so that they will either become buried or retry according to their
 configured number of retries. If jobs hadn't yet reached  "lost contact" status,
 they will have a status of running until the time they would normally become
