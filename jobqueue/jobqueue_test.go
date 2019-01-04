@@ -3313,6 +3313,7 @@ func TestJobqueueRunners(t *testing.T) {
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 10 * time.Second
+		ServerCheckRunnerTime = 2 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
 		pwd, err := os.Getwd()
 		if err != nil {
