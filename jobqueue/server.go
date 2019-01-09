@@ -715,6 +715,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server listenAndServe", true)
 			defer wg.Done()
 			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && errs != http.ErrServerClosed {
@@ -725,16 +726,19 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server status casting", true)
 			defer wg.Done()
 			s.statusCaster.Broadcasting(0)
 		}()
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server server casting", true)
 			defer wg.Done()
 			s.badServerCaster.Broadcasting(0)
 		}()
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server scheduler casting", true)
 			defer wg.Done()
 			s.schedCaster.Broadcasting(0)
 		}()
@@ -1432,6 +1436,8 @@ func (s *Server) createQueue() {
 			if job.killCalled {
 				defer func() {
 					go func() {
+						defer internal.LogPanic(s.Logger, "jobqueue ttr callback releaseJob", true)
+
 						// wait for the item to go back to run queue
 						<-time.After(50 * time.Millisecond)
 
