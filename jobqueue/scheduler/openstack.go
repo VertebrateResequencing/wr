@@ -411,6 +411,8 @@ func (s *standin) waitForServer() (*cloud.Server, error) {
 	s.mutex.Unlock()
 	done := make(chan *cloud.Server)
 	go func() {
+		defer internal.LogPanic(s.Logger, "waitForServer", true)
+
 		server := <-s.endWait
 		done <- server
 		s.mutex.Lock()
@@ -1094,6 +1096,8 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			s.runMutex.Unlock()
 			done := make(chan error)
 			go func() {
+				defer internal.LogPanic(s.Logger, "runCmd", true)
+
 				for {
 					select {
 					case <-standinServer.readyToSpawn:
@@ -1481,6 +1485,8 @@ func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails
 	}
 
 	go func() {
+		defer internal.LogPanic(s.Logger, "recover", true)
+
 		// periodically check on this server; when it is no longer running
 		// anything, destroy it
 		ticker := time.NewTicker(host.TTD)

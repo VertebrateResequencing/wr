@@ -279,7 +279,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 	// network or server isn't really ready for ssh yet; wait for up to
 	// 5mins for success, if we had only just created this server
 	hostAndPort := s.IP + ":22"
-	client, err := sshDial(hostAndPort, s.sshClientConfig)
+	client, err := sshDial(hostAndPort, s.sshClientConfig, s.logger)
 	if err != nil {
 		limit := time.After(sshTimeOut)
 		ticker := time.NewTicker(1 * time.Second)
@@ -288,7 +288,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 		for {
 			select {
 			case <-ticker.C:
-				client, err = sshDial(hostAndPort, s.sshClientConfig)
+				client, err = sshDial(hostAndPort, s.sshClientConfig, s.logger)
 
 				// if it's a known "ssh still starting up" error, wait until the
 				// timeout, unless ssh had worked previously, in which case
@@ -333,10 +333,11 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 
 // sshDial calls ssh.Dial() and enforces the config's timeout, which ssh.Dial()
 // doesn't always seem to obey.
-func sshDial(addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+func sshDial(addr string, sshConfig *ssh.ClientConfig, logger log15.Logger) (*ssh.Client, error) {
 	clientCh := make(chan *ssh.Client, 1)
 	errCh := make(chan error, 1)
 	go func() {
+		defer internal.LogPanic(logger, "sshDial", false)
 		sshClient, err := ssh.Dial("tcp", addr, sshConfig)
 		clientCh <- sshClient
 		errCh <- err
@@ -442,6 +443,7 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 	errCh := make(chan string, 1)
 	finished := make(chan bool, 1)
 	go func() {
+		defer internal.LogPanic(s.logger, "server runcmd cancellation", false)
 		select {
 		case <-cancelCh:
 			outCh <- ""

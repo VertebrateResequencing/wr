@@ -315,6 +315,8 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 			s.resourceMutex.Unlock()
 
 			go func() {
+				defer internal.LogPanic(s.Logger, "recover", true)
+
 				// periodically check on this pid; when it has exited, update
 				// our resource usage
 				ticker := time.NewTicker(1 * time.Second)
@@ -487,7 +489,7 @@ func (s *local) processQueue() error {
 			s.running[key]++
 
 			go func() {
-				defer internal.LogPanic(s.Logger, "runCmd", true)
+				defer internal.LogPanic(s.Logger, "processQueue runCmd loop", true)
 
 				err := s.runCmdFunc(cmd, req, reserved, call)
 
@@ -533,6 +535,8 @@ func (s *local) processQueue() error {
 		}
 
 		go func() {
+			defer internal.LogPanic(s.Logger, "processQueue recall setup", true)
+
 			s.mutex.Lock()
 			defer s.mutex.Unlock()
 			s.processing = false
@@ -540,6 +544,7 @@ func (s *local) processQueue() error {
 			s.recall = false
 			if recall {
 				go func() {
+					defer internal.LogPanic(s.Logger, "processQueue recall", true)
 					errp := s.processQueue()
 					if errp != nil {
 						s.Warn("processQueue recall failed", "err", errp)
