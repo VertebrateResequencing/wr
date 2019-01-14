@@ -61,6 +61,7 @@ var osUsername string
 var osRAM int
 var osDisk int
 var flavorRegex string
+var flavorSets string
 var postCreationScript string
 var postDeploymentScript string
 var cloudGatewayIP string
@@ -153,6 +154,19 @@ configured WR_MANAGERCERTDOMAIN (which can't be localhost), and then create an
 A record for WR_MANAGERCERTDOMAIN that points to the IP address of the cloud
 server that wr manager was started on.
 
+The --flavor_sets option lets you describe how flavors relate to hardware in
+your cloud setup, and is probably only relevant to private clouds such as
+OpenStack, where hardware is limited. If some flavors can only be created on a
+subset of your hardware, and other flavors can only be created on a different
+subset of your hardware, then you should describe those flavors as being in
+different sets, using the form f1,f2;f3,f4 where f1 and f2 are in the same set
+and f3 and f4 are in a different set (these names are treated as regular
+expressions). Doing this will result in the following behaviour: if a flavor is
+picked to run a job (according to your --flavor regex), but a server of that
+flavor can't be created due to lack of hardware, then the next best flavor -
+excluding flavors in the initial pick's flavor set - will be picked and tried
+instead.
+
 Deploy can work with any given OS image because it uploads wr to any server it
 creates; your OS image does not have to have wr installed on it. The only
 requirements of the OS image are that it support ssh and sftp on port 22, and
@@ -208,8 +222,8 @@ within OpenStack.`,
 			}
 		}
 
-		if len(cloudResourceNameUniquer) > 11 {
-			die("--resource_name must be 11 characters or less")
+		if len(cloudResourceNameUniquer) > maxCloudResourceUsernameLength {
+			die("--resource_name must be %d characters or less", maxCloudResourceUsernameLength)
 		}
 
 		// first we need our working directory to exist
@@ -601,21 +615,37 @@ see which have issues.
 
 After investigating the servers with the appropriate tools you have that can
 interegate your cloud, if the servers are definitely never going to be useable
-(eg. they have been destroyed and no longer exist), you can use this command to
-confirm they are dead, which means the manager will no longer think those server
-resources are in use. If the servers still exist, confirming they are dead will
-result in the manager trying to destroy them.`,
+(eg. they have been destroyed and no longer exist, or have had kernel panics),
+you can use this command to confirm they are dead with --confirmdead, which
+means the manager will no longer think those server resources are in use. If the
+servers still exist, confirming they are dead will result in the manager trying
+to destroy them.
+
+If --confirmdead results in wr successfully destroying servers or confirming
+they no longer exist, any jobs that were running on those servers (which most
+likely would have reached "lost contact" status) will be killed or confirmed
+dead, so that they will either become buried or retry according to their
+configured number of retries. If jobs hadn't yet reached  "lost contact" status,
+they will have a status of running until the time they would normally become
+lost, at which point they will automatically be confirmed dead.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if cloudServersConfirmDead && (!cloudServersAll && cloudServerID == "") {
 			die("in --confirmdead mode, either --all or --identifier must be specified")
 		}
 
 		jq := connect(time.Duration(timeoutint)*time.Second, false)
+		defer func() {
+			err := jq.Disconnect()
+			if err != nil {
+				warn("failed to disconnect: %s", err)
+			}
+		}()
 
 		var badServers []*jobqueue.BadServer
+		var killedJobs []*jobqueue.Job
 		var err error
 		if cloudServersConfirmDead {
-			badServers, err = jq.ConfirmCloudServersDead(cloudServerID)
+			badServers, killedJobs, err = jq.ConfirmCloudServersDead(cloudServerID)
 			if err != nil {
 				die("%s", err)
 			}
@@ -648,6 +678,27 @@ result in the manager trying to destroy them.`,
 			}
 			fmt.Printf(" ID: %s; IP: %s; Name: %s%s\n", server.ID, server.IP, server.Name, problem)
 		}
+
+		if cloudServersConfirmDead {
+			if len(killedJobs) > 0 {
+				info("confirmed that %d running or lost commands on the dead server(s) were lost:", len(killedJobs))
+				for _, job := range killedJobs {
+					state := string(job.State)
+					if state == string(jobqueue.JobStateRunning) {
+						var action string
+						if job.UntilBuried <= 0 {
+							action = "buried"
+						} else {
+							action = "retried"
+						}
+						state = fmt.Sprintf("%s - will be %s", state, action)
+					}
+					fmt.Printf(" Cmd: %s\n  (from server %s, state is now %s)\n", job.Cmd, job.HostID, state)
+				}
+			} else {
+				info("there were no running or lost commands on the dead server(s)")
+			}
+		}
 	},
 }
 
@@ -660,12 +711,13 @@ func init() {
 	// flags specific to these sub-commands
 	defaultConfig := internal.DefaultConfig(appLogger)
 	cloudDeployCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
-	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name to be included when naming cloud resources (should be unique to you, max length 11)")
+	cloudDeployCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), fmt.Sprintf("name to be included when naming cloud resources (should be unique to you, max length %d)", maxCloudResourceUsernameLength))
 	cloudDeployCmd.Flags().StringVarP(&osPrefix, "os", "o", defaultConfig.CloudOS, "prefix of name, or ID, of the OS image your servers should use")
 	cloudDeployCmd.Flags().StringVarP(&osUsername, "username", "u", defaultConfig.CloudUser, "username needed to log in to the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
+	cloudDeployCmd.Flags().StringVar(&flavorSets, "flavor_sets", defaultConfig.CloudFlavorSets, "sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
 	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().IntVar(&maxManagerRAM, "max_local_ram", -1, "maximum MB of manager memory to use to run cmds; -1 means unlimited")
@@ -678,7 +730,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
 	cloudDeployCmd.Flags().IntVarP(&cloudManagerTimeoutSeconds, "timeout", "t", 15, "how long to wait in seconds for the manager to start up")
 	cloudDeployCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
-	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs")
+	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs, and have runners log to syslog on their machines")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name you set during deploy")
@@ -861,6 +913,9 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if flavorRegex != "" {
 			flavorArg = " -l '" + flavorRegex + "'"
 		}
+		if flavorSets != "" {
+			flavorArg += " --cloud_flavor_sets '" + flavorSets + "'"
+		}
 
 		var osDiskArg string
 		if osDisk > 0 {
@@ -871,7 +926,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		m := cloudMaxServers - 1
 		debugStr := ""
 		if cloudDebug {
-			debugStr = " --debug"
+			debugStr = " --debug --runner_debug"
 		}
 		useCertDomainStr := ""
 		if domainMatchesIP {

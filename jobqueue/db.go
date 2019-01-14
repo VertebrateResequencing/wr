@@ -439,6 +439,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		db.wg.Add(1)
 		go func() {
+			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs rglookups", true)
 			defer db.wg.Done()
 			sort.Sort(rgLookups)
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
@@ -446,6 +447,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		db.wg.Add(1)
 		go func() {
+			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs repGroups", true)
 			defer db.wg.Done()
 			var rgs sobsd
 			for rg := range repGroups {
@@ -460,6 +462,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		if len(dgLookups) > 0 {
 			db.wg.Add(1)
 			go func() {
+				defer internal.LogPanic(db.Logger, "jobqueue database dgLookups", true)
 				defer db.wg.Done()
 				sort.Sort(dgLookups)
 				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
@@ -469,6 +472,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		if len(rdgLookups) > 0 {
 			db.wg.Add(1)
 			go func() {
+				defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs rdgLookups", true)
 				defer db.wg.Done()
 				sort.Sort(rdgLookups)
 				errors <- db.storeBatched(bucketRDTK, rdgLookups, db.storeLookups)
@@ -477,6 +481,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 
 		db.wg.Add(1)
 		go func() {
+			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs encodedJobs", true)
 			defer db.wg.Done()
 			sort.Sort(encodedJobs)
 			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
@@ -1163,6 +1168,7 @@ func (db *db) retrieve(bucket []byte, key string) []byte {
 func (db *db) remove(bucket []byte, key string) {
 	db.wg.Add(1)
 	go func() {
+		defer internal.LogPanic(db.Logger, "jobqueue database remove", true)
 		defer db.wg.Done()
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			b := tx.Bucket(bucket)

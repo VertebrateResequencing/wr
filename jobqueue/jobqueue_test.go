@@ -358,21 +358,34 @@ func TestJobqueueSignal(t *testing.T) {
 	ClientTouchInterval = 50 * time.Millisecond
 	ClientRetryWait = 1 * time.Second
 
+	alreadyKilled := make(map[int]bool)
+	killServer := func(jq *Client, serverPid int, serverCmd *exec.Cmd) {
+		if alreadyKilled[serverPid] {
+			return
+		}
+		errd := jq.Disconnect()
+		if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+			fmt.Printf("failed to disconnect: %s\n", errd)
+		}
+
+		errk := syscall.Kill(serverPid, syscall.SIGTERM)
+		if errk != nil {
+			fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
+		}
+
+		errw := serverCmd.Wait()
+		if errw != nil {
+			fmt.Printf("failed to reap server pid: %s\n", errw)
+		}
+		alreadyKilled[serverPid] = true
+	}
+
 	Convey("Once a jobqueue server is up as a daemon", t, func() {
 		jq, token, serverCmd, errf := startServer(serverExe, false, false, config, addr)
 		serverPid := serverCmd.Process.Pid
 		So(errf, ShouldBeNil)
-		defer func() {
-			errk := syscall.Kill(serverPid, syscall.SIGTERM)
-			if errk != nil {
-				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
-			}
-			errw := serverCmd.Wait()
-			if errw != nil {
-				fmt.Printf("failed to reap server pid: %s\n", errw)
-			}
-		}()
-		defer jq.Disconnect()
+
+		defer killServer(jq, serverPid, serverCmd)
 
 		So(jq.ServerInfo.PID, ShouldEqual, serverPid)
 
@@ -496,13 +509,10 @@ func TestJobqueueSignal(t *testing.T) {
 			go func() {
 				<-time.After(2 * time.Second)
 				gotJob, errg := jq.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
-				errk := syscall.Kill(serverPid, syscall.SIGKILL)
-				if errk != nil {
-					fmt.Printf("failed to send SIGKILL to server: %s\n", errk)
-				}
+				killServer(jq, serverPid, serverCmd)
 				if errg == nil && gotJob != nil {
 					<-time.After(2 * time.Second)
-					errk = syscall.Kill(gotJob.Pid, syscall.SIGKILL)
+					errk := syscall.Kill(gotJob.Pid, syscall.SIGKILL)
 					if errk != nil {
 						fmt.Printf("failed to send SIGKILL to job: %s\n", errk)
 					}
@@ -523,7 +533,7 @@ func TestJobqueueSignal(t *testing.T) {
 			}()
 
 			j1worked := make(chan bool)
-			giveUp1 := time.After(16 * time.Second)
+			giveUp1 := time.After(30 * time.Second)
 			go func() {
 				errch := make(chan error)
 				go func() {
@@ -538,6 +548,7 @@ func TestJobqueueSignal(t *testing.T) {
 						// everything was fine
 						jqerr, ok := erre.(Error)
 						if !ok || jqerr.Err != ErrStopReserving {
+							fmt.Printf("\nexecute had err: %s\n", erre)
 							j1worked <- false
 							return
 						}
@@ -545,12 +556,13 @@ func TestJobqueueSignal(t *testing.T) {
 					j1worked <- true
 					return
 				case <-giveUp1:
+					fmt.Printf("\ngave up waiting for job to finish\n")
 					j1worked <- false
 				}
 			}()
 
 			j2worked := make(chan bool)
-			giveUp2 := time.After(16 * time.Second)
+			giveUp2 := time.After(30 * time.Second)
 			go func() {
 				errch := make(chan error)
 				go func() {
@@ -596,10 +608,7 @@ func TestJobqueueSignal(t *testing.T) {
 		})
 
 		Reset(func() {
-			errk := syscall.Kill(serverPid, syscall.SIGTERM)
-			if errk != nil && !strings.HasSuffix(errk.Error(), "no such process") {
-				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
-			}
+			killServer(jq, serverPid, serverCmd)
 		})
 	})
 
@@ -609,22 +618,7 @@ func TestJobqueueSignal(t *testing.T) {
 		jq, token, serverCmd, errf := startServer(serverExe, false, true, config, addr)
 		serverPid := serverCmd.Process.Pid
 		So(errf, ShouldBeNil)
-		defer func() {
-			errk := syscall.Kill(serverPid, syscall.SIGTERM)
-			if errk != nil && !strings.HasSuffix(errk.Error(), "no such process") {
-				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
-			}
-			errw := serverCmd.Wait()
-			if errw != nil && !strings.HasSuffix(errw.Error(), "was already called") {
-				fmt.Printf("failed to reap server pid: %s\n", errw)
-			}
-		}()
-		defer func() {
-			errd := jq.Disconnect()
-			if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
-				fmt.Printf("failed to disconnect: %s\n", errd)
-			}
-		}()
+		defer killServer(jq, serverPid, serverCmd)
 
 		So(jq.ServerInfo.PID, ShouldEqual, serverPid)
 
@@ -675,9 +669,11 @@ func TestJobqueueSignal(t *testing.T) {
 			}
 			So(len(runnerPids), ShouldEqual, 2)
 			So(runnerPidToKill, ShouldNotEqual, 0)
+			So(runnerPidToKill, ShouldNotEqual, serverPid)
 
 			// kill server and then second runner, then wait before starting new
-			// server
+			// server. We don't use killServer here because we don't want to
+			// jq.Disconnect and reap before killing the runner
 			errk := syscall.Kill(serverPid, syscall.SIGKILL)
 			if errk != nil {
 				fmt.Printf("failed to send SIGKILL to server: %s\n", errk)
@@ -687,6 +683,16 @@ func TestJobqueueSignal(t *testing.T) {
 			if errk != nil {
 				fmt.Printf("failed to send SIGKILL to runner: %s\n", errk)
 			}
+			errd := jq.Disconnect()
+			if errd != nil && !strings.HasSuffix(errd.Error(), "connection closed") {
+				fmt.Printf("failed to disconnect: %s\n", errd)
+			}
+			errw := serverCmd.Wait()
+			if errw != nil {
+				fmt.Printf("failed to reap server pid: %s\n", errw)
+			}
+			alreadyKilled[serverPid] = true
+
 			<-time.After(4 * time.Second)
 			var errf error
 			jq, _, serverCmd, errf = startServer(serverExe, true, true, config, addr)
@@ -700,7 +706,7 @@ func TestJobqueueSignal(t *testing.T) {
 			cmd3 := "echo 1"
 			jobs = []*Job{{Cmd: cmd3, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 1}, Retries: uint8(0), RepGroup: "wait"}}
 			inserts, already, err = jq.Add(jobs, envVars, true)
-			errd := jq.Disconnect()
+			errd = jq.Disconnect()
 			if errd != nil {
 				fmt.Printf("failed to disconnect: %s\n", errd)
 			}
@@ -750,22 +756,12 @@ func TestJobqueueSignal(t *testing.T) {
 
 			// for subsequent tests to work, we need to wait for the server to
 			// really be gone
-			errk = syscall.Kill(serverPid, syscall.SIGTERM)
-			if errk != nil {
-				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
-			}
-			errw := serverCmd.Wait()
-			if errw != nil {
-				fmt.Printf("failed to reap server pid: %s\n", errw)
-			}
+			killServer(jq, serverPid, serverCmd)
 			So(waitUntilPidsAreGone(map[int]bool{serverPid: true}, 5), ShouldBeTrue)
 		})
 
 		Reset(func() {
-			errk := syscall.Kill(serverPid, syscall.SIGTERM)
-			if errk != nil && !strings.HasSuffix(errk.Error(), "no such process") {
-				fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
-			}
+			killServer(jq, serverPid, serverCmd)
 		})
 	})
 }
@@ -1584,7 +1580,6 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("Jobs that fork and change processgroup can still be fully killed", func() {
 					jobs = nil
-
 					tmpdir, err := ioutil.TempDir("", "wr_kill_test")
 					So(err, ShouldBeNil)
 					defer os.RemoveAll(tmpdir)
@@ -1613,6 +1608,9 @@ func TestJobqueueMedium(t *testing.T) {
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					jqerr, ok := err.(Error)
+					if !ok {
+						fmt.Printf("\ngot err %+v (%s)\n", err, err)
+					}
 					So(ok, ShouldBeTrue)
 					So(jqerr.Err, ShouldEqual, FailReasonKilled)
 					So(job.State, ShouldEqual, JobStateBuried)
@@ -3315,6 +3313,7 @@ func TestJobqueueRunners(t *testing.T) {
 	// start these tests anew because these tests have the server spawn runners
 	Convey("Once a new jobqueue server is up", t, func() {
 		ServerItemTTR = 10 * time.Second
+		ServerCheckRunnerTime = 2 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
 		pwd, err := os.Getwd()
 		if err != nil {
@@ -3345,6 +3344,107 @@ func TestJobqueueRunners(t *testing.T) {
 
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
+
+		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 1", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "fallocate"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// run the first job by itself, so learning occurs (even when disk
+			// is 0 and override is 2)
+			waitToFinish := func() bool {
+				done := make(chan bool, 1)
+				go func() {
+					limit := time.After(10 * time.Second)
+					ticker := time.NewTicker(500 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							if !server.HasRunners() {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				return <-done
+			}
+
+			waitToFinish()
+			complete, errj := jq.GetByRepGroup("fallocate", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldResemble, zeroReq)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			// add 3 similar jobs that only really differ in override behaviour
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 2", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(0), RepGroup: "learns"})
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 3", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "learnsDiskNotMem"})
+			// following is the main test: specifying Disk of 0 and override 2
+			// should result in 0 overriding learned value, even though its a
+			// zero value, if DiskSet is true
+			notOverrideReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0, Disk: 0}
+			overrideReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0, Disk: 0, DiskSet: true}
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 4", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: notOverrideReq, Retries: uint8(0), Override: uint8(2), RepGroup: "learnsDiskNotMem2"})
+			jobs = append(jobs, &Job{Cmd: "fallocate -l 200M foo && echo 5", Cwd: tmpdir, ReqGroup: "fallocate", Requirements: overrideReq, Retries: uint8(0), Override: uint8(2), RepGroup: "nolearning"})
+
+			inserts, already, err = jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 4)
+			So(already, ShouldEqual, 1)
+
+			waitToFinish()
+
+			complete, errj = jq.GetByRepGroup("learns", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldNotResemble, zeroReq)
+			So(complete[0].Requirements.Disk, ShouldEqual, 1)
+			So(complete[0].Requirements.RAM, ShouldEqual, 100)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			complete, errj = jq.GetByRepGroup("learnsDiskNotMem", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldNotResemble, zeroReq)
+			So(complete[0].Requirements.Disk, ShouldEqual, 1)
+			So(complete[0].Requirements.RAM, ShouldEqual, 1)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			complete, errj = jq.GetByRepGroup("learnsDiskNotMem2", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldNotResemble, zeroReq)
+			So(complete[0].Requirements.Disk, ShouldEqual, 1)
+			So(complete[0].Requirements.RAM, ShouldEqual, 1)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+
+			complete, errj = jq.GetByRepGroup("nolearning", false, 0, JobStateComplete, false, false)
+			So(errj, ShouldBeNil)
+			So(len(complete), ShouldEqual, 1)
+			So(complete[0].Requirements, ShouldResemble, overrideReq)
+			So(complete[0].PeakDisk, ShouldEqual, 200)
+		})
 
 		Convey("You can connect, and add a job that you can kill while it's running", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -4261,7 +4361,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	ClientTouchInterval = 50 * time.Millisecond
 
 	host, _ := os.Hostname()
-	if strings.HasPrefix(host, "wr-development-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
+	if strings.HasPrefix(host, "wr-dev-"+localUser) && osPrefix != "" && osUser != "" && flavorRegex != "" {
 		var server *Server
 		var token []byte
 		var errs error
@@ -4392,9 +4492,12 @@ sudo usermod -aG docker ` + osUser
 				dockerCidFile := "jobqueue_test.cidfile"
 				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
 
+				dockerCidFile = "uuid-20181127.cidfile"
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidglob_docker", MonitorDocker: "uuid-*.cidfile"})
+
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
-				So(inserts, ShouldEqual, 3)
+				So(inserts, ShouldEqual, 4)
 				So(already, ShouldEqual, 0)
 
 				// wait for the jobs to get run
@@ -4440,6 +4543,13 @@ sudo usermod -aG docker ` + osUser
 				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
 
 				got, err = jq.GetByRepGroup("cidfile_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThan, 100)
+				So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
+				So(got[0].CPUtime, ShouldBeGreaterThan, 5*time.Second)
+
+				got, err = jq.GetByRepGroup("cidglob_docker", false, 0, JobStateComplete, false, false)
 				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeLessThan, 100)

@@ -36,6 +36,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/inconshreveable/log15"
+	logext "github.com/inconshreveable/log15/ext"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -65,8 +66,11 @@ type maxResourceGetter func() int
 // canCounters are functions used by processQueue() to see how many of a job
 // can be run. (We make use of this in the local struct so that other
 // implementers of scheduleri can embed local, use local's processQueue(), but
-// have their own canCounter implementation.)
-type canCounter func(req *Requirements) (canCount int)
+// have their own canCounter implementation.) The call argument will be a random
+// string. That same string will also be supplied to the cmdRunner function, so
+// you can tie together cmdRunner invocations that are all a result of a
+// particular canCounter call.
+type canCounter func(req *Requirements, call string) (canCount int)
 
 // stateUpdaters are functions used by processQueue() to update any global state
 // that might have become invalid due to changes external to our own actions.
@@ -79,7 +83,7 @@ type stateUpdater func()
 // (Their reason for being is the same as for canCounters.) The reservedCh
 // should be sent true as soon as resources have been reserved to run the cmd,
 // or sent false if something went wrong before that.
-type cmdRunner func(cmd string, req *Requirements, reservedCh chan bool) error
+type cmdRunner func(cmd string, req *Requirements, reservedCh chan bool, call string) error
 
 // cancelCmdRunner are functions used by processQueue() to cancel the running
 // of cmdRunners that started but didn't really start to run the cmd. You give
@@ -311,6 +315,8 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 			s.resourceMutex.Unlock()
 
 			go func() {
+				defer internal.LogPanic(s.Logger, "recover", true)
+
 				// periodically check on this pid; when it has exited, update
 				// our resource usage
 				ticker := time.NewTicker(1 * time.Second)
@@ -463,7 +469,8 @@ func (s *local) processQueue() error {
 		}
 
 		// now see if there's remaining capacity to run the job
-		canCount := s.canCountFunc(req)
+		call := logext.RandId(8)
+		canCount := s.canCountFunc(req, call)
 		s.Debug("processQueue canCount", "can", canCount, "running", running, "should", shouldCount)
 		if canCount > shouldCount {
 			canCount = shouldCount
@@ -482,9 +489,9 @@ func (s *local) processQueue() error {
 			s.running[key]++
 
 			go func() {
-				defer internal.LogPanic(s.Logger, "runCmd", true)
+				defer internal.LogPanic(s.Logger, "processQueue runCmd loop", true)
 
-				err := s.runCmdFunc(cmd, req, reserved)
+				err := s.runCmdFunc(cmd, req, reserved, call)
 
 				s.mutex.Lock()
 				s.resourceMutex.Lock()
@@ -528,6 +535,8 @@ func (s *local) processQueue() error {
 		}
 
 		go func() {
+			defer internal.LogPanic(s.Logger, "processQueue recall setup", true)
+
 			s.mutex.Lock()
 			defer s.mutex.Unlock()
 			s.processing = false
@@ -535,6 +544,7 @@ func (s *local) processQueue() error {
 			s.recall = false
 			if recall {
 				go func() {
+					defer internal.LogPanic(s.Logger, "processQueue recall", true)
 					errp := s.processQueue()
 					if errp != nil {
 						s.Warn("processQueue recall failed", "err", errp)
@@ -549,7 +559,7 @@ func (s *local) processQueue() error {
 
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources.
-func (s *local) canCount(req *Requirements) int {
+func (s *local) canCount(req *Requirements, call string) int {
 	s.resourceMutex.RLock()
 	defer s.resourceMutex.RUnlock()
 
@@ -585,7 +595,7 @@ func (s *local) canCount(req *Requirements) int {
 // NB: we only return an error if we can't start the cmd, not if the command
 // fails (schedule() only guarantees that the cmds are run count times, not that
 // they run /successful/ that many times).
-func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool) error {
+func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call string) error {
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	err := ec.Start()
 	if err != nil {

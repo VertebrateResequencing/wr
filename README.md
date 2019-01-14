@@ -85,10 +85,11 @@ the config options available. The main things you need to know are:
   If you'll be using OpenStack, it is strongly recommended to configure
   database backups to go to S3.
 * The wr executable must be available at that same absolute path on all
-  compute nodes in your cluster, so you either need to place it on a shared
-  disk, or install it in the same place on all machines (eg. have it as part of
-  your OS image). If you use config files, these must also be readable by all
-  nodes (when you don't have a shared disk, it's best to configure using
+  compute nodes in your cluster, so you need to place it on a shared disk or
+  install it in the same place on all machines. In cloud environments, the wr
+  executable is copied for you to new cloud servers, so it doesn't need to be
+  part of your OS images. If you use config files, these must also be readable
+  by all nodes (when you don't have a shared disk, it's best to configure using
   environment variables).
 * If you are ssh tunnelling to the node where you are running wr and wish
   to use the web interface, you will have to forward the host and port that it

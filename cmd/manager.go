@@ -55,6 +55,7 @@ var maxLocalRAM int
 var cloudNoSecurityGroups bool
 var cloudUseConfigDrive bool
 var useCertDomain bool
+var runnerDebug bool
 
 const kubernetes = "kubernetes"
 
@@ -104,13 +105,13 @@ tenant (project) also running wr.
 Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
 on which wr manager will be started in OpenStack mode for you. See 'wr cloud
 deploy -h' for the details of which environment variables you need to use the
-OpenStack scheduler.
+OpenStack scheduler. That help also explains some of the --cloud* options in
+further detail.
 
 Similarly, If using the Kubernetes scheduler you must already be running in a
 pod. Be sure to pass a namespace for wr to use that will not have another wr
 user attempting to use it.
-Instead it is recommended to use 'wr kubernetes deploy' to bootstrap wr to a
-cluster.
+Instead it is recommended to use 'wr k8s deploy' to bootstrap wr to a cluster.
 
 The --use_cert_domain option is intended for use when you have configured your
 own security certificates and want the manager to be reachable at a given
@@ -167,6 +168,10 @@ fully.`,
 			if len(configMapName) == 0 && len(postCreationScript) == 0 {
 				die("either a config map name or path to a post creation script is required")
 			}
+		}
+
+		if len(localUsername) > maxCloudResourceUsernameLength {
+			die("--local_username must be %d characters or less", maxCloudResourceUsernameLength)
 		}
 
 		// later, we will wait for the daemonized manager to either create a new
@@ -357,7 +362,79 @@ down will be lost.`,
 
 		err = jq.Disconnect()
 		if err != nil {
-			warn("Disconnecting from the server failed: %s", err)
+			warn("disconnecting from the server failed: %s", err)
+		}
+	},
+}
+
+// pause sub-command makes the server stop spawning new runners and stops it
+// letting existing runners reserve jobs. It's like drain, but you can resume.
+var managerPauseCmd = &cobra.Command{
+	Use:   "pause",
+	Short: "Pause starting any new jobs",
+	Long: `Pause starting any new jobs; allowing running jobs to continue.
+
+While paused you can continue to add new Jobs, but nothing new will start
+running until you "resume". This is like the "drain" command, but doesn't stop
+the manager.
+
+It is safe to repeat this command to get an update on how long before your last
+running job will finish.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// first try and connect
+		jq := connect(5*time.Second, true)
+		if jq == nil {
+			die("could not connect to the manager on port %s, so could not initiate a pause", config.ManagerPort)
+		}
+
+		// we managed to connect to the daemon; ask it to go in to pause mode
+		numLeft, etc, err := jq.PauseServer()
+		if err != nil {
+			die("even though I was able to connect to the manager, it failed to enter pause mode: %s", err)
+		}
+
+		if numLeft == 0 {
+			info("wr manager running on port %s is paused: there were no jobs still running.", config.ManagerPort)
+		} else if numLeft == 1 {
+			info("wr manager running on port %s is now paused; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
+		} else {
+			info("wr manager running on port %s is now paused; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
+		}
+
+		err = jq.Disconnect()
+		if err != nil {
+			warn("disconnecting from the server failed: %s", err)
+		}
+	},
+}
+
+// resume sub-command makes the server start spawning new runners. For use after
+// a pause.
+var managerResumeCmd = &cobra.Command{
+	Use:   "resume",
+	Short: "Resume starts running queued jobs following a pause",
+	Long: `Resume starts running queued jobs following a pause.
+
+If you have used the "pause" command, running this will resume normal operation
+of the manager.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// first try and connect
+		jq := connect(5*time.Second, true)
+		if jq == nil {
+			die("could not connect to the manager on port %s, so could not initiate a pause", config.ManagerPort)
+		}
+
+		// we managed to connect to the daemon; ask it to resume
+		err := jq.ResumeServer()
+		if err != nil {
+			die("even though I was able to connect to the manager, it failed to resume: %s", err)
+		}
+
+		info("wr manager running on port %s has resumed", config.ManagerPort)
+
+		err = jq.Disconnect()
+		if err != nil {
+			warn("disconnecting from the server failed: %s", err)
 		}
 	},
 }
@@ -441,6 +518,8 @@ func init() {
 
 	RootCmd.AddCommand(managerCmd)
 	managerCmd.AddCommand(managerStartCmd)
+	managerCmd.AddCommand(managerPauseCmd)
+	managerCmd.AddCommand(managerResumeCmd)
 	managerCmd.AddCommand(managerDrainCmd)
 	managerCmd.AddCommand(managerStopCmd)
 	managerCmd.AddCommand(managerStatusCmd)
@@ -455,10 +534,11 @@ func init() {
 	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "maximum MB of local memory to use to run cmds; -1 means unlimited")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
-	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), "for cloud schedulers, your local username outside of the cloud")
+	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), fmt.Sprintf("for cloud schedulers, your local username outside of the cloud (max length %d)", maxCloudResourceUsernameLength))
 	managerStartCmd.Flags().IntVarP(&osRAM, "cloud_ram", "r", defaultConfig.CloudRAM, "for cloud schedulers, ram (MB) needed by the OS image specified by --cloud_os")
 	managerStartCmd.Flags().IntVarP(&osDisk, "cloud_disk", "d", defaultConfig.CloudDisk, "for cloud schedulers, minimum disk (GB) for servers")
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
+	managerStartCmd.Flags().StringVar(&flavorSets, "cloud_flavor_sets", defaultConfig.CloudFlavorSets, "for cloud schedulers, sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
 	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
 	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", "for the kubernetes scheduler, provide an existing config map to initialise all pods with. To be used instead of --cloud_script")
@@ -471,12 +551,13 @@ func init() {
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&useCertDomain, "use_cert_domain", false, "if cert domain is configured, provide it to spawned clients instead of our IP address")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
+	managerStartCmd.Flags().BoolVar(&runnerDebug, "runner_debug", false, "have runners log to syslog on their machines")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
 
 func logStarted(s *jobqueue.ServerInfo, token []byte) {
-	info("wr manager started on %s, pid %d", sAddr(s), s.PID)
+	info("wr manager %s started on %s, pid %d", jobqueue.ServerVersion, sAddr(s), s.PID)
 
 	// go back to just stderr so we don't log token to file (this doesn't affect
 	// server logging)
@@ -561,6 +642,7 @@ func startJQ(postCreation []byte) {
 			OSRAM:                osRAM,
 			OSDisk:               osDisk,
 			FlavorRegex:          flavorRegex,
+			FlavorSets:           flavorSets,
 			PostCreationScript:   postCreation,
 			ConfigFiles:          cloudConfigFiles,
 			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
@@ -617,13 +699,18 @@ func startJQ(postCreation []byte) {
 
 	}
 
+	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
+	if runnerDebug {
+		runnerCmd += " --debug"
+	}
+
 	// start the jobqueue server
 	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
-		RunnerCmd:       exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
+		RunnerCmd:       runnerCmd,
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		TokenFile:       config.ManagerTokenFile,

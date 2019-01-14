@@ -66,6 +66,8 @@ github.com/gophercloud/gophercloud v0.0.0-20181006170026-546f1f72e004 h1:SQYCwLS
 github.com/gophercloud/gophercloud v0.0.0-20181006170026-546f1f72e004/go.mod h1:3WdhXV3rUYy9p6AUW8d94kr+HS62Y4VL9mBnFxsD8q4=
 github.com/gophercloud/gophercloud v0.0.0-20181009192228-f2f15d653e07 h1:tqvhHvbpc+m52nj1NxOBSvtPgf2iptPt39p/7U7GRZQ=
 github.com/gophercloud/gophercloud v0.0.0-20181009192228-f2f15d653e07/go.mod h1:3WdhXV3rUYy9p6AUW8d94kr+HS62Y4VL9mBnFxsD8q4=
+github.com/gophercloud/gophercloud v0.0.0-20181202211702-fac2636416a9 h1:MSnKEq5bbYeK31CTMpUYhZboIoTxSoDXfbun8hKl3+o=
+github.com/gophercloud/gophercloud v0.0.0-20181202211702-fac2636416a9/go.mod h1:3WdhXV3rUYy9p6AUW8d94kr+HS62Y4VL9mBnFxsD8q4=
 github.com/gopherjs/gopherjs v0.0.0-20180825215210-0210a2f0f73c h1:16eHWuMGvCjSfgRJKqIzapE78onvvTbdi1rMkU00lZw=
 github.com/gopherjs/gopherjs v0.0.0-20180825215210-0210a2f0f73c/go.mod h1:wJfORRmW1u3UXTncJ5qlYoELFm8eSnnEO6hX4iZ3EWY=
 github.com/gorilla/websocket v1.4.0 h1:WDFjx/TMzVgy9VdMMQi2K2Emtwi2QcUQsztZ/zLaH/Q=
@@ -124,6 +126,8 @@ github.com/opencontainers/go-digest v0.0.0-20180430190053-c9281466c8b2 h1:QhPf3A
 github.com/opencontainers/go-digest v0.0.0-20180430190053-c9281466c8b2/go.mod h1:cMLVZDEM3+U2I4VmLI6N8jQYUd2OVphdqWwCJHrFt2s=
 github.com/opencontainers/image-spec v0.0.0-20180411145040-e562b0440392 h1:rBwY4zl6Rvzh0RyFbELnswKxVfiq7xB/d2sfgy3PmHI=
 github.com/opencontainers/image-spec v0.0.0-20180411145040-e562b0440392/go.mod h1:BtxoFyWECRxE4U/7sNtV5W15zMzWCbyJoFRP3s7yZA0=
+github.com/patrickmn/go-cache v2.1.0+incompatible h1:HRMgzkcYKYpi3C8ajMPV8OFXaaRUnok+kx1WdO15EQc=
+github.com/patrickmn/go-cache v2.1.0+incompatible/go.mod h1:3Qf8kWWT7OJRJbdiICTKqZju1ZixQ/KpMGzzAfe6+WQ=
 github.com/pkg/errors v0.0.0-20180311214515-816c9085562c h1:F5RoIh7F9wB47PvXvpP1+Ihq1TkyC8iRdvwfKkESEZQ=
 github.com/pkg/errors v0.0.0-20180311214515-816c9085562c/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pkg/sftp v0.0.0-20180824225003-b9345f483dc3 h1:WoQsKxLkGC71OjqWitPdENKSndT8B/AoO6Tr+BJPLeY=

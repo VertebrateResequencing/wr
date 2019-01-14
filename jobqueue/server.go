@@ -73,8 +73,10 @@ const (
 	ErrMustReserve      = "you must Reserve() a Job before passing it to other methods"
 	ErrDBError          = "failed to use database"
 	ErrPermissionDenied = "bad token: permission denied"
+	ErrBeingDrained     = "server is being drained"
 	ErrStopReserving    = "recovered on a new server; you should stop reserving"
 	ServerModeNormal    = "started"
+	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
 )
 
@@ -140,7 +142,7 @@ type ServerInfo struct {
 	PID        int    // process id of server
 	Deployment string // deployment the server is running under
 	Scheduler  string // the name of the scheduler that jobs are being submitted to
-	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain if draining
+	Mode       string // ServerModeNormal if the server is running normally, or ServerModeDrain|Paused if draining or paused
 }
 
 // ServerVersions holds the server version (git tag) and API version supported.
@@ -616,6 +618,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	// set up responding to command-line clients
+	ignoreClientMessages := true
 	wg.Add(1)
 	go func() {
 		// log panics and die
@@ -636,6 +639,12 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 					if !inShutdown && rerr != mangos.ErrRecvTimeout {
 						s.Error("Server socket Receive error", "err", rerr)
 					}
+					continue
+				}
+
+				// ignore messages that were waiting on the socket before we've
+				// even finished starting up
+				if ignoreClientMessages {
 					continue
 				}
 
@@ -706,6 +715,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server listenAndServe", true)
 			defer wg.Done()
 			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && errs != http.ErrServerClosed {
@@ -716,16 +726,19 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server status casting", true)
 			defer wg.Done()
 			s.statusCaster.Broadcasting(0)
 		}()
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server server casting", true)
 			defer wg.Done()
 			s.badServerCaster.Broadcasting(0)
 		}()
 		wg.Add(1)
 		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server scheduler casting", true)
 			defer wg.Done()
 			s.schedCaster.Broadcasting(0)
 		}()
@@ -794,6 +807,8 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		}
 	}
 
+	ignoreClientMessages = false
+
 	return s, msg, token, err
 }
 
@@ -822,7 +837,7 @@ func (s *Server) Drain() error {
 	if !s.up {
 		return Error{"Drain", "", ErrNoServer}
 	}
-	if s.drain {
+	if s.drain && s.ServerInfo.Mode == ServerModeDrain {
 		return nil
 	}
 
@@ -848,6 +863,43 @@ func (s *Server) Drain() error {
 			break
 		}
 	}()
+	return nil
+}
+
+// Pause is like Drain(), except that we don't Stop().
+func (s *Server) Pause() error {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+	if !s.up {
+		return Error{"Pause", "", ErrNoServer}
+	}
+	if s.drain {
+		if s.ServerInfo.Mode == ServerModeDrain {
+			return Error{"Pause", "", ErrBeingDrained}
+		}
+		return nil
+	}
+	s.drain = true
+	s.ServerInfo.Mode = ServerModePause
+	return nil
+}
+
+// Resume undoes Pause(). Does not return an error if we were not paused.
+func (s *Server) Resume() error {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+	if !s.up {
+		return Error{"Resume", "", ErrNoServer}
+	}
+	if !s.drain {
+		return nil
+	}
+	if s.ServerInfo.Mode == ServerModeDrain {
+		return Error{"Resume", "", ErrBeingDrained}
+	}
+	s.drain = false
+	s.ServerInfo.Mode = ServerModeNormal
+	s.q.TriggerReadyAddedCallback()
 	return nil
 }
 
@@ -1051,7 +1103,7 @@ func (s *Server) createQueue() {
 					if recs > 0 {
 						recsSecs = recs
 					}
-					recommendedReq = &scheduler.Requirements{RAM: recmMBs, Disk: recdGBs, Time: time.Duration(recsSecs) * time.Second}
+					recommendedReq = &scheduler.Requirements{RAM: recmMBs, Disk: recdGBs, DiskSet: true, Time: time.Duration(recsSecs) * time.Second}
 					groupToReqs[job.ReqGroup] = recommendedReq
 				}
 			}
@@ -1060,9 +1112,10 @@ func (s *Server) createQueue() {
 				job.Lock()
 				if job.RequirementsOrig == nil {
 					job.RequirementsOrig = &scheduler.Requirements{
-						RAM:  job.Requirements.RAM,
-						Time: job.Requirements.Time,
-						Disk: job.Requirements.Disk,
+						RAM:     job.Requirements.RAM,
+						Time:    job.Requirements.Time,
+						Disk:    job.Requirements.Disk,
+						DiskSet: job.Requirements.DiskSet,
 					}
 				}
 
@@ -1082,7 +1135,7 @@ func (s *Server) createQueue() {
 				}
 
 				if recommendedReq.Disk > 0 {
-					if job.RequirementsOrig.Disk > 0 {
+					if job.RequirementsOrig.Disk > 0 || job.RequirementsOrig.DiskSet {
 						switch job.Override {
 						case 0:
 							job.Requirements.Disk = recommendedReq.Disk
@@ -1369,25 +1422,44 @@ func (s *Server) createQueue() {
 	// runner died or because of networking issues: we keep them in the
 	// running queue, but mark them up as having possibly failed, leaving it
 	// up the user if they want to confirm the jobs are dead by killing
-	// them or leaving them to spring back to life if not.
+	// them or leaving them to spring back to life if not. If they already
+	// killed it, however, we'll do normal releasing behaviour afterwards.
 	q.SetTTRCallback(func(data interface{}) queue.SubQueue {
 		job := data.(*Job)
 
 		job.Lock()
-		defer job.Unlock()
 		if !job.StartTime.IsZero() && !job.Exited {
 			job.Lost = true
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
+
+			if job.killCalled {
+				defer func() {
+					go func() {
+						defer internal.LogPanic(s.Logger, "jobqueue ttr callback releaseJob", true)
+
+						// wait for the item to go back to run queue
+						<-time.After(50 * time.Millisecond)
+
+						// now release it
+						err := s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false)
+						if err != nil {
+							s.Warn("failed to release job after TTR", "err", err)
+						}
+					}()
+				}()
+			}
 
 			// since our changed callback won't be called, send out this
 			// transition from running to lost state
 			defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
 			defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
 
+			job.Unlock()
 			return queue.SubQueueRun
 		}
 
+		job.Unlock()
 		return queue.SubQueueDelay
 	})
 }

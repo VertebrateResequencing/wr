@@ -22,7 +22,6 @@ package jobqueue
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -41,9 +40,8 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
 	"github.com/gofrs/uuid"
+	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
 	"nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/req"
@@ -135,6 +133,7 @@ type Client struct {
 	host       string
 	port       string
 	args       []string // allowing internal reconnects
+	log15.Logger
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -211,6 +210,9 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		args:     []string{addr, caFile, certDomain},
 	}
 
+	c.Logger = log15.New()
+	c.Logger.SetHandler(log15.DiscardHandler())
+
 	// Dial succeeds even when there's no server up, so we test the connection
 	// works with a Ping()
 	si, err := c.Ping(timeout)
@@ -236,6 +238,14 @@ func (c *Client) Disconnect() error {
 	return c.sock.Close()
 }
 
+// SetLogger sets the logger, if you want to get debug type messages when
+// running client methods (currently only Execute() tells you about connection
+// issues, letting you understand why it might not seem to be doing anything as
+// it tries to reconnect). By default, these messages are discarded.
+func (c *Client) SetLogger(logger log15.Logger) {
+	c.Logger = logger
+}
+
 // Ping tells you if your connection to the server is working, returning static
 // information about the server. If err is nil, it works. This is the only
 // command that interacts with the server that works if a blank or invalid
@@ -253,7 +263,12 @@ func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 // running. You get back a count of existing runners and and an estimated time
 // until completion for the last of those runners.
 func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
-	resp, err := c.request(&clientRequest{Method: "drain"})
+	return c.drainOrPauseServer("drain")
+}
+
+// drainOrPauseServer handles the response from drain or pause.
+func (c *Client) drainOrPauseServer(method string) (running int, etc time.Duration, err error) {
+	resp, err := c.request(&clientRequest{Method: method})
 	if err != nil {
 		return running, etc, err
 	}
@@ -261,6 +276,22 @@ func (c *Client) DrainServer() (running int, etc time.Duration, err error) {
 	running = s.Running
 	etc = s.ETC
 	return running, etc, err
+}
+
+// PauseServer tells the server to stop spawning new runners and stop letting
+// existing runners reserve new jobs. (It is like DrainServer(), without
+// stopping the server). You get back a count of existing runners and and an
+// estimated time until completion for the last of those runners.
+func (c *Client) PauseServer() (running int, etc time.Duration, err error) {
+	return c.drainOrPauseServer("pause")
+}
+
+// ResumeServer tells the server to start spawning new runners and start letting
+// existing runners reserve new jobs. Use this after a PauseServer() call to
+// resume normal operation.
+func (c *Client) ResumeServer() error {
+	_, err := c.request(&clientRequest{Method: "resume"})
+	return err
 }
 
 // ShutdownServer tells the server to immediately cease all operations. Its last
@@ -415,6 +446,8 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // immediately return an error. NB: the peak RAM tracking assumes we are running
 // on a modern linux system with /proc/*/smaps.
 func (c *Client) Execute(job *Job, shell string) error {
+	logger := c.Logger.New("job", job.Key())
+
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
 	// but in this case we want to avoid starting to execute the command before
@@ -678,12 +711,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// if docker monitoring has been requested, try and get the docker client
 	// now and fail early if we can't
-	var dockerClient *docker.Client
-	existingDockerContainers := make(map[string]bool)
+	var dockerClient *internal.DockerClient
 	var monitorDocker, getFirstDockerContainer bool
 	if job.MonitorDocker != "" {
 		monitorDocker = true
-		dockerClient, err = docker.NewClientWithOpts(docker.FromEnv)
+		dockerClient, err = internal.NewDockerClient()
 		if err != nil {
 			buryErr := fmt.Errorf("failed to create docker client: %s", err)
 			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
@@ -693,11 +725,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 			return buryErr
 		}
 
-		// if we've been asked to monitor the first container that appears, note
-		// existing containers
+		// if we've been asked to monitor the first container that appears,
+		// remember existing containers
 		if job.MonitorDocker == "?" {
 			getFirstDockerContainer = true
-			containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+			errc := dockerClient.RememberCurrentContainerIDs()
 			if errc != nil {
 				buryErr := fmt.Errorf("failed to get docker containers: %s", errc)
 				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
@@ -705,9 +737,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 					buryErr = fmt.Errorf("%s (and burying the job failed: %s)", buryErr.Error(), errb)
 				}
 				return buryErr
-			}
-			for _, container := range containers {
-				existingDockerContainers[container.ID] = true
 			}
 		}
 	}
@@ -811,7 +840,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 			if dockerContainerID != "" {
 				// kill the docker container as well
-				errd := dockerClient.ContainerKill(context.Background(), dockerContainerID, "SIGKILL")
+				errd := dockerClient.KillContainer(dockerContainerID)
 				if errk == nil {
 					errk = errd
 				} else {
@@ -879,6 +908,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errf != nil {
 					// we may have lost contact with the manager; this is OK. We
 					// will keep trying to touch until it works
+					logger.Warn("could not touch", "err", errf)
 					continue
 				}
 			case <-memTicker.C:
@@ -899,55 +929,26 @@ func (c *Client) Execute(job *Job, shell string) error {
 				var cpuS int
 				if monitorDocker {
 					if dockerContainerID == "" {
+						var errg error
 						if getFirstDockerContainer {
 							// look for a new container
-							containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
-							if errc == nil {
-								for _, container := range containers {
-									if _, exists := existingDockerContainers[container.ID]; !exists {
-										dockerContainerID = container.ID
-										break
-									}
-								}
-							}
+							dockerContainerID, errg = dockerClient.GetNewDockerContainerID()
 						} else {
-							// job.MonitorDocker might be a file path
-							cidPath := job.MonitorDocker
-							if !strings.HasPrefix(cidPath, "/") {
-								cidPath = filepath.Join(cmd.Dir, cidPath)
-							}
-							_, errs := os.Stat(cidPath)
-							if errs == nil {
-								b, errr := ioutil.ReadFile(cidPath)
-								if errr == nil {
-									dockerContainerID = strings.TrimSuffix(string(b), "\n")
-								}
-							}
-
-							// or might be a name; check names of all new
-							// containers
-							if dockerContainerID == "" {
-								containers, errc := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
-								if errc == nil {
-								CONTAINERS:
-									for _, container := range containers {
-										if _, exists := existingDockerContainers[container.ID]; !exists {
-											for _, name := range container.Names {
-												name = strings.TrimPrefix(name, "/")
-												if name == job.MonitorDocker {
-													dockerContainerID = container.ID
-													break CONTAINERS
-												}
-											}
-										}
-									}
-								}
+							// job.MonitorDocker might be a file path or name of
+							// a new container
+							dockerContainerID, errg = dockerClient.GetNewDockerContainerIDByName(job.MonitorDocker, cmd.Dir)
+						}
+						if errg != nil {
+							if myerr == nil {
+								myerr = errg
+							} else {
+								myerr = fmt.Errorf("%s (and finding the docker container had issues: %s)", myerr.Error(), errg)
 							}
 						}
 					}
 
 					if dockerContainerID != "" {
-						dockerMem, thisDockerCPU, errs := internal.DockerStats(dockerClient, dockerContainerID)
+						dockerMem, thisDockerCPU, errs := dockerClient.ContainerStats(dockerContainerID)
 						if errs == nil {
 							if dockerMem > mem {
 								mem = dockerMem
@@ -1235,15 +1236,18 @@ func (c *Client) Execute(job *Job, shell string) error {
 		Exited:   true,
 	}
 	for {
-		if disconnected {
-			// we've previously failed to contact the server
-			if time.Now().After(retryEnd) {
-				break
-			}
+		if time.Now().After(retryEnd) {
+			logger.Warn("giving up trying to connect to server")
+			break
+		}
 
-			// try a quick connect attempt
+		if disconnected {
+			// we've previously failed to contact the server; try a quick
+			// connect attempt
 			newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
 			if errc != nil {
+				logger.Warn("tried to reconnect to server but failed", "err", errc)
+
 				// keep retrying after a jittered sleep
 				wait := ClientRetryWait + time.Duration(rand.Float64()*0.5*float64(ClientRetryWait))
 				<-time.After(wait)
@@ -1252,6 +1256,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 			// server is back, update ourselves and continue (we keep the quick
 			// timeout, but that should be good enough just to get through this)
+			logger.Info("reconnected to server")
 			disconnected = false
 			c.sock = newC.sock
 		}
@@ -1265,13 +1270,23 @@ func (c *Client) Execute(job *Job, shell string) error {
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
+			logger.Error("failed to update server with cmd's final state", "err", err)
 			hadProblems = true
+
 			if !disconnected {
 				errd := c.Disconnect()
-				if errd == nil {
+				if errd == nil || strings.Contains(errd.Error(), "connection closed") {
 					disconnected = true
+				} else {
+					logger.Warn("failed to disconnect", "err", errd)
 				}
 			}
+
+			if strings.Contains(err.Error(), ErrBadJob) {
+				// this is a permanent error, give up
+				break
+			}
+
 			<-time.After(ClientRetryWait)
 			continue
 		}
@@ -1670,12 +1685,21 @@ func (c *Client) GetBadCloudServers() ([]*BadServer, error) {
 // their destruction. If id is an empty string, applies to all such servers. If
 // it is the ID of a server returned by GetBadCloudServers(), applies to just
 // that server. Returns the servers that were successfully confirmed dead.
-func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, error) {
+//
+// Additionally, any jobs that were running or lost on those servers will be
+// killed or confirmed dead, meaning that they become buried or delayed, as per
+// their retry count. Jobs that were successfully killed are returned. Note that
+// if a job hadn't become lost before calling this method, it will be returned
+// with a state of "running", but as soon as it would normally be marked as
+// lost, it will be instead be treated as if you confirmed it dead. The job's
+// UntilBuried is what it will be at that future time point, so if it is 0 you
+// know this currently running job will be buried.
+func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, []*Job, error) {
 	resp, err := c.request(&clientRequest{Method: "getbcs", ConfirmDeadCloudServers: true, CloudServerID: id})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resp.BadServers, err
+	return resp.BadServers, resp.Jobs, err
 }
 
 // request the server do something and get back its response. We can only cope

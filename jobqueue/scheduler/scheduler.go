@@ -81,11 +81,12 @@ func (e Error) Error() string {
 // run, so that when provided to a scheduler it will be able to schedule things
 // appropriately.
 type Requirements struct {
-	RAM   int               // the expected peak RAM in MB Cmd will use while running
-	Time  time.Duration     // the expected time Cmd will take to run
-	Cores float64           // how many processor cores the Cmd will use
-	Disk  int               // the required local disk space in GB the Cmd needs to run
-	Other map[string]string // a map that will be passed through to the job scheduler, defining further arbitrary resource requirements
+	RAM     int               // the expected peak RAM in MB Cmd will use while running
+	Time    time.Duration     // the expected time Cmd will take to run
+	Cores   float64           // how many processor cores the Cmd will use
+	Disk    int               // the required local disk space in GB the Cmd needs to run
+	DiskSet bool              // to distinguish between you specifying 0 Disk and not specifying Disk at all
+	Other   map[string]string // a map that will be passed through to the job scheduler, defining further arbitrary resource requirements
 }
 
 // Stringify represents the contents of the Requirements as a string, sorting

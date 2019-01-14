@@ -106,7 +106,10 @@ type JobDefaults struct {
 	// Time is the amount of time each cmd will run for. Defaults to 1 hour.
 	Time time.Duration
 	// Disk is the number of Gigabytes cmds will use.
-	Disk      int
+	Disk int
+	// DiskSet is used to distinguish between Disk not being provided, and
+	// being provided with a value of 0 or more.
+	DiskSet   bool
 	Override  int
 	Priority  int
 	Retries   int
@@ -196,6 +199,7 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var cmd, cwd, rg, repg, monitorDocker string
 	var mb, disk, override, priority, retries int
+	var diskSet bool
 	var cpus float64
 	var dur time.Duration
 	var envOverride []byte
@@ -280,8 +284,10 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 
 	if jvj.Disk == nil {
 		disk = jd.Disk
+		diskSet = jd.DiskSet
 	} else {
 		disk = *jvj.Disk
+		diskSet = true
 	}
 
 	if jvj.Priority == nil {
@@ -434,7 +440,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		CwdMatters:    cwdMatters,
 		ChangeHome:    changeHome,
 		ReqGroup:      rg,
-		Requirements:  &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, Other: other},
+		Requirements:  &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, DiskSet: diskSet, Other: other},
 		Override:      uint8(override),
 		Priority:      uint8(priority),
 		Retries:       uint8(retries),
@@ -621,12 +627,14 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 // The returned int is a http.Status* variable.
 func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
+	_, diskSet := r.Form["disk"]
 	jd := &JobDefaults{
 		Cwd:           r.Form.Get("cwd"),
 		RepGrp:        r.Form.Get("rep_grp"),
 		ReqGrp:        r.Form.Get("req_grp"),
 		CPUs:          urlStringToFloat(r.Form.Get("cpus")),
 		Disk:          urlStringToInt(r.Form.Get("disk")),
+		DiskSet:       diskSet,
 		Override:      urlStringToInt(r.Form.Get("override")),
 		Priority:      urlStringToInt(r.Form.Get("priority")),
 		Retries:       urlStringToInt(r.Form.Get("retries")),

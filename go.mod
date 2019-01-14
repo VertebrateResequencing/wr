@@ -31,7 +31,7 @@ require (
 	github.com/google/go-cmp v0.2.0 // indirect
 	github.com/google/gofuzz v0.0.0-20161122191042-44d81051d367 // indirect
 	github.com/googleapis/gnostic v0.0.0-20170729233727-0c5108395e2d // indirect
-	github.com/gophercloud/gophercloud v0.0.0-20181009192228-f2f15d653e07
+	github.com/gophercloud/gophercloud v0.0.0-20181202211702-fac2636416a9
 	github.com/gopherjs/gopherjs v0.0.0-20180825215210-0210a2f0f73c // indirect
 	github.com/gorilla/websocket v1.4.0
 	github.com/gotestyourself/gotestyourself v2.1.0+incompatible // indirect
@@ -58,6 +58,7 @@ require (
 	github.com/onsi/gomega v1.4.2 // indirect
 	github.com/opencontainers/go-digest v0.0.0-20180430190053-c9281466c8b2 // indirect
 	github.com/opencontainers/image-spec v0.0.0-20180411145040-e562b0440392 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.0.0-20180311214515-816c9085562c // indirect
 	github.com/pkg/sftp v0.0.0-20180824225003-b9345f483dc3
 	github.com/pmezard/go-difflib v1.0.0 // indirect

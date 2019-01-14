@@ -5,6 +5,46 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.17.0] - 2019-01-14
+### Added
+- New `wr manager pause` and `wr manager resume` commands, allowing you to
+  temporarily pause the running of further commands, while letting existing
+  commands continue to run and queuing newly added commands.
+- New cloudflavorsets config option and related manager and cloud arguments.
+  This allows you to define which cloud flavors are backed by different
+  hardware, which results in the cloud scheduler retrying a flavor in a
+  different set when the hardware backing one set is full.
+- When you start the manager, it now logs its version to the log file.
+- New --runner_debug option to `wr manager start` that makes runners log
+  warnings and errors to syslog on the machine they find themselves on.
+  `wr cloud deploy --debug` turns this on.
+
+### Changed
+- Cloud resources have been renamed from having a wr-[production|development]
+  prefix, to having a wr-[prod|dev] prefix, increasing `wr cloud deploy
+  --resource_name` length limit from 11 to 18. `wr manager start
+  --local_username` now also shares this length restriction, to avoid
+  hostname truncation issues as intended. Be sure to teardown existing clouds
+  _before_ updating to this version.
+- `wr cloud servers --confirmdead`, in addition to deleting dead servers, now
+  also confirms dead any jobs that were running on those servers.
+- `wr add --monitor_docker` now takes wildcards, to specify variable filenames.
+
+### Fixed
+- Adding jobs with an override of 2 now works with the disk resource when you
+  specify 0 GB, using both the CLI and the REST API. (Not specifying it
+  continues to use learned values, since override only applies to specified
+  resources.)
+- If a cloud server has a hostname that is a truncation of its name in the
+  cloud, `wr status` is still able to look up and report its ID.
+- If a manager crashes or is killed, and then is restarted, it now ignores old
+  client messages still cached in the socket.
+- If authentication with OpenStack fails, re-authentication no longer gets
+  disabled.
+- Fix for 1 case of jobs pending for a long time when using the OpenStack
+  scheduler in certain circumstances.
+
+
 ## [0.16.0] - 2018-11-15
 ### Added
 - New `wr k8s` commands to self-deploy to kubernetes clusters. See:
