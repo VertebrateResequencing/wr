@@ -17,11 +17,13 @@ require (
 	github.com/docker/spdystream v0.0.0-20181023171402-6480d4af844c // indirect
 	github.com/elazarl/goproxy v0.0.0-20181003060214-f58a169a71a5 // indirect
 	github.com/emicklei/go-restful v2.8.0+incompatible // indirect
+	github.com/emicklei/go-restful-swagger12 v0.0.0-20170926063155-7524189396c6 // indirect
 	github.com/fanatic/go-infoblox v0.0.0-20180819145836-7f3fc0bb3f6a
 	github.com/fatih/color v1.7.0
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-ini/ini v1.41.0 // indirect
 	github.com/go-ole/go-ole v0.0.0-20180625085808-7a0fa49edf48 // indirect
+	github.com/go-openapi/loads v0.18.0 // indirect
 	github.com/go-openapi/spec v0.18.0 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/gofrs/uuid v2.1.0+incompatible
@@ -41,12 +43,14 @@ require (
 	github.com/hanwen/go-fuse v0.0.0-20190201110340-3342667fc815 // indirect
 	github.com/hashicorp/go-multierror v1.0.0
 	github.com/hashicorp/golang-lru v0.5.0
+	github.com/howeyc/gopass v0.0.0-20170109162249-bf9dde6d0d2c // indirect
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/inconshreveable/log15 v0.0.0-20180818164646-67afb5ed74ec
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/jinzhu/configor v0.0.0-20180614024415-4edaf76fe188
 	github.com/jpillora/backoff v0.0.0-20180909062703-3050d21c67d7
 	github.com/json-iterator/go v0.0.0-20180612202835-f2b4162afba3 // indirect
+	github.com/juju/ratelimit v1.0.1 // indirect
 	github.com/kardianos/osext v0.0.0-20170510131534-ae77be60afb1
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.0 // indirect
@@ -81,10 +85,18 @@ require (
 	gopkg.in/ini.v1 v1.38.3 // indirect
 	gopkg.in/yaml.v1 v1.0.0-20140924161607-9f9df34309c0 // indirect
 	gotest.tools v2.1.0+incompatible // indirect
-	k8s.io/api v0.0.0-20181221193117-173ce66c1e39
-	k8s.io/apimachinery v0.0.0-20190111195121-fa6ddc151d63
+	k8s.io/api v0.0.0-20190202010521-49be0e3344fe
+	k8s.io/apimachinery v0.0.0-20190204010555-a98ff070d70e
 	k8s.io/client-go v10.0.0+incompatible
 	k8s.io/klog v0.1.0 // indirect
+	k8s.io/kube-openapi v0.0.0-20190204220027-815fb30b1ecf // indirect
+	k8s.io/kubernetes v1.13.3 // indirect
 	nanomsg.org/go-mangos v0.0.0-20180815160134-b7ff4263f0d7
 	sigs.k8s.io/yaml v1.1.0 // indirect
 )
+
+replace k8s.io/apimachinery => k8s.io/apimachinery v0.0.0-20180228050457-302974c03f7e
+
+replace k8s.io/api => k8s.io/api v0.0.0-20180308224125-73d903622b73
+
+replace k8s.io/client-go => k8s.io/client-go v7.0.0+incompatible
