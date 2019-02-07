@@ -25,31 +25,60 @@ import (
 )
 
 func TestLimiter(t *testing.T) {
-	Convey("You can make a new Limiter with some limits set", t, func() {
-		l := New()
-		So(l, ShouldNotBeNil)
+	Convey("You can make a new Limiter with a limit defining callback", t, func() {
+		limits := make(map[string]uint)
+		limits["l1"] = 3
+		limits["l2"] = 2
+		cb := func(name string) uint {
+			if limit, exists := limits[name]; exists {
+				return limit
+			}
+			return 0
+		}
 
-		l.SetLimit("l1", 3)
-		l.SetLimit("l2", 2)
+		l := New(cb)
+		So(l, ShouldNotBeNil)
 
 		Convey("Increment and Decrement work as expected", func() {
 			So(l.Increment([]string{"l1", "l2"}), ShouldBeTrue)
-			So(l.Decrement([]string{"l1", "l2"}), ShouldBeNil)
+			l.Decrement([]string{"l1", "l2"})
 
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
 			So(l.Increment([]string{"l1", "l2"}), ShouldBeFalse)
-			err := l.Decrement([]string{"l1", "l2"})
-			So(err, ShouldNotBeNil)
-			lerr, ok := err.(Error)
-			So(ok, ShouldBeTrue)
-			So(lerr.Err, ShouldEqual, ErrNotIncremented)
-			So(l.Decrement([]string{"l2"}), ShouldBeNil)
+			l.Decrement([]string{"l1", "l2"})
+			So(l.Increment([]string{"l1", "l2"}), ShouldBeTrue)
+			l.Decrement([]string{"l2"})
 			So(l.Increment([]string{"l1", "l2"}), ShouldBeTrue)
 
 			So(l.Increment([]string{"l3"}), ShouldBeTrue)
-			So(l.Decrement([]string{"l3"}), ShouldBeNil)
+			l.Decrement([]string{"l3"})
+		})
+
+		Convey("You can change limits with SetLimit(), and Decrement() forgets about unused groups", func() {
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			l.SetLimit("l2", 3)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			l.Decrement([]string{"l2"})
+			l.Decrement([]string{"l2"})
+			l.Decrement([]string{"l2"})
+			// at this point l2 should have been forgotten about, which means
+			// we forgot we set the limit to 3
+			l.Decrement([]string{"l2"}) // doesn't panic or something
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			l.Decrement([]string{"l2"})
+			l.Decrement([]string{"l2"})
+			limits["l2"] = 3
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
 		})
 	})
 }
