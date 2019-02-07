@@ -20,32 +20,49 @@
 Package limiter provides a way of limiting the number of something that belongs
 to one or more limit groups. It can be used concurrently.
 
-You first create a Limiter and make SetLimit() calls to define the limit of
-each group. Then when you want to have something in one or more of those groups,
-you call Increment(). If limits have not been reached, it returns true. When
-your "something" is done, Decrement().
+You first create a Limiter with a callback that provides the limit of each
+group. Then when you want to have something in one or more of those groups, you
+call Increment(). If limits have not been reached, it returns true. When your
+"something" is done, Decrement().
+
+Your callback is only called once per group while that group is in use: the
+limit you provide is stored in memory. But Decrement() removes groups from
+memory when the count becomes zero, so that unused groups don't fill up memory.
+If a subsequent Increment() uses a group that was removed from memory, your
+callback will be called again to find out the limit. It is intended that you
+don't store all your limits in memory yourself, but retrieve them from disk.
+If you need to change the limit of a group, your callback should start returning
+the new limit, and you should call SetLimit() to change the memorised limit, if
+any.
 
     import "github.com/VertebrateResequencing/wr/limiter"
 
-    l := limiter.New()
-    l.SetLimit("l1", 3)
-    l.SetLimit("l2", 2)
+    cb := func(name string) int {
+        if name == "l1" {
+            return 3
+        } else if name == "l2" {
+            return 2
+        }
+        return 0
+    }
+
+    l := limiter.New(cb)
 
     if l.Increment([]string{"l1", "l2"}) { // true
         // do something that can only be done if neither l1 nor l2 have reached
         // their limit, then afterwards:
-        l.Decrement([]string{"l1", "l2"})
+        l.Decrement([]string{"l1", "l2"}, false)
     }
 
     l.Increment([]string{"l2"}) // true
     l.Increment([]string{"l2"}) // true
     l.Increment([]string{"l2"}) // false
     l.Increment([]string{"l1", "l2"}) // false
-    l.Decrement([]string{"l1", "l2"}) // error, "l1" not incremented yet
-    l.Decrement([]string{"l2"})
+    l.Decrement([]string{"l1", "l2"}, false) // error, "l1" not incremented yet
+    l.Decrement([]string{"l2"}, false)
     l.Increment([]string{"l1", "l2"}) // true
 
-    l.Increment([]string{"l3"}) // true for anything with no SetLimit()
-    l.Decrement([]string{"l3"}) // ignored, no error
+    l.Increment([]string{"l3"}) // true if callback returns 0
+    l.Decrement([]string{"l3"}, false) // ignored, no error
 */
 package limiter
