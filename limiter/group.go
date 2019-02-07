@@ -47,25 +47,28 @@ func (g *group) setLimit(limit uint) {
 	g.limit = limit
 }
 
-// canIncrement tells you if the current count of this group is less than the
-// limit.
-func (g *group) canIncrement() bool {
-	g.RLock()
-	defer g.RUnlock()
-	return g.current < g.limit
-}
-
-// increment increases the count of this group, but errors if you try to
-// increment beyond the limit (check canIncrement() first, but you will have to
-// guard against the race condition).
-func (g *group) increment() error {
+// increment increases the count of this group, up to the limit. Returns true
+// if an increase happened.
+func (g *group) increment() bool {
 	g.Lock()
 	defer g.Unlock()
 	if g.current >= g.limit {
-		return Error{Group: g.name, Op: "increment", Err: ErrAtLimit}
+		return false
 	}
 	g.current++
-	return nil
+	return true
+}
+
+// decrement decreases the count of this group, down to 0. Returns true if a
+// decrease happened.
+func (g *group) decrement() bool {
+	g.Lock()
+	defer g.Unlock()
+	if g.current <= 0 {
+		return false
+	}
+	g.current--
+	return true
 }
 
 // canDecrement tells you if the current count of this group is greater than 0.
@@ -73,17 +76,4 @@ func (g *group) canDecrement() bool {
 	g.RLock()
 	defer g.RUnlock()
 	return g.current > 0
-}
-
-// decrement decreases the count of this group, but errors if you try to
-// decrement less than zero (check canDecrement() first, but you will have to
-// guard against the race condition).
-func (g *group) decrement() error {
-	g.Lock()
-	defer g.Unlock()
-	if g.current <= 0 {
-		return Error{Group: g.name, Op: "decrement", Err: ErrNotIncremented}
-	}
-	g.current--
-	return nil
 }

@@ -87,16 +87,17 @@ func (l *Limiter) Increment(groups []string) bool {
 			}
 		}
 		if exists {
-			if group.canIncrement() {
+			// contrary to the strict wording of the docs above, we increment
+			// everything, and then decrement them if 1 fails to increment.
+			if group.increment() {
 				gs = append(gs, group)
 			} else {
+				for _, group := range gs {
+					group.decrement()
+				}
 				return false
 			}
 		}
-	}
-
-	for _, group := range gs {
-		group.increment() // *** currently ignoring "impossible" error
 	}
 
 	return true
@@ -113,19 +114,13 @@ func (l *Limiter) Decrement(groups []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var gs []*group
 	for _, name := range groups {
 		if group, exists := l.groups[name]; exists {
-			if group.canDecrement() {
-				gs = append(gs, group)
+			if group.decrement() {
+				if !group.canDecrement() {
+					delete(l.groups, group.name)
+				}
 			}
-		}
-	}
-
-	for _, group := range gs {
-		group.decrement() // *** currently ignoring "impossible" error
-		if !group.canDecrement() {
-			delete(l.groups, group.name)
 		}
 	}
 }
