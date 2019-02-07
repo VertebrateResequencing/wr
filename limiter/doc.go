@@ -51,18 +51,17 @@ any.
     if l.Increment([]string{"l1", "l2"}) { // true
         // do something that can only be done if neither l1 nor l2 have reached
         // their limit, then afterwards:
-        l.Decrement([]string{"l1", "l2"}, false)
+        l.Decrement([]string{"l1", "l2"})
     }
 
     l.Increment([]string{"l2"}) // true
     l.Increment([]string{"l2"}) // true
     l.Increment([]string{"l2"}) // false
     l.Increment([]string{"l1", "l2"}) // false
-    l.Decrement([]string{"l1", "l2"}, false) // error, "l1" not incremented yet
-    l.Decrement([]string{"l2"}, false)
+    l.Decrement([]string{"l1", "l2"}) // l1 ignored since never incremented
     l.Increment([]string{"l1", "l2"}) // true
 
-    l.Increment([]string{"l3"}) // true if callback returns 0
-    l.Decrement([]string{"l3"}, false) // ignored, no error
+    l.Increment([]string{"l3"}) // true since callback returns 0
+    l.Decrement([]string{"l3"}) // ignored
 */
 package limiter
