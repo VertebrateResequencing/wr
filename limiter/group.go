@@ -20,16 +20,11 @@ package limiter
 
 // This file contains the implementation of the group stuct.
 
-import (
-	"sync"
-)
-
 // group struct describes an individual limit group.
 type group struct {
 	name    string
 	limit   uint
 	current uint
-	sync.RWMutex
 }
 
 // newGroup creates a new group.
@@ -42,16 +37,12 @@ func newGroup(name string, limit uint) *group {
 
 // setLimit updates the group's limit.
 func (g *group) setLimit(limit uint) {
-	g.Lock()
-	defer g.Unlock()
 	g.limit = limit
 }
 
 // increment increases the count of this group, up to the limit. Returns true
 // if an increase happened.
 func (g *group) increment() bool {
-	g.Lock()
-	defer g.Unlock()
 	if g.current >= g.limit {
 		return false
 	}
@@ -62,8 +53,6 @@ func (g *group) increment() bool {
 // decrement decreases the count of this group, down to 0. Returns true if a
 // decrease happened.
 func (g *group) decrement() bool {
-	g.Lock()
-	defer g.Unlock()
 	if g.current <= 0 {
 		return false
 	}
@@ -73,7 +62,5 @@ func (g *group) decrement() bool {
 
 // canDecrement tells you if the current count of this group is greater than 0.
 func (g *group) canDecrement() bool {
-	g.RLock()
-	defer g.RUnlock()
 	return g.current > 0
 }
