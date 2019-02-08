@@ -41,6 +41,7 @@ race:
 	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./jobqueue/scheduler
 	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./cloud
 	@go test -p 1 -tags netgo -race -v --count 1 ./rp
+	@go test -p 1 -tags netgo -race -v --count 1 ./limiter
 
 # cd $HOME/go && curl -L https://git.io/vp6lP | sh
 # until all go tools have module support:
