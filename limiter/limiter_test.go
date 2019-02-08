@@ -150,14 +150,13 @@ func TestLimiter(t *testing.T) {
 					}
 					if l.Increment(groups) {
 						atomic.AddUint64(&incs, 1)
-						time.Sleep(time.Millisecond)
+						time.Sleep(100 * time.Millisecond)
 						l.Decrement(groups)
 					} else {
 						atomic.AddUint64(&fails, 1)
-						if atomic.LoadUint64(&fails) >= 50 {
+						if atomic.LoadUint64(&fails) == 50 {
 							l.SetLimit("l4", 125)
 						}
-						time.Sleep(time.Millisecond)
 					}
 				}(i)
 			}
