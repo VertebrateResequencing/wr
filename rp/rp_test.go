@@ -25,6 +25,89 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func BenchmarkRP(b *testing.B) {
+	delayBetween := 0 * time.Millisecond
+	releaseTimeout := 200 * time.Millisecond
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		rp1 := New("l1", delayBetween, 5, releaseTimeout)
+		rp2 := New("l2", delayBetween, 6, releaseTimeout)
+
+		r11, _ := rp1.Request(1)
+		r12, _ := rp1.Request(1)
+		r13, _ := rp1.Request(1)
+		r14, _ := rp1.Request(1)
+		r15, _ := rp1.Request(1)
+		r16, _ := rp1.Request(1)
+		r21, _ := rp2.Request(1)
+		r22, _ := rp2.Request(1)
+		r23, _ := rp2.Request(1)
+		r24, _ := rp2.Request(1)
+		r25, _ := rp2.Request(1)
+		r26, _ := rp2.Request(1)
+		r27, _ := rp2.Request(1)
+
+		rp1.WaitUntilGranted(r11)
+		rp1.WaitUntilGranted(r12)
+		rp1.WaitUntilGranted(r13)
+		rp1.WaitUntilGranted(r14)
+		rp1.WaitUntilGranted(r15)
+		rp1.Granted(r16)
+		rp2.WaitUntilGranted(r21)
+		rp2.WaitUntilGranted(r22)
+		rp2.WaitUntilGranted(r23)
+		rp2.WaitUntilGranted(r24)
+		rp2.WaitUntilGranted(r25)
+		rp2.WaitUntilGranted(r26)
+		rp2.Granted(r27)
+
+		rp1.Release(r11)
+		rp1.Release(r12)
+		rp1.Release(r13)
+		rp1.Release(r14)
+		rp1.Release(r15)
+		rp2.Release(r21)
+		rp2.Release(r22)
+		rp2.Release(r23)
+		rp2.Release(r24)
+		rp2.Release(r25)
+		rp2.Release(r26)
+
+		r11, _ = rp1.Request(1)
+		r12, _ = rp1.Request(1)
+		r13, _ = rp1.Request(1)
+		r14, _ = rp1.Request(1)
+		r15, _ = rp1.Request(1)
+		r16, _ = rp1.Request(1)
+		r17, _ := rp1.Request(1)
+		r18, _ := rp1.Request(1)
+		r19, _ := rp1.Request(1)
+		r110, _ := rp1.Request(1)
+
+		rp1.Granted(r11)
+		rp1.Granted(r12)
+		rp1.Granted(r13)
+		rp1.Granted(r14)
+		rp1.Granted(r15)
+		rp1.Granted(r16)
+		rp1.Granted(r17)
+		rp1.Granted(r18)
+		rp1.Granted(r19)
+		rp1.Granted(r110)
+		rp1.Release(r11)
+		rp1.Release(r12)
+		rp1.Release(r13)
+		rp1.Release(r14)
+		rp1.Release(r15)
+		rp1.Release(r16)
+		rp1.Release(r17)
+		rp1.Release(r18)
+		rp1.Release(r19)
+		rp1.Release(r110)
+	}
+}
+
 func TestRP(t *testing.T) {
 	Convey("You can make a new Protector", t, func() {
 		delayInt := 50
