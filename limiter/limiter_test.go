@@ -112,10 +112,12 @@ func TestLimiter(t *testing.T) {
 		})
 
 		Convey("You can change limits with SetLimit(), and Decrement() forgets about unused groups", func() {
+			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 2)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
 			l.SetLimit("l2", 3)
+			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 3)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
 			l.Decrement([]string{"l2"})
@@ -124,6 +126,7 @@ func TestLimiter(t *testing.T) {
 			// at this point l2 should have been forgotten about, which means
 			// we forgot we set the limit to 3
 			l.Decrement([]string{"l2"}) // doesn't panic or something
+			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 2)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
@@ -131,6 +134,7 @@ func TestLimiter(t *testing.T) {
 			l.Decrement([]string{"l2"})
 			limits["l2"] = 3
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 3)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
