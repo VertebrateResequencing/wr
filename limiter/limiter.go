@@ -78,15 +78,8 @@ func (l *Limiter) Increment(groups []string) bool {
 
 	var gs []*group
 	for _, name := range groups {
-		group, exists := l.groups[name]
-		if !exists {
-			if limit := l.cb(name); limit > 0 {
-				group = newGroup(name, limit)
-				l.groups[name] = group
-				exists = true
-			}
-		}
-		if exists {
+		group := l.vivifyGroup(name)
+		if group != nil {
 			// contrary to the strict wording of the docs above, we increment
 			// everything, and then decrement them if 1 fails to increment.
 			if group.increment() {
@@ -101,6 +94,21 @@ func (l *Limiter) Increment(groups []string) bool {
 	}
 
 	return true
+}
+
+// vivifyGroup either returns a stored group or creates a new one based on the
+// results of calling the SetLimitCallback. You must have the mu.Lock() before
+// calling this. Can return nil if the callback doesn't know about this group
+// and returns a 0 limit.
+func (l *Limiter) vivifyGroup(name string) *group {
+	group, exists := l.groups[name]
+	if !exists {
+		if limit := l.cb(name); limit > 0 {
+			group = newGroup(name, limit)
+			l.groups[name] = group
+		}
+	}
+	return group
 }
 
 // Decrement decrements the count of every supplied group.
@@ -123,4 +131,20 @@ func (l *Limiter) Decrement(groups []string) {
 			}
 		}
 	}
+}
+
+// GetLowestLimit tells you the lowest limit currently set amongst the given
+// groups. If none have a limit set, returns 0.
+func (l *Limiter) GetLowestLimit(groups []string) uint {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var lowest uint
+	for _, name := range groups {
+		group := l.vivifyGroup(name)
+		if group != nil && (lowest == 0 || group.limit < lowest) {
+			lowest = group.limit
+		}
+	}
+	return lowest
 }
