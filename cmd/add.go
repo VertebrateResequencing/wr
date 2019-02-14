@@ -50,6 +50,7 @@ var cmdFile string
 var cmdCwdMatters bool
 var cmdChangeHome bool
 var cmdRepGroup string
+var cmdLimitGroups string
 var cmdDepGroups string
 var cmdCmdDeps string
 var cmdGroupDeps string
@@ -223,6 +224,12 @@ retry button in the web interface.
 their status later. This is only used for reporting and presentation purposes
 when viewing status.
 
+"limit_grps" is an array of arbitrary names you can associate with a command,
+that can be used to limit the number of jobs that run at once in the same group.
+You can optionally suffix a group name with :n where n is a positive integer new
+limit for that group. Otherwise, groups will be unlimited until a limit is set
+with the "wr limit" command.
+
 "dep_grps" is an array of arbitrary names you can associate with a command, so
 that you can then refer to this job (and others with the same dep_grp) in
 another job's deps.
@@ -336,6 +343,7 @@ func init() {
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
 	addCmd.Flags().StringVarP(&cmdRepGroup, "rep_grp", "i", "manually_added", "reporting group for your commands")
+	addCmd.Flags().StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
 	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
 	addCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
@@ -468,6 +476,10 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		if err != nil {
 			die("--time was not specified correctly: %s", err)
 		}
+	}
+
+	if cmdLimitGroups != "" {
+		jd.LimitGroups = strings.Split(cmdLimitGroups, ",")
 	}
 
 	if cmdDepGroups != "" {

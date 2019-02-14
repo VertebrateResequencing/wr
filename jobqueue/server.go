@@ -34,6 +34,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
@@ -215,6 +217,7 @@ type Server struct {
 	sync.Mutex
 	q               *queue.Queue
 	rpl             *rgToKeys
+	limiter         *limiter.Limiter
 	scheduler       *scheduler.Scheduler
 	sgroupcounts    map[string]int
 	sgrouptrigs     map[string]int
@@ -538,6 +541,12 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		uploadDir = "/tmp"
 	}
 
+	// our limiter will use a callback that gets group limits from our database
+	lcb := func(name string) uint {
+		return db.retrieveLimitGroup(name)
+	}
+	l := limiter.New(lcb)
+
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
 		ServerVersions:     &ServerVersions{Version: ServerVersion, API: restAPIVersion},
@@ -546,6 +555,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		sock:               sock,
 		ch:                 new(codec.BincHandle),
 		rpl:                &rgToKeys{lookup: make(map[string]map[string]bool)},
+		limiter:            l,
 		db:                 db,
 		stopSigHandling:    stopSigHandling,
 		stopClientHandling: stopClientHandling,
@@ -599,6 +609,13 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			switch job.State {
 			case JobStateRunning:
 				itemdef.StartQueue = queue.SubQueueRun
+
+				if len(job.LimitGroups) > 0 {
+					s.limiter.Increment(job.LimitGroups)
+					// (our note of incrementation done in the server that died
+					//  is not stored in the db)
+					job.noteIncrementedLimitGroups(job.LimitGroups)
+				}
 
 				req := reqForScheduler(job.Requirements)
 				errr := s.scheduler.Recover(fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
@@ -1207,7 +1224,7 @@ func (s *Server) createQueue() {
 			req := reqForScheduler(job.Requirements)
 
 			prevSchedGroup := job.getSchedulerGroup()
-			schedulerGroup := req.Stringify()
+			schedulerGroup := job.generateSchedulerGroup(req)
 			if prevSchedGroup != schedulerGroup {
 				job.setSchedulerGroup(schedulerGroup)
 				if prevSchedGroup != "" {
@@ -1490,6 +1507,7 @@ func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err e
 // the second is the actual error with more details.
 func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
 	// create itemdefs for the jobs
+	limitGroups := make(map[string]uint)
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -1501,7 +1519,35 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			atomic.AddUint64(&BsubID, 1)
 			job.BsubID = atomic.LoadUint64(&BsubID)
 		}
+
+		if len(job.LimitGroups) > 0 {
+			// remove limit suffixes and remember the last limit per group
+			// specified
+			for i, group := range job.LimitGroups {
+				parts := strings.Split(group, ":")
+				if len(parts) == 2 {
+					limit, err := strconv.Atoi(parts[1])
+					if err == nil && limit > 0 {
+						job.LimitGroups[i] = parts[0]
+						limitGroups[parts[0]] = uint(limit)
+					}
+				}
+			}
+
+			// because these later become part of scheduler groups names, store
+			// them in sorted order, with no duplicates
+			if len(job.LimitGroups) > 1 {
+				job.LimitGroups = internal.DedupSortStrings(job.LimitGroups)
+			}
+		}
+
 		job.Unlock()
+	}
+
+	// store any limit group changes on disk, and update in-memory groups
+	changed, err := s.db.storeLimitGroups(limitGroups)
+	for _, group := range changed {
+		s.limiter.SetLimit(group, limitGroups[group])
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -1568,7 +1614,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
 func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool) error {
-	job.updateAfterExit(endState)
+	job.updateAfterExit(endState, s.limiter)
 	job.Lock()
 	job.FailReason = failReason
 	if !job.StartTime.IsZero() {
@@ -1850,6 +1896,16 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
+		// if this scheduler group has limit groups, drop the groupCount to the
+		// lowest limit of its groups, if that's less than desired groupCount
+		limitGroups := s.schedGroupToLimitGroups(group)
+		if len(limitGroups) > 0 {
+			limit := int(s.limiter.GetLowestLimit(limitGroups))
+			if limit > 0 && limit < groupCount {
+				groupCount = limit
+			}
+		}
+
 		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true

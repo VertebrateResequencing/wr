@@ -66,6 +66,7 @@ type jstatusReq struct {
 type JStatus struct {
 	Key           string
 	RepGroup      string
+	LimitGroups   []string
 	DepGroups     []string
 	Dependencies  []string
 	Cmd           string

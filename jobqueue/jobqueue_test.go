@@ -2809,6 +2809,98 @@ func TestJobqueueMedium(t *testing.T) {
 	})
 }
 
+func TestJobqueueLimitGroups(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
+	Convey("Once a new jobqueue server is up", t, func() {
+		ServerItemTTR = 5 * time.Second
+		ClientTouchInterval = 2500 * time.Millisecond
+		server, _, token, errs := serve(serverConfig)
+		So(errs, ShouldBeNil)
+		defer func() {
+			server.Stop(true)
+		}()
+
+		server.rc = `echo %s %s %s %s %d %d`
+
+		Convey("You can connect, and add jobs with LimitGroups", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer jq.Disconnect()
+
+			var jobs []*Job
+			for i := 1; i <= 5; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:3"}})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 5)
+			So(already, ShouldEqual, 0)
+
+			reserveJobs := func() []*Job {
+				var jobs []*Job
+				for i := 1; i <= 5; i++ {
+					job, err := jq.ReserveScheduled(50*time.Millisecond, "110:0:1:0~a,b")
+					So(err, ShouldBeNil)
+					if job != nil {
+						jobs = append(jobs, job)
+					}
+				}
+				return jobs
+			}
+
+			Convey("You can't reserve more than limit", func() {
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				finalJob := jobs[1]
+
+				for i := 1; i <= 3; i++ {
+					err = jq.Execute(jobs[0], config.RunnerExecShell)
+					So(err, ShouldBeNil)
+					jobs = reserveJobs()
+					So(len(jobs), ShouldEqual, 1)
+				}
+
+				err = jq.Execute(jobs[0], config.RunnerExecShell)
+				So(err, ShouldBeNil)
+
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 0)
+
+				err = jq.Execute(finalJob, config.RunnerExecShell)
+				So(err, ShouldBeNil)
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 0)
+			})
+
+			Convey("You can change the limit by adding a new Job", func() {
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				jobs = []*Job{}
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", 6), Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"a:3", "b:4"}})
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 1)
+			})
+		})
+
+		Reset(func() {
+			server.Stop(true)
+		})
+	})
+}
+
 func TestJobqueueHighMem(t *testing.T) {
 	if runnermode || servermode {
 		return

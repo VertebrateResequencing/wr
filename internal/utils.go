@@ -113,6 +113,24 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 	return sortedKeys
 }
 
+// DedupSortStrings removes duplicates and then sorts the given strings,
+// returning a new slice.
+func DedupSortStrings(s []string) []string {
+	seen := make(map[string]struct{}, len(s))
+	i := 0
+	for _, v := range s {
+		if _, exists := seen[v]; exists {
+			continue
+		}
+		seen[v] = struct{}{}
+		s[i] = v
+		i++
+	}
+	dedup := s[:i]
+	sort.Strings(dedup)
+	return dedup
+}
+
 // Username returns the username of the current user. This avoids problems
 // with static compilation as it avoids the use of os/user. It will only work
 // on linux-like systems where 'id -u -n' works.

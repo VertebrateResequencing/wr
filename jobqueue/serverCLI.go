@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,10 +187,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 
 					if !skip {
-						item, err = s.q.Reserve(cr.SchedulerGroup)
+						item, err = s.reserveWithLimits(cr.SchedulerGroup)
 					}
 				} else {
-					item, err = s.q.Reserve()
+					item, err = s.reserveWithLimits()
 				}
 
 				if err != nil {
@@ -212,7 +213,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							for {
 								select {
 								case <-ticker.C:
-									itemr, err := s.q.Reserve(cr.SchedulerGroup)
+									itemr, err := s.reserveWithLimits(cr.SchedulerGroup)
 									if err != nil {
 										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 											continue
@@ -352,7 +353,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// wasn't released by another process; unlike the other methods,
 				// queue package does not check we're in the run queue when
 				// Remove()ing, since you can remove from any queue)
-				job.updateAfterExit(cr.JobEndState)
+				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
 				if running := item.Stats().State == queue.ItemStateRun; !running {
 					srerr = ErrBadJob
@@ -411,7 +412,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			var job *Job
 			item, job, srerr = s.getij(cr)
 			if srerr == "" {
-				job.updateAfterExit(cr.JobEndState)
+				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
 				job.FailReason = cr.Job.FailReason
 				sgroup := job.schedulerGroup
@@ -780,6 +781,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	job := &Job{
 		RepGroup:      sjob.RepGroup,
 		ReqGroup:      sjob.ReqGroup,
+		LimitGroups:   sjob.LimitGroups,
 		DepGroups:     sjob.DepGroups,
 		Cmd:           sjob.Cmd,
 		Cwd:           sjob.Cwd,
@@ -835,6 +837,50 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)
 		job.EnvCRetrieved = true
 	}
+}
+
+// reserveWithLimits reserves the next item in the queue (optionally limited to
+// the given scheduler group). If (and only if!) a scheduler group was supplied,
+// and it is suffixed with limit groups, those limit groups will be incremented.
+// On success we reserve and return as normal. On failure, we act as if the
+// queue was empty.
+func (s *Server) reserveWithLimits(group ...string) (*queue.Item, error) {
+	var item *queue.Item
+	var err error
+	var limitGroups []string
+	if len(group) == 1 {
+		limitGroups = s.schedGroupToLimitGroups(group[0])
+		if len(limitGroups) > 0 {
+			if !s.limiter.Increment(limitGroups) {
+				return nil, queue.Error{s.q.Name, "Reserve", "", queue.ErrNothingReady}
+			}
+		}
+
+		item, err = s.q.Reserve(group[0])
+	} else {
+		item, err = s.q.Reserve()
+	}
+
+	if len(limitGroups) > 0 {
+		if item == nil {
+			s.limiter.Decrement(limitGroups)
+		} else {
+			item.Data.(*Job).noteIncrementedLimitGroups(limitGroups)
+		}
+	}
+
+	return item, err
+}
+
+// schedGroupToLimitGroups takes a scheduler group that may be suffixed with
+// limit groups (by Job.generateSchedulerGroup()), and returns the extracted
+// limit groups
+func (s *Server) schedGroupToLimitGroups(group string) []string {
+	parts := strings.Split(group, jobSchedLimitGroupSeparator)
+	if len(parts) == 2 {
+		return strings.Split(parts[1], jobLimitGroupSeparator)
+	}
+	return nil
 }
 
 // reply to a client

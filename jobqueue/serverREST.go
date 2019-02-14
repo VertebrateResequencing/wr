@@ -71,6 +71,7 @@ type JobViaJSON struct {
 	Priority         *int              `json:"priority"`
 	Retries          *int              `json:"retries"`
 	RepGrp           string            `json:"rep_grp"`
+	LimitGrps        []string          `json:"limit_grps"`
 	DepGrps          []string          `json:"dep_grps"`
 	Deps             []string          `json:"deps"`
 	CmdDeps          Dependencies      `json:"cmd_deps"`
@@ -109,12 +110,13 @@ type JobDefaults struct {
 	Disk int
 	// DiskSet is used to distinguish between Disk not being provided, and
 	// being provided with a value of 0 or more.
-	DiskSet   bool
-	Override  int
-	Priority  int
-	Retries   int
-	DepGroups []string
-	Deps      Dependencies
+	DiskSet     bool
+	Override    int
+	Priority    int
+	Retries     int
+	LimitGroups []string
+	DepGroups   []string
+	Deps        Dependencies
 	// Env is a comma separated list of key=val pairs.
 	Env           string
 	OnFailure     Behaviours
@@ -203,7 +205,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var cpus float64
 	var dur time.Duration
 	var envOverride []byte
-	var depGroups []string
+	var limitGroups, depGroups []string
 	var deps Dependencies
 	var behaviours Behaviours
 	var mounts MountConfigs
@@ -306,6 +308,12 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}
 	if retries < 0 || retries > 255 {
 		return nil, fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
+	}
+
+	if len(jvj.LimitGrps) == 0 {
+		limitGroups = jd.LimitGroups
+	} else {
+		limitGroups = jvj.LimitGrps
 	}
 
 	if len(jvj.DepGrps) == 0 {
@@ -444,6 +452,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		Override:      uint8(override),
 		Priority:      uint8(priority),
 		Retries:       uint8(retries),
+		LimitGroups:   limitGroups,
 		DepGroups:     depGroups,
 		Dependencies:  deps,
 		EnvOverride:   envOverride,
@@ -631,6 +640,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	jd := &JobDefaults{
 		Cwd:           r.Form.Get("cwd"),
 		RepGrp:        r.Form.Get("rep_grp"),
+		LimitGroups:   urlStringToSlice(r.Form.Get("limit_grps")),
 		ReqGrp:        r.Form.Get("req_grp"),
 		CPUs:          urlStringToFloat(r.Form.Get("cpus")),
 		Disk:          urlStringToInt(r.Form.Get("disk")),
