@@ -1282,7 +1282,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 			}
 
-			if strings.Contains(err.Error(), ErrBadJob) {
+			if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) {
 				// this is a permanent error, give up
 				break
 			}
