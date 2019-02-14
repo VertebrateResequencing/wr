@@ -25,6 +25,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -56,6 +57,7 @@ var (
 	bucketJobsComplete = []byte("jobscomplete")
 	bucketRTK          = []byte("repgroupToKey")
 	bucketRGs          = []byte("repgroups")
+	bucketLGs          = []byte("limitgroups")
 	bucketDTK          = []byte("depgroupToKey")
 	bucketRDTK         = []byte("reverseDepgroupToKey")
 	bucketEnvs         = []byte("envs")
@@ -253,6 +255,10 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketRGs, errf)
 		}
+		_, errf = tx.CreateBucketIfNotExists(bucketLGs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketLGs, errf)
+		}
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
@@ -314,6 +320,47 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 	}
 
 	return dbstruct, msg, err
+}
+
+// storeLimitGroups stores a mapping of group names to unsigned ints in a
+// dedicated bucket. If a group was already in the database, and it had a
+// different value, that group name will be returned in the slice.
+func (db *db) storeLimitGroups(limitGroups map[string]uint) (changed []string, err error) {
+	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLGs)
+
+		for group, limit := range limitGroups {
+			key := []byte(group)
+
+			v := b.Get(key)
+			if v != nil {
+				if binary.BigEndian.Uint64(v) == uint64(limit) {
+					continue
+				}
+				changed = append(changed, group)
+			}
+
+			v = make([]byte, 8)
+			binary.BigEndian.PutUint64(v, uint64(limit))
+			errf := b.Put(key, v)
+			if errf != nil {
+				return errf
+			}
+		}
+
+		return nil
+	})
+	return changed, err
+}
+
+// retrieveLimitGroup gets a value for a particular group from the db that was
+// stored with storeLimitGroups(). If the group wasn't stored, returns 0.
+func (db *db) retrieveLimitGroup(group string) uint {
+	v := db.retrieve(bucketLGs, group)
+	if v == nil {
+		return uint(0)
+	}
+	return uint(binary.BigEndian.Uint64(v))
 }
 
 // storeNewJobs stores jobs in the live bucket, where they will only be used for

@@ -259,6 +259,10 @@ name to just the first letter, eg. -o c):
 						homeChanged = "Changed home: true\n"
 					}
 				}
+				var limitGroups string
+				if len(job.LimitGroups) > 0 {
+					limitGroups = fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
+				}
 				var dockerMonitored string
 				if job.MonitorDocker != "" {
 					dockerID := job.MonitorDocker
@@ -279,7 +283,7 @@ name to just the first letter, eg. -o c):
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, limitGroups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:

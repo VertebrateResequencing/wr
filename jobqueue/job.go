@@ -32,6 +32,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-multierror"
@@ -61,6 +62,14 @@ const (
 	JobStateDeletable JobState = "deletable"
 	JobStateUnknown   JobState = "unknown"
 )
+
+// jobSchedLimitGroupSeparator is the separator between requirements and limit
+// groups in schedular group names.
+const jobSchedLimitGroupSeparator = "~"
+
+// jobLimitGroupSeparator is the separator between limit groups in schedular
+// group names.
+const jobLimitGroupSeparator = ","
 
 // subqueueToJobState converts queue.SubQueue entries to JobStates.
 var subqueueToJobState = map[queue.SubQueue]JobState{
@@ -142,6 +151,12 @@ type Job struct {
 
 	// Retries is the number of times to retry running a Cmd if it fails.
 	Retries uint8
+
+	// LimitGroups are names of limit groups that this job belongs to. If any
+	// of these groups are defined (elsewhere) to have a limit, then if as many
+	// other jobs as the limit are currently running, this job will not start
+	// running. It's a way of not running too many of a type of job at once.
+	LimitGroups []string
 
 	// DepGroups are the dependency groups this job belongs to that other jobs
 	// can refer to in their Dependencies.
@@ -277,11 +292,15 @@ type Job struct {
 	scheduledRunner bool
 
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
-	// later; this is purely client side
+	// later; this is purely client side.
 	mountedFS []*muxfys.MuxFys
 
-	// killCalled is set for running jobs if Kill() is called on them
+	// killCalled is set for running jobs if Kill() is called on them.
 	killCalled bool
+
+	// incrementedLimitGroups notes that we have incremented limit groups for
+	// this job, so they should be decremented when the job finishes running.
+	incrementedLimitGroups []string
 
 	sync.RWMutex
 }
@@ -650,9 +669,25 @@ func (j *Job) ToEssense() *JobEssence {
 	return &JobEssence{JobKey: j.Key()}
 }
 
+// noteIncrementedLimitGroups should be used after incrementing limit groups for
+// this job. It takes the groups you actually just incremented (as opposed to
+// the Job's current LimitGroups), and stores them for decrementing during
+// updateAfterExit(). This avoids any issues with the Job's LimitGroups being
+// changed between these 2 calls (or between you incrementing and reserving the
+// job). The twinned noteIncrementedLimitGroups() and updateAfterExit() calls
+// ensure we don't decrement groups more times than we incremented them.
+func (j *Job) noteIncrementedLimitGroups(groups []string) {
+	j.Lock()
+	defer j.Unlock()
+	j.incrementedLimitGroups = groups
+}
+
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited.
-func (j *Job) updateAfterExit(jes *JobEndState) {
+// JobEndState indicates the job exited. It also decrements any limit groups of
+// this job that had been passed to noteIncrementedLimitGroups(), and then
+// empties that note to make multiple calls to this method safe in terms of
+// decrementing.
+func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes == nil || !jes.Exited {
 		return
 	}
@@ -666,6 +701,12 @@ func (j *Job) updateAfterExit(jes *JobEndState) {
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}
+
+	if len(j.incrementedLimitGroups) > 0 {
+		lim.Decrement(j.incrementedLimitGroups)
+		j.incrementedLimitGroups = []string{}
+	}
+
 	j.Unlock()
 }
 
@@ -691,6 +732,18 @@ func (j *Job) setScheduledRunner(newval bool) {
 	j.Lock()
 	defer j.Unlock()
 	j.scheduledRunner = newval
+}
+
+// generateSchedulerGroup returns a stringified form of the given requirements,
+// appended with a standard form of the current limit groups of this job. We
+// assume that LimitGroups was sorted and deduplicated when it was set on the
+// job (this happens in server.createJobs()).
+func (j *Job) generateSchedulerGroup(req *scheduler.Requirements) string {
+	var lgs string
+	if len(j.LimitGroups) > 0 {
+		lgs = jobSchedLimitGroupSeparator + strings.Join(j.LimitGroups, jobLimitGroupSeparator)
+	}
+	return req.Stringify() + lgs
 }
 
 // getSchedulerGroup provides a thread-safe way of getting the schedulerGroup
@@ -732,6 +785,7 @@ func (j *Job) ToStatus() JStatus {
 	return JStatus{
 		Key:           j.Key(),
 		RepGroup:      j.RepGroup,
+		LimitGroups:   j.LimitGroups,
 		DepGroups:     j.DepGroups,
 		Dependencies:  j.Dependencies.Stringify(),
 		Cmd:           j.Cmd,

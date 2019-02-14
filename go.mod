@@ -50,6 +50,7 @@ require (
 	github.com/jinzhu/configor v0.0.0-20180614024415-4edaf76fe188
 	github.com/jpillora/backoff v0.0.0-20180909062703-3050d21c67d7
 	github.com/json-iterator/go v0.0.0-20180612202835-f2b4162afba3 // indirect
+	github.com/jtolds/gls v4.2.1+incompatible // indirect
 	github.com/juju/ratelimit v1.0.1 // indirect
 	github.com/kardianos/osext v0.0.0-20170510131534-ae77be60afb1
 	github.com/kr/fs v0.1.0 // indirect
@@ -73,6 +74,7 @@ require (
 	github.com/sevlyar/go-daemon v0.0.0-20160925164401-01bb5caedcc4
 	github.com/shirou/gopsutil v0.0.0-20180901134234-eb1f1ab16f2e
 	github.com/shirou/w32 v0.0.0-20160930032740-bb4de0191aa4 // indirect
+	github.com/smartystreets/assertions v0.0.0-20190116191733-b6c0e53d7304 // indirect
 	github.com/smartystreets/goconvey v0.0.0-20181108003508-044398e4856c
 	github.com/spf13/cobra v0.0.0-20180829160745-99dc12355885
 	github.com/spf13/pflag v1.0.3 // indirect

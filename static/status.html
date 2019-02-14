@@ -377,6 +377,15 @@
                                         </dl>
                                     <!-- /ko -->
 
+                                    <!-- ko if: LimitGroups -->
+                                        <dl>
+                                            <dt>LimitGroups</dt>
+                                            <dd>
+                                                <span class="clickable" data-bind="click: $root.showLimitGroups">&lt;show&gt;</span>
+                                            </dd>
+                                        </dl>
+                                    <!-- /ko -->
+
                                     <!-- ko if: DepGroups -->
                                         <dl>
                                             <dt>DepGroups</dt>
@@ -511,6 +520,14 @@
                 dialogCss: 'modal-lg, modal-std',
                 header: { data: { label: stdModalHeader } },
                 body: { data: { content: stdOutput } }
+            }"></div>
+
+            <!-- limitgroups modal -->
+            <div data-bind="modal: {
+                visible: lgModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Limit Groups' } },
+                body: { name: 'envModalBodyTemplate', data: lgVars }
             }"></div>
 
             <!-- depgroups modal -->
@@ -958,6 +975,14 @@
                     self.stdModalHeader(type);
                     self.stdOutput(job[type]);
                     self.stdModalVisible(true);
+                }
+
+                // act if the user clicks to view LimitGroups
+                self.lgModalVisible = ko.observable(false);
+                self.lgVars = ko.observableArray();
+                self.showLimitGroups = function(job) {
+                    self.lgVars(job.LimitGroups);
+                    self.lgModalVisible(true);
                 }
 
                 // act if the user clicks to view DepGroups
