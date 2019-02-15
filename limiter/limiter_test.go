@@ -28,14 +28,14 @@ import (
 )
 
 func BenchmarkLimiter(b *testing.B) {
-	limits := make(map[string]uint)
+	limits := make(map[string]int)
 	limits["l1"] = 5
 	limits["l2"] = 6
-	cb := func(name string) uint {
+	cb := func(name string) int {
 		if limit, exists := limits[name]; exists {
 			return limit
 		}
-		return 0
+		return -1
 	}
 	b.ResetTimer()
 
@@ -79,16 +79,16 @@ func BenchmarkLimiter(b *testing.B) {
 
 func TestLimiter(t *testing.T) {
 	Convey("You can make a new Limiter with a limit defining callback", t, func() {
-		limits := make(map[string]uint)
+		limits := make(map[string]int)
 		limits["l1"] = 3
 		limits["l2"] = 2
 		limits["l4"] = 100
 		limits["l5"] = 200
-		cb := func(name string) uint {
+		cb := func(name string) int {
 			if limit, exists := limits[name]; exists {
 				return limit
 			}
-			return 0
+			return -1
 		}
 
 		l := New(cb)
@@ -138,6 +138,32 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+		})
+
+		Convey("You can have limits of 0 and also RemoveLimit()s", func() {
+			l.SetLimit("l2", 0)
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+
+			limits["l2"] = 0
+			l.RemoveLimit("l2")
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			So(l.GetLowestLimit([]string{"l2"}), ShouldEqual, 0)
+
+			limits["l2"] = -1
+			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			So(l.GetLowestLimit([]string{"l2"}), ShouldEqual, 0)
+
+			l.RemoveLimit("l2")
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.Increment([]string{"l2"}), ShouldBeTrue)
+			So(l.GetLowestLimit([]string{"l2"}), ShouldEqual, -1)
 		})
 
 		Convey("Concurrent SetLimit(), Increment() and Decrement() work", func() {

@@ -27,11 +27,11 @@ import (
 
 // SetLimitCallback is provided to New(). Your function should take the name of
 // a group and return the current limit for that group. If the group doesn't
-// exist or has no limit, return 0. The idea is that you retrieve the limit for
+// exist or has no limit, return -1. The idea is that you retrieve the limit for
 // a group from some on-disk database, so you don't have to have all group
 // limits in memory. (Limiter itself will clear out unused groups from its own
 // memory.)
-type SetLimitCallback func(name string) uint
+type SetLimitCallback func(name string) int
 
 // Limiter struct is used to limit usage of groups.
 type Limiter struct {
@@ -60,6 +60,14 @@ func (l *Limiter) SetLimit(name string, limit uint) {
 	}
 }
 
+// RemoveLimit removes the given group from memory. If your callback also begins
+// returning -1 for this group, the group effectively becomes unlimited.
+func (l *Limiter) RemoveLimit(name string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.groups, name)
+}
+
 // Increment sees if it would be possible to increment the count of every
 // supplied group, without making any of them go over their limit.
 //
@@ -67,8 +75,7 @@ func (l *Limiter) SetLimit(name string, limit uint) {
 // has made us forget about that group, the callback provided to New() will be
 // called with the name, and the returned value will be used to create a new
 // group with that limit and initial count of 0 (which will become 1 if this
-// returns true). Groups with a limit less than 1 are effectively ignored and
-// treated as having an infinite limit.
+// returns true). Groups with a limit of 0 will not be able to be Increment()ed.
 //
 // If possible, the group counts are actually incremented and this returns
 // true. If not possible, no group counts are altered and this returns false.
@@ -99,12 +106,12 @@ func (l *Limiter) Increment(groups []string) bool {
 // vivifyGroup either returns a stored group or creates a new one based on the
 // results of calling the SetLimitCallback. You must have the mu.Lock() before
 // calling this. Can return nil if the callback doesn't know about this group
-// and returns a 0 limit.
+// and returns a -1 limit.
 func (l *Limiter) vivifyGroup(name string) *group {
 	group, exists := l.groups[name]
 	if !exists {
-		if limit := l.cb(name); limit > 0 {
-			group = newGroup(name, limit)
+		if limit := l.cb(name); limit >= 0 {
+			group = newGroup(name, uint(limit))
 			l.groups[name] = group
 		}
 	}
@@ -134,16 +141,16 @@ func (l *Limiter) Decrement(groups []string) {
 }
 
 // GetLowestLimit tells you the lowest limit currently set amongst the given
-// groups. If none have a limit set, returns 0.
-func (l *Limiter) GetLowestLimit(groups []string) uint {
+// groups. If none have a limit set, returns -1.
+func (l *Limiter) GetLowestLimit(groups []string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var lowest uint
+	lowest := -1
 	for _, name := range groups {
 		group := l.vivifyGroup(name)
-		if group != nil && (lowest == 0 || group.limit < lowest) {
-			lowest = group.limit
+		if group != nil && (lowest == -1 || int(group.limit) < lowest) {
+			lowest = int(group.limit)
 		}
 	}
 	return lowest

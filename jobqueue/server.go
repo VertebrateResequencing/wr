@@ -542,7 +542,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	// our limiter will use a callback that gets group limits from our database
-	lcb := func(name string) uint {
+	lcb := func(name string) int {
 		return db.retrieveLimitGroup(name)
 	}
 	l := limiter.New(lcb)
@@ -611,10 +611,11 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				itemdef.StartQueue = queue.SubQueueRun
 
 				if len(job.LimitGroups) > 0 {
-					s.limiter.Increment(job.LimitGroups)
-					// (our note of incrementation done in the server that died
-					//  is not stored in the db)
-					job.noteIncrementedLimitGroups(job.LimitGroups)
+					if s.limiter.Increment(job.LimitGroups) {
+						// (our note of incrementation done in the server that died
+						//  is not stored in the db)
+						job.noteIncrementedLimitGroups(job.LimitGroups)
+					}
 				}
 
 				req := reqForScheduler(job.Requirements)
@@ -1507,7 +1508,7 @@ func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err e
 // the second is the actual error with more details.
 func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
 	// create itemdefs for the jobs
-	limitGroups := make(map[string]uint)
+	limitGroups := make(map[string]int)
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -1527,9 +1528,9 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 				parts := strings.Split(group, ":")
 				if len(parts) == 2 {
 					limit, err := strconv.Atoi(parts[1])
-					if err == nil && limit > 0 {
+					if err == nil {
 						job.LimitGroups[i] = parts[0]
-						limitGroups[parts[0]] = uint(limit)
+						limitGroups[parts[0]] = limit
 					}
 				}
 			}
@@ -1545,9 +1546,12 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 	}
 
 	// store any limit group changes on disk, and update in-memory groups
-	changed, err := s.db.storeLimitGroups(limitGroups)
+	changed, removed, err := s.db.storeLimitGroups(limitGroups)
 	for _, group := range changed {
-		s.limiter.SetLimit(group, limitGroups[group])
+		s.limiter.SetLimit(group, uint(limitGroups[group]))
+	}
+	for _, group := range removed {
+		s.limiter.RemoveLimit(group)
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -1900,8 +1904,8 @@ func (s *Server) scheduleRunners(group string) {
 		// lowest limit of its groups, if that's less than desired groupCount
 		limitGroups := s.schedGroupToLimitGroups(group)
 		if len(limitGroups) > 0 {
-			limit := int(s.limiter.GetLowestLimit(limitGroups))
-			if limit > 0 && limit < groupCount {
+			limit := s.limiter.GetLowestLimit(limitGroups)
+			if limit >= 0 && limit < groupCount {
 				groupCount = limit
 			}
 		}
