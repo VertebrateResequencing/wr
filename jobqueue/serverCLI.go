@@ -657,6 +657,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				sr = &serverResponse{BadServers: servers}
 			}
+		case "getsetlg":
+			if cr.LimitGroup == "" {
+				srerr = ErrBadRequest
+			} else {
+				limit, err := s.getSetLimitGroup(cr.LimitGroup)
+				if err != nil {
+					srerr = ErrInternalError
+					qerr = err.Error()
+				} else {
+					sr = &serverResponse{Limit: limit}
+				}
+			}
 		default:
 			srerr = ErrUnknownCommand
 		}
