@@ -2893,6 +2893,26 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 1)
 			})
+
+			Convey("You can get and change the limit using GetOrSetLimitGroup()", func() {
+				l, err := jq.GetOrSetLimitGroup("b")
+				So(err, ShouldBeNil)
+				So(l, ShouldEqual, 2)
+
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				l, err = jq.GetOrSetLimitGroup("b:4")
+				So(err, ShouldBeNil)
+				So(l, ShouldEqual, 4)
+
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 1)
+
+				l, err = jq.GetOrSetLimitGroup("b")
+				So(err, ShouldBeNil)
+				So(l, ShouldEqual, 4)
+			})
 		})
 
 		Reset(func() {

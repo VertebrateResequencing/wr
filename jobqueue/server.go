@@ -128,6 +128,7 @@ type serverResponse struct {
 	KillCalled bool
 	Job        *Job
 	Jobs       []*Job
+	Limit      int
 	SInfo      *ServerInfo
 	SStats     *ServerStats
 	DB         []byte
@@ -1525,13 +1526,10 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			// remove limit suffixes and remember the last limit per group
 			// specified
 			for i, group := range job.LimitGroups {
-				parts := strings.Split(group, ":")
-				if len(parts) == 2 {
-					limit, err := strconv.Atoi(parts[1])
-					if err == nil {
-						job.LimitGroups[i] = parts[0]
-						limitGroups[parts[0]] = limit
-					}
+				name, limit, suffixed := s.splitSuffixedLimitGroup(group)
+				if suffixed {
+					job.LimitGroups[i] = name
+					limitGroups[name] = limit
 				}
 			}
 
@@ -2060,6 +2058,43 @@ func (s *Server) getBadServers() []*BadServer {
 	}
 	s.bsmutex.RUnlock()
 	return bs
+}
+
+// getSetLimitGroup does the server side of Client.GetOrSetLimitGroup(), taking
+// the same argument.
+func (s *Server) getSetLimitGroup(group string) (int, error) {
+	name, limit, suffixed := s.splitSuffixedLimitGroup(group)
+	if suffixed {
+		limitGroups := make(map[string]int)
+		limitGroups[name] = limit
+		changed, removed, err := s.db.storeLimitGroups(limitGroups)
+		if err != nil {
+			return -1, err
+		}
+		for _, group := range changed {
+			s.limiter.SetLimit(group, uint(limit))
+		}
+		for _, group := range removed {
+			s.limiter.RemoveLimit(group)
+		}
+		s.q.TriggerReadyAddedCallback()
+		return limit, nil
+	}
+	return s.limiter.GetLowestLimit([]string{name}), nil
+}
+
+// splitSuffixedLimitGroup parses a limit group that might be suffixed with a
+// colon and the limit of that group. Returns the group name, and if the final
+// bool is true, the int will be the desired limit for that group.
+func (s *Server) splitSuffixedLimitGroup(group string) (string, int, bool) {
+	parts := strings.Split(group, ":")
+	if len(parts) == 2 {
+		limit, err := strconv.Atoi(parts[1])
+		if err == nil {
+			return parts[0], limit, true
+		}
+	}
+	return group, -1, false
 }
 
 // storeWebSocketConnection stores a connection and returns a unique identifier

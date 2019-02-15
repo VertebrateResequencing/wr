@@ -108,6 +108,7 @@ type clientRequest struct {
 	Keys                    []string
 	Search                  bool
 	Limit                   int
+	LimitGroup              string
 	Method                  string
 	SchedulerGroup          string
 	State                   JobState
@@ -1642,6 +1643,20 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 		return nil, err
 	}
 	return resp.Jobs, err
+}
+
+// GetOrSetLimitGroup takes the name of a limit group and returns the current
+// limit for that group. If the group isn't known about, returns -1.
+//
+// If the name is suffixed with :n, where n is an integer, then the limit of
+// the group is set to n, and then n is returned. Setting n to -1 makes the
+// group forgotten about, effectively making it unlimited.
+func (c *Client) GetOrSetLimitGroup(group string) (int, error) {
+	resp, err := c.request(&clientRequest{Method: "getsetlg", LimitGroup: group})
+	if err != nil {
+		return -1, err
+	}
+	return resp.Limit, err
 }
 
 // UploadFile uploads a local file to the machine where the server is running,
