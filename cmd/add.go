@@ -226,9 +226,10 @@ when viewing status.
 
 "limit_grps" is an array of arbitrary names you can associate with a command,
 that can be used to limit the number of jobs that run at once in the same group.
-You can optionally suffix a group name with :n where n is a positive integer new
-limit for that group. Otherwise, groups will be unlimited until a limit is set
-with the "wr limit" command.
+You can optionally suffix a group name with :n where n is a integer new limit
+for that group. 0 prevents jobs in that group running at all. -1 makes jobs in
+that group unlimited. If no limit number is suffixed, groups will be unlimited
+until a limit is set with the "wr limit" command.
 
 "dep_grps" is an array of arbitrary names you can associate with a command, so
 that you can then refer to this job (and others with the same dep_grp) in

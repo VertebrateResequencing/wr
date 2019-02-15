@@ -324,8 +324,11 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 
 // storeLimitGroups stores a mapping of group names to unsigned ints in a
 // dedicated bucket. If a group was already in the database, and it had a
-// different value, that group name will be returned in the slice.
-func (db *db) storeLimitGroups(limitGroups map[string]uint) (changed []string, err error) {
+// different value, that group name will be returned in the changed slice. If
+// the group is given with a value less than 0, it is not stored in the
+// database; any existing entry is removed and the name is returned in the
+// removed slice.
+func (db *db) storeLimitGroups(limitGroups map[string]int) (changed []string, removed []string, err error) {
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLGs)
 
@@ -334,33 +337,44 @@ func (db *db) storeLimitGroups(limitGroups map[string]uint) (changed []string, e
 
 			v := b.Get(key)
 			if v != nil {
+				if limit < 0 {
+					errd := b.Delete(key)
+					if errd != nil {
+						return errd
+					}
+					removed = append(removed, group)
+					continue
+				}
+
 				if binary.BigEndian.Uint64(v) == uint64(limit) {
 					continue
 				}
 				changed = append(changed, group)
+			} else if limit < 0 {
+				continue
 			}
 
 			v = make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(limit))
-			errf := b.Put(key, v)
-			if errf != nil {
-				return errf
+			errp := b.Put(key, v)
+			if errp != nil {
+				return errp
 			}
 		}
 
 		return nil
 	})
-	return changed, err
+	return changed, removed, err
 }
 
 // retrieveLimitGroup gets a value for a particular group from the db that was
-// stored with storeLimitGroups(). If the group wasn't stored, returns 0.
-func (db *db) retrieveLimitGroup(group string) uint {
+// stored with storeLimitGroups(). If the group wasn't stored, returns -1.
+func (db *db) retrieveLimitGroup(group string) int {
 	v := db.retrieve(bucketLGs, group)
 	if v == nil {
-		return uint(0)
+		return -1
 	}
-	return uint(binary.BigEndian.Uint64(v))
+	return int(binary.BigEndian.Uint64(v))
 }
 
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
