@@ -2845,8 +2845,8 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			reserveJobs := func() []*Job {
 				var jobs []*Job
 				for i := 1; i <= 5; i++ {
-					job, err := jq.ReserveScheduled(50*time.Millisecond, "110:0:1:0~a,b")
-					So(err, ShouldBeNil)
+					job, errr := jq.ReserveScheduled(50*time.Millisecond, "110:0:1:0~a,b")
+					So(errr, ShouldBeNil)
 					if job != nil {
 						jobs = append(jobs, job)
 					}

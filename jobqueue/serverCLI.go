@@ -864,7 +864,7 @@ func (s *Server) reserveWithLimits(group ...string) (*queue.Item, error) {
 		limitGroups = s.schedGroupToLimitGroups(group[0])
 		if len(limitGroups) > 0 {
 			if !s.limiter.Increment(limitGroups) {
-				return nil, queue.Error{s.q.Name, "Reserve", "", queue.ErrNothingReady}
+				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}
 		}
 
