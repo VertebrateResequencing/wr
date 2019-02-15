@@ -1545,6 +1545,9 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 
 	// store any limit group changes on disk, and update in-memory groups
 	changed, removed, err := s.db.storeLimitGroups(limitGroups)
+	if err != nil {
+		return added, dups, alreadyComplete, ErrDBError, err
+	}
 	for _, group := range changed {
 		s.limiter.SetLimit(group, uint(limitGroups[group]))
 	}
