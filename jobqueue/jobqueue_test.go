@@ -2831,7 +2831,12 @@ func TestJobqueueLimitGroups(t *testing.T) {
 		Convey("You can connect, and add jobs with LimitGroups", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
-			defer jq.Disconnect()
+			defer func() {
+				errd := jq.Disconnect()
+				if errd != nil {
+					fmt.Printf("Disconnect failed: %s\n", errd)
+				}
+			}()
 
 			var jobs []*Job
 			for i := 1; i <= 5; i++ {

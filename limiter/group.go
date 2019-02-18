@@ -53,7 +53,7 @@ func (g *group) increment() bool {
 // decrement decreases the count of this group, down to 0. Returns true if a
 // decrease happened.
 func (g *group) decrement() bool {
-	if g.current <= 0 {
+	if g.current == 0 {
 		return false
 	}
 	g.current--
