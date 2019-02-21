@@ -2068,18 +2068,18 @@ func (s *Server) getBadServers() []*BadServer {
 }
 
 // getSetLimitGroup does the server side of Client.GetOrSetLimitGroup(), taking
-// the same argument.
-func (s *Server) getSetLimitGroup(group string) (int, error) {
+// the same argument. The string return value is one of our Err* constants.
+func (s *Server) getSetLimitGroup(group string) (int, string, error) {
 	name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
 	if err != nil {
-		return 0, err
+		return 0, ErrBadLimitGroup, err
 	}
 	if suffixed {
 		limitGroups := make(map[string]int)
 		limitGroups[name] = limit
 		changed, removed, err := s.db.storeLimitGroups(limitGroups)
 		if err != nil {
-			return -1, err
+			return -1, ErrDBError, err
 		}
 		for _, group := range changed {
 			s.limiter.SetLimit(group, uint(limit))
@@ -2088,9 +2088,9 @@ func (s *Server) getSetLimitGroup(group string) (int, error) {
 			s.limiter.RemoveLimit(group)
 		}
 		s.q.TriggerReadyAddedCallback()
-		return limit, nil
+		return limit, "", nil
 	}
-	return s.limiter.GetLowestLimit([]string{name}), nil
+	return s.limiter.GetLowestLimit([]string{name}), "", nil
 }
 
 // splitSuffixedLimitGroup parses a limit group that might be suffixed with a

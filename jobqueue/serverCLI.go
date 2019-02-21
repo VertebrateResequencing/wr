@@ -661,9 +661,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if cr.LimitGroup == "" {
 				srerr = ErrBadRequest
 			} else {
-				limit, err := s.getSetLimitGroup(cr.LimitGroup)
+				limit, serr, err := s.getSetLimitGroup(cr.LimitGroup)
 				if err != nil {
-					srerr = ErrInternalError
+					srerr = serr
 					qerr = err.Error()
 				} else {
 					sr = &serverResponse{Limit: limit}
