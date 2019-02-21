@@ -77,6 +77,7 @@ const (
 	ErrPermissionDenied = "bad token: permission denied"
 	ErrBeingDrained     = "server is being drained"
 	ErrStopReserving    = "recovered on a new server; you should stop reserving"
+	ErrBadLimitGroup    = "colons in limit group names must be followed by integers"
 	ServerModeNormal    = "started"
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
@@ -1526,7 +1527,10 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			// remove limit suffixes and remember the last limit per group
 			// specified
 			for i, group := range job.LimitGroups {
-				name, limit, suffixed := s.splitSuffixedLimitGroup(group)
+				name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
+				if err != nil {
+					return added, dups, alreadyComplete, ErrBadLimitGroup, err
+				}
 				if suffixed {
 					job.LimitGroups[i] = name
 					limitGroups[name] = limit
@@ -2066,7 +2070,10 @@ func (s *Server) getBadServers() []*BadServer {
 // getSetLimitGroup does the server side of Client.GetOrSetLimitGroup(), taking
 // the same argument.
 func (s *Server) getSetLimitGroup(group string) (int, error) {
-	name, limit, suffixed := s.splitSuffixedLimitGroup(group)
+	name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
+	if err != nil {
+		return 0, err
+	}
 	if suffixed {
 		limitGroups := make(map[string]int)
 		limitGroups[name] = limit
@@ -2089,15 +2096,16 @@ func (s *Server) getSetLimitGroup(group string) (int, error) {
 // splitSuffixedLimitGroup parses a limit group that might be suffixed with a
 // colon and the limit of that group. Returns the group name, and if the final
 // bool is true, the int will be the desired limit for that group.
-func (s *Server) splitSuffixedLimitGroup(group string) (string, int, bool) {
+func (s *Server) splitSuffixedLimitGroup(group string) (string, int, bool, error) {
 	parts := strings.Split(group, ":")
 	if len(parts) == 2 {
 		limit, err := strconv.Atoi(parts[1])
-		if err == nil {
-			return parts[0], limit, true
+		if err != nil {
+			return "", -1, false, err
 		}
+		return parts[0], limit, true, nil
 	}
-	return group, -1, false
+	return group, -1, false, nil
 }
 
 // storeWebSocketConnection stores a connection and returns a unique identifier

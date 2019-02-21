@@ -2838,11 +2838,11 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				}
 			}()
 
-			var jobs []*Job
+			var addJobs []*Job
 			for i := 1; i <= 5; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:3"}})
+				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:3"}})
 			}
-			inserts, already, err := jq.Add(jobs, envVars, true)
+			inserts, already, err := jq.Add(addJobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 5)
 			So(already, ShouldEqual, 0)
@@ -2917,6 +2917,16 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				l, err = jq.GetOrSetLimitGroup("b")
 				So(err, ShouldBeNil)
 				So(l, ShouldEqual, 4)
+			})
+
+			Convey("You can't add Jobs with bad LimitGroup names", func() {
+				var jobs []*Job
+				jobs = append(jobs, &Job{Cmd: "echo bad", Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:d3"}})
+				_, _, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldNotBeNil)
+				serr, ok := err.(Error)
+				So(ok, ShouldBeTrue)
+				So(serr.Err, ShouldEqual, ErrBadLimitGroup)
 			})
 		})
 
