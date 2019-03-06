@@ -82,6 +82,12 @@ const (
 	// cwd to a configured location on the machine that the jobqueue server is
 	// running on. *** not yet implemented!
 	CopyToManager
+
+	// Nothing is a BehaviourAction that does nothing. It allows you to define
+	// a Behaviour that will do nothing, distinguishable from a nil Behaviour,
+	// for situations where you want to store a desire to change another
+	// Behaviour to turn it off.
+	Nothing
 )
 
 // Behaviour describes something that should happen in response to a Job's Cmd
@@ -108,6 +114,8 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 		return b.run(j)
 	case CopyToManager:
 		return b.copyToManager(j)
+	case Nothing:
+		return nil
 	}
 	return fmt.Errorf("invalid status %d", status)
 }
@@ -137,6 +145,8 @@ func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 		bvj = BehaviourViaJSON{Cleanup: true}
 	case CleanupAll:
 		bvj = BehaviourViaJSON{CleanupAll: true}
+	case Nothing:
+		bvj = BehaviourViaJSON{Nothing: true}
 	default:
 		return
 	}
@@ -357,6 +367,7 @@ type BehaviourViaJSON struct {
 	CopyToManager []string `json:"copy_to_manager,omitempty"`
 	Cleanup       bool     `json:"cleanup,omitempty"`
 	CleanupAll    bool     `json:"cleanup_all,omitempty"`
+	Nothing       bool     `json:"nothing,omitempty"`
 }
 
 // Behaviour converts the friendly BehaviourViaJSON struct to real Behaviour.
@@ -374,6 +385,8 @@ func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
 		do = Cleanup
 	} else if bj.CleanupAll {
 		do = CleanupAll
+	} else {
+		do = Nothing
 	}
 
 	return &Behaviour{
