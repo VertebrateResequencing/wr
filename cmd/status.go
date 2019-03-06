@@ -466,7 +466,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		if len(jobs) < len(parsedJobs) {
 			warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
 		}
-	default:
+	case cmdLine != "":
 		// get job that has the supplied command
 		var defaultMounts jobqueue.MountConfigs
 		if mountJSON != "" || mountSimple != "" {
