@@ -1,4 +1,4 @@
-// Copyright © 2017, 2018 Genome Research Limited
+// Copyright © 2017-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -25,7 +25,6 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -409,12 +408,11 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		cloudScriptPath = jd.CloudScript
 	}
 	if cloudScriptPath != "" {
-		cloudScriptPath = internal.TildaToHome(cloudScriptPath)
-		postCreation, err := ioutil.ReadFile(cloudScriptPath)
+		scriptContent, err := internal.PathToContent(cloudScriptPath)
 		if err != nil {
-			return nil, fmt.Errorf("cloud_script [%s] could not be read: %s", cloudScriptPath, err)
+			return nil, err
 		}
-		other["cloud_script"] = string(postCreation)
+		other["cloud_script"] = scriptContent
 	}
 
 	if jvj.CloudConfigFiles != "" {

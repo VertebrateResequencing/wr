@@ -494,3 +494,15 @@ func currentIPFallback(ipNet *net.IPNet) (string, error) {
 	}
 	return ip, nil
 }
+
+// PathToContent takes the path to a file and returns its contents as a string.
+// If path begins with a tilda, TildaToHome() is used to first convert the path
+// to an absolute path, in order to find the file.
+func PathToContent(path string) (string, error) {
+	absPath := TildaToHome(path)
+	contents, err := ioutil.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("path [%s] could not be read: %s", absPath, err)
+	}
+	return string(contents), nil
+}
