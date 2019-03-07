@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
 // https://github.com/diegobernardes/ttlcache
@@ -747,6 +747,49 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 	if changedFrom != "" {
 		queue.changed(changedFrom, SubQueueDependent, []*Item{item})
+	}
+
+	return nil
+}
+
+// ChangeKey is a thread-safe way to change the key an item can be found with
+// using Get() (and also ensures any dependencies involving the old key will
+// continue to work). If an item already exists in the queue with the new key,
+// this will fail.
+func (queue *Queue) ChangeKey(old, new string) error {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	if queue.closed {
+		return Error{queue.Name, "ChangeKey", old, ErrQueueClosed}
+	}
+
+	if _, exists := queue.items[new]; exists {
+		return Error{queue.Name, "ChangeKey", new, ErrAlreadyExists}
+	}
+
+	item, exists := queue.items[old]
+	if !exists {
+		return Error{queue.Name, "ChangeKey", old, ErrNotFound}
+	}
+
+	delete(queue.items, old)
+	queue.items[new] = item
+
+	if val, exists := queue.dependants[old]; exists {
+		delete(queue.dependants, old)
+		queue.dependants[new] = val
+	}
+
+	for _, items := range queue.dependants {
+		if val, exists := items[old]; exists {
+			delete(items, old)
+			items[new] = val
+		}
+	}
+
+	for _, item := range queue.items {
+		item.ChangedKey(old, new)
 	}
 
 	return nil
