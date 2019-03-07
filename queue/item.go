@@ -1,4 +1,4 @@
-// Copyright © 2016, 2018 Genome Research Limited
+// Copyright © 2016, 2018, 2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
 // https://github.com/diegobernardes/ttlcache
@@ -174,6 +174,30 @@ func (item *Item) UnresolvedDependencies() []string {
 		i++
 	}
 	return deps
+}
+
+// ChangedKey updates this item by changing its Key if old matches it, or by
+// updating the key in any dependencies of this item.
+func (item *Item) ChangedKey(old, new string) {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	if item.Key == old {
+		item.Key = new
+		return
+	}
+
+	for i, dep := range item.dependencies {
+		if dep == old {
+			item.dependencies[i] = new
+			break
+		}
+	}
+
+	if item.remainingDeps[old] {
+		delete(item.remainingDeps, old)
+		item.remainingDeps[new] = true
+	}
 }
 
 // setDependencies sets the keys of the other items we are dependent upon. This

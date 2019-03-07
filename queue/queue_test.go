@@ -1,4 +1,4 @@
-// Copyright © 2016, 2018 Genome Research Limited
+// Copyright © 2016, 2018, 2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -1234,7 +1234,7 @@ func TestQueue(t *testing.T) {
 		So(fivesixdep.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
 
 		Convey("Only the non-dependent items are immediately ready", func() {
-			depTestFunc(queue)
+			depTestFunc(queue, false)
 		})
 
 		Convey("HasDependents works", func() {
@@ -1375,6 +1375,39 @@ func TestQueue(t *testing.T) {
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
 		})
 
+		Convey("You can change item keys without breaking dependencies", func() {
+			err := queue.ChangeKey("key_3", "changed_3")
+			So(err, ShouldBeNil)
+			err = queue.ChangeKey("key_6", "changed_6")
+			So(err, ShouldBeNil)
+			err = queue.ChangeKey("key_7", "changed_7")
+			So(err, ShouldBeNil)
+
+			err = queue.ChangeKey("foo", "bar")
+			So(err, ShouldNotBeNil)
+			qerr, ok := err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNotFound)
+
+			err = queue.ChangeKey("key_1", "changed_3")
+			So(err, ShouldNotBeNil)
+			qerr, ok = err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrAlreadyExists)
+
+			_, err = queue.Get("key_3")
+			So(err, ShouldNotBeNil)
+			qerr, ok = err.(Error)
+			So(ok, ShouldBeTrue)
+			So(qerr.Err, ShouldEqual, ErrNotFound)
+
+			item, err := queue.Get("changed_3")
+			So(err, ShouldBeNil)
+			So(item.Key, ShouldEqual, "changed_3")
+
+			depTestFunc(queue, true)
+		})
+
 		Convey("You can add dependencies on non-exist items and resolve them later", func() {
 			ten, err := queue.Add("key_10", "", "10", 0, 0*time.Second, 30*time.Second, "", []string{"key_9"})
 			So(err, ShouldBeNil)
@@ -1425,7 +1458,7 @@ func TestQueue(t *testing.T) {
 		So(item7.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
 
 		Convey("Only the non-dependent items are immediately ready", func() {
-			depTestFunc(queue)
+			depTestFunc(queue, false)
 		})
 	})
 
@@ -1472,7 +1505,16 @@ func TestQueue(t *testing.T) {
 	})
 }
 
-func depTestFunc(queue *Queue) {
+func depTestFunc(queue *Queue, changed bool) {
+	key3 := "key_3"
+	key6 := "key_6"
+	key7 := "key_7"
+	if changed {
+		key3 = "changed_3"
+		key6 = "changed_6"
+		key7 = "changed_7"
+	}
+
 	stats := queue.Stats()
 	So(stats.Items, ShouldEqual, 8)
 	So(stats.Delayed, ShouldEqual, 0)
@@ -1500,11 +1542,11 @@ func depTestFunc(queue *Queue) {
 		So(stats.Buried, ShouldEqual, 0)
 		So(stats.Dependant, ShouldEqual, 4)
 
-		item, err = queue.Get("key_6")
+		item, err = queue.Get(key6)
 		So(err, ShouldBeNil)
 		So(item.Stats().State, ShouldEqual, ItemStateDependent)
 
-		err = queue.Remove("key_3")
+		err = queue.Remove(key3)
 		So(err, ShouldBeNil)
 		<-time.After(6 * time.Millisecond)
 
@@ -1526,7 +1568,7 @@ func depTestFunc(queue *Queue) {
 		So(stats.Ready, ShouldEqual, 2)
 		So(stats.Dependant, ShouldEqual, 3)
 
-		err = queue.Remove("key_6")
+		err = queue.Remove(key6)
 		So(err, ShouldBeNil)
 		<-time.After(6 * time.Millisecond)
 
@@ -1550,7 +1592,7 @@ func depTestFunc(queue *Queue) {
 		So(stats.Ready, ShouldEqual, 1)
 		So(stats.Dependant, ShouldEqual, 2)
 
-		item7, err := queue.Get("key_7")
+		item7, err := queue.Get(key7)
 		So(err, ShouldBeNil)
 		So(item7.Stats().State, ShouldEqual, ItemStateDependent)
 		item8, err := queue.Get("key_8")
@@ -1563,6 +1605,6 @@ func depTestFunc(queue *Queue) {
 
 		So(item7.Stats().State, ShouldEqual, ItemStateReady)
 		So(item8.Stats().State, ShouldEqual, ItemStateReady)
-		So(item7.Dependencies(), ShouldResemble, []string{"key_5", "key_6"})
+		So(item7.Dependencies(), ShouldResemble, []string{"key_5", key6})
 	})
 }
