@@ -1281,6 +1281,9 @@ func TestQueue(t *testing.T) {
 			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
 			So(err, ShouldBeNil)
 
+			fiveStats = five.Stats()
+			So(fiveStats.State, ShouldEqual, ItemStateDependent)
+
 			So(five.Dependencies(), ShouldResemble, []string{"key_2", "key_3"})
 			hasDeps, err = queue.HasDependents("key_1")
 			So(err, ShouldBeNil)
@@ -1308,6 +1311,11 @@ func TestQueue(t *testing.T) {
 			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
 			So(err, ShouldBeNil)
 
+			// (you can be dependent on items that do not exist in the queue)
+			So(five.Stats().State, ShouldEqual, ItemStateDependent)
+
+			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
+			So(err, ShouldBeNil)
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
 
 			five, err = queue.Reserve("five")
@@ -1322,7 +1330,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
@@ -1333,7 +1341,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateRun)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, 1*time.Second, fiveStats.TTR, []string{"key_2", "key_3"})
+			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, 1*time.Second, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			queue.Release(five.Key)
@@ -1346,7 +1354,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
