@@ -671,7 +671,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 			item.mutex.RLock()
 			iState := item.state
 			item.mutex.RUnlock()
-			if iState != ItemStateDependent {
+			if len(deps[0]) > 0 && iState != ItemStateDependent {
 				pushToDep := true
 				switch iState {
 				case ItemStateDelay:
@@ -694,7 +694,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 				if pushToDep {
 					queue.depQueue.push(item)
 				}
-			} else {
+			} else if len(deps[0]) == 0 {
 				// switch to ready queue
 				queue.depQueue.remove(item)
 				item.switchDependentReady()
