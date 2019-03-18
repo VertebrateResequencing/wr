@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -654,9 +654,9 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 			desired = parts[0]
 		}
 
-		remote, err := jq.UploadFile(local, desired)
+		remote, err := jq.UploadFile(local, "")
 		if err != nil {
-			warn("failed to upload [%s] to [%s]: %s", local, desired, err)
+			warn("failed to upload [%s] to a unique location: %s", local, err)
 			remoteConfigFiles = append(remoteConfigFiles, cf)
 			continue
 		}
