@@ -276,8 +276,8 @@ help text for "wr cloud deploy"'s --config_files option. The per-job config
 files you specify will be treated as in addition to any specified during cloud
 deploy or when starting the manager.
 
-cloud_shared only works when using a cloud scheduler where both the manager and
-jobs will run on Ubuntu. It will cause /shared on the manager's server to be
+"cloud_shared" only works when using a cloud scheduler where both the manager
+and jobs will run on Ubuntu. It will cause /shared on the manager's server to be
 NFS shared to /shared mounted on the server where your job runs. This gives you
 an easy way of having a shared disk in the cloud, but the size of that disk is
 limited to the size of the manager's volume. Performance may also be poor. This
