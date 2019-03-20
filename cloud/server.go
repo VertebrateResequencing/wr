@@ -764,7 +764,7 @@ func (s *Server) CreateSharedDisk() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get install nfs-kernel-server -y") // #nosec
+	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get update && sudo apt-get install nfs-kernel-server -y") // #nosec
 	err := cmd.Run()
 	if err != nil {
 		return err
@@ -798,7 +798,6 @@ func (s *Server) CreateSharedDisk() error {
 
 	s.createdShare = true
 	s.SharedDisk = true
-	s.logger.Debug("created shared disk")
 	return nil
 }
 
