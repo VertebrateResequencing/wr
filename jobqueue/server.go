@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -126,6 +126,7 @@ type serverResponse struct {
 	Err        string // string instead of error so we can decode on the client side
 	Added      int
 	Existed    int
+	Modified   map[string]string
 	KillCalled bool
 	Job        *Job
 	Jobs       []*Job
@@ -1093,6 +1094,7 @@ func (s *Server) createQueue() {
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
 		groupsScheduledCounts := make(map[string]int)
+		groupsChangedCounts := make(map[string]int)
 		noRecGroups := make(map[string]bool)
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
@@ -1231,6 +1233,7 @@ func (s *Server) createQueue() {
 			if prevSchedGroup != schedulerGroup {
 				job.setSchedulerGroup(schedulerGroup)
 				if prevSchedGroup != "" {
+					groupsChangedCounts[prevSchedGroup]++
 					job.setScheduledRunner(false)
 				}
 				if s.rc != "" {
@@ -1268,6 +1271,10 @@ func (s *Server) createQueue() {
 
 		if s.rc != "" {
 			// clear out groups we no longer need
+			for group, count := range groupsChangedCounts {
+				s.decrementGroupCount(group, count)
+			}
+
 			s.sgcmutex.Lock()
 			stillRunning := make(map[string]int)
 			for _, inter := range q.GetRunningData() {
@@ -1524,39 +1531,18 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 		}
 
 		if len(job.LimitGroups) > 0 {
-			// remove limit suffixes and remember the last limit per group
-			// specified
-			for i, group := range job.LimitGroups {
-				name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
-				if err != nil {
-					return added, dups, alreadyComplete, ErrBadLimitGroup, err
-				}
-				if suffixed {
-					job.LimitGroups[i] = name
-					limitGroups[name] = limit
-				}
-			}
-
-			// because these later become part of scheduler groups names, store
-			// them in sorted order, with no duplicates
-			if len(job.LimitGroups) > 1 {
-				job.LimitGroups = internal.DedupSortStrings(job.LimitGroups)
+			err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+			if err != nil {
+				return added, dups, alreadyComplete, ErrBadLimitGroup, err
 			}
 		}
 
 		job.Unlock()
 	}
 
-	// store any limit group changes on disk, and update in-memory groups
-	changed, removed, err := s.db.storeLimitGroups(limitGroups)
+	err := s.storeLimitGroups(limitGroups)
 	if err != nil {
 		return added, dups, alreadyComplete, ErrDBError, err
-	}
-	for _, group := range changed {
-		s.limiter.SetLimit(group, uint(limitGroups[group]))
-	}
-	for _, group := range removed {
-		s.limiter.RemoveLimit(group)
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -1590,22 +1576,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 
-		// storeNewJobs also returns jobsToUpdate, which are those jobs
-		// currently in the queue that need their dependencies updated because
-		// they just changed when we stored cr.Jobs
-		for _, job := range jobsToUpdate {
-			deps, err := job.Dependencies.incompleteJobKeys(s.db)
-			if err != nil {
-				srerr = ErrDBError
-				qerr = err
-				break
-			}
-			thisErr := s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
-			if thisErr != nil {
-				qerr = thisErr
-				break
-			}
-		}
+		srerr, qerr = s.updateJobDependencies(jobsToUpdate)
 
 		if qerr != nil {
 			srerr = ErrInternalError
@@ -1618,6 +1589,70 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 		}
 	}
 	return added, dups, alreadyComplete, srerr, qerr
+}
+
+// handleUserSpecifiedJobLimitGroups takes limit groups on a job that may have
+// been specified like name:limit, and fixes them to remove the limit suffix,
+// dedup and sort the groups, and fill in your supplied limitGroups map with the
+// latest limit on groups, if any were specified. You should hold the lock on
+// the Job before calling this.
+func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[string]int) error {
+	// remove limit suffixes and remember the last limit per group specified
+	for i, group := range job.LimitGroups {
+		name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
+		if err != nil {
+			return err
+		}
+		if suffixed {
+			job.LimitGroups[i] = name
+			limitGroups[name] = limit
+		}
+	}
+
+	// because these later become part of scheduler groups names, store
+	// them in sorted order, with no duplicates
+	if len(job.LimitGroups) > 1 {
+		job.LimitGroups = internal.DedupSortStrings(job.LimitGroups)
+	}
+
+	return nil
+}
+
+// storeLimitGroups calls db.storeLimitGroups() and handles updating the
+// in-memory representation of the groups.
+func (s *Server) storeLimitGroups(limitGroups map[string]int) error {
+	changed, removed, err := s.db.storeLimitGroups(limitGroups)
+	if err != nil {
+		return err
+	}
+	for _, group := range changed {
+		s.limiter.SetLimit(group, uint(limitGroups[group]))
+	}
+	for _, group := range removed {
+		s.limiter.RemoveLimit(group)
+	}
+	return nil
+}
+
+// updateJobDependencies is used to handle the jobsToUpdate from storeNewJobs()
+// and db.modifyLiveJobs(). These are those jobs currently in the queue that
+// need their dependencies updated because they just changed when we stored the
+// jobs.
+func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
+	for _, job := range jobs {
+		deps, err := job.Dependencies.incompleteJobKeys(s.db)
+		if err != nil {
+			srerr = ErrDBError
+			qerr = err
+			break
+		}
+		thisErr := s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+		if thisErr != nil {
+			qerr = thisErr
+			break
+		}
+	}
+	return srerr, qerr
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates
