@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -106,6 +106,7 @@ type clientRequest struct {
 	JobEndState             *JobEndState
 	Jobs                    []*Job
 	Keys                    []string
+	Modifier                *JobModifier
 	Search                  bool
 	Limit                   int
 	LimitGroup              string
@@ -353,6 +354,25 @@ func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added,
 		return 0, 0, err
 	}
 	return resp.Added, resp.Existed, err
+}
+
+// Modify modifies previously Add()ed jobs that are incomplete and not currently
+// running.
+//
+// The first argument lets you choose which jobs to modify. The second argument
+// lets you define what you want to change in them all. If you want to change
+// the actual command line of a job, you can only modify 1 job.
+//
+// For each modified job, returns a mapping of new internal job id to the old
+// internal job id (which will typically be the same, unless something critical
+// like the command line was changed).
+func (c *Client) Modify(jes []*JobEssence, modifier *JobModifier) (modified map[string]string, err error) {
+	keys := c.jesToKeys(jes)
+	resp, err := c.request(&clientRequest{Method: "jmod", Keys: keys, Modifier: modifier})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Modified, err
 }
 
 // Reserve takes a job off the jobqueue. If you process the job successfully you

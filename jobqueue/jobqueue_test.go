@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -2929,6 +2929,492 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				So(serr.Err, ShouldEqual, ErrBadLimitGroup)
 			})
 		})
+
+		Reset(func() {
+			server.Stop(true)
+		})
+	})
+}
+
+func TestJobqueueModify(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+	rtime := 50 * time.Millisecond
+	rgroup := "110:0:1:0"
+	tmp := "/tmp"
+
+	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
+
+	var jobsToJobEssenses = func(jobs []*Job) []*JobEssence {
+		var jes []*JobEssence
+		for _, job := range jobs {
+			jes = append(jes, job.ToEssense())
+		}
+		return jes
+	}
+
+	Convey("Once a new jobqueue server is up and client is connected", t, func() {
+		ServerItemTTR = 5 * time.Second
+		ClientTouchInterval = 2500 * time.Millisecond
+		ClientReleaseDelay = 0 * time.Second
+		server, _, token, errs := serve(serverConfig)
+		So(errs, ShouldBeNil)
+		defer func() {
+			server.Stop(true)
+		}()
+
+		server.rc = `echo %s %s %s %s %d %d`
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+		defer func() {
+			errd := jq.Disconnect()
+			if errd != nil {
+				fmt.Printf("Disconnect failed: %s\n", errd)
+			}
+		}()
+
+		var addJobs []*Job
+		jm := NewJobModifer()
+
+		add := func(expected int) {
+			inserts, already, err := jq.Add(addJobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, expected)
+			So(already, ShouldEqual, 0)
+		}
+
+		reserve := func(schedStr, expected string) *Job {
+			job, errr := jq.ReserveScheduled(rtime, schedStr)
+			So(errr, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Cmd, ShouldEqual, expected)
+			return job
+		}
+
+		modify := func(repgroup string, expected int) {
+			jobs, err := jq.GetByRepGroup(repgroup, false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			jes := jobsToJobEssenses(jobs)
+			modified, err := jq.Modify(jes, jm)
+			So(err, ShouldBeNil)
+			So(len(modified), ShouldEqual, expected)
+		}
+
+		execute := func(job *Job, shouldWork bool, expectedStdout string) *Job {
+			err := jq.Execute(job, config.RunnerExecShell)
+			if shouldWork {
+				So(err, ShouldBeNil)
+			} else {
+				So(err, ShouldNotBeNil)
+			}
+
+			jobs, err := jq.GetByRepGroup(job.RepGroup, false, 0, "", true, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			if !shouldWork && expectedStdout != "" {
+				stdout, err := jobs[0].StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, expectedStdout)
+			}
+			return jobs[0]
+		}
+
+		kick := func(repgroup string, schedStr, expectedCmd string, expectedStdout string) *Job {
+			jobs, err := jq.GetByRepGroup(repgroup, false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			kicked, err := jq.Kick(jobsToJobEssenses(jobs))
+			So(err, ShouldBeNil)
+			So(kicked, ShouldEqual, 1)
+
+			job := reserve(schedStr, expectedCmd)
+			return execute(job, false, expectedStdout)
+		}
+
+		release := func(job *Job) {
+			err := jq.Release(job, &JobEndState{}, "")
+			So(err, ShouldBeNil)
+		}
+
+		groupsToDeps := func(groups string) (deps Dependencies) {
+			for _, depgroup := range strings.Split(groups, ",") {
+				deps = append(deps, NewDepGroupDependency(depgroup))
+			}
+			return
+		}
+
+		Convey("You can modify the priority and limit of jobs", func() {
+			for i := 1; i <= 3; i++ {
+				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", Priority: uint8(5)})
+			}
+			for i := 4; i <= 7; i++ {
+				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "b", Priority: uint8(6)})
+			}
+
+			add(7)
+
+			<-time.After(1000 * time.Millisecond) // wait for the jobs to be ready and assiged sched groups
+
+			reserve(rgroup, "echo 4")
+
+			jm.SetPriority(uint8(4))
+			modify("b", 3)
+			reserve(rgroup, "echo 1")
+
+			jm = NewJobModifer()
+			jm.SetLimitGroups([]string{"foo:0"})
+			modify("a", 2)
+			reserve(rgroup, "echo 5")
+		})
+
+		Convey("You can modify the command line of a job", func() {
+			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			job := reserve(rgroup, "echo a && false")
+			job = execute(job, false, "a")
+			So(job.Attempts, ShouldEqual, 1)
+
+			jm.SetCmd("echo b && false")
+			modify("a", 1)
+
+			job = kick("a", rgroup, "echo b && false", "b")
+			So(job.Attempts, ShouldEqual, 2)
+		})
+
+		Convey("You can modify the cwd of a job, with and without cwd_matters", func() {
+			dir, err := os.Getwd()
+			So(err, ShouldBeNil)
+			cmd := "pwd && false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: dir, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			job := reserve(rgroup, cmd)
+			job = execute(job, false, "")
+			stdout, err := job.StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldNotEqual, dir)
+			So(stdout, ShouldStartWith, dir)
+
+			jm.SetCwd(tmp)
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, "")
+			stdout, err = job.StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldNotEqual, tmp)
+			So(stdout, ShouldStartWith, tmp)
+			So(job.ActualCwd, ShouldNotEqual, tmp)
+			So(job.ActualCwd, ShouldStartWith, tmp)
+
+			cmd = "pwd && true && false"
+			addJobs = []*Job{{Cmd: cmd, Cwd: dir, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "b", CwdMatters: true}}
+			add(1)
+
+			job = reserve(rgroup, cmd)
+			execute(job, false, dir)
+
+			jm.SetCwd(tmp)
+			modify("b", 1)
+
+			job = kick("b", rgroup, cmd, tmp)
+			So(job.Cwd, ShouldEqual, tmp)
+		})
+
+		Convey("You can modify the req_group of a job", func() {
+			cmd := "echo a"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "initial", Requirements: standardReqs, Override: uint8(0), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			jm.SetReqGroup("modified")
+			modify("a", 1)
+
+			job := reserve(rgroup, cmd)
+			execute(job, true, "a")
+
+			cmd = "echo b"
+			addJobs = []*Job{{Cmd: cmd, Cwd: tmp, ReqGroup: "modified", Requirements: &jqs.Requirements{RAM: 600, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(0), Retries: uint8(0), RepGroup: "b"}}
+			add(1)
+
+			// if the modify of initial didn't work, we'd have no learning of
+			// the modified reqgroup, so it would get 700:0:1:0 as its scheduler
+			// group. But due to learning, the RAM is 100 and the time changed
+
+			job = reserve("200:30:1:0", cmd)
+			So(job.Requirements.RAM, ShouldEqual, 100)
+		})
+
+		Convey("You can modify the requirements of a job", func() {
+			// not actually using a scheduler to determine when and if jobs are
+			// allowed to run, so we're just doing a basic test that the reqs
+			// of the job change appropriately
+			cmd := "echo a"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			jm.SetRequirements(&jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0, CoresSet: true, Disk: 0, Other: make(map[string]string)})
+			modify("a", 1)
+
+			job := reserve("200:0:0:0", cmd)
+			So(job.Requirements.RAM, ShouldEqual, 100)
+			So(job.Requirements.Cores, ShouldEqual, 0)
+			So(job.Requirements.Disk, ShouldEqual, 0)
+			So(len(job.Requirements.Other), ShouldEqual, 0)
+			err := jq.Release(job, &JobEndState{}, "")
+			So(err, ShouldBeNil)
+
+			other := make(map[string]string)
+			other["foo"] = "bar"
+			jm = NewJobModifer()
+			jm.SetRequirements(&jqs.Requirements{RAM: 600, Time: 20 * time.Minute, Cores: 0, Disk: 5, DiskSet: true, Other: other, OtherSet: true})
+			modify("a", 1)
+
+			job = reserve("700:20:0:5:cfd399e4a9dba25ac14a2454ce3e8d24", cmd)
+			So(job.Requirements.RAM, ShouldEqual, 600)
+			So(job.Requirements.Cores, ShouldEqual, 0)
+			So(job.Requirements.Disk, ShouldEqual, 5)
+			So(len(job.Requirements.Other), ShouldEqual, 1)
+			release(job)
+
+			jm = NewJobModifer()
+			jm.SetRequirements(&jqs.Requirements{Cores: 3, CoresSet: true, Disk: 0, DiskSet: true, Other: make(map[string]string), OtherSet: true})
+			modify("a", 1)
+
+			job = reserve("700:20:3:0", cmd)
+			So(job.Requirements.RAM, ShouldEqual, 600)
+			So(job.Requirements.Cores, ShouldEqual, 3)
+			So(job.Requirements.Disk, ShouldEqual, 0)
+			So(len(job.Requirements.Other), ShouldEqual, 0)
+			release(job)
+		})
+
+		Convey("You can modify the override of a job", func() {
+			addJobs = append(addJobs, &Job{Cmd: "echo pre", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(0), Retries: uint8(0), RepGroup: "pre"})
+			cmd := "echo a && false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(2)
+
+			job := reserve(rgroup, "echo pre")
+			execute(job, true, "")
+			job = reserve(rgroup, cmd)
+			job = execute(job, false, "a")
+			So(job.Requirements.Time, ShouldEqual, 10*time.Second)
+
+			jm.SetOverride(uint8(0))
+			modify("a", 1)
+
+			// by turning off override, we enable the learned values, which is
+			// a minimum of 30 mins
+
+			job = kick("a", "200:30:1:0", cmd, "a")
+			So(job.Requirements.Time, ShouldEqual, 30*time.Minute)
+		})
+
+		Convey("You can modify the retries of a job", func() {
+			cmd := "false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			job := reserve(rgroup, cmd)
+			job = execute(job, false, "")
+			So(job.State, ShouldEqual, JobStateBuried)
+			So(job.Retries, ShouldEqual, 0)
+
+			jm.SetRetries(uint8(1))
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, "")
+			So(job.State, ShouldEqual, JobStateReady)
+			So(job.Retries, ShouldEqual, 1)
+		})
+
+		Convey("You can modify the dependencies of a job", func() {
+			addJobs = append(addJobs, &Job{Cmd: "echo a", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", DepGroups: []string{"a"}})
+			addJobs = append(addJobs, &Job{Cmd: "echo b", Cwd: tmp, ReqGroup: "rgroup", Requirements: &jqs.Requirements{RAM: 400, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(2), Retries: uint8(0), RepGroup: "b", DepGroups: []string{"b"}})
+			addJobs = append(addJobs, &Job{Cmd: "echo c", Cwd: tmp, ReqGroup: "rgroup", Requirements: &jqs.Requirements{RAM: 800, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(2), Retries: uint8(0), RepGroup: "c", Dependencies: groupsToDeps("a,b")})
+			add(3)
+
+			jobA := reserve(rgroup, "echo a")
+			reserve("500:0:1:0", "echo b")
+
+			jobC, err := jq.ReserveScheduled(rtime, "900:0:1:0")
+			So(err, ShouldBeNil)
+			So(jobC, ShouldBeNil)
+
+			jm.SetDependencies(groupsToDeps("a"))
+			modify("c", 1)
+
+			execute(jobA, true, "")
+
+			// without the modification, we'd also need to execute job b before
+			// the following reserve would work
+
+			reserve("900:0:1:0", "echo c")
+		})
+
+		Convey("You can modify the command line of a job that other jobs depend on", func() {
+			// echo "echo a && false" | wr add -i a -o 2 -r 0 --dep_grps a && echo "echo b && true" | wr add -i b -o 2 -r 0 --deps a
+			// wr mod -i a --cmdline "echo a && sleep 2"
+			// wr retry -a
+			// [works perfectly]
+			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", DepGroups: []string{"a"}})
+			addJobs = append(addJobs, &Job{Cmd: "echo b && true", Cwd: tmp, ReqGroup: "rgroup", Requirements: &jqs.Requirements{RAM: 400, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(2), Retries: uint8(0), RepGroup: "b", Dependencies: groupsToDeps("a")})
+			add(2)
+
+			job := reserve(rgroup, "echo a && false")
+			job = execute(job, false, "a")
+			So(job.State, ShouldEqual, JobStateBuried)
+
+			job, err := jq.ReserveScheduled(rtime, "700:0:1:0")
+			So(err, ShouldBeNil)
+			So(job, ShouldBeNil)
+
+			jm.SetCmd("echo a && true")
+			modify("a", 1)
+
+			// (kick() assumes the command will fail again)
+			jobs, err := jq.GetByRepGroup("a", false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			kicked, err := jq.Kick(jobsToJobEssenses(jobs))
+			So(err, ShouldBeNil)
+			So(kicked, ShouldEqual, 1)
+			job = reserve(rgroup, "echo a && true")
+			execute(job, true, "")
+
+			reserve("500:0:1:0", "echo b && true")
+		})
+
+		Convey("You can modify the behaviours of a job", func() {
+			dir, err := ioutil.TempDir("", "wr_jobqueue_mod_test")
+			So(err, ShouldBeNil)
+			defer os.RemoveAll(dir)
+
+			cmd := "touch a && false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: dir, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", Behaviours: []*Behaviour{{When: OnExit, Do: Cleanup}}})
+			add(1)
+
+			job := reserve(rgroup, cmd)
+			job = execute(job, false, "")
+			path := filepath.Join(job.ActualCwd, "a")
+			_, err = os.Stat(path)
+			So(err, ShouldNotBeNil)
+
+			jm.SetBehaviours([]*Behaviour{{When: OnExit, Do: Nothing}})
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, "")
+			path = filepath.Join(job.ActualCwd, "a")
+			_, err = os.Stat(path)
+			So(err, ShouldBeNil)
+
+			jm = NewJobModifer()
+			cpPath := filepath.Join(dir, "copied")
+			jm.SetBehaviours([]*Behaviour{{When: OnExit, Do: Cleanup}, {When: OnFailure, Do: Run, Arg: fmt.Sprintf("cp a %s", cpPath)}})
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, "")
+			path = filepath.Join(job.ActualCwd, "a")
+			_, err = os.Stat(path)
+			So(err, ShouldNotBeNil)
+			_, err = os.Stat(cpPath)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("You can modify the env of a job", func() {
+			cmd := "echo $wrmodtestfoo && false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			job := reserve(rgroup, cmd)
+			execute(job, false, "")
+
+			jm.SetEnvOverride("wrmodtestfoo=bar")
+			modify("a", 1)
+
+			kick("a", rgroup, cmd, "bar")
+
+			jm = NewJobModifer()
+			jm.SetEnvOverride("")
+			modify("a", 1)
+
+			kick("a", rgroup, cmd, "")
+		})
+
+		Convey("You can modify the cwd_matters of a job", func() {
+			cmd := "pwd && false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			job := reserve(rgroup, cmd)
+			job = execute(job, false, "")
+			stdout, err := job.StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldNotEqual, tmp)
+			So(stdout, ShouldStartWith, tmp)
+			So(job.ActualCwd, ShouldNotEqual, tmp)
+			So(job.ActualCwd, ShouldStartWith, tmp)
+			So(job.Cwd, ShouldEqual, tmp)
+
+			jm.SetCwdMatters(true)
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, tmp)
+			So(job.ActualCwd, ShouldEqual, tmp)
+			So(job.Cwd, ShouldEqual, tmp)
+
+			jm = NewJobModifer()
+			jm.SetCwdMatters(false)
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, "")
+			stdout, err = job.StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldNotEqual, tmp)
+			So(stdout, ShouldStartWith, tmp)
+			So(job.ActualCwd, ShouldNotEqual, tmp)
+			So(job.ActualCwd, ShouldStartWith, tmp)
+			So(job.Cwd, ShouldEqual, tmp)
+		})
+
+		Convey("You can modify the change_home of a job", func() {
+			home := os.Getenv("HOME")
+			cmd := "echo $HOME && false"
+			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			add(1)
+
+			job := reserve(rgroup, cmd)
+			execute(job, false, home)
+
+			jm.SetChangeHome(true)
+			modify("a", 1)
+
+			job = kick("a", rgroup, cmd, "")
+			stdout, err := job.StdOut()
+			So(err, ShouldBeNil)
+			So(stdout, ShouldNotEqual, tmp)
+			So(stdout, ShouldStartWith, tmp)
+			So(stdout, ShouldEqual, job.ActualCwd)
+
+			jm = NewJobModifer()
+			jm.SetChangeHome(false)
+			modify("a", 1)
+
+			kick("a", rgroup, cmd, home)
+		})
+
+		// *** untested: SetDepGroups(), SetBsubMode(), SetMountConfigs() and
+		// SetMonitorDocker(). The first 2 might not ever be implemented. The
+		// second 2 need to be tested in OpenStack...
+
+		// *** changing cloud options stored in requirements need testing for
+		// real, in OpenStack as well
+
+		// *** want to test that modifications survive a server crash and
+		// restart
 
 		Reset(func() {
 			server.Stop(true)
