@@ -945,6 +945,9 @@ func (j *JobModifier) SetReqGroup(new string) {
 
 // SetRequirements notes that you want to modify the Requirements of Jobs. You
 // can't modify to a nil Requirements, so if req is nil, no set is done.
+//
+// NB: If you want to change Cores, Disk or Other, you must set CoresSet,
+// DiskSet and OtherSet booleans to true, respectively.
 func (j *JobModifier) SetRequirements(req *scheduler.Requirements) {
 	j.Requirements = req
 }
