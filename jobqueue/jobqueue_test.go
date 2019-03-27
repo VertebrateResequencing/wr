@@ -3163,8 +3163,7 @@ func TestJobqueueModify(t *testing.T) {
 			So(job.Requirements.Cores, ShouldEqual, 0)
 			So(job.Requirements.Disk, ShouldEqual, 0)
 			So(len(job.Requirements.Other), ShouldEqual, 0)
-			err := jq.Release(job, &JobEndState{}, "")
-			So(err, ShouldBeNil)
+			release(job)
 
 			other := make(map[string]string)
 			other["foo"] = "bar"
@@ -3180,12 +3179,12 @@ func TestJobqueueModify(t *testing.T) {
 			release(job)
 
 			jm = NewJobModifer()
-			jm.SetRequirements(&jqs.Requirements{Cores: 3, CoresSet: true, Disk: 0, DiskSet: true, Other: make(map[string]string), OtherSet: true})
+			jm.SetRequirements(&jqs.Requirements{Cores: 0.5, CoresSet: true, Disk: 0, DiskSet: true, Other: make(map[string]string), OtherSet: true})
 			modify("a", 1)
 
-			job = reserve("700:20:3:0", cmd)
+			job = reserve("700:20:0.5:0", cmd)
 			So(job.Requirements.RAM, ShouldEqual, 600)
-			So(job.Requirements.Cores, ShouldEqual, 3)
+			So(job.Requirements.Cores, ShouldEqual, 0.5)
 			So(job.Requirements.Disk, ShouldEqual, 0)
 			So(len(job.Requirements.Other), ShouldEqual, 0)
 			release(job)
@@ -3328,13 +3327,15 @@ func TestJobqueueModify(t *testing.T) {
 			job := reserve(rgroup, cmd)
 			execute(job, false, "")
 
-			jm.SetEnvOverride("wrmodtestfoo=bar")
+			errs := jm.SetEnvOverride("wrmodtestfoo=bar")
+			So(errs, ShouldBeNil)
 			modify("a", 1)
 
 			kick("a", rgroup, cmd, "bar")
 
 			jm = NewJobModifer()
-			jm.SetEnvOverride("")
+			errs = jm.SetEnvOverride("")
+			So(errs, ShouldBeNil)
 			modify("a", 1)
 
 			kick("a", rgroup, cmd, "")
@@ -5074,7 +5075,8 @@ sudo usermod -aG docker ` + osUser
 
 				rg := "ccfmod"
 				ccfmodPath := "/tmp/ccfmod"
-				os.OpenFile(ccfmodPath, os.O_RDONLY|os.O_CREATE, 0666)
+				_, erro := os.OpenFile(ccfmodPath, os.O_RDONLY|os.O_CREATE, 0666)
+				So(erro, ShouldBeNil)
 				defer func() {
 					errr := os.Remove(ccfmodPath)
 					So(errr, ShouldBeNil)
