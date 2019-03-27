@@ -2936,6 +2936,14 @@ func TestJobqueueLimitGroups(t *testing.T) {
 	})
 }
 
+func jobsToJobEssenses(jobs []*Job) []*JobEssence {
+	var jes []*JobEssence
+	for _, job := range jobs {
+		jes = append(jes, job.ToEssense())
+	}
+	return jes
+}
+
 func TestJobqueueModify(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -2946,14 +2954,6 @@ func TestJobqueueModify(t *testing.T) {
 	tmp := "/tmp"
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
-
-	var jobsToJobEssenses = func(jobs []*Job) []*JobEssence {
-		var jes []*JobEssence
-		for _, job := range jobs {
-			jes = append(jes, job.ToEssense())
-		}
-		return jes
-	}
 
 	Convey("Once a new jobqueue server is up and client is connected", t, func() {
 		ServerItemTTR = 5 * time.Second
@@ -3256,10 +3256,6 @@ func TestJobqueueModify(t *testing.T) {
 		})
 
 		Convey("You can modify the command line of a job that other jobs depend on", func() {
-			// echo "echo a && false" | wr add -i a -o 2 -r 0 --dep_grps a && echo "echo b && true" | wr add -i b -o 2 -r 0 --deps a
-			// wr mod -i a --cmdline "echo a && sleep 2"
-			// wr retry -a
-			// [works perfectly]
 			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", DepGroups: []string{"a"}})
 			addJobs = append(addJobs, &Job{Cmd: "echo b && true", Cwd: tmp, ReqGroup: "rgroup", Requirements: &jqs.Requirements{RAM: 400, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(2), Retries: uint8(0), RepGroup: "b", Dependencies: groupsToDeps("a")})
 			add(2)
@@ -3406,12 +3402,8 @@ func TestJobqueueModify(t *testing.T) {
 			kick("a", rgroup, cmd, home)
 		})
 
-		// *** untested: SetDepGroups(), SetBsubMode(), SetMountConfigs() and
-		// SetMonitorDocker(). The first 2 might not ever be implemented. The
-		// second 2 need to be tested in OpenStack...
-
-		// *** changing cloud options stored in requirements need testing for
-		// real, in OpenStack as well
+		// *** untested: SetDepGroups(), SetBsubMode(). These are not yet fully
+		// implemented.
 
 		// *** want to test that modifications survive a server crash and
 		// restart
@@ -5006,7 +4998,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			OSRAM:                2048,
 			FlavorRegex:          flavorRegex,
 			ServerPorts:          []int{22},
-			ServerKeepTime:       15 * time.Second,
+			ServerKeepTime:       3 * time.Second,
 			StateUpdateFrequency: 1 * time.Second,
 			Shell:                "bash",
 			MaxInstances:         -1,
@@ -5051,6 +5043,311 @@ sudo usermod -aG docker ` + osUser
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
 			defer jq.Disconnect()
+
+			waitRun := func(done chan bool) {
+				limit := time.After(180 * time.Second)
+				ticker := time.NewTicker(1 * time.Second)
+				for {
+					select {
+					case <-ticker.C:
+						got, errg := jq.GetIncomplete(0, JobStateBuried, false, false)
+						if errg != nil {
+							fmt.Printf("GetIncomplete failed: %s\n", errg)
+						}
+						if len(got) == 1 {
+							ticker.Stop()
+							done <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						done <- false
+						return
+					}
+				}
+			}
+
+			Convey("You can modify cloud_config_files of a job", func() {
+				var jobs []*Job
+				other := make(map[string]string)
+
+				rg := "ccfmod"
+				ccfmodPath := "/tmp/ccfmod"
+				os.OpenFile(ccfmodPath, os.O_RDONLY|os.O_CREATE, 0666)
+				defer func() {
+					errr := os.Remove(ccfmodPath)
+					So(errr, ShouldBeNil)
+				}()
+				cores := float64(runtime.NumCPU() + 1) // ensure the job doesn't run on this instance
+				jobs = append(jobs, &Job{Cmd: "ls " + ccfmodPath, Cwd: "/tmp", ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: cores, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				done := make(chan bool, 1)
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err := jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+
+				jm := NewJobModifer()
+				other = make(map[string]string)
+				other["cloud_config_files"] = ccfmodPath
+				jm.SetRequirements(&jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: cores, Other: other, OtherSet: true})
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				jes := jobsToJobEssenses(got)
+				modified, err := jq.Modify(jes, jm)
+				So(err, ShouldBeNil)
+				So(len(modified), ShouldEqual, 1)
+
+				kicked, err := jq.Kick(jes)
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				// now that the "config" file is copied to where we're trying to
+				// ls, the job should complete
+				go func() {
+					limit := time.After(180 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							got, errg := jq.GetByRepGroup(rg, false, 0, JobStateComplete, false, false)
+							if errg != nil {
+								fmt.Printf("GetIncomplete failed: %s\n", errg)
+							}
+							if len(got) == 1 {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+			})
+
+			Convey("You can modify cloud_script of a job", func() {
+				var jobs []*Job
+				other := make(map[string]string)
+
+				rg := "scmod"
+				csmodPath := "/tmp/csmod"
+				jobs = append(jobs, &Job{Cmd: "ls " + csmodPath, Cwd: "/tmp", ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(1), Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				done := make(chan bool, 1)
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err := jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+
+				jm := NewJobModifer()
+				other = make(map[string]string)
+				other["cloud_script"] = "touch " + csmodPath
+				jm.SetRequirements(&jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(1), Other: other, OtherSet: true})
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				jes := jobsToJobEssenses(got)
+				modified, err := jq.Modify(jes, jm)
+				So(err, ShouldBeNil)
+				So(len(modified), ShouldEqual, 1)
+
+				kicked, err := jq.Kick(jes)
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				// now that the cloud script touches the file we're trying to
+				// ls, the job should complete
+				go func() {
+					limit := time.After(180 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							got, errg := jq.GetByRepGroup(rg, false, 0, JobStateComplete, false, false)
+							if errg != nil {
+								fmt.Printf("GetIncomplete failed: %s\n", errg)
+							}
+							if len(got) == 1 {
+								ticker.Stop()
+								done <- true
+								return
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							done <- false
+							return
+						}
+					}
+				}()
+				So(<-done, ShouldBeTrue)
+			})
+
+			Convey("You can modify cloud_flavor of a job", func() {
+				var jobs []*Job
+				other := make(map[string]string)
+
+				cores := runtime.NumCPU()
+				p, err := cloud.New("openstack", resourceName, filepath.Join(runnertmpdir, "os_resources"))
+				So(err, ShouldBeNil)
+				flavor, err := p.CheapestServerFlavor(cores, 2048, flavorRegex)
+				So(err, ShouldBeNil)
+				flavor, err = p.CheapestServerFlavor(flavor.Cores+1, 2048, flavorRegex)
+				So(err, ShouldBeNil)
+				coresMore := flavor.Cores
+
+				rg := "rg"
+				jobs = append(jobs, &Job{Cmd: "getconf _NPROCESSORS_ONLN && false", Cwd: "/tmp", ReqGroup: "rg", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(cores), Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				// wait for the job to run
+				done := make(chan bool, 1)
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err := jq.GetByRepGroup(rg, false, 0, JobStateBuried, true, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				stdout, err := got[0].StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "1")
+
+				jm := NewJobModifer()
+				other = make(map[string]string)
+				other["cloud_flavor"] = flavor.Name
+				jm.SetRequirements(&jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(cores), Other: other, OtherSet: true})
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				jes := jobsToJobEssenses(got)
+				modified, err := jq.Modify(jes, jm)
+				So(err, ShouldBeNil)
+				So(len(modified), ShouldEqual, 1)
+
+				kicked, err := jq.Kick(jes)
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, true, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				stdout, err = got[0].StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, fmt.Sprintf("%d", coresMore))
+
+				jm = NewJobModifer()
+				other = make(map[string]string)
+				jm.SetRequirements(&jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: float64(cores), Other: other, OtherSet: true})
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				jes = jobsToJobEssenses(got)
+				modified, err = jq.Modify(jes, jm)
+				So(err, ShouldBeNil)
+				So(len(modified), ShouldEqual, 1)
+
+				<-time.After(4 * time.Second) // wait for the flavor.Name node to terminate, or the job in next test might run on it randomly
+
+				kicked, err = jq.Kick(jes)
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, true, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				stdout, err = got[0].StdOut()
+				So(err, ShouldBeNil)
+				So(stdout, ShouldEqual, "1")
+			})
+
+			Convey("You can modify MonitorDocker of a job", func() {
+				var jobs []*Job
+				other := make(map[string]string)
+				other["cloud_script"] = dockerInstallScript
+
+				rg := "first_docker"
+				jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1 && false", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: rg})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				// wait for the job to run
+				done := make(chan bool, 1)
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				expectedRAM := 2000
+				got, err := jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeBetweenOrEqual, 1, 500)
+
+				jm := NewJobModifer()
+				jm.SetMonitorDocker("?")
+				jes := jobsToJobEssenses(got)
+				modified, err := jq.Modify(jes, jm)
+				So(err, ShouldBeNil)
+				So(len(modified), ShouldEqual, 1)
+
+				kicked, err := jq.Kick(jes)
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
+
+				jm = NewJobModifer()
+				jm.SetMonitorDocker("")
+				modified, err = jq.Modify(jes, jm)
+				So(err, ShouldBeNil)
+				So(len(modified), ShouldEqual, 1)
+
+				kicked, err = jq.Kick(jes)
+				So(err, ShouldBeNil)
+				So(kicked, ShouldEqual, 1)
+
+				waitRun(done)
+				So(<-done, ShouldBeTrue)
+
+				got, err = jq.GetByRepGroup(rg, false, 0, JobStateBuried, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeBetweenOrEqual, 1, 500)
+			})
 
 			Convey("You can run cmds that have fractional or 0 CPU requirements simultaneously on 1 CPU", func() {
 				var jobs []*Job
@@ -5750,6 +6047,59 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 1)
+		})
+
+		Convey("You can modify the mounts", func() {
+			jobs = append(jobs, &Job{Cmd: "cat numalphanum.txt", Cwd: cwd, ReqGroup: "cat", Requirements: standardReqs, RepGroup: "s3"})
+
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			job, err := jq.Reserve(50 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.RepGroup, ShouldEqual, "s3")
+
+			jeerr := jq.Execute(job, config.RunnerExecShell)
+			So(jeerr, ShouldNotBeNil)
+
+			got, err := jq.GetByRepGroup("s3", false, 0, JobStateBuried, false, false)
+			So(err, ShouldBeNil)
+			So(len(got), ShouldEqual, 1)
+
+			jm := NewJobModifer()
+			jm.SetMountConfigs(MountConfigs{
+				{Targets: []MountTarget{
+					{Path: s3Path},
+				}, Verbose: true},
+			})
+			got, err = jq.GetByRepGroup("s3", false, 0, JobStateBuried, false, false)
+			So(err, ShouldBeNil)
+			jes := jobsToJobEssenses(got)
+			modified, err := jq.Modify(jes, jm)
+			So(err, ShouldBeNil)
+			So(len(modified), ShouldEqual, 1)
+
+			got, err = jq.GetByRepGroup("s3", false, 0, JobStateBuried, false, false)
+			So(err, ShouldBeNil)
+			jes = jobsToJobEssenses(got)
+			kicked, err := jq.Kick(jes)
+			So(err, ShouldBeNil)
+			So(kicked, ShouldEqual, 1)
+
+			job, err = jq.Reserve(50 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.RepGroup, ShouldEqual, "s3")
+
+			jeerr = jq.Execute(job, config.RunnerExecShell)
+			So(jeerr, ShouldBeNil)
+
+			got, err = jq.GetByRepGroup("s3", false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+			So(len(got), ShouldEqual, 1)
 		})
 
 		Reset(func() {
