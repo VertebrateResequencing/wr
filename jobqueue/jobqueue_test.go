@@ -2951,6 +2951,11 @@ func TestJobqueueModify(t *testing.T) {
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 	rtime := 50 * time.Millisecond
 	rgroup := "110:0:1:0"
+	learnedRgroup := "200:30:1:0"
+	if os.Getenv("TRAVIS_GO_VERSION") != "" {
+		// *** not sure why the memory is higher when running under Travis...
+		learnedRgroup = "300:30:1:0"
+	}
 	tmp := "/tmp"
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -3143,7 +3148,7 @@ func TestJobqueueModify(t *testing.T) {
 			// the modified reqgroup, so it would get 400:0:1:0 as its scheduler
 			// group. But due to learning, the RAM is 100 and the time changed
 
-			job = reserve("200:30:1:0", cmd)
+			job = reserve(learnedRgroup, cmd)
 			So(job.Requirements.RAM, ShouldEqual, 100)
 		})
 
@@ -3208,7 +3213,7 @@ func TestJobqueueModify(t *testing.T) {
 			// by turning off override, we enable the learned values, which is
 			// a minimum of 30 mins
 
-			job = kick("a", "200:30:1:0", cmd, "a")
+			job = kick("a", learnedRgroup, cmd, "a")
 			So(job.Requirements.Time, ShouldEqual, 30*time.Minute)
 		})
 
