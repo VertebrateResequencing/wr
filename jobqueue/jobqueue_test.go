@@ -3136,11 +3136,11 @@ func TestJobqueueModify(t *testing.T) {
 			execute(job, true, "a")
 
 			cmd = "echo b"
-			addJobs = []*Job{{Cmd: cmd, Cwd: tmp, ReqGroup: "modified", Requirements: &jqs.Requirements{RAM: 600, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(0), Retries: uint8(0), RepGroup: "b"}}
+			addJobs = []*Job{{Cmd: cmd, Cwd: tmp, ReqGroup: "modified", Requirements: &jqs.Requirements{RAM: 300, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(0), Retries: uint8(0), RepGroup: "b"}}
 			add(1)
 
 			// if the modify of initial didn't work, we'd have no learning of
-			// the modified reqgroup, so it would get 700:0:1:0 as its scheduler
+			// the modified reqgroup, so it would get 400:0:1:0 as its scheduler
 			// group. But due to learning, the RAM is 100 and the time changed
 
 			job = reserve("200:30:1:0", cmd)
