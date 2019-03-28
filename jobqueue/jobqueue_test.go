@@ -2952,9 +2952,11 @@ func TestJobqueueModify(t *testing.T) {
 	rtime := 50 * time.Millisecond
 	rgroup := "110:0:1:0"
 	learnedRgroup := "200:30:1:0"
-	if os.Getenv("TRAVIS_GO_VERSION") != "" {
+	if os.Getenv("TRAVIS") != "" {
 		// *** not sure why the memory is higher when running under Travis...
 		learnedRgroup = "300:30:1:0"
+	} else {
+		fmt.Printf("\nTRAVIS not set\n")
 	}
 	tmp := "/tmp"
 
