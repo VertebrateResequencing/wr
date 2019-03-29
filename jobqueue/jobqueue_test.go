@@ -2952,11 +2952,11 @@ func TestJobqueueModify(t *testing.T) {
 	rtime := 50 * time.Millisecond
 	rgroup := "110:0:1:0"
 	learnedRgroup := "200:30:1:0"
+	learnedRAM := 100
 	if os.Getenv("TRAVIS") != "" {
 		// *** not sure why the memory is higher when running under Travis...
 		learnedRgroup = "300:30:1:0"
-	} else {
-		fmt.Printf("\nTRAVIS not set\n")
+		learnedRAM = 200
 	}
 	tmp := "/tmp"
 
@@ -3151,7 +3151,7 @@ func TestJobqueueModify(t *testing.T) {
 			// group. But due to learning, the RAM is 100 and the time changed
 
 			job = reserve(learnedRgroup, cmd)
-			So(job.Requirements.RAM, ShouldEqual, 100)
+			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
 		})
 
 		Convey("You can modify the requirements of a job", func() {
