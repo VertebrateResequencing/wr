@@ -2957,6 +2957,8 @@ func TestJobqueueModify(t *testing.T) {
 		// *** not sure why the memory is higher when running under Travis...
 		learnedRgroup = "300:30:1:0"
 		learnedRAM = 200
+	} else {
+		fmt.Printf("\nTRAVIS not set\n")
 	}
 	tmp := "/tmp"
 

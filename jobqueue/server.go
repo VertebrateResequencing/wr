@@ -1238,6 +1238,7 @@ func (s *Server) createQueue() {
 				}
 				if s.rc != "" {
 					errs := q.SetReserveGroup(job.Key(), schedulerGroup)
+					fmt.Printf("\n%s\n", schedulerGroup)
 					if errs != nil {
 						// we could be trying to set the reserve group after the
 						// job has already completed, if they complete
