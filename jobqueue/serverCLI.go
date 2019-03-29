@@ -462,79 +462,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
-				deleted := 0
-				keys := cr.Keys
-				for {
-					var skippedDeps []string
-					var toDelete []string
-					schedGroups := make(map[string]int)
-					var repGroups []string
-					for _, jobkey := range keys {
-						item, err := s.q.Get(jobkey)
-						if err != nil || item == nil {
-							continue
-						}
-						iState := item.Stats().State
-						if iState == queue.ItemStateRun {
-							continue
-						}
-
-						// we can't allow the removal of jobs that have
-						// dependencies, as *queue would regard that as satisfying
-						// the dependency and downstream jobs would start
-						hasDeps, err := s.q.HasDependents(jobkey)
-						if err != nil || hasDeps {
-							if hasDeps {
-								skippedDeps = append(skippedDeps, jobkey)
-							}
-							continue
-						}
-						err = s.q.Remove(jobkey)
-						if err == nil {
-							deleted++
-							toDelete = append(toDelete, jobkey)
-
-							job := item.Data.(*Job)
-							if job.getScheduledRunner() {
-								schedGroups[job.getSchedulerGroup()]++
-							}
-							repGroups = append(repGroups, job.RepGroup)
-							s.Debug("removed job", "cmd", job.Cmd)
-						}
-					}
-
-					if len(toDelete) > 0 {
-						// delete from db live bucket all in one go
-						errd := s.db.deleteLiveJobs(toDelete)
-						if errd != nil {
-							s.Error("job deletion from database failed", "err", errd)
-						}
-
-						// decrement scheduler group counts, in one big go per
-						// group
-						for sg, count := range schedGroups {
-							s.decrementGroupCount(sg, count)
-						}
-
-						// clean up rpl lookups
-						s.rpl.Lock()
-						for i, rg := range repGroups {
-							delete(s.rpl.lookup[rg], toDelete[i])
-						}
-						s.rpl.Unlock()
-
-						// if any were skipped any due to deps, repeat and see
-						// if we can remove everything desired by going down
-						// the dependency tree
-						if len(skippedDeps) > 0 {
-							keys = skippedDeps
-							continue
-						}
-					}
-					break
-				}
-				s.Debug("deleted jobs", "count", deleted)
-				sr = &serverResponse{Existed: deleted}
+				deleted := s.deleteJobs(cr.Keys)
+				s.Debug("deleted jobs", "count", len(deleted))
+				sr = &serverResponse{Existed: len(deleted)}
 			}
 		case "jmod":
 			// modify jobs in the bury/delay/dependent/ready queue and the

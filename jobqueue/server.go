@@ -1720,6 +1720,85 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 	return true, err
 }
 
+// deleteJobs deletes the jobs with the given keys from the
+// bury/delay/dependent/ready queue and the live bucket. Does not delete jobs
+// that have jobs dependant upon them, unless all those dependants were also
+// supplied to this method at the same time (in any order). Returns the keys of
+// jobs actually deleted.
+func (s *Server) deleteJobs(keys []string) []string {
+	var deleted []string
+	for {
+		var skippedDeps []string
+		var toDelete []string
+		schedGroups := make(map[string]int)
+		var repGroups []string
+		for _, jobkey := range keys {
+			item, err := s.q.Get(jobkey)
+			if err != nil || item == nil {
+				continue
+			}
+			iState := item.Stats().State
+			if iState == queue.ItemStateRun {
+				continue
+			}
+
+			// we can't allow the removal of jobs that have
+			// dependencies, as *queue would regard that as satisfying
+			// the dependency and downstream jobs would start
+			hasDeps, err := s.q.HasDependents(jobkey)
+			if err != nil || hasDeps {
+				if hasDeps {
+					skippedDeps = append(skippedDeps, jobkey)
+				}
+				continue
+			}
+			err = s.q.Remove(jobkey)
+			if err == nil {
+				deleted = append(deleted, jobkey)
+				toDelete = append(toDelete, jobkey)
+
+				job := item.Data.(*Job)
+				if job.getScheduledRunner() {
+					schedGroups[job.getSchedulerGroup()]++
+				}
+				repGroups = append(repGroups, job.RepGroup)
+				s.Debug("removed job", "cmd", job.Cmd)
+			}
+		}
+
+		if len(toDelete) > 0 {
+			// delete from db live bucket all in one go
+			errd := s.db.deleteLiveJobs(toDelete)
+			if errd != nil {
+				s.Error("job deletion from database failed", "err", errd)
+			}
+
+			// decrement scheduler group counts, in one big go per
+			// group
+			for sg, count := range schedGroups {
+				s.decrementGroupCount(sg, count)
+			}
+
+			// clean up rpl lookups
+			s.rpl.Lock()
+			for i, rg := range repGroups {
+				delete(s.rpl.lookup[rg], toDelete[i])
+			}
+			s.rpl.Unlock()
+
+			// if we skipped any due to deps, repeat and see if we
+			// can remove everything desired by going down the
+			// dependency tree
+			if len(skippedDeps) > 0 {
+				keys = skippedDeps
+				continue
+			}
+		}
+		break
+	}
+	return deleted
+}
+
 // getJobsByKeys gets jobs with the given keys (current and complete).
 func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
