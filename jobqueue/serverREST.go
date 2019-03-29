@@ -515,8 +515,10 @@ func restJobs(s *Server) http.HandlerFunc {
 			jobs, status, err = restJobsStatus(r, s)
 		case http.MethodPost:
 			jobs, status, err = restJobsAdd(r, s)
+		case http.MethodDelete:
+			jobs, status, err = restJobsCancel(r, s)
 		default:
-			http.Error(w, "So far only GET and POST are supported", http.StatusBadRequest)
+			http.Error(w, "So far only GET, POST and DELETE are supported", http.StatusBadRequest)
 			return
 		}
 
@@ -547,8 +549,9 @@ func restJobs(s *Server) http.HandlerFunc {
 // request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are search, std, env (which can take a "true"
 // value), limit (a number) and state (one of
-// delayed|ready|reserved|running|lost|buried| dependent|complete). Returns the
-// Jobs, a http.Status* value and error.
+// delayed|ready|reserved|running|lost|buried|dependent|complete|deletable),
+// where deletable == !(running|complete). Returns the Jobs, a http.Status*
+// value and error.
 func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	var search, getStd, getEnv bool
@@ -589,6 +592,8 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 			state = JobStateDependent
 		case "complete":
 			state = JobStateComplete
+		case "deletable":
+			state = JobStateDeletable
 		}
 	}
 
@@ -777,6 +782,65 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	}
 
 	return jobs, http.StatusCreated, err
+}
+
+// restJobsCancel kills running jobs, confirms lost jobs as dead, or deletes
+// incomplete jobs. You identify the jobs to operate on in the same way as for
+// restJobsStatus(). However state must be specified, and only one of:
+// (running|lost|deletable) are allowed. Returns the affected Jobs, a
+// http.Status* value and error.
+func restJobsCancel(r *http.Request, s *Server) ([]*Job, int, error) {
+	var state JobState
+	if r.Form.Get("state") != "" {
+		switch r.Form.Get("state") {
+		case "running":
+			state = JobStateRunning
+		case "lost":
+			state = JobStateLost
+		case "deletable":
+			state = JobStateDeletable
+		}
+	}
+	if state == "" {
+		return nil, http.StatusBadRequest, fmt.Errorf("state must be supplied as one of running|lost|deletable")
+	}
+
+	jobs, status, err := restJobsStatus(r, s)
+	if err != nil || status != http.StatusOK {
+		return nil, status, err
+	}
+
+	var handled []*Job
+	returnStatus := http.StatusAccepted
+	if state == JobStateDeletable {
+		returnStatus = http.StatusOK
+		keys := make([]string, len(jobs))
+		for i, job := range jobs {
+			keys[i] = job.Key()
+		}
+		deleted := s.deleteJobs(keys)
+		d := make(map[string]bool, len(deleted))
+		for _, key := range deleted {
+			d[key] = true
+		}
+		for _, job := range jobs {
+			if d[job.Key()] {
+				job.State = JobStateDeleted
+				handled = append(handled, job)
+			}
+		}
+	} else {
+		for _, job := range jobs {
+			k, err := s.killJob(job.Key())
+			if err != nil {
+				return handled, http.StatusInternalServerError, err
+			}
+			if k {
+				handled = append(handled, job)
+			}
+		}
+	}
+	return handled, returnStatus, nil
 }
 
 // restWarnings lets you read warnings from the scheduler, and auto-"dismisses"
