@@ -247,6 +247,9 @@ managercertdomain: "localhost"
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).
 #
+# This will also be the umask that your workflow commands will run under, and
+# therefore determine the permissions on all files your workflows create.
+#
 # Here are examples of alternative umasks:
 # 022 = world readable, user read+writeable
 # 002 = world readable, user+group read+writeable
