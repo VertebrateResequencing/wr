@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"math"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,10 @@ const (
 // debugCounter and debugEffect are used by tests to prove some bugs
 var debugCounter int
 var debugEffect string
+
+// umaskStrip is used to remove umask prefixes from commands we are asked to
+// run, so we can see what the "real" executable is
+var umaskStrip = regexp.MustCompile(`\(umask\s+\d+\s+&&\s+`)
 
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
@@ -1216,7 +1221,8 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 				// check that the exe of the cmd we're supposed to run exists on the
 				// new server, and if not, copy it over *** this is just a hack to
 				// get wr working, need to think of a better way of doing this...
-				exe := strings.Split(cmd, " ")[0]
+				exe := umaskStrip.ReplaceAllString(cmd, "")
+				exe = strings.Split(exe, " ")[0]
 				var exePath, stdout string
 				if exePath, err = exec.LookPath(exe); err == nil {
 					if stdout, _, err = server.RunCmd("file "+exePath, false); stdout != "" {

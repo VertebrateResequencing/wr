@@ -772,7 +772,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			die("failed to access the local database: %s", errf)
 		}
 	}
-	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\n", mp, wp, dbBk, config.ManagerCertDomain), wrConfigFileName); err != nil {
+	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\nmanagerumask: %d\n", mp, wp, dbBk, config.ManagerCertDomain, config.ManagerUmask), wrConfigFileName); err != nil {
 		teardown(provider)
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}

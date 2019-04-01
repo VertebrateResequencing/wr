@@ -5035,6 +5035,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			KeyFile:         config.ManagerKeyFile,
 			Deployment:      config.Deployment,
 			RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
+			Umask:           config.ManagerUmask,
 			Logger:          testLogger,
 		}
 
