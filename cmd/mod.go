@@ -54,10 +54,10 @@ However, if the command has other commands depending upon it, you won't be able
 to remove it. You'll have to remove all the commands and then add them back
 afterwards.
 
-Instead of having to do that, this "mod" command makes it easier to easily
-change any aspect of a command without affecting or triggering its dependencies.
-The only aspect of a command you can't modify is its report group
-identifier.
+Instead of having to do that, this "mod" command makes it easier to change any
+aspect of a command without affecting or triggering its dependencies. The only
+aspects of a command you can't modify are its report group identifier,
+dependency groups and bsub mode.
 
 If you want to modify commands that are currently running you will need to
 "wr kill" them first.
@@ -69,15 +69,15 @@ affected.
 -i is the report group (-i) you supplied to "wr add" when you added the
 command(s) you want to now modify. Combining with -z lets you modify commands in
 multiple report groups, assuming you have arranged that related groups share
-some substring. Or -y lets you specify -i as the internal job id reported during
-"wr status".
+some substring. Alternatively -y lets you specify -i as the internal job id
+reported during "wr status".
 
 Having identified the command(s) to modify, provide any of "wr add"'s options
 (except for -f, -i, --rerun, --dep_grps and --bsub) to change that aspect of the
 command. If the boolean options --cwd_matters, --change_home or --cloud_shared
 were used during "add", these can be turned off with the special options
 --unset_cwd_matters, --unset_change_home and --unset_cloud_shared respectively.
-To turn off other options, supply and empty string as the value.
+To turn off other options, supply an empty string as the value.
 
 To turn off a behaviour, supply an empty string, eg. --on_exit "".
 

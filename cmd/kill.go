@@ -45,8 +45,9 @@ option is specified, only "lost contact" jobs will be affected.
 
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want to now kill. Combining with -z lets you kill jobs in multiple report
-groups, assuming you have arranged that related groups share some substring. Or
--y lets you specify -i as the internal job id reported during "wr status".
+groups, assuming you have arranged that related groups share some substring.
+Alternatively -y lets you specify -i as the internal job id reported during
+"wr status".
 
 The file to provide -f is in the format taken by "wr add".
 
