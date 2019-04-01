@@ -61,8 +61,8 @@ incomplete commands.
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want the status of now. Combining with -z lets you get the status of jobs
 in multiple report groups, assuming you have arranged that related groups share
-some substring. Or -y lets you specify -i as the internal job id reported when
-using this command.
+some substring. Alternatively -y lets you specify -i as the internal job id
+reported when using this command.
 
 The file to provide -f is in the format taken by "wr add".
 
