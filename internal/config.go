@@ -166,13 +166,6 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	config.ManagerDir = TildaToHome(config.ManagerDir)
 	config.ManagerDir += "_" + deployment
 
-	// create the manager dir now, or else we're doomed to failure
-	err = os.MkdirAll(config.ManagerDir, 0700)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
-	}
-
 	// convert the possible relative paths in Manager_*_file to abs paths in
 	// ManagerDir
 	if !filepath.IsAbs(config.ManagerPidFile) {
