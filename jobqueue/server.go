@@ -228,7 +228,6 @@ type Server struct {
 	sgcmutex        sync.Mutex
 	racmutex        sync.RWMutex // to protect the readyaddedcallback
 	rc              string       // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
-	rcUmask         int
 	httpServer      *http.Server
 	statusCaster    *bcast.Group
 	badServerCaster *bcast.Group
@@ -278,16 +277,6 @@ type ServerConfig struct {
 	// clients will not be spawned; for any work to be done you will have to run
 	// your runner client yourself manually.
 	RunnerCmd string
-
-	// Umask is an optional umask that the RunnerCmd will be run under. By
-	// default, if the server runs RunnerCmd locally, RunnerCmd's umask will be
-	// the same as the servers. If RunnerCmd is run remotely, its umask will
-	// be the default umask for commands run on that remote machine. Note that
-	// setting this will result in RunnerCmd being called like
-	// `(umask Umask && RunnerCmd)` (where Umask is your int value, and the
-	// RunnerCmd has been resolved), which may present cross-platform
-	// compatability issues.
-	Umask int
 
 	// Absolute path to where the database file should be saved. The database is
 	// used to ensure no loss of added commands, to keep a permanent history of
@@ -581,7 +570,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		sgrouptrigs:        make(map[string]int),
 		sgtr:               make(map[string]*scheduler.Requirements),
 		rc:                 config.RunnerCmd,
-		rcUmask:            config.Umask,
 		wsconns:            make(map[string]*websocket.Conn),
 		statusCaster:       bcast.NewGroup(),
 		badServerCaster:    bcast.NewGroup(),
@@ -2010,13 +1998,9 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 func (s *Server) scheduleRunners(group string) {
 	s.racmutex.RLock()
 	rc := s.rc
-	rcUmask := s.rcUmask
 	s.racmutex.RUnlock()
 	if rc == "" {
 		return
-	}
-	if rcUmask > 0 {
-		rc = fmt.Sprintf("(umask %d && %s)", rcUmask, rc)
 	}
 
 	s.sgcmutex.Lock()
