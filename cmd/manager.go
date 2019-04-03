@@ -652,6 +652,7 @@ func startJQ(postCreation []byte) {
 			MaxLocalRAM:          &maxLocalRAM,
 			Shell:                config.RunnerExecShell,
 			CIDR:                 cloudCIDR,
+			Umask:                config.ManagerUmask,
 		}
 		serverCIDR = cloudCIDR
 	case kubernetes:
@@ -670,7 +671,6 @@ func startJQ(postCreation []byte) {
 
 	}
 
-	umask := 0
 	if cloudConfig, ok := schedulerConfig.(jqs.CloudConfig); ok {
 		// this is a cloud scheduler, so include our ca.pem and client.token
 		// files in ConfigFiles, so that they will be copied to all servers
@@ -697,11 +697,6 @@ func startJQ(postCreation []byte) {
 				die("according to hostname and env vars, this is not a container in kubernetes")
 			}
 		}
-
-		// unlike local and cluster schedulers like LSF which will pick up the
-		// umask of our manager process when executing runners, we'll need to
-		// explicitly force umask for runners in the cloud
-		umask = config.ManagerUmask
 	}
 
 	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
@@ -716,7 +711,6 @@ func startJQ(postCreation []byte) {
 		SchedulerName:   scheduler,
 		SchedulerConfig: schedulerConfig,
 		RunnerCmd:       runnerCmd,
-		Umask:           umask,
 		DBFile:          config.ManagerDbFile,
 		DBFileBackup:    config.ManagerDbBkFile,
 		TokenFile:       config.ManagerTokenFile,

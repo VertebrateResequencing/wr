@@ -5014,6 +5014,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			StateUpdateFrequency: 1 * time.Second,
 			Shell:                "bash",
 			MaxInstances:         -1,
+			Umask:                config.ManagerUmask,
 		}
 		cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
 		if config.ManagerCAFile != "" {
@@ -5035,7 +5036,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 			KeyFile:         config.ManagerKeyFile,
 			Deployment:      config.Deployment,
 			RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
-			Umask:           config.ManagerUmask,
 			Logger:          testLogger,
 		}
 
