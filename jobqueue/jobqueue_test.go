@@ -174,10 +174,16 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 // startServer runs the given exe with the --servermode arg. It is assumed that
 // doing so starts a jobqueue server in another process that will kill itself
 // after some time or when signalled. We return a client that is connected to
-// that server, along with the client token and the server's pid.
-// If keepDB is true, the exe will be run with --keepdb arg as well. Same idea
-// with enableRunners
+// that server, along with the client token and the server's pid. If keepDB is
+// true, the exe will be run with --keepdb arg as well. Same idea with
+// enableRunners. This also creates config.ManagerDir dir on disk if necessary,
+// and does not delete it afterwards.
 func startServer(serverExe string, keepDB, enableRunners bool, config internal.Config, addr string) (*Client, []byte, *exec.Cmd, error) {
+	err := os.MkdirAll(config.ManagerDir, 0700)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	preStart := time.Now()
 
 	args := []string{"--servermode"}
@@ -190,7 +196,7 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 
 	// run the server in the background
 	cmd := exec.Command(serverExe, args...)
-	err := cmd.Start()
+	err = cmd.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
