@@ -722,10 +722,12 @@ func TestOpenstack(t *testing.T) {
 
 		if os.Getenv("OS_TENANT_ID") == "" {
 			Convey("Schedule() gives impossible error when reqs don't fit in the requested flavor", func() {
+				flavor, err := oss.determineFlavor(possibleReq, "a")
+				So(err, ShouldBeNil)
 				other := make(map[string]string)
-				other["cloud_flavor"] = "o1.tiny"
-				brokenReq := &Requirements{2000, 1 * time.Minute, 1, true, 1, true, other, true}
-				err := s.Schedule("foo", brokenReq, 1)
+				other["cloud_flavor"] = flavor.Name
+				brokenReq := &Requirements{flavor.RAM + 1, 1 * time.Minute, 1, true, 1, true, other, true}
+				err = s.Schedule("foo", brokenReq, 1)
 				So(err, ShouldNotBeNil)
 				serr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
