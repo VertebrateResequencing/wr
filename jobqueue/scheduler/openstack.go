@@ -222,7 +222,7 @@ type ConfigOpenStack struct {
 	// supplied (0), the umask used will be the default umask of the OSUser
 	// user. Note that setting this will result in scheduled commands being
 	// executed like `(umask Umask && cmd)`, which may present cross-platform
-	// compatability issues. (But should work on most linux-like systems.)
+	// compatibility issues. (But should work on most linux-like systems.)
 	Umask int
 }
 

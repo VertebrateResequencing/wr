@@ -2998,7 +2998,7 @@ func TestJobqueueModify(t *testing.T) {
 			job, errr := jq.ReserveScheduled(rtime, schedStr)
 			So(errr, ShouldBeNil)
 			if job == nil && os.Getenv("TRAVIS") != "" && schedStr == learnedRgroup {
-				// *** not sure why the memory is somtimes higher when running
+				// *** not sure why the memory is sometimes higher when running
 				// under Travis...
 				job, errr = jq.ReserveScheduled(rtime, "300:30:1:0")
 				So(errr, ShouldBeNil)

@@ -1194,9 +1194,8 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 		count, err := strconv.Atoi(strings.TrimSpace(string(out)))
 		if err == nil {
 			return count
-		} else {
-			log.Printf("Atoi following [%s] failed: %s\n", cmdStr, err)
 		}
+		log.Printf("Atoi following [%s] failed: %s\n", cmdStr, err)
 	} else {
 		r := regexp.MustCompile(rName + "-\\S+")
 		count := 0
