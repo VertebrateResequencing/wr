@@ -1170,42 +1170,49 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 	if len(flavor) == 1 {
 		extra = "--flavor " + flavor[0] + " "
 	}
+
+	cmdStr := novaCmd + " list " + extra
 	if osPrefix == "" {
-		cmdStr := novaCmd + " list " + extra + "| grep -c " + rName
-		cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
-		out, err := cmd.Output()
-		if ctx.Err() != nil {
-			log.Printf("exec of [%s] timed out\n", cmdStr)
-			return 0
-		}
+		cmdStr += "| grep -c "
+	} else {
+		cmdStr += "| grep "
+	}
+	cmdStr += rName
+	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		log.Printf("exec of [%s] timed out\n", cmdStr)
+		return 0
+	}
+	if err != nil {
+		// uncomment if debugging failures where count is always 0:
+		// log.Printf("cmd [%s] failed: %s\n", cmdStr, err)
+		return 0
+	}
+
+	if osPrefix == "" {
+		count, err := strconv.Atoi(strings.TrimSpace(string(out)))
 		if err == nil {
-			count, err := strconv.Atoi(strings.TrimSpace(string(out)))
-			if err == nil {
-				return count
-			}
+			return count
+		} else {
+			log.Printf("Atoi following [%s] failed: %s\n", cmdStr, err)
 		}
 	} else {
-		cmdStr := novaCmd + " list " + extra + "| grep " + rName
-		cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
-		out, err := cmd.Output()
-		if ctx.Err() != nil {
-			log.Printf("exec of [%s] timed out\n", cmdStr)
-			return 0
-		}
-		if err == nil {
-			r := regexp.MustCompile(rName + "-\\S+")
-			count := 0
-			for _, name := range r.FindAll(out, -1) {
-				showCmd := exec.Command("bash", "-c", novaCmd+" show "+string(name)+" | grep image")
-				showOut, err := showCmd.Output()
-				if err == nil {
-					if strings.Contains(string(showOut), osPrefix) {
-						count++
-					}
+		r := regexp.MustCompile(rName + "-\\S+")
+		count := 0
+		for _, name := range r.FindAll(out, -1) {
+			showCmdStr := novaCmd + " show " + string(name) + " | grep image"
+			showCmd := exec.Command("bash", "-c", showCmdStr)
+			showOut, err := showCmd.Output()
+			if err == nil {
+				if strings.Contains(string(showOut), osPrefix) {
+					count++
 				}
+			} else {
+				log.Printf("cmd [%s] failed: %s\n", showCmdStr, err)
 			}
-			return count
 		}
+		return count
 	}
 	return 0
 }
