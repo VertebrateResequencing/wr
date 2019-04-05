@@ -780,8 +780,7 @@ func TestOpenstack(t *testing.T) {
 						}
 					}
 				}()
-
-				<-time.After(3000 * time.Millisecond)
+				<-time.After(3 * time.Second)
 
 				oss.runMutex.Lock()
 				oss.serversMutex.RLock()
@@ -855,7 +854,7 @@ func TestOpenstack(t *testing.T) {
 					Convey("Run a job on a specific flavor", func() {
 						cmd := "sleep 10"
 						other := make(map[string]string)
-						other["cloud_flavor"] = "o1.small"
+						other["cloud_flavor"] = "o2.small"
 						thisReq := &Requirements{100, 1 * time.Minute, 1, true, 1, true, other, true}
 						err := s.Schedule(cmd, thisReq, 1)
 						So(err, ShouldBeNil)
@@ -869,7 +868,7 @@ func TestOpenstack(t *testing.T) {
 							for {
 								select {
 								case <-ticker.C:
-									novaCount := novaCountServers(novaCmd, rName, "", "o1.small")
+									novaCount := novaCountServers(novaCmd, rName, "", "o2.small")
 									if novaCount > max {
 										max = novaCount
 									}
@@ -984,9 +983,9 @@ func TestOpenstack(t *testing.T) {
 				})
 
 				// *** test if we have a Centos 7 image to use...
-				if osPrefix != "Centos 7" {
+				if osPrefix != "CentOS-7" {
 					oReqs := make(map[string]string)
-					oReqs["cloud_os"] = "Centos 7"
+					oReqs["cloud_os"] = "CentOS-7"
 					oReqs["cloud_user"] = "centos"
 					oReqs["cloud_os_ram"] = "4096"
 
