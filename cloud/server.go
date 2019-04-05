@@ -775,7 +775,7 @@ func (s *Server) CreateSharedDisk() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer internal.LogClose(s.logger, f, "/etc/exports")
 	scanner := bufio.NewScanner(f)
 	var found bool
 	for scanner.Scan() {

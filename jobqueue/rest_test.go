@@ -191,9 +191,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -206,9 +206,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/de6d167c58701e55f5b9f9e1e91d7807", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -237,9 +237,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -256,9 +256,9 @@ func TestREST(t *testing.T) {
 					req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?limit=1", nil)
 					So(err, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
-					response, err := client.Do(req)
+					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
+					responseData, err = ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
@@ -273,9 +273,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				So(response.Status, ShouldEqual, "400 Bad Request")
@@ -321,8 +321,8 @@ func TestREST(t *testing.T) {
 					err = jq.Started(job, 1)
 					So(err, ShouldBeNil)
 
-					req, err := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=running", nil)
-					So(err, ShouldBeNil)
+					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=running", nil)
+					So(errr, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
@@ -358,8 +358,8 @@ func TestREST(t *testing.T) {
 
 					<-time.After(300 * time.Millisecond)
 
-					req, err := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
-					So(err, ShouldBeNil)
+					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
+					So(errr, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
@@ -389,7 +389,7 @@ func TestREST(t *testing.T) {
 					So(jstati[0].State, ShouldEqual, JobStateBuried)
 				})
 
-				Convey("Once excecuted...", func() {
+				Convey("Once executed...", func() {
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
