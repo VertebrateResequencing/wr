@@ -21,6 +21,7 @@ package cloud
 // This file contains the code for the Server struct.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -764,16 +765,31 @@ func (s *Server) CreateSharedDisk() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get install nfs-kernel-server -y") // #nosec
+	cmd := exec.CommandContext(ctx, "bash", "-c", "sudo apt-get update && sudo apt-get install nfs-kernel-server -y") // #nosec
 	err := cmd.Run()
 	if err != nil {
 		return err
 	}
 
-	cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath)) // #nosec
-	err = cmd.Run()
+	f, err := os.Open("/etc/exports")
 	if err != nil {
 		return err
+	}
+	defer internal.LogClose(s.logger, f, "/etc/exports")
+	scanner := bufio.NewScanner(f)
+	var found bool
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), sharePath) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		cmd = exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo '%s *(rw,sync,no_root_squash)' | sudo tee --append /etc/exports > /dev/null", sharePath)) // #nosec
+		err = cmd.Run()
+		if err != nil {
+			return err
+		}
 	}
 
 	if _, errs := os.Stat(sharePath); errs != nil && os.IsNotExist(errs) {
@@ -798,7 +814,6 @@ func (s *Server) CreateSharedDisk() error {
 
 	s.createdShare = true
 	s.SharedDisk = true
-	s.logger.Debug("created shared disk")
 	return nil
 }
 

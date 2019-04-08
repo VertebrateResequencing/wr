@@ -1,4 +1,4 @@
-// Copyright © 2017, 2018 Genome Research Limited
+// Copyright © 2017-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -25,7 +25,6 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -71,6 +70,7 @@ type JobViaJSON struct {
 	Priority         *int              `json:"priority"`
 	Retries          *int              `json:"retries"`
 	RepGrp           string            `json:"rep_grp"`
+	LimitGrps        []string          `json:"limit_grps"`
 	DepGrps          []string          `json:"dep_grps"`
 	Deps             []string          `json:"deps"`
 	CmdDeps          Dependencies      `json:"cmd_deps"`
@@ -109,12 +109,13 @@ type JobDefaults struct {
 	Disk int
 	// DiskSet is used to distinguish between Disk not being provided, and
 	// being provided with a value of 0 or more.
-	DiskSet   bool
-	Override  int
-	Priority  int
-	Retries   int
-	DepGroups []string
-	Deps      Dependencies
+	DiskSet     bool
+	Override    int
+	Priority    int
+	Retries     int
+	LimitGroups []string
+	DepGroups   []string
+	Deps        Dependencies
 	// Env is a comma separated list of key=val pairs.
 	Env           string
 	OnFailure     Behaviours
@@ -203,7 +204,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var cpus float64
 	var dur time.Duration
 	var envOverride []byte
-	var depGroups []string
+	var limitGroups, depGroups []string
 	var deps Dependencies
 	var behaviours Behaviours
 	var mounts MountConfigs
@@ -308,6 +309,12 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		return nil, fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
 	}
 
+	if len(jvj.LimitGrps) == 0 {
+		limitGroups = jd.LimitGroups
+	} else {
+		limitGroups = jvj.LimitGrps
+	}
+
 	if len(jvj.DepGrps) == 0 {
 		depGroups = jd.DepGroups
 	} else {
@@ -401,12 +408,11 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		cloudScriptPath = jd.CloudScript
 	}
 	if cloudScriptPath != "" {
-		cloudScriptPath = internal.TildaToHome(cloudScriptPath)
-		postCreation, err := ioutil.ReadFile(cloudScriptPath)
+		scriptContent, err := internal.PathToContent(cloudScriptPath)
 		if err != nil {
-			return nil, fmt.Errorf("cloud_script [%s] could not be read: %s", cloudScriptPath, err)
+			return nil, err
 		}
-		other["cloud_script"] = string(postCreation)
+		other["cloud_script"] = scriptContent
 	}
 
 	if jvj.CloudConfigFiles != "" {
@@ -444,6 +450,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		Override:      uint8(override),
 		Priority:      uint8(priority),
 		Retries:       uint8(retries),
+		LimitGroups:   limitGroups,
 		DepGroups:     depGroups,
 		Dependencies:  deps,
 		EnvOverride:   envOverride,
@@ -508,8 +515,10 @@ func restJobs(s *Server) http.HandlerFunc {
 			jobs, status, err = restJobsStatus(r, s)
 		case http.MethodPost:
 			jobs, status, err = restJobsAdd(r, s)
+		case http.MethodDelete:
+			jobs, status, err = restJobsCancel(r, s)
 		default:
-			http.Error(w, "So far only GET and POST are supported", http.StatusBadRequest)
+			http.Error(w, "So far only GET, POST and DELETE are supported", http.StatusBadRequest)
 			return
 		}
 
@@ -540,8 +549,9 @@ func restJobs(s *Server) http.HandlerFunc {
 // request url can be suffixed with comma separated job keys or RepGroups.
 // Possible query parameters are search, std, env (which can take a "true"
 // value), limit (a number) and state (one of
-// delayed|ready|reserved|running|lost|buried| dependent|complete). Returns the
-// Jobs, a http.Status* value and error.
+// delayed|ready|reserved|running|lost|buried|dependent|complete|deletable),
+// where deletable == !(running|complete). Returns the Jobs, a http.Status*
+// value and error.
 func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 	// handle possible ?query parameters
 	var search, getStd, getEnv bool
@@ -582,6 +592,8 @@ func restJobsStatus(r *http.Request, s *Server) ([]*Job, int, error) {
 			state = JobStateDependent
 		case "complete":
 			state = JobStateComplete
+		case "deletable":
+			state = JobStateDeletable
 		}
 	}
 
@@ -631,6 +643,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	jd := &JobDefaults{
 		Cwd:           r.Form.Get("cwd"),
 		RepGrp:        r.Form.Get("rep_grp"),
+		LimitGroups:   urlStringToSlice(r.Form.Get("limit_grps")),
 		ReqGrp:        r.Form.Get("req_grp"),
 		CPUs:          urlStringToFloat(r.Form.Get("cpus")),
 		Disk:          urlStringToInt(r.Form.Get("disk")),
@@ -769,6 +782,65 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	}
 
 	return jobs, http.StatusCreated, err
+}
+
+// restJobsCancel kills running jobs, confirms lost jobs as dead, or deletes
+// incomplete jobs. You identify the jobs to operate on in the same way as for
+// restJobsStatus(). However state must be specified, and only one of:
+// (running|lost|deletable) are allowed. Returns the affected Jobs, a
+// http.Status* value and error.
+func restJobsCancel(r *http.Request, s *Server) ([]*Job, int, error) {
+	var state JobState
+	if r.Form.Get("state") != "" {
+		switch r.Form.Get("state") {
+		case "running":
+			state = JobStateRunning
+		case "lost":
+			state = JobStateLost
+		case "deletable":
+			state = JobStateDeletable
+		}
+	}
+	if state == "" {
+		return nil, http.StatusBadRequest, fmt.Errorf("state must be supplied as one of running|lost|deletable")
+	}
+
+	jobs, status, err := restJobsStatus(r, s)
+	if err != nil || status != http.StatusOK {
+		return nil, status, err
+	}
+
+	var handled []*Job
+	returnStatus := http.StatusAccepted
+	if state == JobStateDeletable {
+		returnStatus = http.StatusOK
+		keys := make([]string, len(jobs))
+		for i, job := range jobs {
+			keys[i] = job.Key()
+		}
+		deleted := s.deleteJobs(keys)
+		d := make(map[string]bool, len(deleted))
+		for _, key := range deleted {
+			d[key] = true
+		}
+		for _, job := range jobs {
+			if d[job.Key()] {
+				job.State = JobStateDeleted
+				handled = append(handled, job)
+			}
+		}
+	} else {
+		for _, job := range jobs {
+			k, err := s.killJob(job.Key())
+			if err != nil {
+				return handled, http.StatusInternalServerError, err
+			}
+			if k {
+				handled = append(handled, job)
+			}
+		}
+	}
+	return handled, returnStatus, nil
 }
 
 // restWarnings lets you read warnings from the scheduler, and auto-"dismisses"

@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,10 +187,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 
 					if !skip {
-						item, err = s.q.Reserve(cr.SchedulerGroup)
+						item, err = s.reserveWithLimits(cr.SchedulerGroup)
 					}
 				} else {
-					item, err = s.q.Reserve()
+					item, err = s.reserveWithLimits()
 				}
 
 				if err != nil {
@@ -212,7 +213,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							for {
 								select {
 								case <-ticker.C:
-									itemr, err := s.q.Reserve(cr.SchedulerGroup)
+									itemr, err := s.reserveWithLimits(cr.SchedulerGroup)
 									if err != nil {
 										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
 											continue
@@ -352,7 +353,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// wasn't released by another process; unlike the other methods,
 				// queue package does not check we're in the run queue when
 				// Remove()ing, since you can remove from any queue)
-				job.updateAfterExit(cr.JobEndState)
+				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
 				if running := item.Stats().State == queue.ItemStateRun; !running {
 					srerr = ErrBadJob
@@ -411,7 +412,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			var job *Job
 			item, job, srerr = s.getij(cr)
 			if srerr == "" {
-				job.updateAfterExit(cr.JobEndState)
+				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
 				job.FailReason = cr.Job.FailReason
 				sgroup := job.schedulerGroup
@@ -461,14 +462,34 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
-				deleted := 0
-				keys := cr.Keys
-				for {
-					var skippedDeps []string
-					var toDelete []string
-					schedGroups := make(map[string]int)
-					var repGroups []string
-					for _, jobkey := range keys {
+				deleted := s.deleteJobs(cr.Keys)
+				s.Debug("deleted jobs", "count", len(deleted))
+				sr = &serverResponse{Existed: len(deleted)}
+			}
+		case "jmod":
+			// modify jobs in the bury/delay/dependent/ready queue and the
+			// live bucket
+			if cr.Keys == nil || cr.Modifier == nil {
+				srerr = ErrBadRequest
+			} else {
+				// to avoid race conditions with jobs that are currently
+				// pending, but become running in the middle of us trying to
+				// modify them, we first pause the server, and resume it
+				// afterwards
+				s.Debug("modify requested, pausing server")
+				err := s.Pause()
+				if err != nil {
+					if jqerr, ok := err.(Error); ok {
+						srerr = jqerr.Err
+					} else {
+						srerr = ErrInternalError
+					}
+					qerr = err.Error()
+				}
+
+				if err == nil {
+					var toModify []*Job
+					for _, jobkey := range cr.Keys {
 						item, err := s.q.Get(jobkey)
 						if err != nil || item == nil {
 							continue
@@ -477,63 +498,87 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						if iState == queue.ItemStateRun {
 							continue
 						}
+						toModify = append(toModify, item.Data.(*Job))
+					}
 
-						// we can't allow the removal of jobs that have
-						// dependencies, as *queue would regard that as satisfying
-						// the dependency and downstream jobs would start
-						hasDeps, err := s.q.HasDependents(jobkey)
-						if err != nil || hasDeps {
-							if hasDeps {
-								skippedDeps = append(skippedDeps, jobkey)
+					modified := cr.Modifier.Modify(toModify)
+
+					// additional handling of changed limit groups
+					if cr.Modifier.LimitGroupsSet {
+						limitGroups := make(map[string]int)
+						for _, job := range toModify {
+							err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+							if err != nil {
+								s.Error("failed to modify limit group", "err", err)
 							}
-							continue
 						}
-						err = s.q.Remove(jobkey)
-						if err == nil {
-							deleted++
-							toDelete = append(toDelete, jobkey)
-
-							job := item.Data.(*Job)
-							if job.getScheduledRunner() {
-								schedGroups[job.getSchedulerGroup()]++
-							}
-							repGroups = append(repGroups, job.RepGroup)
-							s.Debug("removed job", "cmd", job.Cmd)
+						err := s.storeLimitGroups(limitGroups)
+						if err != nil {
+							s.Error("failed to store limit groups", "err", err)
 						}
 					}
 
-					if len(toDelete) > 0 {
-						// delete from db live bucket all in one go
-						errd := s.db.deleteLiveJobs(toDelete)
-						if errd != nil {
-							s.Error("job deletion from database failed", "err", errd)
-						}
-
-						// decrement scheduler group counts, in one big go per
-						// group
-						for sg, count := range schedGroups {
-							s.decrementGroupCount(sg, count)
-						}
-
-						// clean up rpl lookups
-						s.rpl.Lock()
-						for i, rg := range repGroups {
-							delete(s.rpl.lookup[rg], toDelete[i])
-						}
-						s.rpl.Unlock()
-
-						// if any were skipped any due to deps, repeat and see
-						// if we can remove everything desired by going down
-						// the dependency tree
-						if len(skippedDeps) > 0 {
-							keys = skippedDeps
+					// update changed keys in the queue and in our rpl lookup
+					keyToRP := make(map[string]string)
+					for _, job := range toModify {
+						keyToRP[job.Key()] = job.RepGroup
+					}
+					s.rpl.Lock()
+					for new, old := range modified {
+						if old == new {
 							continue
 						}
+						errc := s.q.ChangeKey(old, new)
+						if errc != nil {
+							s.Error("failed to change a job key in the queue", "err", errc)
+						}
+
+						rp := keyToRP[new]
+						if _, exists := s.rpl.lookup[rp]; !exists {
+							s.rpl.lookup[rp] = make(map[string]bool)
+						}
+						delete(s.rpl.lookup[rp], old)
+						s.rpl.lookup[rp][new] = true
 					}
-					break
+					s.rpl.Unlock()
+
+					// update db live bucket and dep lookups
+					if len(toModify) > 0 {
+						oldKeys := make([]string, len(toModify))
+						for i, job := range toModify {
+							oldKeys[i] = modified[job.Key()]
+						}
+						errm := s.db.modifyLiveJobs(oldKeys, toModify)
+						if errm != nil {
+							s.Error("job modification in database failed", "err", errm)
+						} else {
+							// if we're changing the jobs these jobs are
+							// dependant upon or their priority, that must be
+							// reflected in the queue as well
+							if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
+								for _, job := range toModify {
+									deps, err := job.Dependencies.incompleteJobKeys(s.db)
+									if err != nil {
+										s.Error("failed to get job dependencies", "err", err)
+									}
+									err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+									if err != nil {
+										s.Error("failed to modify a job in the queue", "err", err)
+									}
+								}
+							}
+						}
+					}
+
+					sr = &serverResponse{Modified: modified}
+
+					// now resume the server again
+					s.Debug("modify completed, resuming server", "count", len(modified))
+					err := s.Resume()
+					if err != nil {
+						s.Error(err.Error())
+					}
 				}
-				s.Debug("deleted jobs", "count", deleted)
-				sr = &serverResponse{Existed: deleted}
 			}
 		case "jkill":
 			// set the killCalled property on the jobs, to change the subsequent
@@ -655,6 +700,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				sr = &serverResponse{BadServers: confirmed, Jobs: jobs}
 			} else {
 				sr = &serverResponse{BadServers: servers}
+			}
+		case "getsetlg":
+			if cr.LimitGroup == "" {
+				srerr = ErrBadRequest
+			} else {
+				limit, serr, err := s.getSetLimitGroup(cr.LimitGroup)
+				if err != nil {
+					srerr = serr
+					qerr = err.Error()
+				} else {
+					sr = &serverResponse{Limit: limit}
+				}
 			}
 		default:
 			srerr = ErrUnknownCommand
@@ -780,6 +837,7 @@ func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
 	job := &Job{
 		RepGroup:      sjob.RepGroup,
 		ReqGroup:      sjob.ReqGroup,
+		LimitGroups:   sjob.LimitGroups,
 		DepGroups:     sjob.DepGroups,
 		Cmd:           sjob.Cmd,
 		Cwd:           sjob.Cwd,
@@ -835,6 +893,50 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 		job.EnvC = s.db.retrieveEnv(job.EnvKey)
 		job.EnvCRetrieved = true
 	}
+}
+
+// reserveWithLimits reserves the next item in the queue (optionally limited to
+// the given scheduler group). If (and only if!) a scheduler group was supplied,
+// and it is suffixed with limit groups, those limit groups will be incremented.
+// On success we reserve and return as normal. On failure, we act as if the
+// queue was empty.
+func (s *Server) reserveWithLimits(group ...string) (*queue.Item, error) {
+	var item *queue.Item
+	var err error
+	var limitGroups []string
+	if len(group) == 1 {
+		limitGroups = s.schedGroupToLimitGroups(group[0])
+		if len(limitGroups) > 0 {
+			if !s.limiter.Increment(limitGroups) {
+				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
+			}
+		}
+
+		item, err = s.q.Reserve(group[0])
+	} else {
+		item, err = s.q.Reserve()
+	}
+
+	if len(limitGroups) > 0 {
+		if item == nil {
+			s.limiter.Decrement(limitGroups)
+		} else {
+			item.Data.(*Job).noteIncrementedLimitGroups(limitGroups)
+		}
+	}
+
+	return item, err
+}
+
+// schedGroupToLimitGroups takes a scheduler group that may be suffixed with
+// limit groups (by Job.generateSchedulerGroup()), and returns the extracted
+// limit groups
+func (s *Server) schedGroupToLimitGroups(group string) []string {
+	parts := strings.Split(group, jobSchedLimitGroupSeparator)
+	if len(parts) == 2 {
+		return strings.Split(parts[1], jobLimitGroupSeparator)
+	}
+	return nil
 }
 
 // reply to a client

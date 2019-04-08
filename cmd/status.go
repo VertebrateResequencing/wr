@@ -61,8 +61,8 @@ incomplete commands.
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want the status of now. Combining with -z lets you get the status of jobs
 in multiple report groups, assuming you have arranged that related groups share
-some substring. Or -y lets you specify -i as the internal job id reported when
-using this command.
+some substring. Alternatively -y lets you specify -i as the internal job id
+reported when using this command.
 
 The file to provide -f is in the format taken by "wr add".
 
@@ -259,6 +259,10 @@ name to just the first letter, eg. -o c):
 						homeChanged = "Changed home: true\n"
 					}
 				}
+				var limitGroups string
+				if len(job.LimitGroups) > 0 {
+					limitGroups = fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
+				}
 				var dockerMonitored string
 				if job.MonitorDocker != "" {
 					dockerID := job.MonitorDocker
@@ -279,7 +283,7 @@ name to just the first letter, eg. -o c):
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; Priority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, limitGroups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:
@@ -462,7 +466,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		if len(jobs) < len(parsedJobs) {
 			warn("%d/%d cmds were not found", len(parsedJobs)-len(jobs), len(parsedJobs))
 		}
-	default:
+	case cmdLine != "":
 		// get job that has the supplied command
 		var defaultMounts jobqueue.MountConfigs
 		if mountJSON != "" || mountSimple != "" {

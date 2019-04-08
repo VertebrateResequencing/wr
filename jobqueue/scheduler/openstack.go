@@ -214,8 +214,16 @@ type ConfigOpenStack struct {
 	GatewayIP string
 
 	// DNSNameServers is a slice of DNS IP addresses to use for lookups on the
-	// created subnet. It defaults to Google's: []string{"8.8.4.4", "8.8.8.8"}
+	// created subnet. It defaults to Google's: []string{"8.8.4.4", "8.8.8.8"}.
 	DNSNameServers []string
+
+	// Umask is an optional umask to run remote commands under, to control the
+	// permissions of files created on spawned OpenStack servers. If not
+	// supplied (0), the umask used will be the default umask of the OSUser
+	// user. Note that setting this will result in scheduled commands being
+	// executed like `(umask Umask && cmd)`, which may present cross-platform
+	// compatibility issues. (But should work on most linux-like systems.)
+	Umask int
 }
 
 // AddConfigFile takes a value as per the ConfigFiles property, and appends it
@@ -1327,6 +1335,9 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		}()
 		err = s.local.runCmd(cmd, req, reserved, call)
 	} else {
+		if s.config.Umask > 0 {
+			cmd = fmt.Sprintf("(umask %d && %s)", s.config.Umask, cmd)
+		}
 		logger.Debug("running command remotely", "cmd", cmd)
 		_, _, err = server.RunCmd(cmd, false)
 

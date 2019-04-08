@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -25,6 +25,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -38,7 +39,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/internal"
-	"github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
@@ -56,6 +57,7 @@ var (
 	bucketJobsComplete = []byte("jobscomplete")
 	bucketRTK          = []byte("repgroupToKey")
 	bucketRGs          = []byte("repgroups")
+	bucketLGs          = []byte("limitgroups")
 	bucketDTK          = []byte("depgroupToKey")
 	bucketRDTK         = []byte("reverseDepgroupToKey")
 	bucketEnvs         = []byte("envs")
@@ -253,6 +255,10 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketRGs, errf)
 		}
+		_, errf = tx.CreateBucketIfNotExists(bucketLGs)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %s", bucketLGs, errf)
+		}
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
@@ -316,6 +322,61 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 	return dbstruct, msg, err
 }
 
+// storeLimitGroups stores a mapping of group names to unsigned ints in a
+// dedicated bucket. If a group was already in the database, and it had a
+// different value, that group name will be returned in the changed slice. If
+// the group is given with a value less than 0, it is not stored in the
+// database; any existing entry is removed and the name is returned in the
+// removed slice.
+func (db *db) storeLimitGroups(limitGroups map[string]int) (changed []string, removed []string, err error) {
+	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLGs)
+
+		for group, limit := range limitGroups {
+			key := []byte(group)
+
+			v := b.Get(key)
+			if v != nil {
+				if limit < 0 {
+					errd := b.Delete(key)
+					if errd != nil {
+						return errd
+					}
+					removed = append(removed, group)
+					continue
+				}
+
+				if binary.BigEndian.Uint64(v) == uint64(limit) {
+					continue
+				}
+				changed = append(changed, group)
+			} else if limit < 0 {
+				continue
+			}
+
+			v = make([]byte, 8)
+			binary.BigEndian.PutUint64(v, uint64(limit))
+			errp := b.Put(key, v)
+			if errp != nil {
+				return errp
+			}
+		}
+
+		return nil
+	})
+	return changed, removed, err
+}
+
+// retrieveLimitGroup gets a value for a particular group from the db that was
+// stored with storeLimitGroups(). If the group wasn't stored, returns -1.
+func (db *db) retrieveLimitGroup(group string) int {
+	v := db.retrieve(bucketLGs, group)
+	if v == nil {
+		return -1
+	}
+	return int(binary.BigEndian.Uint64(v))
+}
+
 // storeNewJobs stores jobs in the live bucket, where they will only be used for
 // disaster recovery. It also stores a lookup from the Job.RepGroup to the Job's
 // key, and since this is independent, and we call this prior to checking for
@@ -337,98 +398,18 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 //
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
-	// turn the jobs in to sobsd and sort by their keys, likewise for the
-	// lookups
-	var encodedJobs sobsd
-	var rgLookups sobsd
-	var dgLookups sobsd
-	var rdgLookups sobsd
-	repGroups := make(map[string]bool)
-	depGroups := make(map[string]bool)
-	newJobKeys := make(map[string]bool)
-	var keptJobs []*Job
-	for _, job := range jobs {
-		keyStr := job.Key()
+	encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
 
-		if ignoreAdded {
-			var added bool
-			added, err = db.checkIfAdded(keyStr)
-			if err != nil {
-				return jobsToQueue, jobsToUpdate, alreadyAdded, err
-			}
-			if added {
-				alreadyAdded++
-				continue
-			}
-			keptJobs = append(keptJobs, job)
-		}
-
-		newJobKeys[keyStr] = true
-		key := []byte(keyStr)
-
-		job.RLock()
-		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(job.RepGroup, key), nil})
-		repGroups[job.RepGroup] = true
-
-		for _, depGroup := range job.DepGroups {
-			if depGroup != "" {
-				dgLookups = append(dgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
-				depGroups[depGroup] = true
-			}
-		}
-
-		for _, depGroup := range job.Dependencies.DepGroups() {
-			rdgLookups = append(rdgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
-		}
-		job.RUnlock()
-
-		var encoded []byte
-		enc := codec.NewEncoderBytes(&encoded, db.ch)
-		job.RLock()
-		err = enc.Encode(job)
-		job.RUnlock()
-		if err != nil {
-			return jobsToQueue, jobsToUpdate, alreadyAdded, err
-		}
-		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
+	if err != nil {
+		return jobsToQueue, jobsToUpdate, alreadyAdded, err
 	}
 
 	if len(encodedJobs) > 0 {
-		if !ignoreAdded {
-			keptJobs = jobs
-		}
-
-		// first determine if any of these new jobs are the parent of previously
-		// stored jobs
-		if len(depGroups) > 0 {
-			jobsToQueue, jobsToUpdate, err = db.retrieveDependentJobs(depGroups, newJobKeys)
-
-			// arrange to have resurrected complete jobs stored in the live
-			// bucket again
-			for _, job := range jobsToQueue {
-				key := []byte(job.Key())
-				var encoded []byte
-				enc := codec.NewEncoderBytes(&encoded, db.ch)
-				job.RLock()
-				err = enc.Encode(job)
-				job.RUnlock()
-				if err != nil {
-					return jobsToQueue, jobsToUpdate, alreadyAdded, err
-				}
-				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
-			}
-
-			if len(jobsToQueue) > 0 {
-				jobsToQueue = append(jobsToQueue, jobs...)
-			} else {
-				jobsToQueue = keptJobs
-			}
-		} else {
-			jobsToQueue = keptJobs
-		}
-
 		// now go ahead and store the lookups and jobs
-		numStores := 3
+		numStores := 2
+		if len(rgs) > 0 {
+			numStores++
+		}
 		if len(dgLookups) > 0 {
 			numStores++
 		}
@@ -445,19 +426,15 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
 		}()
 
-		db.wg.Add(1)
-		go func() {
-			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs repGroups", true)
-			defer db.wg.Done()
-			var rgs sobsd
-			for rg := range repGroups {
-				rgs = append(rgs, [2][]byte{[]byte(rg), nil})
-			}
-			if len(rgs) > 1 {
+		if len(rgs) > 0 {
+			db.wg.Add(1)
+			go func() {
+				defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs repGroups", true)
+				defer db.wg.Done()
 				sort.Sort(rgs)
-			}
-			errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
-		}()
+				errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
+			}()
+		}
 
 		if len(dgLookups) > 0 {
 			db.wg.Add(1)
@@ -514,6 +491,101 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 	}
 
 	return jobsToQueue, jobsToUpdate, alreadyAdded, err
+}
+
+func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, dgLookups, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
+	// turn the jobs in to sobsd and sort by their keys, likewise for the
+	// lookups
+	repGroups := make(map[string]bool)
+	depGroups := make(map[string]bool)
+	newJobKeys := make(map[string]bool)
+	var keptJobs []*Job
+	for _, job := range jobs {
+		keyStr := job.Key()
+
+		if ignoreAdded {
+			var added bool
+			added, err = db.checkIfAdded(keyStr)
+			if err != nil {
+				return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+			}
+			if added {
+				alreadyAdded++
+				continue
+			}
+			keptJobs = append(keptJobs, job)
+		}
+
+		newJobKeys[keyStr] = true
+		key := []byte(keyStr)
+
+		job.RLock()
+		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(job.RepGroup, key), nil})
+		repGroups[job.RepGroup] = true
+
+		for _, depGroup := range job.DepGroups {
+			if depGroup != "" {
+				dgLookups = append(dgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
+				depGroups[depGroup] = true
+			}
+		}
+
+		for _, depGroup := range job.Dependencies.DepGroups() {
+			rdgLookups = append(rdgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
+		}
+		job.RUnlock()
+
+		var encoded []byte
+		enc := codec.NewEncoderBytes(&encoded, db.ch)
+		job.RLock()
+		err = enc.Encode(job)
+		job.RUnlock()
+		if err != nil {
+			return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+		}
+		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
+	}
+
+	if len(encodedJobs) > 0 {
+		if !ignoreAdded {
+			keptJobs = jobs
+		}
+
+		// first determine if any of these new jobs are the parent of previously
+		// stored jobs
+		if len(depGroups) > 0 {
+			jobsToQueue, jobsToUpdate, err = db.retrieveDependentJobs(depGroups, newJobKeys)
+
+			// arrange to have resurrected complete jobs stored in the live
+			// bucket again
+			for _, job := range jobsToQueue {
+				key := []byte(job.Key())
+				var encoded []byte
+				enc := codec.NewEncoderBytes(&encoded, db.ch)
+				job.RLock()
+				err = enc.Encode(job)
+				job.RUnlock()
+				if err != nil {
+					return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+				}
+				encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
+			}
+
+			if len(jobsToQueue) > 0 {
+				jobsToQueue = append(jobsToQueue, jobs...)
+			} else {
+				jobsToQueue = keptJobs
+			}
+		} else {
+			jobsToQueue = keptJobs
+		}
+
+		for rg := range repGroups {
+			rgs = append(rgs, [2][]byte{[]byte(rg), nil})
+		}
+	}
+
+	return encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
 // generateLookupKey creates a lookup key understood by the retrieval methods,
@@ -1004,6 +1076,143 @@ func (db *db) updateJobAfterChange(job *Job) {
 	}()
 }
 
+// modifyLiveJobs is for use if jobs currently in the queue are modified such
+// that their Key() changes, or their dependencies or dependency groups change.
+// We simply remove all reference to the old keys in the lookup buckets, as well
+// as the old jobs from the live bucket, and then do the equivalent of
+// storeNewJobs() on the supplied new version of the jobs. (This is all done in
+// one transaction, so won't leave things in a bad state if interuppted half
+// way.)
+// The order of oldKeys should match the order or new jobs. Ie. oldKeys[0] is
+// the old Key() of jobs[0]. This is so that any stdout/err of old jobs is
+// associated with the new jobs.
+func (db *db) modifyLiveJobs(oldKeys []string, jobs []*Job) error {
+	encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
+	if err != nil {
+		return err
+	}
+	sort.Sort(rgLookups)
+	sort.Sort(rgs)
+	sort.Sort(dgLookups)
+	sort.Sort(rdgLookups)
+	sort.Sort(encodedJobs)
+
+	lookupBuckets := [][]byte{bucketRTK, bucketDTK, bucketRDTK}
+
+	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+		// delete old jobs and their lookups
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		bo := tx.Bucket(bucketStdO)
+		be := tx.Bucket(bucketStdE)
+		os := make([][]byte, len(oldKeys))
+		es := make([][]byte, len(oldKeys))
+		var hadStd bool
+		for i, oldKey := range oldKeys {
+			suffix := []byte(dbDelimiter + oldKey)
+			for _, bucket := range lookupBuckets {
+				b := tx.Bucket(bucket)
+				// *** currently having to go through the the whole lookup
+				// buckets; if this is a noticeable performance issue, will have
+				// to implement a reverse lookup...
+				errf := b.ForEach(func(k, v []byte) error {
+					if bytes.HasSuffix(k, suffix) {
+						errd := b.Delete(k)
+						if errd != nil {
+							return errd
+						}
+					}
+					return nil
+				})
+				if errf != nil {
+					return errf
+				}
+			}
+
+			key := []byte(oldKey)
+			errd := newJobBucket.Delete(key)
+			if errd != nil {
+				return errd
+			}
+
+			o := bo.Get(key)
+			if o != nil {
+				os[i] = o
+				errd = bo.Delete(key)
+				if errd != nil {
+					return errd
+				}
+				hadStd = true
+			}
+
+			e := be.Get(key)
+			if e != nil {
+				es[i] = e
+				errd = be.Delete(key)
+				if errd != nil {
+					return errd
+				}
+				hadStd = true
+			}
+		}
+
+		if len(encodedJobs) > 0 {
+			// now go ahead and store the new lookups and jobs
+			errs := db.putLookups(tx, bucketRTK, rgLookups)
+			if errs != nil {
+				return errs
+			}
+
+			if len(rgs) > 0 {
+				errs = db.putLookups(tx, bucketRGs, rgs)
+				if errs != nil {
+					return errs
+				}
+			}
+
+			if len(dgLookups) > 0 {
+				errs = db.putLookups(tx, bucketDTK, dgLookups)
+				if errs != nil {
+					return errs
+				}
+			}
+
+			if len(rdgLookups) > 0 {
+				errs = db.putLookups(tx, bucketRDTK, rdgLookups)
+				if errs != nil {
+					return errs
+				}
+			}
+
+			if hadStd {
+				for i, job := range jobs {
+					if os[i] != nil {
+						errs = bo.Put([]byte(job.Key()), os[i])
+						if errs != nil {
+							return errs
+						}
+					}
+					if es[i] != nil {
+						errs = be.Put([]byte(job.Key()), es[i])
+						if errs != nil {
+							return errs
+						}
+					}
+				}
+			}
+
+			return db.putEncodedJobs(tx, bucketJobsLive, encodedJobs)
+		}
+		return nil
+	})
+	if err != nil {
+		db.Error("Database error during modify", "err", err)
+	}
+
+	go db.backgroundBackup()
+
+	return err
+}
+
 // retrieveJobStd gets the values that were stored using updateJobStd() for the
 // given job.
 func (db *db) retrieveJobStd(jobkey string) (stdo []byte, stde []byte) {
@@ -1225,31 +1434,43 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 // in the db.
 func (db *db) storeLookups(bucket []byte, lookups sobsd) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
-		lookup := tx.Bucket(bucket)
-		for _, doublet := range lookups {
-			err := lookup.Put(doublet[0], nil)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
+		return db.putLookups(tx, bucket, lookups)
 	})
 	return err
+}
+
+// putLookups does the work of storeLookups(). You must be inside a bolt
+// transaction when calling this.
+func (db *db) putLookups(tx *bolt.Tx, bucket []byte, lookups sobsd) error {
+	lookup := tx.Bucket(bucket)
+	for _, doublet := range lookups {
+		err := lookup.Put(doublet[0], nil)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // storeEncodedJobs is a sobsdStorer for storing Jobs in the db.
 func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
-		bjobs := tx.Bucket(bucket)
-		for _, doublet := range encodes {
-			err := bjobs.Put(doublet[0], doublet[1])
-			if err != nil {
-				return err
-			}
-		}
-		return nil
+		return db.putEncodedJobs(tx, bucket, encodes)
 	})
 	return err
+}
+
+// putEncodedJobs does the work of storeEncodedJobs(). You nust be inside a bolt
+// transaction when calling this.
+func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
+	bjobs := tx.Bucket(bucket)
+	for _, doublet := range encodes {
+		err := bjobs.Put(doublet[0], doublet[1])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // close shuts down the db, should be used prior to exiting. Ensures any

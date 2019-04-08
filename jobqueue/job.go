@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -27,11 +27,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/muxfys"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid"
 	"github.com/hashicorp/go-multierror"
@@ -61,6 +63,14 @@ const (
 	JobStateDeletable JobState = "deletable"
 	JobStateUnknown   JobState = "unknown"
 )
+
+// jobSchedLimitGroupSeparator is the separator between requirements and limit
+// groups in schedular group names.
+const jobSchedLimitGroupSeparator = "~"
+
+// jobLimitGroupSeparator is the separator between limit groups in schedular
+// group names.
+const jobLimitGroupSeparator = ","
 
 // subqueueToJobState converts queue.SubQueue entries to JobStates.
 var subqueueToJobState = map[queue.SubQueue]JobState{
@@ -142,6 +152,12 @@ type Job struct {
 
 	// Retries is the number of times to retry running a Cmd if it fails.
 	Retries uint8
+
+	// LimitGroups are names of limit groups that this job belongs to. If any
+	// of these groups are defined (elsewhere) to have a limit, then if as many
+	// other jobs as the limit are currently running, this job will not start
+	// running. It's a way of not running too many of a type of job at once.
+	LimitGroups []string
 
 	// DepGroups are the dependency groups this job belongs to that other jobs
 	// can refer to in their Dependencies.
@@ -277,11 +293,15 @@ type Job struct {
 	scheduledRunner bool
 
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
-	// later; this is purely client side
+	// later; this is purely client side.
 	mountedFS []*muxfys.MuxFys
 
-	// killCalled is set for running jobs if Kill() is called on them
+	// killCalled is set for running jobs if Kill() is called on them.
 	killCalled bool
+
+	// incrementedLimitGroups notes that we have incremented limit groups for
+	// this job, so they should be decremented when the job finishes running.
+	incrementedLimitGroups []string
 
 	sync.RWMutex
 }
@@ -650,9 +670,25 @@ func (j *Job) ToEssense() *JobEssence {
 	return &JobEssence{JobKey: j.Key()}
 }
 
+// noteIncrementedLimitGroups should be used after incrementing limit groups for
+// this job. It takes the groups you actually just incremented (as opposed to
+// the Job's current LimitGroups), and stores them for decrementing during
+// updateAfterExit(). This avoids any issues with the Job's LimitGroups being
+// changed between these 2 calls (or between you incrementing and reserving the
+// job). The twinned noteIncrementedLimitGroups() and updateAfterExit() calls
+// ensure we don't decrement groups more times than we incremented them.
+func (j *Job) noteIncrementedLimitGroups(groups []string) {
+	j.Lock()
+	defer j.Unlock()
+	j.incrementedLimitGroups = groups
+}
+
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited.
-func (j *Job) updateAfterExit(jes *JobEndState) {
+// JobEndState indicates the job exited. It also decrements any limit groups of
+// this job that had been passed to noteIncrementedLimitGroups(), and then
+// empties that note to make multiple calls to this method safe in terms of
+// decrementing.
+func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes == nil || !jes.Exited {
 		return
 	}
@@ -666,6 +702,12 @@ func (j *Job) updateAfterExit(jes *JobEndState) {
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}
+
+	if len(j.incrementedLimitGroups) > 0 {
+		lim.Decrement(j.incrementedLimitGroups)
+		j.incrementedLimitGroups = []string{}
+	}
+
 	j.Unlock()
 }
 
@@ -691,6 +733,18 @@ func (j *Job) setScheduledRunner(newval bool) {
 	j.Lock()
 	defer j.Unlock()
 	j.scheduledRunner = newval
+}
+
+// generateSchedulerGroup returns a stringified form of the given requirements,
+// appended with a standard form of the current limit groups of this job. We
+// assume that LimitGroups was sorted and deduplicated when it was set on the
+// job (this happens in server.createJobs()).
+func (j *Job) generateSchedulerGroup(req *scheduler.Requirements) string {
+	var lgs string
+	if len(j.LimitGroups) > 0 {
+		lgs = jobSchedLimitGroupSeparator + strings.Join(j.LimitGroups, jobLimitGroupSeparator)
+	}
+	return req.Stringify() + lgs
 }
 
 // getSchedulerGroup provides a thread-safe way of getting the schedulerGroup
@@ -732,6 +786,7 @@ func (j *Job) ToStatus() JStatus {
 	return JStatus{
 		Key:           j.Key(),
 		RepGroup:      j.RepGroup,
+		LimitGroups:   j.LimitGroups,
 		DepGroups:     j.DepGroups,
 		Dependencies:  j.Dependencies.Stringify(),
 		Cmd:           j.Cmd,
@@ -809,4 +864,269 @@ func (j *JobEssence) Stringify() string {
 		out += " [" + j.Cwd + "]"
 	}
 	return out
+}
+
+// JobModifier has the same settable properties as Job, but also has Set*()
+// methods that record which properties you have explicitly set, allowing its
+// Modify() method to know what you wanted to change, including changing to
+// default, without changing to default for properties you wanted to leave
+// alone. The only thing you can't set is RepGroup. The methods on this struct
+// are not thread safe. Do not set any of the properties directly yourself.
+type JobModifier struct {
+	Cmd              string
+	Cwd              string
+	CwdMatters       bool
+	CwdMattersSet    bool
+	ChangeHome       bool
+	ChangeHomeSet    bool
+	ReqGroup         string
+	ReqGroupSet      bool
+	Requirements     *scheduler.Requirements
+	Override         uint8
+	OverrideSet      bool
+	Priority         uint8
+	PrioritySet      bool
+	Retries          uint8
+	RetriesSet       bool
+	EnvOverride      []byte
+	EnvOverrideSet   bool
+	LimitGroups      []string
+	LimitGroupsSet   bool
+	DepGroups        []string
+	DepGroupsSet     bool
+	Dependencies     Dependencies
+	DependenciesSet  bool
+	Behaviours       Behaviours
+	BehavioursSet    bool
+	MountConfigs     MountConfigs
+	MountConfigsSet  bool
+	BsubMode         string
+	BsubModeSet      bool
+	MonitorDocker    string
+	MonitorDockerSet bool
+}
+
+// NewJobModifer is a convenience for making a new JobModifer, that you can call
+// various Set*() methods on before using Modify() to modify a Job.
+func NewJobModifer() *JobModifier {
+	return &JobModifier{}
+}
+
+// SetCmd notes that you want to modify the command line of Jobs to the given
+// cmd. You can't modify to an empty command, so if cmd is blank, no set is
+// done.
+func (j *JobModifier) SetCmd(cmd string) {
+	j.Cmd = cmd
+}
+
+// SetCwd notes that you want to modify the cwd of Jobs to the given cwd. You
+// can't modify to an empty cwd, so if cwd is blank, no set is done.
+func (j *JobModifier) SetCwd(cwd string) {
+	j.Cwd = cwd
+}
+
+// SetCwdMatters notes that you want to modify the CwdMatters of Jobs.
+func (j *JobModifier) SetCwdMatters(new bool) {
+	j.CwdMatters = new
+	j.CwdMattersSet = true
+}
+
+// SetChangeHome notes that you want to modify the ChangeHome of Jobs.
+func (j *JobModifier) SetChangeHome(new bool) {
+	j.ChangeHome = new
+	j.ChangeHomeSet = true
+}
+
+// SetReqGroup notes that you want to modify the ReqGroup of Jobs.
+func (j *JobModifier) SetReqGroup(new string) {
+	j.ReqGroup = new
+	j.ReqGroupSet = true
+}
+
+// SetRequirements notes that you want to modify the Requirements of Jobs. You
+// can't modify to a nil Requirements, so if req is nil, no set is done.
+//
+// NB: If you want to change Cores, Disk or Other, you must set CoresSet,
+// DiskSet and OtherSet booleans to true, respectively.
+func (j *JobModifier) SetRequirements(req *scheduler.Requirements) {
+	j.Requirements = req
+}
+
+// SetOverride notes that you want to modify the Override of Jobs.
+func (j *JobModifier) SetOverride(new uint8) {
+	j.Override = new
+	j.OverrideSet = true
+}
+
+// SetPriority notes that you want to modify the Priority of Jobs.
+func (j *JobModifier) SetPriority(new uint8) {
+	j.Priority = new
+	j.PrioritySet = true
+}
+
+// SetRetries notes that you want to modify the Retries of Jobs.
+func (j *JobModifier) SetRetries(new uint8) {
+	j.Retries = new
+	j.RetriesSet = true
+}
+
+// SetEnvOverride notes that you want to modify the EnvOverride of Jobs. The
+// supplied string should be a comma separated list of key=value pairs. This can
+// generate an error if compression of the data fails.
+func (j *JobModifier) SetEnvOverride(new string) error {
+	var compressedEnv []byte
+	if new != "" {
+		var err error
+		compressedEnv, err = compressEnv(strings.Split(new, ","))
+		if err != nil {
+			return err
+		}
+	}
+	j.EnvOverride = compressedEnv
+	j.EnvOverrideSet = true
+	return nil
+}
+
+// SetLimitGroups notes that you want to modify the LimitGroups of Jobs.
+func (j *JobModifier) SetLimitGroups(new []string) {
+	j.LimitGroups = new
+	j.LimitGroupsSet = true
+}
+
+// SetDepGroups notes that you want to modify the DepGroups of Jobs.
+func (j *JobModifier) SetDepGroups(new []string) {
+	j.DepGroups = new
+	j.DepGroupsSet = true
+}
+
+// SetDependencies notes that you want to modify the Dependencies of Jobs.
+func (j *JobModifier) SetDependencies(new Dependencies) {
+	j.Dependencies = new
+	j.DependenciesSet = true
+}
+
+// SetBehaviours notes that you want to modify the Behaviours of Jobs.
+func (j *JobModifier) SetBehaviours(new Behaviours) {
+	j.Behaviours = new
+	j.BehavioursSet = true
+}
+
+// SetMountConfigs notes that you want to modify the MountConfigs of Jobs.
+func (j *JobModifier) SetMountConfigs(new MountConfigs) {
+	j.MountConfigs = new
+	j.MountConfigsSet = true
+}
+
+// SetBsubMode notes that you want to modify the BsubMode of Jobs.
+func (j *JobModifier) SetBsubMode(new string) {
+	j.BsubMode = new
+	j.BsubModeSet = true
+}
+
+// SetMonitorDocker notes that you want to modify the MonitorDocker of Jobs.
+func (j *JobModifier) SetMonitorDocker(new string) {
+	j.MonitorDocker = new
+	j.MonitorDockerSet = true
+}
+
+// Modify takes existing jobs and modifies them all by setting the new values
+// that you have previously set using the Set*() methods. Other values are left
+// alone. Note that this could result in a Job's Key() changing.
+//
+// NB: this is only an in-memory change to the Jobs, so it is only meaningful
+// for the Server to call this and then store changes in the database. You will
+// also need to handle dependencies of a job changing.
+//
+// Returns a REVERSE mapping of new to old Job keys.
+func (j *JobModifier) Modify(jobs []*Job) map[string]string {
+	keys := make(map[string]string)
+	for _, job := range jobs {
+		job.Lock()
+		before := job.Key()
+		if j.Cmd != "" {
+			job.Cmd = j.Cmd
+		}
+		if j.Cwd != "" {
+			job.Cwd = j.Cwd
+		}
+		if j.CwdMattersSet {
+			job.CwdMatters = j.CwdMatters
+			if j.CwdMatters {
+				job.ActualCwd = job.Cwd
+			}
+		}
+		if j.ChangeHomeSet {
+			job.ChangeHome = j.ChangeHome
+		}
+		if j.ReqGroupSet {
+			job.ReqGroup = j.ReqGroup
+		}
+		if j.Requirements != nil {
+			if j.Requirements.RAM != 0 {
+				job.Requirements.RAM = j.Requirements.RAM
+			}
+			if j.Requirements.Time != 0 {
+				job.Requirements.Time = j.Requirements.Time
+			}
+			if j.Requirements.CoresSet {
+				job.Requirements.Cores = j.Requirements.Cores
+			}
+			if j.Requirements.DiskSet {
+				job.Requirements.Disk = j.Requirements.Disk
+			}
+			if j.Requirements.OtherSet {
+				job.Requirements.Other = j.Requirements.Other
+			}
+		}
+		if j.OverrideSet {
+			job.Override = j.Override
+		}
+		if j.PrioritySet {
+			job.Priority = j.Priority
+		}
+		if j.RetriesSet {
+			job.Retries = j.Retries
+		}
+		if j.EnvOverrideSet {
+			job.EnvOverride = j.EnvOverride
+		}
+		if j.LimitGroupsSet {
+			job.LimitGroups = j.LimitGroups
+		}
+		if j.DepGroupsSet {
+			job.DepGroups = j.DepGroups
+		}
+		if j.DependenciesSet {
+			job.Dependencies = j.Dependencies
+		}
+		if j.BehavioursSet {
+			for _, new := range j.Behaviours {
+				var found bool
+				for i, old := range job.Behaviours {
+					if old.When == new.When {
+						job.Behaviours[i] = new
+						found = true
+						break
+					}
+				}
+				if !found {
+					job.Behaviours = append(job.Behaviours, new)
+				}
+			}
+		}
+		if j.MountConfigsSet {
+			job.MountConfigs = j.MountConfigs
+		}
+		if j.BsubModeSet {
+			job.BsubMode = j.BsubMode
+			atomic.AddUint64(&BsubID, 1)
+			job.BsubID = atomic.LoadUint64(&BsubID)
+		}
+		if j.MonitorDockerSet {
+			job.MonitorDocker = j.MonitorDocker
+		}
+		keys[job.Key()] = before
+		job.Unlock()
+	}
+	return keys
 }

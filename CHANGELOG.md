@@ -5,6 +5,31 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.18.0] - 2019-04-08
+### Added
+- New limit group property on Jobs, to allow you to limit the number of jobs
+  that run at once in a group.
+- New `wr limit` command to set and change limits on limit groups.
+- New `wr mod` command to modify most aspects of incomplete jobs added to the
+  queue.
+- REST API now supports DELETE of jobs to cancel them.
+
+### Changed
+- REST API GET on jobs can now also filter on "deletable" state.
+- Backwards-incompatible internal API changes.
+
+### Fixed
+- Can now build on latest versions of go, and requires at least 1.11.5. You may
+  have to `go clean -modcache` if you encounter problems.
+- managerumask config opion now applies to jobs run on remote OpenStack servers
+  when using the OpenStack scheduler.
+- Fixed a case where it was possible for a job with dependencies to start
+  running immediately if its dependencies were re-added to the queue, before
+  they finished running.
+- The managerdir (~/.wr_production by default) is no longer created until you
+  try to start the manager; other commands like `wr version` do not create it.
+
+
 ## [0.17.0] - 2019-01-14
 ### Added
 - New `wr manager pause` and `wr manager resume` commands, allowing you to

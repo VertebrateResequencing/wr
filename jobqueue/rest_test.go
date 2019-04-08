@@ -191,9 +191,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -206,9 +206,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/de6d167c58701e55f5b9f9e1e91d7807", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -237,9 +237,9 @@ func TestREST(t *testing.T) {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1", nil)
 				So(err, ShouldBeNil)
 				req.Header.Add("Authorization", bearer)
-				response, err := client.Do(req)
+				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err = ioutil.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -256,9 +256,9 @@ func TestREST(t *testing.T) {
 					req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?limit=1", nil)
 					So(err, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
-					response, err := client.Do(req)
+					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
+					responseData, err = ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
@@ -267,6 +267,38 @@ func TestREST(t *testing.T) {
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].Similar, ShouldEqual, 1)
 				})
+			})
+
+			Convey("You can DELETE jobs by RepGroup", func() {
+				req, err := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1", nil)
+				So(err, ShouldBeNil)
+				req.Header.Add("Authorization", bearer)
+				response, err = client.Do(req)
+				So(err, ShouldBeNil)
+				responseData, err = ioutil.ReadAll(response.Body)
+				So(err, ShouldBeNil)
+
+				So(response.Status, ShouldEqual, "400 Bad Request")
+				So(string(responseData), ShouldEqual, "state must be supplied as one of running|lost|deletable\n")
+
+				req, err = http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=deletable", nil)
+				So(err, ShouldBeNil)
+				req.Header.Add("Authorization", bearer)
+				response, err = client.Do(req)
+				So(err, ShouldBeNil)
+				responseData, err = ioutil.ReadAll(response.Body)
+				So(err, ShouldBeNil)
+
+				var jstati []JStatus
+				err = json.Unmarshal(responseData, &jstati)
+				So(err, ShouldBeNil)
+				So(len(jstati), ShouldEqual, 2)
+				keys := make(map[string]bool)
+				for _, j := range jstati {
+					keys[j.Key] = true
+					So(j.State, ShouldEqual, JobStateDeleted)
+				}
+				So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "db1e7d99becace3306c1c2470331c78e": true})
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
@@ -285,82 +317,156 @@ func TestREST(t *testing.T) {
 				So(env, ShouldContain, "foo=bar")
 				So(env, ShouldContain, "test=case")
 
-				err = jq.Execute(job, config.RunnerExecShell)
-				So(err, ShouldNotBeNil)
-				So(job.State, ShouldEqual, JobStateBuried)
-				So(job.Exited, ShouldBeTrue)
-				So(job.Exitcode, ShouldEqual, 1)
-
-				Convey("You can GET all jobs by state, and get their stdout/err", func() {
-					req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=ready", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err := client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
+				Convey("You can DELETE running jobs to bury them", func() {
+					err = jq.Started(job, 1)
 					So(err, ShouldBeNil)
 
-					var jstati []JStatus
-					err = json.Unmarshal(responseData, &jstati)
-					So(err, ShouldBeNil)
-					So(len(jstati), ShouldEqual, 2)
-					keys := make(map[string]bool)
-					for _, j := range jstati {
-						keys[j.Key] = true
-					}
-					So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "f5c0d6240167a6e0b803e23f74e3a085": true})
-
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=true", nil)
-					So(err, ShouldBeNil)
+					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=running", nil)
+					So(errr, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
 					responseData, err = ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati2 []JStatus
-					err = json.Unmarshal(responseData, &jstati2)
-					So(err, ShouldBeNil)
-					So(len(jstati2), ShouldEqual, 1)
-
-					So(jstati2[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-					So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
-					So(jstati2[0].State, ShouldEqual, "buried")
-					So(jstati2[0].StdOut, ShouldEqual, "3")
-
-					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=false", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err = client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
-					So(err, ShouldBeNil)
-
-					var jstati3 []JStatus
-					err = json.Unmarshal(responseData, &jstati3)
-					So(err, ShouldBeNil)
-					So(len(jstati3), ShouldEqual, 1)
-
-					So(jstati3[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
-					So(jstati3[0].CwdBase, ShouldEqual, "/tmp")
-					So(jstati3[0].State, ShouldEqual, "buried")
-					So(jstati3[0].StdOut, ShouldEqual, "")
-				})
-
-				Convey("You can GET all jobs by state and RepGroup", func() {
-					req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?state=ready", nil)
-					So(err, ShouldBeNil)
-					req.Header.Add("Authorization", bearer)
-					response, err := client.Do(req)
-					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
 					err = json.Unmarshal(responseData, &jstati)
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
-					So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+					So(jstati[0].State, ShouldEqual, JobStateRunning)
+
+					<-time.After(300 * time.Millisecond)
+
+					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+					So(err, ShouldBeNil)
+					req.Header.Add("Authorization", bearer)
+					response, err = client.Do(req)
+					So(err, ShouldBeNil)
+					responseData, err = ioutil.ReadAll(response.Body)
+					So(err, ShouldBeNil)
+
+					jstati = []JStatus{}
+					err = json.Unmarshal(responseData, &jstati)
+					So(err, ShouldBeNil)
+					So(len(jstati), ShouldEqual, 1)
+					So(jstati[0].State, ShouldEqual, JobStateBuried)
+				})
+
+				Convey("You can DELETE lost jobs to bury them", func() {
+					err = jq.Started(job, 1)
+					So(err, ShouldBeNil)
+
+					<-time.After(300 * time.Millisecond)
+
+					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=lost", nil)
+					So(errr, ShouldBeNil)
+					req.Header.Add("Authorization", bearer)
+					response, err = client.Do(req)
+					So(err, ShouldBeNil)
+					responseData, err = ioutil.ReadAll(response.Body)
+					So(err, ShouldBeNil)
+
+					var jstati []JStatus
+					err = json.Unmarshal(responseData, &jstati)
+					So(err, ShouldBeNil)
+					So(len(jstati), ShouldEqual, 1)
+					So(jstati[0].State, ShouldEqual, JobStateLost)
+
+					<-time.After(300 * time.Millisecond)
+
+					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+					So(err, ShouldBeNil)
+					req.Header.Add("Authorization", bearer)
+					response, err = client.Do(req)
+					So(err, ShouldBeNil)
+					responseData, err = ioutil.ReadAll(response.Body)
+					So(err, ShouldBeNil)
+
+					jstati = []JStatus{}
+					err = json.Unmarshal(responseData, &jstati)
+					So(err, ShouldBeNil)
+					So(len(jstati), ShouldEqual, 1)
+					So(jstati[0].State, ShouldEqual, JobStateBuried)
+				})
+
+				Convey("Once executed...", func() {
+					err = jq.Execute(job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+
+					Convey("You can GET all jobs by state, and get their stdout/err", func() {
+						req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=ready", nil)
+						So(err, ShouldBeNil)
+						req.Header.Add("Authorization", bearer)
+						response, err := client.Do(req)
+						So(err, ShouldBeNil)
+						responseData, err := ioutil.ReadAll(response.Body)
+						So(err, ShouldBeNil)
+
+						var jstati []JStatus
+						err = json.Unmarshal(responseData, &jstati)
+						So(err, ShouldBeNil)
+						So(len(jstati), ShouldEqual, 2)
+						keys := make(map[string]bool)
+						for _, j := range jstati {
+							keys[j.Key] = true
+						}
+						So(keys, ShouldResemble, map[string]bool{"de6d167c58701e55f5b9f9e1e91d7807": true, "f5c0d6240167a6e0b803e23f74e3a085": true})
+
+						req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=true", nil)
+						So(err, ShouldBeNil)
+						req.Header.Add("Authorization", bearer)
+						response, err = client.Do(req)
+						So(err, ShouldBeNil)
+						responseData, err = ioutil.ReadAll(response.Body)
+						So(err, ShouldBeNil)
+
+						var jstati2 []JStatus
+						err = json.Unmarshal(responseData, &jstati2)
+						So(err, ShouldBeNil)
+						So(len(jstati2), ShouldEqual, 1)
+
+						So(jstati2[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+						So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
+						So(jstati2[0].State, ShouldEqual, "buried")
+						So(jstati2[0].StdOut, ShouldEqual, "3")
+
+						req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=false", nil)
+						So(err, ShouldBeNil)
+						req.Header.Add("Authorization", bearer)
+						response, err = client.Do(req)
+						So(err, ShouldBeNil)
+						responseData, err = ioutil.ReadAll(response.Body)
+						So(err, ShouldBeNil)
+
+						var jstati3 []JStatus
+						err = json.Unmarshal(responseData, &jstati3)
+						So(err, ShouldBeNil)
+						So(len(jstati3), ShouldEqual, 1)
+
+						So(jstati3[0].Key, ShouldEqual, "db1e7d99becace3306c1c2470331c78e")
+						So(jstati3[0].CwdBase, ShouldEqual, "/tmp")
+						So(jstati3[0].State, ShouldEqual, "buried")
+						So(jstati3[0].StdOut, ShouldEqual, "")
+					})
+
+					Convey("You can GET all jobs by state and RepGroup", func() {
+						req, err := http.NewRequest(http.MethodGet, jobsEndPoint+"/rp1?state=ready", nil)
+						So(err, ShouldBeNil)
+						req.Header.Add("Authorization", bearer)
+						response, err := client.Do(req)
+						So(err, ShouldBeNil)
+						responseData, err := ioutil.ReadAll(response.Body)
+						So(err, ShouldBeNil)
+
+						var jstati []JStatus
+						err = json.Unmarshal(responseData, &jstati)
+						So(err, ShouldBeNil)
+						So(len(jstati), ShouldEqual, 1)
+						So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
+					})
 				})
 			})
 		})

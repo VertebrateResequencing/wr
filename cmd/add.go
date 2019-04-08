@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -50,6 +50,7 @@ var cmdFile string
 var cmdCwdMatters bool
 var cmdChangeHome bool
 var cmdRepGroup string
+var cmdLimitGroups string
 var cmdDepGroups string
 var cmdCmdDeps string
 var cmdGroupDeps string
@@ -223,6 +224,13 @@ retry button in the web interface.
 their status later. This is only used for reporting and presentation purposes
 when viewing status.
 
+"limit_grps" is an array of arbitrary names you can associate with a command,
+that can be used to limit the number of jobs that run at once in the same group.
+You can optionally suffix a group name with :n where n is a integer new limit
+for that group. 0 prevents jobs in that group running at all. -1 makes jobs in
+that group unlimited. If no limit number is suffixed, groups will be unlimited
+until a limit is set with the "wr limit" command.
+
 "dep_grps" is an array of arbitrary names you can associate with a command, so
 that you can then refer to this job (and others with the same dep_grp) in
 another job's deps.
@@ -268,8 +276,8 @@ help text for "wr cloud deploy"'s --config_files option. The per-job config
 files you specify will be treated as in addition to any specified during cloud
 deploy or when starting the manager.
 
-cloud_shared only works when using a cloud scheduler where both the manager and
-jobs will run on Ubuntu. It will cause /shared on the manager's server to be
+"cloud_shared" only works when using a cloud scheduler where both the manager
+and jobs will run on Ubuntu. It will cause /shared on the manager's server to be
 NFS shared to /shared mounted on the server where your job runs. This gives you
 an easy way of having a shared disk in the cloud, but the size of that disk is
 limited to the size of the manager's volume. Performance may also be poor. This
@@ -336,6 +344,7 @@ func init() {
 	// flags specific to this sub-command
 	addCmd.Flags().StringVarP(&cmdFile, "file", "f", "-", "file containing your commands; - means read from STDIN")
 	addCmd.Flags().StringVarP(&cmdRepGroup, "rep_grp", "i", "manually_added", "reporting group for your commands")
+	addCmd.Flags().StringVarP(&cmdLimitGroups, "limit_grps", "l", "", "comma-separated list of limit groups")
 	addCmd.Flags().StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	addCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
 	addCmd.Flags().BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
@@ -468,6 +477,10 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		if err != nil {
 			die("--time was not specified correctly: %s", err)
 		}
+	}
+
+	if cmdLimitGroups != "" {
+		jd.LimitGroups = strings.Split(cmdLimitGroups, ",")
 	}
 
 	if cmdDepGroups != "" {
@@ -641,9 +654,9 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 			desired = parts[0]
 		}
 
-		remote, err := jq.UploadFile(local, desired)
+		remote, err := jq.UploadFile(local, "")
 		if err != nil {
-			warn("failed to upload [%s] to [%s]: %s", local, desired, err)
+			warn("failed to upload [%s] to a unique location: %s", local, err)
 			remoteConfigFiles = append(remoteConfigFiles, cf)
 			continue
 		}

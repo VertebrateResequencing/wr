@@ -113,6 +113,24 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 	return sortedKeys
 }
 
+// DedupSortStrings removes duplicates and then sorts the given strings,
+// returning a new slice.
+func DedupSortStrings(s []string) []string {
+	seen := make(map[string]struct{}, len(s))
+	i := 0
+	for _, v := range s {
+		if _, exists := seen[v]; exists {
+			continue
+		}
+		seen[v] = struct{}{}
+		s[i] = v
+		i++
+	}
+	dedup := s[:i]
+	sort.Strings(dedup)
+	return dedup
+}
+
 // Username returns the username of the current user. This avoids problems
 // with static compilation as it avoids the use of os/user. It will only work
 // on linux-like systems where 'id -u -n' works.
@@ -475,4 +493,16 @@ func currentIPFallback(ipNet *net.IPNet) (string, error) {
 		}
 	}
 	return ip, nil
+}
+
+// PathToContent takes the path to a file and returns its contents as a string.
+// If path begins with a tilda, TildaToHome() is used to first convert the path
+// to an absolute path, in order to find the file.
+func PathToContent(path string) (string, error) {
+	absPath := TildaToHome(path)
+	contents, err := ioutil.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("path [%s] could not be read: %s", absPath, err)
+	}
+	return string(contents), nil
 }

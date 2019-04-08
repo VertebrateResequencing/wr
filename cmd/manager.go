@@ -652,6 +652,7 @@ func startJQ(postCreation []byte) {
 			MaxLocalRAM:          &maxLocalRAM,
 			Shell:                config.RunnerExecShell,
 			CIDR:                 cloudCIDR,
+			Umask:                config.ManagerUmask,
 		}
 		serverCIDR = cloudCIDR
 	case kubernetes:
@@ -696,7 +697,6 @@ func startJQ(postCreation []byte) {
 				die("according to hostname and env vars, this is not a container in kubernetes")
 			}
 		}
-
 	}
 
 	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"

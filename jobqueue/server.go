@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -34,6 +34,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
@@ -75,6 +77,7 @@ const (
 	ErrPermissionDenied = "bad token: permission denied"
 	ErrBeingDrained     = "server is being drained"
 	ErrStopReserving    = "recovered on a new server; you should stop reserving"
+	ErrBadLimitGroup    = "colons in limit group names must be followed by integers"
 	ServerModeNormal    = "started"
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
@@ -123,9 +126,11 @@ type serverResponse struct {
 	Err        string // string instead of error so we can decode on the client side
 	Added      int
 	Existed    int
+	Modified   map[string]string
 	KillCalled bool
 	Job        *Job
 	Jobs       []*Job
+	Limit      int
 	SInfo      *ServerInfo
 	SStats     *ServerStats
 	DB         []byte
@@ -215,6 +220,7 @@ type Server struct {
 	sync.Mutex
 	q               *queue.Queue
 	rpl             *rgToKeys
+	limiter         *limiter.Limiter
 	scheduler       *scheduler.Scheduler
 	sgroupcounts    map[string]int
 	sgrouptrigs     map[string]int
@@ -538,6 +544,12 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		uploadDir = "/tmp"
 	}
 
+	// our limiter will use a callback that gets group limits from our database
+	lcb := func(name string) int {
+		return db.retrieveLimitGroup(name)
+	}
+	l := limiter.New(lcb)
+
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
 		ServerVersions:     &ServerVersions{Version: ServerVersion, API: restAPIVersion},
@@ -546,6 +558,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		sock:               sock,
 		ch:                 new(codec.BincHandle),
 		rpl:                &rgToKeys{lookup: make(map[string]map[string]bool)},
+		limiter:            l,
 		db:                 db,
 		stopSigHandling:    stopSigHandling,
 		stopClientHandling: stopClientHandling,
@@ -599,6 +612,14 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			switch job.State {
 			case JobStateRunning:
 				itemdef.StartQueue = queue.SubQueueRun
+
+				if len(job.LimitGroups) > 0 {
+					if s.limiter.Increment(job.LimitGroups) {
+						// (our note of incrementation done in the server that died
+						//  is not stored in the db)
+						job.noteIncrementedLimitGroups(job.LimitGroups)
+					}
+				}
 
 				req := reqForScheduler(job.Requirements)
 				errr := s.scheduler.Recover(fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
@@ -1073,6 +1094,7 @@ func (s *Server) createQueue() {
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
 		groupsScheduledCounts := make(map[string]int)
+		groupsChangedCounts := make(map[string]int)
 		noRecGroups := make(map[string]bool)
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
@@ -1207,10 +1229,11 @@ func (s *Server) createQueue() {
 			req := reqForScheduler(job.Requirements)
 
 			prevSchedGroup := job.getSchedulerGroup()
-			schedulerGroup := req.Stringify()
+			schedulerGroup := job.generateSchedulerGroup(req)
 			if prevSchedGroup != schedulerGroup {
 				job.setSchedulerGroup(schedulerGroup)
 				if prevSchedGroup != "" {
+					groupsChangedCounts[prevSchedGroup]++
 					job.setScheduledRunner(false)
 				}
 				if s.rc != "" {
@@ -1248,6 +1271,10 @@ func (s *Server) createQueue() {
 
 		if s.rc != "" {
 			// clear out groups we no longer need
+			for group, count := range groupsChangedCounts {
+				s.decrementGroupCount(group, count)
+			}
+
 			s.sgcmutex.Lock()
 			stillRunning := make(map[string]int)
 			for _, inter := range q.GetRunningData() {
@@ -1490,6 +1517,7 @@ func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err e
 // the second is the actual error with more details.
 func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
 	// create itemdefs for the jobs
+	limitGroups := make(map[string]int)
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -1501,7 +1529,20 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			atomic.AddUint64(&BsubID, 1)
 			job.BsubID = atomic.LoadUint64(&BsubID)
 		}
+
+		if len(job.LimitGroups) > 0 {
+			err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+			if err != nil {
+				return added, dups, alreadyComplete, ErrBadLimitGroup, err
+			}
+		}
+
 		job.Unlock()
+	}
+
+	err := s.storeLimitGroups(limitGroups)
+	if err != nil {
+		return added, dups, alreadyComplete, ErrDBError, err
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -1535,22 +1576,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			itemdefs = append(itemdefs, &queue.ItemDef{Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job, Priority: job.Priority, Delay: 0 * time.Second, TTR: ServerItemTTR, Dependencies: deps})
 		}
 
-		// storeNewJobs also returns jobsToUpdate, which are those jobs
-		// currently in the queue that need their dependencies updated because
-		// they just changed when we stored cr.Jobs
-		for _, job := range jobsToUpdate {
-			deps, err := job.Dependencies.incompleteJobKeys(s.db)
-			if err != nil {
-				srerr = ErrDBError
-				qerr = err
-				break
-			}
-			thisErr := s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
-			if thisErr != nil {
-				qerr = thisErr
-				break
-			}
-		}
+		srerr, qerr = s.updateJobDependencies(jobsToUpdate)
 
 		if qerr != nil {
 			srerr = ErrInternalError
@@ -1565,10 +1591,74 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 	return added, dups, alreadyComplete, srerr, qerr
 }
 
+// handleUserSpecifiedJobLimitGroups takes limit groups on a job that may have
+// been specified like name:limit, and fixes them to remove the limit suffix,
+// dedup and sort the groups, and fill in your supplied limitGroups map with the
+// latest limit on groups, if any were specified. You should hold the lock on
+// the Job before calling this.
+func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[string]int) error {
+	// remove limit suffixes and remember the last limit per group specified
+	for i, group := range job.LimitGroups {
+		name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
+		if err != nil {
+			return err
+		}
+		if suffixed {
+			job.LimitGroups[i] = name
+			limitGroups[name] = limit
+		}
+	}
+
+	// because these later become part of scheduler groups names, store
+	// them in sorted order, with no duplicates
+	if len(job.LimitGroups) > 1 {
+		job.LimitGroups = internal.DedupSortStrings(job.LimitGroups)
+	}
+
+	return nil
+}
+
+// storeLimitGroups calls db.storeLimitGroups() and handles updating the
+// in-memory representation of the groups.
+func (s *Server) storeLimitGroups(limitGroups map[string]int) error {
+	changed, removed, err := s.db.storeLimitGroups(limitGroups)
+	if err != nil {
+		return err
+	}
+	for _, group := range changed {
+		s.limiter.SetLimit(group, uint(limitGroups[group]))
+	}
+	for _, group := range removed {
+		s.limiter.RemoveLimit(group)
+	}
+	return nil
+}
+
+// updateJobDependencies is used to handle the jobsToUpdate from storeNewJobs()
+// and db.modifyLiveJobs(). These are those jobs currently in the queue that
+// need their dependencies updated because they just changed when we stored the
+// jobs.
+func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
+	for _, job := range jobs {
+		deps, err := job.Dependencies.incompleteJobKeys(s.db)
+		if err != nil {
+			srerr = ErrDBError
+			qerr = err
+			break
+		}
+		thisErr := s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+		if thisErr != nil {
+			qerr = thisErr
+			break
+		}
+	}
+	return srerr, qerr
+}
+
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
 func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool) error {
-	job.updateAfterExit(endState)
+	job.updateAfterExit(endState, s.limiter)
 	job.Lock()
 	job.FailReason = failReason
 	if !job.StartTime.IsZero() {
@@ -1628,6 +1718,85 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 
 	job.Unlock()
 	return true, err
+}
+
+// deleteJobs deletes the jobs with the given keys from the
+// bury/delay/dependent/ready queue and the live bucket. Does not delete jobs
+// that have jobs dependant upon them, unless all those dependants were also
+// supplied to this method at the same time (in any order). Returns the keys of
+// jobs actually deleted.
+func (s *Server) deleteJobs(keys []string) []string {
+	var deleted []string
+	for {
+		var skippedDeps []string
+		var toDelete []string
+		schedGroups := make(map[string]int)
+		var repGroups []string
+		for _, jobkey := range keys {
+			item, err := s.q.Get(jobkey)
+			if err != nil || item == nil {
+				continue
+			}
+			iState := item.Stats().State
+			if iState == queue.ItemStateRun {
+				continue
+			}
+
+			// we can't allow the removal of jobs that have
+			// dependencies, as *queue would regard that as satisfying
+			// the dependency and downstream jobs would start
+			hasDeps, err := s.q.HasDependents(jobkey)
+			if err != nil || hasDeps {
+				if hasDeps {
+					skippedDeps = append(skippedDeps, jobkey)
+				}
+				continue
+			}
+			err = s.q.Remove(jobkey)
+			if err == nil {
+				deleted = append(deleted, jobkey)
+				toDelete = append(toDelete, jobkey)
+
+				job := item.Data.(*Job)
+				if job.getScheduledRunner() {
+					schedGroups[job.getSchedulerGroup()]++
+				}
+				repGroups = append(repGroups, job.RepGroup)
+				s.Debug("removed job", "cmd", job.Cmd)
+			}
+		}
+
+		if len(toDelete) > 0 {
+			// delete from db live bucket all in one go
+			errd := s.db.deleteLiveJobs(toDelete)
+			if errd != nil {
+				s.Error("job deletion from database failed", "err", errd)
+			}
+
+			// decrement scheduler group counts, in one big go per
+			// group
+			for sg, count := range schedGroups {
+				s.decrementGroupCount(sg, count)
+			}
+
+			// clean up rpl lookups
+			s.rpl.Lock()
+			for i, rg := range repGroups {
+				delete(s.rpl.lookup[rg], toDelete[i])
+			}
+			s.rpl.Unlock()
+
+			// if we skipped any due to deps, repeat and see if we
+			// can remove everything desired by going down the
+			// dependency tree
+			if len(skippedDeps) > 0 {
+				keys = skippedDeps
+				continue
+			}
+		}
+		break
+	}
+	return deleted
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete).
@@ -1850,6 +2019,16 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
+		// if this scheduler group has limit groups, drop the groupCount to the
+		// lowest limit of its groups, if that's less than desired groupCount
+		limitGroups := s.schedGroupToLimitGroups(group)
+		if len(limitGroups) > 0 {
+			limit := s.limiter.GetLowestLimit(limitGroups)
+			if limit >= 0 && limit < groupCount {
+				groupCount = limit
+			}
+		}
+
 		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
@@ -2000,6 +2179,47 @@ func (s *Server) getBadServers() []*BadServer {
 	}
 	s.bsmutex.RUnlock()
 	return bs
+}
+
+// getSetLimitGroup does the server side of Client.GetOrSetLimitGroup(), taking
+// the same argument. The string return value is one of our Err* constants.
+func (s *Server) getSetLimitGroup(group string) (int, string, error) {
+	name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
+	if err != nil {
+		return 0, ErrBadLimitGroup, err
+	}
+	if suffixed {
+		limitGroups := make(map[string]int)
+		limitGroups[name] = limit
+		changed, removed, err := s.db.storeLimitGroups(limitGroups)
+		if err != nil {
+			return -1, ErrDBError, err
+		}
+		for _, group := range changed {
+			s.limiter.SetLimit(group, uint(limit))
+		}
+		for _, group := range removed {
+			s.limiter.RemoveLimit(group)
+		}
+		s.q.TriggerReadyAddedCallback()
+		return limit, "", nil
+	}
+	return s.limiter.GetLowestLimit([]string{name}), "", nil
+}
+
+// splitSuffixedLimitGroup parses a limit group that might be suffixed with a
+// colon and the limit of that group. Returns the group name, and if the final
+// bool is true, the int will be the desired limit for that group.
+func (s *Server) splitSuffixedLimitGroup(group string) (string, int, bool, error) {
+	parts := strings.Split(group, ":")
+	if len(parts) == 2 {
+		limit, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return "", -1, false, err
+		}
+		return parts[0], limit, true, nil
+	}
+	return group, -1, false, nil
 }
 
 // storeWebSocketConnection stores a connection and returns a unique identifier

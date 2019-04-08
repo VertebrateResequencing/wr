@@ -43,8 +43,8 @@ affected.
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want to now remove. Combining with -z lets you remove jobs in multiple
 report groups, assuming you have arranged that related groups share some
-substring.  Or -y lets you specify -i as the internal job id reported during
-"wr status".
+substring. Alternatively -y lets you specify -i as the internal job id reported
+during "wr status".
 
 The file to provide -f is in the format taken by "wr add".
 
@@ -52,7 +52,17 @@ In -f and -l mode you must provide the cwd the commands were set to run in, if
 CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
 options that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
-same file you gave to "wr add" in -f mode.`,
+same file you gave to "wr add" in -f mode.
+
+Note that you can't remove a job that has other jobs depending upon it, unless
+you also remove those jobs at the same time. If there is a mistake in the
+command line of a job with dependants, you can either:
+1) use the -f option to remove all the incomplete jobs you added, fix the
+   command line of the bad job by editing the -f file, then use "wr add" to add
+   all the jobs back again with the corrected -f file
+-or-
+2) use the "wr mod" command to modify the command line of the bad job while
+   leaving those jobs that are dependant upon it intact.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		set := countGetJobArgs()
 		if set > 1 {
