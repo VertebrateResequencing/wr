@@ -247,9 +247,6 @@ managercertdomain: "localhost"
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).
 #
-# This will also be the umask that your workflow commands will run under, and
-# therefore determine the permissions on all files your workflows create.
-#
 # Here are examples of alternative umasks:
 # 022 = world readable, user read+writeable
 # 002 = world readable, user+group read+writeable
@@ -402,13 +399,14 @@ cloudgateway: "192.168.0.1"
 clouddns: "8.8.4.4,8.8.8.8"
 
 # cloudos: What OS image should be used for spawned servers?
-# This defaults to "Ubuntu Xenial". It is overridden by the --os option to
+# This defaults to "bionic-server". It is overridden by the --os option to
 # `wr cloud deploy` and the --cloud_os option of `wr manager start`.
-# Note, this is the string prefix of an image that is available to you.
+# Note, this is the string prefix name or complete ID of an image that is
+# available to you.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
-cloudos: "Ubuntu Xenial"
+cloudos: "bionic-server"
 
 # containerimage:  What container image should be used for spawned pods? This
 # defaults to "ubuntu:latest". It is overridden by the --container_image option
