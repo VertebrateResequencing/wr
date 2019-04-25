@@ -65,6 +65,7 @@ type Config struct {
 	RunnerExecShell     string `default:"bash"`
 	Deployment          string `default:"production"`
 	CloudFlavor         string `default:""`
+	CloudFlavorManager  string `default:""`
 	CloudFlavorSets     string `default:""`
 	CloudKeepAlive      int    `default:"120"`
 	CloudServers        int    `default:"-1"`
