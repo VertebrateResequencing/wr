@@ -277,6 +277,7 @@ func (p *openstackp) cacheImages() error {
 			if i.Progress == 100 {
 				thisI := i // copy before storing ref
 				p.imap[i.ID] = &thisI
+				p.imap[i.Name] = &thisI
 			}
 		}
 
@@ -310,6 +311,13 @@ func (p *openstackp) getImage(prefix string) (*images.Image, error) {
 func (p *openstackp) getImageFromCache(prefix string) *images.Image {
 	p.imapMutex.RLock()
 	defer p.imapMutex.RUnlock()
+
+	// find an exact match
+	if i, found := p.imap[prefix]; found {
+		return i
+	}
+
+	// failing that, find a random prefix match
 	for _, i := range p.imap {
 		if strings.HasPrefix(i.Name, prefix) || strings.HasPrefix(i.ID, prefix) {
 			return i
