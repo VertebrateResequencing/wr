@@ -956,6 +956,11 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	// which runCmd call is doing what
 	logger := s.Logger.New("call", logext.RandId(8))
 
+	// req cores, ram and disk must not change throughout this method, yet the
+	// caller could change req at any time. So we make our own req that doesn't
+	// change for these 3 properties
+	req = req.Clone()
+
 	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(req)
 	if err != nil {
 		return err

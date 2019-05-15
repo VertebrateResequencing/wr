@@ -116,6 +116,27 @@ func (req *Requirements) Stringify() string {
 	return fmt.Sprintf("%d:%.0f:%s:%d%s", req.RAM, req.Time.Minutes(), strconv.FormatFloat(req.Cores, 'f', -1, 64), req.Disk, other)
 }
 
+// Clone creates a copy of the Requirements.
+func (req *Requirements) Clone() *Requirements {
+	new := &Requirements{
+		RAM:      req.RAM,
+		Time:     req.Time,
+		Cores:    req.Cores,
+		CoresSet: req.CoresSet,
+		Disk:     req.Disk,
+		DiskSet:  req.DiskSet,
+		OtherSet: req.OtherSet,
+	}
+	if req.OtherSet || len(req.Other) > 0 {
+		newOther := make(map[string]string, len(req.Other))
+		for key, val := range req.Other {
+			newOther[key] = val
+		}
+		new.Other = newOther
+	}
+	return new
+}
+
 // CmdStatus lets you describe how many of a given cmd are already in the job
 // scheduler, and gives the details of those jobs.
 type CmdStatus struct {
