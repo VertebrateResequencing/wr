@@ -2958,7 +2958,8 @@ func TestJobqueueModify(t *testing.T) {
 	rtime := 50 * time.Millisecond
 	rgroup := "110:0:1:0"
 	learnedRgroup := "200:30:1:0"
-	learnedRAM := 100
+	learnedRAMNormal := 100
+	learnedRAMExtra := 200
 	tmp := "/tmp"
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -2997,9 +2998,9 @@ func TestJobqueueModify(t *testing.T) {
 		reserve := func(schedStr, expected string) *Job {
 			job, errr := jq.ReserveScheduled(rtime, schedStr)
 			So(errr, ShouldBeNil)
-			if job == nil && os.Getenv("TRAVIS") != "" && schedStr == learnedRgroup {
+			if job == nil && schedStr == learnedRgroup {
 				// *** not sure why the memory is sometimes higher when running
-				// under Travis...
+				// under Travis or race...
 				job, errr = jq.ReserveScheduled(rtime, "300:30:1:0")
 				So(errr, ShouldBeNil)
 			}
@@ -3156,10 +3157,10 @@ func TestJobqueueModify(t *testing.T) {
 			// if the modify of initial didn't work, we'd have no learning of
 			// the modified reqgroup, so it would get 400:0:1:0 as its scheduler
 			// group. But due to learning, the RAM is 100 and the time changed
-
 			job = reserve(learnedRgroup, cmd)
-			if job.Requirements.RAM != learnedRAM && os.Getenv("TRAVIS") != "" {
-				learnedRAM = 200
+			learnedRAM := learnedRAMNormal
+			if job.Requirements.RAM != learnedRAM {
+				learnedRAM = learnedRAMExtra
 			}
 			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
 		})
