@@ -200,6 +200,14 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 	s.recoveredPids = make(map[int]bool)
 	s.stopPidMonitoring = make(chan struct{})
 
+	// processQueue() calls removeKey() which calls stopAutoProcessing() which
+	// can wait to send on stopAuto, but we only read from stopAuto when
+	// startAutoProcessing()'s processQueue() call is not running; solve the
+	// deadlock potential by buffering stopAuto. stopAuto is also created here
+	// and not in startAutoProcessing() to avoid data races with concurrent
+	// stop and start invocations
+	s.stopAuto = make(chan bool, 1000)
+
 	return err
 }
 
@@ -652,11 +660,6 @@ func (s *local) startAutoProcessing() {
 		return
 	}
 
-	// processQueue() calls removeKey() which calls stopAutoProcessing() which
-	// can wait to send on stopAuto, but we only read from stopAuto when our
-	// processQueue() call is not running; solve the deadlock potential by
-	// buffering stopAuto
-	s.stopAuto = make(chan bool, 100)
 	go func() {
 		defer internal.LogPanic(s.Logger, "auto processQueue", false)
 
@@ -671,10 +674,6 @@ func (s *local) startAutoProcessing() {
 				continue
 			case <-s.stopAuto:
 				ticker.Stop()
-				s.mutex.Lock()
-				defer s.mutex.Unlock()
-				close(s.stopAuto)
-				s.stopAuto = nil
 				return
 			}
 		}
