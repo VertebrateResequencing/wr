@@ -758,25 +758,12 @@ func TestOpenstack(t *testing.T) {
 				flavor, err := oss.determineFlavor(r, "t")
 				So(err, ShouldBeNil)
 
-				Convey("Changing requirements mid-run doesn't break server resource release", func() {
-					inititalRAM := flavor.RAM
-					testReq := &Requirements{inititalRAM, 1 * time.Minute, float64(flavor.Cores), true, 0, true, otherReqs, true}
+				existingKeys := make(map[string]bool)
+				for key := range oss.servers {
+					existingKeys[key] = true
+				}
 
-					existingKeys := make(map[string]bool)
-					for key := range oss.servers {
-						existingKeys[key] = true
-					}
-
-					done := make(chan error, 1)
-					go func() {
-						reserved := make(chan bool)
-						go func() {
-							<-reserved
-						}()
-						err := oss.runCmd("sleep 4", testReq, reserved, "random")
-						done <- err
-					}()
-
+				waitForNewServer := func() *cloud.Server {
 					var newServer *cloud.Server
 					i := 0
 					for {
@@ -793,7 +780,6 @@ func TestOpenstack(t *testing.T) {
 						oss.runMutex.Unlock()
 
 						if newServer != nil {
-							testReq.RAM = inititalRAM - 5
 							break
 						}
 
@@ -802,7 +788,144 @@ func TestOpenstack(t *testing.T) {
 						}
 						<-time.After(1 * time.Second)
 					}
-					So(newServer, ShouldNotBeNil)
+					return newServer
+				}
+
+				Convey("Cancelling jobs prior to server boot up still results in correct resource allocation when...", func() {
+					// since these tests run small jobs, we need to force a new
+					// server in a different way: by having a boot script
+					other := make(map[string]string)
+					other["cloud_script"] = "true\n"
+					testReq := &Requirements{5, 1 * time.Minute, float64(0), true, 0, true, other, true}
+					testReq2 := &Requirements{10, 1 * time.Minute, float64(0), true, 0, true, other, true}
+					flavor, err = oss.determineFlavor(oss.reqForSpawn(testReq2), "random")
+					So(err, ShouldBeNil)
+
+					numJobs := 10
+					submitted := make(chan bool, numJobs+1)
+					done := make(chan error, numJobs+1)
+
+					runCmds := func(cmd string, req *Requirements, count int) {
+						for i := 0; i < count; i++ {
+							go func(i int) {
+								reserved := make(chan bool)
+								go func() {
+									<-reserved
+									submitted <- true
+								}()
+								err := oss.runCmd(cmd, req, reserved, "random")
+								done <- err
+							}(i)
+						}
+					}
+
+					waitSubmitted := func(count int) {
+						for i := 0; i < count; i++ {
+							<-submitted
+						}
+					}
+
+					half := int(numJobs / 2)
+					cmd := "sleep 2"
+					cmd2 := "sleep 3"
+					runCmds(cmd, testReq, half)
+					waitSubmitted(half)
+					runCmds(cmd2, testReq2, half)
+					waitSubmitted(half)
+					<-time.After(1 * time.Second)
+
+					destroyedOrComplete := 0
+					notNeeded := 0
+					checkErrors := func() {
+						for i := 0; i < numJobs; i++ {
+							err := <-done
+							if err == nil || strings.Contains(err.Error(), "destruction of server") {
+								destroyedOrComplete++
+							} else if err != nil && strings.Contains(err.Error(), "no longer needed") {
+								notNeeded++
+							} else {
+								log.Println(err.Error())
+							}
+						}
+					}
+
+					Convey("... all commands are cancelled", func() {
+						oss.cancelRun(cmd, 0)
+						oss.cancelRun(cmd2, 0)
+
+						newServer := waitForNewServer()
+						So(newServer == nil, ShouldBeFalse) // avoid race condition read by ShouldNotBeNil
+
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM, 0), ShouldEqual, 1)
+
+						checkErrors()
+						So(destroyedOrComplete, ShouldEqual, 0)
+						So(notNeeded, ShouldEqual, 10)
+					})
+
+					Convey("... all but the first command is cancelled", func() {
+						oss.cancelRun(cmd, 1)
+						oss.cancelRun(cmd2, 0)
+
+						newServer := waitForNewServer()
+						So(newServer == nil, ShouldBeFalse)
+
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM, 0), ShouldEqual, 0)
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM-5, 0), ShouldEqual, 1)
+
+						checkErrors()
+						So(destroyedOrComplete, ShouldEqual, 1)
+						So(notNeeded, ShouldEqual, 9)
+					})
+
+					Convey("... all but the first command of a second group is cancelled", func() {
+						oss.cancelRun(cmd, 0)
+						oss.cancelRun(cmd2, 1)
+
+						newServer := waitForNewServer()
+						So(newServer == nil, ShouldBeFalse)
+
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM-5, 0), ShouldEqual, 0)
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM-10, 0), ShouldEqual, 1)
+
+						checkErrors()
+						So(destroyedOrComplete, ShouldEqual, 1)
+						So(notNeeded, ShouldEqual, 9)
+					})
+
+					Convey("... all but 1 command of each group are cancelled", func() {
+						oss.cancelRun(cmd, 1)
+						oss.cancelRun(cmd2, 1)
+
+						newServer := waitForNewServer()
+						So(newServer == nil, ShouldBeFalse)
+
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM-10, 0), ShouldEqual, 0)
+						So(newServer.HasSpaceFor(float64(0), flavor.RAM-15, 0), ShouldEqual, 1)
+
+						checkErrors()
+						So(destroyedOrComplete, ShouldEqual, 2)
+						So(notNeeded, ShouldEqual, 8)
+					})
+				})
+
+				Convey("Changing requirements mid-run doesn't break server resource release", func() {
+					inititalRAM := flavor.RAM
+					testReq := &Requirements{inititalRAM, 1 * time.Minute, float64(flavor.Cores), true, 0, true, otherReqs, true}
+
+					done := make(chan error, 1)
+					go func() {
+						reserved := make(chan bool)
+						go func() {
+							<-reserved
+						}()
+						err := oss.runCmd("sleep 4", testReq, reserved, "random")
+						done <- err
+					}()
+
+					newServer := waitForNewServer()
+					testReq.RAM = inititalRAM - 5
+					So(newServer == nil, ShouldBeFalse)
 
 					err := <-done
 					So(err, ShouldBeNil)
