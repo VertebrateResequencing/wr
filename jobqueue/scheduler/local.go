@@ -671,6 +671,10 @@ func (s *local) startAutoProcessing() {
 				continue
 			case <-s.stopAuto:
 				ticker.Stop()
+				s.mutex.Lock()
+				defer s.mutex.Unlock()
+				close(s.stopAuto)
+				s.stopAuto = nil
 				return
 			}
 		}
