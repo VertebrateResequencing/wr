@@ -839,12 +839,14 @@ func TestOpenstack(t *testing.T) {
 					checkErrors := func() {
 						for i := 0; i < numJobs; i++ {
 							err := <-done
-							if err == nil || strings.Contains(err.Error(), "destruction of server") {
+							if err == nil {
 								destroyedOrComplete++
-							} else if err != nil && strings.Contains(err.Error(), "no longer needed") {
-								notNeeded++
 							} else {
-								log.Println(err.Error())
+								if strings.Contains(err.Error(), "destruction of server") {
+									destroyedOrComplete++
+								} else if strings.Contains(err.Error(), "no longer needed") {
+									notNeeded++
+								}
 							}
 						}
 					}
