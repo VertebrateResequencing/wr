@@ -476,7 +476,7 @@ func (s *standin) failed(msg string) bool {
 // will then receive the server you supply here. The server is allocated all the
 // resources that were allocated to this standin.
 //
-// If no allocation occured because everything had been cancel()ed, returns
+// If no allocation occurred because everything had been cancel()ed, returns
 // false. Also returns false if the first cmd to be allocated has been fully
 // cancel()ed, meaning the same caller that created this standin and the server
 // and is now calling this method no longer needs to run a command on this
