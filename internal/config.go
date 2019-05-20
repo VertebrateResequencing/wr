@@ -139,13 +139,15 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
 		configFiles = append(configFiles, configFile)
 	}
-	home := os.Getenv("HOME")
-	if home != "" {
-		configFile = filepath.Join(home, configCommonBasename)
-		_, err = os.Stat(configFile)
-		if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
-			configFiles = append(configFiles, configFile)
-		}
+	home, herr := os.UserHomeDir()
+	if herr != nil || home == "" {
+		logger.Error("could not find home dir", "err", herr)
+		os.Exit(1)
+	}
+	configFile = filepath.Join(home, configCommonBasename)
+	_, err = os.Stat(configFile)
+	if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
+		configFiles = append(configFiles, configFile)
 	}
 	if configDir := os.Getenv("WR_CONFIG_DIR"); configDir != "" {
 		configFile = filepath.Join(configDir, configCommonBasename)

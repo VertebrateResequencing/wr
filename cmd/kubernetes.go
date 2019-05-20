@@ -776,7 +776,10 @@ func init() {
 // gets preserved across containers.
 func rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory
-	hDir := os.Getenv("HOME")
+	hDir, herr := os.UserHomeDir()
+	if herr != nil {
+		warn("could not find home dir", "err", herr)
+	}
 
 	filePairs := []client.FilePair{}
 	paths := []string{}
