@@ -509,7 +509,10 @@ func (s *k8s) runCmd(cmd string, req *Requirements, reservedCh chan bool, call s
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory os.user.Current() was failing in a pod.
 	// https://github.com/mitchellh/go-homedir ?
-	hDir := os.Getenv("HOME")
+	hDir, herr := os.UserHomeDir()
+	if herr != nil {
+		s.Warn("could not find home dir", "err", herr)
+	}
 	filePairs := []client.FilePair{}
 	paths := []string{}
 	pairSrc := []string{}
