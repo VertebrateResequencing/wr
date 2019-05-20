@@ -3,7 +3,7 @@
   "editor.formatOnSave": true,
   "go.lintTool": "gometalinter",
   "go.vetOnSave": "workspace",
-  "go.formatTool": "goreturns",
+  "go.formatTool": "goimports",
   "go.lintFlags": [
     "--vendor",
     "--disable-all",
