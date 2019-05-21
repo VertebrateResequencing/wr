@@ -778,7 +778,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory
 	hDir, herr := os.UserHomeDir()
 	if herr != nil {
-		warn("could not find home dir", "err", herr)
+		warn("could not find home dir: %s", herr)
 	}
 
 	filePairs := []client.FilePair{}
