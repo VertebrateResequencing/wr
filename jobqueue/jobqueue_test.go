@@ -1727,7 +1727,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					home, herr := os.UserHomeDir()
 					So(herr, ShouldBeNil)
-					So(stdout, ShouldEqual, tmpDir+"-"+home
+					So(stdout, ShouldEqual, tmpDir+"-"+home)
 					stderr, err := job.StdErr()
 					So(err, ShouldBeNil)
 					So(stderr, ShouldEqual, os.TempDir())
@@ -5792,7 +5792,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 	s3Path := os.Getenv("JOBQUEUE_REMOTES3_PATH")
 	home, herr := os.UserHomeDir()
 	if herr != nil {
-		SkipConvet("home directory not known, so can't run tests")
+		SkipConvey("home directory not known, so can't run tests")
 		return
 	}
 	_, s3cfgErr := os.Stat(filepath.Join(home, ".s3cfg"))
