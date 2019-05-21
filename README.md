@@ -44,15 +44,15 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.11.5 of go is required):
+Alternatively, build it yourself (at least v1.12 of go is required):
 
 1. Install go on your machine according to:
 [golang.org/doc/install](https://golang.org/doc/install)
 An example way of setting up a personal Go installation in your home directory
 would be:
 
-        wget https://dl.google.com/go/go1.11.5.linux-amd64.tar.gz
-        tar -xvzf go1.11.5.linux-amd64.tar.gz && rm go1.11.5.linux-amd64.tar.gz
+        wget https://dl.google.com/go/go1.12.5.linux-amd64.tar.gz
+        tar -xvzf go1.12.5.linux-amd64.tar.gz && rm go1.12.5.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin
 
 2. Download, compile, and install wr (not inside $GOPATH, if you set that):
