@@ -200,13 +200,9 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 	s.recoveredPids = make(map[int]bool)
 	s.stopPidMonitoring = make(chan struct{})
 
-	// processQueue() calls removeKey() which calls stopAutoProcessing() which
-	// can wait to send on stopAuto, but we only read from stopAuto when
-	// startAutoProcessing()'s processQueue() call is not running; solve the
-	// deadlock potential by buffering stopAuto. stopAuto is also created here
-	// and not in startAutoProcessing() to avoid data races with concurrent
-	// stop and start invocations
-	s.stopAuto = make(chan bool, 1000)
+	// stopAuto is created here and not in startAutoProcessing() to avoid data
+	// races with concurrent stop and start invocations
+	s.stopAuto = make(chan bool)
 
 	return err
 }
@@ -667,10 +663,16 @@ func (s *local) startAutoProcessing() {
 		for {
 			select {
 			case <-ticker.C:
-				err := s.processQueue()
-				if err != nil {
-					s.Error("Auomated processQueue call failed", "err", err)
-				}
+				// processQueue can end up calling stopAutoProcessing which
+				// will wait on the read of stopAuto below, but we won't read
+				// it until this case completes, so call processQueue in a go
+				// routine to complete the case ~instantly
+				go func() {
+					err := s.processQueue()
+					if err != nil {
+						s.Error("Automated processQueue call failed", "err", err)
+					}
+				}()
 				continue
 			case <-s.stopAuto:
 				ticker.Stop()
