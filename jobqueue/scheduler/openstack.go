@@ -663,9 +663,11 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 
-	// pass through our shell config and logger to our local embed
+	// pass through our shell config and logger to our local embed, as well as
+	// creating its stopAuto channel
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
 	s.local.Logger = s.Logger
+	s.local.stopAuto = make(chan bool)
 
 	s.standins = make(map[string]*standin)
 	s.cmdToStandins = make(map[string]map[string]bool)
