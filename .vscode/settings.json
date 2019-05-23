@@ -1,13 +1,17 @@
 {
-  "go.lintOnSave": "package",
-  "editor.formatOnSave": true,
-  "go.lintTool": "golangci-lint",
-  "go.vetOnSave": "workspace",
-  "go.formatTool": "goreturns",
-  "go.formatFlags": [
-    "-w",
-  ],
-  "go.lintFlags": [
-    "--fast",
-  ]
+    "[go]": {
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": true
+        },
+    },
+    "go.formatTool": "goimports",
+    "go.formatFlags": [
+        "-w"
+    ],
+    "go.lintOnSave": "package",
+    "go.lintTool": "golangci-lint",
+    "go.lintFlags": [
+        "--fast"
+    ]
 }
