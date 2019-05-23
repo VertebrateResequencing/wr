@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -65,13 +65,14 @@ type Config struct {
 	RunnerExecShell     string `default:"bash"`
 	Deployment          string `default:"production"`
 	CloudFlavor         string `default:""`
+	CloudFlavorManager  string `default:""`
 	CloudFlavorSets     string `default:""`
 	CloudKeepAlive      int    `default:"120"`
 	CloudServers        int    `default:"-1"`
 	CloudCIDR           string `default:"192.168.0.0/18"`
 	CloudGateway        string `default:"192.168.0.1"`
 	CloudDNS            string `default:"8.8.4.4,8.8.8.8"`
-	CloudOS             string `default:"Ubuntu Xenial"`
+	CloudOS             string `default:"bionic-server"`
 	ContainerImage      string `default:"ubuntu:latest"`
 	CloudUser           string `default:"ubuntu"`
 	CloudRAM            int    `default:"2048"`
@@ -138,13 +139,15 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
 		configFiles = append(configFiles, configFile)
 	}
-	home := os.Getenv("HOME")
-	if home != "" {
-		configFile = filepath.Join(home, configCommonBasename)
-		_, err = os.Stat(configFile)
-		if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
-			configFiles = append(configFiles, configFile)
-		}
+	home, herr := os.UserHomeDir()
+	if herr != nil || home == "" {
+		logger.Error("could not find home dir", "err", herr)
+		os.Exit(1)
+	}
+	configFile = filepath.Join(home, configCommonBasename)
+	_, err = os.Stat(configFile)
+	if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
+		configFiles = append(configFiles, configFile)
 	}
 	if configDir := os.Getenv("WR_CONFIG_DIR"); configDir != "" {
 		configFile = filepath.Join(configDir, configCommonBasename)

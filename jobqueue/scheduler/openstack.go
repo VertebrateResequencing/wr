@@ -260,18 +260,22 @@ type standin struct {
 	usedRAM        int
 	usedCores      float64
 	usedDisk       int
+	firstCmd       string
+	cmds           map[string][]*Requirements // cmd to req lookup of allocations
+	cmdNotNeeded   map[string]chan bool
+	cmdsWaiting    map[string]int
 	mutex          sync.RWMutex
 	alreadyFailed  bool
 	failReason     string
 	nowWaiting     int // for waitForServer()
 	endWait        chan *cloud.Server
-	waitingToSpawn bool // for isExtraneous() and opst's runCmd()
+	waitingToSpawn bool // for isExtraneous()
 	readyToSpawn   chan bool
 	noLongerNeeded chan bool
 	log15.Logger
 }
 
-// newStandin returns a new standin server
+// newStandin returns a new standin server.
 func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, script []byte, configFiles string, sharedDisk bool, logger log15.Logger) *standin {
 	availableDisk := flavor.Disk
 	if disk > availableDisk {
@@ -289,26 +293,100 @@ func newStandin(id string, flavor *cloud.Flavor, disk int, osPrefix string, scri
 		endWait:        make(chan *cloud.Server),
 		readyToSpawn:   make(chan bool),
 		noLongerNeeded: make(chan bool),
+		cmds:           make(map[string][]*Requirements),
+		cmdNotNeeded:   make(map[string]chan bool),
+		cmdsWaiting:    make(map[string]int),
 		Logger:         logger.New("standin", id),
 	}
 }
 
-// matches is like cloud.Server.Matches()
+// matches is like cloud.Server.Matches().
 func (s *standin) matches(os string, script []byte, configFiles string, flavor *cloud.Flavor, sharedDisk bool) bool {
 	return s.os == os && bytes.Equal(s.script, script) && s.configFiles == configFiles && (flavor == nil || flavor.ID == s.flavor.ID) && s.sharedDisk == sharedDisk
 }
 
-// allocate is like cloud.Server.Allocate()
-func (s *standin) allocate(req *Requirements) {
+// allocate is like cloud.Server.Allocate() but also records the cmd these reqs
+// were allocated for, for possible cancellation purposes.
+func (s *standin) allocate(cmd string, req *Requirements) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.usedCores = internal.FloatAdd(s.usedCores, req.Cores)
 	s.usedRAM += req.RAM
 	s.usedDisk += req.Disk
 	s.Debug("allocate", "cores", req.Cores, "RAM", req.RAM, "disk", req.Disk, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+
+	if s.firstCmd == "" {
+		s.firstCmd = cmd
+	}
+	if _, exists := s.cmds[cmd]; !exists {
+		s.cmds[cmd] = []*Requirements{}
+	}
+	s.cmds[cmd] = append(s.cmds[cmd], req)
 }
 
-// hasSpaceFor is like cloud.Server.HasSpaceFor()
+// numAllocationsForCmd returns the number of times cmd was sent to allocate()
+// (and not cancel()ed).
+func (s *standin) numAllocationsForCmd(cmd string) int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if reqs, exists := s.cmds[cmd]; exists {
+		return len(reqs)
+	}
+	return 0
+}
+
+// cancel is used to change your mind about prior allocate() calls; it will make
+// it as if count of those calls never happened. Returns the number of prior
+// calls successfully cancelled, and a boolean which if true means this standin
+// is now empty.
+func (s *standin) cancel(cmd string, count int) (int, bool) {
+	if count == 0 {
+		return 0, false
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	notNeededCh := s.cmdNotNeeded[cmd]
+	cancelled := 0
+	if reqs, exists := s.cmds[cmd]; exists {
+		if len(reqs) == 0 {
+			delete(s.cmds, cmd)
+			return 0, len(s.cmds) == 0
+		}
+
+		for {
+			var req *Requirements
+			req, reqs = reqs[len(reqs)-1], reqs[:len(reqs)-1]
+
+			s.usedCores = internal.FloatSubtract(s.usedCores, req.Cores)
+			s.usedRAM -= req.RAM
+			s.usedDisk -= req.Disk
+			s.Debug("cancel", "cores", req.Cores, "RAM", req.RAM, "disk", req.Disk, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+
+			waiting := s.cmdsWaiting[cmd]
+			if waiting > 0 {
+				notNeededCh <- true
+				s.nowWaiting--
+				s.cmdsWaiting[cmd]--
+			}
+
+			cancelled++
+			if cancelled == count {
+				break
+			}
+		}
+
+		if len(reqs) == 0 {
+			delete(s.cmds, cmd)
+		} else if cancelled > 0 {
+			s.cmds[cmd] = reqs
+		}
+	}
+
+	return cancelled, len(s.cmds) == 0
+}
+
+// hasSpaceFor is like cloud.Server.HasSpaceFor().
 func (s *standin) hasSpaceFor(req *Requirements) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -395,51 +473,89 @@ func (s *standin) failed(msg string) bool {
 
 // worked is what you call once the server that this is a standin for has
 // actually started up successfully. Anything that is waiting on waitForServer()
-// will then receive the server you supply here. The server is allocated all
-// the resources that were allocated to this standin.
-func (s *standin) worked(server *cloud.Server) {
+// will then receive the server you supply here. The server is allocated all the
+// resources that were allocated to this standin.
+//
+// If no allocation occurred because everything had been cancel()ed, returns
+// false. Also returns false if the first cmd to be allocated has been fully
+// cancel()ed, meaning the same caller that created this standin and the server
+// and is now calling this method no longer needs to run a command on this
+// server (but other users of this standin do).
+func (s *standin) worked(server *cloud.Server) bool {
 	s.mutex.RLock()
 	server.Allocate(s.usedCores, s.usedRAM, s.usedDisk)
-	s.Debug("standin worked", "server", server.ID, "cores", s.usedCores, "ram", s.usedRAM, "disk", s.usedDisk)
+	msg := "standin worked"
+	r := true
+	if s.usedCores == 0 && s.usedRAM == 0 && s.usedDisk == 0 {
+		msg = "standin's server not needed"
+		server.Release(s.usedCores, s.usedRAM, s.usedDisk)
+		r = false
+	}
+	s.Debug(msg, "server", server.ID, "cores", s.usedCores, "ram", s.usedRAM, "disk", s.usedDisk)
 	if s.nowWaiting > 0 {
 		s.mutex.RUnlock()
 		s.endWait <- server
 	} else {
 		s.mutex.RUnlock()
 	}
+
+	if r {
+		if _, exists := s.cmds[s.firstCmd]; !exists {
+			r = false
+		}
+	}
+
+	return r
 }
 
 // waitForServer waits until another goroutine calls failed() or worked(). You
 // would use this after checking hasSpaceFor() and doing allocate().
-func (s *standin) waitForServer() (*cloud.Server, error) {
-	// *** is this broken if called multiple times?...
+func (s *standin) waitForServer(cmd string) (*cloud.Server, error) {
 	s.mutex.Lock()
 	s.nowWaiting++
-	s.Debug("waitForServer", "waiting", s.nowWaiting)
+	var notNeededCh chan bool
+	var exists bool
+	if notNeededCh, exists = s.cmdNotNeeded[cmd]; !exists {
+		notNeededCh = make(chan bool)
+		s.cmdNotNeeded[cmd] = notNeededCh
+	}
+	s.cmdsWaiting[cmd]++
+	s.Debug("waitForServer", "waiting", s.nowWaiting, "cmd", cmd, "cmdWaiting", s.cmdsWaiting[cmd])
 	s.mutex.Unlock()
 	done := make(chan *cloud.Server)
+	reason := make(chan string)
 	go func() {
 		defer internal.LogPanic(s.Logger, "waitForServer", true)
+		select {
+		case server := <-s.endWait: // sent by failed() or worked()
+			s.mutex.RLock()
+			reasonStr := s.failReason
+			s.mutex.RUnlock()
+			done <- server
+			reason <- reasonStr
+			s.mutex.Lock()
+			s.nowWaiting--
+			s.cmdsWaiting[cmd]--
+			nowWaiting := s.nowWaiting
+			s.mutex.Unlock()
+			s.Debug("waitForServer endWait", "waiting", nowWaiting)
 
-		server := <-s.endWait
-		done <- server
-		s.mutex.Lock()
-		s.nowWaiting--
-		nowWaiting := s.nowWaiting
-		s.mutex.Unlock()
-		s.Debug("waitForServer endWait", "waiting", nowWaiting)
-
-		// multiple goroutines may have called waitForServer(), so we
-		// will repeat for the next one if so
-		if nowWaiting > 0 {
-			s.endWait <- server
+			// multiple goroutines may have called waitForServer(), so we
+			// will repeat for the next one if so
+			if nowWaiting > 0 {
+				s.endWait <- server
+			}
+		case <-notNeededCh: // sent by cancel()
+			done <- nil
+			reason <- standinNotNeeded
+			s.Debug("waitForServer notNeeded")
+			// cancel() will send on the channel as many times as needed
 		}
 	}()
 	server := <-done
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	if s.failReason != "" {
-		return server, fmt.Errorf(s.failReason)
+	reasonStr := <-reason
+	if reasonStr != "" {
+		return server, fmt.Errorf(reasonStr)
 	}
 	return server, nil
 }
@@ -547,9 +663,11 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 
-	// pass through our shell config and logger to our local embed
+	// pass through our shell config and logger to our local embed, as well as
+	// creating its stopAuto channel
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
 	s.local.Logger = s.Logger
+	s.local.stopAuto = make(chan bool)
 
 	s.standins = make(map[string]*standin)
 	s.cmdToStandins = make(map[string]map[string]bool)
@@ -956,6 +1074,12 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	// which runCmd call is doing what
 	logger := s.Logger.New("call", logext.RandId(8))
 
+	// while it doesn't happen in practice with jobqueue.Server, it is
+	// theoretically possible for our caller to change req while we run, but the
+	// req details supplied to our Allocate() and Release() calls must match. So
+	// clone our own req that doesn't change
+	req = req.Clone()
+
 	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(req)
 	if err != nil {
 		return err
@@ -1005,13 +1129,13 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		for _, standinServer := range s.standins {
 			if standinServer.matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && standinServer.hasSpaceFor(req) > 0 {
 				s.recordStandin(standinServer, cmd)
-				standinServer.allocate(req)
+				standinServer.allocate(cmd, req)
 				reservedCh <- true // it doesn't matter if we send true or false or if the follwing waitForServer() call fails
 				s.runMutex.Unlock()
 				logger = logger.New("standin", standinServer.id)
 				logger.Debug("using existing standin")
 				var errw error
-				server, errw = standinServer.waitForServer()
+				server, errw = standinServer.waitForServer(cmd)
 				if errw != nil || server == nil {
 					logger.Debug("giving up on standin", "err", errw)
 					return errw
@@ -1084,7 +1208,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		u, _ := uuid.NewV4()
 		standinID := u.String()
 		standinServer := newStandin(standinID, flavor, req.Disk, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, s.Logger)
-		standinServer.allocate(req)
+		standinServer.allocate(cmd, req)
 		s.recordStandin(standinServer, cmd)
 		logger = logger.New("standin", standinID)
 		logger.Debug("using new standin")
@@ -1119,11 +1243,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			}()
 			err = <-done
 			if err != nil {
-				s.resourceMutex.Lock()
-				s.reservedInstances--
-				s.reservedCores -= flavor.Cores
-				s.reservedRAM -= flavor.RAM
-				s.resourceMutex.Unlock()
+				usingQuotaCB()
 				return err
 			}
 
@@ -1300,7 +1420,18 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		s.serversMutex.Lock()
 		s.servers[server.ID] = server
 		s.serversMutex.Unlock()
-		standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
+		needed := standinServer.worked(server) // calls server.Allocate() for everything allocated to the standin
+
+		if !needed {
+			// the server is up, but our standin is no longer needed and
+			// allocated nothing to the server, so it also called
+			// server.Release(), triggering its scale down. Or just our own cmd
+			// doesn't need to be run anymore, but other commands assigned to
+			// our standin do. In either case, we don't need to run a command
+			// any more
+			s.runMutex.Unlock()
+			return errors.New(standinNotNeeded)
+		}
 	}
 
 	s.runMutex.Unlock()
@@ -1362,32 +1493,34 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	return err
 }
 
-// cancelRun fails standins for the given cmd. Only call when you have the lock!
+// cancelRun fails standins for the given cmd.
 func (s *opst) cancelRun(cmd string, desiredCount int) {
 	s.runMutex.Lock()
 	defer s.runMutex.Unlock()
 
+	currentCount := 0
 	if lookup, existed := s.cmdToStandins[cmd]; existed {
-		numStandins := len(lookup)
-		cancelCount := numStandins - desiredCount
-		if cancelCount > 0 {
-			cancelled := 0
-			for standinID := range lookup {
-				if standinServer, existed := s.standins[standinID]; existed {
-					if standinServer.failed(standinNotNeeded) {
-						cancelled++
+		for standinID := range lookup {
+			if standinServer, existed := s.standins[standinID]; existed {
+				currentCount += standinServer.numAllocationsForCmd(cmd)
+				cancelCount := currentCount - desiredCount
+				if cancelCount > 0 {
+					cancelledForThisServer, empty := standinServer.cancel(cmd, cancelCount)
+
+					if empty && standinServer.failed(standinNotNeeded) {
 						s.waitingToSpawn--
 						s.eraseStandin(standinServer.id)
 						standinServer.noLongerNeeded <- true
-
-						if cancelled >= cancelCount {
-							break
-						}
 					}
-				} else {
-					// (this should be impossible)
-					delete(lookup, standinID)
+
+					currentCount -= cancelledForThisServer
+					if currentCount <= desiredCount {
+						break
+					}
 				}
+			} else {
+				// (this should be impossible)
+				delete(lookup, standinID)
 			}
 		}
 	}

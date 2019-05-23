@@ -61,6 +61,7 @@ var osUsername string
 var osRAM int
 var osDisk int
 var flavorRegex string
+var managerFlavor string
 var flavorSets string
 var postCreationScript string
 var postDeploymentScript string
@@ -342,7 +343,10 @@ within OpenStack.`,
 		}
 		if server == nil {
 			info("please wait while a server is spawned on %s...", providerName)
-			flavor, errf := provider.CheapestServerFlavor(1, osRAM, flavorRegex)
+			if managerFlavor == "" {
+				managerFlavor = flavorRegex
+			}
+			flavor, errf := provider.CheapestServerFlavor(1, osRAM, managerFlavor)
 			if errf != nil {
 				teardown(provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
@@ -717,6 +721,11 @@ func init() {
 	cloudDeployCmd.Flags().IntVarP(&osRAM, "os_ram", "r", defaultConfig.CloudRAM, "ram (MB) needed by the OS image specified by --os")
 	cloudDeployCmd.Flags().IntVarP(&osDisk, "os_disk", "d", defaultConfig.CloudDisk, "minimum disk (GB) for servers")
 	cloudDeployCmd.Flags().StringVarP(&flavorRegex, "flavor", "f", defaultConfig.CloudFlavor, "a regular expression to limit server flavors that can be automatically picked")
+	defaultNote := ""
+	if defaultConfig.CloudFlavorManager == "" {
+		defaultNote = " (defaults to --flavor if blank)"
+	}
+	cloudDeployCmd.Flags().StringVar(&managerFlavor, "manager_flavor", defaultConfig.CloudFlavorManager, "like --flavor, but specific to the first server created to run the manager"+defaultNote)
 	cloudDeployCmd.Flags().StringVar(&flavorSets, "flavor_sets", defaultConfig.CloudFlavorSets, "sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
 	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")

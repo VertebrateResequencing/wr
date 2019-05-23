@@ -247,9 +247,6 @@ managercertdomain: "localhost"
 # This defaults to 007 (user+group read+writable, no access to others).
 # Note, this is a number (no quotes).
 #
-# This will also be the umask that your workflow commands will run under, and
-# therefore determine the permissions on all files your workflows create.
-#
 # Here are examples of alternative umasks:
 # 022 = world readable, user read+writeable
 # 002 = world readable, user+group read+writeable
@@ -298,6 +295,16 @@ runnerexecshell: "bash"
 # available to run a command, that is capable of running the command (according
 # to wr's knowledge of how much RAM and how many cores it needs to run).
 # cloudflavor: ""
+
+# cloudflavormanager: What server flavors can be used for the manager?
+# Without being set, any available flavor can be picked. It is overridden by
+# the --manager_flavor option to `wr cloud deploy`.
+# 
+# This is like cloudflavor, but only applies to the first server created on
+# which `wr manager` is started.
+#
+# If blank, defaults to the value of cloudflavor.
+# cloudflavormanager: ""
 
 # cloudflavorsets: What server flavors are assigned to different hardware?
 # Without being provided, all flavors are assumed to be able to be used on all
@@ -402,13 +409,14 @@ cloudgateway: "192.168.0.1"
 clouddns: "8.8.4.4,8.8.8.8"
 
 # cloudos: What OS image should be used for spawned servers?
-# This defaults to "Ubuntu Xenial". It is overridden by the --os option to
+# This defaults to "bionic-server". It is overridden by the --os option to
 # `wr cloud deploy` and the --cloud_os option of `wr manager start`.
-# Note, this is the string prefix of an image that is available to you.
+# Note, this is the string prefix name or complete ID of an image that is
+# available to you.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
-cloudos: "Ubuntu Xenial"
+cloudos: "bionic-server"
 
 # containerimage:  What container image should be used for spawned pods? This
 # defaults to "ubuntu:latest". It is overridden by the --container_image option

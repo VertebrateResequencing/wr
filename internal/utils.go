@@ -173,10 +173,11 @@ func parseIDCmd(idopts ...string) (string, error) {
 }
 
 // TildaToHome converts a path beginning with ~/ to the absolute path based in
-// the current home directory (according to the environment variable $HOME).
+// the current home directory. If that cannot be determined, path is returned
+// unaltered.
 func TildaToHome(path string) string {
-	home := os.Getenv("HOME")
-	if home != "" && strings.HasPrefix(path, "~/") {
+	home, herr := os.UserHomeDir()
+	if herr == nil && home != "" && strings.HasPrefix(path, "~/") {
 		path = strings.TrimLeft(path, "~/")
 		path = filepath.Join(home, path)
 	}

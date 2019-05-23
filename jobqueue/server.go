@@ -2270,7 +2270,13 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 		close(s.stopSigHandling)
 	}
 
+	var sgroups []string
+	s.sgcmutex.Lock()
 	for group := range s.sgroupcounts {
+		sgroups = append(sgroups, group)
+	}
+	s.sgcmutex.Unlock()
+	for _, group := range sgroups {
 		s.clearSchedulerGroup(group)
 	}
 
