@@ -71,16 +71,16 @@ type Item struct {
 // be released automatically.
 type ItemStats struct {
 	State     ItemState
+	Age       time.Duration
+	Remaining time.Duration
+	Delay     time.Duration
+	TTR       time.Duration
 	Reserves  uint32
 	Timeouts  uint32
 	Releases  uint32
 	Buries    uint32
 	Kicks     uint32
-	Age       time.Duration
-	Remaining time.Duration
 	Priority  uint8
-	Delay     time.Duration
-	TTR       time.Duration
 }
 
 func newItem(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) *Item {

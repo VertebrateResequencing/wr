@@ -31,18 +31,18 @@ import (
 // Protector struct is used to Protect a particular resource by granting tokens
 // tokens when the resource has capacity.
 type Protector struct {
+	pending        []*request
+	lastProcess    time.Time
 	Name           string // Name of the resource being protected.
 	maxTokens      int
 	usedTokens     int
 	delayBetween   time.Duration
 	releaseTimeout time.Duration
 	requests       map[Receipt]*request
-	pending        []*request
-	lastProcess    time.Time
-	reprocessing   bool
 	availabilityCb AvailabilityCallback
-	disabled       bool
 	mu             sync.RWMutex
+	reprocessing   bool
+	disabled       bool
 }
 
 // New creates a new Protector. The name is for your benefit, describing the

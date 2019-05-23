@@ -96,29 +96,29 @@ var (
 // to request it do something. (The properties are only exported so the
 // encoder doesn't ignore them.)
 type clientRequest struct {
-	ClientID                uuid.UUID
 	Env                     []byte // compressed binc encoding of []string
-	FirstReserve            bool
-	GetEnv                  bool
-	GetStd                  bool
-	IgnoreComplete          bool
-	Job                     *Job
-	JobEndState             *JobEndState
 	Jobs                    []*Job
 	Keys                    []string
-	Modifier                *JobModifier
-	Search                  bool
-	Limit                   int
+	File                    []byte // compressed bytes of file content
+	Token                   []byte
 	LimitGroup              string
 	Method                  string
 	SchedulerGroup          string
 	State                   JobState
-	File                    []byte // compressed bytes of file content
 	Path                    string // desired path File should be stored at, can be blank
-	Timeout                 time.Duration
-	Token                   []byte
-	ConfirmDeadCloudServers bool
 	CloudServerID           string
+	Job                     *Job
+	JobEndState             *JobEndState
+	Modifier                *JobModifier
+	Limit                   int
+	Timeout                 time.Duration
+	ClientID                uuid.UUID
+	FirstReserve            bool
+	GetEnv                  bool
+	GetStd                  bool
+	IgnoreComplete          bool
+	Search                  bool
+	ConfirmDeadCloudServers bool
 }
 
 // Client represents the client side of the socket that the jobqueue server is

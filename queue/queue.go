@@ -151,8 +151,9 @@ var defaultTTRCallback = func(data interface{}) SubQueue {
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
 type Queue struct {
+	delayTime              time.Time
+	ttrTime                time.Time
 	Name                   string
-	mutex                  sync.RWMutex
 	items                  map[string]*Item
 	dependants             map[string]map[string]*Item
 	delayQueue             *subQueue
@@ -163,18 +164,17 @@ type Queue struct {
 	delayNotification      chan bool
 	startedDelayProcessing chan bool
 	delayClose             chan bool
-	delayTime              time.Time
 	ttrNotification        chan bool
 	startedTTRProcessing   chan bool
 	ttrClose               chan bool
-	ttrTime                time.Time
-	closed                 bool
 	readyAddedCb           ReadyAddedCallback
-	readyAddedCbRunning    bool
-	readyAddedCbMutex      sync.Mutex
-	readyAddedCbRecall     bool
 	changedCb              ChangedCallback
 	ttrCb                  TTRCallback
+	mutex                  sync.RWMutex
+	readyAddedCbMutex      sync.Mutex
+	closed                 bool
+	readyAddedCbRunning    bool
+	readyAddedCbRecall     bool
 }
 
 // Stats holds information about the Queue's state.

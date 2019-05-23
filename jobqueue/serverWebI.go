@@ -64,45 +64,42 @@ type jstatusReq struct {
 // JStatus is the job info we send to the status webpage (only real difference
 // to Job is that some of the values are converted to easy-to-display forms).
 type JStatus struct {
-	Key           string
-	RepGroup      string
 	LimitGroups   []string
 	DepGroups     []string
 	Dependencies  []string
+	OtherRequests []string
+	Env           []string
+	Key           string
+	RepGroup      string
 	Cmd           string
 	State         JobState
 	Cwd           string
 	CwdBase       string
-	HomeChanged   bool
 	Behaviours    string
 	Mounts        string
 	MonitorDocker string
-	// ExpectedRAM is in Megabytes.
-	ExpectedRAM int
-	// ExpectedTime is in seconds.
-	ExpectedTime float64
-	// RequestedDisk is in Gigabytes.
-	RequestedDisk int
-	OtherRequests []string
-	Cores         float64
-	PeakRAM       int
-	PeakDisk      int64 // MBs
-	Exited        bool
-	Exitcode      int
 	FailReason    string
-	Pid           int
 	Host          string
 	HostID        string
 	HostIP        string
+	StdErr        string
+	StdOut        string
+	ExpectedRAM   int     // ExpectedRAM is in Megabytes.
+	ExpectedTime  float64 // ExpectedTime is in seconds.
+	RequestedDisk int     // RequestedDisk is in Gigabytes.
+	Cores         float64
+	PeakRAM       int
+	PeakDisk      int64 // MBs
+	Exitcode      int
+	Pid           int
 	Walltime      float64
 	CPUtime       float64
 	Started       int64
 	Ended         int64
-	StdErr        string
-	StdOut        string
-	Env           []string
-	Attempts      uint32
 	Similar       int
+	Attempts      uint32
+	HomeChanged   bool
+	Exited        bool
 }
 
 // webInterfaceStatic is a http handler for our static documents in static.go
