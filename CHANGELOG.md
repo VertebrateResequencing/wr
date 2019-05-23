@@ -5,6 +5,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.18.1] - 2019-05-23
+### Added
+- New `--manager_flavor` option to `wr cloud deploy` (defaulting to new
+  cloudflavormanager config option), to be able to set a different flavor for
+  the deployed manager compared to workers created by the manager.
+
+### Changed
+- At least go v1.12 is needed to compile wr.
+- cloudos config option (and --os option to `wr cloud deploy` or --cloud_os
+  option to `wr manager start`) has always picked a random image that had a
+  matching prefix; now an image with an exactly matching name will be picked in
+  preference.
+- Default cloudos changed from "Ubuntu Xenial" to "bionic-server".
+
+### Fixed
+- Fixed a situation where OpenStack servers failed to scale down and became
+  unused when adding lots of quickly completing jobs.
+
+
 ## [0.18.0] - 2019-04-08
 ### Added
 - New limit group property on Jobs, to allow you to limit the number of jobs
