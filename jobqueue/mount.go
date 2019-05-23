@@ -114,10 +114,6 @@ type MountTarget struct {
 	// bucket that holds all the files you wish to access.
 	Path string
 
-	// Cache is a boolean, which if true, turns on data caching of any data
-	// retrieved, or any data you wish to upload.
-	Cache bool `json:",omitempty"`
-
 	// CacheDir is the local directory to store cached data. If this parameter
 	// is supplied, Cache is forced true and so doesn't need to be provided. If
 	// this parameter is not supplied but Cache is true, the directory will be a
@@ -125,6 +121,10 @@ type MountTarget struct {
 	// deleted on unmount. If it's a relative path, it will be relative to the
 	// CacheBase.
 	CacheDir string `json:",omitempty"`
+
+	// Cache is a boolean, which if true, turns on data caching of any data
+	// retrieved, or any data you wish to upload.
+	Cache bool `json:",omitempty"`
 
 	// Write is a boolean, which if true, makes the mount point writeable. If
 	// you don't intend to write to a mount, just leave this parameter out.

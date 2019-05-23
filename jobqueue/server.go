@@ -203,50 +203,50 @@ type schedulerIssue struct {
 
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
+	token     []byte
+	uploadDir string
+	sock      mangos.Socket
+	ch        codec.Handle
+	rc        string // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	log15.Logger
 	ServerInfo         *ServerInfo
 	ServerVersions     *ServerVersions
-	token              []byte
-	uploadDir          string
-	sock               mangos.Socket
-	ch                 codec.Handle
 	db                 *db
 	done               chan error
 	stopSigHandling    chan bool
 	stopClientHandling chan bool
 	wg                 *sync.WaitGroup
-	up                 bool
-	drain              bool
-	blocking           bool
+	q                  *queue.Queue
+	rpl                *rgToKeys
+	limiter            *limiter.Limiter
+	scheduler          *scheduler.Scheduler
+	sgroupcounts       map[string]int
+	sgrouptrigs        map[string]int
+	sgtr               map[string]*scheduler.Requirements
+	httpServer         *http.Server
+	statusCaster       *bcast.Group
+	badServerCaster    *bcast.Group
+	schedCaster        *bcast.Group
+	racCheckTimer      *time.Timer
+	racCheckReady      int
+	wsconns            map[string]*websocket.Conn
+	badServers         map[string]*cloud.Server
+	schedIssues        map[string]*schedulerIssue
+	timings            map[string]*timingAvg
+	racmutex           sync.RWMutex // to protect the readyaddedcallback
+	bsmutex            sync.RWMutex
+	simutex            sync.RWMutex
+	krmutex            sync.RWMutex
+	ssmutex            sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 	sync.Mutex
-	q               *queue.Queue
-	rpl             *rgToKeys
-	limiter         *limiter.Limiter
-	scheduler       *scheduler.Scheduler
-	sgroupcounts    map[string]int
-	sgrouptrigs     map[string]int
-	sgtr            map[string]*scheduler.Requirements
-	sgcmutex        sync.Mutex
-	racmutex        sync.RWMutex // to protect the readyaddedcallback
-	rc              string       // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
-	httpServer      *http.Server
-	statusCaster    *bcast.Group
-	badServerCaster *bcast.Group
-	schedCaster     *bcast.Group
-	racCheckTimer   *time.Timer
-	racChecking     bool
-	racCheckReady   int
-	wsmutex         sync.Mutex
-	wsconns         map[string]*websocket.Conn
-	bsmutex         sync.RWMutex
-	badServers      map[string]*cloud.Server
-	simutex         sync.RWMutex
-	schedIssues     map[string]*schedulerIssue
-	krmutex         sync.RWMutex
-	killRunners     bool
-	timings         map[string]*timingAvg
-	tmutex          sync.Mutex
-	ssmutex         sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
-	log15.Logger
+	sgcmutex    sync.Mutex
+	wsmutex     sync.Mutex
+	tmutex      sync.Mutex
+	up          bool
+	drain       bool
+	blocking    bool
+	racChecking bool
+	killRunners bool
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All

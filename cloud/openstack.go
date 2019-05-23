@@ -83,30 +83,30 @@ var openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAM
 
 // openstackp is our implementer of provideri
 type openstackp struct {
-	computeClient     *gophercloud.ServiceClient
-	errorBackoff      *backoff.Backoff
-	externalNetworkID string
-	fmap              map[string]*Flavor
-	fmapMutex         sync.RWMutex
 	lastFlavorCache   time.Time
-	imap              map[string]*images.Image
-	imapMutex         sync.RWMutex
-	createdKeyPair    bool
-	useConfigDrive    bool
-	hasDefaultGroup   bool
-	ipNet             *net.IPNet
-	networkClient     *gophercloud.ServiceClient
+	externalNetworkID string
 	networkName       string
 	networkUUID       string
 	ownName           string
-	ownServer         *servers.Server
 	poolName          string
 	securityGroup     string
-	spawnFailed       bool
 	spawnTimes        ewma.MovingAverage
 	spawnTimesVolume  ewma.MovingAverage
 	tenantID          string
 	log15.Logger
+	computeClient   *gophercloud.ServiceClient
+	errorBackoff    *backoff.Backoff
+	fmap            map[string]*Flavor
+	imap            map[string]*images.Image
+	ipNet           *net.IPNet
+	networkClient   *gophercloud.ServiceClient
+	ownServer       *servers.Server
+	fmapMutex       sync.RWMutex
+	imapMutex       sync.RWMutex
+	createdKeyPair  bool
+	useConfigDrive  bool
+	hasDefaultGroup bool
+	spawnFailed     bool
 }
 
 // requiredEnv returns envs that are definitely required.

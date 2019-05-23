@@ -84,10 +84,10 @@ type Requirements struct {
 	RAM      int               // the expected peak RAM in MB Cmd will use while running
 	Time     time.Duration     // the expected time Cmd will take to run
 	Cores    float64           // how many processor cores the Cmd will use
-	CoresSet bool              // to distinguish between you specifying 0 Cores and not specifying Cores at all
 	Disk     int               // the required local disk space in GB the Cmd needs to run
-	DiskSet  bool              // to distinguish between you specifying 0 Disk and not specifying Disk at all
 	Other    map[string]string // a map that will be passed through to the job scheduler, defining further arbitrary resource requirements
+	CoresSet bool              // to distinguish between you specifying 0 Cores and not specifying Cores at all
+	DiskSet  bool              // to distinguish between you specifying 0 Disk and not specifying Disk at all
 	OtherSet bool
 }
 

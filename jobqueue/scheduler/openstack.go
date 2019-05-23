@@ -54,9 +54,10 @@ var debugEffect string
 // from the local scheduler.
 type opst struct {
 	local
+	flavorSets [][]string
+	log15.Logger
 	config            *ConfigOpenStack
 	provider          *cloud.Provider
-	flavorSets        [][]string
 	quotaMaxInstances int
 	quotaMaxCores     int
 	quotaMaxRAM       int
@@ -66,26 +67,25 @@ type opst struct {
 	reservedRAM       int
 	reservedVolume    int
 	servers           map[string]*cloud.Server
-	serversMutex      sync.RWMutex
 	standins          map[string]*standin
-	spawningNow       bool
 	waitingToSpawn    int
 	cmdToStandins     map[string]map[string]bool
 	standinToCmd      map[string]map[string]bool
-	updatingState     bool
-	stateMutex        sync.Mutex
-	cbmutex           sync.RWMutex
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
-	runMutex          sync.Mutex
-	stopRunning       bool
 	recoveredServers  map[string]bool
-	rsMutex           sync.Mutex
 	stopRSMonitoring  chan struct{}
 	failedFlavors     map[string]time.Time
-	ffMutex           sync.RWMutex
 	dfCache           *cache.Cache
-	log15.Logger
+	serversMutex      sync.RWMutex
+	cbmutex           sync.RWMutex
+	ffMutex           sync.RWMutex
+	stateMutex        sync.Mutex
+	runMutex          sync.Mutex
+	rsMutex           sync.Mutex
+	spawningNow       bool
+	updatingState     bool
+	stopRunning       bool
 }
 
 // ConfigOpenStack represents the configuration options required by the
@@ -250,29 +250,29 @@ func (c *ConfigOpenStack) GetServerKeepTime() time.Duration {
 // spawn in the future), allowing us to keep track of command->server
 // allocations while they're still being created.
 type standin struct {
-	id             string
+	script      []byte
+	id          string
+	os          string
+	configFiles string // in cloud.Server.CopyOver() format
+	firstCmd    string
+	failReason  string
+	log15.Logger
 	flavor         *cloud.Flavor
 	disk           int
-	os             string
-	script         []byte
-	configFiles    string // in cloud.Server.CopyOver() format
-	sharedDisk     bool
 	usedRAM        int
 	usedCores      float64
 	usedDisk       int
-	firstCmd       string
 	cmds           map[string][]*Requirements // cmd to req lookup of allocations
 	cmdNotNeeded   map[string]chan bool
 	cmdsWaiting    map[string]int
-	mutex          sync.RWMutex
-	alreadyFailed  bool
-	failReason     string
 	nowWaiting     int // for waitForServer()
 	endWait        chan *cloud.Server
-	waitingToSpawn bool // for isExtraneous()
 	readyToSpawn   chan bool
 	noLongerNeeded chan bool
-	log15.Logger
+	mutex          sync.RWMutex
+	sharedDisk     bool
+	alreadyFailed  bool
+	waitingToSpawn bool // for isExtraneous()
 }
 
 // newStandin returns a new standin server.

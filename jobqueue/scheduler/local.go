@@ -94,18 +94,15 @@ type cancelCmdRunner func(cmd string, desiredNumber int)
 
 // local is our implementer of scheduleri.
 type local struct {
+	log15.Logger
 	config            *ConfigLocal
 	maxRAM            int
 	maxCores          int
 	ram               int
 	cores             float64
 	rcount            int
-	mutex             sync.Mutex
-	rcMutex           sync.RWMutex
-	resourceMutex     sync.RWMutex
 	queue             *queue.Queue
 	running           map[string]int
-	cleaned           bool
 	reqCheckFunc      reqChecker
 	maxMemFunc        maxResourceGetter
 	maxCPUFunc        maxResourceGetter
@@ -114,14 +111,17 @@ type local struct {
 	stateUpdateFreq   time.Duration
 	runCmdFunc        cmdRunner
 	cancelRunCmdFunc  cancelCmdRunner
-	autoProcessing    bool
 	stopAuto          chan bool
+	recoveredPids     map[int]bool
+	stopPidMonitoring chan struct{}
+	rcMutex           sync.RWMutex
+	resourceMutex     sync.RWMutex
+	mutex             sync.Mutex
+	rpMutex           sync.Mutex
+	cleaned           bool
+	autoProcessing    bool
 	processing        bool
 	recall            bool
-	recoveredPids     map[int]bool
-	rpMutex           sync.Mutex
-	stopPidMonitoring chan struct{}
-	log15.Logger
 }
 
 // ConfigLocal represents the configuration options required by the local

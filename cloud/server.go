@@ -70,43 +70,43 @@ type Flavor struct {
 // Server provides details of the server that Spawn() created for you, and some
 // methods that let you keep track of how you use that server.
 type Server struct {
+	Script            []byte // the content of a start-up script run on the server
+	sshClients        []*ssh.Client
+	sshClientSessions []int
 	AdminPass         string
-	Disk              int // GB of available disk space
-	Flavor            *Flavor
 	ID                string
 	IP                string // ip address that you could SSH to
-	IsHeadNode        bool
-	Name              string        // ought to correspond to the hostname
-	OS                string        // the name of the Operating System image
-	Script            []byte        // the content of a start-up script run on the server
-	ConfigFiles       string        // files that you will CopyOver() and require to be on this Server, in CopyOver() format
-	SharedDisk        bool          // the server will mount /shared
+	Name              string // ought to correspond to the hostname
+	OS                string // the name of the Operating System image
+	ConfigFiles       string // files that you will CopyOver() and require to be on this Server, in CopyOver() format
+	UserName          string // the username needed to log in to the server
+	permanentProblem  string
+	homeDir           string
+	logger            log15.Logger
+	Flavor            *Flavor
+	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
-	UserName          string        // the username needed to log in to the server
 	cancelDestruction chan bool
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
+	location          *time.Location
+	provider          *Provider
+	sshClientConfig   *ssh.ClientConfig
+	usedCores         float64
+	usedDisk          int
+	usedRAM           int
+	mutex             sync.RWMutex
+	hmutex            sync.Mutex
+	csmutex           sync.Mutex
+	IsHeadNode        bool
+	SharedDisk        bool // the server will mount /shared
 	created           bool // to distinguish instances we discovered or spawned
 	toBeDestroyed     bool
 	destroyed         bool
 	goneBad           bool
-	location          *time.Location
-	mutex             sync.RWMutex
 	onDeathrow        bool
-	permanentProblem  string
-	provider          *Provider
-	sshClientConfig   *ssh.ClientConfig
-	sshClients        []*ssh.Client
-	sshClientSessions []int
 	sshStarted        bool
-	usedCores         float64
-	usedDisk          int
-	usedRAM           int
-	homeDir           string
-	hmutex            sync.Mutex
 	createdShare      bool
-	csmutex           sync.Mutex
-	logger            log15.Logger // (not embedded to make gob happy)
 }
 
 // Matches tells you if in principle a Server has the given os, script, config

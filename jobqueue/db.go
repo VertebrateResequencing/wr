@@ -98,25 +98,25 @@ func (s sobsd) Less(i, j int) bool {
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
-	backingUp          bool
-	backupFinal        bool
-	backupStopWait     chan bool
-	backupLast         time.Time
-	backupMount        *muxfys.MuxFys
-	backupNotification chan bool
-	backupPath         string
-	backupQueued       bool
-	backupWait         time.Duration
-	backupsEnabled     bool
-	bolt               *bolt.DB
-	ch                 codec.Handle
-	closed             bool
-	envcache           *lru.ARCCache
-	slowBackups        bool // just for testing purposes
-	sync.RWMutex
+	backupLast time.Time
+	backupPath string
+	ch         codec.Handle
+	log15.Logger
+	backupStopWait       chan bool
+	backupMount          *muxfys.MuxFys
+	backupNotification   chan bool
+	backupWait           time.Duration
+	bolt                 *bolt.DB
+	envcache             *lru.ARCCache
 	updatingAfterJobExit int
 	wg                   *sync.WaitGroup
-	log15.Logger
+	sync.RWMutex
+	backingUp      bool
+	backupFinal    bool
+	backupQueued   bool
+	backupsEnabled bool
+	closed         bool
+	slowBackups    bool // just for testing purposes
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile

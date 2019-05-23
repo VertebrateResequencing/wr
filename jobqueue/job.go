@@ -873,36 +873,36 @@ func (j *JobEssence) Stringify() string {
 // alone. The only thing you can't set is RepGroup. The methods on this struct
 // are not thread safe. Do not set any of the properties directly yourself.
 type JobModifier struct {
+	EnvOverride      []byte
+	LimitGroups      []string
+	DepGroups        []string
+	Dependencies     Dependencies
+	Behaviours       Behaviours
+	MountConfigs     MountConfigs
 	Cmd              string
 	Cwd              string
+	ReqGroup         string
+	BsubMode         string
+	MonitorDocker    string
+	Requirements     *scheduler.Requirements
 	CwdMatters       bool
 	CwdMattersSet    bool
 	ChangeHome       bool
 	ChangeHomeSet    bool
-	ReqGroup         string
 	ReqGroupSet      bool
-	Requirements     *scheduler.Requirements
 	Override         uint8
 	OverrideSet      bool
 	Priority         uint8
 	PrioritySet      bool
 	Retries          uint8
 	RetriesSet       bool
-	EnvOverride      []byte
 	EnvOverrideSet   bool
-	LimitGroups      []string
 	LimitGroupsSet   bool
-	DepGroups        []string
 	DepGroupsSet     bool
-	Dependencies     Dependencies
 	DependenciesSet  bool
-	Behaviours       Behaviours
 	BehavioursSet    bool
-	MountConfigs     MountConfigs
 	MountConfigsSet  bool
-	BsubMode         string
 	BsubModeSet      bool
-	MonitorDocker    string
 	MonitorDockerSet bool
 }
 
