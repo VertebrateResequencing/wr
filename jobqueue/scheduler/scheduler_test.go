@@ -369,7 +369,10 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
-	host, _ := os.Hostname()
+	host, err := os.Hostname()
+	if err != nil {
+		log.Fatal(err)
+	}
 	Convey("You can get a new lsf scheduler", t, func() {
 		s, err := New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
 		So(err, ShouldBeNil)
@@ -557,7 +560,10 @@ func TestOpenstack(t *testing.T) {
 		SkipConvey("OpenStack scheduler tests are skipped without special OS_FLAVOR_REGEX environment variable being set", t, func() {})
 		return
 	}
-	host, _ := os.Hostname()
+	host, err := os.Hostname()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	Convey("You can get a new openstack scheduler", t, func() {
 		tmpdir, errt := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
@@ -727,7 +733,7 @@ func TestOpenstack(t *testing.T) {
 				So(err, ShouldBeNil)
 				other := make(map[string]string)
 				other["cloud_flavor"] = flavor.Name
-				brokenReq := &Requirements{flavor.RAM + 1, 1 * time.Minute, 1, 1, otherReqs, true, true, true}
+				brokenReq := &Requirements{flavor.RAM + 1, 1 * time.Minute, 1, 1, other, true, true, true}
 				err = s.Schedule("foo", brokenReq, 1)
 				So(err, ShouldNotBeNil)
 				serr, ok := err.(Error)
@@ -1294,7 +1300,10 @@ func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {
 	if len(files) < expected {
 		// wait a little longer for things to sync up, by running ls
 		cmd := exec.Command("ls", tmpdir)
-		cmd.Run()
+		err = cmd.Run()
+		if err != nil {
+			log.Fatal(err)
+		}
 		files, err = ioutil.ReadDir(tmpdir)
 		if err != nil {
 			log.Fatal(err)

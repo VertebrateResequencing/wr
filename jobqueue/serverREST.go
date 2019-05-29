@@ -25,6 +25,7 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -529,7 +530,11 @@ func restJobs(s *Server) http.HandlerFunc {
 		// convert jobs to jstatus
 		jstati := make([]JStatus, len(jobs))
 		for i, job := range jobs {
-			jstati[i] = job.ToStatus()
+			jstati[i], err = job.ToStatus()
+			if err != nil && err != io.ErrUnexpectedEOF {
+				http.Error(w, err.Error(), status)
+				return
+			}
 		}
 
 		// return job details as JSON

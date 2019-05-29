@@ -36,7 +36,7 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid"
-	"github.com/hashicorp/go-multierror"
+	multierror "github.com/hashicorp/go-multierror"
 	"github.com/ugorji/go/codec"
 )
 
@@ -332,12 +332,15 @@ func (j *Job) Env() ([]string, error) {
 		return nil, err
 	}
 
-	if j.EnvCRetrieved && len(j.EnvC) == 0 {
-		env := os.Environ()
-		if len(overrideEs) > 0 {
-			env = envOverride(env, overrideEs)
+	if len(j.EnvC) == 0 {
+		if j.EnvCRetrieved {
+			env := os.Environ()
+			if len(overrideEs) > 0 {
+				env = envOverride(env, overrideEs)
+			}
+			return env, err
 		}
-		return env, err
+		return nil, nil
 	}
 
 	decompressed, err := decompress(j.EnvC)
@@ -764,15 +767,27 @@ func (j *Job) setSchedulerGroup(newval string) {
 }
 
 // ToStatus converts a job to a simplified JStatus, useful for output as JSON.
-func (j *Job) ToStatus() JStatus {
-	stderr, _ := j.StdErr()
-	stdout, _ := j.StdOut()
-	env, _ := j.Env()
+func (j *Job) ToStatus() (JStatus, error) {
+	stderr, err := j.StdErr()
+	if err != nil {
+		return JStatus{}, err
+	}
+	stdout, err := j.StdOut()
+	if err != nil {
+		return JStatus{}, err
+	}
+	env, err := j.Env()
+	if err != nil {
+		return JStatus{}, err
+	}
 	var cwdLeaf string
 	j.RLock()
 	defer j.RUnlock()
 	if j.ActualCwd != "" {
-		cwdLeaf, _ = filepath.Rel(j.Cwd, j.ActualCwd)
+		cwdLeaf, err = filepath.Rel(j.Cwd, j.ActualCwd)
+		if err != nil {
+			return JStatus{}, err
+		}
 		cwdLeaf = "/" + cwdLeaf
 	}
 	state := j.State
@@ -820,7 +835,7 @@ func (j *Job) ToStatus() JStatus {
 		StdErr:        stderr,
 		StdOut:        stdout,
 		Env:           env,
-	}
+	}, nil
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it

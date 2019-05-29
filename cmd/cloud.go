@@ -868,7 +868,10 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	if !alreadyStarted {
 		// create a file containing all the env vars for this provider, so that
 		// we can source it later
-		envvars, _ := cloud.AllEnv(providerName)
+		envvars, erra := cloud.AllEnv(providerName)
+		if erra != nil {
+			die("failed to get needed environment variables: %s", erra)
+		}
 		envvarExports := ""
 		for _, env := range envvars {
 			val := os.Getenv(env)

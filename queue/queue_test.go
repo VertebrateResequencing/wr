@@ -55,7 +55,7 @@ func TestQueue(t *testing.T) {
 						done <- false
 					}
 				}
-				queue.Destroy()
+				qdestroy(queue)
 			}
 			done <- true
 		}()
@@ -80,9 +80,12 @@ func TestQueue(t *testing.T) {
 					}
 				}
 				for i := 0; i < 10; i++ {
-					queue.Reserve()
+					_, errr := queue.Reserve()
+					if errr != nil {
+						fmt.Printf("queue.Reserve() failed: %s\n", errr)
+					}
 				}
-				queue.Destroy()
+				qdestroy(queue)
 			}
 			done <- true
 		}()
@@ -91,7 +94,7 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once 10 items of differing delay and ttr have been added to the queue", t, func() {
 		queue := New("myqueue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 
 		var callBackLock sync.Mutex
 		var numReadyAdded int
@@ -587,23 +590,26 @@ func TestQueue(t *testing.T) {
 
 				Convey("Touching doesn't mess with the correct queue order", func() {
 					queue = New("new queue")
-					defer queue.Destroy()
+					defer qdestroy(queue)
 					_, erra := queue.Add("item1", "", "data", 0, 0*time.Millisecond, 50*time.Millisecond, "")
 					So(erra, ShouldBeNil)
 					_, erra = queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond, "")
 					So(erra, ShouldBeNil)
 					<-time.After(1 * time.Millisecond)
-					item1, _ := queue.Reserve()
+					item1, erra := queue.Reserve()
+					So(erra, ShouldBeNil)
 					So(item1.Key, ShouldEqual, "item1")
 					So(item1.State(), ShouldEqual, ItemStateRun)
-					item2, _ := queue.Reserve()
+					item2, erra := queue.Reserve()
+					So(erra, ShouldBeNil)
 					So(item2.Key, ShouldEqual, "item2")
 					So(item2.State(), ShouldEqual, ItemStateRun)
 
 					<-time.After(25 * time.Millisecond)
 
 					So(queue.runQueue.firstItem().Key, ShouldEqual, "item1")
-					queue.Touch(item1.Key)
+					erra = queue.Touch(item1.Key)
+					So(erra, ShouldBeNil)
 					So(queue.runQueue.firstItem().Key, ShouldEqual, "item2")
 
 					<-time.After(30 * time.Millisecond)
@@ -761,12 +767,14 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once an item been added to the queue", t, func() {
 		queue := New("myqueue")
-		defer queue.Destroy()
-		item, _ := queue.Add("item1", "", "data", 0, 50*time.Millisecond, 50*time.Millisecond, "")
+		defer qdestroy(queue)
+		item, err := queue.Add("item1", "", "data", 0, 50*time.Millisecond, 50*time.Millisecond, "")
+		So(err, ShouldBeNil)
 
 		Convey("It can be removed from the queue immediately prior to it getting switched to the ready queue", func() {
 			<-time.After(49 * time.Millisecond)
-			queue.Remove("item1")
+			err = queue.Remove("item1")
+			So(err, ShouldBeNil)
 			<-time.After(6 * time.Millisecond)
 			So(item.State(), ShouldEqual, ItemStateRemoved)
 
@@ -842,11 +850,13 @@ func TestQueue(t *testing.T) {
 
 		Convey("Once reserved", func() {
 			<-time.After(55 * time.Millisecond)
-			queue.Reserve()
+			_, err = queue.Reserve()
+			So(err, ShouldBeNil)
 
 			Convey("It can be removed from the queue immediately prior to it getting switched to the ready queue", func() {
 				<-time.After(49 * time.Millisecond)
-				queue.Remove("item1")
+				err = queue.Remove("item1")
+				So(err, ShouldBeNil)
 				<-time.After(6 * time.Millisecond)
 				So(item.State(), ShouldEqual, ItemStateRemoved)
 
@@ -921,7 +931,7 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
 		queue := New("1000 queue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 		type testdata struct {
 			ID int
 		}
@@ -996,7 +1006,7 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once a thousand items with no delay and differing ReserveGroups have been added to the queue", t, func() {
 		queue := New("1000 queue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 		type testdata struct {
 			ID int
 		}
@@ -1053,7 +1063,7 @@ func TestQueue(t *testing.T) {
 
 	Convey("Once a thousand items with a small delay have been added to the queue", t, func() {
 		queue := New("1000 queue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 		t := time.Now()
 		for i := 0; i < 1000; i++ {
 			key := fmt.Sprintf("key_%d", i)
@@ -1094,7 +1104,7 @@ func TestQueue(t *testing.T) {
 
 	Convey("You can add many items to the queue in one go", t, func() {
 		q := New("myqueue")
-		defer q.Destroy()
+		defer qdestroy(q)
 
 		item, err := q.Reserve("")
 		So(err, ShouldNotBeNil)
@@ -1152,7 +1162,8 @@ func TestQueue(t *testing.T) {
 		So(dups, ShouldEqual, 20)
 
 		Convey("It doesn't work if the queue is closed", func() {
-			q.Destroy()
+			err = q.Destroy()
+			So(err, ShouldBeNil)
 			_, _, err = q.AddMany(itemdefs)
 			So(err, ShouldNotBeNil)
 			qerr, ok := err.(Error)
@@ -1213,7 +1224,7 @@ func TestQueue(t *testing.T) {
 	Convey("Once some items with dependencies have been added to the queue", t, func() {
 		// https://i-msdn.sec.s-msft.com/dynimg/IC332764.gif
 		queue := New("dep queue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 		_, err := queue.Add("key_1", "", "1", 0, 0*time.Second, 30*time.Second, "")
 		So(err, ShouldBeNil)
 		_, err = queue.Add("key_2", "", "2", 0, 0*time.Second, 30*time.Second, "")
@@ -1344,7 +1355,8 @@ func TestQueue(t *testing.T) {
 			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, 1*time.Second, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
-			queue.Release(five.Key)
+			err = queue.Release(five.Key)
+			So(err, ShouldBeNil)
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDelay)
 
@@ -1364,7 +1376,8 @@ func TestQueue(t *testing.T) {
 			So(five, ShouldNotBeNil)
 			So(five.Stats().State, ShouldEqual, ItemStateRun)
 
-			queue.Bury(five.Key)
+			err = queue.Bury(five.Key)
+			So(err, ShouldBeNil)
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateBury)
 
@@ -1373,7 +1386,8 @@ func TestQueue(t *testing.T) {
 
 			So(five.Stats().State, ShouldEqual, ItemStateBury)
 
-			queue.Kick(five.Key)
+			err = queue.Kick(five.Key)
+			So(err, ShouldBeNil)
 			So(five.Stats().State, ShouldEqual, ItemStateDependent)
 
 			err = queue.Remove("key_1")
@@ -1436,7 +1450,7 @@ func TestQueue(t *testing.T) {
 	Convey("Once some items with dependencies have been added to the queue en-masse", t, func() {
 		// same setup as in previous test
 		queue := New("dep many queue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 
 		var itemdefs []*ItemDef
 		itemdefs = append(itemdefs, &ItemDef{
@@ -1472,7 +1486,7 @@ func TestQueue(t *testing.T) {
 
 	Convey("When you add items to the queue over time, slow readyAddedCallbacks only get called once at a time", t, func() {
 		queue := New("myqueue")
-		defer queue.Destroy()
+		defer qdestroy(queue)
 
 		var callBackLock sync.RWMutex
 		var added []int
@@ -1615,4 +1629,11 @@ func depTestFunc(queue *Queue, changed bool) {
 		So(item8.Stats().State, ShouldEqual, ItemStateReady)
 		So(item7.Dependencies(), ShouldResemble, []string{"key_5", key6})
 	})
+}
+
+func qdestroy(q *Queue) {
+	err := q.Destroy()
+	if err != nil {
+		fmt.Printf("queue.Destroy failed: %s\n", err)
+	}
 }

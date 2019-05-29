@@ -1205,7 +1205,12 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			s.resourceMutex.Unlock()
 		}
 
-		u, _ := uuid.NewV4()
+		u, err := uuid.NewV4()
+		if err != nil {
+			s.runMutex.Unlock()
+			usingQuotaCB()
+			return err
+		}
 		standinID := u.String()
 		standinServer := newStandin(standinID, flavor, req.Disk, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, s.Logger)
 		standinServer.allocate(cmd, req)

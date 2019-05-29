@@ -19,6 +19,7 @@
 package rp
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,19 +35,19 @@ func BenchmarkRP(b *testing.B) {
 		rp1 := New("l1", delayBetween, 5, releaseTimeout)
 		rp2 := New("l2", delayBetween, 6, releaseTimeout)
 
-		r11, _ := rp1.Request(1)
-		r12, _ := rp1.Request(1)
-		r13, _ := rp1.Request(1)
-		r14, _ := rp1.Request(1)
-		r15, _ := rp1.Request(1)
-		r16, _ := rp1.Request(1)
-		r21, _ := rp2.Request(1)
-		r22, _ := rp2.Request(1)
-		r23, _ := rp2.Request(1)
-		r24, _ := rp2.Request(1)
-		r25, _ := rp2.Request(1)
-		r26, _ := rp2.Request(1)
-		r27, _ := rp2.Request(1)
+		r11 := getRequest(rp1, 1)
+		r12 := getRequest(rp1, 1)
+		r13 := getRequest(rp1, 1)
+		r14 := getRequest(rp1, 1)
+		r15 := getRequest(rp1, 1)
+		r16 := getRequest(rp1, 1)
+		r21 := getRequest(rp2, 1)
+		r22 := getRequest(rp2, 1)
+		r23 := getRequest(rp2, 1)
+		r24 := getRequest(rp2, 1)
+		r25 := getRequest(rp2, 1)
+		r26 := getRequest(rp2, 1)
+		r27 := getRequest(rp2, 1)
 
 		rp1.WaitUntilGranted(r11)
 		rp1.WaitUntilGranted(r12)
@@ -74,16 +75,16 @@ func BenchmarkRP(b *testing.B) {
 		rp2.Release(r25)
 		rp2.Release(r26)
 
-		r11, _ = rp1.Request(1)
-		r12, _ = rp1.Request(1)
-		r13, _ = rp1.Request(1)
-		r14, _ = rp1.Request(1)
-		r15, _ = rp1.Request(1)
-		r16, _ = rp1.Request(1)
-		r17, _ := rp1.Request(1)
-		r18, _ := rp1.Request(1)
-		r19, _ := rp1.Request(1)
-		r110, _ := rp1.Request(1)
+		r11 = getRequest(rp1, 1)
+		r12 = getRequest(rp1, 1)
+		r13 = getRequest(rp1, 1)
+		r14 = getRequest(rp1, 1)
+		r15 = getRequest(rp1, 1)
+		r16 = getRequest(rp1, 1)
+		r17 := getRequest(rp1, 1)
+		r18 := getRequest(rp1, 1)
+		r19 := getRequest(rp1, 1)
+		r110 := getRequest(rp1, 1)
 
 		rp1.Granted(r11)
 		rp1.Granted(r12)
@@ -106,6 +107,14 @@ func BenchmarkRP(b *testing.B) {
 		rp1.Release(r19)
 		rp1.Release(r110)
 	}
+}
+
+func getRequest(rp *Protector, numTokens int) Receipt {
+	r, err := rp.Request(numTokens)
+	if err != nil {
+		fmt.Printf("Request had an error: %s\n", err)
+	}
+	return r
 }
 
 func TestRP(t *testing.T) {

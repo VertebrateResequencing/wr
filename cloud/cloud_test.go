@@ -224,7 +224,12 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					defer server.Destroy()
+					defer func() {
+						errd := server.Destroy()
+						if errd != nil {
+							fmt.Printf("deferred server.Destroy failed: %s", errd)
+						}
+					}()
 					err = server.WaitUntilReady("", []byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
@@ -304,7 +309,10 @@ func TestOpenStack(t *testing.T) {
 											<-time.After(2 * time.Second)
 											alive := server.Alive(true)
 											if !alive {
-												server.Destroy()
+												errd := server.Destroy()
+												if errd != nil {
+													fmt.Printf("deferred server.Destroy failed: %s", errd)
+												}
 											}
 										}()
 									}
@@ -351,7 +359,8 @@ func TestOpenStack(t *testing.T) {
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
-					server.Destroy()
+					err = server.Destroy()
+					So(err, ShouldBeNil)
 				})
 
 				Convey("Spawning with a start up script that relies on an unsupplied file returns an error", func() {
@@ -362,7 +371,8 @@ func TestOpenStack(t *testing.T) {
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
-					server.Destroy()
+					err = server.Destroy()
+					So(err, ShouldBeNil)
 
 					Convey("But supplying the file makes it work", func() {
 						server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
@@ -372,7 +382,8 @@ func TestOpenStack(t *testing.T) {
 						So(err, ShouldBeNil)
 						ok := server.Alive(true)
 						So(ok, ShouldBeTrue)
-						server.Destroy()
+						err = server.Destroy()
+						So(err, ShouldBeNil)
 					})
 				})
 
@@ -471,13 +482,19 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Reset(func() {
-					p.TearDown()
+					errd := p.TearDown()
+					if errd != nil {
+						fmt.Printf("reset p.Teardown failed: %s", errd)
+					}
 				})
 			})
 
 			// *** we need all the tests for negative and failure cases
 
-			p.TearDown()
+			errd := p.TearDown()
+			if errd != nil {
+				fmt.Printf("ending p.Teardown failed: %s", errd)
+			}
 		})
 	}
 }

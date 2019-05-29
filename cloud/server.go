@@ -941,8 +941,8 @@ func (s *Server) Destroy() error {
 	s.logger.Debug("server destroyed", "err", err)
 	if err != nil {
 		// check if the server exists
-		ok, _ := s.provider.CheckServer(s.ID)
-		if ok {
+		ok, errc := s.provider.CheckServer(s.ID)
+		if ok && errc == nil {
 			return err
 		}
 		// if not, assume there's no Server and ignore this error (which may
@@ -971,8 +971,8 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 		s.mutex.Unlock()
 		return false
 	}
-	ok, _ := s.provider.CheckServer(s.ID)
-	if !ok {
+	ok, errc := s.provider.CheckServer(s.ID)
+	if !ok || errc != nil {
 		s.mutex.Unlock()
 		return false
 	}

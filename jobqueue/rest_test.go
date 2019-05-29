@@ -168,7 +168,7 @@ func TestREST(t *testing.T) {
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 3)
-
+			
 			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
 			So(jstati[0].State, ShouldEqual, "ready")
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
@@ -304,7 +304,12 @@ func TestREST(t *testing.T) {
 			Convey("Once one of the jobs has changed state", func() {
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
-				defer jq.Disconnect()
+				defer func() {
+					err = jq.Disconnect()
+					if err != nil {
+						fmt.Printf("jq.Disconnect failed: %s\n", err)
+					}
+				}()
 
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
