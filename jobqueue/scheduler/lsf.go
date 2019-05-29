@@ -375,7 +375,7 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	for key := range s.sortedqs {
 		s.sortedqKeys = append(s.sortedqKeys, key)
 	}
-	sort.Sort(sort.IntSlice(s.sortedqKeys))
+	sort.Ints(s.sortedqKeys)
 
 	// now s.sortedqs has [0] containing our default preferred order or queues,
 	// and other numbers which can be tested against any global maximum number
