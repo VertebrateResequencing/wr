@@ -302,7 +302,7 @@ func (c *Client) ResumeServer() error {
 // we indirectly report if the server was shut down successfully.
 func (c *Client) ShutdownServer() bool {
 	_, err := c.request(&clientRequest{Method: "shutdown"})
-	if err == nil || (err != nil && err.Error() == "receive time out") {
+	if err == nil || err.Error() == "receive time out" {
 		return true
 	}
 	return false

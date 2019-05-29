@@ -363,7 +363,7 @@ func TestLSF(t *testing.T) {
 	}
 	if err != nil {
 		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err := New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
+			_, err = New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
 			So(err, ShouldNotBeNil)
 		})
 		return

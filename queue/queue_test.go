@@ -784,7 +784,7 @@ func TestQueue(t *testing.T) {
 			So(stats.Ready, ShouldEqual, 0)
 
 			Convey("Once removed it can't be updated", func() {
-				err := queue.Update("item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+				err = queue.Update("item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
 				So(err, ShouldNotBeNil)
 				qerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
@@ -809,7 +809,7 @@ func TestQueue(t *testing.T) {
 			So(item.State(), ShouldEqual, ItemStateDelay)
 			<-time.After(25 * time.Millisecond)
 			So(item.State(), ShouldEqual, ItemStateDelay)
-			err := queue.Update("item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+			err = queue.Update("item1", "", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
 			So(err, ShouldBeNil)
 			<-time.After(30 * time.Millisecond)
 			So(item.State(), ShouldEqual, ItemStateDelay)
@@ -817,20 +817,20 @@ func TestQueue(t *testing.T) {
 			So(item.State(), ShouldEqual, ItemStateReady)
 
 			Convey("When ready the priority can be updated", func() {
-				err := queue.Update("item1", "", "data", 1, 75*time.Millisecond, 50*time.Millisecond)
+				err = queue.Update("item1", "", "data", 1, 75*time.Millisecond, 50*time.Millisecond)
 				So(err, ShouldBeNil)
 				So(item.priority, ShouldEqual, 1)
 			})
 
 			Convey("When ready the ReserveGroup can be changed with Update()", func() {
-				err := queue.Update("item1", "newGroup", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
+				err = queue.Update("item1", "newGroup", "data", 0, 75*time.Millisecond, 50*time.Millisecond)
 				So(err, ShouldBeNil)
 				So(item.ReserveGroup, ShouldEqual, "newGroup")
 			})
 
 			Convey("When ready the ReserveGroup can be changed with SetReserveGroup()", func() {
-				gotItem, err := queue.Reserve("newGroup")
-				So(err, ShouldNotBeNil)
+				gotItem, errr := queue.Reserve("newGroup")
+				So(errr, ShouldNotBeNil)
 				So(gotItem, ShouldBeNil)
 
 				err = queue.SetReserveGroup("item1", "newGroup")
