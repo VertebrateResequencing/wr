@@ -274,9 +274,13 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							writeMutex.Lock()
 							failed := false
 							for _, job := range jobs {
-								status := job.ToStatus()
+								status, err := job.ToStatus()
+								if err != nil {
+									failed = true
+									break
+								}
 								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
-								err := conn.WriteJSON(status)
+								err = conn.WriteJSON(status)
 								if err != nil {
 									failed = true
 									break
@@ -365,9 +369,12 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				case req.Key != "":
 					jobs, _, errstr := s.getJobsByKeys([]string{req.Key}, true, true)
 					if errstr == "" && len(jobs) == 1 {
-						status := jobs[0].ToStatus()
+						status, err := jobs[0].ToStatus()
+						if err != nil {
+							break
+						}
 						writeMutex.Lock()
-						err := conn.WriteJSON(status)
+						err = conn.WriteJSON(status)
 						writeMutex.Unlock()
 						if err != nil {
 							break

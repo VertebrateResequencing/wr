@@ -378,7 +378,10 @@ name to just the first letter, eg. -o c):
 		case "json", "j":
 			jstati := make([]jobqueue.JStatus, len(jobs))
 			for i, job := range jobs {
-				jstati[i] = job.ToStatus()
+				jstati[i], err = job.ToStatus()
+				if err != nil {
+					die("failed to convert job to status: %s", err)
+				}
 			}
 
 			encoder := json.NewEncoder(os.Stdout)

@@ -1299,8 +1299,12 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		count := 0
 		window := jobStatWindowPercent
 		var prev []int
+		var erra error
 		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
-			max, _ = strconv.Atoi(string(v))
+			max, erra = strconv.Atoi(string(v))
+			if erra != nil {
+				return erra
+			}
 
 			count++
 			if count > 100 {
