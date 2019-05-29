@@ -232,7 +232,6 @@ type Server struct {
 	wsconns            map[string]*websocket.Conn
 	badServers         map[string]*cloud.Server
 	schedIssues        map[string]*schedulerIssue
-	timings            map[string]*timingAvg
 	racmutex           sync.RWMutex // to protect the readyaddedcallback
 	bsmutex            sync.RWMutex
 	simutex            sync.RWMutex
@@ -241,7 +240,6 @@ type Server struct {
 	sync.Mutex
 	sgcmutex    sync.Mutex
 	wsmutex     sync.Mutex
-	tmutex      sync.Mutex
 	up          bool
 	drain       bool
 	blocking    bool
@@ -576,7 +574,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		badServers:         make(map[string]*cloud.Server),
 		schedCaster:        bcast.NewGroup(),
 		schedIssues:        make(map[string]*schedulerIssue),
-		timings:            make(map[string]*timingAvg),
 		Logger:             serverLogger,
 	}
 

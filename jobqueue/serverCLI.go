@@ -23,7 +23,6 @@ package jobqueue
 import (
 	"bytes"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -742,50 +741,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 	// send reply to client
 	return s.reply(m, sr) // *** log failure to reply?
-}
-
-// logTimings will log the average took after 1000 calls to this message with
-// the same desc.
-func (s *Server) logTimings(desc string, took time.Duration) {
-	if desc == "" {
-		return
-	}
-
-	s.tmutex.Lock()
-	if _, exists := s.timings[desc]; !exists {
-		s.timings[desc] = &timingAvg{}
-	}
-	avg := s.timings[desc].store(took.Seconds())
-	s.tmutex.Unlock()
-	if avg > 0 {
-		s.Info("timing", "desc", desc, "avg", avg)
-	}
-}
-
-// timingAvg is used by logTimings to do the averaging
-type timingAvg struct {
-	timings [1000]float64
-	count   int
-	sync.Mutex
-}
-
-// store stores the supplied float64, and when there are 1000 of them returns
-// the average and resets. Otherwise returns 0.
-func (a *timingAvg) store(s float64) float64 {
-	a.Lock()
-	defer a.Unlock()
-	a.timings[a.count] = s
-	a.count++
-	if a.count == 1000 {
-		sum := float64(0)
-		for i := range &a.timings {
-			sum += a.timings[i]
-		}
-		a.timings = [1000]float64{}
-		a.count = 0
-		return sum / float64(1000)
-	}
-	return 0
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
