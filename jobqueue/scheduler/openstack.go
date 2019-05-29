@@ -1205,11 +1205,11 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			s.resourceMutex.Unlock()
 		}
 
-		u, err := uuid.NewV4()
-		if err != nil {
+		u, erru := uuid.NewV4()
+		if erru != nil {
 			s.runMutex.Unlock()
 			usingQuotaCB()
-			return err
+			return erru
 		}
 		standinID := u.String()
 		standinServer := newStandin(standinID, flavor, req.Disk, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, s.Logger)
