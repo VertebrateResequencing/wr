@@ -168,7 +168,7 @@ func TestREST(t *testing.T) {
 			err = json.Unmarshal(responseData, &jstati)
 			So(err, ShouldBeNil)
 			So(len(jstati), ShouldEqual, 3)
-			
+
 			So(jstati[0].Key, ShouldEqual, "de6d167c58701e55f5b9f9e1e91d7807")
 			So(jstati[0].State, ShouldEqual, "ready")
 			So(jstati[0].CwdBase, ShouldEqual, "/tmp")
