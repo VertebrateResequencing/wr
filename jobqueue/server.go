@@ -543,10 +543,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	// our limiter will use a callback that gets group limits from our database
-	lcb := func(name string) int {
-		return db.retrieveLimitGroup(name)
-	}
-	l := limiter.New(lcb)
+	l := limiter.New(db.retrieveLimitGroup)
 
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
@@ -796,7 +793,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			var existed bool
 			if si, existed = s.schedIssues[msg]; existed {
 				si.LastDate = time.Now().Unix()
-				si.Count = si.Count + 1
+				si.Count += 1
 			} else {
 				si = &schedulerIssue{
 					Msg:       msg,

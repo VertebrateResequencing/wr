@@ -153,14 +153,14 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 			s.queues[queue] = make(map[string]int)
 			continue
 		}
-		if queue == "" {
-			continue
-		}
 
-		if rePrio.MatchString(line) {
+		switch {
+		case queue == "":
+			continue
+		case rePrio.MatchString(line):
 			nextIsPrio = true
 			continue
-		} else if nextIsPrio {
+		case nextIsPrio:
 			fields := strings.Fields(line)
 			s.queues[queue]["prio"], err = strconv.Atoi(fields[0])
 			if err != nil {
@@ -183,14 +183,15 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 				updateHighest("max_user", i)
 			}
 			nextIsPrio = false
-		} else if reDefaultLimits.MatchString(line) {
+		case reDefaultLimits.MatchString(line):
 			lookingAtDefaults = true
 			continue
-		} else if reDefaultsFinished.MatchString(line) {
+		case reDefaultsFinished.MatchString(line):
 			lookingAtDefaults = false
 			continue
-		} else if !lookingAtDefaults {
-			if reMemlimit.MatchString(line) {
+		case !lookingAtDefaults:
+			switch {
+			case reMemlimit.MatchString(line):
 				nextIsMemlimit = 0
 				for _, word := range strings.Fields(line) {
 					nextIsMemlimit++
@@ -199,7 +200,7 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					}
 				}
 				continue
-			} else if nextIsMemlimit > 0 {
+			case nextIsMemlimit > 0:
 				if matches := reNumUnit.FindAllStringSubmatch(line, -1); matches != nil && len(matches) >= nextIsMemlimit-1 {
 					val, err := strconv.Atoi(matches[nextIsMemlimit-1][1])
 					if err != nil {
@@ -218,10 +219,10 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					updateHighest("memlimit", val)
 				}
 				nextIsMemlimit = 0
-			} else if reRunLimit.MatchString(line) {
+			case reRunLimit.MatchString(line):
 				nextIsRunlimit = true
 				continue
-			} else if nextIsRunlimit {
+			case nextIsRunlimit:
 				if matches := reParseRunlimit.FindStringSubmatch(line); len(matches) == 2 {
 					mins, err := strconv.Atoi(matches[1])
 					if err != nil {
@@ -255,11 +256,9 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					delete(s.queues, queue)
 					queue = ""
 				}
-			} else {
-				if matches[2] != "all" {
-					s.queues[queue][kind] = len(vals)
-					updateHighest(kind, len(vals))
-				}
+			} else if matches[2] != "all" {
+				s.queues[queue][kind] = len(vals)
+				updateHighest(kind, len(vals))
 			}
 		}
 

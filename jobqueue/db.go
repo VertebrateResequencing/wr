@@ -1404,7 +1404,7 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 	if rem > 500 {
 		batchSize = batchSize - rem + 1000
 	} else {
-		batchSize = batchSize - rem
+		batchSize -= rem
 	}
 	if batchSize < 1000 {
 		batchSize = 1000

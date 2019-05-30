@@ -1095,13 +1095,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried", job.Cmd, exitcode)
 			default:
 				dorelease = true
-				if ranoutMem {
+				switch {
+				case ranoutMem:
 					failreason = FailReasonRAM
 					myerr = Error{"Execute", job.Key(), FailReasonRAM}
-				} else if ranoutDisk {
+				case ranoutDisk:
 					failreason = FailReasonDisk
 					myerr = Error{"Execute", job.Key(), FailReasonDisk}
-				} else if signalled {
+				case signalled:
 					if ranoutTime {
 						failreason = FailReasonTime
 						myerr = Error{"Execute", job.Key(), FailReasonTime}
@@ -1109,11 +1110,11 @@ func (c *Client) Execute(job *Job, shell string) error {
 						failreason = FailReasonSignal
 						myerr = Error{"Execute", job.Key(), FailReasonSignal}
 					}
-				} else if killCalled {
+				case killCalled:
 					dobury = true
 					failreason = FailReasonKilled
 					myerr = Error{"Execute", job.Key(), FailReasonKilled}
-				} else {
+				default:
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
 				}
@@ -1283,11 +1284,12 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 
 		// update the database with our final state
-		if dobury {
+		switch {
+		case dobury:
 			err = c.Bury(job, jes, failreason)
-		} else if dorelease {
+		case dorelease:
 			err = c.Release(job, jes, failreason) // which buries after job.Retries fails in a row
-		} else if doarchive {
+		case doarchive:
 			err = c.Archive(job, jes)
 		}
 		if err != nil {
