@@ -404,7 +404,7 @@ type BehavioursViaJSON []BehaviourViaJSON
 
 // Behaviours converts a BehavioursViaJSON to real Behaviours.
 func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) Behaviours {
-	var bs Behaviours
+	bs := make(Behaviours, 0, len(bjs))
 	for _, bj := range bjs {
 		bs = append(bs, bj.Behaviour(when))
 	}

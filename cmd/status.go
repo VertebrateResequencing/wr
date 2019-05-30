@@ -490,7 +490,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 }
 
 func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
-	var jes []*jobqueue.JobEssence
+	jes := make([]*jobqueue.JobEssence, 0, len(jobs))
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
 	}

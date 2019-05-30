@@ -1318,7 +1318,7 @@ func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 
 func mtimesOfFilesInDir(tmpdir string, expected int) []time.Time {
 	files := getInfoOfFilesInDir(tmpdir, expected)
-	var times []time.Time
+	times := make([]time.Time, 0, len(files))
 	for _, info := range files {
 		times = append(times, info.ModTime())
 		os.Remove(filepath.Join(tmpdir, info.Name()))

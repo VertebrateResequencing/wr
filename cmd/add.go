@@ -635,8 +635,9 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 // the MD5 paths as the sources, keeping the desired destinations. It does not
 // alter path specs for config files that don't exist locally.
 func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
-	var remoteConfigFiles []string
-	for _, cf := range strings.Split(configFiles, ",") {
+	cfs := strings.Split(configFiles, ",")
+	remoteConfigFiles := make([]string, 0, len(cfs))
+	for _, cf := range cfs {
 		parts := strings.Split(cf, ":")
 		local := internal.TildaToHome(parts[0])
 		_, err := os.Stat(local)

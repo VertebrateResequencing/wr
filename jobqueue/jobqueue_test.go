@@ -2957,7 +2957,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 }
 
 func jobsToJobEssenses(jobs []*Job) []*JobEssence {
-	var jes []*JobEssence
+	jes := make([]*JobEssence, len(jobs))
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
 	}
@@ -6214,7 +6214,7 @@ func TestJobqueueSpeed(t *testing.T) {
 	defer disconnect(jq)
 
 	before := time.Now()
-	var jobs []*Job
+	jobs := make([]*Job, 0, n)
 	for i := 0; i < n; i++ {
 		jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
 	}
