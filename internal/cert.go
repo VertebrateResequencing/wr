@@ -24,7 +24,7 @@ package internal
 // this file has functions for generating certs and keys for TLS purposes
 
 import (
-	"crypto/rand"
+	crand "crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -68,7 +68,7 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string) error {
 	}
 
 	// key for root CA
-	rootKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	rootKey, err := rsa.GenerateKey(crand.Reader, 2048)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string) error {
 	}
 
 	// key for server
-	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	serverKey, err := rsa.GenerateKey(crand.Reader, 2048)
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string) error {
 // valid from now until validFor. It will be valid for supplied domain.
 func certTemplate(domain string) (*x509.Certificate, error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	serialNumber, err := crand.Int(crand.Reader, serialNumberLimit)
 	if err != nil {
 		return nil, errors.New("failed to generate serial number: " + err.Error())
 	}
@@ -142,7 +142,7 @@ func certTemplate(domain string) (*x509.Certificate, error) {
 // createCert creates a certificate given a template, signing it against its
 // parent, and saving the cert in PEM format to certPath.
 func createCert(template, parentCert *x509.Certificate, publicKey interface{}, parentPrivateKey interface{}, certPath string) (*x509.Certificate, error) {
-	certDER, err := x509.CreateCertificate(rand.Reader, template, parentCert, publicKey, parentPrivateKey)
+	certDER, err := x509.CreateCertificate(crand.Reader, template, parentCert, publicKey, parentPrivateKey)
 	if err != nil {
 		return nil, err
 	}

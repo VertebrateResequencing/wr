@@ -25,7 +25,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
-	"crypto/rand"
+	crand "crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
@@ -70,7 +70,7 @@ func generateToken(tokenFile string) ([]byte, error) {
 	}
 
 	b := make([]byte, 32)
-	_, err := rand.Read(b)
+	_, err := crand.Read(b)
 	if err != nil {
 		return nil, err
 	}
