@@ -123,8 +123,9 @@ func TestClusterPend(t *testing.T) {
 		var jobs []*jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
+		rg := c.repgrp
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-			jobs, err = jq.GetByRepGroup(c.repgrp, false, 0, "", false, false)
+			jobs, err = jq.GetByRepGroup(rg, false, 0, "", false, false)
 			if err != nil {
 				return false, err
 			}

@@ -392,6 +392,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 
 			for _, g := range groupList {
 				if g.Name == resources.ResourceName {
+					g := g // pin
 					group = &g
 					foundGroup = true
 					if defaultGroupExists {
@@ -627,6 +628,7 @@ func (p *openstackp) inCloud() bool {
 			for _, server := range serverList {
 				if nameToHostName(server.Name) == hostname {
 					p.ownName = hostname
+					server := server // pin (not needed since we return, but just to be careful)
 					p.ownServer = &server
 					inCloud = true
 					return false, nil
