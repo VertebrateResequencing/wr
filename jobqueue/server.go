@@ -1908,8 +1908,9 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 
 // getJobsCurrent gets all current (incomplete) jobs.
 func (s *Server) getJobsCurrent(limit int, state JobState, getStd bool, getEnv bool) []*Job {
-	var jobs []*Job
-	for _, item := range s.q.AllItems() {
+	allItems := s.q.AllItems()
+	jobs := make([]*Job, 0, len(allItems))
+	for _, item := range allItems {
 		jobs = append(jobs, s.itemToJob(item, false, false))
 	}
 
@@ -2160,7 +2161,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 // slice of badServer structs.
 func (s *Server) getBadServers() []*BadServer {
 	s.bsmutex.RLock()
-	var bs []*BadServer
+	bs := make([]*BadServer, 0, len(s.badServers))
 	for _, server := range s.badServers {
 		bs = append(bs, &BadServer{
 			ID:      server.ID,
@@ -2264,8 +2265,8 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 		close(s.stopSigHandling)
 	}
 
-	var sgroups []string
 	s.sgcmutex.Lock()
+	sgroups := make([]string, 0, len(s.sgroupcounts))
 	for group := range s.sgroupcounts {
 		sgroups = append(sgroups, group)
 	}

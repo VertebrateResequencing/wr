@@ -423,7 +423,8 @@ func (s *local) processQueue() error {
 		return nil
 	}
 
-	var toRelease []string
+	stats := s.queue.Stats()
+	toRelease := make([]string, 0, stats.Items)
 	defer func() {
 		for _, key := range toRelease {
 			errr := s.queue.Release(key)

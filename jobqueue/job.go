@@ -794,7 +794,7 @@ func (j *Job) ToStatus() (JStatus, error) {
 	if state == JobStateRunning && j.Lost {
 		state = JobStateLost
 	}
-	var ot []string
+	ot := make([]string, 0, len(j.Requirements.Other))
 	for key, val := range j.Requirements.Other {
 		ot = append(ot, key+":"+val)
 	}

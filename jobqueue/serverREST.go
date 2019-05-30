@@ -750,7 +750,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	}
 
 	// convert to real Job structs with default values filled in
-	var inputJobs []*Job
+	inputJobs := make([]*Job, 0, len(jvjs))
 	for _, jvj := range jvjs {
 		job, errf := jvj.Convert(jd)
 		if errf != nil {

@@ -588,7 +588,7 @@ func (queue *Queue) Get(key string) (*Item, error) {
 func (queue *Queue) GetRunningData() []interface{} {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
-	var data []interface{}
+	data := make([]interface{}, 0, len(queue.runQueue.items))
 	for _, item := range queue.runQueue.items {
 		data = append(data, item.Data)
 	}
@@ -598,9 +598,9 @@ func (queue *Queue) GetRunningData() []interface{} {
 // AllItems returns the items in the queue. NB: You should NOT do anything
 // to these items - use for read-only purposes.
 func (queue *Queue) AllItems() []*Item {
-	var items []*Item
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
+	items := make([]*Item, 0, len(queue.items))
 	for _, item := range queue.items {
 		items = append(items, item)
 	}

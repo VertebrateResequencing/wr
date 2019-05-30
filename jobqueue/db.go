@@ -816,7 +816,7 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 // in the jobsToQueue return value.
 func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[string]bool) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
 	// first convert the depGroups in to sorted prefixes, for linear searching
-	var prefixes sobsd
+	prefixes := make(sobsd, 0, len(depGroups))
 	for depGroup := range depGroups {
 		prefixes = append(prefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
 	}

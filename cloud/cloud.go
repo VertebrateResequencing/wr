@@ -562,7 +562,7 @@ func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets []
 		}
 	}
 
-	var matches []*Flavor
+	matches := make([]*Flavor, len(sets))
 	excludedSets := make(map[int]bool, len(sets))
 	var exclusions []*regexp.Regexp
 

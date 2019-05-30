@@ -1627,7 +1627,7 @@ func (c *Client) GetByEssences(jes []*JobEssence) ([]*Job, error) {
 // jesToKeys deals with the jes arg that GetByEccences(), Kick() and Delete()
 // take.
 func (c *Client) jesToKeys(jes []*JobEssence) []string {
-	var keys []string
+	keys := make([]string, 0, len(jes))
 	for _, je := range jes {
 		keys = append(keys, je.Key())
 	}
