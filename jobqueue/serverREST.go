@@ -754,7 +754,7 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	for _, jvj := range jvjs {
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
-			return nil, http.StatusBadRequest, fmt.Errorf("There was a problem interpreting your job: %s", errf)
+			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %s", errf)
 		}
 		inputJobs = append(inputJobs, job)
 	}

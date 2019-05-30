@@ -1363,10 +1363,10 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 							if err == nil {
 								_, _, err = server.RunCmd("chmod u+x "+exePath, false)
 							} else {
-								err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
+								err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 							}
 						} else if err != nil {
-							err = fmt.Errorf("Could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
+							err = fmt.Errorf("could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
 						}
 					} else {
 						// checking for exePath with the file command failed for
@@ -1376,11 +1376,11 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 						if err == nil {
 							_, _, err = server.RunCmd("chmod u+x "+exePath, false)
 						} else {
-							err = fmt.Errorf("Could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
+							err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 						}
 					}
 				} else {
-					err = fmt.Errorf("Could not look for exe [%s]: %s", exePath, err)
+					err = fmt.Errorf("could not look for exe [%s]: %s", exePath, err)
 				}
 			}
 

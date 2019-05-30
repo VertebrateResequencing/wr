@@ -269,7 +269,7 @@ func (b *Behaviour) run(j *Job) error {
 
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
-		return fmt.Errorf("Arg %s is type %T, not string", b.Arg, b.Arg)
+		return fmt.Errorf("arg %s is type %T, not string", b.Arg, b.Arg)
 	}
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
@@ -292,7 +292,7 @@ func (b *Behaviour) run(j *Job) error {
 func (b *Behaviour) copyToManager(j *Job) error {
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
-		return fmt.Errorf("Arg %s is type %T, not []string", b.Arg, b.Arg)
+		return fmt.Errorf("arg %s is type %T, not []string", b.Arg, b.Arg)
 	}
 
 	// *** not yet implemented
