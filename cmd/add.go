@@ -548,9 +548,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		if errg != nil {
 			die("%s", errg)
 		}
-		if isLocal {
-			pwd = wd
-		} else if cmdCwdMatters {
+		if isLocal || cmdCwdMatters {
 			pwd = wd
 		} else {
 			pwd = "/tmp"

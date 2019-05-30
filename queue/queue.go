@@ -705,7 +705,8 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 	}
 
 	item.mutex.Lock()
-	if item.delay != delay {
+	switch {
+	case item.delay != delay:
 		item.delay = delay
 		if item.state == ItemStateDelay {
 			item.mutex.Unlock()
@@ -714,7 +715,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		} else {
 			item.mutex.Unlock()
 		}
-	} else if item.priority != priority || item.ReserveGroup != reserveGroup || addedReady {
+	case item.priority != priority || item.ReserveGroup != reserveGroup || addedReady:
 		item.priority = priority
 		oldGroup := item.ReserveGroup
 		item.ReserveGroup = reserveGroup
@@ -724,7 +725,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		} else {
 			item.mutex.Unlock()
 		}
-	} else if item.ttr != ttr {
+	case item.ttr != ttr:
 		item.ttr = ttr
 		if item.state == ItemStateRun {
 			item.mutex.Unlock()
@@ -733,7 +734,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		} else {
 			item.mutex.Unlock()
 		}
-	} else {
+	default:
 		item.mutex.Unlock()
 	}
 

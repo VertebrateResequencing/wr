@@ -130,23 +130,25 @@ func webInterfaceStatic(s *Server) http.HandlerFunc {
 			return
 		}
 
-		if strings.HasPrefix(path, "/js") {
+		switch {
+		case strings.HasPrefix(path, "/js"):
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		} else if strings.HasPrefix(path, "/css") {
+		case strings.HasPrefix(path, "/css"):
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		} else if strings.HasPrefix(path, "/fonts") {
-			if strings.HasSuffix(path, ".eot") {
+		case strings.HasPrefix(path, "/fonts"):
+			switch {
+			case strings.HasSuffix(path, ".eot"):
 				w.Header().Set("Content-Type", "application/vnd.ms-fontobject")
-			} else if strings.HasSuffix(path, ".svg") {
+			case strings.HasSuffix(path, ".svg"):
 				w.Header().Set("Content-Type", "image/svg+xml")
-			} else if strings.HasSuffix(path, ".ttf") {
+			case strings.HasSuffix(path, ".ttf"):
 				w.Header().Set("Content-Type", "application/x-font-truetype")
-			} else if strings.HasSuffix(path, ".woff") {
+			case strings.HasSuffix(path, ".woff"):
 				w.Header().Set("Content-Type", "application/font-woff")
-			} else if strings.HasSuffix(path, ".woff2") {
+			case strings.HasSuffix(path, ".woff2"):
 				w.Header().Set("Content-Type", "application/font-woff2")
 			}
-		} else if strings.HasSuffix(path, "favicon.ico") {
+		case strings.HasSuffix(path, "favicon.ico"):
 			w.Header().Set("Content-Type", "image/x-icon")
 		}
 

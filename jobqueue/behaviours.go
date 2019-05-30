@@ -375,17 +375,18 @@ func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
 	var do BehaviourAction
 	var arg interface{}
 
-	if bj.Run != "" {
+	switch {
+	case bj.Run != "":
 		do = Run
 		arg = bj.Run
-	} else if len(bj.CopyToManager) > 0 {
+	case len(bj.CopyToManager) > 0:
 		do = CopyToManager
 		arg = bj.CopyToManager
-	} else if bj.Cleanup {
+	case bj.Cleanup:
 		do = Cleanup
-	} else if bj.CleanupAll {
+	case bj.CleanupAll:
 		do = CleanupAll
-	} else {
+	default:
 		do = Nothing
 	}
 

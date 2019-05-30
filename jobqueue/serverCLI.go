@@ -52,15 +52,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	drain := s.drain
 	s.ssmutex.RUnlock()
 
+	switch {
 	// check that the client making the request has the expected token
-	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
+	case (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping":
 		srerr = ErrPermissionDenied
 		qerr = "Client presented the wrong token"
-	} else if s.q == nil || (!up && !drain) {
+	case s.q == nil || (!up && !drain):
 		// the server just got shutdown
 		srerr = ErrClosedStop
 		qerr = "The server has been stopped"
-	} else {
+	default:
 		switch cr.Method {
 		case "ping":
 			// avoid a later race condition when we try to encode ServerInfo by
@@ -149,17 +150,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if err != nil {
 					srerr = ErrDBError
 					qerr = err.Error()
-				} else {
-					if srerr == "" {
-						// create the jobs server-side
-						added, dups, alreadyComplete, thisSrerr, err := s.createJobs(cr.Jobs, envkey, cr.IgnoreComplete)
-						if err != nil {
-							srerr = thisSrerr
-							qerr = err.Error()
-						} else {
-							s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
-						}
+				} else if srerr == "" {
+					// create the jobs server-side
+					added, dups, alreadyComplete, thisSrerr, err := s.createJobs(cr.Jobs, envkey, cr.IgnoreComplete)
+					if err != nil {
+						srerr = thisSrerr
+						qerr = err.Error()
+					} else {
+						s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
+						sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
 					}
 				}
 			}
@@ -354,13 +353,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// Remove()ing, since you can remove from any queue)
 				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
-				if running := item.Stats().State == queue.ItemStateRun; !running {
+				running := item.Stats().State == queue.ItemStateRun
+				switch {
+				case running:
 					srerr = ErrBadJob
 					job.Unlock()
-				} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
+				case !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero():
 					srerr = ErrBadRequest
 					job.Unlock()
-				} else {
+				default:
 					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
@@ -550,20 +551,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						errm := s.db.modifyLiveJobs(oldKeys, toModify)
 						if errm != nil {
 							s.Error("job modification in database failed", "err", errm)
-						} else {
+						} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
 							// if we're changing the jobs these jobs are
 							// dependant upon or their priority, that must be
 							// reflected in the queue as well
-							if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
-								for _, job := range toModify {
-									deps, err := job.Dependencies.incompleteJobKeys(s.db)
-									if err != nil {
-										s.Error("failed to get job dependencies", "err", err)
-									}
-									err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
-									if err != nil {
-										s.Error("failed to modify a job in the queue", "err", err)
-									}
+							for _, job := range toModify {
+								deps, err := job.Dependencies.incompleteJobKeys(s.db)
+								if err != nil {
+									s.Error("failed to get job dependencies", "err", err)
+								}
+								err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+								if err != nil {
+									s.Error("failed to modify a job in the queue", "err", err)
 								}
 							}
 						}

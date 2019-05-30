@@ -176,20 +176,23 @@ func (c *Controller) processNextItem() {
 
 	// do processing on key
 	err := c.processItem(key.(string))
+	if err != nil {
+		if c.queue.NumRequeues(key) < maxRetries {
+			c.Error("processing queue item, will retry", "key", key, "error", err)
+			// requeue
+			c.queue.AddRateLimited(key)
+			return
+		}
 
-	if err == nil {
-		// No error => queue stop tracking history
-		c.queue.Forget(key)
-	} else if c.queue.NumRequeues(key) < maxRetries {
-		c.Error("processing queue item, will retry", "key", key, "error", err)
-		// requeue
-		c.queue.AddRateLimited(key)
-	} else {
-		// err != nil and too many retries
+		// too many retries
 		c.Error("processing queue item failed", "key", key, "error", err)
 		c.queue.Forget(key)
 		utilruntime.HandleError(err)
+		return
 	}
+
+	// No error => queue stop tracking history
+	c.queue.Forget(key)
 }
 
 // processItem(key) is where we define how to react to an item coming off the

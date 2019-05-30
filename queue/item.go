@@ -108,11 +108,12 @@ func (item *Item) Stats() *ItemStats {
 	defer item.mutex.RUnlock()
 	age := time.Since(item.creation)
 	var remaining time.Duration
-	if item.state == ItemStateDelay {
+	switch item.state {
+	case ItemStateDelay:
 		remaining = time.Until(item.readyAt)
-	} else if item.state == ItemStateRun {
+	case ItemStateRun:
 		remaining = time.Until(item.releaseAt)
-	} else {
+	default:
 		remaining = time.Duration(0) * time.Second
 	}
 	return &ItemStats{
@@ -159,7 +160,7 @@ func (item *Item) ReadyAt() time.Time {
 // back dependencies that already got resolved, leaving you in a permanent
 // dependent state; use UnresolvedDependencies() for that purpose instead.
 func (item *Item) Dependencies() []string {
-	return item.dependencies[:]
+	return item.dependencies
 }
 
 // UnresolvedDependencies returns the keys of the other items we are still
@@ -206,7 +207,7 @@ func (item *Item) ChangedKey(old, new string) {
 func (item *Item) setDependencies(deps []string) {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
-	item.dependencies = deps[:]
+	item.dependencies = deps
 	item.remainingDeps = make(map[string]bool)
 	for _, key := range item.dependencies {
 		item.remainingDeps[key] = true

@@ -511,16 +511,18 @@ FLAVORS:
 		}
 
 		if f.Cores >= cores && f.RAM >= ramMB {
-			if fr == nil {
-				fr = f
-			} else if f.Cores < fr.Cores {
-				fr = f
-			} else if f.Cores == fr.Cores {
-				if f.RAM < fr.RAM {
+			if fr != nil {
+				if f.Cores < fr.Cores {
 					fr = f
-				} else if f.RAM == fr.RAM && f.Disk < fr.Disk {
-					fr = f
+				} else if f.Cores == fr.Cores {
+					if f.RAM < fr.RAM {
+						fr = f
+					} else if f.RAM == fr.RAM && f.Disk < fr.Disk {
+						fr = f
+					}
 				}
+			} else {
+				fr = f
 			}
 		}
 	}
