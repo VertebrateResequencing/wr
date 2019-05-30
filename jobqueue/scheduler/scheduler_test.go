@@ -115,7 +115,7 @@ func TestLocal(t *testing.T) {
 			var overhead time.Duration
 			for {
 				if !s.Busy() {
-					overhead = time.Since(before) - time.Duration(750*time.Millisecond)
+					overhead = time.Since(before) - (750*time.Millisecond)
 					break
 				}
 				<-time.After(1 * time.Millisecond)
@@ -831,7 +831,7 @@ func TestOpenstack(t *testing.T) {
 						}
 					}
 
-					half := int(numJobs / 2)
+					half := numJobs / 2
 					cmd := "sleep 2"
 					cmd2 := "sleep 3"
 					runCmds(cmd, testReq, half)
@@ -1117,7 +1117,7 @@ func TestOpenstack(t *testing.T) {
 					So(spawned, ShouldBeBetweenOrEqual, 2, count)
 
 					foundServers := novaCountServers(novaCmd, rName, "")
-					So(foundServers, ShouldBeBetweenOrEqual, 1, int(eta/10)) // (assuming a ~10s spawn time)
+					So(foundServers, ShouldBeBetweenOrEqual, 1, eta/10) // (assuming a ~10s spawn time)
 
 					// after the last run, they are all auto-destroyed
 					<-time.After(20 * time.Second)

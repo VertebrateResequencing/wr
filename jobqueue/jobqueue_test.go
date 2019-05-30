@@ -6223,7 +6223,7 @@ func TestJobqueueSpeed(t *testing.T) {
 		log.Fatal(err)
 	}
 	e := time.Since(before)
-	per := int64(e.Nanoseconds() / int64(n))
+	per := e.Nanoseconds() / int64(n)
 	log.Printf("Added %d jobqueue jobs (%d inserts, %d dups) in %s == %d per\n", n, inserts, already, e, per)
 
 	err = jq.Disconnect()
@@ -6274,7 +6274,7 @@ func TestJobqueueSpeed(t *testing.T) {
 	}
 
 	e = time.Since(beginat)
-	per = int64(e.Nanoseconds() / int64(n))
+	per = e.Nanoseconds() / int64(n)
 	log.Printf("Reserved %d jobqueue jobs (%d not available) in %s == %d per\n", r, na, e, per)
 
 	// q := queue.New("myqueue")
