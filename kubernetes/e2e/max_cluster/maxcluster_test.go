@@ -18,7 +18,7 @@
 
 // tests echo {42,24,mice,test} | xargs -n 1 -r echo echo | wr add
 
-package maxCluster
+package maxcluster
 
 import (
 	"encoding/gob"

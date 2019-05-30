@@ -793,7 +793,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			var existed bool
 			if si, existed = s.schedIssues[msg]; existed {
 				si.LastDate = time.Now().Unix()
-				si.Count += 1
+				si.Count++
 			} else {
 				si = &schedulerIssue{
 					Msg:       msg,
