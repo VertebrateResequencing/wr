@@ -813,7 +813,7 @@ func TestOpenstack(t *testing.T) {
 
 					runCmds := func(cmd string, req *Requirements, count int) {
 						for i := 0; i < count; i++ {
-							go func(i int) {
+							go func() {
 								reserved := make(chan bool)
 								go func() {
 									<-reserved
@@ -821,7 +821,7 @@ func TestOpenstack(t *testing.T) {
 								}()
 								err := oss.runCmd(cmd, req, reserved, "random")
 								done <- err
-							}(i)
+							}()
 						}
 					}
 
