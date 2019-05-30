@@ -527,7 +527,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		}
 
 		if len(rcs) == 0 {
-			err := fmt.Errorf("No Targets specified")
+			err := fmt.Errorf("no Targets specified")
 			_, erru := j.Unmount()
 			if erru != nil {
 				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)

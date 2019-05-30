@@ -161,7 +161,7 @@ func NewController(
 				AddFunc: func(obj interface{}) {
 					key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 					if err != nil {
-						utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", obj, err))
+						utilruntime.HandleError(fmt.Errorf("couldn't get key for object %#v: %v", obj, err))
 						return
 					}
 					controller.workqueue.Add(key)
@@ -177,7 +177,7 @@ func NewController(
 					}
 					key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(new)
 					if err != nil {
-						utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", new, err))
+						utilruntime.HandleError(fmt.Errorf("couldn't get key for object %#v: %v", new, err))
 						return
 					}
 					controller.workqueue.Add(key)
@@ -185,7 +185,7 @@ func NewController(
 				DeleteFunc: func(obj interface{}) {
 					pod, ok := obj.(*corev1.Pod)
 					if !ok {
-						utilruntime.HandleError(fmt.Errorf("Couldn't cast object to pod for object %#v", obj))
+						utilruntime.HandleError(fmt.Errorf("couldn't cast object to pod for object %#v", obj))
 						return
 					}
 					controller.Debug("pod deleted", "pod", pod.ObjectMeta.Name)
@@ -197,7 +197,7 @@ func NewController(
 		AddFunc: func(obj interface{}) {
 			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 			if err != nil {
-				utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", obj, err))
+				utilruntime.HandleError(fmt.Errorf("couldn't get key for object %#v: %v", obj, err))
 				return
 			}
 			controller.workqueue.Add(key)
@@ -212,7 +212,7 @@ func NewController(
 			}
 			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(new)
 			if err != nil {
-				utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %#v: %v", new, err))
+				utilruntime.HandleError(fmt.Errorf("couldn't get key for object %#v: %v", new, err))
 				return
 			}
 			controller.workqueue.Add(key)
@@ -221,7 +221,7 @@ func NewController(
 		DeleteFunc: func(obj interface{}) {
 			node, ok := obj.(*corev1.Node)
 			if !ok {
-				utilruntime.HandleError(fmt.Errorf("Couldn't cast object to node for object %#v", obj))
+				utilruntime.HandleError(fmt.Errorf("couldn't cast object to node for object %#v", obj))
 				return
 			}
 			// Delete the node from the nodeResources map. Do it here, so it's
@@ -262,7 +262,7 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	c.Debug("Waiting for caches to sync")
 	if ok := cache.WaitForCacheSync(stopCh, c.podSynced, c.nodeSynced); !ok {
 		c.Crit("failed to wait for caches to sync")
-		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
+		utilruntime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 	c.Debug("Caches synced")
@@ -409,7 +409,7 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 			}()
 		} else {
 			c.Error("could not find return error channel", "pod", pod.ObjectMeta.Name)
-			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
+			return fmt.Errorf("could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 	}
 
@@ -422,13 +422,13 @@ func (c *Controller) processPod(pod *corev1.Pod) error {
 				if !req.Done {
 					req.Done = true
 					c.Error("sending error on error chan", "pod", pod.ObjectMeta.Name, "error", "pod failed")
-					req.ErrChan <- fmt.Errorf("Pod %s failed", pod.ObjectMeta.Name)
+					req.ErrChan <- fmt.Errorf("pod %s failed", pod.ObjectMeta.Name)
 					close(req.ErrChan)
 				}
 			}()
 		} else {
 			c.Error("could not find return error channel", "pod", pod.ObjectMeta.Name)
-			return fmt.Errorf("Could not find return error channel for pod %s", pod.ObjectMeta.Name)
+			return fmt.Errorf("could not find return error channel for pod %s", pod.ObjectMeta.Name)
 		}
 
 		// Get logs
@@ -585,9 +585,9 @@ REQS:
 
 			c.Error("reqCheck failed. No node has capacity for request", "req", req)
 			req.CbChan <- Response{
-				Error:     fmt.Errorf("No node has the capacity to schedule the current job"),
+				Error:     fmt.Errorf("no node has the capacity to schedule the current job"),
 				Ephemeral: StorageEphemeralEnabled}
-			c.sendErrChan(fmt.Sprintf("No node has the capacity to schedule the current job"))
+			c.sendErrChan(fmt.Sprintf("no node has the capacity to schedule the current job"))
 		case <-stopCh:
 			return
 		}

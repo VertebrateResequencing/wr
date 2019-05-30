@@ -160,7 +160,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) error {
 	// multiplexed bidirectional streams to and from the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
-		return fmt.Errorf("Error creating SPDYExecutor: %s", err.Error())
+		return fmt.Errorf("error creating SPDYExecutor: %s", err.Error())
 	}
 
 	// Execute the command, with Std(in,out,err) pointing to the above readers
@@ -173,7 +173,7 @@ func (p *Kubernetesp) AttachCmd(opts *CmdOptions) error {
 	})
 	if err != nil {
 		p.Error("AttachCmd returned error", "error", opts.Err)
-		return fmt.Errorf("Error executing remote command: %v", err)
+		return fmt.Errorf("error executing remote command: %v", err)
 	}
 
 	return nil
@@ -203,7 +203,7 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) error {
 	// multiplexed bidirectional streams to and from  the pod
 	exec, err := remotecommand.NewSPDYExecutor(p.clusterConfig, "POST", execRequest.URL())
 	if err != nil {
-		return fmt.Errorf("Error creating SPDYExecutor: %v", err)
+		return fmt.Errorf("error creating SPDYExecutor: %v", err)
 	}
 
 	// Execute the command, with Std(in,out,err) pointing to the above readers
@@ -215,7 +215,7 @@ func (p *Kubernetesp) ExecCmd(opts *CmdOptions, namespace string) error {
 		Tty:    false,
 	})
 	if err != nil {
-		return fmt.Errorf("Error executing remote command: %v", err)
+		return fmt.Errorf("error executing remote command: %v", err)
 	}
 
 	return nil
@@ -248,7 +248,7 @@ func (p *Kubernetesp) ExecInPod(podName string, containerName, namespace string,
 
 	// If the exec call succeeded, but the cmd failed, also error
 	if len(stdErr.Str) != 0 {
-		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("Command produced STDERR: %s", stdErr.Str)
+		return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), fmt.Errorf("command produced STDERR: %s", stdErr.Str)
 	}
 
 	return strings.Join(stdOut.Str, " "), strings.Join(stdErr.Str, " "), nil
