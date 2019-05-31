@@ -355,7 +355,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				job.Lock()
 				running := item.Stats().State == queue.ItemStateRun
 				switch {
-				case running:
+				case !running:
 					srerr = ErrBadJob
 					job.Unlock()
 				case !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero():
