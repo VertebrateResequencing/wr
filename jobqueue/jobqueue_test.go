@@ -41,6 +41,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/inconshreveable/log15"
+	"github.com/sb10/l15h"
 	"github.com/shirou/gopsutil/process"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -62,7 +63,8 @@ var serverEnableRunners bool
 var testLogger = log15.New()
 
 func init() {
-	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
+	h := l15h.CallerInfoHandler(log15.StderrHandler)
+	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, h))
 
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
@@ -2433,7 +2435,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(j4.RepGroup, ShouldEqual, "dep4")
 
 					err = jq.Release(j4, nil, "")
-					So(err, ShouldNotBeNil)
+					So(err, ShouldBeNil)
 
 					// *** we should implement rejection of dependency cycles
 					// and test for that
@@ -2815,7 +2817,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(j4.RepGroup, ShouldEqual, "dep4")
 
 					err = jq.Release(j4, nil, "")
-					So(err, ShouldNotBeNil)
+					So(err, ShouldBeNil)
 
 					// *** we should implement rejection of dependency cycles
 					// and test for that
