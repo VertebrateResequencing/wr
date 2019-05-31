@@ -533,7 +533,7 @@ func TestREST(t *testing.T) {
 			So(response.StatusCode, ShouldEqual, 400)
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
-			So(string(responseData), ShouldEqual, "There was a problem interpreting your job: cmd was not specified\n")
+			So(string(responseData), ShouldEqual, "there was a problem interpreting your job: cmd was not specified\n")
 		})
 
 		Convey("You can POST with optional parameters to set new job defaults", func() {
