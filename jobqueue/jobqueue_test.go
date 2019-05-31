@@ -2959,7 +2959,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 }
 
 func jobsToJobEssenses(jobs []*Job) []*JobEssence {
-	jes := make([]*JobEssence, len(jobs))
+	jes := make([]*JobEssence, 0, len(jobs))
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
 	}
