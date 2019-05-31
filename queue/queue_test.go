@@ -1634,6 +1634,9 @@ func depTestFunc(queue *Queue, changed bool) {
 func qdestroy(q *Queue) {
 	err := q.Destroy()
 	if err != nil {
+		if qerr, ok := err.(Error); ok && qerr.Err == ErrQueueClosed {
+			return
+		}
 		fmt.Printf("queue.Destroy failed: %s\n", err)
 	}
 }
