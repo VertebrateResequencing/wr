@@ -1933,7 +1933,7 @@ func TestJobqueueMedium(t *testing.T) {
 					// wait for the job to finish executing
 					done := make(chan bool, 1)
 					go func() {
-						go execute(jq, job, config.RunnerExecShell)
+						go execute(jq, job, config.RunnerExecShell, true)
 
 						limit := time.After(10 * time.Second)
 						ticker := time.NewTicker(500 * time.Millisecond)
@@ -6445,10 +6445,10 @@ func disconnect(client *Client) {
 	}
 }
 
-func execute(client *Client, job *Job, shell string) {
+func execute(client *Client, job *Job, shell string, failExpected ...bool) {
 	err := client.Execute(job, shell)
-	if err != nil {
-		fmt.Printf("client.Execute(%s) failed: %s", job.Cmd, err)
+	if err != nil && !(len(failExpected) == 1 && failExpected[0]) {
+		fmt.Printf("client.Execute() failed: %s", err)
 	}
 }
 
