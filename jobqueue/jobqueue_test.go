@@ -6547,6 +6547,9 @@ func runner() {
 
 // setDomainIP is an author-only func to ensure that domain points to localhost
 func setDomainIP(domain string) {
+	if domain == "localhost" {
+		return
+	}
 	host, err := os.Hostname()
 	if err != nil {
 		fmt.Printf("failed to get Hostname: %s", err)
