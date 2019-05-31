@@ -23,6 +23,8 @@ linters:
   enable:
     - dupl
     - gocyclo
+    - gochecknoglobals
+    - gochecknoinits
 
 issues:
   exclude-rules:
@@ -30,6 +32,14 @@ issues:
       linters:
         - gocyclo
         - dupl
+        - gochecknoglobals
+        - gochecknoinits
+    - path: cmd/
+      linters:
+        - gocyclo
+        - dupl
+        - gochecknoglobals
+        - gochecknoinits
 
   new: true
 
