@@ -398,6 +398,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			var job *Job
 			_, job, srerr = s.getij(cr)
 			if srerr == "" {
+				if cr.JobEndState == nil {
+					cr.JobEndState = &JobEndState{}
+				}
 				cr.JobEndState.Stdout = cr.Job.StdOutC
 				cr.JobEndState.Stderr = cr.Job.StdErrC
 				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true)
