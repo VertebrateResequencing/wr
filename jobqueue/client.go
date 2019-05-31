@@ -1481,6 +1481,9 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 // have been the one to Reserve() the supplied Job, and the Job must be marked
 // as having successfully run, or you will get an error.
 func (c *Client) Archive(job *Job, jes *JobEndState) error {
+	if jes == nil {
+		jes = &JobEndState{}
+	}
 	err := c.ended(job, jes)
 	if err != nil {
 		return err
@@ -1503,6 +1506,9 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 // in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
 // number of times.)
 func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
+	if jes == nil {
+		jes = &JobEndState{}
+	}
 	err := c.ended(job, jes)
 	if err != nil {
 		return err
@@ -1532,6 +1538,9 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 // reserve a job before you can bury it. Optionally supply an error that will
 // be be displayed as the Job's stderr.
 func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...error) error {
+	if jes == nil {
+		jes = &JobEndState{}
+	}
 	err := c.ended(job, jes)
 	if err != nil {
 		return err
