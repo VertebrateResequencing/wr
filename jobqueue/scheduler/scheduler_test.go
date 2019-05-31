@@ -115,7 +115,7 @@ func TestLocal(t *testing.T) {
 			var overhead time.Duration
 			for {
 				if !s.Busy() {
-					overhead = time.Since(before) - (750*time.Millisecond)
+					overhead = time.Since(before) - (750 * time.Millisecond)
 					break
 				}
 				<-time.After(1 * time.Millisecond)
