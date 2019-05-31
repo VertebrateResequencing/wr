@@ -3861,8 +3861,10 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job.Cmd, ShouldEqual, job1Cmd)
 				go func() {
 					erre := jq.Execute(job, config.RunnerExecShell)
-					if erre != nil {
-						fmt.Printf("Execute failed: %s", erre)
+					if erre == nil {
+						fmt.Printf("Execute succeeded when it should have failed\n")
+					} else if !strings.Contains(erre.Error(), "receive time out") {
+						fmt.Printf("Execute failed in an unexpected way: %s", erre)
 					}
 				}()
 				So(job.Exited, ShouldBeFalse)
