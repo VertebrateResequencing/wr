@@ -6440,7 +6440,7 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 
 func disconnect(client *Client) {
 	err := client.Disconnect()
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "connection closed") {
 		fmt.Printf("client.Disconnect() failed: %s", err)
 	}
 }
