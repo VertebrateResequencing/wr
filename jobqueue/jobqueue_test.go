@@ -694,7 +694,7 @@ func TestJobqueueSignal(t *testing.T) {
 				fmt.Printf("failed to disconnect: %s\n", errd)
 			}
 			errw := serverCmd.Wait()
-			if errw != nil {
+			if errw != nil && !strings.Contains(errw.Error(), "signal: killed") {
 				fmt.Printf("failed to reap server pid: %s\n", errw)
 			}
 			alreadyKilled[serverPid] = true
