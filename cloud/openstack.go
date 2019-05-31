@@ -1011,9 +1011,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		return true, nil
 	})
-	if err != nil {
-		merr = multierror.Append(merr, err)
-	}
+	merr = p.combineError(merr, err)
 
 	if p.ownName == "" {
 		// delete router
@@ -1030,7 +1028,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 					if errr != nil {
 						tries++
 						if tries >= 10 {
-							merr = multierror.Append(merr, errr)
+							merr = p.combineError(merr, errr)
 							break
 						}
 						<-time.After(1 * time.Second)
@@ -1042,9 +1040,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 		}
 
 		// delete network (and its subnet)
@@ -1052,9 +1048,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 		}
 
 		// delete secgroup
@@ -1062,9 +1056,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 		}
 	}
 
@@ -1077,14 +1069,21 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 			resources.PrivateKey = ""
 		}
 	}
 
 	return merr.ErrorOrNil()
+}
+
+// combineError Append()s the given err on merr, but ignores err if it is
+// "Resource not found".
+func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror.Error {
+	if err != nil && !strings.Contains(err.Error(), "Resource not found") {
+		merr = multierror.Append(merr, err)
+	}
+	return merr
 }
 
 // getAvailableFloatingIP gets or creates an unused floating ip
