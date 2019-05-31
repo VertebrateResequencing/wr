@@ -562,7 +562,7 @@ func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets []
 		}
 	}
 
-	matches := make([]*Flavor, len(sets))
+	matches := make([]*Flavor, 0, len(sets))
 	excludedSets := make(map[int]bool, len(sets))
 	var exclusions []*regexp.Regexp
 
@@ -961,6 +961,9 @@ func (p *Provider) TearDown() error {
 	// indicating it is still in the cloud and could be needed in the future
 	if p.resources.PrivateKey == "" {
 		err = p.deleteResourceFile()
+		if os.IsNotExist(err) {
+			err = nil
+		}
 	}
 	return err
 }
