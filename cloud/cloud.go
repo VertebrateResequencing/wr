@@ -119,8 +119,12 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
-// we give up and return an error from Spawn().
+// we give up and return an error from WaitUntilReady().
 var sentinelTimeOut = 10 * time.Minute
+
+// pcsTimeOut is how long we wait for a user's post creation script to exit
+// before we give up and return an error from WaitUntilReady().
+var pcsTimeOut = 15 * time.Minute
 
 // defaultDNSNameServers holds some public (google) dns name server addresses
 // for use when creating cloud subnets that need internet access.
@@ -796,15 +800,26 @@ SENTINEL:
 			return fmt.Errorf("cloud server start up script could not be made executable: %s", err)
 		}
 
-		// *** currently we have no timeout on this, probably want one...
+		// protect running the script with a timeout
+		limit := time.After(pcsTimeOut)
+		exiterr := make(chan error, 1)
 		var stderr string
-		_, stderr, err = s.RunCmd(pcsPath, false)
-		if err != nil {
-			err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
-			if len(stderr) > 0 {
-				err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
+		go func() {
+			var runerr error
+			_, stderr, runerr = s.RunCmd(pcsPath, false)
+			exiterr <- runerr
+		}()
+		select {
+		case err = <-exiterr:
+			if err != nil {
+				err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
+				if len(stderr) > 0 {
+					err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
+				}
+				return err
 			}
-			return err
+		case <-limit:
+			return fmt.Errorf("cloud server start up script failed to complete within %s", pcsTimeOut)
 		}
 
 		_, _, rmErr := s.RunCmd("rm "+pcsPath, false)

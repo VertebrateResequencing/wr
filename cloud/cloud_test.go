@@ -354,11 +354,27 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					err = server.WaitUntilReady("", []byte("#!/bin/bash\nfalse"))
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\n>&2 echo foo\nfalse"))
 					So(err, ShouldNotBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
-					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1\nSTDERR:\nfoo")
+					err = server.Destroy()
+					So(err, ShouldBeNil)
+				})
+
+				Convey("Spawning with a start up script that takes too long returns an error as well", func() {
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					pcsTimeOut = 1 * time.Second
+					defer func() {
+						pcsTimeOut = 15 * time.Minute
+					}()
+					err = server.WaitUntilReady("", []byte("#!/bin/bash\nsleep 5"))
+					So(err, ShouldNotBeNil)
+					ok := server.Alive(true)
+					So(ok, ShouldBeTrue)
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed to complete within")
 					err = server.Destroy()
 					So(err, ShouldBeNil)
 				})
