@@ -274,7 +274,9 @@ flavor (normally the cheapest flavor is chosen for you based on the command's
 resource requirements). The format for cloud_config_files is described under the
 help text for "wr cloud deploy"'s --config_files option. The per-job config
 files you specify will be treated as in addition to any specified during cloud
-deploy or when starting the manager.
+deploy or when starting the manager. Note that your cloud_script must complete
+within 15 mins; if your script is slow because it installs a lot of software,
+consider creating a new image instead and using cloud_os.
 
 "cloud_shared" only works when using a cloud scheduler where both the manager
 and jobs will run on Ubuntu. It will cause /shared on the manager's server to be

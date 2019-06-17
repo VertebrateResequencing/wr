@@ -479,7 +479,9 @@ clouddisk: 1
 # OpenStack.
 #
 # When wr spawns a new server, cloudscript will be run on it when the server
-# first boots up.
+# first boots up. Note that there is a time limit of 15 mins for the script to
+# run. If your script installs lots of software and is exceeding the limit for
+# that reason, consider creating a new image instead and setting cloudos.
 # cloudscript: ""
 
 # cloudconfigfiles: What config files should be copied to newly spawned servers?

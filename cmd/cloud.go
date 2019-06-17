@@ -120,7 +120,9 @@ The --script option value can be, for example, the path to a bash script that
 you want to run on any created cloud server before any commands run on them. You
 might install some software for example. Note that the script is run as the user
 defined by --username; if necessary, your bash script may have to prefix its
-commands with 'sudo' if the command would only work as root user.
+commands with 'sudo' if the command would only work as root user. Also, there is
+a time limit of 15 mins for the script to run. If you're installing lots of
+software, consider creating a new image instead, and using the --os option.
 
 The --config_files option lets you specify comma separated arbitrary text file
 paths that should be copied from your local system to any created cloud servers.
@@ -168,8 +170,8 @@ flavor can't be created due to lack of hardware, then the next best flavor -
 excluding flavors in the initial pick's flavor set - will be picked and tried
 instead.
 
-Deploy can work with any given OS image because it uploads wr to any server it
-creates; your OS image does not have to have wr installed on it. The only
+Deploy can work with any given --os OS image because it uploads wr to any server
+it creates; your OS image does not have to have wr installed on it. The only
 requirements of the OS image are that it support ssh and sftp on port 22, and
 that it be a 64bit linux-like system with /proc/*/smaps, /tmp and some local
 writeable disk space in the home directory. For --mounts to work, fuse-utils
