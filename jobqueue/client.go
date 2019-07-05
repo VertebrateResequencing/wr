@@ -237,6 +237,8 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 // Disconnect closes the connection to the jobqueue server. It is CRITICAL that
 // you call Disconnect() before calling Connect() again in the same process.
 func (c *Client) Disconnect() error {
+	c.Lock()
+	defer c.Unlock()
 	return c.sock.Close()
 }
 
@@ -1280,7 +1282,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 			// timeout, but that should be good enough just to get through this)
 			logger.Info("reconnected to server")
 			disconnected = false
+			c.Lock()
 			c.sock = newC.sock
+			c.Unlock()
 		}
 
 		// update the database with our final state

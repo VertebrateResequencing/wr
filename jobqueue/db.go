@@ -970,6 +970,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	jpr := job.PeakRAM
 	jpd := job.PeakDisk
 	jec := job.Exitcode
+	jfr := job.FailReason
 	err := enc.Encode(job)
 	job.RUnlock()
 	if err != nil {
@@ -1017,7 +1018,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 				return errf
 			}
 
-			switch job.FailReason {
+			switch jfr {
 			case FailReasonRAM:
 				b := tx.Bucket(bucketJobRAM)
 				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpr)), []byte(strconv.Itoa(jpr)))
