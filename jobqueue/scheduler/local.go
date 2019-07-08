@@ -499,10 +499,6 @@ func (s *local) processQueue() error {
 				err := s.runCmdFunc(cmd, req, reserved, call)
 
 				s.mutex.Lock()
-				s.resourceMutex.Lock()
-				s.ram -= req.RAM
-				s.cores -= req.Cores
-				s.resourceMutex.Unlock()
 				s.running[key]--
 				if s.running[key] <= 0 {
 					delete(s.running, key)
@@ -633,6 +629,11 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 		s.rcount = 0
 	}
 	s.rcMutex.Unlock()
+
+	s.resourceMutex.Lock()
+	s.ram -= req.RAM
+	s.cores -= req.Cores
+	s.resourceMutex.Unlock()
 
 	return nil // do not return error running the command
 }
