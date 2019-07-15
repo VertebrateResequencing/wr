@@ -80,7 +80,7 @@ func TestQueue(t *testing.T) {
 					}
 				}
 				for i := 0; i < 10; i++ {
-					_, errr := queue.Reserve()
+					_, errr := queue.Reserve("", 0)
 					if errr != nil {
 						fmt.Printf("queue.Reserve() failed: %s\n", errr)
 					}
@@ -268,22 +268,22 @@ func TestQueue(t *testing.T) {
 			callBackLock.Unlock()
 
 			Convey("Once ready you should be able to reserve them in the expected order", func() {
-				item1, err := queue.Reserve()
+				item1, err := queue.Reserve("", 0)
 				So(err, ShouldBeNil)
 				So(item1, ShouldNotBeNil)
 				So(item1.Key, ShouldEqual, "key_0")
 				So(item1.reserves, ShouldEqual, 1)
-				item2, err := queue.Reserve()
+				item2, err := queue.Reserve("", 0)
 				So(err, ShouldBeNil)
 				So(item2, ShouldNotBeNil)
 				So(item2.Key, ShouldEqual, "key_1")
 				prepareToCheckChanged()
-				item3, err := queue.Reserve()
+				item3, err := queue.Reserve("", 0)
 				So(err, ShouldBeNil)
 				So(checkChanged(SubQueueReady, SubQueueRun, 1), ShouldBeTrue)
 				So(item3, ShouldNotBeNil)
 				So(item3.Key, ShouldEqual, "key_2")
-				item4, err := queue.Reserve()
+				item4, err := queue.Reserve("", 0)
 				So(err, ShouldNotBeNil)
 				So(item4, ShouldBeNil)
 				qerr, ok := err.(Error)
@@ -334,7 +334,7 @@ func TestQueue(t *testing.T) {
 						So(checkChanged(SubQueueDelay, SubQueueReady, 1), ShouldBeTrue)
 
 						Convey("Once reserved, the delay can be altered and this affects the next release", func() {
-							item1, err = queue.Reserve()
+							item1, err = queue.Reserve("", 0)
 							So(err, ShouldBeNil)
 							So(item1, ShouldNotBeNil)
 							So(item1.Key, ShouldEqual, "key_0")
@@ -353,7 +353,7 @@ func TestQueue(t *testing.T) {
 						})
 
 						Convey("Once reserved and released, the delay can be altered", func() {
-							item1, err = queue.Reserve()
+							item1, err = queue.Reserve("", 0)
 							So(err, ShouldBeNil)
 							So(item1, ShouldNotBeNil)
 							So(item1.Key, ShouldEqual, "key_0")
@@ -596,11 +596,11 @@ func TestQueue(t *testing.T) {
 					_, erra = queue.Add("item2", "", "data", 0, 0*time.Millisecond, 52*time.Millisecond, "")
 					So(erra, ShouldBeNil)
 					<-time.After(1 * time.Millisecond)
-					item1, erra := queue.Reserve()
+					item1, erra := queue.Reserve("", 0)
 					So(erra, ShouldBeNil)
 					So(item1.Key, ShouldEqual, "item1")
 					So(item1.State(), ShouldEqual, ItemStateRun)
-					item2, erra := queue.Reserve()
+					item2, erra := queue.Reserve("", 0)
 					So(erra, ShouldBeNil)
 					So(item2.Key, ShouldEqual, "item2")
 					So(item2.State(), ShouldEqual, ItemStateRun)
@@ -646,12 +646,12 @@ func TestQueue(t *testing.T) {
 					qerr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(qerr.Err, ShouldEqual, ErrQueueClosed)
-					_, err = queue.Reserve()
+					_, err = queue.Reserve("", 0)
 					So(err, ShouldNotBeNil)
 					qerr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
 					So(qerr.Err, ShouldEqual, ErrQueueClosed)
-					_, err = queue.Reserve("")
+					_, err = queue.Reserve("", 0)
 					So(err, ShouldNotBeNil)
 					qerr, ok = err.(Error)
 					So(ok, ShouldBeTrue)
@@ -738,7 +738,7 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("If not ready you can't reserve them", func() {
-			item, err := queue.Reserve()
+			item, err := queue.Reserve("", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
 			qerr, ok := err.(Error)
@@ -829,7 +829,7 @@ func TestQueue(t *testing.T) {
 			})
 
 			Convey("When ready the ReserveGroup can be changed with SetReserveGroup()", func() {
-				gotItem, errr := queue.Reserve("newGroup")
+				gotItem, errr := queue.Reserve("newGroup", 0)
 				So(errr, ShouldNotBeNil)
 				So(gotItem, ShouldBeNil)
 
@@ -837,7 +837,7 @@ func TestQueue(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(item.ReserveGroup, ShouldEqual, "newGroup")
 
-				gotItem, err = queue.Reserve("newGroup")
+				gotItem, err = queue.Reserve("newGroup", 0)
 				So(err, ShouldBeNil)
 				// So(gotItem, ShouldNotBeNil) *** this causes a data race since goconvey must be trying to access members of gotItem
 				if gotItem == nil {
@@ -850,7 +850,7 @@ func TestQueue(t *testing.T) {
 
 		Convey("Once reserved", func() {
 			<-time.After(55 * time.Millisecond)
-			_, err = queue.Reserve()
+			_, err = queue.Reserve("", 0)
 			So(err, ShouldBeNil)
 
 			Convey("It can be removed from the queue immediately prior to it getting switched to the ready queue", func() {
@@ -952,7 +952,7 @@ func TestQueue(t *testing.T) {
 
 			Convey("And can all be reserved", func() {
 				for i := 0; i < 1000; i++ {
-					item, err := queue.Reserve()
+					item, err := queue.Reserve("", 0)
 					So(err, ShouldBeNil)
 					So(item, ShouldNotBeNil)
 					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
@@ -976,7 +976,7 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("You can change the group of items with SetReserveGroup()", func() {
-			item, err := queue.Reserve("1001")
+			item, err := queue.Reserve("1001", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
 
@@ -986,19 +986,19 @@ func TestQueue(t *testing.T) {
 			err = queue.SetReserveGroup("key_2", "1001")
 			So(err, ShouldBeNil)
 
-			item, err = queue.Reserve("1001")
+			item, err = queue.Reserve("1001", 0)
 			So(err, ShouldBeNil)
 			So(item, ShouldNotBeNil)
 			So(item.Key, ShouldEqual, "key_1")
 			So(item.ReserveGroup, ShouldEqual, "1001")
 
-			item, err = queue.Reserve("1001")
+			item, err = queue.Reserve("1001", 0)
 			So(err, ShouldBeNil)
 			So(item, ShouldNotBeNil)
 			So(item.Key, ShouldEqual, "key_2")
 			So(item.ReserveGroup, ShouldEqual, "1001")
 
-			item, err = queue.Reserve("1001")
+			item, err = queue.Reserve("1001", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
 		})
@@ -1029,7 +1029,7 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("They can be reserved by specifying a group", func() {
-			item, err := queue.Reserve("1001")
+			item, err := queue.Reserve("1001", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
 			qerr, ok := err.(Error)
@@ -1038,7 +1038,7 @@ func TestQueue(t *testing.T) {
 
 			sort.Ints(dataids)
 			for _, dataid := range dataids {
-				item, err := queue.Reserve(fmt.Sprintf("%d", dataid))
+				item, err := queue.Reserve(fmt.Sprintf("%d", dataid), 0)
 				So(err, ShouldBeNil)
 				So(item, ShouldNotBeNil)
 				So(item.Data.(*testdata).ID, ShouldEqual, dataid)
@@ -1046,14 +1046,14 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("You can change a group with SetReserveGroup()", func() {
-			item, err := queue.Reserve("1001")
+			item, err := queue.Reserve("1001", 0)
 			So(err, ShouldNotBeNil)
 			So(item, ShouldBeNil)
 
 			err = queue.SetReserveGroup("key_1", "1001")
 			So(err, ShouldBeNil)
 
-			item, err = queue.Reserve("1001")
+			item, err = queue.Reserve("1001", 0)
 			So(err, ShouldBeNil)
 			So(item, ShouldNotBeNil)
 			So(item.Key, ShouldEqual, "key_1")
@@ -1093,7 +1093,7 @@ func TestQueue(t *testing.T) {
 
 			Convey("And can all be reserved", func() {
 				for i := 0; i < 1000; i++ {
-					item, err := queue.Reserve()
+					item, err := queue.Reserve("", 0)
 					So(err, ShouldBeNil)
 					So(item, ShouldNotBeNil)
 					So(item.Key, ShouldEqual, fmt.Sprintf("key_%d", i))
@@ -1106,7 +1106,7 @@ func TestQueue(t *testing.T) {
 		q := New("myqueue")
 		defer qdestroy(q)
 
-		item, err := q.Reserve("")
+		item, err := q.Reserve("", 0)
 		So(err, ShouldNotBeNil)
 		So(item, ShouldBeNil)
 		qerr, ok := err.(Error)
@@ -1329,7 +1329,7 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
 
-			five, err = queue.Reserve("five")
+			five, err = queue.Reserve("five", 0)
 			So(err, ShouldBeNil)
 			So(five, ShouldNotBeNil)
 			fiveStats = five.Stats()
@@ -1346,7 +1346,7 @@ func TestQueue(t *testing.T) {
 
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
 
-			five, err = queue.Reserve("five")
+			five, err = queue.Reserve("five", 0)
 			So(err, ShouldBeNil)
 			So(five, ShouldNotBeNil)
 			fiveStats = five.Stats()
@@ -1371,7 +1371,7 @@ func TestQueue(t *testing.T) {
 
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
 
-			five, err = queue.Reserve("five")
+			five, err = queue.Reserve("five", 0)
 			So(err, ShouldBeNil)
 			So(five, ShouldNotBeNil)
 			So(five.Stats().State, ShouldEqual, ItemStateRun)
@@ -1524,6 +1524,92 @@ func TestQueue(t *testing.T) {
 		So(len(added), ShouldEqual, 2)
 		So(added[1], ShouldEqual, 10)
 		callBackLock.RUnlock()
+	})
+
+	Convey("You can reserve with a wait time, reserving before items are even added", t, func() {
+		queue := New("myqueue")
+		defer qdestroy(queue)
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 0)
+
+		item, err := queue.Reserve("foo", 0)
+		So(item, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+
+		addErrCh := make(chan error)
+		go func() {
+			<-time.After(5 * time.Millisecond)
+			_, err := queue.Add("key1", "bar", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+			addErrCh <- err
+		}()
+		go func() {
+			<-time.After(20 * time.Millisecond)
+			_, err := queue.Add("key2", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+			addErrCh <- err
+		}()
+
+		rCh0 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("bar", 1*time.Millisecond)
+			rCh0 <- item == nil && err != nil && time.Since(t) < 5*time.Millisecond
+		}()
+
+		rCh1 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("foo", 10*time.Millisecond)
+			rCh1 <- item == nil && err != nil && time.Since(t) < 15*time.Millisecond
+		}()
+
+		rCh2 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("foo", 30*time.Millisecond)
+			rCh2 <- item != nil && err == nil && time.Since(t) < 25*time.Millisecond && item.Key == "key2"
+		}()
+
+		So(<-rCh0, ShouldBeTrue)
+		So(<-addErrCh, ShouldBeNil)
+		So(<-rCh1, ShouldBeTrue)
+		So(<-addErrCh, ShouldBeNil)
+		So(<-rCh2, ShouldBeTrue)
+	})
+
+	Convey("You can reserve with a wait time, reserving before a dependent item becomes ready", t, func() {
+		queue := New("myqueue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add("key1", "one", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key2", "two", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "", []string{"key1"})
+		So(err, ShouldBeNil)
+
+		rmErrCh := make(chan error)
+		go func() {
+			<-time.After(20 * time.Millisecond)
+			err := queue.Remove("key1")
+			rmErrCh <- err
+		}()
+
+		rCh1 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("two", 10*time.Millisecond)
+			rCh1 <- item == nil && err != nil && time.Since(t) < 15*time.Millisecond
+		}()
+
+		rCh2 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("two", 30*time.Millisecond)
+			rCh2 <- item != nil && err == nil && time.Since(t) < 25*time.Millisecond && item.Key == "key2"
+		}()
+
+		So(<-rCh1, ShouldBeTrue)
+		So(<-rmErrCh, ShouldBeNil)
+		So(<-rCh2, ShouldBeTrue)
 	})
 }
 

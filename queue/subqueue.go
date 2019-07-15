@@ -1,4 +1,4 @@
-// Copyright © 2016 Genome Research Limited
+// Copyright © 2016, 2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -24,26 +24,77 @@ package queue
 import (
 	"container/heap"
 	"sync"
+	"time"
+
+	"github.com/inconshreveable/log15"
+	logext "github.com/inconshreveable/log15/ext"
 )
 
 type subQueue struct {
-	mutex        sync.RWMutex
-	items        []*Item
-	groupedItems map[string][]*Item
-	sqIndex      int
-	reserveGroup string
+	mutex                    sync.RWMutex
+	items                    []*Item
+	groupedItems             map[string][]*Item
+	sqIndex                  int
+	reserveGroup             string
+	pushNotificationChannels map[string]map[string]chan bool
+	log15.Logger
 }
 
 // create a new subQueue that can hold *Items in "priority" order. sqIndex is
 // one of 0 (priority is based on the item's delay), 1 (priority is based on the
 // item's priority or creation) or 2 (priority is based on the item's ttr).
-func newSubQueue(sqIndex int) *subQueue {
-	queue := &subQueue{sqIndex: sqIndex}
+func newSubQueue(sqIndex int, logger log15.Logger) *subQueue {
+	queue := &subQueue{
+		sqIndex:                  sqIndex,
+		pushNotificationChannels: make(map[string]map[string]chan bool),
+		Logger:                   logger.New(),
+	}
 	if sqIndex == 1 {
 		queue.groupedItems = make(map[string][]*Item)
 	}
 	heap.Init(queue)
 	return queue
+}
+
+// notifyPush lets you supply a channel that will then receive true whenever the
+// next item with the given ReserveGroup (of if reserveGroup is blank, no
+// ReserveGroup) is push()ed to this subQueue.
+//
+// After 1 matching item has been pushed, the supplied ch will not be used
+// again.
+//
+// If timeout duration passes before a matching item is pushed, the ch will
+// receive false and not be used again.
+func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Duration) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	var chans map[string]chan bool
+	if val, ok := q.pushNotificationChannels[reserveGroup]; ok {
+		chans = val
+	} else {
+		chans = make(map[string]chan bool)
+	}
+	id := logext.RandId(8)
+	chans[id] = ch
+	q.pushNotificationChannels[reserveGroup] = chans
+	q.Debug("notifyPush stored ch", "group", reserveGroup, "id", id)
+
+	go func() {
+		<-time.After(timeout)
+		q.mutex.Lock()
+		defer q.mutex.Unlock()
+		if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
+			if ch, ok := chans[id]; ok {
+				q.Debug("notify timed out", "group", reserveGroup, "id", id)
+				ch <- false
+				delete(chans, id)
+				if len(q.pushNotificationChannels[reserveGroup]) == 0 {
+					delete(q.pushNotificationChannels, reserveGroup)
+				}
+			}
+		}
+	}()
 }
 
 // push adds an item to the queue
@@ -52,6 +103,18 @@ func (q *subQueue) push(item *Item) {
 	defer q.mutex.Unlock()
 	if q.sqIndex == 1 {
 		q.reserveGroup = item.ReserveGroup
+		q.Debug("pushing item to ready queue", "group", item.ReserveGroup)
+	}
+	if chans, ok := q.pushNotificationChannels[q.reserveGroup]; ok {
+		q.Debug("push should notify", "group", q.reserveGroup)
+		defer func() {
+			for key, ch := range chans {
+				q.Debug("notifying true", "group", q.reserveGroup, "id", key)
+				ch <- true
+			}
+			delete(q.pushNotificationChannels, q.reserveGroup)
+			q.Debug("deleted notifiers", "group", q.reserveGroup)
+		}()
 	}
 	heap.Push(q, item)
 }

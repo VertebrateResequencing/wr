@@ -60,16 +60,21 @@ delay queue.
 
     // add an item to the queue
     ttr := 30 * time.Second
-    item, err := q.Add("uuid", "group", "item data", 0, 0 * time.Second, ttr)
+    item, err := q.Add("uuid1", "", "item data1", 0, 0 * time.Second, ttr)
+    item, err := q.Add("uuid2", "group", "item data2", 0, 0 * time.Second, ttr)
 
     // get it back out
-    item, err = queue.Get("uuid")
+    item, err = queue.Get("uuid1")
 
-    // reserve the next item
-    item, err = queue.Reserve()
+    // reserve the next item with no group
+    item, err = queue.Reserve("", 0)
 
     // or reserve the next item in a particular group
-    item, err = queue.Reserve("group")
+	item, err = queue.Reserve("group", 0)
+
+	// or reserve even if there are no items in the queue right now, waiting
+	// until something gets added or otherwise becomes ready
+	item, err = queue.Reserve("group", 1 * time.Second)
 
     // queue.Touch() every < ttr seconds if you might take longer than ttr to
     // process the item
@@ -83,6 +88,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/inconshreveable/log15"
 )
 
 // SubQueue is how we name the sub-queues of a Queue.
@@ -175,6 +182,7 @@ type Queue struct {
 	closed                 bool
 	readyAddedCbRunning    bool
 	readyAddedCbRecall     bool
+	log15.Logger
 }
 
 // Stats holds information about the Queue's state.
@@ -200,14 +208,15 @@ type ItemDef struct {
 }
 
 // New is a helper to create instance of the Queue struct.
-func New(name string) *Queue {
+func New(name string, logger log15.Logger) *Queue {
+	l := logger.New()
 	queue := &Queue{
 		Name:                   name,
 		items:                  make(map[string]*Item),
 		dependants:             make(map[string]map[string]*Item),
-		delayQueue:             newSubQueue(0),
-		readyQueue:             newSubQueue(1),
-		runQueue:               newSubQueue(2),
+		delayQueue:             newSubQueue(0, l),
+		readyQueue:             newSubQueue(1, l),
+		runQueue:               newSubQueue(2, l),
 		buryQueue:              newBuryQueue(),
 		depQueue:               newDependencyQueue(),
 		ttrNotification:        make(chan bool, 1),
@@ -219,6 +228,7 @@ func New(name string) *Queue {
 		delayClose:             make(chan bool, 1),
 		delayTime:              time.Now(),
 		ttrCb:                  defaultTTRCallback,
+		Logger:                 l,
 	}
 	go queue.startDelayProcessing()
 	<-queue.startedDelayProcessing
@@ -861,19 +871,25 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) error {
 // Reserve is a thread-safe way to get the highest priority (or for those with
 // equal priority, the oldest (by time since the item was first Add()ed) item in
 // the queue, switching it from the ready sub-queue to the run sub-queue, and in
-// so doing starting its ttr countdown. By specifying the optional reserveGroup
-// argument, you will get the next item that was added with the given
-// ReserveGroup (conversely, if your items were added with ReserveGroups but you
-// don't supply one here, you will not get an item).
+// so doing starting its ttr countdown.
+//
+// If reserveGroup is not blank, you will get the next item that was added with
+// the given ReserveGroup (conversely, if your items were added with
+// ReserveGroups but you don't supply one here, you will not get an item).
+//
+// If wait is greater than 0, we will wait for up to that much time for an item
+// to appear in the ready sub-queue, if at least 1 isn't already there. If after
+// this time there is still nothing in the ready sub-queue, no item and a
+// ErrNothingReady error is returned.
 //
 // You need to Remove() the item when you're done with it. If you're still doing
 // something and ttr is approaching, Touch() it, otherwise it will be assumed
-// you died and the item will be released back to the ready sub- queue
+// you died and the item will be released back to the ready sub-queue
 // automatically, to be handled by someone else that gets it from a Reserve()
 // call. If you know you can't handle it right now, but someone else might be
 // able to later, you can manually call Release(), which moves it to the delay
 // sub-queue.
-func (queue *Queue) Reserve(reserveGroup ...string) (*Item, error) {
+func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -881,17 +897,40 @@ func (queue *Queue) Reserve(reserveGroup ...string) (*Item, error) {
 		return nil, Error{queue.Name, "Reserve", "", ErrQueueClosed}
 	}
 
-	var group string
-	if len(reserveGroup) == 1 {
-		group = reserveGroup[0]
-	}
-
 	// pop an item from the ready queue and add it to the run queue
-	item := queue.readyQueue.pop(group)
+	l := queue.Logger.New("group", reserveGroup, "wait", wait)
+	l.Debug("queue Reserve called")
+	item := queue.readyQueue.pop(reserveGroup)
 	if item == nil {
-		queue.mutex.Unlock()
-		return item, Error{queue.Name, "Reserve", "", ErrNothingReady}
+		if wait > 0 {
+			l.Debug("no item, will notify")
+			ch := make(chan bool, 1)
+			queue.readyQueue.notifyPush(reserveGroup, ch, wait)
+			queue.mutex.Unlock()
+			l.Debug("unlocked after notify")
+
+			// wait until something is pushed to the ready queue or we hit the
+			// timeout
+			tryAgain := <-ch
+			l.Debug("read from ch", "tryAgain", tryAgain)
+			if tryAgain {
+				queue.mutex.Lock()
+				l.Debug("got lock, will try pop again")
+				item = queue.readyQueue.pop(reserveGroup)
+				if item == nil {
+					queue.mutex.Unlock()
+				}
+			}
+		} else {
+			queue.mutex.Unlock()
+		}
+
+		if item == nil {
+			l.Debug("no item")
+			return item, Error{queue.Name, "Reserve", "", ErrNothingReady}
+		}
 	}
+	l.Debug("got item", "item", item.Key)
 
 	item.touch()
 	queue.runQueue.push(item)
