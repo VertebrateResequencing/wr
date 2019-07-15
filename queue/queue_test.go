@@ -1611,6 +1611,56 @@ func TestQueue(t *testing.T) {
 		So(<-rmErrCh, ShouldBeNil)
 		So(<-rCh2, ShouldBeTrue)
 	})
+
+	Convey("You can reserve with a wait time, reserving before changing an item's reserve group", t, func() {
+		queue := New("myqueue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add("key1", "one", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+		So(err, ShouldBeNil)
+		_, err = queue.Add("key2", "two", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "", []string{"key1"})
+		So(err, ShouldBeNil)
+
+		rmErrCh := make(chan error)
+		go func() {
+			<-time.After(20 * time.Millisecond)
+			err := queue.Remove("key1")
+			rmErrCh <- err
+		}()
+
+		go func() {
+			<-time.After(40 * time.Millisecond)
+			err := queue.SetReserveGroup("key2", "three")
+			rmErrCh <- err
+		}()
+
+		rCh1 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("three", 10*time.Millisecond)
+			rCh1 <- item == nil && err != nil && time.Since(t) < 15*time.Millisecond
+		}()
+
+		rCh2 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("three", 30*time.Millisecond)
+			rCh2 <- item == nil && err != nil && time.Since(t) < 35*time.Millisecond
+		}()
+
+		rCh3 := make(chan bool)
+		go func() {
+			t := time.Now()
+			item, err := queue.Reserve("three", 50*time.Millisecond)
+			rCh3 <- item != nil && err == nil && time.Since(t) < 45*time.Millisecond && item.Key == "key2"
+		}()
+
+		So(<-rCh1, ShouldBeTrue)
+		So(<-rmErrCh, ShouldBeNil)
+		So(<-rCh2, ShouldBeTrue)
+		So(<-rmErrCh, ShouldBeNil)
+		So(<-rCh3, ShouldBeTrue)
+	})
 }
 
 func depTestFunc(queue *Queue, changed bool) {

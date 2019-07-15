@@ -43,11 +43,18 @@ type subQueue struct {
 // create a new subQueue that can hold *Items in "priority" order. sqIndex is
 // one of 0 (priority is based on the item's delay), 1 (priority is based on the
 // item's priority or creation) or 2 (priority is based on the item's ttr).
-func newSubQueue(sqIndex int, logger log15.Logger) *subQueue {
+func newSubQueue(sqIndex int, logger ...log15.Logger) *subQueue {
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
+	} else {
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
 	queue := &subQueue{
 		sqIndex:                  sqIndex,
 		pushNotificationChannels: make(map[string]map[string]chan bool),
-		Logger:                   logger.New(),
+		Logger:                   l,
 	}
 	if sqIndex == 1 {
 		queue.groupedItems = make(map[string][]*Item)
@@ -58,10 +65,12 @@ func newSubQueue(sqIndex int, logger log15.Logger) *subQueue {
 
 // notifyPush lets you supply a channel that will then receive true whenever the
 // next item with the given ReserveGroup (of if reserveGroup is blank, no
-// ReserveGroup) is push()ed to this subQueue.
+// ReserveGroup) is push()ed to this subQueue. It will also receive true if an
+// item that has already been pushed this subQueue has its ReserveGroup updated
+// to the given reserverGroup.
 //
-// After 1 matching item has been pushed, the supplied ch will not be used
-// again.
+// After 1 matching item has been pushed or updated, the supplied ch will not be
+// used again.
 //
 // If timeout duration passes before a matching item is pushed, the ch will
 // receive false and not be used again.
@@ -78,7 +87,6 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 	id := logext.RandId(8)
 	chans[id] = ch
 	q.pushNotificationChannels[reserveGroup] = chans
-	q.Debug("notifyPush stored ch", "group", reserveGroup, "id", id)
 
 	go func() {
 		<-time.After(timeout)
@@ -86,7 +94,6 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 		defer q.mutex.Unlock()
 		if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
 			if ch, ok := chans[id]; ok {
-				q.Debug("notify timed out", "group", reserveGroup, "id", id)
 				ch <- false
 				delete(chans, id)
 				if len(q.pushNotificationChannels[reserveGroup]) == 0 {
@@ -97,25 +104,26 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 	}()
 }
 
+// triggerNotify is used to check if we should notify about the given
+// reserverGroup and send true on the registered channels if so. You
+// must hold the mutext lock before calling this.
+func (q *subQueue) triggerNotify(reserveGroup string) {
+	if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
+		for _, ch := range chans {
+			ch <- true
+		}
+		delete(q.pushNotificationChannels, reserveGroup)
+	}
+}
+
 // push adds an item to the queue
 func (q *subQueue) push(item *Item) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	if q.sqIndex == 1 {
 		q.reserveGroup = item.ReserveGroup
-		q.Debug("pushing item to ready queue", "group", item.ReserveGroup)
 	}
-	if chans, ok := q.pushNotificationChannels[q.reserveGroup]; ok {
-		q.Debug("push should notify", "group", q.reserveGroup)
-		defer func() {
-			for key, ch := range chans {
-				q.Debug("notifying true", "group", q.reserveGroup, "id", key)
-				ch <- true
-			}
-			delete(q.pushNotificationChannels, q.reserveGroup)
-			q.Debug("deleted notifiers", "group", q.reserveGroup)
-		}()
-	}
+	defer q.triggerNotify(q.reserveGroup)
 	heap.Push(q, item)
 }
 
@@ -196,6 +204,7 @@ func (q *subQueue) update(item *Item, oldGroup ...string) {
 		q.reserveGroup = oldGroup[0]
 		heap.Remove(q, item.queueIndexes[q.sqIndex])
 		q.reserveGroup = item.ReserveGroup
+		defer q.triggerNotify(q.reserveGroup)
 		heap.Push(q, item)
 		return
 	}

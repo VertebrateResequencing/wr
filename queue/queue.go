@@ -208,8 +208,14 @@ type ItemDef struct {
 }
 
 // New is a helper to create instance of the Queue struct.
-func New(name string, logger log15.Logger) *Queue {
-	l := logger.New()
+func New(name string, logger ...log15.Logger) *Queue {
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
+	} else {
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
 	queue := &Queue{
 		Name:                   name,
 		items:                  make(map[string]*Item),
@@ -898,24 +904,18 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 	}
 
 	// pop an item from the ready queue and add it to the run queue
-	l := queue.Logger.New("group", reserveGroup, "wait", wait)
-	l.Debug("queue Reserve called")
 	item := queue.readyQueue.pop(reserveGroup)
 	if item == nil {
 		if wait > 0 {
-			l.Debug("no item, will notify")
 			ch := make(chan bool, 1)
 			queue.readyQueue.notifyPush(reserveGroup, ch, wait)
 			queue.mutex.Unlock()
-			l.Debug("unlocked after notify")
 
 			// wait until something is pushed to the ready queue or we hit the
 			// timeout
 			tryAgain := <-ch
-			l.Debug("read from ch", "tryAgain", tryAgain)
 			if tryAgain {
 				queue.mutex.Lock()
-				l.Debug("got lock, will try pop again")
 				item = queue.readyQueue.pop(reserveGroup)
 				if item == nil {
 					queue.mutex.Unlock()
@@ -926,11 +926,9 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 		}
 
 		if item == nil {
-			l.Debug("no item")
 			return item, Error{queue.Name, "Reserve", "", ErrNothingReady}
 		}
 	}
-	l.Debug("got item", "item", item.Key)
 
 	item.touch()
 	queue.runQueue.push(item)
