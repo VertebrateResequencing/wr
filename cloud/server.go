@@ -107,6 +107,7 @@ type Server struct {
 	onDeathrow        bool
 	sshStarted        bool
 	createdShare      bool
+	used              bool
 }
 
 // Matches tells you if in principle a Server has the given os, script, config
@@ -122,6 +123,7 @@ func (s *Server) Matches(os string, script []byte, configFiles string, flavor *F
 func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.used = true
 	s.usedCores = internal.FloatAdd(s.usedCores, cores)
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
@@ -132,6 +134,13 @@ func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
 	if s.onDeathrow {
 		s.cancelDestruction <- true
 	}
+}
+
+// Used tells you if this server has ever had Allocate() called on it.
+func (s *Server) Used() bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.used
 }
 
 // Release records that the given resources have now been freed.
