@@ -170,12 +170,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// first just try to Reserve normally
 				var item *queue.Item
 				var err error
+				skip := false
 				if cr.SchedulerGroup != "" {
 					// if this is the first job that the client is trying to
 					// reserve, and if we don't actually want any more clients
-					// working on this schedulerGroup, we'll just act as if nothing
-					// was ready. Likewise if in drain mode.
-					skip := false
+					// working on this schedulerGroup, we'll just act as if
+					// nothing was ready. Likewise if in drain mode.
 					if cr.FirstReserve && s.rc != "" {
 						s.sgcmutex.Lock()
 						if count, existed := s.sgroupcounts[cr.SchedulerGroup]; !existed || count == 0 {
@@ -183,64 +183,25 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						}
 						s.sgcmutex.Unlock()
 					}
-
-					if !skip {
-						item, err = s.reserveWithLimits(cr.SchedulerGroup)
-					}
-				} else {
-					item, err = s.reserveWithLimits()
 				}
 
-				if err != nil {
-					if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-						// there's nothing in the ready sub queue right now, so every
-						// second try and Reserve() from the queue until either we get
-						// an item, or we exceed the client's timeout
-						var stop <-chan time.Time
-						if cr.Timeout.Nanoseconds() > 0 {
-							stop = time.After(cr.Timeout)
-						} else {
-							stop = make(chan time.Time)
-						}
+				if !skip {
+					item, err = s.reserveWithLimits(cr.SchedulerGroup, cr.Timeout)
 
-						itemerrch := make(chan *itemErr, 1)
-						ticker := time.NewTicker(ServerReserveTicker)
-						go func() {
-							defer internal.LogPanic(s.Logger, "reserve", true)
-
-							for {
-								select {
-								case <-ticker.C:
-									itemr, err := s.reserveWithLimits(cr.SchedulerGroup)
-									if err != nil {
-										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-											continue
-										}
-										ticker.Stop()
-										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
-											itemerrch <- &itemErr{err: ErrQueueClosed}
-										} else {
-											itemerrch <- &itemErr{err: ErrInternalError}
-										}
-										return
-									}
-									ticker.Stop()
-									itemerrch <- &itemErr{item: itemr}
-									return
-								case <-stop:
-									ticker.Stop()
-									// if we time out, we'll return nil job and nil err
-									itemerrch <- &itemErr{}
-									return
-								}
+					if err != nil {
+						if qerr, ok := err.(queue.Error); ok {
+							switch qerr.Err {
+							case queue.ErrNothingReady:
+								srerr = ""
+							case queue.ErrQueueClosed:
+								srerr = ErrQueueClosed
+							default:
+								srerr = ErrInternalError
 							}
-						}()
-						itemerr := <-itemerrch
-						close(itemerrch)
-						item = itemerr.item
-						srerr = itemerr.err
+						}
 					}
 				}
+
 				if srerr == "" && item != nil {
 					// clean up any past state to have a fresh job ready to run
 					sjob := item.Data.(*Job)
@@ -857,22 +818,20 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 // and it is suffixed with limit groups, those limit groups will be incremented.
 // On success we reserve and return as normal. On failure, we act as if the
 // queue was empty.
-func (s *Server) reserveWithLimits(group ...string) (*queue.Item, error) {
+func (s *Server) reserveWithLimits(group string, wait time.Duration) (*queue.Item, error) {
 	var item *queue.Item
 	var err error
 	var limitGroups []string
-	if len(group) == 1 {
-		limitGroups = s.schedGroupToLimitGroups(group[0])
+	if group != "" {
+		limitGroups = s.schedGroupToLimitGroups(group)
 		if len(limitGroups) > 0 {
 			if !s.limiter.Increment(limitGroups) {
 				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}
 		}
-
-		item, err = s.q.Reserve(group[0])
-	} else {
-		item, err = s.q.Reserve()
 	}
+
+	item, err = s.q.Reserve(group, wait)
 
 	if len(limitGroups) > 0 {
 		if item == nil {

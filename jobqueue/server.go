@@ -1063,7 +1063,7 @@ func (s *Server) uploadFile(source io.Reader, savePath string) (string, error) {
 // createQueue creates and stores a queue.Queue on the Server and sets up its
 // callbacks.
 func (s *Server) createQueue() {
-	q := queue.New("cmds")
+	q := queue.New("cmds", s.Logger)
 	s.q = q
 
 	// we set a callback for things entering this queue's ready sub-queue.
@@ -2032,7 +2032,7 @@ func (s *Server) scheduleRunners(group string) {
 				problem = false
 				s.sgcmutex.Lock()
 				for {
-					item, errr := s.q.Reserve(group)
+					item, errr := s.q.Reserve(group, 0)
 					if errr != nil {
 						if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNothingReady {
 							s.Warn("scheduleRunners failed to reserve an item", "group", group, "err", errr)
