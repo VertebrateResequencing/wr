@@ -819,7 +819,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 
 	// spawn
 	failMsg := "server failed spawn"
-	logger.Debug("will spawn", "flavor", flavor.Name)
+	logger.Debug("will spawn new server", "flavor", flavor.Name, "cmd", cmd)
 	tSpawn := time.Now()
 	server, err := s.provider.Spawn(requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, usingQuotaCB)
 	serverID := "failed"
@@ -984,7 +984,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			server.Allocate(req.Cores, req.RAM, req.Disk)
 			reservedCh <- true
 			logger = logger.New("server", sid)
-			logger.Debug("using existing server")
+			logger.Debug("picked server")
 			break
 		}
 	}
@@ -1249,6 +1249,8 @@ func (s *opst) notifyBadServer(server *cloud.Server) {
 func (s *opst) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.runMutex.Lock()
+	defer s.runMutex.Unlock()
 	s.cleanMutex.Lock()
 	defer s.cleanMutex.Unlock()
 	s.spawnMutex.Lock()
