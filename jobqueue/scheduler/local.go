@@ -262,6 +262,9 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 		count: count,
 	}
 	s.mutex.Lock()
+	if s.cleanedUp() {
+		return nil
+	}
 
 	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
@@ -413,10 +416,6 @@ func (s *local) removeKey(key string) {
 // possible to run any, does so if it is, otherwise returns the jobs to the
 // queue.
 func (s *local) processQueue(reason string) error {
-	if s.cleanedUp() {
-		return nil
-	}
-
 	s.Debug("processQueue starting", "reason", reason)
 
 	// first perform any global state update needed by the scheduler
@@ -427,6 +426,9 @@ func (s *local) processQueue(reason string) error {
 	// complete
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.cleanedUp() {
+		return nil
+	}
 	if s.processing {
 		s.recall = true
 		s.Debug("processQueue returning early since still running")
@@ -657,12 +659,11 @@ func (s *local) postProcess() {}
 // periodically as well means we are responsive to external events freeing up
 // resources.
 func (s *local) startAutoProcessing() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	if s.cleanedUp() {
 		return
 	}
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	if s.autoProcessing {
 		return
 	}
