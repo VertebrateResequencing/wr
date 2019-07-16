@@ -5093,7 +5093,10 @@ sudo usermod -aG docker ` + osUser
 	Convey("You can connect with an OpenStack scheduler", t, func() {
 		server, _, token, errs = serve(osConfig)
 		So(errs, ShouldBeNil)
-		defer server.Stop(true)
+		defer func() {
+			<-time.After(1 * time.Second) // give runners a chance to exit to avoid extraneous warnings
+			server.Stop(true)
+		}()
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
@@ -5798,6 +5801,7 @@ sudo usermod -aG docker ` + osUser
 
 		Reset(func() {
 			if server != nil {
+				<-time.After(1 * time.Second)
 				server.Stop(true)
 			}
 		})
