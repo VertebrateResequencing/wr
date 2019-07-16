@@ -478,6 +478,7 @@ func (s *local) processQueue(reason string) error {
 		count := j.count
 		j.RUnlock()
 
+		s.runMutex.Lock()
 		running := s.running[key]
 		s.Debug("processQueue running", "needs", count, "current", running, "cmd", cmd)
 		if count == 0 && running == 0 {
@@ -485,6 +486,7 @@ func (s *local) processQueue(reason string) error {
 			// from the queue; do so now
 			s.Debug("processQueue cancelling", "cmd", cmd)
 			s.removeKey(key)
+			s.runMutex.Unlock()
 			continue
 		}
 		toRelease = append(toRelease, key)
@@ -492,6 +494,7 @@ func (s *local) processQueue(reason string) error {
 		if shouldCount <= 0 {
 			// we're already running everything for this job, try the next
 			// largest cmd
+			s.runMutex.Unlock()
 			continue
 		}
 
@@ -506,13 +509,13 @@ func (s *local) processQueue(reason string) error {
 		if canCount <= 0 {
 			// try and fill any "gaps" (spare memory/ cpu) by seeing if a cmd
 			// with lesser resource requirements can be run
+			s.runMutex.Unlock()
 			continue
 		}
 
 		// start running what we can
 		s.Debug("processQueue runCmdFunc", "count", canCount)
 		reserved := make(chan bool, canCount)
-		s.runMutex.Lock()
 		for i := 0; i < canCount; i++ {
 			s.running[key]++
 			s.Debug("increased running", "cmd", cmd, "now", s.running[key])
@@ -738,6 +741,8 @@ func (s *local) setBadServerCallBack(cb BadServerCallBack) {}
 func (s *local) cleanup() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.runMutex.Lock()
+	defer s.runMutex.Unlock()
 	s.cleanMutex.Lock()
 	defer s.cleanMutex.Unlock()
 	s.stopAutoProcessing()
