@@ -841,7 +841,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 		if err == nil && needsSharedDisk {
 			s.serversMutex.RLock()
 			localhostIP := s.servers["localhost"].IP
-			s.serversMutex.RLock()
+			s.serversMutex.RUnlock()
 			err = s.doUnlessCleaned(server, func() error { return server.MountSharedDisk(localhostIP) })
 		}
 
@@ -1255,10 +1255,6 @@ func (s *opst) cleanup() {
 	defer s.cleanMutex.Unlock()
 	s.spawnMutex.Lock()
 	defer s.spawnMutex.Unlock()
-	s.stateMutex.Lock()
-	defer s.stateMutex.Unlock()
-	s.serversMutex.Lock()
-	defer s.serversMutex.Unlock()
 
 	// prevent any further scheduling and queue processing, and destroy the
 	// queue
@@ -1269,6 +1265,7 @@ func (s *opst) cleanup() {
 	}
 
 	// wait for any ongoing state update to complete
+	s.stateMutex.Lock()
 	for {
 		if !s.updatingState {
 			break
@@ -1277,8 +1274,10 @@ func (s *opst) cleanup() {
 		<-time.After(10 * time.Millisecond)
 		s.stateMutex.Lock()
 	}
+	defer s.stateMutex.Unlock()
 
 	// bring down all our servers
+	s.serversMutex.Lock()
 	close(s.stopRSMonitoring)
 	for sid, server := range s.servers {
 		if sid == "localhost" {
@@ -1290,6 +1289,7 @@ func (s *opst) cleanup() {
 		}
 		delete(s.servers, sid)
 	}
+	defer s.serversMutex.Unlock()
 
 	// teardown any cloud resources created
 	err = s.provider.TearDown()
