@@ -148,9 +148,10 @@ type ConfigLocal struct {
 
 // jobs are what we store in our queue.
 type job struct {
-	cmd   string
-	req   *Requirements
-	count int
+	cmd                string
+	req                *Requirements
+	count              int
+	scheduleDecrements int
 	sync.RWMutex
 }
 
@@ -269,17 +270,24 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
+			// update the job's count (only)
+			j := item.Data.(*job)
+			j.Lock()
+			before := j.count
+			j.count = count
+			if count < before {
+				j.scheduleDecrements += before - count
+			} else if j.scheduleDecrements > 0 {
+				j.scheduleDecrements -= count - before
+				if j.scheduleDecrements < 0 {
+					j.scheduleDecrements = 0
+				}
+			}
+			j.Unlock()
+			s.Debug("schedule changed j.count", "cmd", cmd, "before", before, "needs", count)
 			if count == 0 {
 				s.removeKey(key)
 				s.Debug("schedule removed job", "cmd", cmd)
-			} else {
-				// update the job's count (only)
-				j := item.Data.(*job)
-				j.Lock()
-				before := j.count
-				j.count = count
-				j.Unlock()
-				s.Debug("schedule changed j.count", "cmd", cmd, "before", before, "needs", count)
 			}
 		} else {
 			s.mutex.Unlock()
@@ -416,8 +424,6 @@ func (s *local) removeKey(key string) {
 // possible to run any, does so if it is, otherwise returns the jobs to the
 // queue.
 func (s *local) processQueue(reason string) error {
-	s.Debug("processQueue starting", "reason", reason)
-
 	// first perform any global state update needed by the scheduler
 	s.stateUpdateFunc()
 
@@ -435,6 +441,7 @@ func (s *local) processQueue(reason string) error {
 		return nil
 	}
 	s.processing = true
+	s.Debug("processQueue starting", "reason", reason)
 
 	stats := s.queue.Stats()
 	toRelease := make([]string, 0, stats.Items)
@@ -536,10 +543,23 @@ func (s *local) processQueue(reason string) error {
 				if s.running[key] <= 0 {
 					delete(s.running, key)
 				}
-				s.runMutex.Unlock()
 
-				// we don't decrement j.count here because we expect our caller
-				// to decrement it via a schedule() call
+				// decrement j.count here if we didn't already decrement it
+				// during a schedule() call
+				if err == nil {
+					j.Lock()
+					if j.scheduleDecrements > 0 {
+						j.scheduleDecrements--
+					} else {
+						j.count--
+					}
+					jCount := j.count
+					j.Unlock()
+					if jCount <= 0 {
+						s.removeKey(key)
+					}
+				}
+				s.runMutex.Unlock()
 
 				if err != nil {
 					// users are notified of relevant errors during runCmd; here
