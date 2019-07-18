@@ -154,7 +154,7 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
-	if s.usedCores <= 0 && s.TTD.Seconds() > 0 {
+	if s.usedCores <= 0 && s.usedRAM <= 0 && s.TTD.Seconds() > 0 {
 		s.logger.Debug("server idle")
 		go func() {
 			defer internal.LogPanic(s.logger, "server release", false)
@@ -163,6 +163,10 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 			if s.onDeathrow {
 				s.mutex.Unlock()
 				s.logger.Debug("server already on deathrow")
+				return
+			} else if s.usedCores > 0 || s.usedRAM > 0 {
+				s.mutex.Unlock()
+				s.logger.Debug("allocated before entering deathrow")
 				return
 			}
 			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
