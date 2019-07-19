@@ -114,9 +114,9 @@ type local struct {
 	cleanMutex        sync.RWMutex
 	rcMutex           sync.RWMutex
 	resourceMutex     sync.RWMutex
+	runMutex          sync.RWMutex
 	mutex             sync.Mutex
 	rpMutex           sync.Mutex
-	runMutex          sync.Mutex
 	cleaned           bool
 	autoProcessing    bool
 	processing        bool
@@ -304,6 +304,28 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 	// try and run the jobs in the queue
 	return s.processQueue("schedule")
+}
+
+// cmdCountRemaining tells you the count of cmd still needed based on what was
+// supplied to schedule(), and how many we've already finished running or are
+// currently running. Returns 0 if the cmd isn't known about.
+func (s *local) cmdCountRemaining(cmd string) int {
+	key := jobName(cmd, "n/a", false)
+	item, err := s.queue.Get(key)
+	if err != nil || item == nil {
+		return 0
+	}
+
+	j := item.Data.(*job)
+	j.RLock()
+	count := j.count
+	j.RUnlock()
+
+	s.runMutex.RLock()
+	running := s.running[key]
+	s.runMutex.RUnlock()
+
+	return count - running
 }
 
 // recover achieves the aims of Recover(). Here we find an untracked pid

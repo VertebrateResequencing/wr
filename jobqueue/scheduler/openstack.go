@@ -22,6 +22,7 @@ package scheduler
 // on servers spawned on demand.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -39,8 +40,8 @@ import (
 )
 
 const (
-	unquotadVal     = 1000000 // a "large" number for use when we don't have quota
-	cleanedUpErrStr = "cleaned up"
+	unquotadVal           = 1000000 // a "large" number for use when we don't have quota
+	serverNotNeededErrStr = "server not needed"
 )
 
 // debugCounter and debugEffect are used by tests to prove some bugs
@@ -835,14 +836,16 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 		logger.Debug("waiting for server ready")
 		failMsg = "server failed ready"
 		tReady := time.Now()
-		err = s.doUnlessCleaned(server, func() error { return server.WaitUntilReady(requestedConfigFiles, requestedScript) })
+		err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
+			return server.WaitUntilReady(ctx, requestedConfigFiles, requestedScript)
+		})
 		logger.Debug("waited for server to become ready", "took", time.Since(tReady))
 
 		if err == nil && needsSharedDisk {
 			s.serversMutex.RLock()
 			localhostIP := s.servers["localhost"].IP
 			s.serversMutex.RUnlock()
-			err = s.doUnlessCleaned(server, func() error { return server.MountSharedDisk(localhostIP) })
+			err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.MountSharedDisk(context.Background(), localhostIP) })
 		}
 
 		if err == nil {
@@ -854,8 +857,8 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 			exe := strings.Split(cmd, " ")[0]
 			var exePath, stdout string
 			if exePath, err = exec.LookPath(exe); err == nil {
-				err = s.doUnlessCleaned(server, func() error {
-					stdout, _, err = server.RunCmd("file "+exePath, false)
+				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
+					stdout, _, err = server.RunCmd(ctx, "file "+exePath, false)
 					return err
 				})
 				if stdout != "" {
@@ -865,29 +868,29 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 						// dir, but the remote server has a different user, or
 						// presumably if it is somewhere requiring root
 						// permission
-						err = s.doUnlessCleaned(server, func() error { return server.UploadFile(exePath, exePath) })
+						err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.UploadFile(ctx, exePath, exePath) })
 						if err == nil {
-							err = s.doUnlessCleaned(server, func() error {
-								_, _, err = server.RunCmd("chmod u+x "+exePath, false)
+							err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
+								_, _, err = server.RunCmd(ctx, "chmod u+x "+exePath, false)
 								return err
 							})
-						} else if err.Error() != cleanedUpErrStr {
+						} else if err.Error() != serverNotNeededErrStr {
 							err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 						}
-					} else if err != nil && err.Error() != cleanedUpErrStr {
+					} else if err != nil && err.Error() != serverNotNeededErrStr {
 						err = fmt.Errorf("could not check exe with [file %s]: %s [%s]", exePath, stdout, err)
 					}
 				} else {
 					// checking for exePath with the file command failed for
 					// some reason, and without any stdout... but let's just
 					// try the upload anyway, assuming the exe isn't there
-					err = s.doUnlessCleaned(server, func() error { return server.UploadFile(exePath, exePath) })
+					err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.UploadFile(ctx, exePath, exePath) })
 					if err == nil {
-						err = s.doUnlessCleaned(server, func() error {
-							_, _, err = server.RunCmd("chmod u+x "+exePath, false)
+						err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
+							_, _, err = server.RunCmd(ctx, "chmod u+x "+exePath, false)
 							return err
 						})
-					} else if err.Error() != cleanedUpErrStr {
+					} else if err.Error() != serverNotNeededErrStr {
 						err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
 					}
 				}
@@ -902,18 +905,20 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	}
 
 	if s.cleanedUp() {
-		err = errors.New(cleanedUpErrStr)
+		err = errors.New(serverNotNeededErrStr)
 	}
 
 	// handle Spawn() or upload-of-exe errors now, by destroying the server
 	// and noting we failed
 	if err != nil {
-		if err.Error() != cleanedUpErrStr {
+		if err.Error() == serverNotNeededErrStr {
+			logger.Debug(failMsg, "err", err)
+		} else {
 			logger.Warn(failMsg, "err", err)
 		}
 		if server != nil {
 			errd := server.Destroy()
-			if errd != nil && err.Error() != cleanedUpErrStr {
+			if errd != nil {
 				logger.Debug("server also failed to destroy", "err", errd)
 			}
 		} else if s.provider.ErrIsNoHardware(err) {
@@ -922,7 +927,9 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 			s.ffMutex.Unlock()
 			s.Warn("server failed to spawn due to lack of hardware", "flavor", flavor.Name)
 		}
-		s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
+		if err.Error() != serverNotNeededErrStr {
+			s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
+		}
 		return
 	}
 
@@ -939,13 +946,41 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	s.serversMutex.Unlock()
 }
 
-// doUnlessCleaned runs the given code unless cleanup() has been called, in
-// which case an error is returned instead.
-func (s *opst) doUnlessCleaned(server *cloud.Server, code func() error) error {
+// actOnServerIfNeeded runs the given code unless cleanup() has been called, or
+// cmd no longer needs to be run, in which case an error is returned instead.
+// It will also periodiclly check if the cmd still needs to be run, and return
+// early with an error if not, even while the given code is still running.
+func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(ctx context.Context) error) error {
 	if s.cleanedUp() {
-		return errors.New(cleanedUpErrStr)
+		return errors.New(serverNotNeededErrStr)
 	}
-	return code()
+	if s.cmdCountRemaining(cmd) <= 0 {
+		s.Debug("bailing on a spawn early since no longer needed", "server", server.ID)
+		return errors.New(serverNotNeededErrStr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- code(ctx)
+	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	for {
+		select {
+		case err := <-errCh:
+			ticker.Stop()
+			return err
+		case <-ticker.C:
+			if s.cmdCountRemaining(cmd) <= 0 {
+				ticker.Stop()
+				cancel()
+				s.Debug("bailing on a spawn mid-action since no longer needed", "server", server.ID)
+				return errors.New(serverNotNeededErrStr)
+			}
+		}
+	}
 }
 
 // runCmd runs the command on next available server. NB: we only return an error
@@ -1017,7 +1052,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			cmd = fmt.Sprintf("(umask %d && %s)", s.config.Umask, cmd)
 		}
 		logger.Debug("running command remotely", "cmd", cmd)
-		_, _, err = server.RunCmd(cmd, false)
+		_, _, err = server.RunCmd(context.Background(), cmd, false)
 
 		// if we got an error running the command, we won't use this server
 		// again
@@ -1166,7 +1201,7 @@ func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails
 			select {
 			case <-ticker.C:
 				active := true
-				_, _, errr := server.RunCmd("pgrep -f '"+cmd+"'", false)
+				_, _, errr := server.RunCmd(context.Background(), "pgrep -f '"+cmd+"'", false)
 				if errr != nil {
 					// *** assume the error is because a process with cmd
 					// doesn't exist, not because prgrep failed for some other
