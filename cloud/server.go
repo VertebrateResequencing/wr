@@ -110,6 +110,122 @@ type Server struct {
 	used              bool
 }
 
+// WaitUntilReady waits for the server to become fully ready: the boot process
+// will have completed and ssh will work. This is not part of provider.Spawn()
+// because you may not want or be able to ssh to your server, and so that you
+// can Spawn() another server while waiting for this one to become ready. If you
+// get an err, you will want to call server.Destroy() as this is not done for
+// you.
+//
+// You supply a context so that you can cancel waiting if you no longer need
+// this server. Be sure to Destroy() it after cancelling.
+//
+// files is a string in the format taken by the CopyOver() method; if supplied
+// non-blank it will CopyOver the specified files (after the server is ready,
+// before any postCreationScript is run).
+//
+// postCreationScript is the []byte content of a script that will be run on the
+// server (as the user supplied to Spawn()) once it is ready, and it will
+// complete before this function returns; empty slice means do nothing.
+func (s *Server) WaitUntilReady(ctx context.Context, files string, postCreationScript []byte) error {
+	// wait for ssh to come up
+	_, _, err := s.SSHClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	// wait for sentinelFilePath to exist, indicating that the server is
+	// really ready to use
+	limit := time.After(sentinelTimeOut)
+	ticker := time.NewTicker(1 * time.Second)
+SENTINEL:
+	for {
+		select {
+		case <-ticker.C:
+			o, e, fileErr := s.RunCmd(ctx, "file "+sentinelFilePath, false)
+			if fileErr == nil && !strings.Contains(o, "No such file") && !strings.Contains(e, "No such file") {
+				ticker.Stop()
+				// *** o contains "empty"; test for that instead? Does file
+				// behave the same way on all linux variants?
+				_, _, rmErr := s.RunCmd(ctx, "sudo rm "+sentinelFilePath, false)
+				if rmErr != nil {
+					s.logger.Warn("failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
+				}
+				break SENTINEL
+			}
+			continue SENTINEL
+		case <-limit:
+			ticker.Stop()
+			return errors.New("cloud server never became ready to use")
+		}
+	}
+
+	// copy over any desired files
+	if files != "" {
+		err = s.CopyOver(ctx, files)
+		if err != nil {
+			return fmt.Errorf("cloud server files failed to upload: %s", err)
+		}
+		s.ConfigFiles = files
+	}
+
+	// run the postCreationScript
+	if len(postCreationScript) > 0 {
+		pcsPath := "/tmp/.postCreationScript"
+		err = s.CreateFile(ctx, string(postCreationScript), pcsPath)
+		if err != nil {
+			return fmt.Errorf("cloud server start up script failed to upload: %s", err)
+		}
+
+		_, _, err = s.RunCmd(ctx, "chmod u+x "+pcsPath, false)
+		if err != nil {
+			return fmt.Errorf("cloud server start up script could not be made executable: %s", err)
+		}
+
+		// protect running the script with a timeout
+		limit := time.After(pcsTimeOut)
+		exiterr := make(chan error, 1)
+		var stderr string
+		go func() {
+			var runerr error
+			_, stderr, runerr = s.RunCmd(ctx, pcsPath, false)
+			exiterr <- runerr
+		}()
+		select {
+		case err = <-exiterr:
+			if err != nil {
+				err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
+				if len(stderr) > 0 {
+					err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
+				}
+				return err
+			}
+		case <-limit:
+			return fmt.Errorf("cloud server start up script failed to complete within %s", pcsTimeOut)
+		}
+
+		_, _, rmErr := s.RunCmd(ctx, "rm "+pcsPath, false)
+		if rmErr != nil {
+			s.logger.Warn("failed to remove post creation script", "path", pcsPath, "err", rmErr)
+		}
+
+		s.Script = postCreationScript
+
+		// because the postCreationScript may have altered PATH and other things
+		// that subsequent RunCmd may rely on, clear the clients
+		for _, client := range s.sshClients {
+			err = client.Close()
+			if err != nil {
+				s.logger.Warn("failed to close client ssh connection", "err", err)
+			}
+		}
+		s.sshClients = []*ssh.Client{}
+		s.sshClientSessions = []int{}
+	}
+
+	return nil
+}
+
 // Matches tells you if in principle a Server has the given os, script, config
 // files, flavor and has a shared disk mounted. Useful before calling
 // HasSpaceFor, since if you don't match these things you can't use the Server
@@ -260,7 +376,7 @@ func (s *Server) createSSHClientConfig() error {
 // be one that hasn't failed to create a session yet; a new client will be
 // created if necessary. You get back the client's index, so that if this client
 // fails to create a session you can mark this client as bad.
-func (s *Server) SSHClient() (*ssh.Client, int, error) {
+func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -293,7 +409,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 	// network or server isn't really ready for ssh yet; wait for up to
 	// 5mins for success, if we had only just created this server
 	hostAndPort := s.IP + ":22"
-	client, err := sshDial(hostAndPort, s.sshClientConfig, s.logger)
+	client, err := sshDial(ctx, hostAndPort, s.sshClientConfig, s.logger)
 	if err != nil {
 		limit := time.After(sshTimeOut)
 		ticker := time.NewTicker(1 * time.Second)
@@ -302,7 +418,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 		for {
 			select {
 			case <-ticker.C:
-				client, err = sshDial(hostAndPort, s.sshClientConfig, s.logger)
+				client, err = sshDial(ctx, hostAndPort, s.sshClientConfig, s.logger)
 
 				// if it's a known "ssh still starting up" error, wait until the
 				// timeout, unless ssh had worked previously, in which case
@@ -321,6 +437,10 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 				// brings up sshd and starts rejecting connections before
 				// the centos user gets added)
 				ticks++
+				if err != nil && err.Error() == "connection attempt cancelled" {
+					ticker.Stop()
+					break DIAL
+				}
 				if err == nil || ticks == 9 || !s.created {
 					ticker.Stop()
 					break DIAL
@@ -330,6 +450,10 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 			case <-limit:
 				ticker.Stop()
 				err = errors.New("giving up waiting for ssh to work")
+				break DIAL
+			case <-ctx.Done():
+				ticker.Stop()
+				err = errors.New("cancelled waiting for ssh to work")
 				break DIAL
 			}
 		}
@@ -347,7 +471,7 @@ func (s *Server) SSHClient() (*ssh.Client, int, error) {
 
 // sshDial calls ssh.Dial() and enforces the config's timeout, which ssh.Dial()
 // doesn't always seem to obey.
-func sshDial(addr string, sshConfig *ssh.ClientConfig, logger log15.Logger) (*ssh.Client, error) {
+func sshDial(ctx context.Context, addr string, sshConfig *ssh.ClientConfig, logger log15.Logger) (*ssh.Client, error) {
 	clientCh := make(chan *ssh.Client, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -362,6 +486,8 @@ func sshDial(addr string, sshConfig *ssh.ClientConfig, logger log15.Logger) (*ss
 		return <-clientCh, err
 	case <-deadline:
 		return nil, fmt.Errorf("connection could not be established")
+	case <-ctx.Done():
+		return nil, fmt.Errorf("connection attempt cancelled")
 	}
 }
 
@@ -370,8 +496,8 @@ func sshDial(addr string, sshConfig *ssh.ClientConfig, logger log15.Logger) (*ss
 // created within 5s. Also returns the index of the client this session came
 // from, so that when you can call CloseSSHSession() when you're done with the
 // returned session.
-func (s *Server) SSHSession() (*ssh.Session, int, error) {
-	sshClient, clientIndex, err := s.SSHClient()
+func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
+	sshClient, clientIndex, err := s.SSHClient(ctx)
 	if err != nil {
 		s.logger.Debug("server ssh could not be established", "err", err)
 		return nil, clientIndex, fmt.Errorf("cloud SSHSession() failed to get a client: %s", err.Error())
@@ -389,6 +515,9 @@ func (s *Server) SSHSession() (*ssh.Session, int, error) {
 		case <-time.After(sshShortTimeOut):
 			s.logger.Debug("server ssh timed out", "clientindex", clientIndex)
 			done <- fmt.Errorf("cloud SSHSession() timed out")
+		case <-ctx.Done():
+			s.logger.Debug("server ssh cancelled", "clientindex", clientIndex)
+			done <- fmt.Errorf("cloud SSHSession() cancelled")
 		case <-worked:
 			return
 		}
@@ -437,9 +566,9 @@ func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
 
 // RunCmd runs the given command on the server, optionally in the background.
 // You get the command's STDOUT and STDERR as strings.
-func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err error) {
+func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error) {
 	// create a session
-	session, clientIndex, err := s.SSHSession()
+	session, clientIndex, err := s.SSHSession(ctx)
 	if err != nil {
 		return stdout, stderr, err
 	}
@@ -463,6 +592,10 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 			outCh <- ""
 			errCh <- ""
 			done <- fmt.Errorf("cloud RunCmd() cancelled due to destruction of server %s", s.ID)
+		case <-ctx.Done():
+			outCh <- ""
+			errCh <- ""
+			done <- fmt.Errorf("cloud RunCmd() on server %s cancelled on request", s.ID)
 		case <-finished:
 			// end select
 		}
@@ -509,8 +642,8 @@ func (s *Server) RunCmd(cmd string, background bool) (stdout, stderr string, err
 }
 
 // UploadFile uploads a local file to the given location on the server.
-func (s *Server) UploadFile(source string, dest string) error {
-	sshClient, _, err := s.SSHClient()
+func (s *Server) UploadFile(ctx context.Context, source string, dest string) error {
+	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -522,7 +655,7 @@ func (s *Server) UploadFile(source string, dest string) error {
 	defer internal.LogClose(s.logger, client, "upload file client session", "source", source, "dest", dest)
 
 	// create all parent dirs of dest
-	err = s.MkDir(filepath.Dir(dest))
+	err = s.MkDir(ctx, filepath.Dir(dest))
 	if err != nil {
 		return err
 	}
@@ -558,8 +691,8 @@ func (s *Server) UploadFile(source string, dest string) error {
 // one. The mtimes of the files are retained.
 //
 // NB: currently only works if the server supports the command 'pwd'.
-func (s *Server) CopyOver(files string) error {
-	timezone, err := s.GetTimeZone()
+func (s *Server) CopyOver(ctx context.Context, files string) error {
+	timezone, err := s.GetTimeZone(ctx)
 	if err != nil {
 		return err
 	}
@@ -585,7 +718,7 @@ func (s *Server) CopyOver(files string) error {
 		}
 
 		if strings.HasPrefix(remotePath, "~/") {
-			homeDir, errh := s.HomeDir()
+			homeDir, errh := s.HomeDir(ctx)
 			if errh != nil {
 				return errh
 			}
@@ -593,7 +726,7 @@ func (s *Server) CopyOver(files string) error {
 			remotePath = filepath.Join(homeDir, remotePath)
 		}
 
-		err = s.UploadFile(localPath, remotePath)
+		err = s.UploadFile(ctx, localPath, remotePath)
 		if err != nil {
 			return err
 		}
@@ -601,7 +734,7 @@ func (s *Server) CopyOver(files string) error {
 		// if these are config files we likely need to make them user-only read,
 		// and if they're not, I can't see how it matters if group/all can't
 		// read? This is a single user server and I'm the only one using it...
-		_, _, err = s.RunCmd("chmod 600 "+remotePath, false)
+		_, _, err = s.RunCmd(ctx, "chmod 600 "+remotePath, false)
 		if err != nil {
 			return err
 		}
@@ -609,7 +742,7 @@ func (s *Server) CopyOver(files string) error {
 		// sometimes the mtime of the file matters, so we try and set that on
 		// the remote copy
 		timestamp := info.ModTime().UTC().In(timezone).Format(touchStampFormat)
-		_, _, err = s.RunCmd(fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
+		_, _, err = s.RunCmd(ctx, fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
 		if err != nil {
 			return err
 		}
@@ -619,14 +752,14 @@ func (s *Server) CopyOver(files string) error {
 
 // HomeDir gets the absolute path to the server's home directory. Depends on
 // 'pwd' command existing on the server.
-func (s *Server) HomeDir() (string, error) {
+func (s *Server) HomeDir(ctx context.Context) (string, error) {
 	s.hmutex.Lock()
 	defer s.hmutex.Unlock()
 	if s.homeDir != "" {
 		return s.homeDir, nil
 	}
 
-	stdout, _, err := s.RunCmd("pwd", false)
+	stdout, _, err := s.RunCmd(ctx, "pwd", false)
 	if err != nil {
 		return "", err
 	}
@@ -636,12 +769,12 @@ func (s *Server) HomeDir() (string, error) {
 
 // GetTimeZone gets the server's time zone as a fixed time.Location in the fake
 // timezone 'SER'; you should only rely on the offset to convert times.
-func (s *Server) GetTimeZone() (*time.Location, error) {
+func (s *Server) GetTimeZone(ctx context.Context) (*time.Location, error) {
 	if s.location != nil {
 		return s.location, nil
 	}
 
-	serverDate, _, err := s.RunCmd(`date +%z`, false)
+	serverDate, _, err := s.RunCmd(ctx, `date +%z`, false)
 	if err != nil {
 		return nil, err
 	}
@@ -659,8 +792,8 @@ func (s *Server) GetTimeZone() (*time.Location, error) {
 }
 
 // CreateFile creates a new file with the given content on the server.
-func (s *Server) CreateFile(content string, dest string) error {
-	sshClient, _, err := s.SSHClient()
+func (s *Server) CreateFile(ctx context.Context, content string, dest string) error {
+	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -672,7 +805,7 @@ func (s *Server) CreateFile(content string, dest string) error {
 	defer internal.LogClose(s.logger, client, "create file client session")
 
 	// create all parent dirs of dest
-	err = s.MkDir(filepath.Dir(dest))
+	err = s.MkDir(ctx, filepath.Dir(dest))
 	if err != nil {
 		return err
 	}
@@ -690,8 +823,8 @@ func (s *Server) CreateFile(content string, dest string) error {
 
 // DownloadFile downloads a file from the server and stores it locally. The
 // directory for your local file must already exist.
-func (s *Server) DownloadFile(source string, dest string) error {
-	sshClient, _, err := s.SSHClient()
+func (s *Server) DownloadFile(ctx context.Context, source string, dest string) error {
+	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -725,7 +858,7 @@ func (s *Server) DownloadFile(source string, dest string) error {
 
 // MkDir creates a directory (and it's parents as necessary) on the server.
 // Requires sudo.
-func (s *Server) MkDir(dir string) error {
+func (s *Server) MkDir(ctx context.Context, dir string) error {
 	if dir == "." {
 		return nil
 	}
@@ -733,7 +866,7 @@ func (s *Server) MkDir(dir string) error {
 	//*** it would be nice to do this with client.Mkdir, but that doesn't do
 	// the equivalent of mkdir -p, and errors out if dirs already exist... for
 	// now it's easier to just call mkdir
-	_, _, err := s.RunCmd(fmt.Sprintf("[ -d %s ]", dir), false)
+	_, _, err := s.RunCmd(ctx, fmt.Sprintf("[ -d %s ]", dir), false)
 	if err == nil {
 		// dir already exists
 		return nil
@@ -741,20 +874,20 @@ func (s *Server) MkDir(dir string) error {
 
 	// try without sudo, so that if we create multiple dirs, they all have the
 	// correct permissions
-	_, _, err = s.RunCmd("mkdir -p "+dir, false)
+	_, _, err = s.RunCmd(ctx, "mkdir -p "+dir, false)
 	if err == nil {
 		return nil
 	}
 
 	// try again with sudo
-	_, e, err := s.RunCmd("sudo mkdir -p "+dir, false)
+	_, e, err := s.RunCmd(ctx, "sudo mkdir -p "+dir, false)
 	if err != nil {
 		return fmt.Errorf("%s; %s", e, err.Error())
 	}
 
 	// correct permission on leaf dir *** not currently correcting permission on
 	// any parent dirs we might have just made
-	_, e, err = s.RunCmd(fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, dir), false)
+	_, e, err = s.RunCmd(ctx, fmt.Sprintf("sudo chown %s:%s %s", s.UserName, s.UserName, dir), false)
 	if err != nil {
 		return fmt.Errorf("%s; %s", e, err.Error())
 	}
@@ -836,25 +969,25 @@ func (s *Server) CreateSharedDisk() error {
 // already mounted (or created on this Server). NB: currently hard-coded to use
 // apt-get to install nfs-common on the server first, so probably only
 // compatible with Ubuntu. Requires sudo.
-func (s *Server) MountSharedDisk(nfsServerIP string) error {
+func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error {
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
 	if s.createdShare {
 		return nil
 	}
 
-	_, _, err := s.RunCmd("sudo apt-get update && sudo apt-get install nfs-common -y", false)
+	_, _, err := s.RunCmd(ctx, "sudo apt-get update && sudo apt-get install nfs-common -y", false)
 	if err != nil {
 		return err
 	}
 
-	err = s.MkDir(sharePath)
+	err = s.MkDir(ctx, sharePath)
 	if err != nil {
 		return err
 	}
 	s.logger.Debug("ran MkDir")
 
-	stdo, stde, err := s.RunCmd(fmt.Sprintf("sudo mount %s:%s %s", nfsServerIP, sharePath, sharePath), false)
+	stdo, stde, err := s.RunCmd(ctx, fmt.Sprintf("sudo mount %s:%s %s", nfsServerIP, sharePath, sharePath), false)
 	if err != nil {
 		s.logger.Error("mount attempt failed", "stdout", stdo, "stderr", stde)
 		return err
@@ -994,7 +1127,7 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 	if len(checkSSH) == 1 && checkSSH[0] {
 		// provider may claim the server is fine, but it might not really be
 		// usable; confirm we can still ssh to it
-		session, clientIndex, err := s.SSHSession()
+		session, clientIndex, err := s.SSHSession(context.Background())
 		if err != nil {
 			return false
 		}
