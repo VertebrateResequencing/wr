@@ -194,6 +194,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 	s.postProcessFunc = s.postProcess
+	s.cmdNotNeededFunc = s.cmdNotNeeded
 
 	// pass through our shell config and logger to our local embed
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}

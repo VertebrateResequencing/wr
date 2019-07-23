@@ -75,10 +75,12 @@ type opst struct {
 	serversMutex      sync.RWMutex
 	cbmutex           sync.RWMutex
 	ffMutex           sync.RWMutex
+	scMutex           sync.RWMutex
 	stateMutex        sync.Mutex
 	rsMutex           sync.Mutex
 	spawnMutex        sync.Mutex
 	spawningNow       map[string]bool
+	spawnCanceller    chan struct{}
 	updatingState     bool
 	stopRunning       bool
 }
@@ -343,6 +345,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 	s.postProcessFunc = s.postProcess
+	s.cmdNotNeededFunc = s.cmdNotNeeded
 
 	// pass through our shell config and logger to our local embed, as well as
 	// creating its stopAuto channel
@@ -833,7 +836,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	if err == nil && server != nil {
 		// wait until boot is finished, ssh is ready and osScript has
 		// completed
-		logger.Debug("waiting for server ready")
+		logger.Debug("waiting for server to become ready")
 		failMsg = "server failed ready"
 		tReady := time.Now()
 		err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
@@ -954,32 +957,47 @@ func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(c
 	if s.cleanedUp() {
 		return errors.New(serverNotNeededErrStr)
 	}
+
+	s.scMutex.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		s.scMutex.Lock()
+		s.spawnCanceller = nil
+		s.scMutex.Unlock()
+	}()
+	canceller := make(chan struct{}, 1)
+	s.spawnCanceller = canceller
+	s.scMutex.Unlock()
+
 	if s.cmdCountRemaining(cmd) <= 0 {
 		s.Debug("bailing on a spawn early since no longer needed", "server", server.ID)
 		return errors.New(serverNotNeededErrStr)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- code(ctx)
 	}()
 
-	ticker := time.NewTicker(5 * time.Second)
 	for {
 		select {
 		case err := <-errCh:
-			ticker.Stop()
 			return err
-		case <-ticker.C:
-			if s.cmdCountRemaining(cmd) <= 0 {
-				ticker.Stop()
-				cancel()
-				s.Debug("bailing on a spawn mid-action since no longer needed", "server", server.ID)
-				return errors.New(serverNotNeededErrStr)
-			}
+		case <-canceller:
+			cancel()
+			s.Debug("bailing on a spawn mid-action since no longer needed", "server", server.ID)
+			return errors.New(serverNotNeededErrStr)
 		}
+	}
+}
+
+// cmdNotNeeded cancels the context set by actOnServerIfNeeded(), if any.
+func (s *opst) cmdNotNeeded(cmd string) {
+	s.scMutex.RLock()
+	defer s.scMutex.RUnlock()
+	if s.spawnCanceller != nil {
+		close(s.spawnCanceller)
 	}
 }
 
@@ -999,9 +1017,6 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(req)
 	if err != nil {
 		return err
-	}
-	if requestedFlavor != nil {
-		logger.Debug("using requested flavor", "flavor", requestedFlavor.Name)
 	}
 
 	if s.cleanedUp() {
@@ -1136,7 +1151,7 @@ func (s *opst) stateUpdate() {
 func (s *opst) postProcess() {
 	s.serversMutex.Lock()
 	for _, server := range s.servers {
-		if !server.Used() {
+		if server.Name != "localhost" && !server.Used() {
 			s.Debug("placing unused server on deathrow", "server", server.ID)
 			server.Allocate(0, 1, 1)
 			server.Release(0, 1, 1)

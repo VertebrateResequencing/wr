@@ -89,6 +89,10 @@ type cmdRunner func(cmd string, req *Requirements, reservedCh chan bool, call st
 // a postProcess() call does work.
 type postProcessor func()
 
+// unneededCmdHandler are functions called when scheduling a cmd or completing
+// the execution of a command, and we no longer need to run more of the cmd.
+type unneededCmdHandler func(cmd string)
+
 // local is our implementer of scheduleri.
 type local struct {
 	log15.Logger
@@ -104,6 +108,7 @@ type local struct {
 	maxMemFunc        maxResourceGetter
 	maxCPUFunc        maxResourceGetter
 	canCountFunc      canCounter
+	cmdNotNeededFunc  unneededCmdHandler
 	postProcessFunc   postProcessor
 	stateUpdateFunc   stateUpdater
 	stateUpdateFreq   time.Duration
@@ -196,6 +201,7 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
 	s.postProcessFunc = s.postProcess
+	s.cmdNotNeededFunc = s.cmdNotNeeded
 
 	s.recoveredPids = make(map[int]bool)
 	s.stopPidMonitoring = make(chan struct{})
@@ -289,6 +295,9 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 				s.removeKey(key)
 				s.Debug("schedule removed job", "cmd", cmd)
 			}
+			s.runMutex.RLock()
+			s.checkNeeded(cmd, key, count, s.running[key])
+			s.runMutex.RUnlock()
 		} else {
 			s.mutex.Unlock()
 			return err
@@ -304,6 +313,15 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 
 	// try and run the jobs in the queue
 	return s.processQueue("schedule")
+}
+
+// checkNeeded takes a cmd, item key, current item.Count and number of cmd
+// currently running. If we do not need to run any more of this cmd, calls
+// cmdNotNeededFunc(cmd).
+func (s *local) checkNeeded(cmd, key string, needed, running int) {
+	if needed-running <= 0 {
+		s.cmdNotNeededFunc(cmd)
+	}
 }
 
 // cmdCountRemaining tells you the count of cmd still needed based on what was
@@ -459,7 +477,6 @@ func (s *local) processQueue(reason string) error {
 	}
 	if s.processing {
 		s.recall = true
-		s.Debug("processQueue returning early since still running")
 		return nil
 	}
 	s.processing = true
@@ -511,7 +528,7 @@ func (s *local) processQueue(reason string) error {
 
 		s.runMutex.Lock()
 		running := s.running[key]
-		s.Debug("processQueue running", "needs", count, "current", running, "cmd", cmd)
+		s.Debug("processQueue binpacking", "needs", count, "current", running, "cmd", cmd)
 		if count == 0 && running == 0 {
 			// a cancellation has come in, and somehow we didn't remove this
 			// from the queue; do so now
@@ -549,19 +566,15 @@ func (s *local) processQueue(reason string) error {
 		reserved := make(chan bool, canCount)
 		for i := 0; i < canCount; i++ {
 			s.running[key]++
-			s.Debug("increased running", "cmd", cmd, "now", s.running[key])
+			s.checkNeeded(cmd, key, count, s.running[key])
 
 			go func() {
 				defer internal.LogPanic(s.Logger, "processQueue runCmd loop", true)
 
 				err := s.runCmdFunc(cmd, req, reserved, call)
-				art := time.Now()
-				s.Debug("after runCmd", "cmd", cmd)
 
 				s.runMutex.Lock()
-				before := s.running[key]
 				s.running[key]--
-				s.Debug("after runCmd, decremented running", "cmd", cmd, "before", before, "now", s.running[key], "locktime", time.Since(art))
 				if s.running[key] <= 0 {
 					delete(s.running, key)
 				}
@@ -695,6 +708,10 @@ func (s *local) stateUpdate() {}
 // postProcess in the local scheduler is a no-op, since there currently isn't
 // anything that needs to be done after a postProcess() call.
 func (s *local) postProcess() {}
+
+// cmdNotNeeded in the local scheduler is a no-op, since there currently isn't
+// anything that needs to be done when a cmd is no longer needed.
+func (s *local) cmdNotNeeded(cmd string) {}
 
 // startAutoProcessing begins periodic running of processQueue(). Normally
 // processQueue is only called when cmds are added or complete. Calling it
