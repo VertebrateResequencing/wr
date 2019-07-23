@@ -5126,6 +5126,72 @@ sudo usermod -aG docker ` + osUser
 			}
 		}
 
+		Convey("You can add a chain of jobs that run quickly one after the other", func() {
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
+			oneReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: tmpdir, ReqGroup: "test1", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"1"}})
+			d1 := NewDepGroupDependency("1")
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: tmpdir, ReqGroup: "test2", Requirements: oneReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"2"}, Dependencies: Dependencies{d1}})
+			d2 := NewDepGroupDependency("2")
+			jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: tmpdir, ReqGroup: "test3", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"3"}, Dependencies: Dependencies{d2}})
+
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 3)
+			So(already, ShouldEqual, 0)
+
+			// wait for the jobs to get run
+			done := make(chan bool, 1)
+			go func() {
+				limit := time.After(30 * time.Second)
+				ticker := time.NewTicker(500 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						if !server.HasRunners() {
+							ticker.Stop()
+							done <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						done <- false
+						return
+					}
+				}
+			}()
+			So(<-done, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("chain", false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 3)
+			var e1, s2, e2, s3 time.Time
+			for _, job := range jobs {
+				So(job.State, ShouldEqual, JobStateComplete)
+				switch job.Cmd {
+				case "echo 1":
+					e1 = job.EndTime
+				case "echo 2":
+					s2 = job.StartTime
+					e2 = job.EndTime
+				case "echo 3":
+					s3 = job.StartTime
+				}
+			}
+			// (the below used to be over a second ; these tests show we
+			//  improved the behaviour and now react instantly)
+			So(s2.Sub(e1), ShouldBeLessThan, 100*time.Millisecond)
+			So(s3.Sub(e2), ShouldBeLessThan, 100*time.Millisecond)
+		})
+
 		Convey("You can modify cloud_config_files of a job", func() {
 			var jobs []*Job
 			other := make(map[string]string)
