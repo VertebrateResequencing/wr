@@ -803,9 +803,9 @@ func (s *local) cleanup() {
 	defer s.mutex.Unlock()
 	s.runMutex.Lock()
 	defer s.runMutex.Unlock()
+	s.stopAutoProcessing()
 	s.cleanMutex.Lock()
 	defer s.cleanMutex.Unlock()
-	s.stopAutoProcessing()
 	close(s.stopPidMonitoring)
 	s.cleaned = true
 	err := s.queue.Destroy()
