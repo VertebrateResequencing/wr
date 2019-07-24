@@ -496,8 +496,8 @@ func TestJobqueueSignal(t *testing.T) {
 			cmd := "sleep 10"
 			cmd2 := "perl -e 'for (1..10) { sleep(1) }'" // we want to kill this part way, but `sleep` processes don't seem to die straight away when killed
 			var jobs []*Job
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
-			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -582,6 +582,7 @@ func TestJobqueueSignal(t *testing.T) {
 						j2worked <- true
 						return
 					}
+					fmt.Printf("\njob2 had err %s\n", erre)
 					j2worked <- false
 					return
 				case <-giveUp2:
