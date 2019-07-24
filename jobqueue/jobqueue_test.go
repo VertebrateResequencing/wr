@@ -46,6 +46,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const serverRC = `echo %s %s %s %s %d %d`
+
 var runnermode bool
 var runnerfail bool
 var schedgrp string
@@ -798,7 +800,7 @@ func TestJobqueueBasics(t *testing.T) {
 		server, _, token, errs = serve(serverConfig)
 		So(errs, ShouldBeNil)
 
-		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
+		server.rc = serverRC // ReserveScheduled() only works if we have an rc
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -2849,7 +2851,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			server.Stop(true)
 		}()
 
-		server.rc = `echo %s %s %s %s %d %d`
+		server.rc = serverRC
 
 		Convey("You can connect, and add jobs with LimitGroups", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -2991,7 +2993,7 @@ func TestJobqueueModify(t *testing.T) {
 			server.Stop(true)
 		}()
 
-		server.rc = `echo %s %s %s %s %d %d`
+		server.rc = serverRC
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)

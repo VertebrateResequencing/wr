@@ -42,6 +42,7 @@ import (
 const (
 	unquotadVal           = 1000000 // a "large" number for use when we don't have quota
 	serverNotNeededErrStr = "server not needed"
+	localhostName         = "localhost"
 )
 
 // debugCounter and debugEffect are used by tests to prove some bugs
@@ -65,7 +66,6 @@ type opst struct {
 	reservedRAM       int
 	reservedVolume    int
 	servers           map[string]*cloud.Server
-	waitingToSpawn    int
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
 	recoveredServers  map[string]bool
@@ -82,7 +82,6 @@ type opst struct {
 	spawningNow       map[string]bool
 	spawnCanceller    chan struct{}
 	updatingState     bool
-	stopRunning       bool
 }
 
 // ConfigOpenStack represents the configuration options required by the
@@ -331,7 +330,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 			localhost.Flavor.RAM = *s.config.MaxLocalRAM
 		}
 	}
-	s.servers["localhost"] = localhost
+	s.servers[localhostName] = localhost
 
 	// set our functions for use in schedule() and processQueue()
 	s.reqCheckFunc = s.reqCheck
@@ -534,7 +533,7 @@ func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, 
 
 		// create a shared disk on our "head" node (if not already done)
 		s.serversMutex.RLock()
-		err = s.servers["localhost"].CreateSharedDisk()
+		err = s.servers[localhostName].CreateSharedDisk()
 		s.serversMutex.RUnlock()
 	}
 
@@ -846,7 +845,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 
 		if err == nil && needsSharedDisk {
 			s.serversMutex.RLock()
-			localhostIP := s.servers["localhost"].IP
+			localhostIP := s.servers[localhostName].IP
 			s.serversMutex.RUnlock()
 			err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.MountSharedDisk(context.Background(), localhostIP) })
 		}
@@ -1055,7 +1054,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	}()
 
 	// now we have a server, ssh over and run the cmd on it
-	if server.Name == "localhost" {
+	if server.Name == localhostName {
 		logger.Debug("running command locally", "cmd", cmd)
 		reserved := make(chan bool)
 		go func() {
@@ -1151,7 +1150,7 @@ func (s *opst) stateUpdate() {
 func (s *opst) postProcess() {
 	s.serversMutex.Lock()
 	for _, server := range s.servers {
-		if server.Name != "localhost" && !server.Used() {
+		if server.Name != localhostName && !server.Used() {
 			s.Debug("placing unused server on deathrow", "server", server.ID)
 			server.Allocate(0, 1, 1)
 			server.Release(0, 1, 1)
@@ -1330,7 +1329,7 @@ func (s *opst) cleanup() {
 	s.serversMutex.Lock()
 	close(s.stopRSMonitoring)
 	for sid, server := range s.servers {
-		if sid == "localhost" {
+		if sid == localhostName {
 			continue
 		}
 		errd := server.Destroy()

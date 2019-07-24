@@ -997,6 +997,7 @@ func TestOpenstack(t *testing.T) {
 					<-time.After(20 * time.Second)
 
 					foundServers = novaCountServers(novaCmd, rName, "")
+					So(foundServers, ShouldEqual, 0)
 
 					// *** not really confirming that the cmds actually ran on
 					// the spawned servers

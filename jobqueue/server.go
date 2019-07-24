@@ -113,13 +113,6 @@ func (e Error) Error() string {
 	return "jobqueue " + e.Op + "(" + e.Item + "): " + e.Err
 }
 
-// itemErr is used internally to implement Reserve(), which needs to send item
-// and err over a channel.
-type itemErr struct {
-	item *queue.Item
-	err  string
-}
-
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
