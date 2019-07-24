@@ -146,26 +146,7 @@ func TestLocal(t *testing.T) {
 				So(numfiles, ShouldEqual, maxCPU+count)
 				So(s.Busy(), ShouldBeFalse)
 			})
-
-			Convey("You can Schedule() again to drop the count", func() {
-				newcount := maxCPU + 1 // (this test only really makes sense if newcount is now less than count, ie. we have more than 1 cpu)
-
-				<-time.After(700 * time.Millisecond)
-
-				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
-				So(numfiles, ShouldEqual, maxCPU+maxCPU)
-
-				err = s.Schedule(cmd, possibleReq, newcount)
-				So(err, ShouldBeNil)
-
-				<-time.After(750*time.Millisecond + overhead)
-
-				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
-				So(numfiles, ShouldEqual, maxCPU+newcount)
-
-				So(waitToFinish(s, 3, 100), ShouldBeTrue)
-			})
-
+			
 			Convey("Dropping the count below the number currently running doesn't kill those that are running", func() {
 				newcount := maxCPU - 1
 
@@ -205,6 +186,25 @@ func TestLocal(t *testing.T) {
 			})
 
 			if maxCPU > 1 {
+				Convey("You can Schedule() again to drop the count", func() {
+					newcount := maxCPU + 1 // (this test only really makes sense if newcount is now less than count, ie. we have more than 1 cpu)
+	
+					<-time.After(700 * time.Millisecond)
+	
+					numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
+					So(numfiles, ShouldEqual, maxCPU+maxCPU)
+	
+					err = s.Schedule(cmd, possibleReq, newcount)
+					So(err, ShouldBeNil)
+	
+					<-time.After(750*time.Millisecond + overhead)
+	
+					numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
+					So(numfiles, ShouldEqual, maxCPU+newcount)
+	
+					So(waitToFinish(s, 3, 100), ShouldBeTrue)
+				})
+
 				Convey("You can Schedule() a new job and have it run while the first is still running", func() {
 					newcount := maxCPU + 1
 
@@ -230,6 +230,9 @@ func TestLocal(t *testing.T) {
 				//*** want a test where the first job fills up all resources
 				// and has more to do, and a second job could slip and complete
 				// before resources for the first become available
+			} else {
+				waitToFinish(s, 3, 100)
+				SkipConvey("Skipping Schedule() tests that need more than 1 cpu", func() {})
 			}
 		})
 
