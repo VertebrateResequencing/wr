@@ -279,25 +279,23 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 			// update the job's count (only)
 			j := item.Data.(*job)
 			j.Lock()
+			s.runMutex.RLock()
+			running := s.running[key]
+			s.runMutex.RUnlock()
 			before := j.count
 			j.count = count
-			if count < before {
-				j.scheduleDecrements += before - count
-			} else if j.scheduleDecrements > 0 {
-				j.scheduleDecrements -= count - before
-				if j.scheduleDecrements < 0 {
-					j.scheduleDecrements = 0
-				}
+			if count < running {
+				j.scheduleDecrements = running - count
+			} else {
+				j.scheduleDecrements = 0
 			}
 			j.Unlock()
-			s.Debug("schedule changed j.count", "cmd", cmd, "before", before, "needs", count)
+			s.Debug("schedule changed number needed", "cmd", cmd, "before", before, "needs", count)
 			if count == 0 {
 				s.removeKey(key)
 				s.Debug("schedule removed job", "cmd", cmd)
 			}
-			s.runMutex.RLock()
-			s.checkNeeded(cmd, key, count, s.running[key])
-			s.runMutex.RUnlock()
+			s.checkNeeded(cmd, key, count, running)
 		} else {
 			s.mutex.Unlock()
 			return err
@@ -488,7 +486,9 @@ func (s *local) processQueue(reason string) error {
 		for _, key := range toRelease {
 			errr := s.queue.Release(key)
 			if errr != nil {
-				s.Warn("processQueue item release failed", "err", errr)
+				if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+					s.Warn("processQueue item release failed", "err", errr)
+				}
 			}
 		}
 		s.postProcessFunc()
@@ -524,7 +524,6 @@ func (s *local) processQueue(reason string) error {
 		cmd := j.cmd
 		req := j.req
 		count := j.count
-		j.RUnlock()
 
 		s.runMutex.Lock()
 		running := s.running[key]
@@ -535,6 +534,7 @@ func (s *local) processQueue(reason string) error {
 			s.Debug("processQueue cancelling", "cmd", cmd)
 			s.removeKey(key)
 			s.runMutex.Unlock()
+			j.RUnlock()
 			continue
 		}
 		toRelease = append(toRelease, key)
@@ -543,6 +543,7 @@ func (s *local) processQueue(reason string) error {
 			// we're already running everything for this job, try the next
 			// largest cmd
 			s.runMutex.Unlock()
+			j.RUnlock()
 			continue
 		}
 
@@ -558,6 +559,7 @@ func (s *local) processQueue(reason string) error {
 			// try and fill any "gaps" (spare memory/ cpu) by seeing if a cmd
 			// with lesser resource requirements can be run
 			s.runMutex.Unlock()
+			j.RUnlock()
 			continue
 		}
 
@@ -573,6 +575,7 @@ func (s *local) processQueue(reason string) error {
 
 				err := s.runCmdFunc(cmd, req, reserved, call)
 
+				j.Lock()
 				s.runMutex.Lock()
 				s.running[key]--
 				if s.running[key] <= 0 {
@@ -582,19 +585,18 @@ func (s *local) processQueue(reason string) error {
 				// decrement j.count here if we didn't already decrement it
 				// during a schedule() call
 				if err == nil {
-					j.Lock()
 					if j.scheduleDecrements > 0 {
 						j.scheduleDecrements--
 					} else {
 						j.count--
 					}
 					jCount := j.count
-					j.Unlock()
 					if jCount <= 0 {
 						s.removeKey(key)
 					}
 				}
 				s.runMutex.Unlock()
+				j.Unlock()
 
 				if err != nil {
 					// users are notified of relevant errors during runCmd; here
@@ -609,6 +611,7 @@ func (s *local) processQueue(reason string) error {
 			}()
 		}
 		s.runMutex.Unlock()
+		j.RUnlock()
 
 		// before looping again, wait for all the above runCmdFuncs to at least
 		// get as far as reserving their resources, so subsequent calls to
