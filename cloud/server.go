@@ -1040,10 +1040,14 @@ func (s *Server) IsBad() bool {
 }
 
 // BadDuration tells you how long it has been since the last GoneBad() call
-// (when there hasn't been a NotBad() call since).
+// (when there hasn't been a NotBad() call since). Returns 0 seconds if not
+// actually bad right now.
 func (s *Server) BadDuration() time.Duration {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+	if s.goneBad.IsZero() {
+		return 0 * time.Second
+	}
 	return time.Since(s.goneBad)
 }
 
