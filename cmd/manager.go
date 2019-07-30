@@ -543,6 +543,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
 	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", "for the kubernetes scheduler, provide an existing config map to initialise all pods with. To be used instead of --cloud_script")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
+	managerStartCmd.Flags().IntVar(&cloudServersAutoConfirmDead, "cloud_auto_confirm_dead", defaultConfig.CloudAutoConfirmDead, "for cloud schedulers, how long to wait in minutes before destroying bad servers; 0 means forever")
 	managerStartCmd.Flags().IntVarP(&maxServers, "cloud_servers", "m", defaultConfig.CloudServers, "for cloud schedulers, maximum number of additional servers to spawn; -1 means unlimited")
 	managerStartCmd.Flags().StringVar(&cloudCIDR, "cloud_cidr", defaultConfig.CloudCIDR, "for cloud schedulers, CIDR of the subnet to spawn servers in")
 	managerStartCmd.Flags().BoolVar(&cloudUseConfigDrive, "cloud_use_config_drives", false, "for cloud schedulers, spawn servers with configuration drives")
@@ -720,6 +721,7 @@ func startJQ(postCreation []byte) {
 		KeyFile:         config.ManagerKeyFile,
 		CertDomain:      config.ManagerCertDomain,
 		DomainMatchesIP: useCertDomain,
+		AutoConfirmDead: time.Duration(cloudServersAutoConfirmDead) * time.Minute,
 		Deployment:      config.Deployment,
 		CIDR:            serverCIDR,
 		Logger:          serverLogger,

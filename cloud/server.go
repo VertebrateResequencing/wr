@@ -86,6 +86,7 @@ type Server struct {
 	Flavor            *Flavor
 	Disk              int           // GB of available disk space
 	TTD               time.Duration // amount of idle time allowed before destruction
+	goneBad           time.Time
 	cancelDestruction chan bool
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
@@ -103,7 +104,6 @@ type Server struct {
 	created           bool // to distinguish instances we discovered or spawned
 	toBeDestroyed     bool
 	destroyed         bool
-	goneBad           bool
 	onDeathrow        bool
 	sshStarted        bool
 	createdShare      bool
@@ -1012,7 +1012,7 @@ func (s *Server) MountSharedDisk(ctx context.Context, nfsServerIP string) error 
 func (s *Server) GoneBad(permanentProblem ...string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.goneBad = true
+	s.goneBad = time.Now()
 
 	if len(permanentProblem) == 1 {
 		s.permanentProblem = permanentProblem[0]
@@ -1026,7 +1026,7 @@ func (s *Server) NotBad() bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if !s.destroyed && !s.toBeDestroyed && s.permanentProblem == "" {
-		s.goneBad = false
+		s.goneBad = time.Time{}
 		return true
 	}
 	return false
@@ -1036,7 +1036,15 @@ func (s *Server) NotBad() bool {
 func (s *Server) IsBad() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return s.goneBad
+	return !s.goneBad.IsZero()
+}
+
+// BadDuration tells you how long it has been since the last GoneBad() call
+// (when there hasn't been a NotBad() call since).
+func (s *Server) BadDuration() time.Duration {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return time.Since(s.goneBad)
 }
 
 // PermanentProblem tells you if GoneBad("problem message") has been called,
@@ -1076,7 +1084,9 @@ func (s *Server) Destroy() error {
 
 	s.toBeDestroyed = false
 	s.destroyed = true
-	s.goneBad = true
+	if s.goneBad.IsZero() {
+		s.goneBad = time.Now()
+	}
 
 	// for testing purposes, we anticipate that provider isn't set
 	if s.provider == nil {
