@@ -79,7 +79,7 @@ type Config struct {
 	CloudDisk            int    `default:"1"`
 	CloudScript          string `default:""`
 	CloudConfigFiles     string `default:"~/.s3cfg,~/.aws/credentials,~/.aws/config"`
-	CloudAutoConfirmDead int    `default:""`
+	CloudAutoConfirmDead int    `default:"30"`
 	DeploySuccessScript  string `default:""`
 }
 
