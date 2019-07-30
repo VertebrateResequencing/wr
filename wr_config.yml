@@ -349,9 +349,9 @@ runnerexecshell: "bash"
 cloudkeepalive: 120
 
 # cloudautoconfirmdead: How long should dead spawned servers be kept?
-# The default of 0 means keep them forever. It is overridden by the
-# --auto_confirm_dead option to `wr cloud deploy` and the
-# --cloud_auto_confirm_dead option of `wr manager start`.
+# This defaults to 30. It is overridden by the --auto_confirm_dead option to
+# `wr cloud deploy` and the --cloud_auto_confirm_dead option of
+# `wr manager start`.
 # Note, this is a number (no quotes) of mintues.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -379,7 +379,9 @@ cloudkeepalive: 120
 # allow time for manual investigation if desired, or for temporary issues to
 # resolve themselves.
 #
-# cloudautoconfirmdead: 0
+# A value of 0 turns off this behaviour of automatically confirming servers are
+# dead.
+cloudautoconfirmdead: 30
 
 # cloudservers: How many additional cloud servers can be spawned?
 # This defaults to -1. It is overridden by the --max_servers option to
