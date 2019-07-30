@@ -319,6 +319,13 @@ type ServerConfig struct {
 	// continue running.
 	DomainMatchesIP bool
 
+	// AutoConfirmDead is the time that a spawned server must be considered
+	// dead before it is automatically destroyed and jobs running on it are
+	// confirmed lost. The default of 0 time disables automatic destruction.
+	// Only relevant when using a scheduler that spawns servers on which to
+	// execute jobs.
+	AutoConfirmDead time.Duration
+
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
 	Deployment string
@@ -761,6 +768,37 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 					skip = true
 				} else {
 					s.badServers[server.ID] = server
+
+					// arrange to confirm this dead after the configured time
+					if config.AutoConfirmDead > 0 {
+						go func(id string) {
+							<-time.After(config.AutoConfirmDead)
+							s.bsmutex.Lock()
+							defer s.bsmutex.Unlock()
+							if badServer, exists := s.badServers[id]; exists && badServer.BadDuration() >= config.AutoConfirmDead {
+								delete(s.badServers, id)
+								waited := badServer.BadDuration()
+								errd := badServer.Destroy()
+								s.Warn("server destroyed after remaining bad for some time", "server", id, "waited", waited, "err", errd)
+								serverIDs := make(map[string]bool)
+								serverIDs[id] = true
+								s.killJobsOnServers(serverIDs)
+
+								if errd == nil {
+									// make the message in the web interface
+									// about this server go away
+									s.badServerCaster.Send(&BadServer{
+										ID:      id,
+										Name:    badServer.Name,
+										IP:      badServer.IP,
+										Date:    time.Now().Unix(),
+										IsBad:   false,
+										Problem: badServer.PermanentProblem(),
+									})
+								}
+							}
+						}(server.ID)
+					}
 				}
 			} else {
 				delete(s.badServers, server.ID)
@@ -1784,6 +1822,41 @@ func (s *Server) deleteJobs(keys []string) []string {
 		break
 	}
 	return deleted
+}
+
+// killJobsOnServers kills running and confirms lost jobs that were running on
+// hosts with the given IDs. Returns the affected jobs.
+func (s *Server) killJobsOnServers(serverIDs map[string]bool) []*Job {
+	var jobs []*Job
+	if len(serverIDs) > 0 {
+		running := s.getJobsCurrent(0, JobStateRunning, false, false)
+		lost := s.getJobsCurrent(0, JobStateLost, false, false)
+		for _, job := range append(running, lost...) {
+			if serverIDs[job.HostID] {
+				k, err := s.killJob(job.Key())
+				if err != nil {
+					s.Error("failed to kill a job after destroying its server: %s", err)
+				} else if k {
+					// try and grab the latest job state after
+					// having killed it, but still return the client
+					// version of the job
+					if item, err := s.q.Get(job.Key()); err == nil && item != nil {
+						liveJob := item.Data.(*Job)
+						job.State = liveJob.State
+						job.UntilBuried = liveJob.UntilBuried
+						if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
+							// we're going to release the job as
+							// soon as it goes from running to lost
+							job.UntilBuried--
+						}
+					}
+					jobs = append(jobs, job)
+				}
+			}
+		}
+		s.Debug("killed jobs on bad servers", "number", len(jobs))
+	}
+	return jobs
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete).

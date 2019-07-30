@@ -610,8 +610,19 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if server != nil && server.IsBad() {
 						errd := server.Destroy()
 						if errd != nil {
-							s.Warn("Server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
+							s.Warn("server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
 							continue
+						} else {
+							// make the message in the web interface about this
+							// server go away
+							s.badServerCaster.Send(&BadServer{
+								ID:      badServer.ID,
+								Name:    badServer.Name,
+								IP:      badServer.IP,
+								Date:    time.Now().Unix(),
+								IsBad:   false,
+								Problem: server.PermanentProblem(),
+							})
 						}
 					}
 					confirmed = append(confirmed, badServer)
@@ -629,36 +640,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// think there's much to be done about that though; we must be
 				// sure the servers are really dead before confirming jobs are
 				// dead.
-				var jobs []*Job
-				if len(serverIDs) > 0 {
-					running := s.getJobsCurrent(0, JobStateRunning, false, false)
-					lost := s.getJobsCurrent(0, JobStateLost, false, false)
-					for _, job := range append(running, lost...) {
-						if serverIDs[job.HostID] {
-							k, err := s.killJob(job.Key())
-							if err != nil {
-								s.Error("failed to kill a job after destroying its server: %s", err)
-							} else if k {
-								// try and grab the latest job state after
-								// having killed it, but still return the client
-								// version of the job
-								if item, err := s.q.Get(job.Key()); err == nil && item != nil {
-									liveJob := item.Data.(*Job)
-									job.State = liveJob.State
-									job.UntilBuried = liveJob.UntilBuried
-									if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
-										// we're going to release the job as
-										// soon as it goes from running to lost
-										job.UntilBuried--
-									}
-								}
-								jobs = append(jobs, job)
-							}
-						}
-					}
-					s.Debug("killed jobs on bad servers", "number", len(jobs))
-				}
-
+				jobs := s.killJobsOnServers(serverIDs)
 				sr = &serverResponse{BadServers: confirmed, Jobs: jobs}
 			} else {
 				sr = &serverResponse{BadServers: servers}

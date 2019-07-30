@@ -348,6 +348,39 @@ runnerexecshell: "bash"
 # A value of 0 turns off the termination of idle servers (not recommended).
 cloudkeepalive: 120
 
+# cloudautoconfirmdead: How long should dead spawned servers be kept?
+# The default of 0 means keep them forever. It is overridden by the
+# --auto_confirm_dead option to `wr cloud deploy` and the
+# --cloud_auto_confirm_dead option of `wr manager start`.
+# Note, this is a number (no quotes) of mintues.
+#
+# This option is only relevant when you are using a cloud scheduler such as
+# OpenStack.
+#
+# When wr spawns a new server on which to execute commands, it periodically
+# checks if it can still SSH to it. If not, the server is considered "dead". If
+# this was due to a temporary networking issue or similar, then later on the
+# server could become responsive again and it will no longer be considered dead.
+# A server will also be considered dead (permanently) if a wr process running on
+# it is killed.
+# 
+# In the former case it may not be possible to execute new commands on the
+# server, and in the latter case wr will not even try to do so. But since the
+# server still exists, it may be using up your quota, preventing the creation
+# of a new server on which to run commands.
+#
+# If you wish to investigate all instances of your servers becoming "dead", you
+# can use `wr cloud servers` to find out about them and manually confirm them
+# dead, destroying them if they still exist.
+#
+# For unattended usage, however, you can configure this to a > 0 value and wr
+# will automatically confirm the servers dead if they remain dead for the given
+# number of minutes. It is suggested you set this to a high value like 30, to
+# allow time for manual investigation if desired, or for temporary issues to
+# resolve themselves.
+#
+# cloudautoconfirmdead: 0
+
 # cloudservers: How many additional cloud servers can be spawned?
 # This defaults to -1. It is overridden by the --max_servers option to
 # `wr cloud deploy` and the --cloud_servers option of `wr manager start`.
