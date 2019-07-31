@@ -8,6 +8,7 @@ require (
 	github.com/PuerkitoBio/purell v1.1.1 // indirect
 	github.com/StackExchange/wmi v0.0.0-20181212234831-e0a55b97c705 // indirect
 	github.com/VertebrateResequencing/muxfys v3.0.5+incompatible
+	github.com/VertebrateResequencing/muxfys/v4 v4.0.0
 	github.com/VividCortex/ewma v0.0.0-20170804035156-43880d236f69
 	github.com/armon/consul-api v0.0.0-20180202201655-eb2c6b5be1b6 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20190424111038-f61b66f89f4a // indirect
@@ -134,5 +135,3 @@ replace k8s.io/client-go => k8s.io/client-go v7.0.0+incompatible
 replace github.com/grafov/bcast => github.com/grafov/bcast v0.0.0-20161019100130-e9affb593f6c
 
 replace github.com/sevlyar/go-daemon => github.com/sevlyar/go-daemon v0.1.1-0.20160925164401-01bb5caedcc4
-
-replace github.com/VertebrateResequencing/muxfys => github.com/VertebrateResequencing/muxfys/v4 v4.0.0

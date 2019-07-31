@@ -25,7 +25,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
