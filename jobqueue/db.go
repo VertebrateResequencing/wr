@@ -37,7 +37,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/internal"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/inconshreveable/log15"
