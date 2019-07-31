@@ -352,7 +352,7 @@ cloudkeepalive: 120
 # This defaults to 30. It is overridden by the --auto_confirm_dead option to
 # `wr cloud deploy` and the --cloud_auto_confirm_dead option of
 # `wr manager start`.
-# Note, this is a number (no quotes) of mintues.
+# Note, this is a number (no quotes) of minutes.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
