@@ -1577,6 +1577,42 @@ func TestQueue(t *testing.T) {
 		So(<-rCh2, ShouldBeTrue)
 	})
 
+	Convey("Multiple clients can reserve with a wait time before items are even added", t, func() {
+		queue := New("myqueue")
+		defer qdestroy(queue)
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 0)
+
+		rCh := make(chan bool)
+		i := 0
+		for {
+			i++
+			go func() {
+				t := time.Now()
+				item, err := queue.Reserve("foo", 30*time.Millisecond)
+				rCh <- item != nil && err == nil && time.Since(t) < 25*time.Millisecond
+			}()
+			if i == 2 {
+				break
+			}
+		}
+
+		addErrCh := make(chan error)
+		go func() {
+			<-time.After(20 * time.Millisecond)
+			_, err1 := queue.Add("key1", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+			_, err2 := queue.Add("key2", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+			addErrCh <- err1
+			addErrCh <- err2
+		}()
+
+		So(<-addErrCh, ShouldBeNil)
+		So(<-addErrCh, ShouldBeNil)
+		So(<-rCh, ShouldBeTrue)
+		So(<-rCh, ShouldBeTrue)
+	})
+
 	Convey("You can reserve with a wait time, reserving before a dependent item becomes ready", t, func() {
 		queue := New("myqueue")
 		defer qdestroy(queue)
