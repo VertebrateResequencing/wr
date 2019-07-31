@@ -46,6 +46,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const serverRC = `echo %s %s %s %s %d %d`
+
 var runnermode bool
 var runnerfail bool
 var schedgrp string
@@ -496,8 +498,8 @@ func TestJobqueueSignal(t *testing.T) {
 			cmd := "sleep 10"
 			cmd2 := "perl -e 'for (1..10) { sleep(1) }'" // we want to kill this part way, but `sleep` processes don't seem to die straight away when killed
 			var jobs []*Job
-			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
-			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "recover"})
+			jobs = append(jobs, &Job{Cmd: cmd2, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "buried"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 2)
@@ -582,6 +584,7 @@ func TestJobqueueSignal(t *testing.T) {
 						j2worked <- true
 						return
 					}
+					fmt.Printf("\njob2 had err %s\n", erre)
 					j2worked <- false
 					return
 				case <-giveUp2:
@@ -797,7 +800,7 @@ func TestJobqueueBasics(t *testing.T) {
 		server, _, token, errs = serve(serverConfig)
 		So(errs, ShouldBeNil)
 
-		server.rc = `echo %s %s %s %s %d %d` // ReserveScheduled() only works if we have an rc
+		server.rc = serverRC // ReserveScheduled() only works if we have an rc
 
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -2848,7 +2851,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			server.Stop(true)
 		}()
 
-		server.rc = `echo %s %s %s %s %d %d`
+		server.rc = serverRC
 
 		Convey("You can connect, and add jobs with LimitGroups", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -2990,7 +2993,7 @@ func TestJobqueueModify(t *testing.T) {
 			server.Stop(true)
 		}()
 
-		server.rc = `echo %s %s %s %s %d %d`
+		server.rc = serverRC
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
@@ -5093,7 +5096,10 @@ sudo usermod -aG docker ` + osUser
 	Convey("You can connect with an OpenStack scheduler", t, func() {
 		server, _, token, errs = serve(osConfig)
 		So(errs, ShouldBeNil)
-		defer server.Stop(true)
+		defer func() {
+			<-time.After(1 * time.Second) // give runners a chance to exit to avoid extraneous warnings
+			server.Stop(true)
+		}()
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
@@ -5122,6 +5128,72 @@ sudo usermod -aG docker ` + osUser
 				}
 			}
 		}
+
+		Convey("You can add a chain of jobs that run quickly one after the other", func() {
+			tmpdir, err := ioutil.TempDir("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
+			oneReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: tmpdir, ReqGroup: "test1", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"1"}})
+			d1 := NewDepGroupDependency("1")
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: tmpdir, ReqGroup: "test2", Requirements: oneReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"2"}, Dependencies: Dependencies{d1}})
+			d2 := NewDepGroupDependency("2")
+			jobs = append(jobs, &Job{Cmd: "echo 3", Cwd: tmpdir, ReqGroup: "test3", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"3"}, Dependencies: Dependencies{d2}})
+
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 3)
+			So(already, ShouldEqual, 0)
+
+			// wait for the jobs to get run
+			done := make(chan bool, 1)
+			go func() {
+				limit := time.After(30 * time.Second)
+				ticker := time.NewTicker(500 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						if !server.HasRunners() {
+							ticker.Stop()
+							done <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						done <- false
+						return
+					}
+				}
+			}()
+			So(<-done, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("chain", false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 3)
+			var e1, s2, e2, s3 time.Time
+			for _, job := range jobs {
+				So(job.State, ShouldEqual, JobStateComplete)
+				switch job.Cmd {
+				case "echo 1":
+					e1 = job.EndTime
+				case "echo 2":
+					s2 = job.StartTime
+					e2 = job.EndTime
+				case "echo 3":
+					s3 = job.StartTime
+				}
+			}
+			// (the below used to be over a second ; these tests show we
+			//  improved the behaviour and now react instantly)
+			So(s2.Sub(e1), ShouldBeLessThan, 100*time.Millisecond)
+			So(s3.Sub(e2), ShouldBeLessThan, 100*time.Millisecond)
+		})
 
 		Convey("You can modify cloud_config_files of a job", func() {
 			var jobs []*Job
@@ -5798,6 +5870,7 @@ sudo usermod -aG docker ` + osUser
 
 		Reset(func() {
 			if server != nil {
+				<-time.After(1 * time.Second)
 				server.Stop(true)
 			}
 		})

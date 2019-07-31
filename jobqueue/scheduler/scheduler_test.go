@@ -34,7 +34,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -51,6 +50,7 @@ func init() {
 func TestLocal(t *testing.T) {
 	runtime.GOMAXPROCS(maxCPU)
 
+	var overhead time.Duration
 	Convey("You can get a new local scheduler", t, func() {
 		s, err := New("local", &ConfigLocal{"bash", 1 * time.Second, 0, 0}, testLogger)
 		So(err, ShouldBeNil)
@@ -102,118 +102,134 @@ func TestLocal(t *testing.T) {
 			}
 			defer os.RemoveAll(tmpdir2)
 
+			defer waitToFinish(s, 30, 100)
+
 			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75); @a = tempfile(DIR => q[%s]); exit(0);'", tmpdir, tmpdir2) // creates a file, sleeps for 0.75s and then creates another file
 
-			// different machines take difference amounts of times to actually
+			// different machines take different amounts of times to actually
 			// run the above command, so we first need to run the command (in
 			// parallel still, since it is slower to run when many are running
 			// at once) to find how long it takes, as subsequent tests are very
 			// timing dependent
-			err = s.Schedule(cmd, possibleReq, maxCPU)
-			So(err, ShouldBeNil)
-			before := time.Now()
-			var overhead time.Duration
-			for {
-				if !s.Busy() {
-					overhead = time.Since(before) - (750 * time.Millisecond)
-					break
-				}
-				<-time.After(1 * time.Millisecond)
+			if overhead == 0 {
+				Convey("You can first run with the number of CPUs", func() {
+					err = s.Schedule(cmd, possibleReq, maxCPU)
+					So(err, ShouldBeNil)
+					before := time.Now()
+					for {
+						if !s.Busy() {
+							overhead = time.Since(before) - (750 * time.Millisecond) // about 150ms
+							break
+						}
+						<-time.After(1 * time.Millisecond)
+					}
+				})
 			}
 
 			count := maxCPU * 2
-			err = s.Schedule(cmd, possibleReq, count)
-			So(err, ShouldBeNil)
-			So(s.Busy(), ShouldBeTrue)
+			sched := func() {
+				err = s.Schedule(cmd, possibleReq, count)
+				So(err, ShouldBeNil)
+				So(s.Busy(), ShouldBeTrue)
+			}
 
 			Convey("It eventually runs them all", func() {
+				sched()
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU) // from the speed test + half of the newly scheduled tests
-				So(numfiles, ShouldEqual, maxCPU+maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
+				So(numfiles, ShouldEqual, maxCPU)
 
 				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, maxCPU+count) // from the speed test + all the newly scheduled tests have at least started
-				So(numfiles, ShouldEqual, maxCPU+count)
-				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
-				if numfiles < maxCPU+count {
+				numfiles = testDirForFiles(tmpdir, count)
+				So(numfiles, ShouldEqual, count)
+				numfiles = testDirForFiles(tmpdir2, count)
+				if numfiles < count {
 					So(s.Busy(), ShouldBeTrue) // but they might not all have finished quite yet
 				}
 
 				<-time.After(200*time.Millisecond + overhead) // an extra 150ms for leeway
-
-				numfiles = testDirForFiles(tmpdir2, maxCPU+count)
-				So(numfiles, ShouldEqual, maxCPU+count)
+				numfiles = testDirForFiles(tmpdir2, count)
+				So(numfiles, ShouldEqual, count)
 				So(s.Busy(), ShouldBeFalse)
 			})
 
-			Convey("You can Schedule() again to drop the count", func() {
-				newcount := maxCPU + 1 // (this test only really makes sense if newcount is now less than count, ie. we have more than 1 cpu)
-
-				<-time.After(700 * time.Millisecond)
-
-				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
-				So(numfiles, ShouldEqual, maxCPU+maxCPU)
-
-				err = s.Schedule(cmd, possibleReq, newcount)
-				So(err, ShouldBeNil)
-
-				<-time.After(750*time.Millisecond + overhead)
-
-				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
-				So(numfiles, ShouldEqual, maxCPU+newcount)
-
-				So(waitToFinish(s, 3, 100), ShouldBeTrue)
-			})
-
 			Convey("Dropping the count below the number currently running doesn't kill those that are running", func() {
-				newcount := maxCPU - 1
-
+				sched()
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
-				So(numfiles, ShouldEqual, maxCPU+maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
+				So(numfiles, ShouldEqual, maxCPU)
 
+				newcount := maxCPU - 1
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
 				<-time.After(750*time.Millisecond + overhead)
 
-				numfiles = testDirForFiles(tmpdir, maxCPU+maxCPU)
-				So(numfiles, ShouldEqual, maxCPU+maxCPU)
+				numfiles = testDirForFiles(tmpdir, maxCPU)
+				So(numfiles, ShouldEqual, maxCPU)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
+
+				numfiles = testDirForFiles(tmpdir2, maxCPU)
+				So(numfiles, ShouldEqual, maxCPU)
 			})
 
 			Convey("You can Schedule() again to increase the count", func() {
-				newcount := count + 1
-
+				sched()
 				<-time.After(700 * time.Millisecond)
 
-				numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
-				So(numfiles, ShouldEqual, maxCPU+maxCPU)
+				numfiles := testDirForFiles(tmpdir, maxCPU)
+				So(numfiles, ShouldEqual, maxCPU)
 
+				newcount := count + 1
 				err = s.Schedule(cmd, possibleReq, newcount)
 				So(err, ShouldBeNil)
 
 				<-time.After(1500*time.Millisecond + overhead + overhead)
 
-				numfiles = testDirForFiles(tmpdir, maxCPU+newcount)
-				So(numfiles, ShouldEqual, maxCPU+newcount)
+				numfiles = testDirForFiles(tmpdir, newcount)
+				So(numfiles, ShouldEqual, newcount)
 
 				So(waitToFinish(s, 3, 100), ShouldBeTrue)
+
+				numfiles = testDirForFiles(tmpdir2, newcount)
+				So(numfiles, ShouldEqual, newcount)
 			})
 
 			if maxCPU > 1 {
-				Convey("You can Schedule() a new job and have it run while the first is still running", func() {
-					newcount := maxCPU + 1
-
+				Convey("You can Schedule() again to drop the count", func() {
+					sched()
 					<-time.After(700 * time.Millisecond)
 
-					numfiles := testDirForFiles(tmpdir, maxCPU+maxCPU)
-					So(numfiles, ShouldEqual, maxCPU+maxCPU)
+					numfiles := testDirForFiles(tmpdir, maxCPU)
+					So(numfiles, ShouldEqual, maxCPU)
 
+					newcount := maxCPU + 1 // (this test only really makes sense if newcount is now less than count, ie. we have more than 1 cpu)
+					err = s.Schedule(cmd, possibleReq, newcount)
+					So(err, ShouldBeNil)
+
+					<-time.After(750*time.Millisecond + overhead)
+
+					numfiles = testDirForFiles(tmpdir, newcount)
+					So(numfiles, ShouldEqual, newcount)
+
+					So(waitToFinish(s, 3, 100), ShouldBeTrue)
+
+					numfiles = testDirForFiles(tmpdir2, newcount)
+					So(numfiles, ShouldEqual, newcount)
+				})
+
+				Convey("You can Schedule() a new job and have it run while the first is still running", func() {
+					sched()
+					<-time.After(700 * time.Millisecond)
+
+					numfiles := testDirForFiles(tmpdir, maxCPU)
+					So(numfiles, ShouldEqual, maxCPU)
+
+					newcount := maxCPU + 1
 					err = s.Schedule(cmd, possibleReq, newcount)
 					So(err, ShouldBeNil)
 					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir)
@@ -222,15 +238,20 @@ func TestLocal(t *testing.T) {
 
 					<-time.After(750*time.Millisecond + overhead)
 
-					numfiles = testDirForFiles(tmpdir, maxCPU+newcount+1)
-					So(numfiles, ShouldEqual, maxCPU+newcount+1)
+					numfiles = testDirForFiles(tmpdir, newcount+1)
+					So(numfiles, ShouldEqual, newcount+1)
 
 					So(waitToFinish(s, 3, 100), ShouldBeTrue)
+
+					numfiles = testDirForFiles(tmpdir2, newcount)
+					So(numfiles, ShouldEqual, newcount)
 				})
 
 				//*** want a test where the first job fills up all resources
 				// and has more to do, and a second job could slip and complete
 				// before resources for the first become available
+			} else {
+				SkipConvey("Skipping Schedule() tests that need more than 1 cpu", func() {})
 			}
 		})
 
@@ -742,6 +763,64 @@ func TestOpenstack(t *testing.T) {
 			})
 		}
 
+		getServerFlavors := func() map[int]int {
+			oss.serversMutex.RLock()
+			defer oss.serversMutex.RUnlock()
+			flavors := make(map[int]int)
+			for _, server := range oss.servers {
+				flavors[server.Flavor.Cores]++
+			}
+			return flavors
+		}
+
+		waitForServers := func(wanted map[int]int) bool {
+			limit := time.After(120 * time.Second)
+			ticker := time.NewTicker(1 * time.Second)
+			for {
+				select {
+				case <-ticker.C:
+					if len(wanted) == 0 {
+						oss.stateUpdate()
+					}
+					have := getServerFlavors()
+					ok := true
+					for cpus, desired := range wanted {
+						if actual, exists := have[cpus]; exists {
+							if actual < desired {
+								ok = false
+								// fmt.Printf("only %d not %d for flavor %d\n", actual, desired, cpus)
+								break
+							}
+						} else {
+							ok = false
+							// fmt.Printf("missing flavor %d\n", cpus)
+							break
+						}
+					}
+					for cpus := range have {
+						if cpus == 1 {
+							// ignore localhost
+							continue
+						}
+						if _, exists := wanted[cpus]; !exists {
+							ok = false
+							// fmt.Printf("extra flavor %d\n", cpus)
+							break
+						}
+					}
+
+					if ok {
+						ticker.Stop()
+						return true
+					}
+					continue
+				case <-limit:
+					ticker.Stop()
+					return false
+				}
+			}
+		}
+
 		// we need to not actually run the real scheduling tests if we're not
 		// running in openstack, because the scheduler will try to ssh to
 		// the servers it spawns
@@ -752,255 +831,70 @@ func TestOpenstack(t *testing.T) {
 			novaCmd = "nova"
 		}
 		if novaCmd != "" && oss.provider.InCloud() {
-			Convey("When running on a new server...", func() {
-				// avoid running anything on ourselves, so we actually spawn a
-				// new server
-				r := oss.reqForSpawn(possibleReq)
-				for _, server := range oss.servers {
-					if server.Flavor.RAM >= r.RAM {
-						r.RAM = server.Flavor.RAM + 1000
-					}
-				}
-				flavor, err := oss.determineFlavor(r, "t")
-				So(err, ShouldBeNil)
-
-				existingKeys := make(map[string]bool)
-				for key := range oss.servers {
-					existingKeys[key] = true
-				}
-
-				waitForNewServer := func() *cloud.Server {
-					var newServer *cloud.Server
-					i := 0
-					for {
-						i++
-
-						oss.runMutex.Lock()
-						oss.serversMutex.RLock()
-						for key, server := range oss.servers {
-							if !existingKeys[key] {
-								newServer = server
-							}
-						}
-						oss.serversMutex.RUnlock()
-						oss.runMutex.Unlock()
-
-						if newServer != nil {
-							break
-						}
-
-						if i == 120 {
-							break
-						}
-						<-time.After(1 * time.Second)
-					}
-					return newServer
-				}
-
-				Convey("Cancelling jobs prior to server boot up still results in correct resource allocation when...", func() {
-					// since these tests run small jobs, we need to force a new
-					// server in a different way: by having a boot script
-					other := make(map[string]string)
-					other["cloud_script"] = "true\n"
-					testReq := &Requirements{5, 1 * time.Minute, float64(0), 0, other, true, true, true}
-					testReq2 := &Requirements{10, 1 * time.Minute, float64(0), 0, other, true, true, true}
-					flavor, err = oss.determineFlavor(oss.reqForSpawn(testReq2), "random")
-					So(err, ShouldBeNil)
-
-					numJobs := 10
-					submitted := make(chan bool, numJobs+1)
-					done := make(chan error, numJobs+1)
-
-					runCmds := func(cmd string, req *Requirements, count int) {
-						for i := 0; i < count; i++ {
-							go func() {
-								reserved := make(chan bool)
-								go func() {
-									<-reserved
-									submitted <- true
-								}()
-								err := oss.runCmd(cmd, req, reserved, "random")
-								done <- err
-							}()
-						}
-					}
-
-					waitSubmitted := func(count int) {
-						for i := 0; i < count; i++ {
-							<-submitted
-						}
-					}
-
-					half := numJobs / 2
-					cmd := "sleep 2"
-					cmd2 := "sleep 3"
-					runCmds(cmd, testReq, half)
-					waitSubmitted(half)
-					runCmds(cmd2, testReq2, half)
-					waitSubmitted(half)
-					<-time.After(1 * time.Second)
-
-					destroyedOrComplete := 0
-					notNeeded := 0
-					checkErrors := func() {
-						for i := 0; i < numJobs; i++ {
-							err := <-done
-							if err == nil {
-								destroyedOrComplete++
-							} else {
-								if strings.Contains(err.Error(), "destruction of server") {
-									destroyedOrComplete++
-								} else if strings.Contains(err.Error(), "no longer needed") {
-									notNeeded++
-								}
-							}
-						}
-					}
-
-					Convey("... all commands are cancelled", func() {
-						oss.cancelRun(cmd, 0)
-						oss.cancelRun(cmd2, 0)
-
-						newServer := waitForNewServer()
-						So(newServer == nil, ShouldBeFalse) // avoid race condition read by ShouldNotBeNil
-
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM, 0), ShouldEqual, 1)
-
-						checkErrors()
-						So(destroyedOrComplete, ShouldEqual, 0)
-						So(notNeeded, ShouldEqual, 10)
-					})
-
-					Convey("... all but the first command is cancelled", func() {
-						oss.cancelRun(cmd, 1)
-						oss.cancelRun(cmd2, 0)
-
-						newServer := waitForNewServer()
-						So(newServer == nil, ShouldBeFalse)
-
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM, 0), ShouldEqual, 0)
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM-5, 0), ShouldEqual, 1)
-
-						checkErrors()
-						So(destroyedOrComplete, ShouldEqual, 1)
-						So(notNeeded, ShouldEqual, 9)
-					})
-
-					Convey("... all but the first command of a second group is cancelled", func() {
-						oss.cancelRun(cmd, 0)
-						oss.cancelRun(cmd2, 1)
-
-						newServer := waitForNewServer()
-						So(newServer == nil, ShouldBeFalse)
-
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM-5, 0), ShouldEqual, 0)
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM-10, 0), ShouldEqual, 1)
-
-						checkErrors()
-						So(destroyedOrComplete, ShouldEqual, 1)
-						So(notNeeded, ShouldEqual, 9)
-					})
-
-					Convey("... all but 1 command of each group are cancelled", func() {
-						oss.cancelRun(cmd, 1)
-						oss.cancelRun(cmd2, 1)
-
-						newServer := waitForNewServer()
-						So(newServer == nil, ShouldBeFalse)
-
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM-10, 0), ShouldEqual, 0)
-						So(newServer.HasSpaceFor(float64(0), flavor.RAM-15, 0), ShouldEqual, 1)
-
-						checkErrors()
-						So(destroyedOrComplete, ShouldEqual, 2)
-						So(notNeeded, ShouldEqual, 8)
-					})
-				})
-
-				Convey("Changing requirements mid-run doesn't break server resource release", func() {
-					inititalRAM := flavor.RAM
-					testReq := &Requirements{inititalRAM, 1 * time.Minute, float64(flavor.Cores), 0, otherReqs, true, true, true}
-
-					done := make(chan error, 1)
-					go func() {
-						reserved := make(chan bool)
-						go func() {
-							<-reserved
-						}()
-						err := oss.runCmd("sleep 4", testReq, reserved, "random")
-						done <- err
-					}()
-
-					newServer := waitForNewServer()
-					testReq.RAM = inititalRAM - 5
-					So(newServer == nil, ShouldBeFalse)
-
-					err := <-done
-					So(err, ShouldBeNil)
-
-					So(newServer.HasSpaceFor(float64(flavor.Cores), inititalRAM, 0), ShouldEqual, 1)
-				})
-
-				Convey("The canCount during and after spawning is correct", func() {
-					// *** these tests are only going to work if no external process
-					// changes resource usage before we finish...
-					testReq := &Requirements{flavor.RAM, 1 * time.Minute, float64(flavor.Cores), 0, otherReqs, true, true, true}
-					numServers := len(oss.servers)
-					can := oss.canCount(testReq, "random")
-
-					done := make(chan bool, 1)
-					go func() {
-						i := 0
-						for {
-							i++
-							reserved := make(chan bool)
-							go func() {
-								<-reserved
-							}()
-							err := oss.runCmd("sleep 4", testReq, reserved, "random")
-							if err == nil || i == 3 {
-								done <- true
-								break
-							}
-						}
-					}()
-					<-time.After(3 * time.Second)
-
-					oss.runMutex.Lock()
-					oss.serversMutex.RLock()
-					So(len(oss.servers)+len(oss.standins), ShouldEqual, numServers+1)
-					oss.serversMutex.RUnlock()
-					oss.runMutex.Unlock()
-					So(oss.canCount(testReq, "random2"), ShouldEqual, can-1)
-
-					<-done
-
-					oss.serversMutex.Lock()
-					for sid, server := range oss.servers {
-						if server.Destroyed() {
-							delete(oss.servers, sid)
-						}
-					}
-					So(len(oss.servers), ShouldEqual, numServers+1)
-					oss.serversMutex.Unlock()
-					So(oss.canCount(testReq, "random3"), ShouldEqual, can)
-
-					<-time.After(20 * time.Second)
-
-					oss.serversMutex.Lock()
-					for sid, server := range oss.servers {
-						if server.Destroyed() {
-							delete(oss.servers, sid)
-						}
-					}
-					So(len(oss.servers), ShouldEqual, numServers)
-					oss.serversMutex.Unlock()
-					So(oss.canCount(testReq, "random4"), ShouldEqual, can)
-				})
-			})
+			oFile := filepath.Join(tmpdir, "out")
 
 			Convey("Schedule() lets you...", func() {
-				oFile := filepath.Join(tmpdir, "out")
+				Convey("Ask for many small cmds and then a large cmd but get both running right away", func() {
+					other := make(map[string]string)
+
+					smallCmd := "sleep 1"
+					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
+					err := s.Schedule(smallCmd, smallReq, 1000000)
+					So(err, ShouldBeNil)
+
+					bigCmd := "sleep 2"
+					bigReq := &Requirements{100, 1 * time.Minute, 4, 1, other, true, true, true}
+					err = s.Schedule(bigCmd, bigReq, 1)
+					So(err, ShouldBeNil)
+
+					wanted := make(map[int]int)
+					wanted[2] = 1
+					wanted[4] = 1
+					So(waitForServers(wanted), ShouldBeTrue)
+
+					err = s.Schedule(smallCmd, smallReq, 0)
+					So(err, ShouldBeNil)
+					err = s.Schedule(bigCmd, bigReq, 0)
+					So(err, ShouldBeNil)
+
+					wanted = make(map[int]int)
+					So(waitForServers(wanted), ShouldBeTrue)
+				})
+
+				Convey("Ask for a many large commands and then small cmds and get both running right away and sharing servers", func() {
+					other := make(map[string]string)
+
+					bigCmd := "sleep 1"
+					bigReq := &Requirements{100, 1 * time.Minute, 6, 1, other, true, true, true}
+					err := s.Schedule(bigCmd, bigReq, 1000000)
+					So(err, ShouldBeNil)
+
+					smallCmd := "sleep 5"
+					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
+					err = s.Schedule(smallCmd, smallReq, 4)
+					So(err, ShouldBeNil)
+
+					wanted := make(map[int]int)
+					wanted[8] = 1
+					wanted[2] = 1
+					So(waitForServers(wanted), ShouldBeTrue)
+
+					oss.serversMutex.RLock()
+					for _, server := range oss.servers {
+						if server.Flavor.Cores == 8 {
+							So(server.HasSpaceFor(2, 1, 1), ShouldEqual, 0)
+						}
+					}
+					oss.serversMutex.RUnlock()
+
+					err = s.Schedule(smallCmd, smallReq, 0)
+					So(err, ShouldBeNil)
+					err = s.Schedule(bigCmd, bigReq, 0)
+					So(err, ShouldBeNil)
+
+					wanted = make(map[int]int)
+					So(waitForServers(wanted), ShouldBeTrue)
+				})
 
 				Convey("Run jobs that use a NFS shared disk", func() {
 					cmd := "touch /shared/test1"
@@ -1078,10 +972,12 @@ func TestOpenstack(t *testing.T) {
 
 				Convey("Run jobs with no inputs/outputs", func() {
 					// on authors setup, the following count is sufficient to
-					// test spawning instances over the quota in the test
-					// environment if we reserve 26 cores per job
+					// get up to 3 instances and then kill an un-needed 4th
+					// prior to cleaning up *** would be good to test hitting
+					// the quota as well, but that takes too long and is
+					// unreliable
 					count := 18
-					eta := 200 // if it takes longer than this, it's a likely indicator of a bug where it has actually stalled on a stuck lock
+					eta := 200
 					cmd := "sleep 10"
 					oReqs := make(map[string]string)
 					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, oReqs, true, true, true}
