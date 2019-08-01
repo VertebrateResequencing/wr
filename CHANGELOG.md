@@ -5,6 +5,46 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.19.0] - 2019-08-01
+### Added
+- New --cloud_auto_confirm_dead option to `wr manager start` (and similar
+  option for `wr cloud deploy`, and new config option) that allows dead
+  OpenStack servers to be automatically confirmed dead (destroying them, and
+  confirming the jobs running on them as dead as well) after, by default,
+  30mins. NB: for the old behaviour where dead servers were left alone until
+  you manually investigated, set this option to 0.
+
+### Changed
+- OpenStack scheduler reimplemented for new fixes and behaviour:
+  1. Avoids a lock-up issue where jobs would stop getting scheduled under
+     certain circumstances.
+  2. Quota warnings no longer appear until quota is physically used up.
+  3. The flavor of server to spawn and the jobs to run on them are reassessed
+     after every spawn, job completion and schedule, allowing bin-packing to do
+     the expected thing as new jobs are scheduled over time.
+  4. Spawned servers that are no longer needed are abandoned right away,
+     allowing any other still-desired server to come up straight away.
+  5. Servers for different kinds of job (according to having different resource
+     requirements) are now spawned fully simultaneously, while servers for the
+     same kind of job are now spawned fully sequentially. (The old behaviour was
+     servers for all kinds of jobs were spawned sequentially, but with some
+     overlap.)
+- Cloud scripts (being the scripts that run after an OpenStack server boots up)
+  now have a time limit of 15 mins, so that scripts that fail to exit do not
+  cause servers to be created that are never used and never destroyed.
+- For developers of wr, the linting method has changed to golangci-lint. See
+  comment in Makefile for installation instructions.
+
+### Fixed
+- Theoretical edge-case bugs fixed, alongside potential general stability
+  improvements.
+- Memory leak associated with running jobs that write empty files to uncached S3
+  mounts.
+- Runners now wait the appropriate time for new jobs to run, and start running
+  them the moment they're added.
+- Edge-case where an OpenStack server could scale down while running a command.
+
+
 ## [0.18.1] - 2019-05-23
 ### Added
 - New `--manager_flavor` option to `wr cloud deploy` (defaulting to new
