@@ -64,11 +64,11 @@ var userid int
 func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 	// from http://stackoverflow.com/a/18695428/675083 *** should also try the
 	// idiomatic way to see if that's better in any way
-	valToKeys := map[int][]string{}
+	valToKeys := make(map[int][]string, len(imap))
 	for key, val := range imap {
 		valToKeys[val] = append(valToKeys[val], key)
 	}
-	var vals []int
+	vals := make([]int, 0, len(valToKeys))
 	for val := range valToKeys {
 		vals = append(vals, val)
 	}
@@ -79,7 +79,7 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 		sort.Sort(sort.IntSlice(vals))
 	}
 
-	var sortedKeys []string
+	sortedKeys := make([]string, 0, len(vals))
 	for _, val := range vals {
 		sortedKeys = append(sortedKeys, valToKeys[val]...)
 	}
@@ -90,12 +90,12 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 // a the values found at a given sub value, reversed if you supply true as the
 // second arg.
 func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, reverse bool) []string {
-	criterionValueToKeys := make(map[int][]string)
+	criterionValueToKeys := make(map[int][]string, len(imap))
 	for key, submap := range imap {
 		val := submap[criterion]
 		criterionValueToKeys[val] = append(criterionValueToKeys[val], key)
 	}
-	var criterionValues []int
+	criterionValues := make([]int, 0, len(criterionValueToKeys))
 	for val := range criterionValueToKeys {
 		criterionValues = append(criterionValues, val)
 	}
@@ -106,7 +106,7 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 		sort.Sort(sort.IntSlice(criterionValues))
 	}
 
-	var sortedKeys []string
+	sortedKeys := make([]string, 0, len(criterionValues))
 	for _, val := range criterionValues {
 		sortedKeys = append(sortedKeys, criterionValueToKeys[val]...)
 	}

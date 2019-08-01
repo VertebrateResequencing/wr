@@ -274,7 +274,9 @@ flavor (normally the cheapest flavor is chosen for you based on the command's
 resource requirements). The format for cloud_config_files is described under the
 help text for "wr cloud deploy"'s --config_files option. The per-job config
 files you specify will be treated as in addition to any specified during cloud
-deploy or when starting the manager.
+deploy or when starting the manager. Note that your cloud_script must complete
+within 15 mins; if your script is slow because it installs a lot of software,
+consider creating a new image instead and using cloud_os.
 
 "cloud_shared" only works when using a cloud scheduler where both the manager
 and jobs will run on Ubuntu. It will cause /shared on the manager's server to be
@@ -548,9 +550,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		if errg != nil {
 			die("%s", errg)
 		}
-		if isLocal {
-			pwd = wd
-		} else if cmdCwdMatters {
+		if isLocal || cmdCwdMatters {
 			pwd = wd
 		} else {
 			pwd = "/tmp"
@@ -637,8 +637,9 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 // the MD5 paths as the sources, keeping the desired destinations. It does not
 // alter path specs for config files that don't exist locally.
 func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
-	var remoteConfigFiles []string
-	for _, cf := range strings.Split(configFiles, ",") {
+	cfs := strings.Split(configFiles, ",")
+	remoteConfigFiles := make([]string, 0, len(cfs))
+	for _, cf := range cfs {
 		parts := strings.Split(cf, ":")
 		local := internal.TildaToHome(parts[0])
 		_, err := os.Stat(local)

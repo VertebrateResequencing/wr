@@ -19,6 +19,7 @@
 package cloud
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -224,8 +225,13 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawn returns a Server object that lets you Allocate, Release and check HasSpaceFor", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					defer server.Destroy()
-					err = server.WaitUntilReady("", []byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
+					defer func() {
+						errd := server.Destroy()
+						if errd != nil {
+							fmt.Printf("deferred server.Destroy failed: %s", errd)
+						}
+					}()
+					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\nsleep 10 && echo bar > /tmp/post_creation_script_output"))
 					So(err, ShouldBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
@@ -253,22 +259,22 @@ func TestOpenStack(t *testing.T) {
 
 					Convey("You can also interact with the server over ssh, running commands and creating files and directories", func() {
 						// our post creation script should have completed before WaitUntilReady() returned
-						stdout, stderr, err := server.RunCmd("cat /tmp/post_creation_script_output", false)
+						stdout, stderr, err := server.RunCmd(context.Background(), "cat /tmp/post_creation_script_output", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "bar\n")
 						So(stderr, ShouldBeBlank)
 
-						err = server.MkDir("/tmp/foo/bar")
+						err = server.MkDir(context.Background(), "/tmp/foo/bar")
 						So(err, ShouldBeNil)
 
-						stdout, _, err = server.RunCmd("bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
+						stdout, _, err = server.RunCmd(context.Background(), "bash -c ls /tmp/foo/bar", false) // *** don't know why ls on its own returns exit code 2...
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "")
 
-						err = server.CreateFile("my content", "/tmp/foo/bar/a/b/file")
+						err = server.CreateFile(context.Background(), "my content", "/tmp/foo/bar/a/b/file")
 						So(err, ShouldBeNil)
 
-						stdout, _, err = server.RunCmd("cat /tmp/foo/bar/a/b/file", false)
+						stdout, _, err = server.RunCmd(context.Background(), "cat /tmp/foo/bar/a/b/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "my content")
 
@@ -276,10 +282,10 @@ func TestOpenStack(t *testing.T) {
 						err = ioutil.WriteFile(localFile, []byte("uploadable content"), 0644)
 						So(err, ShouldBeNil)
 
-						err = server.UploadFile(localFile, "/tmp/foo/bar/a/c/file")
+						err = server.UploadFile(context.Background(), localFile, "/tmp/foo/bar/a/c/file")
 						So(err, ShouldBeNil)
 
-						stdout, stderr, err = server.RunCmd("cat /tmp/foo/bar/a/c/file", false)
+						stdout, stderr, err = server.RunCmd(context.Background(), "cat /tmp/foo/bar/a/c/file", false)
 						So(err, ShouldBeNil)
 						So(stdout, ShouldEqual, "uploadable content")
 						So(stderr, ShouldBeBlank)
@@ -288,7 +294,7 @@ func TestOpenStack(t *testing.T) {
 							// first find out our network interface so we
 							// can later simulate a server lock up by killing
 							// the network
-							intf, _, err := server.RunCmd("route | grep '^default' | grep -o '[^ ]*$'", false)
+							intf, _, err := server.RunCmd(context.Background(), "route | grep '^default' | grep -o '[^ ]*$'", false)
 							So(err, ShouldBeNil)
 							intf = strings.TrimSpace(intf)
 							So(intf, ShouldNotBeBlank)
@@ -304,11 +310,14 @@ func TestOpenStack(t *testing.T) {
 											<-time.After(2 * time.Second)
 											alive := server.Alive(true)
 											if !alive {
-												server.Destroy()
+												errd := server.Destroy()
+												if errd != nil {
+													fmt.Printf("deferred server.Destroy failed: %s", errd)
+												}
 											}
 										}()
 									}
-									_, _, err := server.RunCmd(cmd, false)
+									_, _, err := server.RunCmd(context.Background(), cmd, false)
 									if err != nil {
 										results <- true
 									} else {
@@ -327,7 +336,7 @@ func TestOpenStack(t *testing.T) {
 							results := make(chan bool, num)
 							for i := 1; i <= num; i++ {
 								go func() {
-									_, _, err := server.RunCmd("sleep 3", false)
+									_, _, err := server.RunCmd(context.Background(), "sleep 3", false)
 									if err != nil {
 										results <- false
 									} else {
@@ -346,33 +355,74 @@ func TestOpenStack(t *testing.T) {
 				Convey("Spawning with a bad start up script returns an error, but a live server", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					err = server.WaitUntilReady("", []byte("#!/bin/bash\nfalse"))
+					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\n>&2 echo foo\nfalse"))
 					So(err, ShouldNotBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
-					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
-					server.Destroy()
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1\nSTDERR:\nfoo")
+					err = server.Destroy()
+					So(err, ShouldBeNil)
+				})
+
+				Convey("Spawning with a start up script that takes too long returns an error as well", func() {
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					pcsTimeOut = 1 * time.Second
+					defer func() {
+						pcsTimeOut = 15 * time.Minute
+					}()
+					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\nsleep 5"))
+					So(err, ShouldNotBeNil)
+					ok := server.Alive(true)
+					So(ok, ShouldBeTrue)
+					So(err.Error(), ShouldStartWith, "cloud server start up script failed to complete within")
+					err = server.Destroy()
+					So(err, ShouldBeNil)
+				})
+
+				Convey("WaitUntilReady can be cancelled", func() {
+					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
+					So(err, ShouldBeNil)
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					go func() {
+						<-time.After(2 * time.Second)
+						cancel()
+					}()
+					t := time.Now()
+					err = server.WaitUntilReady(ctx, "", []byte("#!/bin/bash\nsleep 5"))
+					took := time.Since(t)
+					So(err, ShouldNotBeNil)
+					ok := server.Alive(true)
+					So(ok, ShouldBeTrue)
+					So(err.Error(), ShouldContainSubstring, "cancelled")
+					err = server.Destroy()
+					So(err, ShouldBeNil)
+					So(took, ShouldBeGreaterThanOrEqualTo, 2*time.Second)
+					So(took, ShouldBeLessThan, 3*time.Second)
 				})
 
 				Convey("Spawning with a start up script that relies on an unsupplied file returns an error", func() {
 					server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
-					err = server.WaitUntilReady("", []byte("#!/bin/bash\ncat /tmp/foo"))
+					err = server.WaitUntilReady(context.Background(), "", []byte("#!/bin/bash\ncat /tmp/foo"))
 					So(err, ShouldNotBeNil)
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 					So(err.Error(), ShouldStartWith, "cloud server start up script failed: cloud RunCmd(/tmp/.postCreationScript) failed: Process exited with status 1")
-					server.Destroy()
+					err = server.Destroy()
+					So(err, ShouldBeNil)
 
 					Convey("But supplying the file makes it work", func() {
 						server, err := p.Spawn(osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 						So(err, ShouldBeNil)
 						_, filename, _, _ := runtime.Caller(0)
-						err = server.WaitUntilReady(filename+":/tmp/foo", []byte("#!/bin/bash\ncat /tmp/foo"))
+						err = server.WaitUntilReady(context.Background(), filename+":/tmp/foo", []byte("#!/bin/bash\ncat /tmp/foo"))
 						So(err, ShouldBeNil)
 						ok := server.Alive(true)
 						So(ok, ShouldBeTrue)
-						server.Destroy()
+						err = server.Destroy()
+						So(err, ShouldBeNil)
 					})
 				})
 
@@ -457,7 +507,7 @@ func TestOpenStack(t *testing.T) {
 					ok := server.Alive(true)
 					So(ok, ShouldBeTrue)
 
-					stdout, _, err := server.RunCmd("df -h .", false)
+					stdout, _, err := server.RunCmd(context.Background(), "df -h .", false)
 					So(err, ShouldBeNil)
 					So(stdout, ShouldContainSubstring, fmt.Sprintf("%dG", flavor.Disk+10))
 				})
@@ -471,13 +521,19 @@ func TestOpenStack(t *testing.T) {
 				})
 
 				Reset(func() {
-					p.TearDown()
+					errd := p.TearDown()
+					if errd != nil {
+						fmt.Printf("reset p.Teardown failed: %s", errd)
+					}
 				})
 			})
 
 			// *** we need all the tests for negative and failure cases
 
-			p.TearDown()
+			errd := p.TearDown()
+			if errd != nil {
+				fmt.Printf("ending p.Teardown failed: %s", errd)
+			}
 		})
 	}
 }

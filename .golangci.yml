@@ -1,0 +1,94 @@
+run:
+  deadline: 4m
+  build-tags:
+    - netgo
+  skip-files:
+    - jobqueue/static.go
+  modules-download-mode: readonly
+
+output:
+  # colored-line-number|line-number|json|tab|checkstyle|code-climate, default is "colored-line-number"
+  format: colored-line-number
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: true
+  govet:
+    check-shadowing: true
+  goimports:
+    # put imports beginning with prefix after 3rd-party packages;
+    # it's a comma-separated list of prefixes
+    # local-prefixes: github.com/VertebrateResequencing/wr
+  maligned:
+    # print struct with more effective memory layout or not, false by default
+    suggest-new: true
+  unused:
+    # treat code as a program (not a library) and report unused exported identifiers; default is false.
+    # XXX: if you enable this setting, unused will report a lot of false-positives in text editors:
+    # if it's called for subdir of a project it can't find funcs usages. All text editor integrations
+    # with golangci-lint call it on a directory with the changed file.
+    check-exported: false
+  unparam:
+    # Inspect exported functions, default is false. Set to true if no external program/library imports your code.
+    # XXX: if you enable this setting, unparam will report a lot of false-positives in text editors:
+    # if it's called for subdir of a project it can't find external interfaces. All text editor integrations
+    # with golangci-lint call it on a directory with the changed file.
+    check-exported: false
+  nakedret:
+    max-func-lines: 30
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: true
+
+linters:
+  enable-all: true
+  # enable:
+  #   - deadcode
+  #   - errcheck
+  #   - gosimple
+  #   - govet
+  #   - ineffassign
+  #   - staticcheck
+  #   - structcheck
+  #   - typecheck
+  #   - unused
+  #   - varcheck
+  #   - goconst
+  #   - gocritic
+  #   - goimports
+  #   - golint
+  #   - gosec
+  #   - interfacer
+  #   - maligned
+  #   - misspell
+  #   - nakedret
+  #   - prealloc
+  #   - scopelint
+  #   - stylecheck
+  #   - unconvert
+  #   - unparam
+  disable-all: false
+  disable:
+    - depguard
+    - dupl
+    - gochecknoglobals
+    - gochecknoinits
+    - gocyclo
+    - gofmt
+    - lll
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on tests files.
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: true
+

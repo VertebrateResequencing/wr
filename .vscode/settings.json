@@ -1,35 +1,17 @@
 {
-  "go.lintOnSave": "package",
-  "editor.formatOnSave": true,
-  "go.lintTool": "gometalinter",
-  "go.vetOnSave": "workspace",
-  "go.formatTool": "goimports",
-  "go.lintFlags": [
-    "--vendor",
-    "--disable-all",
-    "--enable=unconvert",
-    "--enable=interfacer",
-    "--enable=gotypex",
-    "--enable=structcheck",
-    "--enable=gofmt",
-    "--enable=varcheck",
-    "--enable=gotype",
-    "--enable=goconst",
-    "--enable=deadcode",
-    "--enable=vet",
-    "--enable=unparam",
-    "--enable=golint",
-    "--enable=goimports",
-    "--enable=gosec",
-    "--enable=megacheck",
-    "--enable=ineffassign",
-    "--enable=misspell",
-    "--enable=nakedret",
-    "--enable=vetshadow",
-    "--enable=errcheck",
-    "--json",
-    "--fast",
-    "--deadline",
-    "30s"
-  ]
+    "[go]": {
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": true
+        },
+    },
+    "go.formatTool": "goimports",
+    "go.formatFlags": [
+        "-w"
+    ],
+    "go.lintOnSave": "package",
+    "go.lintTool": "golangci-lint",
+    "go.lintFlags": [
+        "--fast"
+    ]
 }

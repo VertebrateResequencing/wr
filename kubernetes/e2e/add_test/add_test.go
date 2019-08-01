@@ -18,7 +18,7 @@
 
 // tests echo {42,24,mice,test} | xargs -n 1 -r echo echo | wr add
 
-package addTest
+package addtest
 
 import (
 	"crypto/md5"
@@ -135,8 +135,9 @@ func TestEchoes(t *testing.T) {
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
+		cmd := c.cmd
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmd}, false, false)
 			if err != nil {
 				return false, err
 			}
@@ -177,8 +178,9 @@ func TestFileCreation(t *testing.T) {
 		var job *jobqueue.Job
 		var err error
 		// The job may take some time to complete, so we need to poll.
+		cmd := c.cmd
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmd}, false, false)
 			if err != nil {
 				return false, err
 			}
@@ -240,8 +242,9 @@ func TestContainerImage(t *testing.T) {
 		var err error
 
 		// The job may take some time to complete, so we need to poll.
+		cmd := c.cmd
 		errr := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout*2, func() (bool, error) {
-			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: c.cmd}, false, false)
+			job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmd}, false, false)
 			if err != nil {
 				return false, err
 			}
@@ -268,7 +271,8 @@ func TestContainerImage(t *testing.T) {
 		var runnercontainer *apiv1.Container
 		for _, container := range pod.Spec.Containers {
 			if container.Name == "wr-runner" {
-				runnercontainer = &container
+				c := container
+				runnercontainer = &c
 				break
 			}
 		}

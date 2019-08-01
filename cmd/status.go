@@ -378,7 +378,10 @@ name to just the first letter, eg. -o c):
 		case "json", "j":
 			jstati := make([]jobqueue.JStatus, len(jobs))
 			for i, job := range jobs {
-				jstati[i] = job.ToStatus()
+				jstati[i], err = job.ToStatus()
+				if err != nil {
+					die("failed to convert job to status: %s", err)
+				}
 			}
 
 			encoder := json.NewEncoder(os.Stdout)
@@ -487,7 +490,7 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 }
 
 func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
-	var jes []*jobqueue.JobEssence
+	jes := make([]*jobqueue.JobEssence, 0, len(jobs))
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
 	}

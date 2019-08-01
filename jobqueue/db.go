@@ -37,7 +37,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/internal"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/inconshreveable/log15"
@@ -98,25 +98,25 @@ func (s sobsd) Less(i, j int) bool {
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
 
 type db struct {
-	backingUp          bool
-	backupFinal        bool
-	backupStopWait     chan bool
-	backupLast         time.Time
-	backupMount        *muxfys.MuxFys
-	backupNotification chan bool
-	backupPath         string
-	backupQueued       bool
-	backupWait         time.Duration
-	backupsEnabled     bool
-	bolt               *bolt.DB
-	ch                 codec.Handle
-	closed             bool
-	envcache           *lru.ARCCache
-	slowBackups        bool // just for testing purposes
-	sync.RWMutex
+	backupLast time.Time
+	backupPath string
+	ch         codec.Handle
+	log15.Logger
+	backupStopWait       chan bool
+	backupMount          *muxfys.MuxFys
+	backupNotification   chan bool
+	backupWait           time.Duration
+	bolt                 *bolt.DB
+	envcache             *lru.ARCCache
 	updatingAfterJobExit int
 	wg                   *sync.WaitGroup
-	log15.Logger
+	sync.RWMutex
+	backingUp      bool
+	backupFinal    bool
+	backupQueued   bool
+	backupsEnabled bool
+	closed         bool
+	slowBackups    bool // just for testing purposes
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -816,7 +816,7 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 // in the jobsToQueue return value.
 func (db *db) retrieveDependentJobs(depGroups map[string]bool, newJobKeys map[string]bool) (jobsToQueue []*Job, jobsToUpdate []*Job, err error) {
 	// first convert the depGroups in to sorted prefixes, for linear searching
-	var prefixes sobsd
+	prefixes := make(sobsd, 0, len(depGroups))
 	for depGroup := range depGroups {
 		prefixes = append(prefixes, [2][]byte{[]byte(depGroup + dbDelimiter), nil})
 	}
@@ -970,6 +970,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 	jpr := job.PeakRAM
 	jpd := job.PeakDisk
 	jec := job.Exitcode
+	jfr := job.FailReason
 	err := enc.Encode(job)
 	job.RUnlock()
 	if err != nil {
@@ -1017,7 +1018,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 				return errf
 			}
 
-			switch job.FailReason {
+			switch jfr {
 			case FailReasonRAM:
 				b := tx.Bucket(bucketJobRAM)
 				errf = b.Put([]byte(fmt.Sprintf("%s%s%20d", jrg, dbDelimiter, jpr)), []byte(strconv.Itoa(jpr)))
@@ -1299,8 +1300,12 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 		count := 0
 		window := jobStatWindowPercent
 		var prev []int
+		var erra error
 		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
-			max, _ = strconv.Atoi(string(v))
+			max, erra = strconv.Atoi(string(v))
+			if erra != nil {
+				return erra
+			}
 
 			count++
 			if count > 100 {
@@ -1400,7 +1405,7 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 	if rem > 500 {
 		batchSize = batchSize - rem + 1000
 	} else {
-		batchSize = batchSize - rem
+		batchSize -= rem
 	}
 	if batchSize < 1000 {
 		batchSize = 1000

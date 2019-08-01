@@ -25,7 +25,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
@@ -293,8 +293,9 @@ func mountParseJSON(jsonString string) jobqueue.MountConfigs {
 // parses it to a MountConfig in a MountConfigs (to match the output type of
 // mountParseJSON).
 func mountParseSimple(simpleString string) jobqueue.MountConfigs {
-	var targets []jobqueue.MountTarget
-	for _, simple := range strings.Split(simpleString, ",") {
+	ss := strings.Split(simpleString, ",")
+	targets := make([]jobqueue.MountTarget, 0, len(ss))
+	for _, simple := range ss {
 		parts := strings.Split(simple, ":")
 		if len(parts) != 2 || len(parts[0]) != 2 {
 			die("'%s' was not in the right format", simple)

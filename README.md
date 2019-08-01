@@ -51,8 +51,9 @@ Alternatively, build it yourself (at least v1.12 of go is required):
 An example way of setting up a personal Go installation in your home directory
 would be:
 
-        wget https://dl.google.com/go/go1.12.5.linux-amd64.tar.gz
-        tar -xvzf go1.12.5.linux-amd64.tar.gz && rm go1.12.5.linux-amd64.tar.gz
+        export GOV=1.12.7
+        wget https://dl.google.com/go/go$GOV.linux-amd64.tar.gz
+        tar -xvzf go$GOV.linux-amd64.tar.gz && rm go$GOV.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin
 
 2. Download, compile, and install wr (not inside $GOPATH, if you set that):

@@ -304,7 +304,12 @@ func TestREST(t *testing.T) {
 			Convey("Once one of the jobs has changed state", func() {
 				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldBeNil)
-				defer jq.Disconnect()
+				defer func() {
+					err = jq.Disconnect()
+					if err != nil {
+						fmt.Printf("jq.Disconnect failed: %s\n", err)
+					}
+				}()
 
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
@@ -528,7 +533,7 @@ func TestREST(t *testing.T) {
 			So(response.StatusCode, ShouldEqual, 400)
 			responseData, err := ioutil.ReadAll(response.Body)
 			So(err, ShouldBeNil)
-			So(string(responseData), ShouldEqual, "There was a problem interpreting your job: cmd was not specified\n")
+			So(string(responseData), ShouldEqual, "there was a problem interpreting your job: cmd was not specified\n")
 		})
 
 		Convey("You can POST with optional parameters to set new job defaults", func() {

@@ -25,6 +25,7 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -53,75 +54,60 @@ const (
 // JobViaJSON describes the properties of a JOB that a user wishes to add to the
 // queue, convenient if they are supplying JSON.
 type JobViaJSON struct {
-	Cmd          string       `json:"cmd"`
-	Cwd          string       `json:"cwd"`
-	CwdMatters   bool         `json:"cwd_matters"`
-	ChangeHome   bool         `json:"change_home"`
-	MountConfigs MountConfigs `json:"mounts"`
-	ReqGrp       string       `json:"req_grp"`
+	MountConfigs MountConfigs      `json:"mounts"`
+	LimitGrps    []string          `json:"limit_grps"`
+	DepGrps      []string          `json:"dep_grps"`
+	Deps         []string          `json:"deps"`
+	CmdDeps      Dependencies      `json:"cmd_deps"`
+	OnFailure    BehavioursViaJSON `json:"on_failure"`
+	OnSuccess    BehavioursViaJSON `json:"on_success"`
+	OnExit       BehavioursViaJSON `json:"on_exit"`
+	Env          []string          `json:"env"`
+	Cmd          string            `json:"cmd"`
+	Cwd          string            `json:"cwd"`
+	ReqGrp       string            `json:"req_grp"`
 	// Memory is a number and unit suffix, eg. 1G for 1 Gigabyte.
 	Memory string `json:"memory"`
 	// Time is a duration with a unit suffix, eg. 1h for 1 hour.
-	Time string   `json:"time"`
-	CPUs *float64 `json:"cpus"`
+	Time             string   `json:"time"`
+	RepGrp           string   `json:"rep_grp"`
+	MonitorDocker    string   `json:"monitor_docker"`
+	CloudOS          string   `json:"cloud_os"`
+	CloudUser        string   `json:"cloud_username"`
+	CloudScript      string   `json:"cloud_script"`
+	CloudConfigFiles string   `json:"cloud_config_files"`
+	CloudFlavor      string   `json:"cloud_flavor"`
+	BsubMode         string   `json:"bsub_mode"`
+	CPUs             *float64 `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
-	Disk             *int              `json:"disk"`
-	Override         *int              `json:"override"`
-	Priority         *int              `json:"priority"`
-	Retries          *int              `json:"retries"`
-	RepGrp           string            `json:"rep_grp"`
-	LimitGrps        []string          `json:"limit_grps"`
-	DepGrps          []string          `json:"dep_grps"`
-	Deps             []string          `json:"deps"`
-	CmdDeps          Dependencies      `json:"cmd_deps"`
-	OnFailure        BehavioursViaJSON `json:"on_failure"`
-	OnSuccess        BehavioursViaJSON `json:"on_success"`
-	OnExit           BehavioursViaJSON `json:"on_exit"`
-	Env              []string          `json:"env"`
-	MonitorDocker    string            `json:"monitor_docker"`
-	CloudOS          string            `json:"cloud_os"`
-	CloudUser        string            `json:"cloud_username"`
-	CloudScript      string            `json:"cloud_script"`
-	CloudConfigFiles string            `json:"cloud_config_files"`
-	CloudOSRam       *int              `json:"cloud_ram"`
-	CloudFlavor      string            `json:"cloud_flavor"`
-	CloudShared      bool              `json:"cloud_shared"`
-	BsubMode         string            `json:"bsub_mode"`
-	RTimeout         *int              `json:"reserve_timeout"`
+	Disk        *int `json:"disk"`
+	Override    *int `json:"override"`
+	Priority    *int `json:"priority"`
+	Retries     *int `json:"retries"`
+	CloudOSRam  *int `json:"cloud_ram"`
+	RTimeout    *int `json:"reserve_timeout"`
+	CwdMatters  bool `json:"cwd_matters"`
+	ChangeHome  bool `json:"change_home"`
+	CloudShared bool `json:"cloud_shared"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
 // the conversion.
 type JobDefaults struct {
-	RepGrp string
-	// Cwd defaults to /tmp.
-	Cwd        string
-	CwdMatters bool
-	ChangeHome bool
-	ReqGrp     string
-	// CPUs is the number of CPU cores each cmd will use.
-	CPUs float64
-	// Memory is the number of Megabytes each cmd will use. Defaults to 1000.
-	Memory int
-	// Time is the amount of time each cmd will run for. Defaults to 1 hour.
-	Time time.Duration
-	// Disk is the number of Gigabytes cmds will use.
-	Disk int
-	// DiskSet is used to distinguish between Disk not being provided, and
-	// being provided with a value of 0 or more.
-	DiskSet     bool
-	Override    int
-	Priority    int
-	Retries     int
-	LimitGroups []string
-	DepGroups   []string
-	Deps        Dependencies
-	// Env is a comma separated list of key=val pairs.
-	Env           string
+	LimitGroups   []string
+	DepGroups     []string
+	Deps          Dependencies
 	OnFailure     Behaviours
 	OnSuccess     Behaviours
 	OnExit        Behaviours
 	MountConfigs  MountConfigs
+	compressedEnv []byte
+	RepGrp        string
+	// Cwd defaults to /tmp.
+	Cwd    string
+	ReqGrp string
+	// Env is a comma separated list of key=val pairs.
+	Env           string
 	MonitorDocker string
 	CloudOS       string
 	CloudUser     string
@@ -130,14 +116,28 @@ type JobDefaults struct {
 	CloudScript string
 	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
 	CloudConfigFiles string
+	BsubMode         string
+	osRAM            string
+	// CPUs is the number of CPU cores each cmd will use.
+	CPUs   float64 // Memory is the number of Megabytes each cmd will use. Defaults to 1000.
+	Memory int
+	// Time is the amount of time each cmd will run for. Defaults to 1 hour.
+	Time time.Duration
+	// Disk is the number of Gigabytes cmds will use.
+	Disk     int
+	Override int
+	Priority int
+	Retries  int
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
-	CloudOSRam    int
-	CloudShared   bool
-	BsubMode      string
-	compressedEnv []byte
-	osRAM         string
-	RTimeout      int
+	CloudOSRam int
+	RTimeout   int
+	CwdMatters bool
+	ChangeHome bool
+	// DiskSet is used to distinguish between Disk not being provided, and
+	// being provided with a value of 0 or more.
+	DiskSet     bool
+	CloudShared bool
 }
 
 // DefaultCwd returns the Cwd value, defaulting to /tmp.
@@ -530,7 +530,11 @@ func restJobs(s *Server) http.HandlerFunc {
 		// convert jobs to jstatus
 		jstati := make([]JStatus, len(jobs))
 		for i, job := range jobs {
-			jstati[i] = job.ToStatus()
+			jstati[i], err = job.ToStatus()
+			if err != nil && err != io.ErrUnexpectedEOF {
+				http.Error(w, err.Error(), status)
+				return
+			}
 		}
 
 		// return job details as JSON
@@ -746,11 +750,11 @@ func restJobsAdd(r *http.Request, s *Server) ([]*Job, int, error) {
 	}
 
 	// convert to real Job structs with default values filled in
-	var inputJobs []*Job
+	inputJobs := make([]*Job, 0, len(jvjs))
 	for _, jvj := range jvjs {
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
-			return nil, http.StatusBadRequest, fmt.Errorf("There was a problem interpreting your job: %s", errf)
+			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %s", errf)
 		}
 		inputJobs = append(inputJobs, job)
 	}

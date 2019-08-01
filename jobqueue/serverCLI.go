@@ -23,7 +23,6 @@ package jobqueue
 import (
 	"bytes"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -53,15 +52,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 	drain := s.drain
 	s.ssmutex.RUnlock()
 
+	switch {
 	// check that the client making the request has the expected token
-	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping" {
+	case (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != "ping":
 		srerr = ErrPermissionDenied
 		qerr = "Client presented the wrong token"
-	} else if s.q == nil || (!up && !drain) {
+	case s.q == nil || (!up && !drain):
 		// the server just got shutdown
 		srerr = ErrClosedStop
 		qerr = "The server has been stopped"
-	} else {
+	default:
 		switch cr.Method {
 		case "ping":
 			// avoid a later race condition when we try to encode ServerInfo by
@@ -150,17 +150,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				if err != nil {
 					srerr = ErrDBError
 					qerr = err.Error()
-				} else {
-					if srerr == "" {
-						// create the jobs server-side
-						added, dups, alreadyComplete, thisSrerr, err := s.createJobs(cr.Jobs, envkey, cr.IgnoreComplete)
-						if err != nil {
-							srerr = thisSrerr
-							qerr = err.Error()
-						} else {
-							s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
-							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
-						}
+				} else if srerr == "" {
+					// create the jobs server-side
+					added, dups, alreadyComplete, thisSrerr, err := s.createJobs(cr.Jobs, envkey, cr.IgnoreComplete)
+					if err != nil {
+						srerr = thisSrerr
+						qerr = err.Error()
+					} else {
+						s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
+						sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
 					}
 				}
 			}
@@ -172,12 +170,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// first just try to Reserve normally
 				var item *queue.Item
 				var err error
+				skip := false
 				if cr.SchedulerGroup != "" {
 					// if this is the first job that the client is trying to
 					// reserve, and if we don't actually want any more clients
-					// working on this schedulerGroup, we'll just act as if nothing
-					// was ready. Likewise if in drain mode.
-					skip := false
+					// working on this schedulerGroup, we'll just act as if
+					// nothing was ready. Likewise if in drain mode.
 					if cr.FirstReserve && s.rc != "" {
 						s.sgcmutex.Lock()
 						if count, existed := s.sgroupcounts[cr.SchedulerGroup]; !existed || count == 0 {
@@ -185,64 +183,25 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						}
 						s.sgcmutex.Unlock()
 					}
-
-					if !skip {
-						item, err = s.reserveWithLimits(cr.SchedulerGroup)
-					}
-				} else {
-					item, err = s.reserveWithLimits()
 				}
 
-				if err != nil {
-					if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-						// there's nothing in the ready sub queue right now, so every
-						// second try and Reserve() from the queue until either we get
-						// an item, or we exceed the client's timeout
-						var stop <-chan time.Time
-						if cr.Timeout.Nanoseconds() > 0 {
-							stop = time.After(cr.Timeout)
-						} else {
-							stop = make(chan time.Time)
-						}
+				if !skip {
+					item, err = s.reserveWithLimits(cr.SchedulerGroup, cr.Timeout)
 
-						itemerrch := make(chan *itemErr, 1)
-						ticker := time.NewTicker(ServerReserveTicker)
-						go func() {
-							defer internal.LogPanic(s.Logger, "reserve", true)
-
-							for {
-								select {
-								case <-ticker.C:
-									itemr, err := s.reserveWithLimits(cr.SchedulerGroup)
-									if err != nil {
-										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
-											continue
-										}
-										ticker.Stop()
-										if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrQueueClosed {
-											itemerrch <- &itemErr{err: ErrQueueClosed}
-										} else {
-											itemerrch <- &itemErr{err: ErrInternalError}
-										}
-										return
-									}
-									ticker.Stop()
-									itemerrch <- &itemErr{item: itemr}
-									return
-								case <-stop:
-									ticker.Stop()
-									// if we time out, we'll return nil job and nil err
-									itemerrch <- &itemErr{}
-									return
-								}
+					if err != nil {
+						if qerr, ok := err.(queue.Error); ok {
+							switch qerr.Err {
+							case queue.ErrNothingReady:
+								srerr = ""
+							case queue.ErrQueueClosed:
+								srerr = ErrQueueClosed
+							default:
+								srerr = ErrInternalError
 							}
-						}()
-						itemerr := <-itemerrch
-						close(itemerrch)
-						item = itemerr.item
-						srerr = itemerr.err
+						}
 					}
 				}
+
 				if srerr == "" && item != nil {
 					// clean up any past state to have a fresh job ready to run
 					sjob := item.Data.(*Job)
@@ -355,13 +314,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// Remove()ing, since you can remove from any queue)
 				job.updateAfterExit(cr.JobEndState, s.limiter)
 				job.Lock()
-				if running := item.Stats().State == queue.ItemStateRun; !running {
+				running := item.Stats().State == queue.ItemStateRun
+				switch {
+				case !running:
 					srerr = ErrBadJob
 					job.Unlock()
-				} else if !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero() {
+				case !job.Exited || job.Exitcode != 0 || job.StartTime.IsZero() || job.EndTime.IsZero():
 					srerr = ErrBadRequest
 					job.Unlock()
-				} else {
+				default:
 					key := job.Key()
 					job.State = JobStateComplete
 					job.FailReason = ""
@@ -398,6 +359,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			var job *Job
 			_, job, srerr = s.getij(cr)
 			if srerr == "" {
+				if cr.JobEndState == nil {
+					cr.JobEndState = &JobEndState{}
+				}
 				cr.JobEndState.Stdout = cr.Job.StdOutC
 				cr.JobEndState.Stderr = cr.Job.StdErrC
 				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true)
@@ -551,20 +515,18 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						errm := s.db.modifyLiveJobs(oldKeys, toModify)
 						if errm != nil {
 							s.Error("job modification in database failed", "err", errm)
-						} else {
+						} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
 							// if we're changing the jobs these jobs are
 							// dependant upon or their priority, that must be
 							// reflected in the queue as well
-							if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
-								for _, job := range toModify {
-									deps, err := job.Dependencies.incompleteJobKeys(s.db)
-									if err != nil {
-										s.Error("failed to get job dependencies", "err", err)
-									}
-									err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
-									if err != nil {
-										s.Error("failed to modify a job in the queue", "err", err)
-									}
+							for _, job := range toModify {
+								deps, err := job.Dependencies.incompleteJobKeys(s.db)
+								if err != nil {
+									s.Error("failed to get job dependencies", "err", err)
+								}
+								err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+								if err != nil {
+									s.Error("failed to modify a job in the queue", "err", err)
 								}
 							}
 						}
@@ -648,8 +610,19 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if server != nil && server.IsBad() {
 						errd := server.Destroy()
 						if errd != nil {
-							s.Warn("Server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
+							s.Warn("server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
 							continue
+						} else {
+							// make the message in the web interface about this
+							// server go away
+							s.badServerCaster.Send(&BadServer{
+								ID:      badServer.ID,
+								Name:    badServer.Name,
+								IP:      badServer.IP,
+								Date:    time.Now().Unix(),
+								IsBad:   false,
+								Problem: server.PermanentProblem(),
+							})
 						}
 					}
 					confirmed = append(confirmed, badServer)
@@ -667,36 +640,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// think there's much to be done about that though; we must be
 				// sure the servers are really dead before confirming jobs are
 				// dead.
-				var jobs []*Job
-				if len(serverIDs) > 0 {
-					running := s.getJobsCurrent(0, JobStateRunning, false, false)
-					lost := s.getJobsCurrent(0, JobStateLost, false, false)
-					for _, job := range append(running, lost...) {
-						if serverIDs[job.HostID] {
-							k, err := s.killJob(job.Key())
-							if err != nil {
-								s.Error("failed to kill a job after destroying its server: %s", err)
-							} else if k {
-								// try and grab the latest job state after
-								// having killed it, but still return the client
-								// version of the job
-								if item, err := s.q.Get(job.Key()); err == nil && item != nil {
-									liveJob := item.Data.(*Job)
-									job.State = liveJob.State
-									job.UntilBuried = liveJob.UntilBuried
-									if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
-										// we're going to release the job as
-										// soon as it goes from running to lost
-										job.UntilBuried--
-									}
-								}
-								jobs = append(jobs, job)
-							}
-						}
-					}
-					s.Debug("killed jobs on bad servers", "number", len(jobs))
-				}
-
+				jobs := s.killJobsOnServers(serverIDs)
 				sr = &serverResponse{BadServers: confirmed, Jobs: jobs}
 			} else {
 				sr = &serverResponse{BadServers: servers}
@@ -742,50 +686,6 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 	// send reply to client
 	return s.reply(m, sr) // *** log failure to reply?
-}
-
-// logTimings will log the average took after 1000 calls to this message with
-// the same desc.
-func (s *Server) logTimings(desc string, took time.Duration) {
-	if desc == "" {
-		return
-	}
-
-	s.tmutex.Lock()
-	if _, exists := s.timings[desc]; !exists {
-		s.timings[desc] = &timingAvg{}
-	}
-	avg := s.timings[desc].store(took.Seconds())
-	s.tmutex.Unlock()
-	if avg > 0 {
-		s.Info("timing", "desc", desc, "avg", avg)
-	}
-}
-
-// timingAvg is used by logTimings to do the averaging
-type timingAvg struct {
-	timings [1000]float64
-	count   int
-	sync.Mutex
-}
-
-// store stores the supplied float64, and when there are 1000 of them returns
-// the average and resets. Otherwise returns 0.
-func (a *timingAvg) store(s float64) float64 {
-	a.Lock()
-	defer a.Unlock()
-	a.timings[a.count] = s
-	a.count++
-	if a.count == 1000 {
-		sum := float64(0)
-		for i := range &a.timings {
-			sum += a.timings[i]
-		}
-		a.timings = [1000]float64{}
-		a.count = 0
-		return sum / float64(1000)
-	}
-	return 0
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
@@ -900,22 +800,20 @@ func (s *Server) jobPopulateStdEnv(job *Job, getStd bool, getEnv bool) {
 // and it is suffixed with limit groups, those limit groups will be incremented.
 // On success we reserve and return as normal. On failure, we act as if the
 // queue was empty.
-func (s *Server) reserveWithLimits(group ...string) (*queue.Item, error) {
+func (s *Server) reserveWithLimits(group string, wait time.Duration) (*queue.Item, error) {
 	var item *queue.Item
 	var err error
 	var limitGroups []string
-	if len(group) == 1 {
-		limitGroups = s.schedGroupToLimitGroups(group[0])
+	if group != "" {
+		limitGroups = s.schedGroupToLimitGroups(group)
 		if len(limitGroups) > 0 {
 			if !s.limiter.Increment(limitGroups) {
 				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}
 		}
-
-		item, err = s.q.Reserve(group[0])
-	} else {
-		item, err = s.q.Reserve()
 	}
+
+	item, err = s.q.Reserve(group, wait)
 
 	if len(limitGroups) > 0 {
 		if item == nil {

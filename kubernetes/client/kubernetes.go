@@ -275,7 +275,7 @@ func (p *Kubernetesp) Initialize(clientset kubernetes.Interface, namespace ...st
 		})
 		if retryErr != nil {
 			p.Error("creation of new namespace failed", "err", retryErr)
-			return fmt.Errorf("Creation of new namespace failed: %v", retryErr)
+			return fmt.Errorf("creation of new namespace failed: %v", retryErr)
 		}
 	}
 
@@ -337,7 +337,7 @@ func (p *Kubernetesp) Deploy(tempMountPath string, command string, cmdArgs []str
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("Failed to create cluster role binding in namespace %s: %s", p.NewNamespaceName, err)
+		return fmt.Errorf("failed to create cluster role binding in namespace %s: %s", p.NewNamespaceName, err)
 	}
 
 	// Specify new wr deployment
@@ -743,7 +743,7 @@ func (p *Kubernetesp) CheckWRDeploymentHealthy(namespace string) (bool, error) {
 	for _, condition := range deployment.Status.Conditions {
 		if condition.Type == appsv1beta1.DeploymentAvailable {
 			if condition.Status == apiv1.ConditionFalse {
-				return false, fmt.Errorf("Deployment Unhealthy: %s", condition.Message)
+				return false, fmt.Errorf("deployment unhealthy: %s", condition.Message)
 			}
 		}
 	}

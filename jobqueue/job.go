@@ -31,12 +31,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/VertebrateResequencing/muxfys"
+	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid"
-	"github.com/hashicorp/go-multierror"
+	multierror "github.com/hashicorp/go-multierror"
 	"github.com/ugorji/go/codec"
 )
 
@@ -332,12 +332,15 @@ func (j *Job) Env() ([]string, error) {
 		return nil, err
 	}
 
-	if j.EnvCRetrieved && len(j.EnvC) == 0 {
-		env := os.Environ()
-		if len(overrideEs) > 0 {
-			env = envOverride(env, overrideEs)
+	if len(j.EnvC) == 0 {
+		if j.EnvCRetrieved {
+			env := os.Environ()
+			if len(overrideEs) > 0 {
+				env = envOverride(env, overrideEs)
+			}
+			return env, err
 		}
-		return env, err
+		return nil, nil
 	}
 
 	decompressed, err := decompress(j.EnvC)
@@ -524,7 +527,7 @@ func (j *Job) Mount(onCwd ...bool) ([]string, []string, error) {
 		}
 
 		if len(rcs) == 0 {
-			err := fmt.Errorf("No Targets specified")
+			err := fmt.Errorf("no Targets specified")
 			_, erru := j.Unmount()
 			if erru != nil {
 				err = fmt.Errorf("%s (and the unmount failed: %s)", err.Error(), erru)
@@ -764,22 +767,34 @@ func (j *Job) setSchedulerGroup(newval string) {
 }
 
 // ToStatus converts a job to a simplified JStatus, useful for output as JSON.
-func (j *Job) ToStatus() JStatus {
-	stderr, _ := j.StdErr()
-	stdout, _ := j.StdOut()
-	env, _ := j.Env()
+func (j *Job) ToStatus() (JStatus, error) {
+	stderr, err := j.StdErr()
+	if err != nil {
+		return JStatus{}, err
+	}
+	stdout, err := j.StdOut()
+	if err != nil {
+		return JStatus{}, err
+	}
+	env, err := j.Env()
+	if err != nil {
+		return JStatus{}, err
+	}
 	var cwdLeaf string
 	j.RLock()
 	defer j.RUnlock()
 	if j.ActualCwd != "" {
-		cwdLeaf, _ = filepath.Rel(j.Cwd, j.ActualCwd)
+		cwdLeaf, err = filepath.Rel(j.Cwd, j.ActualCwd)
+		if err != nil {
+			return JStatus{}, err
+		}
 		cwdLeaf = "/" + cwdLeaf
 	}
 	state := j.State
 	if state == JobStateRunning && j.Lost {
 		state = JobStateLost
 	}
-	var ot []string
+	ot := make([]string, 0, len(j.Requirements.Other))
 	for key, val := range j.Requirements.Other {
 		ot = append(ot, key+":"+val)
 	}
@@ -820,7 +835,7 @@ func (j *Job) ToStatus() JStatus {
 		StdErr:        stderr,
 		StdOut:        stdout,
 		Env:           env,
-	}
+	}, nil
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it
@@ -873,36 +888,36 @@ func (j *JobEssence) Stringify() string {
 // alone. The only thing you can't set is RepGroup. The methods on this struct
 // are not thread safe. Do not set any of the properties directly yourself.
 type JobModifier struct {
+	EnvOverride      []byte
+	LimitGroups      []string
+	DepGroups        []string
+	Dependencies     Dependencies
+	Behaviours       Behaviours
+	MountConfigs     MountConfigs
 	Cmd              string
 	Cwd              string
+	ReqGroup         string
+	BsubMode         string
+	MonitorDocker    string
+	Requirements     *scheduler.Requirements
 	CwdMatters       bool
 	CwdMattersSet    bool
 	ChangeHome       bool
 	ChangeHomeSet    bool
-	ReqGroup         string
 	ReqGroupSet      bool
-	Requirements     *scheduler.Requirements
 	Override         uint8
 	OverrideSet      bool
 	Priority         uint8
 	PrioritySet      bool
 	Retries          uint8
 	RetriesSet       bool
-	EnvOverride      []byte
 	EnvOverrideSet   bool
-	LimitGroups      []string
 	LimitGroupsSet   bool
-	DepGroups        []string
 	DepGroupsSet     bool
-	Dependencies     Dependencies
 	DependenciesSet  bool
-	Behaviours       Behaviours
 	BehavioursSet    bool
-	MountConfigs     MountConfigs
 	MountConfigsSet  bool
-	BsubMode         string
 	BsubModeSet      bool
-	MonitorDocker    string
 	MonitorDockerSet bool
 }
 

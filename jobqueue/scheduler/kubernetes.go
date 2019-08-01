@@ -177,14 +177,13 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	s.Debug("configuration passed", "configuration", s.config)
 
 	// make queue
-	s.queue = queue.New(localPlace)
+	s.queue = queue.New(localPlace, s.Logger)
 	s.running = make(map[string]int)
 
 	// set our functions for use in schedule() and processQueue()
 	s.reqCheckFunc = s.reqCheck
 	s.canCountFunc = s.canCount
 	s.runCmdFunc = s.runCmd
-	s.cancelRunCmdFunc = s.cancelRun
 	s.stateUpdateFunc = s.stateUpdate
 	s.maxMemFunc = s.maxMem
 	s.maxCPUFunc = s.maxCPU
@@ -194,6 +193,8 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	if s.stateUpdateFreq == 0 {
 		s.stateUpdateFreq = 1 * time.Minute
 	}
+	s.postProcessFunc = s.postProcess
+	s.cmdNotNeededFunc = s.cmdNotNeeded
 
 	// pass through our shell config and logger to our local embed
 	s.local.config = &ConfigLocal{Shell: s.config.Shell}
@@ -390,7 +391,7 @@ func (s *k8s) cleanup() {
 // 100. ToDO: If any job is pending with the given requirements, return 0 until
 // that pend fails. This should reduce overall load on the cluster when adding
 // lots of jobs at once.
-func (s *k8s) canCount(req *Requirements, call string) int {
+func (s *k8s) canCount(cmd string, req *Requirements, call string) int {
 	s.Debug("canCount Called, returning 100")
 	// 100 is  a big enough block for anyone...
 	return 100

@@ -269,7 +269,7 @@ func (b *Behaviour) run(j *Job) error {
 
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
-		return fmt.Errorf("Arg %s is type %T, not string", b.Arg, b.Arg)
+		return fmt.Errorf("arg %s is type %T, not string", b.Arg, b.Arg)
 	}
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
@@ -292,7 +292,7 @@ func (b *Behaviour) run(j *Job) error {
 func (b *Behaviour) copyToManager(j *Job) error {
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
-		return fmt.Errorf("Arg %s is type %T, not []string", b.Arg, b.Arg)
+		return fmt.Errorf("arg %s is type %T, not []string", b.Arg, b.Arg)
 	}
 
 	// *** not yet implemented
@@ -375,17 +375,18 @@ func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
 	var do BehaviourAction
 	var arg interface{}
 
-	if bj.Run != "" {
+	switch {
+	case bj.Run != "":
 		do = Run
 		arg = bj.Run
-	} else if len(bj.CopyToManager) > 0 {
+	case len(bj.CopyToManager) > 0:
 		do = CopyToManager
 		arg = bj.CopyToManager
-	} else if bj.Cleanup {
+	case bj.Cleanup:
 		do = Cleanup
-	} else if bj.CleanupAll {
+	case bj.CleanupAll:
 		do = CleanupAll
-	} else {
+	default:
 		do = Nothing
 	}
 
@@ -403,7 +404,7 @@ type BehavioursViaJSON []BehaviourViaJSON
 
 // Behaviours converts a BehavioursViaJSON to real Behaviours.
 func (bjs BehavioursViaJSON) Behaviours(when BehaviourTrigger) Behaviours {
-	var bs Behaviours
+	bs := make(Behaviours, 0, len(bjs))
 	for _, bj := range bjs {
 		bs = append(bs, bj.Behaviour(when))
 	}

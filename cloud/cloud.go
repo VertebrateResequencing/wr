@@ -52,7 +52,8 @@ than 1 process at a time.
     // spawn a server
     flavor := provider.CheapestServerFlavor(1, 1024, "")
     server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, true)
-    server.WaitUntilReady("~/.s3cfg")
+    ctx := context.Background()
+    server.WaitUntilReady(ctx, "~/.s3cfg")
 
     // simplistic way of making the most of the server by running as many
     // commands as possible:
@@ -60,7 +61,7 @@ than 1 process at a time.
         if server.HasSpaceFor(1, 1024, 1) > 0 {
             server.Allocate(1, 1024, 1)
             go func() {
-                server.RunCmd(cmd, false)
+                server.RunCmd(ctx, cmd, false)
                 server.Release(1, 1024, 1)
             }()
         } else {
@@ -75,8 +76,6 @@ package cloud
 
 import (
 	"encoding/gob"
-	"errors"
-	"fmt"
 	"os"
 	"regexp"
 	"runtime"
@@ -87,7 +86,6 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
-	"golang.org/x/crypto/ssh"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -119,8 +117,12 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
-// we give up and return an error from Spawn().
+// we give up and return an error from WaitUntilReady().
 var sentinelTimeOut = 10 * time.Minute
+
+// pcsTimeOut is how long we wait for a user's post creation script to exit
+// before we give up and return an error from WaitUntilReady().
+var pcsTimeOut = 15 * time.Minute
 
 // defaultDNSNameServers holds some public (google) dns name server addresses
 // for use when creating cloud subnets that need internet access.
@@ -511,16 +513,18 @@ FLAVORS:
 		}
 
 		if f.Cores >= cores && f.RAM >= ramMB {
-			if fr == nil {
-				fr = f
-			} else if f.Cores < fr.Cores {
-				fr = f
-			} else if f.Cores == fr.Cores {
-				if f.RAM < fr.RAM {
+			if fr != nil {
+				if f.Cores < fr.Cores {
 					fr = f
-				} else if f.RAM == fr.RAM && f.Disk < fr.Disk {
-					fr = f
+				} else if f.Cores == fr.Cores {
+					if f.RAM < fr.RAM {
+						fr = f
+					} else if f.RAM == fr.RAM && f.Disk < fr.Disk {
+						fr = f
+					}
 				}
+			} else {
+				fr = f
 			}
 		}
 	}
@@ -560,7 +564,7 @@ func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets []
 		}
 	}
 
-	var matches []*Flavor
+	matches := make([]*Flavor, 0, len(sets))
 	excludedSets := make(map[int]bool, len(sets))
 	var exclusions []*regexp.Regexp
 
@@ -725,108 +729,6 @@ func (p *Provider) ErrIsNoHardware(err error) bool {
 	return p.impl.errIsNoHardware(err)
 }
 
-// WaitUntilReady waits for the server to become fully ready: the boot process
-// will have completed and ssh will work. This is not part of provider.Spawn()
-// because you may not want or be able to ssh to your server, and so that you
-// can Spawn() another server while waiting for this one to become ready. If you
-// get an err, you will want to call server.Destroy() as this is not done for
-// you.
-//
-// files is a string in the format taken by the CopyOver() method; if supplied
-// non-blank it will CopyOver the specified files (after the server is ready,
-// before any postCreationScript is run).
-//
-// postCreationScript is the []byte content of a script that will be run on the
-// server (as the user supplied to Spawn()) once it is ready, and it will
-// complete before this function returns; empty slice means do nothing.
-func (s *Server) WaitUntilReady(files string, postCreationScript []byte) error {
-	// wait for ssh to come up
-	_, _, err := s.SSHClient()
-	if err != nil {
-		return err
-	}
-
-	// wait for sentinelFilePath to exist, indicating that the server is
-	// really ready to use
-	limit := time.After(sentinelTimeOut)
-	ticker := time.NewTicker(1 * time.Second)
-SENTINEL:
-	for {
-		select {
-		case <-ticker.C:
-			o, e, fileErr := s.RunCmd("file "+sentinelFilePath, false)
-			if fileErr == nil && !strings.Contains(o, "No such file") && !strings.Contains(e, "No such file") {
-				ticker.Stop()
-				// *** o contains "empty"; test for that instead? Does file
-				// behave the same way on all linux variants?
-				_, _, rmErr := s.RunCmd("sudo rm "+sentinelFilePath, false)
-				if rmErr != nil {
-					s.logger.Warn("failed to remove sentinel file", "path", sentinelFilePath, "err", rmErr)
-				}
-				break SENTINEL
-			}
-			continue SENTINEL
-		case <-limit:
-			ticker.Stop()
-			return errors.New("cloud server never became ready to use")
-		}
-	}
-
-	// copy over any desired files
-	if files != "" {
-		err = s.CopyOver(files)
-		if err != nil {
-			return fmt.Errorf("cloud server files failed to upload: %s", err)
-		}
-		s.ConfigFiles = files
-	}
-
-	// run the postCreationScript
-	if len(postCreationScript) > 0 {
-		pcsPath := "/tmp/.postCreationScript"
-		err = s.CreateFile(string(postCreationScript), pcsPath)
-		if err != nil {
-			return fmt.Errorf("cloud server start up script failed to upload: %s", err)
-		}
-
-		_, _, err = s.RunCmd("chmod u+x "+pcsPath, false)
-		if err != nil {
-			return fmt.Errorf("cloud server start up script could not be made executable: %s", err)
-		}
-
-		// *** currently we have no timeout on this, probably want one...
-		var stderr string
-		_, stderr, err = s.RunCmd(pcsPath, false)
-		if err != nil {
-			err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
-			if len(stderr) > 0 {
-				err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
-			}
-			return err
-		}
-
-		_, _, rmErr := s.RunCmd("rm "+pcsPath, false)
-		if rmErr != nil {
-			s.logger.Warn("failed to remove post creation script", "path", pcsPath, "err", rmErr)
-		}
-
-		s.Script = postCreationScript
-
-		// because the postCreationScript may have altered PATH and other things
-		// that subsequent RunCmd may rely on, clear the clients
-		for _, client := range s.sshClients {
-			err = client.Close()
-			if err != nil {
-				s.logger.Warn("failed to close client ssh connection", "err", err)
-			}
-		}
-		s.sshClients = []*ssh.Client{}
-		s.sshClientSessions = []int{}
-	}
-
-	return nil
-}
-
 // CheckServer asks the provider if the status of the given server (id retrieved
 // via Spawn() or Servers()) indicates it is working fine. (If it's not and
 // was previously thought to be a spawned server with an external IP, then it
@@ -959,6 +861,9 @@ func (p *Provider) TearDown() error {
 	// indicating it is still in the cloud and could be needed in the future
 	if p.resources.PrivateKey == "" {
 		err = p.deleteResourceFile()
+		if os.IsNotExist(err) {
+			err = nil
+		}
 	}
 	return err
 }

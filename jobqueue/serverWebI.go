@@ -64,45 +64,42 @@ type jstatusReq struct {
 // JStatus is the job info we send to the status webpage (only real difference
 // to Job is that some of the values are converted to easy-to-display forms).
 type JStatus struct {
-	Key           string
-	RepGroup      string
 	LimitGroups   []string
 	DepGroups     []string
 	Dependencies  []string
+	OtherRequests []string
+	Env           []string
+	Key           string
+	RepGroup      string
 	Cmd           string
 	State         JobState
 	Cwd           string
 	CwdBase       string
-	HomeChanged   bool
 	Behaviours    string
 	Mounts        string
 	MonitorDocker string
-	// ExpectedRAM is in Megabytes.
-	ExpectedRAM int
-	// ExpectedTime is in seconds.
-	ExpectedTime float64
-	// RequestedDisk is in Gigabytes.
-	RequestedDisk int
-	OtherRequests []string
-	Cores         float64
-	PeakRAM       int
-	PeakDisk      int64 // MBs
-	Exited        bool
-	Exitcode      int
 	FailReason    string
-	Pid           int
 	Host          string
 	HostID        string
 	HostIP        string
+	StdErr        string
+	StdOut        string
+	ExpectedRAM   int     // ExpectedRAM is in Megabytes.
+	ExpectedTime  float64 // ExpectedTime is in seconds.
+	RequestedDisk int     // RequestedDisk is in Gigabytes.
+	Cores         float64
+	PeakRAM       int
+	PeakDisk      int64 // MBs
+	Exitcode      int
+	Pid           int
 	Walltime      float64
 	CPUtime       float64
 	Started       int64
 	Ended         int64
-	StdErr        string
-	StdOut        string
-	Env           []string
-	Attempts      uint32
 	Similar       int
+	Attempts      uint32
+	HomeChanged   bool
+	Exited        bool
 }
 
 // webInterfaceStatic is a http handler for our static documents in static.go
@@ -133,23 +130,25 @@ func webInterfaceStatic(s *Server) http.HandlerFunc {
 			return
 		}
 
-		if strings.HasPrefix(path, "/js") {
+		switch {
+		case strings.HasPrefix(path, "/js"):
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		} else if strings.HasPrefix(path, "/css") {
+		case strings.HasPrefix(path, "/css"):
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		} else if strings.HasPrefix(path, "/fonts") {
-			if strings.HasSuffix(path, ".eot") {
+		case strings.HasPrefix(path, "/fonts"):
+			switch {
+			case strings.HasSuffix(path, ".eot"):
 				w.Header().Set("Content-Type", "application/vnd.ms-fontobject")
-			} else if strings.HasSuffix(path, ".svg") {
+			case strings.HasSuffix(path, ".svg"):
 				w.Header().Set("Content-Type", "image/svg+xml")
-			} else if strings.HasSuffix(path, ".ttf") {
+			case strings.HasSuffix(path, ".ttf"):
 				w.Header().Set("Content-Type", "application/x-font-truetype")
-			} else if strings.HasSuffix(path, ".woff") {
+			case strings.HasSuffix(path, ".woff"):
 				w.Header().Set("Content-Type", "application/font-woff")
-			} else if strings.HasSuffix(path, ".woff2") {
+			case strings.HasSuffix(path, ".woff2"):
 				w.Header().Set("Content-Type", "application/font-woff2")
 			}
-		} else if strings.HasSuffix(path, "favicon.ico") {
+		case strings.HasSuffix(path, "favicon.ico"):
 			w.Header().Set("Content-Type", "image/x-icon")
 		}
 
@@ -277,9 +276,13 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							writeMutex.Lock()
 							failed := false
 							for _, job := range jobs {
-								status := job.ToStatus()
+								status, err := job.ToStatus()
+								if err != nil {
+									failed = true
+									break
+								}
 								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
-								err := conn.WriteJSON(status)
+								err = conn.WriteJSON(status)
 								if err != nil {
 									failed = true
 									break
@@ -368,9 +371,12 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 				case req.Key != "":
 					jobs, _, errstr := s.getJobsByKeys([]string{req.Key}, true, true)
 					if errstr == "" && len(jobs) == 1 {
-						status := jobs[0].ToStatus()
+						status, err := jobs[0].ToStatus()
+						if err != nil {
+							break
+						}
 						writeMutex.Lock()
-						err := conn.WriteJSON(status)
+						err = conn.WriteJSON(status)
 						writeMutex.Unlock()
 						if err != nil {
 							break

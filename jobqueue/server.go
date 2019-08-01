@@ -113,13 +113,6 @@ func (e Error) Error() string {
 	return "jobqueue " + e.Op + "(" + e.Item + "): " + e.Err
 }
 
-// itemErr is used internally to implement Reserve(), which needs to send item
-// and err over a channel.
-type itemErr struct {
-	item *queue.Item
-	err  string
-}
-
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
@@ -203,50 +196,48 @@ type schedulerIssue struct {
 
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
+	token     []byte
+	uploadDir string
+	sock      mangos.Socket
+	ch        codec.Handle
+	rc        string // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
+	log15.Logger
 	ServerInfo         *ServerInfo
 	ServerVersions     *ServerVersions
-	token              []byte
-	uploadDir          string
-	sock               mangos.Socket
-	ch                 codec.Handle
 	db                 *db
 	done               chan error
 	stopSigHandling    chan bool
 	stopClientHandling chan bool
 	wg                 *sync.WaitGroup
-	up                 bool
-	drain              bool
-	blocking           bool
+	q                  *queue.Queue
+	rpl                *rgToKeys
+	limiter            *limiter.Limiter
+	scheduler          *scheduler.Scheduler
+	sgroupcounts       map[string]int
+	sgrouptrigs        map[string]int
+	sgtr               map[string]*scheduler.Requirements
+	httpServer         *http.Server
+	statusCaster       *bcast.Group
+	badServerCaster    *bcast.Group
+	schedCaster        *bcast.Group
+	racCheckTimer      *time.Timer
+	racCheckReady      int
+	wsconns            map[string]*websocket.Conn
+	badServers         map[string]*cloud.Server
+	schedIssues        map[string]*schedulerIssue
+	racmutex           sync.RWMutex // to protect the readyaddedcallback
+	bsmutex            sync.RWMutex
+	simutex            sync.RWMutex
+	krmutex            sync.RWMutex
+	ssmutex            sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 	sync.Mutex
-	q               *queue.Queue
-	rpl             *rgToKeys
-	limiter         *limiter.Limiter
-	scheduler       *scheduler.Scheduler
-	sgroupcounts    map[string]int
-	sgrouptrigs     map[string]int
-	sgtr            map[string]*scheduler.Requirements
-	sgcmutex        sync.Mutex
-	racmutex        sync.RWMutex // to protect the readyaddedcallback
-	rc              string       // runner command string compatible with fmt.Sprintf(..., schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed)
-	httpServer      *http.Server
-	statusCaster    *bcast.Group
-	badServerCaster *bcast.Group
-	schedCaster     *bcast.Group
-	racCheckTimer   *time.Timer
-	racChecking     bool
-	racCheckReady   int
-	wsmutex         sync.Mutex
-	wsconns         map[string]*websocket.Conn
-	bsmutex         sync.RWMutex
-	badServers      map[string]*cloud.Server
-	simutex         sync.RWMutex
-	schedIssues     map[string]*schedulerIssue
-	krmutex         sync.RWMutex
-	killRunners     bool
-	timings         map[string]*timingAvg
-	tmutex          sync.Mutex
-	ssmutex         sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
-	log15.Logger
+	sgcmutex    sync.Mutex
+	wsmutex     sync.Mutex
+	up          bool
+	drain       bool
+	blocking    bool
+	racChecking bool
+	killRunners bool
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -327,6 +318,13 @@ type ServerConfig struct {
 	// update the domain again, those clients will be able to reconnect and
 	// continue running.
 	DomainMatchesIP bool
+
+	// AutoConfirmDead is the time that a spawned server must be considered
+	// dead before it is automatically destroyed and jobs running on it are
+	// confirmed lost. The default of 0 time disables automatic destruction.
+	// Only relevant when using a scheduler that spawns servers on which to
+	// execute jobs.
+	AutoConfirmDead time.Duration
 
 	// Name of the deployment ("development" or "production"); development
 	// databases are deleted and recreated on start up by default.
@@ -545,10 +543,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	// our limiter will use a callback that gets group limits from our database
-	lcb := func(name string) int {
-		return db.retrieveLimitGroup(name)
-	}
-	l := limiter.New(lcb)
+	l := limiter.New(db.retrieveLimitGroup)
 
 	s = &Server{
 		ServerInfo:         &ServerInfo{Addr: ip + ":" + config.Port, Host: certDomain, Port: config.Port, WebPort: config.WebPort, PID: os.Getpid(), Deployment: config.Deployment, Scheduler: config.SchedulerName, Mode: ServerModeNormal},
@@ -576,7 +571,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		badServers:         make(map[string]*cloud.Server),
 		schedCaster:        bcast.NewGroup(),
 		schedIssues:        make(map[string]*schedulerIssue),
-		timings:            make(map[string]*timingAvg),
 		Logger:             serverLogger,
 	}
 
@@ -774,6 +768,37 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 					skip = true
 				} else {
 					s.badServers[server.ID] = server
+
+					// arrange to confirm this dead after the configured time
+					if config.AutoConfirmDead > 0 {
+						go func(id string) {
+							<-time.After(config.AutoConfirmDead)
+							s.bsmutex.Lock()
+							defer s.bsmutex.Unlock()
+							if badServer, exists := s.badServers[id]; exists && badServer.BadDuration() >= config.AutoConfirmDead {
+								delete(s.badServers, id)
+								waited := badServer.BadDuration()
+								errd := badServer.Destroy()
+								s.Warn("server destroyed after remaining bad for some time", "server", id, "waited", waited, "err", errd)
+								serverIDs := make(map[string]bool)
+								serverIDs[id] = true
+								s.killJobsOnServers(serverIDs)
+
+								if errd == nil {
+									// make the message in the web interface
+									// about this server go away
+									s.badServerCaster.Send(&BadServer{
+										ID:      id,
+										Name:    badServer.Name,
+										IP:      badServer.IP,
+										Date:    time.Now().Unix(),
+										IsBad:   false,
+										Problem: badServer.PermanentProblem(),
+									})
+								}
+							}
+						}(server.ID)
+					}
 				}
 			} else {
 				delete(s.badServers, server.ID)
@@ -799,7 +824,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 			var existed bool
 			if si, existed = s.schedIssues[msg]; existed {
 				si.LastDate = time.Now().Unix()
-				si.Count = si.Count + 1
+				si.Count++
 			} else {
 				si = &schedulerIssue{
 					Msg:       msg,
@@ -1069,7 +1094,7 @@ func (s *Server) uploadFile(source io.Reader, savePath string) (string, error) {
 // createQueue creates and stores a queue.Queue on the Server and sets up its
 // callbacks.
 func (s *Server) createQueue() {
-	q := queue.New("cmds")
+	q := queue.New("cmds", s.Logger)
 	s.q = q
 
 	// we set a callback for things entering this queue's ready sub-queue.
@@ -1371,10 +1396,12 @@ func (s *Server) createQueue() {
 					s.racmutex.Lock()
 					s.racChecking = false
 					stats := q.Stats()
-					s.racmutex.Unlock()
 
 					if stats.Ready >= s.racCheckReady {
+						s.racmutex.Unlock()
 						q.TriggerReadyAddedCallback()
+					} else {
+						s.racmutex.Unlock()
 					}
 				}()
 
@@ -1799,6 +1826,41 @@ func (s *Server) deleteJobs(keys []string) []string {
 	return deleted
 }
 
+// killJobsOnServers kills running and confirms lost jobs that were running on
+// hosts with the given IDs. Returns the affected jobs.
+func (s *Server) killJobsOnServers(serverIDs map[string]bool) []*Job {
+	var jobs []*Job
+	if len(serverIDs) > 0 {
+		running := s.getJobsCurrent(0, JobStateRunning, false, false)
+		lost := s.getJobsCurrent(0, JobStateLost, false, false)
+		for _, job := range append(running, lost...) {
+			if serverIDs[job.HostID] {
+				k, err := s.killJob(job.Key())
+				if err != nil {
+					s.Error("failed to kill a job after destroying its server: %s", err)
+				} else if k {
+					// try and grab the latest job state after
+					// having killed it, but still return the client
+					// version of the job
+					if item, err := s.q.Get(job.Key()); err == nil && item != nil {
+						liveJob := item.Data.(*Job)
+						job.State = liveJob.State
+						job.UntilBuried = liveJob.UntilBuried
+						if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
+							// we're going to release the job as
+							// soon as it goes from running to lost
+							job.UntilBuried--
+						}
+					}
+					jobs = append(jobs, job)
+				}
+			}
+		}
+		s.Debug("killed jobs on bad servers", "number", len(jobs))
+	}
+	return jobs
+}
+
 // getJobsByKeys gets jobs with the given keys (current and complete).
 func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
 	var notfound []string
@@ -1914,8 +1976,9 @@ func (s *Server) getCompleteJobsByRepGroup(repgroup string) (jobs []*Job, srerr 
 
 // getJobsCurrent gets all current (incomplete) jobs.
 func (s *Server) getJobsCurrent(limit int, state JobState, getStd bool, getEnv bool) []*Job {
-	var jobs []*Job
-	for _, item := range s.q.AllItems() {
+	allItems := s.q.AllItems()
+	jobs := make([]*Job, 0, len(allItems))
+	for _, item := range allItems {
 		jobs = append(jobs, s.itemToJob(item, false, false))
 	}
 
@@ -2037,7 +2100,7 @@ func (s *Server) scheduleRunners(group string) {
 				problem = false
 				s.sgcmutex.Lock()
 				for {
-					item, errr := s.q.Reserve(group)
+					item, errr := s.q.Reserve(group, 0)
 					if errr != nil {
 						if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNothingReady {
 							s.Warn("scheduleRunners failed to reserve an item", "group", group, "err", errr)
@@ -2166,7 +2229,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 // slice of badServer structs.
 func (s *Server) getBadServers() []*BadServer {
 	s.bsmutex.RLock()
-	var bs []*BadServer
+	bs := make([]*BadServer, 0, len(s.badServers))
 	for _, server := range s.badServers {
 		bs = append(bs, &BadServer{
 			ID:      server.ID,
@@ -2270,8 +2333,8 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 		close(s.stopSigHandling)
 	}
 
-	var sgroups []string
 	s.sgcmutex.Lock()
+	sgroups := make([]string, 0, len(s.sgroupcounts))
 	for group := range s.sgroupcounts {
 		sgroups = append(sgroups, group)
 	}

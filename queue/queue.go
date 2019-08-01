@@ -60,16 +60,21 @@ delay queue.
 
     // add an item to the queue
     ttr := 30 * time.Second
-    item, err := q.Add("uuid", "group", "item data", 0, 0 * time.Second, ttr)
+    item, err := q.Add("uuid1", "", "item data1", 0, 0 * time.Second, ttr)
+    item, err := q.Add("uuid2", "group", "item data2", 0, 0 * time.Second, ttr)
 
     // get it back out
-    item, err = queue.Get("uuid")
+    item, err = queue.Get("uuid1")
 
-    // reserve the next item
-    item, err = queue.Reserve()
+    // reserve the next item with no group
+    item, err = queue.Reserve("", 0)
 
     // or reserve the next item in a particular group
-    item, err = queue.Reserve("group")
+	item, err = queue.Reserve("group", 0)
+
+	// or reserve even if there are no items in the queue right now, waiting
+	// until something gets added or otherwise becomes ready
+	item, err = queue.Reserve("group", 1 * time.Second)
 
     // queue.Touch() every < ttr seconds if you might take longer than ttr to
     // process the item
@@ -83,6 +88,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/inconshreveable/log15"
 )
 
 // SubQueue is how we name the sub-queues of a Queue.
@@ -151,8 +158,9 @@ var defaultTTRCallback = func(data interface{}) SubQueue {
 // automatically depending on their delay or ttr expiring, or manually by
 // calling certain methods.
 type Queue struct {
+	delayTime              time.Time
+	ttrTime                time.Time
 	Name                   string
-	mutex                  sync.RWMutex
 	items                  map[string]*Item
 	dependants             map[string]map[string]*Item
 	delayQueue             *subQueue
@@ -163,18 +171,18 @@ type Queue struct {
 	delayNotification      chan bool
 	startedDelayProcessing chan bool
 	delayClose             chan bool
-	delayTime              time.Time
 	ttrNotification        chan bool
 	startedTTRProcessing   chan bool
 	ttrClose               chan bool
-	ttrTime                time.Time
-	closed                 bool
 	readyAddedCb           ReadyAddedCallback
-	readyAddedCbRunning    bool
-	readyAddedCbMutex      sync.Mutex
-	readyAddedCbRecall     bool
 	changedCb              ChangedCallback
 	ttrCb                  TTRCallback
+	mutex                  sync.RWMutex
+	readyAddedCbMutex      sync.Mutex
+	closed                 bool
+	readyAddedCbRunning    bool
+	readyAddedCbRecall     bool
+	log15.Logger
 }
 
 // Stats holds information about the Queue's state.
@@ -200,14 +208,21 @@ type ItemDef struct {
 }
 
 // New is a helper to create instance of the Queue struct.
-func New(name string) *Queue {
+func New(name string, logger ...log15.Logger) *Queue {
+	var l log15.Logger
+	if len(logger) == 1 {
+		l = logger[0].New()
+	} else {
+		l = log15.New()
+		l.SetHandler(log15.DiscardHandler())
+	}
 	queue := &Queue{
 		Name:                   name,
 		items:                  make(map[string]*Item),
 		dependants:             make(map[string]map[string]*Item),
-		delayQueue:             newSubQueue(0),
-		readyQueue:             newSubQueue(1),
-		runQueue:               newSubQueue(2),
+		delayQueue:             newSubQueue(0, l),
+		readyQueue:             newSubQueue(1, l),
+		runQueue:               newSubQueue(2, l),
 		buryQueue:              newBuryQueue(),
 		depQueue:               newDependencyQueue(),
 		ttrNotification:        make(chan bool, 1),
@@ -219,6 +234,7 @@ func New(name string) *Queue {
 		delayClose:             make(chan bool, 1),
 		delayTime:              time.Now(),
 		ttrCb:                  defaultTTRCallback,
+		Logger:                 l,
 	}
 	go queue.startDelayProcessing()
 	<-queue.startedDelayProcessing
@@ -588,7 +604,7 @@ func (queue *Queue) Get(key string) (*Item, error) {
 func (queue *Queue) GetRunningData() []interface{} {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
-	var data []interface{}
+	data := make([]interface{}, 0, len(queue.runQueue.items))
 	for _, item := range queue.runQueue.items {
 		data = append(data, item.Data)
 	}
@@ -598,9 +614,9 @@ func (queue *Queue) GetRunningData() []interface{} {
 // AllItems returns the items in the queue. NB: You should NOT do anything
 // to these items - use for read-only purposes.
 func (queue *Queue) AllItems() []*Item {
-	var items []*Item
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
+	items := make([]*Item, 0, len(queue.items))
 	for _, item := range queue.items {
 		items = append(items, item)
 	}
@@ -705,7 +721,8 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 	}
 
 	item.mutex.Lock()
-	if item.delay != delay {
+	switch {
+	case item.delay != delay:
 		item.delay = delay
 		if item.state == ItemStateDelay {
 			item.mutex.Unlock()
@@ -714,7 +731,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		} else {
 			item.mutex.Unlock()
 		}
-	} else if item.priority != priority || item.ReserveGroup != reserveGroup || addedReady {
+	case item.priority != priority || item.ReserveGroup != reserveGroup || addedReady:
 		item.priority = priority
 		oldGroup := item.ReserveGroup
 		item.ReserveGroup = reserveGroup
@@ -724,7 +741,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		} else {
 			item.mutex.Unlock()
 		}
-	} else if item.ttr != ttr {
+	case item.ttr != ttr:
 		item.ttr = ttr
 		if item.state == ItemStateRun {
 			item.mutex.Unlock()
@@ -733,7 +750,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 		} else {
 			item.mutex.Unlock()
 		}
-	} else {
+	default:
 		item.mutex.Unlock()
 	}
 
@@ -860,19 +877,25 @@ func (queue *Queue) SetReserveGroup(key string, newGroup string) error {
 // Reserve is a thread-safe way to get the highest priority (or for those with
 // equal priority, the oldest (by time since the item was first Add()ed) item in
 // the queue, switching it from the ready sub-queue to the run sub-queue, and in
-// so doing starting its ttr countdown. By specifying the optional reserveGroup
-// argument, you will get the next item that was added with the given
-// ReserveGroup (conversely, if your items were added with ReserveGroups but you
-// don't supply one here, you will not get an item).
+// so doing starting its ttr countdown.
+//
+// If reserveGroup is not blank, you will get the next item that was added with
+// the given ReserveGroup (conversely, if your items were added with
+// ReserveGroups but you don't supply one here, you will not get an item).
+//
+// If wait is greater than 0, we will wait for up to that much time for an item
+// to appear in the ready sub-queue, if at least 1 isn't already there. If after
+// this time there is still nothing in the ready sub-queue, no item and a
+// ErrNothingReady error is returned.
 //
 // You need to Remove() the item when you're done with it. If you're still doing
 // something and ttr is approaching, Touch() it, otherwise it will be assumed
-// you died and the item will be released back to the ready sub- queue
+// you died and the item will be released back to the ready sub-queue
 // automatically, to be handled by someone else that gets it from a Reserve()
 // call. If you know you can't handle it right now, but someone else might be
 // able to later, you can manually call Release(), which moves it to the delay
 // sub-queue.
-func (queue *Queue) Reserve(reserveGroup ...string) (*Item, error) {
+func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, error) {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -880,16 +903,31 @@ func (queue *Queue) Reserve(reserveGroup ...string) (*Item, error) {
 		return nil, Error{queue.Name, "Reserve", "", ErrQueueClosed}
 	}
 
-	var group string
-	if len(reserveGroup) == 1 {
-		group = reserveGroup[0]
-	}
-
 	// pop an item from the ready queue and add it to the run queue
-	item := queue.readyQueue.pop(group)
+	item := queue.readyQueue.pop(reserveGroup)
 	if item == nil {
-		queue.mutex.Unlock()
-		return item, Error{queue.Name, "Reserve", "", ErrNothingReady}
+		if wait > 0 {
+			ch := make(chan bool, 1)
+			queue.readyQueue.notifyPush(reserveGroup, ch, wait)
+			queue.mutex.Unlock()
+
+			// wait until something is pushed to the ready queue or we hit the
+			// timeout
+			tryAgain := <-ch
+			if tryAgain {
+				queue.mutex.Lock()
+				item = queue.readyQueue.pop(reserveGroup)
+				if item == nil {
+					queue.mutex.Unlock()
+				}
+			}
+		} else {
+			queue.mutex.Unlock()
+		}
+
+		if item == nil {
+			return item, Error{queue.Name, "Reserve", "", ErrNothingReady}
+		}
 	}
 
 	item.touch()

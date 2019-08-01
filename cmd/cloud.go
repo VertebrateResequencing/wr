@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -79,6 +80,7 @@ var maxManagerRAM int
 var cloudServersAll bool
 var cloudServerID string
 var cloudServersConfirmDead bool
+var cloudServersAutoConfirmDead int
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -120,7 +122,9 @@ The --script option value can be, for example, the path to a bash script that
 you want to run on any created cloud server before any commands run on them. You
 might install some software for example. Note that the script is run as the user
 defined by --username; if necessary, your bash script may have to prefix its
-commands with 'sudo' if the command would only work as root user.
+commands with 'sudo' if the command would only work as root user. Also, there is
+a time limit of 15 mins for the script to run. If you're installing lots of
+software, consider creating a new image instead, and using the --os option.
 
 The --config_files option lets you specify comma separated arbitrary text file
 paths that should be copied from your local system to any created cloud servers.
@@ -168,8 +172,8 @@ flavor can't be created due to lack of hardware, then the next best flavor -
 excluding flavors in the initial pick's flavor set - will be picked and tried
 instead.
 
-Deploy can work with any given OS image because it uploads wr to any server it
-creates; your OS image does not have to have wr installed on it. The only
+Deploy can work with any given --os OS image because it uploads wr to any server
+it creates; your OS image does not have to have wr installed on it. The only
 requirements of the OS image are that it support ssh and sftp on port 22, and
 that it be a 64bit linux-like system with /proc/*/smaps, /tmp and some local
 writeable disk space in the home directory. For --mounts to work, fuse-utils
@@ -356,7 +360,7 @@ within OpenStack.`,
 				teardown(provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
 			}
-			errf = server.WaitUntilReady(cloudConfigFiles, postCreation)
+			errf = server.WaitUntilReady(context.Background(), cloudConfigFiles, postCreation)
 			if errf != nil {
 				teardown(provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
@@ -537,7 +541,7 @@ and accessible.`,
 		headNode := provider.HeadNode()
 		if headNode != nil && headNode.Alive() {
 			cloudLogFilePath := config.ManagerLogFile + "." + providerName
-			errf := headNode.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
+			errf := headNode.DownloadFile(context.Background(), filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
 
 			if errf != nil {
 				warn("could not download the remote log file: %s", errf)
@@ -738,6 +742,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVar(&cloudDNS, "network_dns", defaultConfig.CloudDNS, "comma separated DNS name server IPs to use in the created subnet")
 	cloudDeployCmd.Flags().StringVarP(&cloudConfigFiles, "config_files", "c", defaultConfig.CloudConfigFiles, "comma separated paths of config files to copy to spawned servers")
 	cloudDeployCmd.Flags().IntVarP(&cloudManagerTimeoutSeconds, "timeout", "t", 15, "how long to wait in seconds for the manager to start up")
+	cloudDeployCmd.Flags().IntVar(&cloudServersAutoConfirmDead, "auto_confirm_dead", defaultConfig.CloudAutoConfirmDead, "how long to wait in minutes before destroying bad servers; 0 means forever")
 	cloudDeployCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs, and have runners log to syslog on their machines")
 
@@ -753,9 +758,11 @@ func init() {
 }
 
 func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe string, mp int, wp int, keyPath string, wrMayHaveStarted bool, domainMatchesIP bool) {
+	ctx := context.Background()
+
 	// upload ourselves to /tmp
 	remoteExe := filepath.Join(cloudBinDir, "wr")
-	err := server.UploadFile(exe, remoteExe)
+	err := server.UploadFile(ctx, exe, remoteExe)
 	if err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to upload wr to the server at %s: %s", server.IP, err)
@@ -770,7 +777,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	} else if config.IsProduction() {
 		// copy over our database
 		if _, errf := os.Stat(config.ManagerDbFile); errf == nil {
-			if errf = server.UploadFile(config.ManagerDbFile, filepath.Join("./.wr_"+config.Deployment, "db")); errf == nil {
+			if errf = server.UploadFile(ctx, config.ManagerDbFile, filepath.Join("./.wr_"+config.Deployment, "db")); errf == nil {
 				info("copied local database to remote server")
 			} else if !wrMayHaveStarted {
 				teardown(provider)
@@ -781,19 +788,19 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			die("failed to access the local database: %s", errf)
 		}
 	}
-	if err = server.CreateFile(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\nmanagerumask: %d\n", mp, wp, dbBk, config.ManagerCertDomain, config.ManagerUmask), wrConfigFileName); err != nil {
+	if err = server.CreateFile(ctx, fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\nmanagerdbbkfile: \"%s\"\nmanagercertdomain: \"%s\"\nmanagerumask: %d\n", mp, wp, dbBk, config.ManagerCertDomain, config.ManagerUmask), wrConfigFileName); err != nil {
 		teardown(provider)
 		die("failed to create our config file on the server at %s: %s", server.IP, err)
 	}
 
 	// copy over our token file, if we're in a recovery situation
 	if _, errf := os.Stat(config.ManagerTokenFile); errf == nil {
-		if errf = server.UploadFile(config.ManagerTokenFile, filepath.Join("./.wr_"+config.Deployment, "client.token")); errf == nil {
+		if errf = server.UploadFile(ctx, config.ManagerTokenFile, filepath.Join("./.wr_"+config.Deployment, "client.token")); errf == nil {
 			info("copied existing client.token to remote server")
 		}
 	}
 
-	if _, _, err = server.RunCmd("chmod u+x "+remoteExe, false); err != nil && !wrMayHaveStarted {
+	if _, _, err = server.RunCmd(ctx, "chmod u+x "+remoteExe, false); err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to make remote wr executable: %s", err)
 	}
@@ -802,7 +809,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	cRN := cloudResourceName(cloudResourceNameUniquer)
 	localResourceFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+"."+cRN)
 	remoteResourceFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+"."+cRN)
-	if err = server.UploadFile(localResourceFile, remoteResourceFile); err != nil && !wrMayHaveStarted {
+	if err = server.UploadFile(ctx, localResourceFile, remoteResourceFile); err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to upload wr cloud resources file to the server at %s: %s", server.IP, err)
 	}
@@ -812,46 +819,46 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		die("failed to create key file %s: %s", localKeyFile, err)
 	}
 	remoteKeyFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".key")
-	if err = server.UploadFile(localKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
+	if err = server.UploadFile(ctx, localKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to upload wr cloud key file to the server at %s: %s", server.IP, err)
 	}
-	_, _, err = server.RunCmd("chmod 600 "+remoteResourceFile, false)
+	_, _, err = server.RunCmd(ctx, "chmod 600 "+remoteResourceFile, false)
 	if err != nil {
 		warn("failed to chmod 600 %s: %s", remoteResourceFile, err)
 	}
-	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	_, _, err = server.RunCmd(ctx, "chmod 600 "+remoteKeyFile, false)
 	if err != nil {
 		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
 	}
 
 	// copy over our ca, cert and key files
 	remoteCertFile := filepath.Join("./.wr_"+config.Deployment, "cert.pem")
-	if err = server.UploadFile(config.ManagerCertFile, remoteCertFile); err != nil && !wrMayHaveStarted {
+	if err = server.UploadFile(ctx, config.ManagerCertFile, remoteCertFile); err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to upload wr manager certificate file to the server at %s: %s", server.IP, err)
 	}
 	remoteKeyFile = filepath.Join("./.wr_"+config.Deployment, "key.pem")
-	if err = server.UploadFile(config.ManagerKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
+	if err = server.UploadFile(ctx, config.ManagerKeyFile, remoteKeyFile); err != nil && !wrMayHaveStarted {
 		teardown(provider)
 		die("failed to upload wr manager key file to the server at %s: %s", server.IP, err)
 	}
-	_, _, err = server.RunCmd("chmod 600 "+remoteCertFile, false)
+	_, _, err = server.RunCmd(ctx, "chmod 600 "+remoteCertFile, false)
 	if err != nil {
 		warn("failed to chmod 600 %s: %s", remoteCertFile, err)
 	}
-	_, _, err = server.RunCmd("chmod 600 "+remoteKeyFile, false)
+	_, _, err = server.RunCmd(ctx, "chmod 600 "+remoteKeyFile, false)
 	if err != nil {
 		warn("failed to chmod 600 %s: %s", remoteKeyFile, err)
 	}
 	_, err = os.Stat(config.ManagerCAFile)
 	if err == nil {
 		remoteCAFile := filepath.Join("./.wr_"+config.Deployment, "ca.pem")
-		if err = server.UploadFile(config.ManagerCAFile, remoteCAFile); err != nil && !wrMayHaveStarted {
+		if err = server.UploadFile(ctx, config.ManagerCAFile, remoteCAFile); err != nil && !wrMayHaveStarted {
 			teardown(provider)
 			die("failed to upload wr manager CA file to the server at %s: %s", server.IP, err)
 		}
-		_, _, err = server.RunCmd("chmod 600 "+remoteCAFile, false)
+		_, _, err = server.RunCmd(ctx, "chmod 600 "+remoteCAFile, false)
 		if err != nil {
 			warn("failed to chmod 600 %s: %s", remoteCAFile, err)
 		}
@@ -860,7 +867,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
-		response, _, errf := server.RunCmd(fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
+		response, _, errf := server.RunCmd(ctx, fmt.Sprintf("%s manager status --deployment %s", remoteExe, config.Deployment), false)
 		if errf == nil && response == "started\n" {
 			alreadyStarted = true
 		}
@@ -868,7 +875,10 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	if !alreadyStarted {
 		// create a file containing all the env vars for this provider, so that
 		// we can source it later
-		envvars, _ := cloud.AllEnv(providerName)
+		envvars, erra := cloud.AllEnv(providerName)
+		if erra != nil {
+			die("failed to get needed environment variables: %s", erra)
+		}
 		envvarExports := ""
 		for _, env := range envvars {
 			val := os.Getenv(env)
@@ -878,12 +888,12 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// *** this is bash-like only; is that a problem?
 			envvarExports += fmt.Sprintf("export %s=\"%s\"\n", env, val)
 		}
-		err = server.CreateFile(envvarExports, wrEnvFileName)
+		err = server.CreateFile(ctx, envvarExports, wrEnvFileName)
 		if err != nil {
 			teardown(provider)
 			die("failed to create our environment variables file on the server at %s: %s", server.IP, err)
 		}
-		_, _, err = server.RunCmd("chmod 600 "+wrEnvFileName, false)
+		_, _, err = server.RunCmd(ctx, "chmod 600 "+wrEnvFileName, false)
 		if err != nil {
 			warn("failed to chmod 600 %s: %s", wrEnvFileName, err)
 		}
@@ -893,7 +903,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// copy over the post creation script to the server so remote
 			// manager can use it
 			remoteScriptFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".script")
-			err = server.UploadFile(postCreationScript, remoteScriptFile)
+			err = server.UploadFile(ctx, postCreationScript, remoteScriptFile)
 			if err != nil && !wrMayHaveStarted {
 				teardown(provider)
 				die("failed to upload wr cloud script file to the server at %s: %s", server.IP, err)
@@ -941,10 +951,10 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if domainMatchesIP {
 			useCertDomainStr = " --use_cert_domain"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --max_cores %d --max_ram %d --timeout %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, useCertDomainStr, debugStr, wrEnvFileName)
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
 
 		var e string
-		_, e, err = server.RunCmd(mCmd, false)
+		_, e, err = server.RunCmd(ctx, mCmd, false)
 		if err != nil {
 			warn("failed to start wr manager on the remote server")
 			if len(e) > 0 {
@@ -954,7 +964,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			// copy over any manager logs that got created locally (ignore
 			// errors, and overwrite any existing file)
 			cloudLogFilePath := config.ManagerLogFile + "." + providerName
-			errf := server.DownloadFile(filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
+			errf := server.DownloadFile(ctx, filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
 
 			// display any non-info lines in that log file
 			if errf == nil {
@@ -1000,7 +1010,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 
 	remoteTokenFile := filepath.Join("./.wr_"+config.Deployment, "client.token")
-	err = server.DownloadFile(remoteTokenFile, config.ManagerTokenFile)
+	err = server.DownloadFile(ctx, remoteTokenFile, config.ManagerTokenFile)
 	if err != nil {
 		teardown(provider)
 		die("could not make a local copy of the authentication token: %s", err)

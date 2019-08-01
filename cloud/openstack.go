@@ -83,30 +83,30 @@ var openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAM
 
 // openstackp is our implementer of provideri
 type openstackp struct {
-	computeClient     *gophercloud.ServiceClient
-	errorBackoff      *backoff.Backoff
-	externalNetworkID string
-	fmap              map[string]*Flavor
-	fmapMutex         sync.RWMutex
 	lastFlavorCache   time.Time
-	imap              map[string]*images.Image
-	imapMutex         sync.RWMutex
-	createdKeyPair    bool
-	useConfigDrive    bool
-	hasDefaultGroup   bool
-	ipNet             *net.IPNet
-	networkClient     *gophercloud.ServiceClient
+	externalNetworkID string
 	networkName       string
 	networkUUID       string
 	ownName           string
-	ownServer         *servers.Server
 	poolName          string
 	securityGroup     string
-	spawnFailed       bool
 	spawnTimes        ewma.MovingAverage
 	spawnTimesVolume  ewma.MovingAverage
 	tenantID          string
 	log15.Logger
+	computeClient   *gophercloud.ServiceClient
+	errorBackoff    *backoff.Backoff
+	fmap            map[string]*Flavor
+	imap            map[string]*images.Image
+	ipNet           *net.IPNet
+	networkClient   *gophercloud.ServiceClient
+	ownServer       *servers.Server
+	fmapMutex       sync.RWMutex
+	imapMutex       sync.RWMutex
+	createdKeyPair  bool
+	useConfigDrive  bool
+	hasDefaultGroup bool
+	spawnFailed     bool
 }
 
 // requiredEnv returns envs that are definitely required.
@@ -392,6 +392,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 
 			for _, g := range groupList {
 				if g.Name == resources.ResourceName {
+					g := g // pin
 					group = &g
 					foundGroup = true
 					if defaultGroupExists {
@@ -627,6 +628,7 @@ func (p *openstackp) inCloud() bool {
 			for _, server := range serverList {
 				if nameToHostName(server.Name) == hostname {
 					p.ownName = hostname
+					server := server // pin (not needed since we return, but just to be careful)
 					p.ownServer = &server
 					inCloud = true
 					return false, nil
@@ -1009,9 +1011,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		return true, nil
 	})
-	if err != nil {
-		merr = multierror.Append(merr, err)
-	}
+	merr = p.combineError(merr, err)
 
 	if p.ownName == "" {
 		// delete router
@@ -1028,7 +1028,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 					if errr != nil {
 						tries++
 						if tries >= 10 {
-							merr = multierror.Append(merr, errr)
+							merr = p.combineError(merr, errr)
 							break
 						}
 						<-time.After(1 * time.Second)
@@ -1040,9 +1040,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 		}
 
 		// delete network (and its subnet)
@@ -1050,9 +1048,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 		}
 
 		// delete secgroup
@@ -1060,9 +1056,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 		}
 	}
 
@@ -1075,14 +1069,21 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t = time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
-			if err != nil {
-				merr = multierror.Append(merr, err)
-			}
+			merr = p.combineError(merr, err)
 			resources.PrivateKey = ""
 		}
 	}
 
 	return merr.ErrorOrNil()
+}
+
+// combineError Append()s the given err on merr, but ignores err if it is
+// "Resource not found".
+func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror.Error {
+	if err != nil && !strings.Contains(err.Error(), "Resource not found") {
+		merr = multierror.Append(merr, err)
+	}
+	return merr
 }
 
 // getAvailableFloatingIP gets or creates an unused floating ip

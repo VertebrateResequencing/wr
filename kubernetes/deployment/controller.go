@@ -139,7 +139,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	go c.informer.Run(stopCh)
 
 	if !cache.WaitForCacheSync(stopCh, c.HasSynced) {
-		utilruntime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
+		utilruntime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 		return
 	}
 
@@ -176,20 +176,23 @@ func (c *Controller) processNextItem() {
 
 	// do processing on key
 	err := c.processItem(key.(string))
+	if err != nil {
+		if c.queue.NumRequeues(key) < maxRetries {
+			c.Error("processing queue item, will retry", "key", key, "error", err)
+			// requeue
+			c.queue.AddRateLimited(key)
+			return
+		}
 
-	if err == nil {
-		// No error => queue stop tracking history
-		c.queue.Forget(key)
-	} else if c.queue.NumRequeues(key) < maxRetries {
-		c.Error("processing queue item, will retry", "key", key, "error", err)
-		// requeue
-		c.queue.AddRateLimited(key)
-	} else {
-		// err != nil and too many retries
+		// too many retries
 		c.Error("processing queue item failed", "key", key, "error", err)
 		c.queue.Forget(key)
 		utilruntime.HandleError(err)
+		return
 	}
+
+	// No error => queue stop tracking history
+	c.queue.Forget(key)
 }
 
 // processItem(key) is where we define how to react to an item coming off the
@@ -199,7 +202,7 @@ func (c *Controller) processItem(key string) error {
 
 	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
-		return fmt.Errorf("Error fetching object with key %s from store: %v", key, err)
+		return fmt.Errorf("error fetching object with key %s from store: %v", key, err)
 	}
 
 	if !exists {
