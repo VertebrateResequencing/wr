@@ -575,6 +575,7 @@ func (s *local) processQueue(reason string) error {
 
 				err := s.runCmdFunc(cmd, req, reserved, call)
 
+				s.mutex.Lock()
 				j.Lock()
 				s.runMutex.Lock()
 				s.running[key]--
@@ -597,6 +598,7 @@ func (s *local) processQueue(reason string) error {
 				}
 				s.runMutex.Unlock()
 				j.Unlock()
+				s.mutex.Unlock()
 
 				if err != nil {
 					// users are notified of relevant errors during runCmd; here
