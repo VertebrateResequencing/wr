@@ -1396,10 +1396,12 @@ func (s *Server) createQueue() {
 					s.racmutex.Lock()
 					s.racChecking = false
 					stats := q.Stats()
-					s.racmutex.Unlock()
 
 					if stats.Ready >= s.racCheckReady {
+						s.racmutex.Unlock()
 						q.TriggerReadyAddedCallback()
+					} else {
+						s.racmutex.Unlock()
 					}
 				}()
 
