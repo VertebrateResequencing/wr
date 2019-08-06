@@ -1038,7 +1038,30 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
 			server = thisServer
 			server.Allocate(req.Cores, req.RAM, req.Disk)
-			reservedCh <- true
+
+			// *** reservedCh is buffered and sending on it should never
+			// block, but somehow we have gotten stuck here before; make
+			// sure we don't get stuck on this send
+			ch := make(chan bool, 1)
+			done := make(chan bool, 1)
+			go func() {
+				reservedCh <- true
+				done <- true
+				ch <- true
+			}()
+			go func() {
+				select {
+				case <-time.After(30 * time.Second):
+					ch <- false
+				case <-done:
+					return
+				}
+			}()
+			sentReserved := <-ch
+			if !sentReserved {
+				logger.Warn("failed to send on reservedCh", "server", sid)
+			}
+
 			logger = logger.New("server", sid)
 			logger.Debug("picked server")
 			break

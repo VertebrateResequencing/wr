@@ -641,8 +641,28 @@ func (s *local) processQueue(reason string) error {
 		// before looping again, wait for all the above runCmdFuncs to at least
 		// get as far as reserving their resources, so subsequent calls to
 		// canCountFunc will be accurate
-		for i := 0; i < canCount; i++ {
-			<-reserved
+		ch := make(chan bool, 1)
+		done := make(chan bool, 1)
+		go func() {
+			for i := 0; i < canCount; i++ {
+				s.Debug("processQueue will reserve resources", "i", i+1)
+				<-reserved
+				s.Debug("processQueue reserved resources", "i", i+1)
+			}
+			done <- true
+			ch <- true
+		}()
+		go func() {
+			select {
+			case <-time.After(5 * time.Minute):
+				ch <- false
+			case <-done:
+				return
+			}
+		}()
+		sentAll := <-ch
+		if !sentAll {
+			s.Warn("failed to reserve all resources")
 		}
 
 		// keep looping, in case any smaller job can also be run
