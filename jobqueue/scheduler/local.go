@@ -290,12 +290,18 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 				j.scheduleDecrements = 0
 			}
 			j.Unlock()
-			s.Debug("schedule changed number needed", "cmd", cmd, "before", before, "needs", count)
+			if count != before {
+				s.Debug("schedule changed number needed", "cmd", cmd, "before", before, "needs", count)
+			}
 			if count == 0 {
 				s.removeKey(key)
 				s.Debug("schedule removed job", "cmd", cmd)
 			}
-			s.checkNeeded(cmd, key, count, running)
+			if !s.checkNeeded(cmd, key, count, running) {
+				// bypass a pointless processQueue call
+				s.mutex.Unlock()
+				return nil
+			}
 		} else {
 			s.mutex.Unlock()
 			return err
@@ -316,10 +322,12 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 // checkNeeded takes a cmd, item key, current item.Count and number of cmd
 // currently running. If we do not need to run any more of this cmd, calls
 // cmdNotNeededFunc(cmd).
-func (s *local) checkNeeded(cmd, key string, needed, running int) {
-	if needed-running <= 0 {
+func (s *local) checkNeeded(cmd, key string, needed, running int) bool {
+	if needed <= running {
 		s.cmdNotNeededFunc(cmd)
+		return false
 	}
+	return true
 }
 
 // cmdCountRemaining tells you the count of cmd still needed based on what was
