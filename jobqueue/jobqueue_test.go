@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	muxfys "github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
