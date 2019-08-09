@@ -689,10 +689,14 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 // updateAfterExit sets some properties on the job, only if the supplied
 // JobEndState indicates the job exited. It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
+	j.decrementLimitGroups(lim)
+
 	if jes == nil || !jes.Exited {
 		return
 	}
+
 	j.Lock()
+	defer j.Unlock()
 	j.Exited = true
 	j.Exitcode = jes.Exitcode
 	j.PeakRAM = jes.PeakRAM
@@ -702,8 +706,6 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}
-	j.Unlock()
-	j.decrementLimitGroups(lim)
 }
 
 // decrementLimitGroups decrements any limit groups of this job that had been
