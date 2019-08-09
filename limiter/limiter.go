@@ -60,6 +60,19 @@ func (l *Limiter) SetLimit(name string, limit uint) {
 	}
 }
 
+// GetLimit tells you the limit currently set for the given group. If the group
+// doesn't exist, returns -1.
+func (l *Limiter) GetLimit(name string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	group := l.vivifyGroup(name)
+	if group == nil {
+		return -1
+	}
+	return int(group.limit)
+}
+
 // RemoveLimit removes the given group from memory. If your callback also begins
 // returning -1 for this group, the group effectively becomes unlimited.
 func (l *Limiter) RemoveLimit(name string) {
@@ -151,6 +164,25 @@ func (l *Limiter) GetLowestLimit(groups []string) int {
 		group := l.vivifyGroup(name)
 		if group != nil && (lowest == -1 || int(group.limit) < lowest) {
 			lowest = int(group.limit)
+		}
+	}
+	return lowest
+}
+
+// GetRemainingCapacity tells you how many times you could Increment() the given
+// groups. If none have a limit set, returns -1.
+func (l *Limiter) GetRemainingCapacity(groups []string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	lowest := -1
+	for _, name := range groups {
+		group := l.vivifyGroup(name)
+		if group != nil {
+			capacity := int(group.limit - group.current)
+			if lowest == -1 || capacity < lowest {
+				lowest = capacity
+			}
 		}
 	}
 	return lowest
