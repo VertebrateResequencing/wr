@@ -1514,6 +1514,7 @@ func (s *Server) createQueue() {
 		}
 
 		job.Unlock()
+		job.decrementLimitGroups(s.limiter)
 		return queue.SubQueueDelay
 	})
 }

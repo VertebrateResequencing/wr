@@ -2843,7 +2843,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 5 * time.Second
+		ServerItemTTR = 1 * time.Second
 		ClientTouchInterval = 2500 * time.Millisecond
 		server, _, token, errs := serve(serverConfig)
 		So(errs, ShouldBeNil)
@@ -2952,6 +2952,15 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				serr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
 				So(serr.Err, ShouldEqual, ErrBadLimitGroup)
+			})
+
+			Convey("Failing to start a job after reserving it does not use up the limit", func() {
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				<-time.After(2*time.Second)
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
 			})
 		})
 

@@ -678,8 +678,8 @@ func (j *Job) ToEssense() *JobEssence {
 // the Job's current LimitGroups), and stores them for decrementing during
 // updateAfterExit(). This avoids any issues with the Job's LimitGroups being
 // changed between these 2 calls (or between you incrementing and reserving the
-// job). The twinned noteIncrementedLimitGroups() and updateAfterExit() calls
-// ensure we don't decrement groups more times than we incremented them.
+// job). The twinned noteIncrementedLimitGroups() and decrementLimitGroups()
+// calls ensure we don't decrement groups more times than we incremented them.
 func (j *Job) noteIncrementedLimitGroups(groups []string) {
 	j.Lock()
 	defer j.Unlock()
@@ -687,10 +687,7 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited. It also decrements any limit groups of
-// this job that had been passed to noteIncrementedLimitGroups(), and then
-// empties that note to make multiple calls to this method safe in terms of
-// decrementing.
+// JobEndState indicates the job exited. It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes == nil || !jes.Exited {
 		return
@@ -705,13 +702,20 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}
+	j.Unlock()
+	j.decrementLimitGroups(lim)
+}
 
+// decrementLimitGroups decrements any limit groups of this job that had been
+// passed to noteIncrementedLimitGroups(), and then empties that note to make
+// multiple calls to this method safe in terms of decrementing.
+func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
+	j.Lock()
+	defer j.Unlock()
 	if len(j.incrementedLimitGroups) > 0 {
 		lim.Decrement(j.incrementedLimitGroups)
 		j.incrementedLimitGroups = []string{}
 	}
-
-	j.Unlock()
 }
 
 // Key calculates a unique key to describe the job.
