@@ -221,7 +221,6 @@ type Server struct {
 	badServerCaster    *bcast.Group
 	schedCaster        *bcast.Group
 	racCheckTimer      *time.Timer
-	racCheckReady      int
 	wsconns            map[string]*websocket.Conn
 	badServers         map[string]*cloud.Server
 	schedIssues        map[string]*schedulerIssue
@@ -1367,12 +1366,12 @@ func (s *Server) createQueue() {
 				}(group)
 			}
 
-			// in the event that the runners we spawn can't reach us
-			// temporarily and just die, we need to make sure this callback
-			// gets triggered again even if no new jobs get added
+			// in the event that the runners we spawn can't reach us temporarily
+			// and just die (or they manage to run and exit due to a limit), we
+			// need to make sure this callback gets triggered again even if no
+			// new jobs get added
 			s.racmutex.Lock()
 			defer s.racmutex.Unlock()
-			s.racCheckReady = len(allitemdata)
 			if s.racChecking {
 				if !s.racCheckTimer.Stop() {
 					<-s.racCheckTimer.C
@@ -1397,7 +1396,7 @@ func (s *Server) createQueue() {
 					s.racChecking = false
 					stats := q.Stats()
 
-					if stats.Ready >= s.racCheckReady {
+					if stats.Ready > 0 {
 						s.racmutex.Unlock()
 						q.TriggerReadyAddedCallback()
 					} else {
