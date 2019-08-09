@@ -2962,6 +2962,18 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 2)
 			})
+
+			Convey("Burying jobs after reserving them does not use up the limit", func() {
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				jq.Bury(jobs[0], nil, "foo")
+				jq.Bury(jobs[1], nil, "foo")
+
+				<-time.After(2 * time.Second)
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+			})
 		})
 
 		Reset(func() {
