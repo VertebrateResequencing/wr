@@ -36,7 +36,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -2958,7 +2957,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				jobs := reserveJobs()
 				So(len(jobs), ShouldEqual, 2)
 
-				<-time.After(2*time.Second)
+				<-time.After(2 * time.Second)
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 2)
 			})
