@@ -112,32 +112,46 @@ func TestLimiter(t *testing.T) {
 		})
 
 		Convey("You can change limits with SetLimit(), and Decrement() forgets about unused groups", func() {
-			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 2)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			groups := []string{"l1", "l2"}
+			two := []string{"l2"}
+			So(l.GetLowestLimit(groups), ShouldEqual, 2)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 2)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 1)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 0)
+			So(l.Increment(two), ShouldBeFalse)
 			l.SetLimit("l2", 3)
-			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 3)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeFalse)
-			l.Decrement([]string{"l2"})
-			l.Decrement([]string{"l2"})
-			l.Decrement([]string{"l2"})
+			So(l.GetLowestLimit(groups), ShouldEqual, 3)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 1)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 0)
+			So(l.Increment(two), ShouldBeFalse)
+			l.Decrement(two)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 1)
+			l.Decrement(two)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 2)
+			l.Decrement(two)
 			// at this point l2 should have been forgotten about, which means
 			// we forgot we set the limit to 3
-			l.Decrement([]string{"l2"}) // doesn't panic or something
-			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 2)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeFalse)
-			l.Decrement([]string{"l2"})
-			l.Decrement([]string{"l2"})
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 2)
+			l.Decrement(two) // doesn't panic or something
+			So(l.GetLowestLimit(groups), ShouldEqual, 2)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 2)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 0)
+			So(l.Increment(two), ShouldBeFalse)
+			l.Decrement(two)
+			l.Decrement(two)
 			limits["l2"] = 3
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.GetLowestLimit([]string{"l1", "l2"}), ShouldEqual, 3)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.Increment([]string{"l2"}), ShouldBeFalse)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 3)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.GetLowestLimit(groups), ShouldEqual, 3)
+			So(l.GetRemainingCapacity(groups), ShouldEqual, 2)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.Increment(two), ShouldBeTrue)
+			So(l.Increment(two), ShouldBeFalse)
 		})
 
 		Convey("You can have limits of 0 and also RemoveLimit()s", func() {
@@ -147,11 +161,11 @@ func TestLimiter(t *testing.T) {
 			limits["l2"] = 0
 			l.RemoveLimit("l2")
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
-			So(l.GetLowestLimit([]string{"l2"}), ShouldEqual, 0)
+			So(l.GetLimit("l2"), ShouldEqual, 0)
 
 			limits["l2"] = -1
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)
-			So(l.GetLowestLimit([]string{"l2"}), ShouldEqual, 0)
+			So(l.GetLimit("l2"), ShouldEqual, 0)
 
 			l.RemoveLimit("l2")
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
@@ -163,7 +177,7 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
 			So(l.Increment([]string{"l2"}), ShouldBeTrue)
-			So(l.GetLowestLimit([]string{"l2"}), ShouldEqual, -1)
+			So(l.GetLimit("l2"), ShouldEqual, -1)
 		})
 
 		Convey("Concurrent SetLimit(), Increment() and Decrement() work", func() {
