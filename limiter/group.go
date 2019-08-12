@@ -40,27 +40,36 @@ func (g *group) setLimit(limit uint) {
 	g.limit = limit
 }
 
-// increment increases the count of this group, up to the limit. Returns true
-// if an increase happened.
-func (g *group) increment() bool {
-	if g.current >= g.limit {
-		return false
-	}
-	g.current++
-	return true
+// canIncrement tells you if the current count of this group is less than the
+// limit.
+func (g *group) canIncrement() bool {
+	return g.current < g.limit
 }
 
-// decrement decreases the count of this group, down to 0. Returns true if a
-// decrease happened.
+// increment increases the current count of this group. You must call
+// canIncrement() first to make sure you won't go over the limit (and hold a
+// lock over the 2 calls to avoid a race condition).
+func (g *group) increment() {
+	g.current++
+}
+
+// decrement decreases the current count of this group. Returns true if the
+// current count indicates the group is unused.
 func (g *group) decrement() bool {
+	// (decrementing a uint under 0 makes it a large positive value, so we must
+	// check first)
 	if g.current == 0 {
-		return false
+		return true
 	}
 	g.current--
-	return true
+	return g.current < 1
 }
 
-// canDecrement tells you if the current count of this group is greater than 0.
-func (g *group) canDecrement() bool {
-	return g.current > 0
+// capacity tells you how many more increments you could do on this group before
+// breaching the limit.
+func (g *group) capacity() int {
+	if g.current >= g.limit {
+		return 0
+	}
+	return int(g.limit - g.current)
 }

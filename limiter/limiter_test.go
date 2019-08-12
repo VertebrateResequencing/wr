@@ -27,7 +27,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-func BenchmarkLimiter(b *testing.B) {
+func BenchmarkLimiterIncDec(b *testing.B) {
 	limits := make(map[string]int)
 	limits["l1"] = 5
 	limits["l2"] = 6
@@ -37,43 +37,76 @@ func BenchmarkLimiter(b *testing.B) {
 		}
 		return -1
 	}
+	both := []string{"l1", "l2"}
+	first := []string{"l1"}
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
 		l := New(cb)
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Increment([]string{"l1", "l2"})
-		l.Decrement([]string{"l1", "l2"})
-		l.Decrement([]string{"l1", "l2"})
-		l.Decrement([]string{"l1", "l2"})
-		l.Decrement([]string{"l1", "l2"})
-		l.Decrement([]string{"l1", "l2"})
-		l.Decrement([]string{"l1", "l2"})
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Increment(both)
+		l.Decrement(both)
+		l.Decrement(both)
+		l.Decrement(both)
+		l.Decrement(both)
+		l.Decrement(both)
+		l.Decrement(both)
 
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Increment([]string{"l1"})
-		l.Decrement([]string{"l1"})
-		l.Decrement([]string{"l1"})
-		l.Decrement([]string{"l1"})
-		l.Decrement([]string{"l1"})
-		l.Decrement([]string{"l1"})
-		l.Decrement([]string{"l1"})
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Increment(first)
+		l.Decrement(first)
+		l.Decrement(first)
+		l.Decrement(first)
+		l.Decrement(first)
+		l.Decrement(first)
+		l.Decrement(first)
+	}
+}
+func BenchmarkLimiterCapacity(b *testing.B) {
+	limits := make(map[string]int)
+	limits["l1"] = 5
+	limits["l2"] = 6
+	cb := func(name string) int {
+		if limit, exists := limits[name]; exists {
+			return limit
+		}
+		return -1
+	}
+	both := []string{"l1", "l2"}
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		l := New(cb)
+		for {
+			l.Increment(both)
+			cap := l.GetRemainingCapacity(both)
+			if cap == 0 {
+				break
+			}
+		}
+		for {
+			l.Decrement(both)
+			cap := l.GetRemainingCapacity(both)
+			if cap == 5 {
+				break
+			}
+		}
 	}
 }
 
