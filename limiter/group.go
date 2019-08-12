@@ -22,9 +22,10 @@ package limiter
 
 // group struct describes an individual limit group.
 type group struct {
-	name    string
-	limit   uint
-	current uint
+	name     string
+	limit    uint
+	current  uint
+	toNotify []chan bool
 }
 
 // newGroup creates a new group.
@@ -61,7 +62,22 @@ func (g *group) decrement() bool {
 	if g.current == 0 {
 		return true
 	}
+
 	g.current--
+
+	// notify callers who passed a channel to notifyDecrement(), but do it
+	// defensively in a go routine so if the caller doesn't read from the
+	// channel, we don't block forever
+	if len(g.toNotify) > 0 {
+		chans := g.toNotify
+		g.toNotify = []chan bool{}
+		go func() {
+			for _, ch := range chans {
+				ch <- true
+			}
+		}()
+	}
+
 	return g.current < 1
 }
 
@@ -72,4 +88,10 @@ func (g *group) capacity() int {
 		return 0
 	}
 	return int(g.limit - g.current)
+}
+
+// notifyDecrement will result in true being sent on the given channel the next
+// time decrement() is called. (And then the channel is discarded.)
+func (g *group) notifyDecrement(ch chan bool) {
+	g.toNotify = append(g.toNotify, ch)
 }
