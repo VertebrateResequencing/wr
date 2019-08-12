@@ -242,5 +242,55 @@ func TestLimiter(t *testing.T) {
 			So(atomic.LoadUint64(&incs), ShouldEqual, 125)
 			So(atomic.LoadUint64(&fails), ShouldEqual, 75)
 		})
+
+		Convey("Concurrent Increment()s at the limit work with wait times", func() {
+			groups := []string{"l1", "l2"}
+			So(l.Increment(groups), ShouldBeTrue)
+			So(l.Increment(groups), ShouldBeTrue)
+			So(l.Increment(groups), ShouldBeFalse)
+
+			go func() {
+				<-time.After(50 * time.Millisecond)
+				l.Decrement(groups)
+				l.Decrement(groups)
+				<-time.After(50 * time.Millisecond)
+				l.Decrement(groups)
+			}()
+
+			go func() {
+				<-time.After(60 * time.Millisecond)
+				// (decrementing the higher capacity group doesn't make an
+				// increment of the lower capacity group work)
+				l.Decrement([]string{"l1"})
+			}()
+
+			var incs uint64
+			var fails uint64
+			lastSuccessful := false
+			wait := 75 * time.Millisecond
+			var wg sync.WaitGroup
+			for i := 0; i < 4; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					if i == 3 {
+						wait = 125 * time.Millisecond
+					}
+					if l.Increment(groups, wait) {
+						atomic.AddUint64(&incs, 1)
+						if i == 3 {
+							lastSuccessful = true
+						}
+					} else {
+						atomic.AddUint64(&fails, 1)
+					}
+				}(i)
+			}
+			wg.Wait()
+
+			So(atomic.LoadUint64(&incs), ShouldEqual, 3)
+			So(atomic.LoadUint64(&fails), ShouldEqual, 1)
+			So(lastSuccessful, ShouldBeTrue)
+		})
 	})
 }
