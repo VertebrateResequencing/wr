@@ -96,23 +96,21 @@ func (l *Limiter) Increment(groups []string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var gs []*group
 	for _, name := range groups {
 		group := l.vivifyGroup(name)
 		if group != nil {
-			// contrary to the strict wording of the docs above, we increment
-			// everything, and then decrement them if 1 fails to increment.
-			if group.increment() {
-				gs = append(gs, group)
-			} else {
-				for _, group := range gs {
-					group.decrement()
-				}
+			if !group.canIncrement() {
 				return false
 			}
 		}
 	}
 
+	for _, name := range groups {
+		group := l.vivifyGroup(name)
+		if group != nil {
+			group.increment()
+		}
+	}
 	return true
 }
 
@@ -145,9 +143,7 @@ func (l *Limiter) Decrement(groups []string) {
 	for _, name := range groups {
 		if group, exists := l.groups[name]; exists {
 			if group.decrement() {
-				if !group.canDecrement() {
-					delete(l.groups, group.name)
-				}
+				delete(l.groups, group.name)
 			}
 		}
 	}
@@ -179,7 +175,7 @@ func (l *Limiter) GetRemainingCapacity(groups []string) int {
 	for _, name := range groups {
 		group := l.vivifyGroup(name)
 		if group != nil {
-			capacity := int(group.limit - group.current)
+			capacity := group.capacity()
 			if lowest == -1 || capacity < lowest {
 				lowest = capacity
 			}
