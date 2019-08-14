@@ -2875,7 +2875,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			reserveJobs := func() []*Job {
 				var jobs []*Job
 				for i := 1; i <= 5; i++ {
-					job, errr := jq.ReserveScheduled(50*time.Millisecond, "110:0:1:0~a,b")
+					job, errr := jq.ReserveScheduled(25*time.Millisecond, "110:0:1:0~a,b")
 					So(errr, ShouldBeNil)
 					if job != nil {
 						jobs = append(jobs, job)
@@ -4023,6 +4023,66 @@ func TestJobqueueRunners(t *testing.T) {
 
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
+
+		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+
+			var jobs []*Job
+			count := 3
+			for i := 1; i <= count; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d && sleep 1", i), Cwd: "/tmp", CwdMatters: true, ReqGroup: "limitedA", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"a:5", "b:1"}})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			waitForCompletion := func(n int) bool {
+				limit := time.After(10 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("limited", false, 0, JobStateComplete, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == n {
+							ticker.Stop()
+							return true
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						return false
+					}
+				}
+			}
+
+			// wait for 1 job to complete, then add a job with overlapping
+			// limitgroups and different requirements
+			waitForCompletion(1)
+
+			jobs = []*Job{}
+			jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d && sleep 1", count+1), Cwd: "/tmp", CwdMatters: true, ReqGroup: "limitedB", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"c:5", "b:1"}})
+			inserts, already, err = jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// the remaining jobs should complete in about count seconds, ie. no
+			// delay between finishing the 0 cpu jobs, and starting the 1 cpu
+			// job. If this is not working due to a bug, it takes
+			// ServerCheckRunnerTime longer. When working, it takes an
+			// additional runner timeout (1s) due to fact the first runner uses
+			// up the limit for that long while waiting to reserve from the now
+			// empty queue for its group. There's also a little overhead.
+			t := time.Now()
+			waitForCompletion(count + 1)
+			So(time.Since(t), ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
+		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)

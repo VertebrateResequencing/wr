@@ -295,7 +295,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 			}
 			if count == 0 {
 				s.removeKey(key)
-				s.Debug("schedule removed job", "cmd", cmd)
+				s.Debug("schedule removed cmd", "cmd", cmd)
 			}
 			if !s.checkNeeded(cmd, key, count, running) {
 				// bypass a pointless processQueue call
@@ -307,7 +307,7 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 			return err
 		}
 	} else {
-		s.Debug("schedule added new job", "cmd", cmd, "needs", count)
+		s.Debug("schedule added new cmd", "cmd", cmd, "needs", count)
 	}
 	s.mutex.Unlock()
 
@@ -581,7 +581,9 @@ func (s *local) processQueue(reason string) error {
 			go func() {
 				defer internal.LogPanic(s.Logger, "processQueue runCmd loop", true)
 
+				s.Debug("will run cmd", "cmd", cmd, "call", call)
 				err := s.runCmdFunc(cmd, req, reserved, call)
+				s.Debug("ran cmd", "cmd", cmd, "call", call)
 
 				s.mutex.Lock()
 				j.Lock()
@@ -743,7 +745,6 @@ func (s *local) startAutoProcessing() {
 	go func() {
 		defer internal.LogPanic(s.Logger, "auto processQueue", false)
 
-		s.Debug("starting auto processing", "frequency", s.stateUpdateFreq)
 		ticker := time.NewTicker(s.stateUpdateFreq)
 		for {
 			select {

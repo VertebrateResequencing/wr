@@ -215,6 +215,7 @@ type Server struct {
 	scheduler          *scheduler.Scheduler
 	sgroupcounts       map[string]int
 	sgrouptrigs        map[string]int
+	idtl               map[string]int
 	sgtr               map[string]*scheduler.Requirements
 	httpServer         *http.Server
 	statusCaster       *bcast.Group
@@ -562,6 +563,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		scheduler:          sch,
 		sgroupcounts:       make(map[string]int),
 		sgrouptrigs:        make(map[string]int),
+		idtl:               make(map[string]int),
 		sgtr:               make(map[string]*scheduler.Requirements),
 		rc:                 config.RunnerCmd,
 		wsconns:            make(map[string]*websocket.Conn),
@@ -1120,6 +1122,7 @@ func (s *Server) createQueue() {
 		groupsScheduledCounts := make(map[string]int)
 		groupsChangedCounts := make(map[string]int)
 		noRecGroups := make(map[string]bool)
+		groupLimits := make(map[string]int)
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
 
@@ -1274,6 +1277,28 @@ func (s *Server) createQueue() {
 			}
 
 			if s.rc != "" {
+				// ignore jobs that would put us over the limit
+				limit, set := groupLimits[schedulerGroup]
+				if !set {
+					limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+					if len(limitGroups) > 0 {
+						groupLimits[schedulerGroup] = s.limiter.GetRemainingCapacity(limitGroups)
+					} else {
+						groupLimits[schedulerGroup] = -1
+					}
+					limit = groupLimits[schedulerGroup]
+				}
+				if limit >= 0 && groups[schedulerGroup] == limit {
+					if !job.getSchedulerIgnored() {
+						s.idtl[schedulerGroup]++
+						job.setSchedulerIgnored(true)
+					}
+					continue
+				} else if job.getSchedulerIgnored() {
+					job.setSchedulerIgnored(false)
+					s.idtl[schedulerGroup]--
+				}
+
 				if job.getScheduledRunner() {
 					groupsScheduledCounts[schedulerGroup]++
 				} else {
@@ -1329,7 +1354,6 @@ func (s *Server) createQueue() {
 					delete(s.sgrouptrigs, group)
 				}
 			}
-			s.sgcmutex.Unlock()
 
 			// schedule runners for each group in the job scheduler
 			for group, count := range groups {
@@ -1338,7 +1362,6 @@ func (s *Server) createQueue() {
 				// decrement the count and re-call Schedule() to get rid
 				// of no-longer-needed pending runners in the job
 				// scheduler
-				s.sgcmutex.Lock()
 				countIncRunning := count
 				if s.sgroupcounts[group] > 0 {
 					countIncRunning += s.sgroupcounts[group]
@@ -1357,7 +1380,6 @@ func (s *Server) createQueue() {
 					}
 				}
 
-				s.sgcmutex.Unlock()
 				s.wg.Add(1)
 				go func(group string) {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners", true)
@@ -1365,6 +1387,7 @@ func (s *Server) createQueue() {
 					s.scheduleRunners(group)
 				}(group)
 			}
+			s.sgcmutex.Unlock()
 
 			// in the event that the runners we spawn can't reach us temporarily
 			// and just die (or they manage to run and exit due to a limit), we
@@ -2082,16 +2105,6 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		// if this scheduler group has limit groups, drop the groupCount to the
-		// lowest limit of its groups, if that's less than desired groupCount
-		limitGroups := s.schedGroupToLimitGroups(group)
-		if len(limitGroups) > 0 {
-			limit := s.limiter.GetLowestLimit(limitGroups)
-			if limit >= 0 && limit < groupCount {
-				groupCount = limit
-			}
-		}
-
 		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
 		if err != nil {
 			problem := true
@@ -2169,11 +2182,27 @@ func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int)
 		doTrigger := false
 		s.sgcmutex.Lock()
 		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
+			if _, set := s.idtl[schedulerGroup]; set {
+				s.idtl[schedulerGroup] -= drop
+				if s.idtl[schedulerGroup] >= 0 {
+					// we previously ignored jobs due to going over their limit,
+					// and there's still jobs to do, so don't actually decrement
+					// now
+					s.sgcmutex.Unlock()
+					return
+				}
+				delete(s.idtl, schedulerGroup)
+				doTrigger = true
+			}
+
 			s.sgroupcounts[schedulerGroup] -= drop
 
 			if s.sgroupcounts[schedulerGroup] <= 0 {
 				s.sgcmutex.Unlock()
 				s.clearSchedulerGroup(schedulerGroup)
+				if doTrigger {
+					s.q.TriggerReadyAddedCallback()
+				}
 				return
 			}
 
@@ -2215,6 +2244,7 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 			return
 		}
 		delete(s.sgroupcounts, schedulerGroup)
+		delete(s.idtl, schedulerGroup)
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
 		s.sgcmutex.Unlock()
@@ -2267,7 +2297,7 @@ func (s *Server) getSetLimitGroup(group string) (int, string, error) {
 		s.q.TriggerReadyAddedCallback()
 		return limit, "", nil
 	}
-	return s.limiter.GetLowestLimit([]string{name}), "", nil
+	return s.limiter.GetLimit(name), "", nil
 }
 
 // splitSuffixedLimitGroup parses a limit group that might be suffixed with a
