@@ -807,9 +807,15 @@ func (s *Server) reserveWithLimits(group string, wait time.Duration) (*queue.Ite
 	if group != "" {
 		limitGroups = s.schedGroupToLimitGroups(group)
 		if len(limitGroups) > 0 {
-			if !s.limiter.Increment(limitGroups) {
+			// it is better to call Increment before Reserve and possibly use up
+			// the limit for up to wait period if there's no item in the queue,
+			// than it is to Reserve first and then Release if at the limit,
+			// because Releasing causes scheduler churn
+			t := time.Now()
+			if !s.limiter.Increment(limitGroups, wait) {
 				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}
+			wait -= time.Since(t)
 		}
 	}
 
