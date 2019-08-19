@@ -43,7 +43,6 @@ import (
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
 const sshShortTimeOut = 5 * time.Second
-const maxZeroCoreJobs = 1000000 // the maxmimum number of jobs a server has space for when cores request is 0
 
 // maxSSHSessions is the maximum number of sessions we will try and multiplex on
 // each ssh client we make for a server. It doesn't matter if this is lower than
@@ -327,7 +326,10 @@ func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	if cores > 0 {
 		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	} else {
-		canDo = maxZeroCoreJobs
+		// rather than an infinite or very large value, we say double the
+		// core count because there are still real limits on the number of
+		// processes we can run at once before things start falling over
+		canDo = s.Flavor.Cores * 2
 	}
 	if canDo > 1 {
 		var n int
