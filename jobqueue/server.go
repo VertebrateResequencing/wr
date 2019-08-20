@@ -222,6 +222,7 @@ type Server struct {
 	badServerCaster    *bcast.Group
 	schedCaster        *bcast.Group
 	racCheckTimer      *time.Timer
+	pauseRequests      int
 	wsconns            map[string]*websocket.Conn
 	badServers         map[string]*cloud.Server
 	schedIssues        map[string]*schedulerIssue
@@ -913,41 +914,51 @@ func (s *Server) Drain() error {
 	return nil
 }
 
-// Pause is like Drain(), except that we don't Stop().
-func (s *Server) Pause() error {
+// Pause is like Drain(), except that we don't Stop(). Returns true if we were
+// not already paused.
+func (s *Server) Pause() (bool, error) {
 	s.ssmutex.Lock()
 	defer s.ssmutex.Unlock()
 	if !s.up {
-		return Error{"Pause", "", ErrNoServer}
+		return false, Error{"Pause", "", ErrNoServer}
 	}
 	if s.drain {
 		if s.ServerInfo.Mode == ServerModeDrain {
-			return Error{"Pause", "", ErrBeingDrained}
+			return false, Error{"Pause", "", ErrBeingDrained}
 		}
-		return nil
 	}
 	s.drain = true
 	s.ServerInfo.Mode = ServerModePause
-	return nil
+	s.pauseRequests++
+	return s.pauseRequests == 1, nil
 }
 
 // Resume undoes Pause(). Does not return an error if we were not paused.
-func (s *Server) Resume() error {
+// If multiple pauses have been requested at once, actually does nothing until
+// the number of resume requests matches the number of pauses.
+// Returns true if actually resumed.
+func (s *Server) Resume() (bool, error) {
 	s.ssmutex.Lock()
 	defer s.ssmutex.Unlock()
 	if !s.up {
-		return Error{"Resume", "", ErrNoServer}
+		return false, Error{"Resume", "", ErrNoServer}
 	}
 	if !s.drain {
-		return nil
+		return false, nil
 	}
 	if s.ServerInfo.Mode == ServerModeDrain {
-		return Error{"Resume", "", ErrBeingDrained}
+		return false, Error{"Resume", "", ErrBeingDrained}
+	}
+	s.pauseRequests--
+	if s.pauseRequests > 0 {
+		return false, nil
+	} else if s.pauseRequests < 0 {
+		s.pauseRequests = 0
 	}
 	s.drain = false
 	s.ServerInfo.Mode = ServerModeNormal
 	s.q.TriggerReadyAddedCallback()
-	return nil
+	return true, nil
 }
 
 // GetServerStats returns some simple live stats about what's happening in the
