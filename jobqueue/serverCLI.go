@@ -85,7 +85,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "pause":
 			s.Debug("pause requested")
-			err := s.Pause()
+			paused, err := s.Pause()
 			if err != nil {
 				if jqerr, ok := err.(Error); ok {
 					srerr = jqerr.Err
@@ -94,11 +94,24 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 				qerr = err.Error()
 			} else {
+				if paused {
+					s.Info("paused by request")
+				} else {
+					// clients are allowed to call pause as many times as they
+					// like, but a single resume call later should work, so we
+					// resume now to keep the internal pause counter at 1
+					resumed, err := s.Resume()
+					if err != nil {
+						s.Error("resume following an extraneous pause failed", "error", err)
+					} else if resumed {
+						s.Error("resumed incorrectly succeeded following a pause that did not")
+					}
+				}
 				sr = &serverResponse{SStats: s.GetServerStats()}
 			}
 		case "resume":
 			s.Debug("resume requested")
-			err := s.Resume()
+			resumed, err := s.Resume()
 			if err != nil {
 				if jqerr, ok := err.(Error); ok {
 					srerr = jqerr.Err
@@ -106,9 +119,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					srerr = ErrInternalError
 				}
 				qerr = err.Error()
+			} else if resumed {
+				s.Info("resumed on request")
 			}
 		case "drain":
-			s.Debug("drain requested")
+			s.Info("drain requested")
 			err := s.Drain()
 			if err != nil {
 				srerr = ErrInternalError
@@ -440,8 +455,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// pending, but become running in the middle of us trying to
 				// modify them, we first pause the server, and resume it
 				// afterwards
-				s.Debug("modify requested, pausing server")
-				err := s.Pause()
+				paused, err := s.Pause()
 				if err != nil {
 					if jqerr, ok := err.(Error); ok {
 						srerr = jqerr.Err
@@ -449,6 +463,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						srerr = ErrInternalError
 					}
 					qerr = err.Error()
+				} else if paused {
+					s.Debug("modify requested, paused server")
+				} else {
+					s.Debug("modify requested")
 				}
 
 				if err == nil {
@@ -535,10 +553,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sr = &serverResponse{Modified: modified}
 
 					// now resume the server again
-					s.Debug("modify completed, resuming server", "count", len(modified))
-					err := s.Resume()
+					resumed, err := s.Resume()
 					if err != nil {
 						s.Error(err.Error())
+					} else if resumed {
+						s.Debug("modify completed, resumed server", "count", len(modified))
+					} else {
+						s.Debug("modify completed", "count", len(modified))
 					}
 				}
 			}

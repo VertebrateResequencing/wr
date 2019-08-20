@@ -3461,6 +3461,41 @@ func TestJobqueueModify(t *testing.T) {
 			kick("a", rgroup, cmd, home)
 		})
 
+		Convey("Modifying does not resume a paused server", func() {
+			for i := 1; i <= 3; i++ {
+				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", Priority: uint8(5)})
+			}
+
+			add(3)
+
+			<-time.After(1000 * time.Millisecond)
+
+			reserve(rgroup, "echo 1")
+
+			_, _, errp := jq.PauseServer()
+			So(errp, ShouldBeNil)
+			job, errr := jq.ReserveScheduled(rtime, rgroup)
+			So(job, ShouldBeNil)
+			So(errr, ShouldBeNil)
+
+			jm = NewJobModifer()
+			jm.SetPriority(uint8(4))
+			modify("a", 2)
+
+			job, errr = jq.ReserveScheduled(rtime, rgroup)
+			So(job, ShouldBeNil)
+			So(errr, ShouldBeNil)
+
+			errr = jq.ResumeServer()
+			So(errr, ShouldBeNil)
+
+			reserve(rgroup, "echo 2")
+
+			// *** want an inverse test that ResumeServer() in the middle of
+			// carriying out a Modify() does not cause issues, but ~impossible
+			// without mocks
+		})
+
 		// *** untested: SetDepGroups(), SetBsubMode(). These are not yet fully
 		// implemented.
 
