@@ -56,6 +56,7 @@ import (
 const (
 	defaultReserveTimeout               = 1 // implementers of reserveTimeout can just return this
 	infiniteQueueTime     time.Duration = 0
+	minimumQueueTime      time.Duration = 15 * time.Minute
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -178,7 +179,7 @@ type scheduleri interface {
 	recover(cmd string, req *Requirements, host *RecoveredHostDetails) error // achieve the aims of Recover()
 	busy() bool                                                              // achieve the aims of Busy()
 	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
-	maxQueueTime(req *Requirements) time.Duration                            // achieve the aims of MaxQueueTime()
+	maxQueueTime(req *Requirements) time.Duration                            // achieve the aims of MaxQueueTime(), return 0 for infinite queue time
 	hostToID(host string) string                                             // achieve the aims of HostToID()
 	setMessageCallBack(MessageCallBack)                                      // achieve the aims of SetMessageCallBack()
 	setBadServerCallBack(BadServerCallBack)                                  // achieve the aims of SetBadServerCallBack()
@@ -342,10 +343,16 @@ func (s *Scheduler) ReserveTimeout(req *Requirements) int {
 // MaxQueueTime returns the maximum amount of time that jobs with the given
 // resource requirements are allowed to run for in the job scheduler's queue. If
 // the job scheduler doesn't have a queue system, or if the queue allows jobs to
-// run forever, then this returns a 0 length duration, which should be regarded
-// as "infinite" queue time.
+// run forever, then this returns req.Time + 15 mins.
 func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
-	return s.impl.maxQueueTime(req)
+	d := s.impl.maxQueueTime(req)
+	if d == 0 {
+		// jobqueue Server uses this to pass a time limit to the client process
+		// being scheduled, which we want to exit soon after it has done a
+		// minimal amount of work, but not earlier than 15mins to aid efficiency
+		return req.Time + minimumQueueTime
+	}
+	return d
 }
 
 // HostToID will return the server id of the server with the given host name, if

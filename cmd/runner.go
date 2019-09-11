@@ -135,7 +135,15 @@ complete.`,
 		// aren't any more commands in the queue
 		numrun := 0
 		exitReason := fmt.Sprintf("there are no more commands in scheduler group '%s'", schedgrp)
+		var jobTime time.Duration
 		for {
+			// see if we have enough time to run a new job before we should
+			// exit
+			if time.Now().Add(jobTime).After(endTime) {
+				exitReason = "we're about to hit our maximum time limit"
+				break
+			}
+
 			var job *jobqueue.Job
 			var err error
 			if schedgrp == "" {
@@ -151,15 +159,18 @@ complete.`,
 				break
 			}
 
-			// see if we have enough time left to run this
-			if time.Now().Add(job.Requirements.Time).After(endTime) {
-				err = jq.Release(job, nil, "not enough time to run")
-				if err != nil {
-					// oh well?
-					warn("job release after running out of time failed: %s", err)
+			if job.Requirements.Time != jobTime {
+				// confirm we have enough time left to run this
+				jobTime = job.Requirements.Time
+				if time.Now().Add(jobTime).After(endTime) {
+					err = jq.Release(job, nil, "not enough time to run")
+					if err != nil {
+						// oh well?
+						warn("job release after running out of time failed: %s", err)
+					}
+					exitReason = "we're about to hit our maximum time limit"
+					break
 				}
-				exitReason = "we're about to hit our maximum time limit"
-				break
 			}
 
 			// actually run the cmd
