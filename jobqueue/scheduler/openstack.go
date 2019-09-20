@@ -1002,6 +1002,7 @@ func (s *opst) cmdNotNeeded(cmd string) {
 	s.scMutex.RLock()
 	defer s.scMutex.RUnlock()
 	if canceller, exists := s.spawnCanceller[cmd]; exists {
+		delete(s.spawnCanceller, cmd)
 		close(canceller)
 	}
 }
