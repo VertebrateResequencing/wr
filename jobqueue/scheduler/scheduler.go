@@ -56,7 +56,7 @@ import (
 const (
 	defaultReserveTimeout               = 1 // implementers of reserveTimeout can just return this
 	infiniteQueueTime     time.Duration = 0
-	minimumQueueTime      time.Duration = 15 * time.Minute
+	minimumQueueTime      time.Duration = 1 * time.Minute
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -175,7 +175,7 @@ type RecoveredHostDetails struct {
 // scheduler.
 type scheduleri interface {
 	initialize(config interface{}, logger log15.Logger) error                // do any initial set up to be able to use the job scheduler
-	schedule(cmd string, req *Requirements, count int) error                 // achieve the aims of Schedule()
+	schedule(cmd string, req *Requirements, priority uint8, count int) error // achieve the aims of Schedule()
 	recover(cmd string, req *Requirements, host *RecoveredHostDetails) error // achieve the aims of Recover()
 	busy() bool                                                              // achieve the aims of Busy()
 	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
@@ -272,12 +272,19 @@ func (s *Scheduler) SetBadServerCallBack(cb BadServerCallBack) {
 // you had less than `count`, it will schedule more to run. If you have more
 // than `count`, it will remove the appropriate number of scheduled (but not yet
 // running) jobs that were previously scheduled for this same cmd (counts of 0
-// are legitimate - it will get rid of all non-running jobs for the cmd). If no
-// error is returned, you know all `count` of your jobs are now scheduled and
-// will eventually run unless you call Schedule() again with the same command
-// and a lower count. NB: there is no guarantee that the jobs run successfully,
-// and no feedback on their success or failure is given.
-func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
+// are legitimate - it will get rid of all non-running jobs for the cmd).
+//
+// Typically schedulers will end up running cmds according to their "size" (cpu
+// and memory needed as per the req), with larger cmds running first due to bin
+// packing. Some schedulers will take the given priority in to account and try
+// to run cmds with higher priorities before those with lower ones. Equal
+// priority jobs will use the normal approach.
+//
+// If no error is returned, you know all `count` of your jobs are now scheduled
+// and will eventually run unless you call Schedule() again with the same
+// command and a lower count. NB: there is no guarantee that the jobs run
+// successfully, and no feedback on their success or failure is given.
+func (s *Scheduler) Schedule(cmd string, req *Requirements, priority uint8, count int) error {
 	// Schedule may get called many times in different go routines, eg. a
 	// succession of calls with the same cmd and req but decrementing count.
 	// Here we arrange that impl.schedule is only called once at a time per
@@ -293,14 +300,14 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, count int) error {
 	s.limiter[cmd] = count
 	s.Unlock()
 
-	err := s.impl.schedule(cmd, req, count)
+	err := s.impl.schedule(cmd, req, priority, count)
 
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {
 		if newcount != count {
 			go func() {
 				defer internal.LogPanic(s.Logger, "schedule recall", true)
-				errf := s.Schedule(cmd, req, newcount)
+				errf := s.Schedule(cmd, req, priority, newcount)
 				if errf != nil {
 					s.Error("schedule recall", "err", err)
 				}
@@ -349,7 +356,7 @@ func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 	if d == 0 {
 		// jobqueue Server uses this to pass a time limit to the client process
 		// being scheduled, which we want to exit soon after it has done a
-		// minimal amount of work, but not earlier than 15mins to aid efficiency
+		// minimal amount of work, but not earlier than 1min to aid efficiency
 		return req.Time + minimumQueueTime
 	}
 	return d

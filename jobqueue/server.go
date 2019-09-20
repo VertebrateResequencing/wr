@@ -213,6 +213,7 @@ type Server struct {
 	rpl                *rgToKeys
 	limiter            *limiter.Limiter
 	scheduler          *scheduler.Scheduler
+	sgrouppriority     map[string]uint8
 	sgroupcounts       map[string]int
 	sgrouptrigs        map[string]int
 	idtl               map[string]int
@@ -562,6 +563,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		wg:                 wg,
 		up:                 true,
 		scheduler:          sch,
+		sgrouppriority:     make(map[string]uint8),
 		sgroupcounts:       make(map[string]int),
 		sgrouptrigs:        make(map[string]int),
 		idtl:               make(map[string]int),
@@ -1130,6 +1132,7 @@ func (s *Server) createQueue() {
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
+		groupToPriority := make(map[string]uint8)
 		groupsScheduledCounts := make(map[string]int)
 		groupsChangedCounts := make(map[string]int)
 		noRecGroups := make(map[string]bool)
@@ -1287,6 +1290,10 @@ func (s *Server) createQueue() {
 				}
 			}
 
+			if _, defined := groupToPriority[schedulerGroup]; !defined || job.Priority > groupToPriority[schedulerGroup] {
+				groupToPriority[schedulerGroup] = job.Priority
+			}
+
 			if s.rc != "" {
 				// ignore jobs that would put us over the limit
 				limit, set := groupLimits[schedulerGroup]
@@ -1368,6 +1375,10 @@ func (s *Server) createQueue() {
 
 			// schedule runners for each group in the job scheduler
 			for group, count := range groups {
+				// we keep track of the highest priority of jobs in this group
+				// which we pass on to the scheduler
+				s.sgrouppriority[group] = groupToPriority[group]
+
 				// we also keep a count of how many we request for this
 				// group, so that when we Archive() or Bury() we can
 				// decrement the count and re-call Schedule() to get rid
@@ -2113,10 +2124,11 @@ func (s *Server) scheduleRunners(group string) {
 		s.sgroupcounts[group] = 0
 		doClear = true
 	}
+	priority := s.sgrouppriority[group]
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, groupCount)
+		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, priority, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
@@ -2258,8 +2270,9 @@ func (s *Server) clearSchedulerGroup(schedulerGroup string) {
 		delete(s.idtl, schedulerGroup)
 		delete(s.sgrouptrigs, schedulerGroup)
 		delete(s.sgtr, schedulerGroup)
+		delete(s.sgrouppriority, schedulerGroup)
 		s.sgcmutex.Unlock()
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0)
+		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0, 0)
 		if err != nil {
 			s.Warn("clearSchedulerGroup failed", "err", err)
 		}

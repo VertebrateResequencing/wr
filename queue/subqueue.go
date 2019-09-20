@@ -246,7 +246,10 @@ func (q *subQueue) Less(i, j int) bool {
 	case 1:
 		if itemList, existed := q.groupedItems[q.reserveGroup]; existed {
 			if itemList[i].priority == itemList[j].priority {
-				return itemList[i].creation.Before(itemList[j].creation)
+				if itemList[i].size == itemList[j].size {
+					return itemList[i].creation.Before(itemList[j].creation)
+				}
+				return itemList[i].size > itemList[j].size
 			}
 			return itemList[i].priority > itemList[j].priority
 		}
