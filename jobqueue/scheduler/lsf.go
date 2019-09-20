@@ -412,7 +412,7 @@ func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
 // schedule achieves the aims of Schedule(). Note that if rescheduling a cmd
 // at a lower count, we cannot guarantee that only that number get run; it may
 // end up being a few more.
-func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
+func (s *lsf) schedule(cmd string, req *Requirements, priority uint8, count int) error {
 	// find the best queue for these resource requirements
 	queue, err := s.determineQueue(req, 0)
 	if err != nil {

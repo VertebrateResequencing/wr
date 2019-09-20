@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,8 +64,8 @@ func TestLocal(t *testing.T) {
 			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
 		})
 
-		Convey("MaxQueueTime() always returns 0", func() {
-			So(s.MaxQueueTime(possibleReq).Seconds(), ShouldEqual, 0)
+		Convey("MaxQueueTime() returns req time plus 1m", func() {
+			So(s.MaxQueueTime(possibleReq).Seconds(), ShouldEqual, 61)
 		})
 
 		Convey("Busy() starts off false", func() {
@@ -83,7 +84,7 @@ func TestLocal(t *testing.T) {
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
-			err := s.Schedule("foo", impossibleReq, 1)
+			err := s.Schedule("foo", impossibleReq, 0, 1)
 			So(err, ShouldNotBeNil)
 			serr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
@@ -113,7 +114,7 @@ func TestLocal(t *testing.T) {
 			// timing dependent
 			if overhead == 0 {
 				Convey("You can first run with the number of CPUs", func() {
-					err = s.Schedule(cmd, possibleReq, maxCPU)
+					err = s.Schedule(cmd, possibleReq, 0, maxCPU)
 					So(err, ShouldBeNil)
 					before := time.Now()
 					for {
@@ -128,7 +129,7 @@ func TestLocal(t *testing.T) {
 
 			count := maxCPU * 2
 			sched := func() {
-				err = s.Schedule(cmd, possibleReq, count)
+				err = s.Schedule(cmd, possibleReq, 0, count)
 				So(err, ShouldBeNil)
 				So(s.Busy(), ShouldBeTrue)
 			}
@@ -163,7 +164,7 @@ func TestLocal(t *testing.T) {
 				So(numfiles, ShouldEqual, maxCPU)
 
 				newcount := maxCPU - 1
-				err = s.Schedule(cmd, possibleReq, newcount)
+				err = s.Schedule(cmd, possibleReq, 0, newcount)
 				So(err, ShouldBeNil)
 
 				<-time.After(750*time.Millisecond + overhead)
@@ -185,7 +186,7 @@ func TestLocal(t *testing.T) {
 				So(numfiles, ShouldEqual, maxCPU)
 
 				newcount := count + 1
-				err = s.Schedule(cmd, possibleReq, newcount)
+				err = s.Schedule(cmd, possibleReq, 0, newcount)
 				So(err, ShouldBeNil)
 
 				<-time.After(1500*time.Millisecond + overhead + overhead)
@@ -208,7 +209,7 @@ func TestLocal(t *testing.T) {
 					So(numfiles, ShouldEqual, maxCPU)
 
 					newcount := maxCPU + 1 // (this test only really makes sense if newcount is now less than count, ie. we have more than 1 cpu)
-					err = s.Schedule(cmd, possibleReq, newcount)
+					err = s.Schedule(cmd, possibleReq, 0, newcount)
 					So(err, ShouldBeNil)
 
 					<-time.After(750*time.Millisecond + overhead)
@@ -230,10 +231,10 @@ func TestLocal(t *testing.T) {
 					So(numfiles, ShouldEqual, maxCPU)
 
 					newcount := maxCPU + 1
-					err = s.Schedule(cmd, possibleReq, newcount)
+					err = s.Schedule(cmd, possibleReq, 0, newcount)
 					So(err, ShouldBeNil)
 					newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@b = tempfile(DIR => q[%s]); select(undef, undef, undef, 0.75);'", tmpdir)
-					err = s.Schedule(newcmd, possibleReq, 1)
+					err = s.Schedule(newcmd, possibleReq, 0, 1)
 					So(err, ShouldBeNil)
 
 					<-time.After(750*time.Millisecond + overhead)
@@ -277,9 +278,9 @@ func TestLocal(t *testing.T) {
 
 				// schedule 2 big cmds and then a small one to prove the small
 				// one fits the gap and runs before the second big one
-				err = s.Schedule(bigCmd, bigReq, 2)
+				err = s.Schedule(bigCmd, bigReq, 0, 2)
 				So(err, ShouldBeNil)
-				err = s.Schedule(smallCmd, smallReq, 1)
+				err = s.Schedule(smallCmd, smallReq, 0, 1)
 				So(err, ShouldBeNil)
 
 				for {
@@ -306,11 +307,11 @@ func TestLocal(t *testing.T) {
 				// compared to each other, then schedule 2 small cmds and a big
 				// command that uses all cpus to prove that the biggest one
 				// takes priority
-				err = s.Schedule(blockCmd, blockReq, 1)
+				err = s.Schedule(blockCmd, blockReq, 0, 1)
 				So(err, ShouldBeNil)
-				err = s.Schedule(smallCmd, smallReq, 2)
+				err = s.Schedule(smallCmd, smallReq, 0, 2)
 				So(err, ShouldBeNil)
-				err = s.Schedule(bigCmd, blockReq, 1)
+				err = s.Schedule(bigCmd, blockReq, 0, 1)
 				So(err, ShouldBeNil)
 
 				for {
@@ -332,6 +333,50 @@ func TestLocal(t *testing.T) {
 				// extra ms before it does anything. Not sure how to test for
 				// actual job start time order...
 			})
+
+			Convey("Priority overrides bin-packing for smaller cmds", func() {
+				smallTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_small_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(smallTmpdir)
+				bigTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_big_output_dir_")
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer os.RemoveAll(bigTmpdir)
+
+				smallCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", smallTmpdir)
+				smallReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
+				bigCmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.75", bigTmpdir)
+				bigReq := &Requirements{1, 1 * time.Second, float64(maxCPU / 2), 0, otherReqs, true, true, true}
+
+				// schedule 3 big cmds (where 2 can run at once, filling the
+				// whole machine) and then a small one to prove the small
+				// one with higher priority runs before the 3rd big one.
+				err = s.Schedule(bigCmd, bigReq, 0, 3)
+				So(err, ShouldBeNil)
+				err = s.Schedule(smallCmd, smallReq, 1, 1)
+				So(err, ShouldBeNil)
+
+				for {
+					if !s.Busy() {
+						break
+					}
+					<-time.After(1 * time.Millisecond)
+				}
+
+				bigTimes := mtimesOfFilesInDir(bigTmpdir, 2)
+				So(len(bigTimes), ShouldEqual, 3)
+				smallTimes := mtimesOfFilesInDir(smallTmpdir, 1)
+				So(len(smallTimes), ShouldEqual, 1)
+				sort.Slice(bigTimes, func(i, j int) bool {
+					return bigTimes[i].Before(bigTimes[j])
+				})
+				So(smallTimes[0], ShouldHappenAfter, bigTimes[0])
+				So(smallTimes[0], ShouldHappenOnOrAfter, bigTimes[1])
+				So(smallTimes[0], ShouldHappenOnOrBefore, bigTimes[2])
+			})
 		}
 
 		// wait a while for any remaining jobs to finish
@@ -352,7 +397,7 @@ func TestLocal(t *testing.T) {
 			cmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.5", tmpDir)
 			sleepReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
 
-			err = s.Schedule(cmd, sleepReq, 2)
+			err = s.Schedule(cmd, sleepReq, 0, 2)
 			So(err, ShouldBeNil)
 
 			for {
@@ -447,7 +492,7 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
-			err := s.Schedule("foo", impossibleReq, 1)
+			err := s.Schedule("foo", impossibleReq, 0, 1)
 			So(err, ShouldNotBeNil)
 			serr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
@@ -477,7 +522,7 @@ func TestLSF(t *testing.T) {
 			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); sleep(5); exit(0);'", tmpdir)
 
 			count := maxCPU * 2
-			err = s.Schedule(cmd, possibleReq, count)
+			err = s.Schedule(cmd, possibleReq, 0, count)
 			So(err, ShouldBeNil)
 			So(s.Busy(), ShouldBeTrue)
 
@@ -494,7 +539,7 @@ func TestLSF(t *testing.T) {
 
 			Convey("You can Schedule() again to increase the count", func() {
 				newcount := count + 5
-				err = s.Schedule(cmd, possibleReq, newcount)
+				err = s.Schedule(cmd, possibleReq, 0, newcount)
 				So(err, ShouldBeNil)
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
 				numfiles := testDirForFiles(tmpdir, newcount)
@@ -508,7 +553,7 @@ func TestLSF(t *testing.T) {
 				So(s.Busy(), ShouldBeTrue)
 
 				newcmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); sleep(1); exit(0);'", tmpdir)
-				err = s.Schedule(newcmd, possibleReq, 1)
+				err = s.Schedule(newcmd, possibleReq, 0, 1)
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
@@ -527,7 +572,7 @@ func TestLSF(t *testing.T) {
 			cmd := fmt.Sprintf("perl -MFile::Temp=tempfile -e '@a = tempfile(DIR => q[%s]); sleep(2); exit(0);'", tmpdir)
 
 			count := 10000 // 1,000,000 just errors out, and 100,000 could be bad for LSF in some way
-			err = s.Schedule(cmd, possibleReq, count)
+			err = s.Schedule(cmd, possibleReq, 0, count)
 			So(err, ShouldBeNil)
 			So(s.Busy(), ShouldBeTrue)
 
@@ -537,7 +582,7 @@ func TestLSF(t *testing.T) {
 				So(numfiles, ShouldBeBetween, 1, count-(maxCPU*2)-2)
 
 				newcount := numfiles + maxCPU
-				err = s.Schedule(cmd, possibleReq, newcount)
+				err = s.Schedule(cmd, possibleReq, 0, newcount)
 				So(err, ShouldBeNil)
 
 				So(waitToFinish(s, 300, 1000), ShouldBeTrue)
@@ -741,7 +786,7 @@ func TestOpenstack(t *testing.T) {
 		})
 
 		Convey("Schedule() gives impossible error when given impossible reqs", func() {
-			err := s.Schedule("foo", impossibleReq, 1)
+			err := s.Schedule("foo", impossibleReq, 0, 1)
 			So(err, ShouldNotBeNil)
 			serr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
@@ -755,7 +800,7 @@ func TestOpenstack(t *testing.T) {
 				other := make(map[string]string)
 				other["cloud_flavor"] = flavor.Name
 				brokenReq := &Requirements{flavor.RAM + 1, 1 * time.Minute, 1, 1, other, true, true, true}
-				err = s.Schedule("foo", brokenReq, 1)
+				err = s.Schedule("foo", brokenReq, 0, 1)
 				So(err, ShouldNotBeNil)
 				serr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
@@ -839,12 +884,12 @@ func TestOpenstack(t *testing.T) {
 
 					smallCmd := "sleep 1"
 					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
-					err := s.Schedule(smallCmd, smallReq, 1000000)
+					err := s.Schedule(smallCmd, smallReq, 0, 1000000)
 					So(err, ShouldBeNil)
 
 					bigCmd := "sleep 2"
 					bigReq := &Requirements{100, 1 * time.Minute, 4, 1, other, true, true, true}
-					err = s.Schedule(bigCmd, bigReq, 1)
+					err = s.Schedule(bigCmd, bigReq, 0, 1)
 					So(err, ShouldBeNil)
 
 					wanted := make(map[int]int)
@@ -852,9 +897,9 @@ func TestOpenstack(t *testing.T) {
 					wanted[4] = 1
 					So(waitForServers(wanted), ShouldBeTrue)
 
-					err = s.Schedule(smallCmd, smallReq, 0)
+					err = s.Schedule(smallCmd, smallReq, 0, 0)
 					So(err, ShouldBeNil)
-					err = s.Schedule(bigCmd, bigReq, 0)
+					err = s.Schedule(bigCmd, bigReq, 0, 0)
 					So(err, ShouldBeNil)
 
 					wanted = make(map[int]int)
@@ -866,12 +911,12 @@ func TestOpenstack(t *testing.T) {
 
 					bigCmd := "sleep 1"
 					bigReq := &Requirements{100, 1 * time.Minute, 6, 1, other, true, true, true}
-					err := s.Schedule(bigCmd, bigReq, 1000000)
+					err := s.Schedule(bigCmd, bigReq, 0, 1000000)
 					So(err, ShouldBeNil)
 
 					smallCmd := "sleep 5"
 					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
-					err = s.Schedule(smallCmd, smallReq, 4)
+					err = s.Schedule(smallCmd, smallReq, 0, 4)
 					So(err, ShouldBeNil)
 
 					wanted := make(map[int]int)
@@ -887,9 +932,9 @@ func TestOpenstack(t *testing.T) {
 					}
 					oss.serversMutex.RUnlock()
 
-					err = s.Schedule(smallCmd, smallReq, 0)
+					err = s.Schedule(smallCmd, smallReq, 0, 0)
 					So(err, ShouldBeNil)
-					err = s.Schedule(bigCmd, bigReq, 0)
+					err = s.Schedule(bigCmd, bigReq, 0, 0)
 					So(err, ShouldBeNil)
 
 					wanted = make(map[int]int)
@@ -901,7 +946,7 @@ func TestOpenstack(t *testing.T) {
 					other := make(map[string]string)
 					other["cloud_shared"] = "true"
 					localReq := &Requirements{100, 1 * time.Minute, 1, 1, other, true, true, true}
-					err := s.Schedule(cmd, localReq, 1)
+					err := s.Schedule(cmd, localReq, 0, 1)
 					So(err, ShouldBeNil)
 
 					remoteReq := oss.reqForSpawn(localReq)
@@ -912,7 +957,7 @@ func TestOpenstack(t *testing.T) {
 					}
 					remoteReq.Other = other
 					cmd = "touch /shared/test2"
-					err = s.Schedule(cmd, remoteReq, 1)
+					err = s.Schedule(cmd, remoteReq, 0, 1)
 					So(err, ShouldBeNil)
 
 					So(s.Busy(), ShouldBeTrue)
@@ -935,7 +980,7 @@ func TestOpenstack(t *testing.T) {
 						other := make(map[string]string)
 						other["cloud_flavor"] = "o2.small"
 						thisReq := &Requirements{100, 1 * time.Minute, 1, 1, other, true, true, true}
-						err := s.Schedule(cmd, thisReq, 1)
+						err := s.Schedule(cmd, thisReq, 0, 1)
 						So(err, ShouldBeNil)
 						So(s.Busy(), ShouldBeTrue)
 
@@ -981,7 +1026,7 @@ func TestOpenstack(t *testing.T) {
 					cmd := "sleep 10"
 					oReqs := make(map[string]string)
 					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, oReqs, true, true, true}
-					err := s.Schedule(cmd, thisReq, count)
+					err := s.Schedule(cmd, thisReq, 0, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 
@@ -1035,7 +1080,7 @@ func TestOpenstack(t *testing.T) {
 					newCount := 3
 					eta := 120
 					cmd := "sleep 10"
-					err := s.Schedule(cmd, newReq, newCount)
+					err := s.Schedule(cmd, newReq, 0, newCount)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
@@ -1049,7 +1094,7 @@ func TestOpenstack(t *testing.T) {
 					newCount := 3
 					eta := 120
 					cmd := "sleep 10"
-					err := s.Schedule(cmd, newReq, newCount)
+					err := s.Schedule(cmd, newReq, 0, newCount)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
 					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
@@ -1075,7 +1120,7 @@ func TestOpenstack(t *testing.T) {
 						newCount := 3
 						eta := 120
 						cmd := "sleep 10 && (echo override > " + oFile + ") || true"
-						err := s.Schedule(cmd, newReq, newCount)
+						err := s.Schedule(cmd, newReq, 0, newCount)
 						So(err, ShouldBeNil)
 						So(s.Busy(), ShouldBeTrue)
 
@@ -1132,7 +1177,7 @@ func TestOpenstack(t *testing.T) {
 						Convey("Run multiple jobs at once on multi-core servers", func() {
 							cmd := "sleep 30"
 							jobReq := &Requirements{multiCoreFlavor.RAM / numCores, 1 * time.Minute, 1, 0, oReqs, true, true, true}
-							err = s.Schedule(cmd, jobReq, numCores)
+							err = s.Schedule(cmd, jobReq, 0, numCores)
 							So(err, ShouldBeNil)
 							So(s.Busy(), ShouldBeTrue)
 
