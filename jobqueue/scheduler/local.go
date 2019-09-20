@@ -336,6 +336,7 @@ func (s *local) schedule(cmd string, req *Requirements, priority uint8, count in
 // cmdNotNeededFunc(cmd).
 func (s *local) checkNeeded(cmd, key string, needed, running int) bool {
 	if needed <= running {
+		s.Debug("checkNeeded not needed", "cmd", cmd, "key", key, "needed", needed, "running", running)
 		s.cmdNotNeededFunc(cmd)
 		return false
 	}
