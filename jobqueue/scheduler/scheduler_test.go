@@ -435,6 +435,13 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
+	var specifiedOther = make(map[string]string)
+	specifiedOther["scheduler_queue"] = "yesterday"
+	specifiedOther["scheduler_misc"] = "-R avx"
+	possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs, true, true, true}
+	specifiedReq := &Requirements{100, 1 * time.Minute, 1, 20, specifiedOther, true, true, true}
+	impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
+
 	host, err := os.Hostname()
 	if err != nil {
 		log.Fatal(err)
@@ -443,9 +450,6 @@ func TestLSF(t *testing.T) {
 		s, err := New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
-
-		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs, true, true, true}
-		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(possibleReq), ShouldEqual, 1)
@@ -486,6 +490,29 @@ func TestLSF(t *testing.T) {
 				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 4320)
 			})
 		}
+
+		Convey("determineQueue() returns user queue if specified", func() {
+			queue, err := s.impl.(*lsf).determineQueue(specifiedReq, 0)
+			So(err, ShouldBeNil)
+			So(queue, ShouldEqual, "yesterday")
+		})
+
+		Convey("generateBsubArgs() adds in user-specified options", func() {
+			bsubArgs := s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
+			So(strings.HasSuffix(bsubArgs[8], "[1-2]"), ShouldBeTrue)
+			bsubArgs[8] = "random1"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R avx", "-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			specifiedOther["scheduler_misc"] = `-R "avx foo"`
+			bsubArgs = s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs[9] = "random2"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R", "avx foo", "-J", "random2", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			specifiedOther["scheduler_misc"] = `-E "un supported"`
+			bsubArgs = s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs[7] = "random3"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+		})
 
 		Convey("Busy() starts off false", func() {
 			So(s.Busy(), ShouldBeFalse)

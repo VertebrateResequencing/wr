@@ -77,6 +77,8 @@ type JobViaJSON struct {
 	CloudScript      string   `json:"cloud_script"`
 	CloudConfigFiles string   `json:"cloud_config_files"`
 	CloudFlavor      string   `json:"cloud_flavor"`
+	SchedulerQueue   string   `json:"queue"`
+	SchedulerMisc    string   `json:"misc"`
 	BsubMode         string   `json:"bsub_mode"`
 	CPUs             *float64 `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
@@ -116,6 +118,8 @@ type JobDefaults struct {
 	CloudScript string
 	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
 	CloudConfigFiles string
+	SchedulerQueue   string
+	SchedulerMisc    string
 	BsubMode         string
 	osRAM            string
 	// CPUs is the number of CPU cores each cmd will use.
@@ -430,6 +434,18 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 
 	if jvj.CloudShared || jd.CloudShared {
 		other["cloud_shared"] = "true"
+	}
+
+	if jvj.SchedulerQueue != "" {
+		other["scheduler_queue"] = jvj.SchedulerQueue
+	} else if jd.SchedulerQueue != "" {
+		other["scheduler_queue"] = jd.SchedulerQueue
+	}
+
+	if jvj.SchedulerMisc != "" {
+		other["scheduler_misc"] = jvj.SchedulerMisc
+	} else if jd.SchedulerMisc != "" {
+		other["scheduler_misc"] = jd.SchedulerMisc
 	}
 
 	if jvj.RTimeout != nil {
