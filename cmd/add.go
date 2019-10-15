@@ -67,6 +67,8 @@ var cmdPostCreationScript string
 var cmdCloudConfigs string
 var cmdCloudSharedDisk bool
 var cmdFlavor string
+var cmdQueue string
+var cmdMisc string
 var cmdMonitorDocker string
 var rtimeoutint int
 
@@ -83,9 +85,9 @@ alternatively have only a JSON object in column 1 that also specifies the
 command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
-memory time override cpus disk priority retries rep_grp dep_grps deps cmd_deps
-monitor_docker cloud_os cloud_username cloud_ram cloud_script cloud_config_files
-cloud_flavor cloud_shared env bsub_mode
+memory time override cpus disk queue misc priority retries rep_grp dep_grps deps
+cmd_deps monitor_docker cloud_os cloud_username cloud_ram cloud_script
+cloud_config_files cloud_flavor cloud_shared env bsub_mode
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -202,6 +204,18 @@ Disk space reservation only applies to the OpenStack schedulers which will
 create temporary volumes of the specified size if necessary. Note that disk
 space usage checking and learning only occurs for jobs where cwd doesn't matter
 (is a unique directory), and ignores the contents of mounted directories.
+
+"queue" tells wr which queue a job should be submitted to, when using a job
+scheduler that has queues (eg. LSF). If queue is not specified, wr will use
+heuristics to pick the most appropriate queue based on the time, memory and cpu
+requirements of the job.
+
+"misc" will be used as-is to form the command line used to submit jobs to
+external job schedulers (eg. LSF). For example, --misc '-R avx' might result
+in a command line containing: bsub -R avx. If possible, avoid including single
+or double quotes within the value passed to --misc, as these cause quoting
+issues and will be ignored. The exception to this is when using the LSF
+scheduler you can say --misc '-R "multiple things"' and it will work.
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
@@ -374,6 +388,8 @@ func init() {
 	addCmd.Flags().StringVar(&cmdPostCreationScript, "cloud_script", "", "in the cloud, path to a start-up script that will be run on the servers created to run these commands")
 	addCmd.Flags().StringVar(&cmdCloudConfigs, "cloud_config_files", "", "in the cloud, comma separated paths of config files to copy to servers created to run these commands")
 	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
+	addCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
+	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
@@ -454,6 +470,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		CloudOSRam:       cmdOsRAM,
 		CloudFlavor:      cmdFlavor,
 		CloudShared:      cmdCloudSharedDisk,
+		SchedulerQueue:   cmdQueue,
+		SchedulerMisc:    cmdMisc,
 		BsubMode:         bsubMode,
 		RTimeout:         rtimeoutint,
 	}
