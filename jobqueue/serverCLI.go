@@ -470,7 +470,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 
 				if err == nil {
-					var toModify []*Job
+					var toModifyJobs []*Job
+					toModifyKeys := make(map[string]*Job)
 					for _, jobkey := range cr.Keys {
 						item, err := s.q.Get(jobkey)
 						if err != nil || item == nil {
@@ -480,71 +481,82 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						if iState == queue.ItemStateRun {
 							continue
 						}
-						toModify = append(toModify, item.Data.(*Job))
+						toModifyJobs = append(toModifyJobs, item.Data.(*Job))
+						toModifyKeys[jobkey] = item.Data.(*Job)
 					}
 
-					modified := cr.Modifier.Modify(toModify)
+					modified := cr.Modifier.Modify(toModifyJobs, s)
 
-					// additional handling of changed limit groups
-					if cr.Modifier.LimitGroupsSet {
-						limitGroups := make(map[string]int)
-						for _, job := range toModify {
-							err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
-							if err != nil {
-								s.Error("failed to modify limit group", "err", err)
+					if len(modified) > 0 {
+						var toModify []*Job
+						for _, old := range modified {
+							job := toModifyKeys[old]
+							if job != nil {
+								toModify = append(toModify, job)
 							}
 						}
-						err := s.storeLimitGroups(limitGroups)
-						if err != nil {
-							s.Error("failed to store limit groups", "err", err)
-						}
-					}
 
-					// update changed keys in the queue and in our rpl lookup
-					keyToRP := make(map[string]string)
-					for _, job := range toModify {
-						keyToRP[job.Key()] = job.RepGroup
-					}
-					s.rpl.Lock()
-					for new, old := range modified {
-						if old == new {
-							continue
-						}
-						errc := s.q.ChangeKey(old, new)
-						if errc != nil {
-							s.Error("failed to change a job key in the queue", "err", errc)
-						}
-
-						rp := keyToRP[new]
-						if _, exists := s.rpl.lookup[rp]; !exists {
-							s.rpl.lookup[rp] = make(map[string]bool)
-						}
-						delete(s.rpl.lookup[rp], old)
-						s.rpl.lookup[rp][new] = true
-					}
-					s.rpl.Unlock()
-
-					// update db live bucket and dep lookups
-					if len(toModify) > 0 {
-						oldKeys := make([]string, len(toModify))
-						for i, job := range toModify {
-							oldKeys[i] = modified[job.Key()]
-						}
-						errm := s.db.modifyLiveJobs(oldKeys, toModify)
-						if errm != nil {
-							s.Error("job modification in database failed", "err", errm)
-						} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
-							// if we're changing the jobs these jobs are
-							// dependant upon or their priority, that must be
-							// reflected in the queue as well
+						// additional handling of changed limit groups
+						if cr.Modifier.LimitGroupsSet {
+							limitGroups := make(map[string]int)
 							for _, job := range toModify {
-								deps, err := job.Dependencies.incompleteJobKeys(s.db)
+								err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 								if err != nil {
-									s.Error("failed to get job dependencies", "err", err)
+									s.Error("failed to modify limit group", "err", err)
 								}
-								err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
-								if err != nil {
-									s.Error("failed to modify a job in the queue", "err", err)
+							}
+							err := s.storeLimitGroups(limitGroups)
+							if err != nil {
+								s.Error("failed to store limit groups", "err", err)
+							}
+						}
+
+						// update changed keys in the queue and in our rpl lookup
+						keyToRP := make(map[string]string)
+						for _, job := range toModify {
+							keyToRP[job.Key()] = job.RepGroup
+						}
+						s.rpl.Lock()
+						for new, old := range modified {
+							if old == new {
+								continue
+							}
+							errc := s.q.ChangeKey(old, new)
+							if errc != nil {
+								s.Error("failed to change a job key in the queue", "err", errc)
+							}
+
+							rp := keyToRP[new]
+							if _, exists := s.rpl.lookup[rp]; !exists {
+								s.rpl.lookup[rp] = make(map[string]bool)
+							}
+							delete(s.rpl.lookup[rp], old)
+							s.rpl.lookup[rp][new] = true
+						}
+						s.rpl.Unlock()
+
+						// update db live bucket and dep lookups
+						if len(toModify) > 0 {
+							oldKeys := make([]string, len(toModify))
+							for i, job := range toModify {
+								oldKeys[i] = modified[job.Key()]
+							}
+							errm := s.db.modifyLiveJobs(oldKeys, toModify)
+							if errm != nil {
+								s.Error("job modification in database failed", "err", errm)
+							} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
+								// if we're changing the jobs these jobs are
+								// dependant upon or their priority, that must be
+								// reflected in the queue as well
+								for _, job := range toModify {
+									deps, err := job.Dependencies.incompleteJobKeys(s.db)
+									if err != nil {
+										s.Error("failed to get job dependencies", "err", err)
+									}
+									err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+									if err != nil {
+										s.Error("failed to modify a job in the queue", "err", err)
+									}
 								}
 							}
 						}

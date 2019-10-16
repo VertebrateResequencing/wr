@@ -363,7 +363,9 @@ func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added,
 //
 // The first argument lets you choose which jobs to modify. The second argument
 // lets you define what you want to change in them all. If you want to change
-// the actual command line of a job, you can only modify 1 job.
+// the actual command line of a job, you can only modify 1 job (and you can't
+// change it to match another job in the queue or that has completed; those
+// requests will be silently ignored).
 //
 // For each modified job, returns a mapping of new internal job id to the old
 // internal job id (which will typically be the same, unless something critical
