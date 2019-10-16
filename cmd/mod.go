@@ -83,7 +83,9 @@ To turn off a behaviour, supply an empty string, eg. --on_exit "".
 
 To change the command line of a command, you must have selected only a single
 command (eg. by specifying an internal job id with -i -y). You can then use
---cmdline to specify the new command.
+--cmdline to specify the new command. You can't specify the command of another
+command in the queue or that has previously completed; those mod requests will
+be silently ignored.
 
 Because modifying a command may change its internal id, a mapping of old to
 new internal ids is printed.`,

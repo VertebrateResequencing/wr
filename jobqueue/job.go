@@ -1074,16 +1074,50 @@ func (j *JobModifier) SetMonitorDocker(new string) {
 // that you have previously set using the Set*() methods. Other values are left
 // alone. Note that this could result in a Job's Key() changing.
 //
+// server is supplied to ensure we don't modify to the same key as another job.
+//
 // NB: this is only an in-memory change to the Jobs, so it is only meaningful
 // for the Server to call this and then store changes in the database. You will
 // also need to handle dependencies of a job changing.
 //
 // Returns a REVERSE mapping of new to old Job keys.
-func (j *JobModifier) Modify(jobs []*Job) map[string]string {
+func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
 	keys := make(map[string]string)
 	for _, job := range jobs {
 		job.Lock()
 		before := job.Key()
+
+		// first work out if the key would change and make sure it doesn't
+		// change in to an existing key
+		new := &Job{Cmd: job.Cmd, Cwd: job.Cwd, CwdMatters: job.CwdMatters, MountConfigs: job.MountConfigs}
+		if j.Cmd != "" {
+			new.Cmd = j.Cmd
+		}
+		if j.Cwd != "" {
+			new.Cwd = j.Cwd
+		}
+		if j.CwdMattersSet {
+			new.CwdMatters = j.CwdMatters
+		}
+		if j.MountConfigsSet {
+			new.MountConfigs = j.MountConfigs
+		}
+		newKey := new.Key()
+		if _, done := keys[newKey]; done {
+			// duplicate of prior job in this loop, ignore
+			job.Unlock()
+			continue
+		}
+		if newKey != before {
+			// check queue and db
+			existing, _, _ := server.getJobsByKeys([]string{newKey}, false, false)
+			if len(existing) != 0 {
+				// duplicate of queued or complete job, ignore
+				job.Unlock()
+				continue
+			}
+		}
+
 		if j.Cmd != "" {
 			job.Cmd = j.Cmd
 		}

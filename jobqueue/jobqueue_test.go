@@ -3140,6 +3140,19 @@ func TestJobqueueModify(t *testing.T) {
 			So(job.Attempts, ShouldEqual, 2)
 		})
 
+		Convey("You can't modify the command line of a job to match another job", func() {
+			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			addJobs = append(addJobs, &Job{Cmd: "echo b && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "b"})
+			add(2)
+
+			jm.SetCmd("echo b && false")
+			modify("a", 0)
+
+			jm.SetCmd("true")
+			modify("a", 1)
+			modify("b", 0)
+		})
+
 		Convey("You can modify the cwd of a job, with and without cwd_matters", func() {
 			dir, err := os.Getwd()
 			So(err, ShouldBeNil)
