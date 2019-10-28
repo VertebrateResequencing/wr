@@ -248,9 +248,9 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment(groups), ShouldBeTrue)
 			So(l.Increment(groups), ShouldBeTrue)
 			So(l.Increment(groups), ShouldBeFalse)
+			start := time.Now()
 
 			go func() {
-				<-time.After(50 * time.Millisecond)
 				l.Decrement(groups)
 				l.Decrement(groups)
 				<-time.After(50 * time.Millisecond)
@@ -264,33 +264,33 @@ func TestLimiter(t *testing.T) {
 				l.Decrement([]string{"l1"})
 			}()
 
-			var incs uint64
+			var quickIncs uint64
+			var slowIncs uint64
 			var fails uint64
-			lastSuccessful := false
-			wait := 75 * time.Millisecond
+			wait := 125 * time.Millisecond
 			var wg sync.WaitGroup
 			for i := 0; i < 4; i++ {
 				wg.Add(1)
-				go func(i int) {
+				go func() {
 					defer wg.Done()
-					if i == 3 {
-						wait = 125 * time.Millisecond
-					}
 					if l.Increment(groups, wait) {
-						atomic.AddUint64(&incs, 1)
-						if i == 3 {
-							lastSuccessful = true
+						if time.Since(start) < 35*time.Millisecond {
+							atomic.AddUint64(&quickIncs, 1)
+						} else {
+							atomic.AddUint64(&slowIncs, 1)
 						}
 					} else {
-						atomic.AddUint64(&fails, 1)
+						if time.Since(start) > 100*time.Millisecond {
+							atomic.AddUint64(&fails, 1)
+						}
 					}
-				}(i)
+				}()
 			}
 			wg.Wait()
 
-			So(atomic.LoadUint64(&incs), ShouldEqual, 3)
+			So(atomic.LoadUint64(&quickIncs), ShouldEqual, 2)
+			So(atomic.LoadUint64(&slowIncs), ShouldEqual, 1)
 			So(atomic.LoadUint64(&fails), ShouldEqual, 1)
-			So(lastSuccessful, ShouldBeTrue)
 		})
 	})
 }
