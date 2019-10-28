@@ -542,6 +542,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
 	touchTicker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
+
+	var wkbsMutex sync.RWMutex
 	whenKilledByServer := func() {}
 	stopTouching := make(chan bool, 2)
 	stopChecking := make(chan bool, 2)
@@ -551,6 +553,8 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-touchTicker.C:
 				kc, errf := c.Touch(job)
 				if kc {
+					wkbsMutex.RLock()
+					defer wkbsMutex.RUnlock()
 					whenKilledByServer()
 					touchTicker.Stop()
 					logger.Warn("kill requested externally")
@@ -937,6 +941,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			}
 		}
 
+		wkbsMutex.Lock()
 		whenKilledByServer = func() {
 			killErr = killCmd()
 			stateMutex.Lock()
@@ -944,6 +949,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			stateMutex.Unlock()
 			closeReaders()
 		}
+		wkbsMutex.Unlock()
 
 	CHECKING:
 		for {
