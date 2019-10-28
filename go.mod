@@ -5,7 +5,7 @@ require (
 	code.cloudfoundry.org/bytefmt v0.0.0-20190819182555-854d396b647c
 	github.com/Microsoft/go-winio v0.4.14 // indirect
 	github.com/StackExchange/wmi v0.0.0-20190523213315-cbe66965904d // indirect
-	github.com/VertebrateResequencing/muxfys/v4 v4.0.1
+	github.com/VertebrateResequencing/muxfys/v4 v4.0.2
 	github.com/VividCortex/ewma v0.0.0-20170804035156-43880d236f69
 	github.com/carbocation/runningvariance v0.0.0-20150817162428-fdcce8a03b6b
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
