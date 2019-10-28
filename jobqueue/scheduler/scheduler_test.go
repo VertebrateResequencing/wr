@@ -1052,7 +1052,7 @@ func TestOpenstack(t *testing.T) {
 					eta := 200
 					cmd := "sleep 10"
 					oReqs := make(map[string]string)
-					thisReq := &Requirements{100, 1 * time.Minute, 26, 1, oReqs, true, true, true}
+					thisReq := &Requirements{100, 1 * time.Minute, 16, 1, oReqs, true, true, true}
 					err := s.Schedule(cmd, thisReq, 0, count)
 					So(err, ShouldBeNil)
 					So(s.Busy(), ShouldBeTrue)
