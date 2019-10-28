@@ -36,12 +36,12 @@ test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kub
 
 race: export CGO_ENABLED = 1
 race:
-	@go test -p 1 -tags netgo -race -v --count 1 ./queue
-	@go test -p 1 -tags netgo -race -v --count 1 ./jobqueue
-	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./jobqueue/scheduler
-	@go test -p 1 -tags netgo -race -v --count 1 -timeout 20m ./cloud
-	@go test -p 1 -tags netgo -race -v --count 1 ./rp
-	@go test -p 1 -tags netgo -race -v --count 1 ./limiter
+	@go test -p 1 -tags netgo -race --count 1 ./queue
+	@go test -p 1 -tags netgo -race --count 1 ./jobqueue
+	@go test -p 1 -tags netgo -race --count 1 -timeout 20m ./jobqueue/scheduler
+	@go test -p 1 -tags netgo -race --count 1 -timeout 20m ./cloud
+	@go test -p 1 -tags netgo -race --count 1 ./rp
+	@go test -p 1 -tags netgo -race --count 1 ./limiter
 
 # curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(go env GOPATH)/bin v1.16.0
 lint:
