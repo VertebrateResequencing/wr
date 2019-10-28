@@ -1406,6 +1406,8 @@ func (c *Client) Started(job *Job, pid int) error {
 	if err != nil {
 		host = localhost
 	}
+	job.Lock()
+	defer job.Unlock()
 	job.Host = host
 	job.HostIP, err = internal.CurrentIP("")
 	if err != nil {
@@ -1425,6 +1427,8 @@ func (c *Client) Started(job *Job, pid int) error {
 func (c *Client) Touch(job *Job) (bool, error) {
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.RLock()
+	defer job.RUnlock()
 	resp, err := c.request(&clientRequest{Method: "jtouch", Job: job})
 	if err != nil {
 		return false, err
@@ -1496,6 +1500,8 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.RLock()
+	defer job.RUnlock()
 	_, err = c.request(&clientRequest{Method: "jarchive", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
@@ -1518,6 +1524,8 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.Lock()
+	defer job.Unlock()
 	job.FailReason = failreason
 	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
 	if err != nil {
