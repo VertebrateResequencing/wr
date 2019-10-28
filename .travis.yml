@@ -13,7 +13,7 @@ env:
     - WR_MANAGERPORT="11301"
     - GO111MODULE=on
 go:
-  - "1.12.7"
+  - "1.13.3"
 go_import_path: github.com/VertebrateResequencing/wr
 install:
   - "go mod verify"
