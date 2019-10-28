@@ -802,9 +802,9 @@ func TestOpenstack(t *testing.T) {
 				}
 			})
 
-			Convey("MaxQueueTime() always returns 'infinite'", func() {
-				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 0)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 0)
+			Convey("MaxQueueTime() always returns enough time to complete 1 job, plus a minute leeway", func() {
+				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 2)
+				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 781)
 			})
 		}
 
