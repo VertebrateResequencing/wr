@@ -1308,13 +1308,17 @@ func (s *Server) createQueue() {
 				}
 				if limit >= 0 && groups[schedulerGroup] == limit {
 					if !job.getSchedulerIgnored() {
+						s.sgcmutex.Lock()
 						s.idtl[schedulerGroup]++
 						job.setSchedulerIgnored(true)
+						s.sgcmutex.Unlock()
 					}
 					continue
 				} else if job.getSchedulerIgnored() {
-					job.setSchedulerIgnored(false)
+					s.sgcmutex.Lock()
 					s.idtl[schedulerGroup]--
+					job.setSchedulerIgnored(false)
+					s.sgcmutex.Unlock()
 				}
 
 				if job.getScheduledRunner() {
