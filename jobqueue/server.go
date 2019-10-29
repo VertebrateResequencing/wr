@@ -2107,6 +2107,18 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 	return limited
 }
 
+// schedulerGroupDetails is used for debugging purposes to see how many jobs are
+// associated with which scheduler groups.
+func (s *Server) schedulerGroupDetails() []string {
+	s.sgcmutex.Lock()
+	defer s.sgcmutex.Unlock()
+	var result []string
+	for group, n := range s.sgroupcounts {
+		result = append(result, fmt.Sprintf("%s (%d jobs)", group, n))
+	}
+	return result
+}
+
 func (s *Server) scheduleRunners(group string) {
 	s.racmutex.RLock()
 	rc := s.rc

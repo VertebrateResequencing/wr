@@ -2999,7 +2999,7 @@ func TestJobqueueModify(t *testing.T) {
 	rgroup := "110:0:1:0"
 	learnedRgroup := "200:30:1:0"
 	learnedRAMNormal := 100
-	learnedRAMExtra := 200
+	learnedRAMExtraRange := []int{200, 300}
 	tmp := "/tmp"
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -3043,6 +3043,21 @@ func TestJobqueueModify(t *testing.T) {
 				// under Travis or race...
 				job, errr = jq.ReserveScheduled(rtime, "300:30:1:0")
 				So(errr, ShouldBeNil)
+
+				if job == nil {
+					job, errr = jq.ReserveScheduled(rtime, "400:30:1:0")
+					So(errr, ShouldBeNil)
+				}
+
+				if job == nil {
+					schedDetails := server.schedulerGroupDetails()
+					if len(schedDetails) > 0 {
+						fmt.Printf("\nschedgrp %s not found, we have:\n", schedStr)
+						for _, val := range schedDetails {
+							fmt.Printf(" - %s\n", val)
+						}
+					}
+				}
 			}
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, expected)
@@ -3211,11 +3226,11 @@ func TestJobqueueModify(t *testing.T) {
 			// the modified reqgroup, so it would get 400:0:1:0 as its scheduler
 			// group. But due to learning, the RAM is 100 and the time changed
 			job = reserve(learnedRgroup, cmd)
-			learnedRAM := learnedRAMNormal
-			if job.Requirements.RAM != learnedRAM {
-				learnedRAM = learnedRAMExtra
+			if job.Requirements.RAM != learnedRAMNormal {
+				So(job.Requirements.RAM, ShouldBeBetweenOrEqual, learnedRAMExtraRange[0], learnedRAMExtraRange[1])
+			} else {
+				So(job.Requirements.RAM, ShouldEqual, learnedRAMNormal)
 			}
-			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
 		})
 
 		Convey("You can modify the requirements of a job", func() {
