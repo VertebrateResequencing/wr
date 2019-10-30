@@ -78,6 +78,7 @@ linters:
     - gocyclo
     - gofmt
     - lll
+    - wsl
 
 issues:
   exclude-rules:
