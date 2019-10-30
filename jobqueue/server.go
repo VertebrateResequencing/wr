@@ -2112,9 +2112,11 @@ func (s *Server) limitJobs(jobs []*Job, limit int, state JobState, getStd bool, 
 func (s *Server) schedulerGroupDetails() []string {
 	s.sgcmutex.Lock()
 	defer s.sgcmutex.Unlock()
-	var result []string
+	result := make([]string, len(s.sgroupcounts))
+	i := 0
 	for group, n := range s.sgroupcounts {
-		result = append(result, fmt.Sprintf("%s (%d jobs)", group, n))
+		result[i] = fmt.Sprintf("%s (%d jobs)", group, n)
+		i++
 	}
 	return result
 }
