@@ -2892,7 +2892,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 
 				finalJob := jobs[1]
 
-				stopTouching := make(chan bool)
+				stopTouching := make(chan bool, 1)
 				go func() {
 					// touch this periodically because it might take more than 1
 					// second from reserving it to executing it later
@@ -2900,12 +2900,14 @@ func TestJobqueueLimitGroups(t *testing.T) {
 					for {
 						select {
 						case <-ticker.C:
-							to, toerr := jq.Touch(finalJob)
-							fmt.Printf("touched %v %s\n", to, toerr)
+							jq.Touch(finalJob)
 						case <-stopTouching:
 							return
 						}
 					}
+				}()
+				defer func() {
+					stopTouching <- true
 				}()
 
 				for i := 1; i <= 3; i++ {
@@ -2921,6 +2923,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 0)
 
+				stopTouching <- true
 				err = jq.Execute(finalJob, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				jobs = reserveJobs()
