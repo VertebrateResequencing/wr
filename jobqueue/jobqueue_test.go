@@ -50,6 +50,7 @@ const serverRC = `echo %s %s %s %s %d %d`
 
 var runnermode bool
 var runnerfail bool
+var runnerdebug bool
 var schedgrp string
 var runnermodetmpdir string
 var rdeployment string
@@ -70,6 +71,7 @@ func init() {
 
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
+	flag.BoolVar(&runnerdebug, "runnerdebug", false, "make the runner create debug files")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
@@ -2890,6 +2892,22 @@ func TestJobqueueLimitGroups(t *testing.T) {
 
 				finalJob := jobs[1]
 
+				stopTouching := make(chan bool)
+				go func() {
+					// touch this periodically because it might take more than 1
+					// second from reserving it to executing it later
+					ticker := time.NewTicker(250 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							to, toerr := jq.Touch(finalJob)
+							fmt.Printf("touched %v %s\n", to, toerr)
+						case <-stopTouching:
+							return
+						}
+					}
+				}()
+
 				for i := 1; i <= 3; i++ {
 					err = jq.Execute(jobs[0], config.RunnerExecShell)
 					So(err, ShouldBeNil)
@@ -4871,9 +4889,10 @@ func TestJobqueueRunners(t *testing.T) {
 				}
 				defer os.RemoveAll(tmpdir)
 
+				req := &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}
 				var jobs []*Job
 				for i := 0; i < count; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch1.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch1.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: req, Retries: uint8(3), RepGroup: "manually_added"})
 				}
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
@@ -4928,7 +4947,7 @@ func TestJobqueueRunners(t *testing.T) {
 				// now add a new batch of jobs with the same reqs and reqgroup
 				jobs = nil
 				for i := 0; i < count2; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch2.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch2.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: req, Retries: uint8(3), RepGroup: "manually_added"})
 				}
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
@@ -6695,17 +6714,18 @@ func runner() {
 	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
-	// uncomment and fill out log path to debug "exit status 1" outputs when
-	// running the test:
-	// logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
-	// if errlog == nil {
-	// 	defer logfile.Close()
-	// 	log.SetOutput(logfile)
-	// }
+	if runnerdebug {
+		logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
+		if errlog == nil {
+			defer logfile.Close()
+			log.SetOutput(logfile)
+		}
+	}
 
 	if schedgrp == "" {
 		log.Fatal("schedgrp missing")
 	}
+	log.Printf("runner working on schedgrp %s\n", schedgrp)
 
 	config := internal.ConfigLoad(rdeployment, true, testLogger)
 
@@ -6728,16 +6748,21 @@ func runner() {
 	defer disconnect(jq)
 
 	clean := true
+	n := 0
+	i := 0
 	for {
+		i++
 		job, err := jq.ReserveScheduled(rtimeoutd, schedgrp)
 		if err != nil {
 			log.Fatalf("reserve err: %s\n", err)
 		}
 		if job == nil {
-			// log.Printf("reserve gave no job after %s\n", rtimeoutd)
+			log.Printf("reserve gave no job after %s\n", rtimeoutd)
 			break
 		}
-		// log.Printf("working on job %s\n", job.Cmd)
+
+		log.Printf("working on job %s\n", job.Cmd)
+		n++
 
 		// actually run the cmd
 		err = jq.Execute(job, config.RunnerExecShell)
@@ -6757,8 +6782,11 @@ func runner() {
 		}
 	}
 
+	log.Printf("ran %d jobs in %d loops\n", n, i)
+
 	// if everything ran cleanly, create a tmpfile in our tmp dir
 	if clean && runnermodetmpdir != "" {
+		log.Printf("creating ok file in %s\n", runnermodetmpdir)
 		tmpfile, err := ioutil.TempFile(runnermodetmpdir, "ok")
 		if err == nil {
 			tmpfile.Close()
