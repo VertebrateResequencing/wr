@@ -888,6 +888,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		return used, nil
 	}
+	finishedChecking := make(chan bool)
 	go func() {
 		var dockerContainerID string
 
@@ -1054,6 +1055,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				break CHECKING
 			}
 		}
+		finishedChecking <- true
 	}()
 
 	// wait for the command to exit
@@ -1062,6 +1064,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	err = cmd.Wait()
 	resourceTicker.Stop()
 	stopChecking <- true
+	<-finishedChecking
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
 	endTime := time.Now()
