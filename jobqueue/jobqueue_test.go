@@ -19,6 +19,7 @@
 package jobqueue
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -1630,11 +1631,11 @@ func TestJobqueueMedium(t *testing.T) {
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					jqerr, ok := err.(Error)
-					if !ok {
-						fmt.Printf("\ngot err %+v (%s)\n", err, err)
+					var jqerr Error
+					if !errors.As(err, &jqerr) {
+						fmt.Printf("\ngot err %+v\n", err)
 					}
-					So(ok, ShouldBeTrue)
+					So(jqerr, ShouldNotBeNil)
 					So(jqerr.Err, ShouldEqual, FailReasonKilled)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
