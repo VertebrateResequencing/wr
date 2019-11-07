@@ -34,9 +34,13 @@ performance](https://github.com/VertebrateResequencing/muxfys).
 wr is still being actively developed, with some significant features
 unimplemented, and some likelihood of encountering bugs.
 
-However, for simple usage, for example easily running your own
-manually-specified commands in an OpenStack environment, it is probably safe to
-use (it is being used in production by multiple groups at the Sanger Institute).
+That said, it is being used in production by multiple groups at the Sanger
+Institute in a number of different ways:
+* Custom workflow script modified to call `wr add` with dependency infomation.
+* Nextflow front end with a wr backend (see the [wiki](https://github.com/VertebrateResequencing/wr/wiki/Nextflow))
+* Cromwell front end with a wr backend (see the [wiki](https://github.com/VertebrateResequencing/wr/wiki/Cromwell))
+
+wr has processed hundreds of TB of data and run millions of commands.
 
 So if you want to be adventurous and provide feedback...
 
@@ -44,14 +48,14 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.12 of go is required):
+Alternatively, build it yourself (at least v1.13 of go is required):
 
 1. Install go on your machine according to:
 [golang.org/doc/install](https://golang.org/doc/install)
 An example way of setting up a personal Go installation in your home directory
 would be:
 
-        export GOV=1.12.7
+        export GOV=1.13.3
         wget https://dl.google.com/go/go$GOV.linux-amd64.tar.gz
         tar -xvzf go$GOV.linux-amd64.tar.gz && rm go$GOV.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin
