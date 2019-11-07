@@ -5,6 +5,45 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.20.0] - 2019-11-07
+### Added
+- New `--misc` option for `wr add` to pass options to LSF scheduler.
+- New `--queue` option for `wr add` to specify a queue to submit to when using
+  the LSF scheduler (it used to be picked for you, and still will if not
+  specified).
+
+### Changed
+- Always try scheduling again in the case that something went wrong with
+  scheduling.
+- Runners wait not just for new jobs to be added to the queue before exiting,
+  but also for limited jobs to become available.
+- Runners under the local and cloud schedulers now exit after running for at
+  least 15mins, after a job ends, allowing better scheduling.
+- The resource-requirments based bin packing used by the local and cloud
+  scheduler now considers user-specified job priority, which combined with the
+  prior change should mean high priority jobs run as soon as possible, even if
+  they are small and all hardware is in use. Small higher priority jobs will run
+  before the next larger lower priority job. However large high priority jobs
+  still have to wait for all smaller jobs to complete and free up enough space.
+- Requires go >v1.13 to build.
+
+### Fixed
+- `wr mod` no longer resumes a paused manager.
+- `wr mod` no longer allows you to change the command line of 1 job to match
+  that of another, which would violate job uniqueness.
+- Critical fix for OpenStack scheduler to avoid edge-case where servers could
+  endlessly be spawned but then deleted before use.
+- If S3 mounting takes a long time, this no longer causes a problem with jobs
+  getting stuck in an endless cycle of retrying without ever starting.
+- Retrieval of complete jobs with `wr status` that completed very quickly and
+  had hundreds running in parallel.
+- No more limit exhaustion if jobs get reserved but don't start, or if they get
+  buried without exiting.
+- No more delay when handling jobs with different resource requirements but the
+  same limit group.
+- Fixed various data races.
+
+
 ## [0.19.0] - 2019-08-01
 ### Added
 - New --cloud_auto_confirm_dead option to `wr manager start` (and similar

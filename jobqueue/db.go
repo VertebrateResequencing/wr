@@ -990,14 +990,16 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 			key := []byte(jobkey)
 
 			bjl := tx.Bucket(bucketJobsLive)
-			errf := bjl.Put(key, encoded)
-			if errf != nil {
-				return errf
+			if bjl.Get(key) != nil {
+				errf := bjl.Put(key, encoded)
+				if errf != nil {
+					return errf
+				}
 			}
 
 			bo := tx.Bucket(bucketStdO)
 			be := tx.Bucket(bucketStdE)
-			errf = bo.Delete(key)
+			errf := bo.Delete(key)
 			if errf != nil {
 				return errf
 			}
@@ -1067,6 +1069,14 @@ func (db *db) updateJobAfterChange(job *Job) {
 
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			bjl := tx.Bucket(bucketJobsLive)
+			if bjl.Get(key) == nil {
+				// it's possible for these batches to be interleaved with
+				// archiveJob batches, and for this batch to update that a job
+				// was started to actually execute after the batch that says the
+				// job completed, removing it from the live bucket. In that
+				// case, don't add it back to the live bucket here.
+				return nil
+			}
 			return bjl.Put(key, encoded)
 		})
 		if err != nil {

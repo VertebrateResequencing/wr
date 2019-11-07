@@ -292,6 +292,10 @@ type Job struct {
 	// job.
 	scheduledRunner bool
 
+	// the server uses this to track if it already ignored this job during
+	// scheduling, due to hitting a limit.
+	schedulerIgnored bool
+
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
 	// later; this is purely client side.
 	mountedFS []*muxfys.MuxFys
@@ -678,8 +682,8 @@ func (j *Job) ToEssense() *JobEssence {
 // the Job's current LimitGroups), and stores them for decrementing during
 // updateAfterExit(). This avoids any issues with the Job's LimitGroups being
 // changed between these 2 calls (or between you incrementing and reserving the
-// job). The twinned noteIncrementedLimitGroups() and updateAfterExit() calls
-// ensure we don't decrement groups more times than we incremented them.
+// job). The twinned noteIncrementedLimitGroups() and decrementLimitGroups()
+// calls ensure we don't decrement groups more times than we incremented them.
 func (j *Job) noteIncrementedLimitGroups(groups []string) {
 	j.Lock()
 	defer j.Unlock()
@@ -687,15 +691,16 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited. It also decrements any limit groups of
-// this job that had been passed to noteIncrementedLimitGroups(), and then
-// empties that note to make multiple calls to this method safe in terms of
-// decrementing.
+// JobEndState indicates the job exited. It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
+	j.decrementLimitGroups(lim)
+
 	if jes == nil || !jes.Exited {
 		return
 	}
+
 	j.Lock()
+	defer j.Unlock()
 	j.Exited = true
 	j.Exitcode = jes.Exitcode
 	j.PeakRAM = jes.PeakRAM
@@ -705,13 +710,18 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}
+}
 
+// decrementLimitGroups decrements any limit groups of this job that had been
+// passed to noteIncrementedLimitGroups(), and then empties that note to make
+// multiple calls to this method safe in terms of decrementing.
+func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
+	j.Lock()
+	defer j.Unlock()
 	if len(j.incrementedLimitGroups) > 0 {
 		lim.Decrement(j.incrementedLimitGroups)
 		j.incrementedLimitGroups = []string{}
 	}
-
-	j.Unlock()
 }
 
 // Key calculates a unique key to describe the job.
@@ -736,6 +746,22 @@ func (j *Job) setScheduledRunner(newval bool) {
 	j.Lock()
 	defer j.Unlock()
 	j.scheduledRunner = newval
+}
+
+// setSchedulerIgnored provides a thread-safe way of setting the
+// schedulerIgnored property of a Job.
+func (j *Job) setSchedulerIgnored(newval bool) {
+	j.Lock()
+	defer j.Unlock()
+	j.schedulerIgnored = newval
+}
+
+// getSchedulerIgnored provides a thread-safe way of getting the
+// schedulerIgnored property of a Job.
+func (j *Job) getSchedulerIgnored() bool {
+	j.RLock()
+	defer j.RUnlock()
+	return j.schedulerIgnored
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,
@@ -1048,16 +1074,50 @@ func (j *JobModifier) SetMonitorDocker(new string) {
 // that you have previously set using the Set*() methods. Other values are left
 // alone. Note that this could result in a Job's Key() changing.
 //
+// server is supplied to ensure we don't modify to the same key as another job.
+//
 // NB: this is only an in-memory change to the Jobs, so it is only meaningful
 // for the Server to call this and then store changes in the database. You will
 // also need to handle dependencies of a job changing.
 //
 // Returns a REVERSE mapping of new to old Job keys.
-func (j *JobModifier) Modify(jobs []*Job) map[string]string {
+func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
 	keys := make(map[string]string)
 	for _, job := range jobs {
 		job.Lock()
 		before := job.Key()
+
+		// first work out if the key would change and make sure it doesn't
+		// change in to an existing key
+		new := &Job{Cmd: job.Cmd, Cwd: job.Cwd, CwdMatters: job.CwdMatters, MountConfigs: job.MountConfigs}
+		if j.Cmd != "" {
+			new.Cmd = j.Cmd
+		}
+		if j.Cwd != "" {
+			new.Cwd = j.Cwd
+		}
+		if j.CwdMattersSet {
+			new.CwdMatters = j.CwdMatters
+		}
+		if j.MountConfigsSet {
+			new.MountConfigs = j.MountConfigs
+		}
+		newKey := new.Key()
+		if _, done := keys[newKey]; done {
+			// duplicate of prior job in this loop, ignore
+			job.Unlock()
+			continue
+		}
+		if newKey != before {
+			// check queue and db
+			existing, _, _ := server.getJobsByKeys([]string{newKey}, false, false)
+			if len(existing) != 0 {
+				// duplicate of queued or complete job, ignore
+				job.Unlock()
+				continue
+			}
+		}
+
 		if j.Cmd != "" {
 			job.Cmd = j.Cmd
 		}

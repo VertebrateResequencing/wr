@@ -155,6 +155,7 @@ type ConfigLocal struct {
 type job struct {
 	cmd                string
 	req                *Requirements
+	priority           uint8
 	count              int
 	scheduleDecrements int
 	sync.RWMutex
@@ -232,7 +233,7 @@ func (s *local) maxQueueTime(req *Requirements) time.Duration {
 }
 
 // schedule achieves the aims of Schedule().
-func (s *local) schedule(cmd string, req *Requirements, count int) error {
+func (s *local) schedule(cmd string, req *Requirements, priority uint8, count int) error {
 	if s.cleanedUp() {
 		return nil
 	}
@@ -246,11 +247,12 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	} // else, just in case a job with these reqs somehow got through in the
 	// past, allow it to be cancelled
 
-	// priority of this cmd will be based on how "large" it is, which is the max
-	// of the percentage of available memory it needs and percentage of cpus it
-	// needs. A cmd that needs 100% of memory or cpu will be our highest
-	// priority command, which is expressed as priority 255, while one that
-	// needs 0% of resources will be expressed as priority 0.
+	// priority of this cmd will be based on the given user priority, but for
+	// equal priority cmds, it will be based on "size", which is the max of the
+	// percentage of available memory it needs and percentage of cpus it needs.
+	// A cmd that needs 100% of memory or cpu will be our highest priority
+	// command, which is expressed as size 255, while one that needs 0% of
+	// resources will be expressed as size 0
 	maxMem := s.maxMemFunc()
 	maxCPU := s.maxCPUFunc()
 	percentMemNeeded := (float64(req.RAM) / float64(maxMem)) * float64(100)
@@ -259,24 +261,25 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 	if percentCPUNeeded > percentMachineNeeded {
 		percentMachineNeeded = percentCPUNeeded
 	}
-	priority := uint8(math.Round(priorityScaler * percentMachineNeeded))
+	size := uint8(math.Round(priorityScaler * percentMachineNeeded))
 
 	// add to the queue
 	key := jobName(cmd, "n/a", false)
 	data := &job{
-		cmd:   cmd,
-		req:   req,
-		count: count,
+		cmd:      cmd,
+		req:      req,
+		priority: priority,
+		count:    count,
 	}
 	s.mutex.Lock()
 	if s.cleanedUp() {
 		return nil
 	}
 
-	item, err := s.queue.Add(key, "", data, priority, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
+	item, err := s.queue.AddWithSize(key, "", data, priority, size, 0*time.Second, 30*time.Second, "") // the ttr just has to be long enough for processQueue() to process a job, not actually run the cmds
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
-			// update the job's count (only)
+			// update the job's count and item priority (only)
 			j := item.Data.(*job)
 			j.Lock()
 			s.runMutex.RLock()
@@ -289,19 +292,34 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 			} else {
 				j.scheduleDecrements = 0
 			}
+			if j.priority != priority {
+				err = s.queue.Update(key, "", j, priority, 0*time.Second, 30*time.Second)
+				if err != nil {
+					s.Error("failed to update priority for cmd", "cmd")
+				} else {
+					s.Debug("schedule changed priority", "cmd", cmd, "before", j.priority, "now", priority)
+					j.priority = priority
+				}
+			}
 			j.Unlock()
-			s.Debug("schedule changed number needed", "cmd", cmd, "before", before, "needs", count)
+			if count != before {
+				s.Debug("schedule changed number needed", "cmd", cmd, "before", before, "needs", count)
+			}
 			if count == 0 {
 				s.removeKey(key)
-				s.Debug("schedule removed job", "cmd", cmd)
+				s.Debug("schedule removed cmd", "cmd", cmd)
 			}
-			s.checkNeeded(cmd, key, count, running)
+			if !s.checkNeeded(cmd, key, count, running) {
+				// bypass a pointless processQueue call
+				s.mutex.Unlock()
+				return nil
+			}
 		} else {
 			s.mutex.Unlock()
 			return err
 		}
 	} else {
-		s.Debug("schedule added new job", "cmd", cmd, "needs", count)
+		s.Debug("schedule added new cmd", "cmd", cmd, "needs", count, "size", size, "priority", priority)
 	}
 	s.mutex.Unlock()
 
@@ -316,10 +334,13 @@ func (s *local) schedule(cmd string, req *Requirements, count int) error {
 // checkNeeded takes a cmd, item key, current item.Count and number of cmd
 // currently running. If we do not need to run any more of this cmd, calls
 // cmdNotNeededFunc(cmd).
-func (s *local) checkNeeded(cmd, key string, needed, running int) {
-	if needed-running <= 0 {
+func (s *local) checkNeeded(cmd, key string, needed, running int) bool {
+	if needed <= running {
+		s.Debug("checkNeeded not needed", "cmd", cmd, "key", key, "needed", needed, "running", running)
 		s.cmdNotNeededFunc(cmd)
+		return false
 	}
+	return true
 }
 
 // cmdCountRemaining tells you the count of cmd still needed based on what was
@@ -573,7 +594,9 @@ func (s *local) processQueue(reason string) error {
 			go func() {
 				defer internal.LogPanic(s.Logger, "processQueue runCmd loop", true)
 
+				s.Debug("will run cmd", "cmd", cmd, "call", call)
 				err := s.runCmdFunc(cmd, req, reserved, call)
+				s.Debug("ran cmd", "cmd", cmd, "call", call)
 
 				s.mutex.Lock()
 				j.Lock()
@@ -735,7 +758,6 @@ func (s *local) startAutoProcessing() {
 	go func() {
 		defer internal.LogPanic(s.Logger, "auto processQueue", false)
 
-		s.Debug("starting auto processing", "frequency", s.stateUpdateFreq)
 		ticker := time.NewTicker(s.stateUpdateFreq)
 		for {
 			select {

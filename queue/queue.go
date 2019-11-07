@@ -400,27 +400,42 @@ func (queue *Queue) Stats() *Stats {
 // was actually added or changed).
 func (queue *Queue) Add(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
 	queue.mutex.Lock()
-
-	if queue.closed {
+	item, err := queue.newItemForAdd(key, reserveGroup, data, priority, 0, delay, ttr)
+	if err != nil {
 		queue.mutex.Unlock()
+		return item, err
+	}
+	queue.handleItemForAdd(item, startQueue, delay, deps...)
+	return item, nil
+}
+
+// newItemForAdd prepares a new item for Add() and AddWithSize() methods. You
+// must hold the mutex lock before calling this.
+func (queue *Queue) newItemForAdd(key string, reserveGroup string, data interface{}, priority uint8, size uint8, delay time.Duration, ttr time.Duration) (*Item, error) {
+	if queue.closed {
 		return nil, Error{queue.Name, "Add", key, ErrQueueClosed}
 	}
 
 	item, existed := queue.items[key]
 	if existed {
-		queue.mutex.Unlock()
 		return item, Error{queue.Name, "Add", key, ErrAlreadyExists}
 	}
 
 	item = newItem(key, reserveGroup, data, priority, delay, ttr)
+	item.size = size
 	queue.items[key] = item
+	return item, nil
+}
 
+// handleItemForAdd checks dependencies and then pushes the item to the desired
+// subqueue. You must hold the mutex lock before calling this. It will unlock.
+func (queue *Queue) handleItemForAdd(item *Item, startQueue SubQueue, delay time.Duration, deps ...[]string) {
 	// check dependencies
 	if len(deps) == 1 && len(deps[0]) > 0 {
 		queue.setItemDependencies(item, deps[0])
 		queue.mutex.Unlock()
 		queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
-		return item, nil
+		return
 	}
 
 	switch startQueue {
@@ -453,7 +468,20 @@ func (queue *Queue) Add(key string, reserveGroup string, data interface{}, prior
 			queue.delayNotificationTrigger(item)
 		}
 	}
+}
 
+// AddWithSize is like Add(), but the item also gets a "size" property.
+// Size alters the way priority is handled. For items with the same priority,
+// the next to be Reserve()d will be the item with the highest size. If they
+// also have the same size, then they will be Reserve()d in fifo order.
+func (queue *Queue) AddWithSize(key string, reserveGroup string, data interface{}, priority uint8, size uint8, delay time.Duration, ttr time.Duration, startQueue SubQueue, deps ...[]string) (*Item, error) {
+	queue.mutex.Lock()
+	item, err := queue.newItemForAdd(key, reserveGroup, data, priority, size, delay, ttr)
+	if err != nil {
+		queue.mutex.Unlock()
+		return item, err
+	}
+	queue.handleItemForAdd(item, startQueue, delay, deps...)
 	return item, nil
 }
 

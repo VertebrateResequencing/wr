@@ -19,6 +19,7 @@
 package jobqueue
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/muxfys/v4"
+	muxfys "github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -50,6 +51,7 @@ const serverRC = `echo %s %s %s %s %d %d`
 
 var runnermode bool
 var runnerfail bool
+var runnerdebug bool
 var schedgrp string
 var runnermodetmpdir string
 var rdeployment string
@@ -70,6 +72,7 @@ func init() {
 
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
+	flag.BoolVar(&runnerdebug, "runnerdebug", false, "make the runner create debug files")
 	flag.StringVar(&schedgrp, "schedgrp", "", "schedgrp for runnermode")
 	flag.StringVar(&rdeployment, "rdeployment", "", "deployment for runnermode")
 	flag.StringVar(&rserver, "rserver", "", "server for runnermode")
@@ -1628,11 +1631,11 @@ func TestJobqueueMedium(t *testing.T) {
 
 					err = jq.Execute(job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					jqerr, ok := err.(Error)
-					if !ok {
-						fmt.Printf("\ngot err %+v (%s)\n", err, err)
+					var jqerr Error
+					if !errors.As(err, &jqerr) {
+						fmt.Printf("\ngot err %+v\n", err)
 					}
-					So(ok, ShouldBeTrue)
+					So(jqerr, ShouldNotBeNil)
 					So(jqerr.Err, ShouldEqual, FailReasonKilled)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
@@ -2843,7 +2846,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
 
 	Convey("Once a new jobqueue server is up", t, func() {
-		ServerItemTTR = 5 * time.Second
+		ServerItemTTR = 1 * time.Second
 		ClientTouchInterval = 2500 * time.Millisecond
 		server, _, token, errs := serve(serverConfig)
 		So(errs, ShouldBeNil)
@@ -2875,7 +2878,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			reserveJobs := func() []*Job {
 				var jobs []*Job
 				for i := 1; i <= 5; i++ {
-					job, errr := jq.ReserveScheduled(50*time.Millisecond, "110:0:1:0~a,b")
+					job, errr := jq.ReserveScheduled(25*time.Millisecond, "110:0:1:0~a,b")
 					So(errr, ShouldBeNil)
 					if job != nil {
 						jobs = append(jobs, job)
@@ -2890,6 +2893,24 @@ func TestJobqueueLimitGroups(t *testing.T) {
 
 				finalJob := jobs[1]
 
+				stopTouching := make(chan bool, 1)
+				go func() {
+					// touch this periodically because it might take more than 1
+					// second from reserving it to executing it later
+					ticker := time.NewTicker(250 * time.Millisecond)
+					for {
+						select {
+						case <-ticker.C:
+							jq.Touch(finalJob)
+						case <-stopTouching:
+							return
+						}
+					}
+				}()
+				defer func() {
+					stopTouching <- true
+				}()
+
 				for i := 1; i <= 3; i++ {
 					err = jq.Execute(jobs[0], config.RunnerExecShell)
 					So(err, ShouldBeNil)
@@ -2903,6 +2924,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 0)
 
+				stopTouching <- true
 				err = jq.Execute(finalJob, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				jobs = reserveJobs()
@@ -2953,6 +2975,27 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(serr.Err, ShouldEqual, ErrBadLimitGroup)
 			})
+
+			Convey("Failing to start a job after reserving it does not use up the limit", func() {
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				<-time.After(2 * time.Second)
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+			})
+
+			Convey("Burying jobs after reserving them does not use up the limit", func() {
+				jobs := reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+
+				jq.Bury(jobs[0], nil, "foo")
+				jq.Bury(jobs[1], nil, "foo")
+
+				<-time.After(2 * time.Second)
+				jobs = reserveJobs()
+				So(len(jobs), ShouldEqual, 2)
+			})
 		})
 
 		Reset(func() {
@@ -2978,7 +3021,7 @@ func TestJobqueueModify(t *testing.T) {
 	rgroup := "110:0:1:0"
 	learnedRgroup := "200:30:1:0"
 	learnedRAMNormal := 100
-	learnedRAMExtra := 200
+	learnedRAMExtraRange := []int{200, 300}
 	tmp := "/tmp"
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -3022,6 +3065,21 @@ func TestJobqueueModify(t *testing.T) {
 				// under Travis or race...
 				job, errr = jq.ReserveScheduled(rtime, "300:30:1:0")
 				So(errr, ShouldBeNil)
+
+				if job == nil {
+					job, errr = jq.ReserveScheduled(rtime, "400:30:1:0")
+					So(errr, ShouldBeNil)
+				}
+
+				if job == nil {
+					schedDetails := server.schedulerGroupDetails()
+					if len(schedDetails) > 0 {
+						fmt.Printf("\nschedgrp %s not found, we have:\n", schedStr)
+						for _, val := range schedDetails {
+							fmt.Printf(" - %s\n", val)
+						}
+					}
+				}
 			}
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, expected)
@@ -3119,6 +3177,19 @@ func TestJobqueueModify(t *testing.T) {
 			So(job.Attempts, ShouldEqual, 2)
 		})
 
+		Convey("You can't modify the command line of a job to match another job", func() {
+			addJobs = append(addJobs, &Job{Cmd: "echo a && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
+			addJobs = append(addJobs, &Job{Cmd: "echo b && false", Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "b"})
+			add(2)
+
+			jm.SetCmd("echo b && false")
+			modify("a", 0)
+
+			jm.SetCmd("true")
+			modify("a", 1)
+			modify("b", 0)
+		})
+
 		Convey("You can modify the cwd of a job, with and without cwd_matters", func() {
 			dir, err := os.Getwd()
 			So(err, ShouldBeNil)
@@ -3177,11 +3248,11 @@ func TestJobqueueModify(t *testing.T) {
 			// the modified reqgroup, so it would get 400:0:1:0 as its scheduler
 			// group. But due to learning, the RAM is 100 and the time changed
 			job = reserve(learnedRgroup, cmd)
-			learnedRAM := learnedRAMNormal
-			if job.Requirements.RAM != learnedRAM {
-				learnedRAM = learnedRAMExtra
+			if job.Requirements.RAM != learnedRAMNormal {
+				So(job.Requirements.RAM, ShouldBeBetweenOrEqual, learnedRAMExtraRange[0], learnedRAMExtraRange[1])
+			} else {
+				So(job.Requirements.RAM, ShouldEqual, learnedRAMNormal)
 			}
-			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
 		})
 
 		Convey("You can modify the requirements of a job", func() {
@@ -3438,6 +3509,41 @@ func TestJobqueueModify(t *testing.T) {
 			modify("a", 1)
 
 			kick("a", rgroup, cmd, home)
+		})
+
+		Convey("Modifying does not resume a paused server", func() {
+			for i := 1; i <= 3; i++ {
+				addJobs = append(addJobs, &Job{Cmd: fmt.Sprintf("echo %d", i), Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a", Priority: uint8(5)})
+			}
+
+			add(3)
+
+			<-time.After(1000 * time.Millisecond)
+
+			reserve(rgroup, "echo 1")
+
+			_, _, errp := jq.PauseServer()
+			So(errp, ShouldBeNil)
+			job, errr := jq.ReserveScheduled(rtime, rgroup)
+			So(job, ShouldBeNil)
+			So(errr, ShouldBeNil)
+
+			jm = NewJobModifer()
+			jm.SetPriority(uint8(4))
+			modify("a", 2)
+
+			job, errr = jq.ReserveScheduled(rtime, rgroup)
+			So(job, ShouldBeNil)
+			So(errr, ShouldBeNil)
+
+			errr = jq.ResumeServer()
+			So(errr, ShouldBeNil)
+
+			reserve(rgroup, "echo 2")
+
+			// *** want an inverse test that ResumeServer() in the middle of
+			// carriying out a Modify() does not cause issues, but ~impossible
+			// without mocks
 		})
 
 		// *** untested: SetDepGroups(), SetBsubMode(). These are not yet fully
@@ -4002,6 +4108,66 @@ func TestJobqueueRunners(t *testing.T) {
 
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
+
+		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+
+			var jobs []*Job
+			count := 3
+			for i := 1; i <= count; i++ {
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d && sleep 1", i), Cwd: "/tmp", CwdMatters: true, ReqGroup: "limitedA", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"a:5", "b:1"}})
+			}
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, count)
+			So(already, ShouldEqual, 0)
+
+			waitForCompletion := func(n int) bool {
+				limit := time.After(10 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("limited", false, 0, JobStateComplete, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == n {
+							ticker.Stop()
+							return true
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						return false
+					}
+				}
+			}
+
+			// wait for 1 job to complete, then add a job with overlapping
+			// limitgroups and different requirements
+			waitForCompletion(1)
+
+			jobs = []*Job{}
+			jobs = append(jobs, &Job{Cmd: fmt.Sprintf("echo %d && sleep 1", count+1), Cwd: "/tmp", CwdMatters: true, ReqGroup: "limitedB", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "limited", LimitGroups: []string{"c:5", "b:1"}})
+			inserts, already, err = jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// the remaining jobs should complete in about count seconds, ie. no
+			// delay between finishing the 0 cpu jobs, and starting the 1 cpu
+			// job. If this is not working due to a bug, it takes
+			// ServerCheckRunnerTime longer. When working, it takes an
+			// additional runner timeout (1s) due to fact the first runner uses
+			// up the limit for that long while waiting to reserve from the now
+			// empty queue for its group. There's also a little overhead.
+			t := time.Now()
+			waitForCompletion(count + 1)
+			So(time.Since(t), ShouldBeLessThan, time.Duration((count*1100)+1000)*time.Millisecond)
+		})
 
 		Convey("You can connect, and add some jobs where reserved resources depend on override", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -4727,9 +4893,10 @@ func TestJobqueueRunners(t *testing.T) {
 				}
 				defer os.RemoveAll(tmpdir)
 
+				req := &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}
 				var jobs []*Job
 				for i := 0; i < count; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch1.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch1.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: req, Retries: uint8(3), RepGroup: "manually_added"})
 				}
 				inserts, already, err := jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
@@ -4784,7 +4951,7 @@ func TestJobqueueRunners(t *testing.T) {
 				// now add a new batch of jobs with the same reqs and reqgroup
 				jobs = nil
 				for i := 0; i < count2; i++ {
-					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch2.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+					jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>batch2.%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: req, Retries: uint8(3), RepGroup: "manually_added"})
 				}
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldBeNil)
@@ -6551,17 +6718,18 @@ func runner() {
 	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
-	// uncomment and fill out log path to debug "exit status 1" outputs when
-	// running the test:
-	// logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
-	// if errlog == nil {
-	// 	defer logfile.Close()
-	// 	log.SetOutput(logfile)
-	// }
+	if runnerdebug {
+		logfile, errlog := ioutil.TempFile("", "wrrunnerlog")
+		if errlog == nil {
+			defer logfile.Close()
+			log.SetOutput(logfile)
+		}
+	}
 
 	if schedgrp == "" {
 		log.Fatal("schedgrp missing")
 	}
+	log.Printf("runner working on schedgrp %s\n", schedgrp)
 
 	config := internal.ConfigLoad(rdeployment, true, testLogger)
 
@@ -6584,16 +6752,21 @@ func runner() {
 	defer disconnect(jq)
 
 	clean := true
+	n := 0
+	i := 0
 	for {
+		i++
 		job, err := jq.ReserveScheduled(rtimeoutd, schedgrp)
 		if err != nil {
 			log.Fatalf("reserve err: %s\n", err)
 		}
 		if job == nil {
-			// log.Printf("reserve gave no job after %s\n", rtimeoutd)
+			log.Printf("reserve gave no job after %s\n", rtimeoutd)
 			break
 		}
-		// log.Printf("working on job %s\n", job.Cmd)
+
+		log.Printf("working on job %s\n", job.Cmd)
+		n++
 
 		// actually run the cmd
 		err = jq.Execute(job, config.RunnerExecShell)
@@ -6613,8 +6786,11 @@ func runner() {
 		}
 	}
 
+	log.Printf("ran %d jobs in %d loops\n", n, i)
+
 	// if everything ran cleanly, create a tmpfile in our tmp dir
 	if clean && runnermodetmpdir != "" {
+		log.Printf("creating ok file in %s\n", runnermodetmpdir)
 		tmpfile, err := ioutil.TempFile(runnermodetmpdir, "ok")
 		if err == nil {
 			tmpfile.Close()

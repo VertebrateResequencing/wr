@@ -80,7 +80,7 @@ type opst struct {
 	rsMutex           sync.Mutex
 	spawnMutex        sync.Mutex
 	spawningNow       map[string]bool
-	spawnCanceller    chan struct{}
+	spawnCanceller    map[string]chan struct{}
 	updatingState     bool
 }
 
@@ -355,6 +355,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	s.recoveredServers = make(map[string]bool)
 	s.stopRSMonitoring = make(chan struct{})
 	s.spawningNow = make(map[string]bool)
+	s.spawnCanceller = make(map[string]chan struct{})
 
 	if s.config.FlavorSets != "" {
 		sets := strings.Split(s.config.FlavorSets, ";")
@@ -962,11 +963,16 @@ func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(c
 	defer func() {
 		cancel()
 		s.scMutex.Lock()
-		s.spawnCanceller = nil
+		delete(s.spawnCanceller, cmd)
 		s.scMutex.Unlock()
 	}()
 	canceller := make(chan struct{}, 1)
-	s.spawnCanceller = canceller
+	// *** canCount() calls spawn() for each requirement 1 at a time, which in
+	// practical terms for wr server corresponds to a unique cmd, so we can
+	// unique based on cmd and cancel the right thing later if needed. Strictly
+	// speaking, this should be based on reqs as well, or canCount should work
+	// with cmds as well.
+	s.spawnCanceller[cmd] = canceller
 	s.scMutex.Unlock()
 
 	if s.cmdCountRemaining(cmd) <= 0 {
@@ -995,8 +1001,9 @@ func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(c
 func (s *opst) cmdNotNeeded(cmd string) {
 	s.scMutex.RLock()
 	defer s.scMutex.RUnlock()
-	if s.spawnCanceller != nil {
-		close(s.spawnCanceller)
+	if canceller, exists := s.spawnCanceller[cmd]; exists {
+		delete(s.spawnCanceller, cmd)
+		close(canceller)
 	}
 }
 

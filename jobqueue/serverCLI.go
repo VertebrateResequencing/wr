@@ -85,7 +85,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "pause":
 			s.Debug("pause requested")
-			err := s.Pause()
+			paused, err := s.Pause()
 			if err != nil {
 				if jqerr, ok := err.(Error); ok {
 					srerr = jqerr.Err
@@ -94,11 +94,24 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				}
 				qerr = err.Error()
 			} else {
+				if paused {
+					s.Info("paused by request")
+				} else {
+					// clients are allowed to call pause as many times as they
+					// like, but a single resume call later should work, so we
+					// resume now to keep the internal pause counter at 1
+					resumed, err := s.Resume()
+					if err != nil {
+						s.Error("resume following an extraneous pause failed", "error", err)
+					} else if resumed {
+						s.Error("resumed incorrectly succeeded following a pause that did not")
+					}
+				}
 				sr = &serverResponse{SStats: s.GetServerStats()}
 			}
 		case "resume":
 			s.Debug("resume requested")
-			err := s.Resume()
+			resumed, err := s.Resume()
 			if err != nil {
 				if jqerr, ok := err.(Error); ok {
 					srerr = jqerr.Err
@@ -106,9 +119,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					srerr = ErrInternalError
 				}
 				qerr = err.Error()
+			} else if resumed {
+				s.Info("resumed on request")
 			}
 		case "drain":
-			s.Debug("drain requested")
+			s.Info("drain requested")
 			err := s.Drain()
 			if err != nil {
 				srerr = ErrInternalError
@@ -440,8 +455,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// pending, but become running in the middle of us trying to
 				// modify them, we first pause the server, and resume it
 				// afterwards
-				s.Debug("modify requested, pausing server")
-				err := s.Pause()
+				paused, err := s.Pause()
 				if err != nil {
 					if jqerr, ok := err.(Error); ok {
 						srerr = jqerr.Err
@@ -449,10 +463,15 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						srerr = ErrInternalError
 					}
 					qerr = err.Error()
+				} else if paused {
+					s.Debug("modify requested, paused server")
+				} else {
+					s.Debug("modify requested")
 				}
 
 				if err == nil {
-					var toModify []*Job
+					var toModifyJobs []*Job
+					toModifyKeys := make(map[string]*Job)
 					for _, jobkey := range cr.Keys {
 						item, err := s.q.Get(jobkey)
 						if err != nil || item == nil {
@@ -462,71 +481,82 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						if iState == queue.ItemStateRun {
 							continue
 						}
-						toModify = append(toModify, item.Data.(*Job))
+						toModifyJobs = append(toModifyJobs, item.Data.(*Job))
+						toModifyKeys[jobkey] = item.Data.(*Job)
 					}
 
-					modified := cr.Modifier.Modify(toModify)
+					modified := cr.Modifier.Modify(toModifyJobs, s)
 
-					// additional handling of changed limit groups
-					if cr.Modifier.LimitGroupsSet {
-						limitGroups := make(map[string]int)
-						for _, job := range toModify {
-							err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
-							if err != nil {
-								s.Error("failed to modify limit group", "err", err)
+					if len(modified) > 0 {
+						var toModify []*Job
+						for _, old := range modified {
+							job := toModifyKeys[old]
+							if job != nil {
+								toModify = append(toModify, job)
 							}
 						}
-						err := s.storeLimitGroups(limitGroups)
-						if err != nil {
-							s.Error("failed to store limit groups", "err", err)
-						}
-					}
 
-					// update changed keys in the queue and in our rpl lookup
-					keyToRP := make(map[string]string)
-					for _, job := range toModify {
-						keyToRP[job.Key()] = job.RepGroup
-					}
-					s.rpl.Lock()
-					for new, old := range modified {
-						if old == new {
-							continue
-						}
-						errc := s.q.ChangeKey(old, new)
-						if errc != nil {
-							s.Error("failed to change a job key in the queue", "err", errc)
-						}
-
-						rp := keyToRP[new]
-						if _, exists := s.rpl.lookup[rp]; !exists {
-							s.rpl.lookup[rp] = make(map[string]bool)
-						}
-						delete(s.rpl.lookup[rp], old)
-						s.rpl.lookup[rp][new] = true
-					}
-					s.rpl.Unlock()
-
-					// update db live bucket and dep lookups
-					if len(toModify) > 0 {
-						oldKeys := make([]string, len(toModify))
-						for i, job := range toModify {
-							oldKeys[i] = modified[job.Key()]
-						}
-						errm := s.db.modifyLiveJobs(oldKeys, toModify)
-						if errm != nil {
-							s.Error("job modification in database failed", "err", errm)
-						} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
-							// if we're changing the jobs these jobs are
-							// dependant upon or their priority, that must be
-							// reflected in the queue as well
+						// additional handling of changed limit groups
+						if cr.Modifier.LimitGroupsSet {
+							limitGroups := make(map[string]int)
 							for _, job := range toModify {
-								deps, err := job.Dependencies.incompleteJobKeys(s.db)
+								err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 								if err != nil {
-									s.Error("failed to get job dependencies", "err", err)
+									s.Error("failed to modify limit group", "err", err)
 								}
-								err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
-								if err != nil {
-									s.Error("failed to modify a job in the queue", "err", err)
+							}
+							err := s.storeLimitGroups(limitGroups)
+							if err != nil {
+								s.Error("failed to store limit groups", "err", err)
+							}
+						}
+
+						// update changed keys in the queue and in our rpl lookup
+						keyToRP := make(map[string]string)
+						for _, job := range toModify {
+							keyToRP[job.Key()] = job.RepGroup
+						}
+						s.rpl.Lock()
+						for new, old := range modified {
+							if old == new {
+								continue
+							}
+							errc := s.q.ChangeKey(old, new)
+							if errc != nil {
+								s.Error("failed to change a job key in the queue", "err", errc)
+							}
+
+							rp := keyToRP[new]
+							if _, exists := s.rpl.lookup[rp]; !exists {
+								s.rpl.lookup[rp] = make(map[string]bool)
+							}
+							delete(s.rpl.lookup[rp], old)
+							s.rpl.lookup[rp][new] = true
+						}
+						s.rpl.Unlock()
+
+						// update db live bucket and dep lookups
+						if len(toModify) > 0 {
+							oldKeys := make([]string, len(toModify))
+							for i, job := range toModify {
+								oldKeys[i] = modified[job.Key()]
+							}
+							errm := s.db.modifyLiveJobs(oldKeys, toModify)
+							if errm != nil {
+								s.Error("job modification in database failed", "err", errm)
+							} else if cr.Modifier.DependenciesSet || cr.Modifier.PrioritySet {
+								// if we're changing the jobs these jobs are
+								// dependant upon or their priority, that must be
+								// reflected in the queue as well
+								for _, job := range toModify {
+									deps, err := job.Dependencies.incompleteJobKeys(s.db)
+									if err != nil {
+										s.Error("failed to get job dependencies", "err", err)
+									}
+									err = s.q.Update(job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
+									if err != nil {
+										s.Error("failed to modify a job in the queue", "err", err)
+									}
 								}
 							}
 						}
@@ -535,10 +565,13 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sr = &serverResponse{Modified: modified}
 
 					// now resume the server again
-					s.Debug("modify completed, resuming server", "count", len(modified))
-					err := s.Resume()
+					resumed, err := s.Resume()
 					if err != nil {
 						s.Error(err.Error())
+					} else if resumed {
+						s.Debug("modify completed, resumed server", "count", len(modified))
+					} else {
+						s.Debug("modify completed", "count", len(modified))
 					}
 				}
 			}
@@ -807,9 +840,15 @@ func (s *Server) reserveWithLimits(group string, wait time.Duration) (*queue.Ite
 	if group != "" {
 		limitGroups = s.schedGroupToLimitGroups(group)
 		if len(limitGroups) > 0 {
-			if !s.limiter.Increment(limitGroups) {
+			// it is better to call Increment before Reserve and possibly use up
+			// the limit for up to wait period if there's no item in the queue,
+			// than it is to Reserve first and then Release if at the limit,
+			// because Releasing causes scheduler churn
+			t := time.Now()
+			if !s.limiter.Increment(limitGroups, wait) {
 				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}
+			wait -= time.Since(t)
 		}
 	}
 

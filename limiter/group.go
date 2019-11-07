@@ -22,9 +22,10 @@ package limiter
 
 // group struct describes an individual limit group.
 type group struct {
-	name    string
-	limit   uint
-	current uint
+	name     string
+	limit    uint
+	current  uint
+	toNotify []chan bool
 }
 
 // newGroup creates a new group.
@@ -40,27 +41,57 @@ func (g *group) setLimit(limit uint) {
 	g.limit = limit
 }
 
-// increment increases the count of this group, up to the limit. Returns true
-// if an increase happened.
-func (g *group) increment() bool {
-	if g.current >= g.limit {
-		return false
-	}
+// canIncrement tells you if the current count of this group is less than the
+// limit.
+func (g *group) canIncrement() bool {
+	return g.current < g.limit
+}
+
+// increment increases the current count of this group. You must call
+// canIncrement() first to make sure you won't go over the limit (and hold a
+// lock over the 2 calls to avoid a race condition).
+func (g *group) increment() {
 	g.current++
-	return true
 }
 
-// decrement decreases the count of this group, down to 0. Returns true if a
-// decrease happened.
+// decrement decreases the current count of this group. Returns true if the
+// current count indicates the group is unused.
 func (g *group) decrement() bool {
+	// (decrementing a uint under 0 makes it a large positive value, so we must
+	// check first)
 	if g.current == 0 {
-		return false
+		return true
 	}
+
 	g.current--
-	return true
+
+	// notify callers who passed a channel to notifyDecrement(), but do it
+	// defensively in a go routine so if the caller doesn't read from the
+	// channel, we don't block forever
+	if len(g.toNotify) > 0 {
+		chans := g.toNotify
+		g.toNotify = []chan bool{}
+		go func() {
+			for _, ch := range chans {
+				ch <- true
+			}
+		}()
+	}
+
+	return g.current < 1
 }
 
-// canDecrement tells you if the current count of this group is greater than 0.
-func (g *group) canDecrement() bool {
-	return g.current > 0
+// capacity tells you how many more increments you could do on this group before
+// breaching the limit.
+func (g *group) capacity() int {
+	if g.current >= g.limit {
+		return 0
+	}
+	return int(g.limit - g.current)
+}
+
+// notifyDecrement will result in true being sent on the given channel the next
+// time decrement() is called. (And then the channel is discarded.)
+func (g *group) notifyDecrement(ch chan bool) {
+	g.toNotify = append(g.toNotify, ch)
 }

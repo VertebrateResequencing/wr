@@ -53,6 +53,7 @@ type Item struct {
 	buries        uint32
 	kicks         uint32
 	priority      uint8 // highest priority is 255
+	size          uint8
 	delay         time.Duration
 	ttr           time.Duration
 	readyAt       time.Time
@@ -81,6 +82,7 @@ type ItemStats struct {
 	Buries    uint32
 	Kicks     uint32
 	Priority  uint8
+	Size      uint8
 }
 
 func newItem(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration) *Item {
@@ -126,6 +128,7 @@ func (item *Item) Stats() *ItemStats {
 		Age:       age,
 		Remaining: remaining,
 		Priority:  item.priority,
+		Size:      item.size,
 		Delay:     item.delay,
 		TTR:       item.ttr,
 	}

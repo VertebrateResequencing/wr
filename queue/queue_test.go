@@ -929,6 +929,31 @@ func TestQueue(t *testing.T) {
 		So(stats.Buried, ShouldEqual, 1)
 	})
 
+	Convey("You can add items to the queue that have sizes", t, func() {
+		queue := New("size queue")
+		defer func() {
+			errd := queue.Destroy()
+			So(errd, ShouldBeNil)
+		}()
+
+		_, err := queue.Add("key_normal", "", "data", 0, 0*time.Millisecond, 100*time.Millisecond, "")
+		So(err, ShouldBeNil)
+		_, err = queue.AddWithSize("key_large", "", "data", 0, 1, 0*time.Millisecond, 100*time.Millisecond, "")
+		So(err, ShouldBeNil)
+
+		stats := queue.Stats()
+		So(stats.Items, ShouldEqual, 2)
+		So(stats.Delayed, ShouldEqual, 0)
+		So(stats.Ready, ShouldEqual, 2)
+		So(stats.Running, ShouldEqual, 0)
+		So(stats.Buried, ShouldEqual, 0)
+
+		item, err := queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+		So(item, ShouldNotBeNil)
+		So(item.Key, ShouldEqual, "key_large")
+	})
+
 	Convey("Once a thousand items with no delay have been added to the queue", t, func() {
 		queue := New("1000 queue")
 		defer qdestroy(queue)

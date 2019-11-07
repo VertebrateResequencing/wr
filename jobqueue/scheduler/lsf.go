@@ -36,6 +36,9 @@ import (
 	"github.com/inconshreveable/log15"
 )
 
+// lsfRFlag is a const used to pull out -R options supplied by user
+var lsfRFlag = regexp.MustCompile(`-R\s+["']([^"']+)["']`)
+
 // lsf is our implementer of scheduleri
 type lsf struct {
 	config             *ConfigLSF
@@ -412,8 +415,9 @@ func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
 // schedule achieves the aims of Schedule(). Note that if rescheduling a cmd
 // at a lower count, we cannot guarantee that only that number get run; it may
 // end up being a few more.
-func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
-	// find the best queue for these resource requirements
+func (s *lsf) schedule(cmd string, req *Requirements, priority uint8, count int) error {
+	// use the given queue or find the best queue for these resource
+	// requirements
 	queue, err := s.determineQueue(req, 0)
 	if err != nil {
 		return err // impossible to run cmd with these reqs
@@ -430,27 +434,8 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	if stillNeeded < 1 {
 		return nil
 	}
-	var bsubArgs []string
 
-	megabytes := req.RAM
-	m := float32(megabytes) * s.memLimitMultiplier
-	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
-	if req.Cores > 1 {
-		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
-	}
-	// if len(req.Other) > 0 {
-	// *** not yet implemented; would check this map for lsf-related keys
-	// and handle them appropriately...
-	// }
-
-	// for checkCmd() to work efficiently we must always set a job name that
-	// corresponds to the cmd. It must also be unique otherwise LSF would not
-	// start running jobs with duplicate names until previous ones complete
-	name := jobName(cmd, s.config.Deployment, true)
-	if stillNeeded > 1 {
-		name += fmt.Sprintf("[1-%d]", stillNeeded)
-	}
-	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
+	bsubArgs := s.generateBsubArgs(queue, req, cmd, stillNeeded)
 
 	// submit to the queue
 	bsubcmd := exec.Command(s.bsubExe, bsubArgs...) // #nosec
@@ -506,6 +491,45 @@ func (s *lsf) schedule(cmd string, req *Requirements, count int) error {
 	return err
 }
 
+// generateBsubArgs generates the appropriate bsub args for the given req and
+// cmd and queue
+func (s *lsf) generateBsubArgs(queue string, req *Requirements, cmd string, needed int) []string {
+	var bsubArgs []string
+	megabytes := req.RAM
+	m := float32(megabytes) * s.memLimitMultiplier
+	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
+
+	if val, ok := req.Other["scheduler_misc"]; ok {
+		parts := lsfRFlag.FindStringSubmatch(val)
+		switch {
+		case len(parts) == 2:
+			bsubArgs = append(bsubArgs, "-R", parts[1])
+		case !strings.Contains(val, `"`):
+			bsubArgs = append(bsubArgs, val)
+		default:
+			// *** not sure how to handle any arbitrary value supplied, since
+			// we'd have to split flag from value in to separate list elements
+			// or encounter escaped quote issues in the resulting command line
+			s.Warn("scheduler misc option ignored", "misc", val)
+		}
+	}
+
+	if req.Cores > 1 {
+		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
+	}
+
+	// for checkCmd() to work efficiently we must always set a job name that
+	// corresponds to the cmd. It must also be unique otherwise LSF would not
+	// start running jobs with duplicate names until previous ones complete
+	name := jobName(cmd, s.config.Deployment, true)
+	if needed > 1 {
+		name += fmt.Sprintf("[1-%d]", needed)
+	}
+	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
+
+	return bsubArgs
+}
+
 // recover achieves the aims of Recover(). We don't have to do anything, since
 // when the cmd finishes running, LSF itself will clean up.
 func (s *lsf) recover(cmd string, req *Requirements, host *RecoveredHostDetails) error {
@@ -525,10 +549,15 @@ func (s *lsf) busy() bool {
 }
 
 // determineQueue picks a queue, preferring ones that are more likely to run our
-// job the soonest (amongst those that are capable of running it). *** globalMax
-// option and associated code may be removed if we never have a way for user
-// to pass this in.
+// job the soonest (amongst those that are capable of running it). If req.Other
+// contains a scheduler_queue value, returns that instead.
+// *** globalMax option and associated code may be removed if we never have a
+// way for user to pass this in.
 func (s *lsf) determineQueue(req *Requirements, globalMax int) (string, error) {
+	if queue, ok := req.Other["scheduler_queue"]; ok {
+		return queue, nil
+	}
+
 	seconds := req.Time.Seconds()
 	mb := req.RAM
 	sortedQueue := 0
