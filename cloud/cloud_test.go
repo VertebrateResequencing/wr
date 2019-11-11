@@ -152,9 +152,10 @@ func TestOpenStack(t *testing.T) {
 				if host == "vr-2-2-02" && len(flavorSets) > 1 {
 					flavors, err := p.CheapestServerFlavors(1, 2048, flavorRegex, flavorSets)
 					So(err, ShouldBeNil)
-					So(len(flavors), ShouldEqual, 2)
+					So(len(flavors), ShouldEqual, 3)
 					So(flavors[0].Name, ShouldEqual, "m1.tiny")
 					So(flavors[1].Name, ShouldEqual, "m2.tiny")
+					So(flavors[2], ShouldBeNil)
 				}
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
