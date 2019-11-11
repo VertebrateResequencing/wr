@@ -471,7 +471,7 @@ func (p *Provider) CheapestServerFlavor(cores, ramMB int, regex string) (*Flavor
 		return nil, err
 	}
 
-	f := p.pickCheapestFlavorWithExclusions(cores, ramMB, r, []*regexp.Regexp{})
+	f := p.pickCheapestFlavorFromSubset(cores, ramMB, r, []*regexp.Regexp{})
 	if f == nil {
 		return nil, Error{"cloud", "CheapestServerFlavor", ErrNoFlavor}
 	}
@@ -491,25 +491,33 @@ func (p *Provider) regexStrToRegexp(regex string) (*regexp.Regexp, error) {
 	return r, nil
 }
 
-// pickCheapestFlavorWithExclusions looks through p.impl.flavors() for the
-// cheapest flavor with a Name that matches the regexp, but that does not match
-// any of the exclusions. regexp can be nil to match any flavor, and exclusions
-// can be empty, but exclusion elements cannot be nil.
-func (p *Provider) pickCheapestFlavorWithExclusions(cores, ramMB int, regexp *regexp.Regexp, exclusions []*regexp.Regexp) *Flavor {
-	// from all available flavours, pick the one that has the lowest ram, disk
-	// and cpus that meet our minimums, and also matches the regex without
-	// matching exclusions
+// pickCheapestFlavorFromSubset looks through p.impl.flavors() for the
+// cheapest flavor with a Name that matches the regexp, and that also matches
+// at least one of the regexps in the subset. regexp can be nil to match any
+// flavor, and subset can be empty to pick from the superset, but subset
+// elements cannot be nil.
+func (p *Provider) pickCheapestFlavorFromSubset(cores, ramMB int, regexp *regexp.Regexp, subset []*regexp.Regexp) *Flavor {
+	// from flavours in the subset, pick the one that has the lowest ram, disk
+	// and cpus that meet our minimums, and also matches the regex
 	var fr *Flavor
-FLAVORS:
 	for _, f := range p.impl.flavors() {
 		if regexp != nil && !regexp.MatchString(f.Name) {
 			continue
 		}
 
-		for _, r := range exclusions {
-			if r.MatchString(f.Name) {
-				continue FLAVORS
+		var inSubset bool
+		if len(subset) == 0 {
+			inSubset = true
+		} else {
+			for _, r := range subset {
+				if r.MatchString(f.Name) {
+					inSubset = true
+					break
+				}
 			}
+		}
+		if !inSubset {
+			continue
 		}
 
 		if f.Cores >= cores && f.RAM >= ramMB {
@@ -531,19 +539,17 @@ FLAVORS:
 	return fr
 }
 
-// CheapestServerFlavors is like CheapestServerFlavor(), taking the same first
-// 3 arguments, but also a slice of slices that describe sets of flavors.
-// For example, [][]string{{"f1","f2"},{"f3","f4"}}. Here, flavors f1 and f2 are
-// in one set, and f3 and f4 are in another. The names are treated as regular
+// CheapestServerFlavors is like CheapestServerFlavor(), taking the same first 3
+// arguments, but also a slice of slices that describe sets of flavors. For
+// example, [][]string{{"f1","f2"},{"f3","f4"}}. Here, flavors f1 and f2 are in
+// one set, and f3 and f4 are in another. The names are treated as regular
 // expressions so you can describe multiple flavors in a set with a single
 // entry.
 //
-// You will get back the cheapest server flavor in each set, but in the order
-// that is best overall. That is, all flavors matching regex are considered as
-// in a normal CheapestServerFlavor() call, to get the first flavor. Then this
-// is repeated, excluding flavors in the set from which the first flavor came.
-// This repeats until a matching flavor can't be found, a found flavor is not in
-// one of your sets, or there are as many output flavors as input sets.
+// You will get back the cheapest server flavor in each set, in the order of the
+// sets you supply. The length of the returned slice will always match length of
+// sets. If, say, the 3rd set does not have a suitable server at all, then the
+// 3rd element of the returned slice will be nil.
 func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets [][]string) ([]*Flavor, error) {
 	// (because flavors can change over time, we can't cache the result of this
 	// calculation and must run it every time)
@@ -552,53 +558,18 @@ func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets []
 		return nil, err
 	}
 
-	regexSets := make([][]*regexp.Regexp, len(sets))
+	matches := make([]*Flavor, len(sets))
+
 	for i, set := range sets {
-		regexSets[i] = make([]*regexp.Regexp, len(sets[i]))
+		subset := make([]*regexp.Regexp, len(set))
 		for j, flavor := range set {
 			rf, err := p.regexStrToRegexp(flavor)
 			if err != nil {
 				return nil, err
 			}
-			regexSets[i][j] = rf
+			subset[j] = rf
 		}
-	}
-
-	matches := make([]*Flavor, 0, len(sets))
-	excludedSets := make(map[int]bool, len(sets))
-	var exclusions []*regexp.Regexp
-
-	for {
-		f := p.pickCheapestFlavorWithExclusions(cores, ramMB, r, exclusions)
-		if f == nil {
-			break
-		}
-
-		matches = append(matches, f)
-		if len(matches) == len(sets) {
-			break
-		}
-
-		// find the set that this flavor belongs to
-		var found bool
-	SETS:
-		for i, set := range regexSets {
-			if excludedSets[i] {
-				continue
-			}
-
-			for _, fr := range set {
-				if fr.MatchString(f.Name) {
-					exclusions = append(exclusions, set...)
-					excludedSets[i] = true
-					found = true
-					break SETS
-				}
-			}
-		}
-		if !found {
-			break
-		}
+		matches[i] = p.pickCheapestFlavorFromSubset(cores, ramMB, r, subset)
 	}
 
 	return matches, nil

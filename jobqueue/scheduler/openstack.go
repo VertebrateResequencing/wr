@@ -436,7 +436,14 @@ func (s *opst) determineFlavor(req *Requirements, call string) (*cloud.Flavor, e
 	}
 
 	flavors, err := s.provider.CheapestServerFlavors(int(math.Ceil(req.Cores)), req.RAM, s.config.FlavorRegex, s.flavorSets)
-	if len(flavors) == 0 {
+	var hasFlavors bool
+	for _, f := range flavors {
+		if f != nil {
+			hasFlavors = true
+			break
+		}
+	}
+	if !hasFlavors {
 		err = Error{"openstack", "determineFlavor", ErrImpossible}
 	} else if err != nil {
 		if perr, ok := err.(cloud.Error); ok && perr.Err == cloud.ErrNoFlavor {
@@ -455,6 +462,10 @@ func (s *opst) determineFlavor(req *Requirements, call string) (*cloud.Flavor, e
 	pickedOld := true
 	var pickedI int
 	for i, f := range flavors {
+		if f == nil {
+			continue
+		}
+
 		if t, failed := s.failedFlavors[f.ID]; failed {
 			if t.Before(oldest) {
 				oldest = t
