@@ -99,6 +99,7 @@ type local struct {
 	maxRAM            int
 	maxCores          int
 	ram               int
+	zeroCores         int
 	cores             float64
 	rcount            int
 	queue             *queue.Queue
@@ -389,7 +390,11 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 
 			s.resourceMutex.Lock()
 			s.ram += req.RAM
-			s.cores += req.Cores
+			if req.Cores == 0 {
+				s.zeroCores++
+			} else {
+				s.cores += req.Cores
+			}
 			s.resourceMutex.Unlock()
 
 			go func() {
@@ -417,7 +422,11 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 
 							s.resourceMutex.Lock()
 							s.ram -= req.RAM
-							s.cores -= req.Cores
+							if req.Cores == 0 {
+								s.zeroCores--
+							} else {
+								s.cores -= req.Cores
+							}
 							s.resourceMutex.Unlock()
 
 							errp := s.processQueue("recover")
@@ -503,7 +512,6 @@ func (s *local) processQueue(reason string) error {
 	stats := s.queue.Stats()
 	toRelease := make([]string, 0, stats.Items)
 	defer func() {
-		s.Debug("processQueue defer a")
 		for _, key := range toRelease {
 			errr := s.queue.Release(key)
 			if errr != nil {
@@ -512,15 +520,12 @@ func (s *local) processQueue(reason string) error {
 				}
 			}
 		}
-		s.Debug("processQueue b")
 		s.postProcessFunc()
-		s.Debug("processQueue c")
 
 		s.processing = false
 		recall := s.recall
 		s.recall = false
 		if recall {
-			s.Debug("processQueue d")
 			go func() {
 				defer internal.LogPanic(s.Logger, "processQueue recall", true)
 				errp := s.processQueue("recall")
@@ -645,14 +650,13 @@ func (s *local) processQueue(reason string) error {
 
 		// before looping again, wait for all the above runCmdFuncs to at least
 		// get as far as reserving their resources, so subsequent calls to
-		// canCountFunc will be accurate
+		// canCountFunc will be accurate. Also try and ensure that if something
+		// goes wrong sending on the reserved channel, we don't get stuck here
 		ch := make(chan bool, 1)
 		done := make(chan bool, 1)
 		go func() {
 			for i := 0; i < canCount; i++ {
-				s.Debug("processQueue will reserve resources", "i", i+1)
 				<-reserved
-				s.Debug("processQueue reserved resources", "i", i+1)
 			}
 			done <- true
 			ch <- true
@@ -668,8 +672,6 @@ func (s *local) processQueue(reason string) error {
 		sentAll := <-ch
 		if !sentAll {
 			s.Warn("processQueue failed to reserve all resources")
-		} else {
-			s.Debug("processQueue reserved all")
 		}
 
 		// keep looping, in case any smaller job can also be run
@@ -694,18 +696,21 @@ func (s *local) canCount(cmd string, req *Requirements, call string) int {
 	}
 	if canCount >= 1 {
 		var canCount2 int
-		if req.Cores > 0 {
-			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
+		if req.Cores == 0 {
+			// rather than allow an infinite or very large number of cmds to run
+			// on this machine, because there are still real limits on the
+			// number of processes we can run at once before things start
+			// falling over, we only allow double the actual core count of zero
+			// core things to run (on top of up to actual core count of non-zero
+			// core things)
+			canCount2 = s.maxCores*2 - s.zeroCores
 		} else {
-			// rather than an infinite or very large value, we say double the
-			// core count because there are still real limits on the number of
-			// processes we can run at once before things start falling over
-			canCount2 = s.maxCores * 2
+			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
 		}
 		if canCount2 < canCount {
 			canCount = canCount2
 			if canCount < 0 {
-				s.Warn("negative canCount", "can", canCount, "maxCores", s.maxCores, "cores", s.cores, "reqCores", req.Cores)
+				s.Warn("negative canCount", "can", canCount, "maxCores", s.maxCores, "cores", s.cores, "zeroCores", s.zeroCores, "reqCores", req.Cores)
 				canCount = 0
 			}
 		}
@@ -757,7 +762,11 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 
 	s.resourceMutex.Lock()
 	s.ram += req.RAM
-	s.cores += req.Cores
+	if req.Cores == 0 {
+		s.zeroCores++
+	} else {
+		s.cores += req.Cores
+	}
 	sr(true)
 	s.resourceMutex.Unlock()
 
@@ -778,7 +787,11 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 
 	s.resourceMutex.Lock()
 	s.ram -= req.RAM
-	s.cores -= req.Cores
+	if req.Cores == 0 {
+		s.zeroCores--
+	} else {
+		s.cores -= req.Cores
+	}
 	s.resourceMutex.Unlock()
 
 	return nil // do not return error running the command
