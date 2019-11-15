@@ -636,6 +636,7 @@ func TestOpenstack(t *testing.T) {
 		OSUser:               osUser,
 		OSRAM:                2048,
 		FlavorRegex:          flavorRegex,
+		FlavorSets:           os.Getenv("OS_FLAVOR_SETS"),
 		ServerPorts:          []int{22},
 		ServerKeepTime:       15 * time.Second,
 		StateUpdateFrequency: 1 * time.Second,

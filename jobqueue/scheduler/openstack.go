@@ -70,11 +70,10 @@ type opst struct {
 	badServerCB       BadServerCallBack
 	recoveredServers  map[string]bool
 	stopRSMonitoring  chan struct{}
-	failedFlavors     map[string]time.Time
+	ffCache           *cache.Cache
 	dfCache           *cache.Cache
 	serversMutex      sync.RWMutex
 	cbmutex           sync.RWMutex
-	ffMutex           sync.RWMutex
 	scMutex           sync.RWMutex
 	stateMutex        sync.Mutex
 	rsMutex           sync.Mutex
@@ -365,7 +364,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 		}
 	}
 
-	s.failedFlavors = make(map[string]time.Time)
+	s.ffCache = cache.New(15*time.Minute, 30*time.Minute)
 	s.dfCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	return err
@@ -416,13 +415,14 @@ func (s *opst) maxCPU() int {
 }
 
 // determineFlavor picks a server flavor, preferring the smallest (cheapest)
-// amongst those that are capable of running it.
+// amongst those that are capable of running it from the earliest possible
+// flavor set.
 //
 // If the initial pick is for a flavor that has been marked as unusable (because
 // the last time we tried to spawn a server of the flavor it failed due to lack
-// of hardware), we return the next best pick from a different flavor set. If
+// of hardware), we return the best pick from the next possible flavor set. If
 // all possible picks from all flavor sets have been marked unusable, we return
-// the flavor that was marked unusable longest ago, to give it another try.
+// the flavor from the first possible flavor set, to give it another try.
 //
 // Since this is called during our canCount and then during runCmd for each
 // "can", we want the return value to be the same for that set of calls, so we
@@ -436,6 +436,9 @@ func (s *opst) determineFlavor(req *Requirements, call string) (*cloud.Flavor, e
 	}
 
 	flavors, err := s.provider.CheapestServerFlavors(int(math.Ceil(req.Cores)), req.RAM, s.config.FlavorRegex, s.flavorSets)
+	if err != nil {
+		return nil, err
+	}
 	var hasFlavors bool
 	for _, f := range flavors {
 		if f != nil {
@@ -454,37 +457,33 @@ func (s *opst) determineFlavor(req *Requirements, call string) (*cloud.Flavor, e
 		return nil, err
 	}
 
-	s.ffMutex.RLock()
-	defer s.ffMutex.RUnlock()
-
 	var flavor *cloud.Flavor
-	oldest := time.Now()
-	pickedOld := true
 	var pickedI int
+	var pickedFirst bool
 	for i, f := range flavors {
 		if f == nil {
 			continue
 		}
+		if flavor != nil {
+			flavor = f
+			pickedI = i
+			pickedFirst = true
+		}
 
-		if t, failed := s.failedFlavors[f.ID]; failed {
-			if t.Before(oldest) {
-				oldest = t
-				flavor = f
-				pickedI = i
-			}
+		if _, failed := s.ffCache.Get(f.ID); failed {
 			continue
 		}
 
 		flavor = f
-		pickedOld = false
 		pickedI = i
+		pickedFirst = false
 		break
 	}
 
-	if pickedOld {
-		s.Debug("determineFlavor's picks were all failed, picking the oldest to fail", "rank", pickedI, "flavor", flavor.Name)
+	if pickedFirst {
+		s.Debug("determineFlavor's picks were all failed, picking the one from the earliest flavor set", "set", pickedI, "flavor", flavor.Name)
 	} else if pickedI != 0 {
-		s.Debug("determineFlavor's preferred pick was failed, picking one that is unfailed", "rank", pickedI, "flavor", flavor.Name)
+		s.Debug("determineFlavor's first pick was failed, picking one that is unfailed", "set", pickedI, "flavor", flavor.Name)
 	}
 
 	if call != "" {
@@ -936,9 +935,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 				logger.Debug("server also failed to destroy", "err", errd)
 			}
 		} else if s.provider.ErrIsNoHardware(err) {
-			s.ffMutex.Lock()
-			s.failedFlavors[flavor.ID] = time.Now()
-			s.ffMutex.Unlock()
+			s.ffCache.Set(flavor.ID, true, cache.DefaultExpiration)
 			s.Warn("server failed to spawn due to lack of hardware", "flavor", flavor.Name)
 		}
 		if err.Error() != serverNotNeededErrStr {
@@ -948,12 +945,10 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	}
 
 	logger.Debug("server useable")
-	s.ffMutex.Lock()
-	if _, failed := s.failedFlavors[flavor.ID]; failed {
+	if _, failed := s.ffCache.Get(flavor.ID); failed {
 		s.Debug("server successfully spawned on previously failed flavor", "flavor", flavor.Name)
-		delete(s.failedFlavors, flavor.ID)
+		s.ffCache.Delete(flavor.ID)
 	}
-	s.ffMutex.Unlock()
 
 	s.serversMutex.Lock()
 	s.servers[server.ID] = server

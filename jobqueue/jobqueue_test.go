@@ -5221,6 +5221,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		OSUser:               osUser,
 		OSRAM:                2048,
 		FlavorRegex:          flavorRegex,
+		FlavorSets:           os.Getenv("OS_FLAVOR_SETS"),
 		ServerPorts:          []int{22},
 		ServerKeepTime:       3 * time.Second,
 		StateUpdateFrequency: 1 * time.Second,
@@ -5740,7 +5741,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			So(got[0].PeakRAM, ShouldBeGreaterThanOrEqualTo, expectedRAM)
 			So(got[0].WallTime(), ShouldBeBetweenOrEqual, 5*time.Second, 25*time.Second)
-			So(got[0].CPUtime, ShouldBeLessThan, 4*time.Second)
+			So(got[0].CPUtime, ShouldBeLessThan, 5*time.Second)
 
 			got, err = jq.GetByRepGroup("named_docker", false, 0, JobStateComplete, false, false)
 			So(err, ShouldBeNil)
