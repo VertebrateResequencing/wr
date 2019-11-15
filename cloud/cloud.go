@@ -547,10 +547,18 @@ func (p *Provider) pickCheapestFlavorFromSubset(cores, ramMB int, regexp *regexp
 // entry.
 //
 // You will get back the cheapest server flavor in each set, in the order of the
-// sets you supply. The length of the returned slice will always match length of
-// sets. If, say, the 3rd set does not have a suitable server at all, then the
-// 3rd element of the returned slice will be nil.
+// sets you supply. The length of the returned slice will match length of sets.
+// If, say, the 3rd set does not have a suitable server at all, then the 3rd
+// element of the returned slice will be nil.
+//
+// In the special case that sets is an empty slice, returns the result of
+// CheapestServerFlavor() in a 1 element slice.
 func (p *Provider) CheapestServerFlavors(cores, ramMB int, regex string, sets [][]string) ([]*Flavor, error) {
+	if len(sets) == 0 {
+		f, err := p.CheapestServerFlavor(cores, ramMB, regex)
+		return []*Flavor{f}, err
+	}
+
 	// (because flavors can change over time, we can't cache the result of this
 	// calculation and must run it every time)
 	r, err := p.regexStrToRegexp(regex)
