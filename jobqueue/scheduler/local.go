@@ -44,7 +44,6 @@ const (
 	localPlace          = "localhost"
 	localReserveTimeout = 1
 	priorityScaler      = float64(255) / float64(100)
-	maxZeroCoreJobs     = 1000000 // the maxmimum number of jobs to run when cpu request is 0
 )
 
 // cmdProcessSanitiser is used to make cmds look like their process
@@ -100,6 +99,7 @@ type local struct {
 	maxRAM            int
 	maxCores          int
 	ram               int
+	zeroCores         int
 	cores             float64
 	rcount            int
 	queue             *queue.Queue
@@ -390,7 +390,11 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 
 			s.resourceMutex.Lock()
 			s.ram += req.RAM
-			s.cores += req.Cores
+			if req.Cores == 0 {
+				s.zeroCores++
+			} else {
+				s.cores += req.Cores
+			}
 			s.resourceMutex.Unlock()
 
 			go func() {
@@ -418,7 +422,11 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 
 							s.resourceMutex.Lock()
 							s.ram -= req.RAM
-							s.cores -= req.Cores
+							if req.Cores == 0 {
+								s.zeroCores--
+							} else {
+								s.cores -= req.Cores
+							}
 							s.resourceMutex.Unlock()
 
 							errp := s.processQueue("recover")
@@ -638,11 +646,32 @@ func (s *local) processQueue(reason string) error {
 		s.runMutex.Unlock()
 		j.RUnlock()
 
+		s.Debug("processQueue runCmdFunc loop complete")
+
 		// before looping again, wait for all the above runCmdFuncs to at least
 		// get as far as reserving their resources, so subsequent calls to
-		// canCountFunc will be accurate
-		for i := 0; i < canCount; i++ {
-			<-reserved
+		// canCountFunc will be accurate. Also try and ensure that if something
+		// goes wrong sending on the reserved channel, we don't get stuck here
+		ch := make(chan bool, 1)
+		done := make(chan bool, 1)
+		go func() {
+			for i := 0; i < canCount; i++ {
+				<-reserved
+			}
+			done <- true
+			ch <- true
+		}()
+		go func() {
+			select {
+			case <-time.After(1 * time.Minute):
+				ch <- false
+			case <-done:
+				return
+			}
+		}()
+		sentAll := <-ch
+		if !sentAll {
+			s.Warn("processQueue failed to reserve all resources")
 		}
 
 		// keep looping, in case any smaller job can also be run
@@ -667,15 +696,21 @@ func (s *local) canCount(cmd string, req *Requirements, call string) int {
 	}
 	if canCount >= 1 {
 		var canCount2 int
-		if req.Cores > 0 {
-			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
+		if req.Cores == 0 {
+			// rather than allow an infinite or very large number of cmds to run
+			// on this machine, because there are still real limits on the
+			// number of processes we can run at once before things start
+			// falling over, we only allow double the actual core count of zero
+			// core things to run (on top of up to actual core count of non-zero
+			// core things)
+			canCount2 = s.maxCores*2 - s.zeroCores
 		} else {
-			canCount2 = maxZeroCoreJobs
+			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
 		}
 		if canCount2 < canCount {
 			canCount = canCount2
 			if canCount < 0 {
-				s.Warn("negative canCount", "can", canCount, "maxCores", s.maxCores, "cores", s.cores, "reqCores", req.Cores)
+				s.Warn("negative canCount", "can", canCount, "maxCores", s.maxCores, "cores", s.cores, "zeroCores", s.zeroCores, "reqCores", req.Cores)
 				canCount = 0
 			}
 		}
@@ -688,11 +723,36 @@ func (s *local) canCount(cmd string, req *Requirements, call string) int {
 // fails (schedule() only guarantees that the cmds are run count times, not that
 // they run /successful/ that many times).
 func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call string) error {
+	sr := func(v bool) {
+		// *** reservedCh is buffered and sending on it should never
+		// block, but somehow we have gotten stuck here before; make
+		// sure we don't get stuck on this send
+		ch := make(chan bool, 1)
+		done := make(chan bool, 1)
+		go func() {
+			reservedCh <- v
+			done <- true
+			ch <- true
+		}()
+		go func() {
+			select {
+			case <-time.After(30 * time.Second):
+				ch <- false
+			case <-done:
+				return
+			}
+		}()
+		sentReserved := <-ch
+		if !sentReserved {
+			s.Warn("failed to send on reservedCh")
+		}
+	}
+
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
 	err := ec.Start()
 	if err != nil {
 		s.Error("runCmd start", "cmd", cmd, "err", err)
-		reservedCh <- false
+		sr(false)
 		return err
 	}
 
@@ -702,8 +762,12 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 
 	s.resourceMutex.Lock()
 	s.ram += req.RAM
-	s.cores += req.Cores
-	reservedCh <- true
+	if req.Cores == 0 {
+		s.zeroCores++
+	} else {
+		s.cores += req.Cores
+	}
+	sr(true)
 	s.resourceMutex.Unlock()
 
 	//*** set up monitoring of RAM and time usage and kill if >> than
@@ -723,7 +787,11 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 
 	s.resourceMutex.Lock()
 	s.ram -= req.RAM
-	s.cores -= req.Cores
+	if req.Cores == 0 {
+		s.zeroCores--
+	} else {
+		s.cores -= req.Cores
+	}
 	s.resourceMutex.Unlock()
 
 	return nil // do not return error running the command

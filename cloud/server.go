@@ -43,7 +43,6 @@ import (
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
 const sshShortTimeOut = 5 * time.Second
-const maxZeroCoreJobs = 1000000 // the maxmimum number of jobs a server has space for when cores request is 0
 
 // maxSSHSessions is the maximum number of sessions we will try and multiplex on
 // each ssh client we make for a server. It doesn't matter if this is lower than
@@ -94,6 +93,7 @@ type Server struct {
 	provider          *Provider
 	sshClientConfig   *ssh.ClientConfig
 	usedCores         float64
+	usedZeroCores     int // we keep track of how many zero core things are allocated
 	usedDisk          int
 	usedRAM           int
 	mutex             sync.RWMutex
@@ -240,11 +240,16 @@ func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.used = true
-	s.usedCores = internal.FloatAdd(s.usedCores, cores)
+
+	if cores == 0 {
+		s.usedZeroCores++
+	} else {
+		s.usedCores = internal.FloatAdd(s.usedCores, cores)
+	}
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
-	s.logger.Debug("server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+	s.logger.Debug("server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedZeroCores", s.usedZeroCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
@@ -263,14 +268,18 @@ func (s *Server) Used() bool {
 func (s *Server) Release(cores float64, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.usedCores = internal.FloatSubtract(s.usedCores, cores)
+	if cores == 0 {
+		s.usedZeroCores--
+	} else {
+		s.usedCores = internal.FloatSubtract(s.usedCores, cores)
+	}
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
-	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedZeroCores", s.usedZeroCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
-	if s.usedCores <= 0 && s.usedRAM <= 0 && s.TTD.Seconds() > 0 {
+	if s.usedCores <= 0 && s.usedZeroCores <= 0 && s.usedRAM <= 0 && s.TTD.Seconds() > 0 {
 		s.logger.Debug("server idle")
 		go func() {
 			defer internal.LogPanic(s.logger, "server release", false)
@@ -323,11 +332,17 @@ func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	if internal.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
+
 	var canDo int
-	if cores > 0 {
-		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
+	if cores == 0 {
+		// rather than allow an infinite or very large number of cmds to run on
+		// this server, because there are still real limits on the number of
+		// processes we can run at once before things start falling over, we
+		// only allow double the actual core count of zero core things to run
+		// (on top of up to actual core count of non-zero core things)
+		canDo = s.Flavor.Cores*2 - s.usedZeroCores
 	} else {
-		canDo = maxZeroCoreJobs
+		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}
 	if canDo > 1 {
 		var n int
