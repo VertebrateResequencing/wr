@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -65,6 +65,7 @@ type opst struct {
 	reservedCores     int
 	reservedRAM       int
 	reservedVolume    int
+	spawningNow       map[string]int
 	servers           map[string]*cloud.Server
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
@@ -78,8 +79,7 @@ type opst struct {
 	stateMutex        sync.Mutex
 	rsMutex           sync.Mutex
 	spawnMutex        sync.Mutex
-	spawningNow       map[string]bool
-	spawnCanceller    map[string]chan struct{}
+	spawnCanceller    map[string]map[string]chan struct{}
 	updatingState     bool
 }
 
@@ -164,6 +164,12 @@ type ConfigOpenStack struct {
 	// no additional instances will be spawned (commands will run locally on the
 	// same instance the manager is running on).
 	MaxInstances int
+
+	// SimultaneousSpawns is the maximum number of instances we are allowed to
+	// try and spawn simultaneously. 0 (the default) means unlimited. 1 would
+	// mean all spawns occur sequentially, which may be more reliable, but would
+	// result in very slow scale up.
+	SimultaneousSpawns int
 
 	// MaxLocalCores is the maximum number of cores that can be used to run
 	// commands on the same instance the manager is running on. -1 (the default)
@@ -312,6 +318,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	// initialize our job queue and other trackers
 	s.queue = queue.New(localPlace, s.Logger)
 	s.running = make(map[string]int)
+	s.spawningNow = make(map[string]int)
 
 	// initialise our servers with details of ourself
 	s.servers = make(map[string]*cloud.Server)
@@ -336,6 +343,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	s.maxMemFunc = s.maxMem
 	s.maxCPUFunc = s.maxCPU
 	s.canCountFunc = s.canCount
+	s.cantFunc = s.spawnMultiple
 	s.runCmdFunc = s.runCmd
 	s.stateUpdateFunc = s.stateUpdate
 	s.stateUpdateFreq = s.config.StateUpdateFrequency
@@ -353,8 +361,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 
 	s.recoveredServers = make(map[string]bool)
 	s.stopRSMonitoring = make(chan struct{})
-	s.spawningNow = make(map[string]bool)
-	s.spawnCanceller = make(map[string]chan struct{})
+	s.spawnCanceller = make(map[string]map[string]chan struct{})
 
 	if s.config.FlavorSets != "" {
 		sets := strings.Split(s.config.FlavorSets, ";")
@@ -553,16 +560,6 @@ func (s *opst) serverReqs(req *Requirements) (osPrefix string, osScript []byte, 
 
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources in existing servers.
-//
-// If the answer is 0, but there is enough quota to spawn a new server, and we
-// are not already in the middle of spawning a server for this req, this is done
-// in the background, and recalling this method later (once the new server has
-// booted up) would return a number greater than 0. It is arranged that this
-// method will be automatically recalled in this cirumcstance.
-//
-// New servers for the same req are created sequentially to avoid overloading
-// OpenStack's sub-systems. Servers for different reqs may be created in
-// parallel, however.
 func (s *opst) canCount(cmd string, req *Requirements, call string) int {
 	if s.cleanedUp() {
 		return 0
@@ -591,32 +588,81 @@ func (s *opst) canCount(cmd string, req *Requirements, call string) int {
 	}
 	s.serversMutex.RUnlock()
 
-	if canCount == 0 {
-		s.spawnMutex.Lock()
-		defer s.spawnMutex.Unlock()
-		reqStr := req.Stringify()
-		if s.spawningNow[reqStr] {
-			return canCount
+	return canCount
+}
+
+// spawnMultiple is our cantFunc which is run when canCount() returns less than
+// desired number of jobs.
+//
+// If there is enough quota to spawn new servers, and we are not already in the
+// middle of spawning too many servers, we spawn instances in the background.
+func (s *opst) spawnMultiple(desired int, cmd string, req *Requirements, call string) {
+	s.spawnMutex.Lock()
+	defer s.spawnMutex.Unlock()
+	var spawningTotal int
+	var spawningCmd int
+	for thisCmd, spawning := range s.spawningNow {
+		spawningTotal += spawning
+		if thisCmd == cmd {
+			spawningCmd = spawning
 		}
+	}
+	if s.config.SimultaneousSpawns > 0 && spawningTotal >= s.config.SimultaneousSpawns {
+		s.Debug("spawnMultiple is spawning max servers already")
+		return
+	}
 
-		// spawn a server in the background
-		s.spawningNow[reqStr] = true
+	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(req)
+	if err != nil {
+		s.Warn("Failed to determine server requirements", "err", err)
+		return
+	}
+	reqForSpawn := s.reqForSpawn(req)
+
+	// work out how many we should spawn at once
+	spawnable, flavor := s.checkQuota(reqForSpawn, requestedFlavor, call)
+	if spawnable == 0 {
+		s.Debug("spawnMultiple can't spawn due to lack of quota")
+		return
+	}
+	perServer := flavor.HasSpaceFor(reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk)
+	if perServer == 0 {
+		s.Error("determined flavor doesn't have space for req", "flavor", flavor, "req", reqForSpawn)
+		return
+	}
+	todo := int(math.Ceil(float64(desired) / float64(perServer)))
+	needed := todo - spawningCmd
+	if needed <= 0 {
+		s.Debug("spawnMultiple is spawning enough for cmd already", "cmd", cmd, "todo", todo, "already", spawningCmd)
+		return
+	}
+	todo = needed
+	if spawnable < todo {
+		todo = spawnable
+	}
+	var allowed int
+	if s.config.SimultaneousSpawns > 0 {
+		allowed = s.config.SimultaneousSpawns - spawningTotal
+		if allowed < todo {
+			todo = allowed
+		}
+	}
+
+	// spawn servers in the background
+	s.Debug("spawnMultiple will spawn new servers", "cmd", cmd, "desired", desired, "perserver", perServer, "spawnable", spawnable, "allowed", allowed, "already", spawningCmd, "actual", todo)
+	for i := 0; i < todo; i++ {
+		s.spawningNow[cmd]++
 		go func() {
-			defer internal.LogPanic(s.Logger, "canCount", false)
-			defer func() {
-				s.spawnMutex.Lock()
-				delete(s.spawningNow, reqStr)
-				s.spawnMutex.Unlock()
-			}()
-
-			reqForSpawn := s.reqForSpawn(req)
-
-			spawnable, flavor := s.checkQuota(reqForSpawn, requestedFlavor, call)
-			if spawnable == 0 {
-				return
-			}
+			defer internal.LogPanic(s.Logger, "spawnMultiple", false)
 
 			s.spawn(reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd, call)
+
+			s.spawnMutex.Lock()
+			s.spawningNow[cmd]--
+			if s.spawningNow[cmd] <= 0 {
+				delete(s.spawningNow, cmd)
+			}
+			s.spawnMutex.Unlock()
 
 			errp := s.processQueue("post spawn")
 			if errp != nil {
@@ -624,8 +670,6 @@ func (s *opst) canCount(cmd string, req *Requirements, call string) int {
 			}
 		}()
 	}
-
-	return canCount
 }
 
 // checkQuota sees if there's enough quota to spawn a server suitable for the
@@ -969,16 +1013,14 @@ func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(c
 	defer func() {
 		cancel()
 		s.scMutex.Lock()
-		delete(s.spawnCanceller, cmd)
+		delete(s.spawnCanceller[cmd], server.ID)
 		s.scMutex.Unlock()
 	}()
 	canceller := make(chan struct{}, 1)
-	// *** canCount() calls spawn() for each requirement 1 at a time, which in
-	// practical terms for wr server corresponds to a unique cmd, so we can
-	// unique based on cmd and cancel the right thing later if needed. Strictly
-	// speaking, this should be based on reqs as well, or canCount should work
-	// with cmds as well.
-	s.spawnCanceller[cmd] = canceller
+	if _, exists := s.spawnCanceller[cmd]; !exists {
+		s.spawnCanceller[cmd] = make(map[string]chan struct{})
+	}
+	s.spawnCanceller[cmd][server.ID] = canceller
 	s.scMutex.Unlock()
 
 	if s.cmdCountRemaining(cmd) <= 0 {
@@ -1007,9 +1049,11 @@ func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(c
 func (s *opst) cmdNotNeeded(cmd string) {
 	s.scMutex.RLock()
 	defer s.scMutex.RUnlock()
-	if canceller, exists := s.spawnCanceller[cmd]; exists {
+	if serverMap, exists := s.spawnCanceller[cmd]; exists {
 		delete(s.spawnCanceller, cmd)
-		close(canceller)
+		for _, canceller := range serverMap {
+			close(canceller)
+		}
 	}
 }
 

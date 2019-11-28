@@ -183,6 +183,7 @@ func (s *k8s) initialize(config interface{}, logger log15.Logger) error {
 	// set our functions for use in schedule() and processQueue()
 	s.reqCheckFunc = s.reqCheck
 	s.canCountFunc = s.canCount
+	s.cantFunc = s.cant
 	s.runCmdFunc = s.runCmd
 	s.stateUpdateFunc = s.stateUpdate
 	s.maxMemFunc = s.maxMem
@@ -396,6 +397,10 @@ func (s *k8s) canCount(cmd string, req *Requirements, call string) int {
 	// 100 is  a big enough block for anyone...
 	return 100
 }
+
+// cant is our cantFunc, which in this case does nothing, since we can't
+// increase available resources.
+func (s *k8s) cant(desired int, cmd string, req *Requirements, call string) {}
 
 // RunFunc calls spawn() and exits with an error = nil when pod has terminated
 // (Runner exited). Or an error if there was a problem.

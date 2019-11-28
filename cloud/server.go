@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -64,6 +64,43 @@ type Flavor struct {
 	Cores int
 	RAM   int // MB
 	Disk  int // GB
+}
+
+// HasSpaceFor takes the cpu, ram and disk requirements of a command and tells
+// you how many of those commands could run simultaneously on a server of our
+// flavor. Returns 0 if not even 1 command could fit on a server with this
+// flavor.
+func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
+	if internal.FloatLessThan(float64(f.Cores), cores) || (f.RAM < ramMB) || (f.Disk < diskGB) {
+		return 0
+	}
+
+	var canDo int
+	if cores == 0 {
+		// rather than allow an infinite or very large number of cmds to run on
+		// a server, because there are still real limits on the number of
+		// processes we can run at once before things start falling over, we
+		// only allow double the actual core count of zero core things to run
+		canDo = f.Cores * 2
+	} else {
+		canDo = int(math.Floor(float64(f.Cores) / cores))
+	}
+	if canDo > 1 {
+		var n int
+		if ramMB > 0 {
+			n = f.RAM / ramMB
+			if n < canDo {
+				canDo = n
+			}
+		}
+		if diskGB > 0 {
+			n = f.Disk / diskGB
+			if n < canDo {
+				canDo = n
+			}
+		}
+	}
+	return canDo
 }
 
 // Server provides details of the server that Spawn() created for you, and some

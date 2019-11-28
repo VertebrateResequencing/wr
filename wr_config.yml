@@ -403,6 +403,19 @@ cloudautoconfirmdead: 30
 # initial server that gets created to run `wr manager`.
 cloudservers: -1
 
+# cloudspawns: How many cloud servers can be spawned simultaneously?
+# This defaults to 10. It is overridden by the --max_spawns option to
+# `wr cloud deploy` and the --cloud_spawns option of `wr manager start`.
+# Note, this is a number (no quotes).
+#
+# This option is only relevant when you are using a cloud scheduler such as
+# OpenStack.
+#
+# 0 means there is no limit to the number of servers that wr will spawn
+# simultaneously. 1 means they will be spawned sequentually. This may be more
+# reliable, but will result in slow scale-up.
+cloudspawns: 10
+
 # cloudcidr: What should be the CIDR of the created subnet?
 # This defaults to "192.168.0.0/18". It is overridden by the --network_cidr
 # option to `wr cloud deploy` and the --cloud_cidr option of `wr manager start`.
