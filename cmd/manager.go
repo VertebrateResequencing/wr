@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -532,6 +532,7 @@ func init() {
 	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	managerStartCmd.Flags().IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(), "maximum number of local cores to use to run cmds; -1 means unlimited")
 	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "maximum MB of local memory to use to run cmds; -1 means unlimited")
+	managerStartCmd.Flags().IntVar(&cloudSpawns, "cloud_spawns", defaultConfig.CloudSpawns, "for cloud schedulers, maximum number of simultaneous server spawns during scale-up")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), fmt.Sprintf("for cloud schedulers, your local username outside of the cloud (max length %d)", maxCloudResourceUsernameLength))
@@ -649,6 +650,7 @@ func startJQ(postCreation []byte) {
 			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
 			StateUpdateFrequency: 1 * time.Minute,
 			MaxInstances:         maxServers,
+			SimultaneousSpawns:   cloudSpawns,
 			MaxLocalCores:        &maxLocalCores,
 			MaxLocalRAM:          &maxLocalRAM,
 			Shell:                config.RunnerExecShell,

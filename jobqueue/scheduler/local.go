@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -71,6 +71,12 @@ type maxResourceGetter func() int
 // particular canCounter call.
 type canCounter func(cmd string, req *Requirements, call string) (canCount int)
 
+// cantHandlers are functions used during processQueue() that are called when
+// the canCounter function returns less than the desired number of jobs. They
+// represent an opportunity to try and increase available resources (eg. by
+// creating new servers).
+type cantHandler func(desired int, cmd string, req *Requirements, call string)
+
 // stateUpdaters are functions used by processQueue() to update any global state
 // that might have become invalid due to changes external to our own actions.
 // (We make use of this in the local struct so that other implementers of
@@ -108,6 +114,7 @@ type local struct {
 	maxMemFunc        maxResourceGetter
 	maxCPUFunc        maxResourceGetter
 	canCountFunc      canCounter
+	cantFunc          cantHandler
 	cmdNotNeededFunc  unneededCmdHandler
 	postProcessFunc   postProcessor
 	stateUpdateFunc   stateUpdater
@@ -195,6 +202,7 @@ func (s *local) initialize(config interface{}, logger log15.Logger) error {
 	s.maxMemFunc = s.maxMem
 	s.maxCPUFunc = s.maxCPU
 	s.canCountFunc = s.canCount
+	s.cantFunc = s.cant
 	s.runCmdFunc = s.runCmd
 	s.stateUpdateFunc = s.stateUpdate
 	s.stateUpdateFreq = s.config.StateUpdateFrequency
@@ -584,6 +592,10 @@ func (s *local) processQueue(reason string) error {
 			canCount = shouldCount
 		}
 
+		if canCount < shouldCount {
+			s.cantFunc(shouldCount-canCount, cmd, req, call)
+		}
+
 		if canCount <= 0 {
 			// try and fill any "gaps" (spare memory/ cpu) by seeing if a cmd
 			// with lesser resource requirements can be run
@@ -717,6 +729,10 @@ func (s *local) canCount(cmd string, req *Requirements, call string) int {
 	}
 	return canCount
 }
+
+// cant is our cantFunc, which in the local case does nothing, since we can't
+// increase available resources.
+func (s *local) cant(desired int, cmd string, req *Requirements, call string) {}
 
 // runCmd runs the command, kills it if it goes much over RAM or time limits.
 // NB: we only return an error if we can't start the cmd, not if the command
