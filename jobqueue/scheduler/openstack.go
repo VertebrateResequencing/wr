@@ -471,7 +471,7 @@ func (s *opst) determineFlavor(req *Requirements, call string) (*cloud.Flavor, e
 		if f == nil {
 			continue
 		}
-		if flavor != nil {
+		if flavor == nil {
 			flavor = f
 			pickedI = i
 			pickedFirst = true
