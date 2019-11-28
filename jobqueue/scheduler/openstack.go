@@ -625,7 +625,7 @@ func (s *opst) spawnMultiple(desired int, cmd string, req *Requirements, call st
 		s.Debug("spawnMultiple can't spawn due to lack of quota")
 		return
 	}
-	perServer := flavor.HasSpaceFor(reqForSpawn.Cores, reqForSpawn.RAM, reqForSpawn.Disk)
+	perServer := flavor.HasSpaceFor(reqForSpawn.Cores, reqForSpawn.RAM, 0) // servers we spawn can have more disk than in the flavor, so we don't consider reqForSpawn.Disk here
 	if perServer == 0 {
 		s.Error("determined flavor doesn't have space for req", "flavor", flavor, "req", reqForSpawn)
 		return
