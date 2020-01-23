@@ -103,6 +103,7 @@ type openstackp struct {
 	ownServer       *servers.Server
 	fmapMutex       sync.RWMutex
 	imapMutex       sync.RWMutex
+	stMutex         sync.RWMutex
 	createdKeyPair  bool
 	useConfigDrive  bool
 	hasDefaultGroup bool
@@ -805,11 +806,13 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		defer internal.LogPanic(p.Logger, "spawn", false)
 
 		var timeoutS float64
+		p.stMutex.RLock()
 		if createdVolume {
 			timeoutS = p.spawnTimesVolume.Value() * 4
 		} else {
 			timeoutS = p.spawnTimes.Value() * 4
 		}
+		p.stMutex.RUnlock()
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
 		}
@@ -831,11 +834,13 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
 					spawnSecs := time.Since(start).Seconds()
+					p.stMutex.Lock()
 					if createdVolume {
 						p.spawnTimesVolume.Add(spawnSecs)
 					} else {
 						p.spawnTimes.Add(spawnSecs)
 					}
+					p.stMutex.Unlock()
 					waitForActive <- nil
 					return
 				}
