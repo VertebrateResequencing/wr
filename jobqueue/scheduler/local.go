@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -499,23 +499,25 @@ func (s *local) removeKey(key string) {
 // possible to run any, does so if it is, otherwise returns the jobs to the
 // queue.
 func (s *local) processQueue(reason string) error {
-	// first perform any global state update needed by the scheduler
-	s.stateUpdateFunc()
-
 	// only process the queue once at a time; other calls to this function
 	// will return immeditely but cause us to recall ourselves when we
 	// complete
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	if s.cleanedUp() {
+		s.mutex.Unlock()
 		return nil
 	}
 	if s.processing {
 		s.recall = true
+		s.mutex.Unlock()
 		return nil
 	}
 	s.processing = true
+	s.mutex.Unlock()
 	s.Debug("processQueue starting", "reason", reason)
+
+	// now perform any global state update needed by the scheduler
+	s.stateUpdateFunc()
 
 	stats := s.queue.Stats()
 	toRelease := make([]string, 0, stats.Items)
@@ -530,9 +532,11 @@ func (s *local) processQueue(reason string) error {
 		}
 		s.postProcessFunc()
 
+		s.mutex.Lock()
 		s.processing = false
 		recall := s.recall
 		s.recall = false
+		s.mutex.Unlock()
 		if recall {
 			go func() {
 				defer internal.LogPanic(s.Logger, "processQueue recall", true)
@@ -618,7 +622,6 @@ func (s *local) processQueue(reason string) error {
 				err := s.runCmdFunc(cmd, req, reserved, call)
 				s.Debug("ran cmd", "cmd", cmd, "call", call)
 
-				s.mutex.Lock()
 				j.Lock()
 				s.runMutex.Lock()
 				s.running[key]--
@@ -641,7 +644,6 @@ func (s *local) processQueue(reason string) error {
 				}
 				s.runMutex.Unlock()
 				j.Unlock()
-				s.mutex.Unlock()
 
 				if err != nil {
 					// users are notified of relevant errors during runCmd; here
