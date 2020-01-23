@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -271,11 +271,17 @@ func (s *Server) Matches(os string, script []byte, configFiles string, flavor *F
 	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID) && s.SharedDisk == sharedDisk
 }
 
-// Allocate records that the given resources have now been used up on this
-// server.
-func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
+// Allocate considers the current usage (according to prior calls)
+// and records the given resources have now been used up on this server, if
+// there was enough space. Returns true if there was enough space and the
+// allocation occurred.
+func (s *Server) Allocate(cores float64, ramMB, diskGB int) bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.checkSpace(cores, ramMB, diskGB) == 0 {
+		return false
+	}
+
 	s.used = true
 
 	if cores == 0 {
@@ -292,6 +298,8 @@ func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
 	if s.onDeathrow {
 		s.cancelDestruction <- true
 	}
+
+	return true
 }
 
 // Used tells you if this server has ever had Allocate() called on it.
@@ -366,6 +374,11 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+	return s.checkSpace(cores, ramMB, diskGB)
+}
+
+// checkSpace does the work of HasSpaceFor. You must hold a read lock on mutex!
+func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 	if internal.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
