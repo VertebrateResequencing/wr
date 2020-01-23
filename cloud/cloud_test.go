@@ -456,8 +456,8 @@ func TestOpenStack(t *testing.T) {
 					ok = server3.Alive()
 					So(ok, ShouldBeTrue)
 
-					server3.Allocate(1, 100, 0)
-					server3.Release(1, 100, 0)
+					server3.Allocate(0, 100, 0)
+					server3.Release(0, 100, 0)
 
 					<-time.After(3 * time.Second)
 
