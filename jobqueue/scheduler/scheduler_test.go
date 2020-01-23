@@ -642,6 +642,7 @@ func TestOpenstack(t *testing.T) {
 		StateUpdateFrequency: 1 * time.Second,
 		Shell:                "bash",
 		MaxInstances:         -1,
+		SimultaneousSpawns:   1,
 	}
 	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
@@ -657,6 +658,13 @@ func TestOpenstack(t *testing.T) {
 	host, err := os.Hostname()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	var novaCmd string
+	if _, errl := exec.LookPath("openstack"); errl == nil {
+		novaCmd = "openstack server"
+	} else if _, errl := exec.LookPath("nova"); errl == nil {
+		novaCmd = "nova"
 	}
 
 	Convey("You can get a new openstack scheduler", t, func() {
@@ -836,139 +844,13 @@ func TestOpenstack(t *testing.T) {
 			})
 		}
 
-		getServerFlavors := func() map[int]int {
-			oss.serversMutex.RLock()
-			defer oss.serversMutex.RUnlock()
-			flavors := make(map[int]int)
-			for _, server := range oss.servers {
-				flavors[server.Flavor.Cores]++
-			}
-			return flavors
-		}
-
-		waitForServers := func(wanted map[int]int) bool {
-			limit := time.After(120 * time.Second)
-			ticker := time.NewTicker(1 * time.Second)
-			for {
-				select {
-				case <-ticker.C:
-					if len(wanted) == 0 {
-						oss.stateUpdate()
-					}
-					have := getServerFlavors()
-					ok := true
-					for cpus, desired := range wanted {
-						if actual, exists := have[cpus]; exists {
-							if actual < desired {
-								ok = false
-								// fmt.Printf("only %d not %d for flavor %d\n", actual, desired, cpus)
-								break
-							}
-						} else {
-							ok = false
-							// fmt.Printf("missing flavor %d\n", cpus)
-							break
-						}
-					}
-					for cpus := range have {
-						if cpus == 1 {
-							// ignore localhost
-							continue
-						}
-						if _, exists := wanted[cpus]; !exists {
-							ok = false
-							// fmt.Printf("extra flavor %d\n", cpus)
-							break
-						}
-					}
-
-					if ok {
-						ticker.Stop()
-						return true
-					}
-					continue
-				case <-limit:
-					ticker.Stop()
-					return false
-				}
-			}
-		}
-
 		// we need to not actually run the real scheduling tests if we're not
 		// running in openstack, because the scheduler will try to ssh to
 		// the servers it spawns
-		var novaCmd string
-		if _, errl := exec.LookPath("openstack"); errl == nil {
-			novaCmd = "openstack server"
-		} else if _, errl := exec.LookPath("nova"); errl == nil {
-			novaCmd = "nova"
-		}
 		if novaCmd != "" && oss.provider.InCloud() {
 			oFile := filepath.Join(tmpdir, "out")
 
 			Convey("Schedule() lets you...", func() {
-				Convey("Ask for many small cmds and then a large cmd but get both running right away", func() {
-					other := make(map[string]string)
-
-					smallCmd := "sleep 1"
-					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
-					err := s.Schedule(smallCmd, smallReq, 0, 1000000)
-					So(err, ShouldBeNil)
-
-					bigCmd := "sleep 2"
-					bigReq := &Requirements{100, 1 * time.Minute, 4, 1, other, true, true, true}
-					err = s.Schedule(bigCmd, bigReq, 0, 1)
-					So(err, ShouldBeNil)
-
-					wanted := make(map[int]int)
-					wanted[2] = 1
-					wanted[4] = 1
-					So(waitForServers(wanted), ShouldBeTrue)
-
-					err = s.Schedule(smallCmd, smallReq, 0, 0)
-					So(err, ShouldBeNil)
-					err = s.Schedule(bigCmd, bigReq, 0, 0)
-					So(err, ShouldBeNil)
-
-					wanted = make(map[int]int)
-					So(waitForServers(wanted), ShouldBeTrue)
-				})
-
-				Convey("Ask for a many large commands and then small cmds and get both running right away and sharing servers", func() {
-					other := make(map[string]string)
-
-					bigCmd := "sleep 1"
-					bigReq := &Requirements{100, 1 * time.Minute, 6, 1, other, true, true, true}
-					err := s.Schedule(bigCmd, bigReq, 0, 1000000)
-					So(err, ShouldBeNil)
-
-					smallCmd := "sleep 5"
-					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
-					err = s.Schedule(smallCmd, smallReq, 0, 4)
-					So(err, ShouldBeNil)
-
-					wanted := make(map[int]int)
-					wanted[8] = 1
-					wanted[2] = 1
-					So(waitForServers(wanted), ShouldBeTrue)
-
-					oss.serversMutex.RLock()
-					for _, server := range oss.servers {
-						if server.Flavor.Cores == 8 {
-							So(server.HasSpaceFor(2, 1, 1), ShouldEqual, 0)
-						}
-					}
-					oss.serversMutex.RUnlock()
-
-					err = s.Schedule(smallCmd, smallReq, 0, 0)
-					So(err, ShouldBeNil)
-					err = s.Schedule(bigCmd, bigReq, 0, 0)
-					So(err, ShouldBeNil)
-
-					wanted = make(map[int]int)
-					So(waitForServers(wanted), ShouldBeTrue)
-				})
-
 				Convey("Run jobs that use a NFS shared disk", func() {
 					cmd := "touch /shared/test1"
 					other := make(map[string]string)
@@ -1002,7 +884,7 @@ func TestOpenstack(t *testing.T) {
 					So(err, ShouldBeNil)
 				})
 
-				if flavorRegex == `^m.*$` && os.Getenv("OS_TENANT_ID") == "" {
+				if flavorRegex == `^[mso].*$` && os.Getenv("OS_TENANT_ID") == "" {
 					Convey("Run a job on a specific flavor", func() {
 						cmd := "sleep 10"
 						other := make(map[string]string)
@@ -1259,6 +1141,174 @@ func TestOpenstack(t *testing.T) {
 			SkipConvey("Actual OpenStack scheduling tests are skipped if not in OpenStack with nova or openstack installed", func() {})
 		}
 	})
+
+	if novaCmd != "" {
+		Convey("You can get a new openstack scheduler that can do multiple spawns", t, func() {
+			tmpdir, errt := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
+			if errt != nil {
+				log.Fatal(errt)
+			}
+			defer os.RemoveAll(tmpdir)
+			config.SavePath = filepath.Join(tmpdir, "os_resources")
+			config.SimultaneousSpawns = 5
+			s, errn := New("openstack", config, testLogger)
+			So(errn, ShouldBeNil)
+			So(s, ShouldNotBeNil)
+			defer func() {
+				s.Cleanup()
+			}()
+			oss := s.impl.(*opst)
+
+			if oss.provider.InCloud() {
+				getServerFlavors := func() map[int]int {
+					oss.serversMutex.RLock()
+					defer oss.serversMutex.RUnlock()
+					flavors := make(map[int]int)
+					for _, server := range oss.servers {
+						flavors[server.Flavor.Cores]++
+					}
+					return flavors
+				}
+
+				waitForServers := func(wanted map[int]int) bool {
+					limit := time.After(120 * time.Second)
+					ticker := time.NewTicker(1 * time.Second)
+					for {
+						select {
+						case <-ticker.C:
+							if len(wanted) == 0 {
+								oss.stateUpdate()
+							}
+							have := getServerFlavors()
+							ok := true
+							for cpus, desired := range wanted {
+								if actual, exists := have[cpus]; exists {
+									if actual < desired {
+										ok = false
+										// fmt.Printf("only %d not %d for flavor %d\n", actual, desired, cpus)
+										break
+									}
+								} else {
+									ok = false
+									// fmt.Printf("missing flavor %d\n", cpus)
+									break
+								}
+							}
+							for cpus := range have {
+								if cpus == 1 {
+									// ignore localhost
+									continue
+								}
+								if _, exists := wanted[cpus]; !exists {
+									ok = false
+									// fmt.Printf("extra flavor %d\n", cpus)
+									break
+								}
+							}
+
+							if ok {
+								ticker.Stop()
+								<-time.After(2 * time.Second)
+								return true
+							}
+							continue
+						case <-limit:
+							ticker.Stop()
+							return false
+						}
+					}
+				}
+
+				other := make(map[string]string)
+
+				Convey("You can Schedule many cmds and a bunch run right away", func() {
+					smallCmd := "sleep 30"
+					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
+					err := s.Schedule(smallCmd, smallReq, 0, config.SimultaneousSpawns*2)
+					So(err, ShouldBeNil)
+
+					wanted := make(map[int]int)
+					wanted[2] = config.SimultaneousSpawns
+					So(waitForServers(wanted), ShouldBeTrue)
+
+					err = s.Schedule(smallCmd, smallReq, 0, 0)
+					So(err, ShouldBeNil)
+
+					wanted = make(map[int]int)
+					So(waitForServers(wanted), ShouldBeTrue)
+				})
+
+				Convey("You can Schedule many small cmds and then a higher priority large cmd and the large runs asap", func() {
+					smallCmd := "sleep 60"
+					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
+					err := s.Schedule(smallCmd, smallReq, 0, config.SimultaneousSpawns*3)
+					So(err, ShouldBeNil)
+
+					bigCmd := "sleep 2"
+					bigReq := &Requirements{100, 1 * time.Minute, 4, 1, other, true, true, true}
+					err = s.Schedule(bigCmd, bigReq, 1, 1)
+					So(err, ShouldBeNil)
+
+					wanted := make(map[int]int)
+					wanted[2] = (config.SimultaneousSpawns * 2) - 1
+					wanted[4] = 1
+					So(waitForServers(wanted), ShouldBeTrue)
+
+					err = s.Schedule(smallCmd, smallReq, 0, 0)
+					So(err, ShouldBeNil)
+					err = s.Schedule(bigCmd, bigReq, 0, 0)
+					So(err, ShouldBeNil)
+
+					wanted = make(map[int]int)
+					So(waitForServers(wanted), ShouldBeTrue)
+				})
+
+				Convey("You can Schedule a large command and then a small cmd and get both running and sharing servers", func() {
+					bigCmd := "sleep 15"
+					bigReq := &Requirements{100, 1 * time.Minute, 6, 1, other, true, true, true}
+					err := s.Schedule(bigCmd, bigReq, 0, config.SimultaneousSpawns-1)
+					So(err, ShouldBeNil)
+
+					smallCmd := "sleep 16"
+					smallReq := &Requirements{100, 1 * time.Minute, 2, 1, other, true, true, true}
+					err = s.Schedule(smallCmd, smallReq, 0, config.SimultaneousSpawns)
+					So(err, ShouldBeNil)
+
+					wanted := make(map[int]int)
+					wanted[8] = config.SimultaneousSpawns - 1
+					wanted[2] = 1
+					So(waitForServers(wanted), ShouldBeTrue)
+
+					oss.serversMutex.RLock()
+					eightcores := 0
+					twocores := 0
+					space := 0
+					for _, server := range oss.servers {
+						if server.Flavor.Cores == 8 {
+							eightcores++
+							thisSpace := server.HasSpaceFor(2, 1, 1)
+							space += thisSpace
+						} else {
+							twocores++
+						}
+					}
+					oss.serversMutex.RUnlock()
+
+					err = s.Schedule(smallCmd, smallReq, 0, 0)
+					So(err, ShouldBeNil)
+					err = s.Schedule(bigCmd, bigReq, 0, 0)
+					So(err, ShouldBeNil)
+
+					wanted = make(map[int]int)
+					So(waitForServers(wanted), ShouldBeTrue)
+
+					So(eightcores, ShouldEqual, config.SimultaneousSpawns-1)
+					So(space, ShouldEqual, 0)
+					So(twocores, ShouldBeBetweenOrEqual, 1, config.SimultaneousSpawns)
+				})
+			}
+		})
+	}
 }
 
 func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {

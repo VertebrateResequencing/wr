@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -67,6 +67,7 @@ type opst struct {
 	reservedVolume    int
 	spawningNow       map[string]int
 	servers           map[string]*cloud.Server
+	spawnedServers    map[string]*cloud.Server
 	msgCB             MessageCallBack
 	badServerCB       BadServerCallBack
 	recoveredServers  map[string]bool
@@ -352,6 +353,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 	}
 	s.postProcessFunc = s.postProcess
 	s.cmdNotNeededFunc = s.cmdNotNeeded
+	s.spawnedServers = make(map[string]*cloud.Server)
 
 	// pass through our shell config and logger to our local embed, as well as
 	// creating its stopAuto channel
@@ -915,8 +917,9 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 			var exePath, stdout string
 			if exePath, err = exec.LookPath(exe); err == nil {
 				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-					stdout, _, err = server.RunCmd(ctx, "file "+exePath, false)
-					return err
+					var errRun error
+					stdout, _, errRun = server.RunCmd(ctx, "file "+exePath, false)
+					return errRun
 				})
 				if stdout != "" {
 					if strings.Contains(stdout, "No such file") {
@@ -928,8 +931,8 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 						err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.UploadFile(ctx, exePath, exePath) })
 						if err == nil {
 							err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-								_, _, err = server.RunCmd(ctx, "chmod u+x "+exePath, false)
-								return err
+								_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
+								return errRun
 							})
 						} else if err.Error() != serverNotNeededErrStr {
 							err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
@@ -944,8 +947,8 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 					err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.UploadFile(ctx, exePath, exePath) })
 					if err == nil {
 						err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-							_, _, err = server.RunCmd(ctx, "chmod u+x "+exePath, false)
-							return err
+							_, _, errRun := server.RunCmd(ctx, "chmod u+x "+exePath, false)
+							return errRun
 						})
 					} else if err.Error() != serverNotNeededErrStr {
 						err = fmt.Errorf("could not upload exe [%s]: %s (try putting the exe in /tmp?)", exePath, err)
@@ -988,15 +991,15 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 		return
 	}
 
-	logger.Debug("server useable")
 	if _, failed := s.ffCache.Get(flavor.ID); failed {
 		s.Debug("server successfully spawned on previously failed flavor", "flavor", flavor.Name)
 		s.ffCache.Delete(flavor.ID)
 	}
 
 	s.serversMutex.Lock()
-	s.servers[server.ID] = server
+	s.spawnedServers[server.ID] = server
 	s.serversMutex.Unlock()
+	logger.Debug("server became usable")
 }
 
 // actOnServerIfNeeded runs the given code unless cleanup() has been called, or
@@ -1085,9 +1088,8 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	s.serversMutex.RLock()
 	var server *cloud.Server
 	for sid, thisServer := range s.servers {
-		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && thisServer.HasSpaceFor(req.Cores, req.RAM, req.Disk) > 0 {
+		if !thisServer.IsBad() && thisServer.Matches(requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk) && thisServer.Allocate(req.Cores, req.RAM, req.Disk) {
 			server = thisServer
-			server.Allocate(req.Cores, req.RAM, req.Disk)
 
 			// *** reservedCh is buffered and sending on it should never
 			// block, but somehow we have gotten stuck here before; make
@@ -1169,10 +1171,25 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 	return err
 }
 
-// stateUpdate checks all our servers are really alive.
+// stateUpdate checks all our servers are really alive, and adds newly spawned
+// servers to the map that runCmd will check.
 func (s *opst) stateUpdate() {
 	s.stateMutex.Lock()
 	defer s.stateMutex.Unlock()
+
+	// when spawn() has finished creating a server and it is usable, it doesn't
+	// immediately add it to s.servers map, since if this happens during a
+	// processQueue() call then we could break bin-packing, with low priority
+	// jobs getting allocated to the new server. Instead spawn() adds the new
+	// server to spawnedServers, and now we move them to servers, since this
+	// method is called once at the start of processQueue()
+	s.serversMutex.Lock()
+	for id, server := range s.spawnedServers {
+		s.servers[id] = server
+		delete(s.spawnedServers, id)
+		s.Debug("made server eligible for use", "id", id)
+	}
+	s.serversMutex.Unlock()
 
 	var servers []*cloud.Server
 	s.serversMutex.Lock()
