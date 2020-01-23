@@ -1425,6 +1425,10 @@ func (s *opst) cleanup() {
 	// bring down all our servers
 	s.serversMutex.Lock()
 	close(s.stopRSMonitoring)
+	for id, server := range s.spawnedServers {
+		s.servers[id] = server
+		delete(s.spawnedServers, id)
+	}
 	for sid, server := range s.servers {
 		if sid == localhostName {
 			continue
