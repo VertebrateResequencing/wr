@@ -129,6 +129,7 @@ type local struct {
 	runMutex          sync.RWMutex
 	mutex             sync.Mutex
 	rpMutex           sync.Mutex
+	apMutex           sync.Mutex
 	cleaned           bool
 	autoProcessing    bool
 	processing        bool
@@ -477,16 +478,18 @@ func (s *local) maxCPU() int {
 }
 
 // removeKey removes a key from the queue, for when there are no more jobs for
-// that key. If this results in an empty queue, stops autoProcessing. You must
-// hold the lock on s before calling this!
+// that key. If this results in an empty queue, stops autoProcessing.
 func (s *local) removeKey(key string) {
-	if s.cleanedUp() {
-		return
-	}
 	err := s.queue.Remove(key)
 	if err != nil {
+		qerr, ok := err.(queue.Error)
+
+		if ok && qerr.Err == queue.ErrQueueClosed {
+			return
+		}
+
 		// warn unless we've already removed this key
-		if qerr, ok := err.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+		if !ok || qerr.Err != queue.ErrNotFound {
 			s.Warn("processQueue item removal failed", "err", err)
 		}
 	}
@@ -837,6 +840,8 @@ func (s *local) startAutoProcessing() {
 	if s.cleanedUp() {
 		return
 	}
+	s.apMutex.Lock()
+	defer s.apMutex.Unlock()
 	if s.autoProcessing {
 		return
 	}
@@ -870,11 +875,10 @@ func (s *local) startAutoProcessing() {
 }
 
 // stopAutoProcessing turns off the periodic processQueue() calls initiated by
-// startAutoProcessing(). You must hold the lock on s before calling this!
+// startAutoProcessing().
 func (s *local) stopAutoProcessing() {
-	if s.cleanedUp() {
-		return
-	}
+	s.apMutex.Lock()
+	defer s.apMutex.Unlock()
 	if !s.autoProcessing {
 		return
 	}
