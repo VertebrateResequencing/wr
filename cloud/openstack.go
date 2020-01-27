@@ -104,6 +104,7 @@ type openstackp struct {
 	fmapMutex       sync.RWMutex
 	imapMutex       sync.RWMutex
 	stMutex         sync.RWMutex
+	spMutex         sync.RWMutex
 	createdKeyPair  bool
 	useConfigDrive  bool
 	hasDefaultGroup bool
@@ -741,7 +742,10 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// if we previously had a problem spawning a server, wait before attempting
 	// again
-	if p.spawnFailed {
+	p.spMutex.RLock()
+	sf := p.spawnFailed
+	p.spMutex.RUnlock()
+	if sf {
 		time.Sleep(p.errorBackoff.Duration())
 	}
 
@@ -795,7 +799,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	usingQuotaCh <- true
 
 	if err != nil {
+		p.spMutex.Lock()
 		p.spawnFailed = true
+		p.spMutex.Unlock()
 		return serverID, serverIP, serverName, adminPass, err
 	}
 
@@ -865,17 +871,21 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		// since we're going to return an error that we failed to spawn, try and
 		// delete the bad server in case it is still there
+		p.spMutex.Lock()
 		p.spawnFailed = true
+		p.spMutex.Unlock()
 		delerr := servers.Delete(p.computeClient, server.ID).ExtractErr()
 		if delerr != nil {
 			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
 		}
 		return serverID, serverIP, serverName, adminPass, err
 	}
+	p.spMutex.Lock()
 	if p.spawnFailed {
 		p.errorBackoff.Reset()
 	}
 	p.spawnFailed = false
+	p.spMutex.Unlock()
 
 	// *** NB. it can still take some number of seconds before I can ssh to it
 
