@@ -999,7 +999,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	s.serversMutex.Lock()
 	s.spawnedServers[server.ID] = server
 	s.serversMutex.Unlock()
-	logger.Debug("server became usable")
+	logger.Debug("server became usable", "flavor", flavor.Name)
 }
 
 // actOnServerIfNeeded runs the given code unless cleanup() has been called, or
@@ -1066,12 +1066,6 @@ func (s *opst) cmdNotNeeded(cmd string) {
 // that many times).
 func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call string) error {
 	logger := s.Logger.New("call", call)
-
-	// while it doesn't happen in practice with jobqueue.Server, it is
-	// theoretically possible for our caller to change req while we run, but the
-	// req details supplied to our Allocate() and Release() calls must match. So
-	// clone our own req that doesn't change
-	req = req.Clone()
 
 	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(req)
 	if err != nil {

@@ -300,7 +300,7 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, priority uint8, coun
 	s.limiter[cmd] = count
 	s.Unlock()
 
-	err := s.impl.schedule(cmd, req, priority, count)
+	err := s.impl.schedule(cmd, req.Clone(), priority, count)
 
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {
