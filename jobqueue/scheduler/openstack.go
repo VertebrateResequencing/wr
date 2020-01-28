@@ -76,7 +76,7 @@ type opst struct {
 	dfCache           *cache.Cache
 	serversMutex      sync.RWMutex
 	cbmutex           sync.RWMutex
-	scMutex           sync.RWMutex
+	scMutex           sync.Mutex
 	stateMutex        sync.Mutex
 	rsMutex           sync.Mutex
 	spawnMutex        sync.Mutex
@@ -1050,8 +1050,8 @@ func (s *opst) actOnServerIfNeeded(server *cloud.Server, cmd string, code func(c
 
 // cmdNotNeeded cancels the context set by actOnServerIfNeeded(), if any.
 func (s *opst) cmdNotNeeded(cmd string) {
-	s.scMutex.RLock()
-	defer s.scMutex.RUnlock()
+	s.scMutex.Lock()
+	defer s.scMutex.Unlock()
 	if serverMap, exists := s.spawnCanceller[cmd]; exists {
 		delete(s.spawnCanceller, cmd)
 		for _, canceller := range serverMap {
