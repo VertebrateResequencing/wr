@@ -136,6 +136,7 @@ type Server struct {
 	mutex             sync.RWMutex
 	hmutex            sync.Mutex
 	csmutex           sync.Mutex
+	closeMutex        sync.Mutex
 	IsHeadNode        bool
 	SharedDisk        bool // the server will mount /shared
 	created           bool // to distinguish instances we discovered or spawned
@@ -708,6 +709,8 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 
 // UploadFile uploads a local file to the given location on the server.
 func (s *Server) UploadFile(ctx context.Context, source string, dest string) error {
+	s.closeMutex.Lock()
+	defer s.closeMutex.Unlock()
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
@@ -858,6 +861,8 @@ func (s *Server) GetTimeZone(ctx context.Context) (*time.Location, error) {
 
 // CreateFile creates a new file with the given content on the server.
 func (s *Server) CreateFile(ctx context.Context, content string, dest string) error {
+	s.closeMutex.Lock()
+	defer s.closeMutex.Unlock()
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
@@ -889,6 +894,8 @@ func (s *Server) CreateFile(ctx context.Context, content string, dest string) er
 // DownloadFile downloads a file from the server and stores it locally. The
 // directory for your local file must already exist.
 func (s *Server) DownloadFile(ctx context.Context, source string, dest string) error {
+	s.closeMutex.Lock()
+	defer s.closeMutex.Unlock()
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
@@ -967,6 +974,8 @@ func (s *Server) MkDir(ctx context.Context, dir string) error {
 // the ability to sudo is required! Also assumes you don't have any other shares
 // configured, and no other process started the NFS server!
 func (s *Server) CreateSharedDisk() error {
+	s.closeMutex.Lock()
+	defer s.closeMutex.Unlock()
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
 	if s.createdShare {
