@@ -136,7 +136,6 @@ type Server struct {
 	mutex             sync.RWMutex
 	hmutex            sync.Mutex
 	csmutex           sync.Mutex
-	closeMutex        sync.Mutex
 	IsHeadNode        bool
 	SharedDisk        bool // the server will mount /shared
 	created           bool // to distinguish instances we discovered or spawned
@@ -630,6 +629,41 @@ func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
 	s.sshClientSessions[clientIndex]--
 }
 
+// SFTPClient is like sftp.NewClient(), but the underlying
+// clientConn.conn.WriteCloser is mutex protected to avoid data races between
+// closes due to errors and direct Close() calls on the *sftp.Client.
+func SFTPClient(conn *ssh.Client) (*sftp.Client, error) {
+	s, err := conn.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	if err = s.RequestSubsystem("sftp"); err != nil {
+		return nil, err
+	}
+	pw, err := s.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	pw = &threadSafeWriteCLoser{WriteCloser: pw}
+	pr, err := s.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	return sftp.NewClientPipe(pr, pw)
+}
+
+type threadSafeWriteCLoser struct {
+	io.WriteCloser
+	sync.Mutex
+}
+
+func (c *threadSafeWriteCLoser) Close() error {
+	c.Lock()
+	defer c.Unlock()
+	return c.WriteCloser.Close()
+}
+
 // RunCmd runs the given command on the server, optionally in the background.
 // You get the command's STDOUT and STDERR as strings.
 func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error) {
@@ -709,14 +743,12 @@ func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdou
 
 // UploadFile uploads a local file to the given location on the server.
 func (s *Server) UploadFile(ctx context.Context, source string, dest string) error {
-	s.closeMutex.Lock()
-	defer s.closeMutex.Unlock()
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
 	}
 
-	client, err := sftp.NewClient(sshClient)
+	client, err := SFTPClient(sshClient)
 	if err != nil {
 		return err
 	}
@@ -861,14 +893,12 @@ func (s *Server) GetTimeZone(ctx context.Context) (*time.Location, error) {
 
 // CreateFile creates a new file with the given content on the server.
 func (s *Server) CreateFile(ctx context.Context, content string, dest string) error {
-	s.closeMutex.Lock()
-	defer s.closeMutex.Unlock()
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
 	}
 
-	client, err := sftp.NewClient(sshClient)
+	client, err := SFTPClient(sshClient)
 	if err != nil {
 		return err
 	}
@@ -894,14 +924,12 @@ func (s *Server) CreateFile(ctx context.Context, content string, dest string) er
 // DownloadFile downloads a file from the server and stores it locally. The
 // directory for your local file must already exist.
 func (s *Server) DownloadFile(ctx context.Context, source string, dest string) error {
-	s.closeMutex.Lock()
-	defer s.closeMutex.Unlock()
 	sshClient, _, err := s.SSHClient(ctx)
 	if err != nil {
 		return err
 	}
 
-	client, err := sftp.NewClient(sshClient)
+	client, err := SFTPClient(sshClient)
 	if err != nil {
 		return err
 	}
@@ -974,8 +1002,6 @@ func (s *Server) MkDir(ctx context.Context, dir string) error {
 // the ability to sudo is required! Also assumes you don't have any other shares
 // configured, and no other process started the NFS server!
 func (s *Server) CreateSharedDisk() error {
-	s.closeMutex.Lock()
-	defer s.closeMutex.Unlock()
 	s.csmutex.Lock()
 	defer s.csmutex.Unlock()
 	if s.createdShare {
