@@ -1782,7 +1782,7 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 		return false, err
 	}
 
-	job := item.Data.(*Job)
+	job := item.Data().(*Job)
 	job.Lock()
 	job.killCalled = true
 
@@ -1833,7 +1833,7 @@ func (s *Server) deleteJobs(keys []string) []string {
 				deleted = append(deleted, jobkey)
 				toDelete = append(toDelete, jobkey)
 
-				job := item.Data.(*Job)
+				job := item.Data().(*Job)
 				if job.getScheduledRunner() {
 					schedGroups[job.getSchedulerGroup()]++
 				}
@@ -1892,7 +1892,7 @@ func (s *Server) killJobsOnServers(serverIDs map[string]bool) []*Job {
 					// having killed it, but still return the client
 					// version of the job
 					if item, err := s.q.Get(job.Key()); err == nil && item != nil {
-						liveJob := item.Data.(*Job)
+						liveJob := item.Data().(*Job)
 						job.State = liveJob.State
 						job.UntilBuried = liveJob.UntilBuried
 						if job.State == JobStateRunning && !liveJob.StartTime.IsZero() {
@@ -2165,7 +2165,7 @@ func (s *Server) scheduleRunners(group string) {
 					if item == nil {
 						break
 					}
-					job := item.Data.(*Job)
+					job := item.Data().(*Job)
 					job.Lock()
 					job.FailReason = FailReasonResource
 					job.Unlock()

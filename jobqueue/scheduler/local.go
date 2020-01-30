@@ -289,7 +289,7 @@ func (s *local) schedule(cmd string, req *Requirements, priority uint8, count in
 	if err != nil {
 		if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrAlreadyExists {
 			// update the job's count and item priority (only)
-			j := item.Data.(*job)
+			j := item.Data().(*job)
 			j.Lock()
 			s.runMutex.RLock()
 			running := s.running[key]
@@ -362,7 +362,7 @@ func (s *local) cmdCountRemaining(cmd string) int {
 		return 0
 	}
 
-	j := item.Data.(*job)
+	j := item.Data().(*job)
 	j.RLock()
 	count := j.count
 	j.RUnlock()
@@ -563,7 +563,7 @@ func (s *local) processQueue(reason string) error {
 			return err
 		}
 		key := item.Key
-		j := item.Data.(*job)
+		j := item.Data().(*job)
 		j.RLock()
 		cmd := j.cmd
 		req := j.req

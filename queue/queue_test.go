@@ -206,7 +206,7 @@ func TestQueue(t *testing.T) {
 		Convey("You can get an item back out", func() {
 			item, err := queue.Get("key_0")
 			So(err, ShouldBeNil)
-			So(item.Data, ShouldEqual, "data")
+			So(item.Data(), ShouldEqual, "data")
 			So(item.creation, ShouldHappenOnOrBefore, items["key_0"].creation)
 		})
 
@@ -235,7 +235,7 @@ func TestQueue(t *testing.T) {
 			So(ok, ShouldBeTrue)
 			So(qerr.Err, ShouldEqual, ErrAlreadyExists)
 			So(err.Error(), ShouldEqual, "queue(myqueue) Add(key_0): already exists")
-			So(item.Data, ShouldEqual, "data")
+			So(item.Data(), ShouldEqual, "data")
 			So(item.creation, ShouldHappenOnOrBefore, items["key_0"].creation)
 		})
 
@@ -408,7 +408,7 @@ func TestQueue(t *testing.T) {
 						qerr, ok = err.(Error)
 						So(ok, ShouldBeTrue)
 						So(qerr.Err, ShouldEqual, ErrNotFound)
-						err = queue.Update(item2.Key, "", item2.Data, 0, 0*time.Second, 0*time.Second)
+						err = queue.Update(item2.Key, "", item2.Data(), 0, 0*time.Second, 0*time.Second)
 						So(err, ShouldNotBeNil)
 						qerr, ok = err.(Error)
 						So(ok, ShouldBeTrue)
@@ -1066,7 +1066,7 @@ func TestQueue(t *testing.T) {
 				item, err := queue.Reserve(fmt.Sprintf("%d", dataid), 0)
 				So(err, ShouldBeNil)
 				So(item, ShouldNotBeNil)
-				So(item.Data.(*testdata).ID, ShouldEqual, dataid)
+				So(item.Data().(*testdata).ID, ShouldEqual, dataid)
 			}
 		})
 
@@ -1299,7 +1299,7 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeTrue)
 
-			err = queue.Update("key_4", "", four.Data, fourStats.Priority, fourStats.Delay, fourStats.TTR, []string{})
+			err = queue.Update("key_4", "", four.Data(), fourStats.Priority, fourStats.Delay, fourStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			So(four.Dependencies(), ShouldResemble, []string{})
@@ -1314,7 +1314,7 @@ func TestQueue(t *testing.T) {
 			So(five.Dependencies(), ShouldResemble, []string{"key_1", "key_2", "key_3"})
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
 			So(err, ShouldBeNil)
 
 			fiveStats = five.Stats()
@@ -1334,7 +1334,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateReady)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
 			So(err, ShouldBeNil)
 
 			So(five.Dependencies(), ShouldResemble, []string{"key_2", "key_1", "key_3"})
@@ -1344,13 +1344,13 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_3"})
 			So(err, ShouldBeNil)
 
 			// (you can be dependent on items that do not exist in the queue)
 			So(five.Stats().State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
 
@@ -1360,13 +1360,13 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateRun)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
 			So(err, ShouldBeNil)
 
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
@@ -1377,7 +1377,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateRun)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, 1*time.Second, fiveStats.TTR, []string{})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, 1*time.Second, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			err = queue.Release(five.Key)
@@ -1385,13 +1385,13 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDelay)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_2", "key_1", "key_3"})
 			So(err, ShouldBeNil)
 
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{})
 			So(err, ShouldBeNil)
 
 			So(five.Stats().State, ShouldEqual, ItemStateReady)
@@ -1406,7 +1406,7 @@ func TestQueue(t *testing.T) {
 			fiveStats = five.Stats()
 			So(fiveStats.State, ShouldEqual, ItemStateBury)
 
-			err = queue.Update("key_5", "five", five.Data, fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_1"})
+			err = queue.Update("key_5", "five", five.Data(), fiveStats.Priority, fiveStats.Delay, fiveStats.TTR, []string{"key_1"})
 			So(err, ShouldBeNil)
 
 			So(five.Stats().State, ShouldEqual, ItemStateBury)
