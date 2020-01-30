@@ -5858,7 +5858,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(240 * time.Second)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
