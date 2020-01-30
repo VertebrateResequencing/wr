@@ -858,7 +858,7 @@ func (s *Server) reserveWithLimits(group string, wait time.Duration) (*queue.Ite
 		if item == nil {
 			s.limiter.Decrement(limitGroups)
 		} else {
-			item.Data.(*Job).noteIncrementedLimitGroups(limitGroups)
+			item.Data().(*Job).noteIncrementedLimitGroups(limitGroups)
 		}
 	}
 
