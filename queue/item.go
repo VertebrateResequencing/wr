@@ -45,7 +45,7 @@ const (
 type Item struct {
 	Key           string
 	ReserveGroup  string
-	Data          interface{}
+	data          interface{}
 	state         ItemState
 	reserves      uint32
 	timeouts      uint32
@@ -89,7 +89,7 @@ func newItem(key string, reserveGroup string, data interface{}, priority uint8, 
 	return &Item{
 		Key:          key,
 		ReserveGroup: reserveGroup,
-		Data:         data,
+		data:         data,
 		state:        ItemStateDelay,
 		reserves:     0,
 		timeouts:     0,
@@ -102,6 +102,20 @@ func newItem(key string, reserveGroup string, data interface{}, priority uint8, 
 		readyAt:      time.Now().Add(delay),
 		creation:     time.Now(),
 	}
+}
+
+// Data returns the data of this item.
+func (item *Item) Data() interface{} {
+	item.mutex.RLock()
+	defer item.mutex.RUnlock()
+	return item.data
+}
+
+// SetData stores new data in this item.
+func (item *Item) SetData(data interface{}) {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+	item.data = data
 }
 
 // Stats returns some information about the item.

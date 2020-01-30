@@ -219,7 +219,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 				if srerr == "" && item != nil {
 					// clean up any past state to have a fresh job ready to run
-					sjob := item.Data.(*Job)
+					sjob := item.Data().(*Job)
 					sjob.Lock()
 					sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
 					sjob.Exited = false
@@ -422,7 +422,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 					err = s.q.Kick(jobkey)
 					if err == nil {
-						job := item.Data.(*Job)
+						job := item.Data().(*Job)
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
 						s.Debug("unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
@@ -481,8 +481,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						if iState == queue.ItemStateRun {
 							continue
 						}
-						toModifyJobs = append(toModifyJobs, item.Data.(*Job))
-						toModifyKeys[jobkey] = item.Data.(*Job)
+						toModifyJobs = append(toModifyJobs, item.Data().(*Job))
+						toModifyKeys[jobkey] = item.Data().(*Job)
 					}
 
 					modified := cr.Modifier.Modify(toModifyJobs, s)
@@ -733,7 +733,7 @@ func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
 	if err != nil || item.Stats().State != queue.ItemStateRun {
 		return item, nil, ErrBadJob
 	}
-	job := item.Data.(*Job)
+	job := item.Data().(*Job)
 
 	if cr.ClientID != job.ReservedBy {
 		return item, job, ErrMustReserve
@@ -755,7 +755,7 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
-	sjob := item.Data.(*Job)
+	sjob := item.Data().(*Job)
 	sjob.RLock()
 
 	stats := item.Stats()
