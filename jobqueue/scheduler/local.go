@@ -528,7 +528,7 @@ func (s *local) processQueue(reason string) error {
 		for _, key := range toRelease {
 			errr := s.queue.Release(key)
 			if errr != nil {
-				if qerr, ok := errr.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+				if qerr, ok := errr.(queue.Error); !ok || (qerr.Err != queue.ErrNotFound && qerr.Err != queue.ErrQueueClosed) {
 					s.Warn("processQueue item release failed", "err", errr)
 				}
 			}
@@ -557,7 +557,7 @@ func (s *local) processQueue(reason string) error {
 	for {
 		item, err := s.queue.Reserve("", 0)
 		if err != nil {
-			if qerr, ok := err.(queue.Error); ok && qerr.Err == queue.ErrNothingReady {
+			if qerr, ok := err.(queue.Error); ok && (qerr.Err == queue.ErrNothingReady || qerr.Err == queue.ErrQueueClosed) {
 				return nil
 			}
 			return err
