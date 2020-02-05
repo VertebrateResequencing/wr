@@ -504,8 +504,9 @@ func (s *lsf) generateBsubArgs(queue string, req *Requirements, cmd string, need
 		switch {
 		case len(parts) == 2:
 			bsubArgs = append(bsubArgs, "-R", parts[1])
-		case !strings.Contains(val, `"`):
-			bsubArgs = append(bsubArgs, val)
+		case !strings.Contains(val, `"`) && !strings.Contains(val, `'`):
+			parts = strings.Fields(val)
+			bsubArgs = append(bsubArgs, parts...)
 		default:
 			// *** not sure how to handle any arbitrary value supplied, since
 			// we'd have to split flag from value in to separate list elements
