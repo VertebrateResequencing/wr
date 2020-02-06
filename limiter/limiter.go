@@ -22,7 +22,7 @@ package limiter
 // package, the Limiter.
 
 import (
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 	"time"
 )
 

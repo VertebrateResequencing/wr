@@ -44,8 +44,9 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"

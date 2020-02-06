@@ -23,13 +23,13 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
+	sync "github.com/sasha-s/go-deadlock"
 	"math"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 

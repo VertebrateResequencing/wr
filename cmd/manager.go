@@ -20,7 +20,9 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	sync "github.com/sasha-s/go-deadlock"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -705,6 +707,13 @@ func startJQ(postCreation []byte) {
 	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
 	if runnerDebug {
 		runnerCmd += " --debug"
+	}
+
+	deadlockBuf := new(bytes.Buffer)
+	sync.Opts.LogBuf = deadlockBuf
+	sync.Opts.OnPotentialDeadlock = func() {
+		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
+		os.Exit(2)
 	}
 
 	// start the jobqueue server

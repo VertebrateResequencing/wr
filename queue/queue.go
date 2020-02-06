@@ -86,7 +86,7 @@ package queue
 
 import (
 	"errors"
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 	"time"
 
 	"github.com/inconshreveable/log15"
@@ -287,6 +287,7 @@ func (queue *Queue) readyAdded() {
 				}
 			}
 			queue.mutex.RUnlock()
+			queue.Debug("new ready items, triggering callback")
 			queue.readyAddedCb(queue.Name, data)
 
 			queue.readyAddedCbMutex.Lock()

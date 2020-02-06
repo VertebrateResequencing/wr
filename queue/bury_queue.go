@@ -22,7 +22,7 @@ package queue
 // removing items
 
 import (
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 )
 
 type buryQueue struct {

@@ -26,7 +26,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 	"sync/atomic"
 	"syscall"
 	"time"

@@ -34,7 +34,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 	"time"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
