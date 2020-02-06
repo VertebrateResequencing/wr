@@ -644,7 +644,7 @@ func SFTPClient(conn *ssh.Client) (*sftp.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	pw = &threadSafeWriteCLoser{WriteCloser: pw}
+	pw = &threadSafeWriteCloser{WriteCloser: pw}
 	pr, err := s.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -653,12 +653,12 @@ func SFTPClient(conn *ssh.Client) (*sftp.Client, error) {
 	return sftp.NewClientPipe(pr, pw)
 }
 
-type threadSafeWriteCLoser struct {
+type threadSafeWriteCloser struct {
 	io.WriteCloser
 	sync.Mutex
 }
 
-func (c *threadSafeWriteCLoser) Close() error {
+func (c *threadSafeWriteCloser) Close() error {
 	c.Lock()
 	defer c.Unlock()
 	return c.WriteCloser.Close()
