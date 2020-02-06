@@ -26,7 +26,7 @@ package queue
 // duplication...
 
 import (
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 )
 
 type depQueue struct {

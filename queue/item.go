@@ -23,7 +23,7 @@ package queue
 // This file implements the items that are added to queues.
 
 import (
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 	"time"
 )
 

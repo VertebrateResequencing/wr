@@ -1298,6 +1298,7 @@ func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails
 
 	go func() {
 		defer internal.LogPanic(s.Logger, "recover", true)
+		s.Debug("recovered server will be checked for running jobs periodically", "server", server.ID)
 
 		// periodically check on this server; when it is no longer running
 		// anything, destroy it
@@ -1306,11 +1307,12 @@ func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails
 			select {
 			case <-ticker.C:
 				active := true
-				_, _, errr := server.RunCmd(context.Background(), "pgrep -f '"+cmd+"'", false)
+				so, se, errr := server.RunCmd(context.Background(), "pgrep -f '"+cmd+"'", false)
 				if errr != nil {
 					// *** assume the error is because a process with cmd
 					// doesn't exist, not because prgrep failed for some other
 					// reason
+					s.Debug("recovered server is no longer running anything", "server", server.ID, "checkCmd", "pgrep -f '"+cmd+"'", "stdout", so, "stderr", se, "err", errr)
 					active = false
 				}
 
@@ -1321,7 +1323,7 @@ func (s *opst) recover(cmd string, req *Requirements, host *RecoveredHostDetails
 					if errd != nil {
 						s.Warn("recovered server destruction failed", "server", server.ID, "err", errd)
 					} else {
-						s.Debug("recovered server was destroyed after going idle")
+						s.Debug("recovered server was destroyed after going idle", "server", server.ID)
 					}
 
 					errp := s.processQueue("openstack recover")

@@ -46,6 +46,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/sftp v1.10.1
 	github.com/ricochet2200/go-disk-usage v0.0.0-20150921141558-f0d1b743428f
+	github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213edefa
 	github.com/sb10/l15h v0.0.0-20170510122137-64c488bf8e22
 	github.com/sevlyar/go-daemon v0.1.5
 	github.com/shirou/gopsutil v2.19.9+incompatible
@@ -77,5 +78,7 @@ replace k8s.io/client-go => k8s.io/client-go v7.0.0+incompatible
 replace github.com/grafov/bcast => github.com/grafov/bcast v0.0.0-20161019100130-e9affb593f6c
 
 replace github.com/sevlyar/go-daemon => github.com/sevlyar/go-daemon v0.1.1-0.20160925164401-01bb5caedcc4
+
+replace sync => github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213edefa // doesn't work?
 
 go 1.13
