@@ -212,10 +212,9 @@ requirements of the job.
 
 "misc" will be used as-is to form the command line used to submit jobs to
 external job schedulers (eg. LSF). For example, --misc '-R avx' might result
-in a command line containing: bsub -R avx. If possible, avoid including single
-or double quotes within the value passed to --misc, as these cause quoting
-issues and will be ignored. The exception to this is when using the LSF
-scheduler you can say --misc '-R "multiple things"' and it will work.
+in a command line containing: bsub -R avx. To avoid quoting issues, surround
+the --misc value in single quotes and if necessary use double quotes within the
+value; do NOT use single quotes within the value. Eg. --misc '-R "foo bar"'.
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
