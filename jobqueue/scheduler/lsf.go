@@ -23,6 +23,7 @@ package scheduler
 
 import (
 	"bufio"
+	"encoding/csv"
 	"fmt"
 	"math"
 	"os/exec"
@@ -35,9 +36,6 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
 )
-
-// lsfRFlag is a const used to pull out -R options supplied by user
-var lsfRFlag = regexp.MustCompile(`-R\s+["']([^"']+)["']`)
 
 // lsf is our implementer of scheduleri
 type lsf struct {
@@ -115,6 +113,9 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 			}
 		}
 	}
+
+	bmgroups := make(map[string]int)
+	parsedBmgroups := false
 
 	// parse bqueues -l to figure out what usable queues we have
 	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l") // #nosec
@@ -260,8 +261,29 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					queue = ""
 				}
 			} else if matches[2] != "all" {
-				s.queues[queue][kind] = len(vals)
-				updateHighest(kind, len(vals))
+				hosts := 0
+				for _, val := range vals {
+					if strings.HasSuffix(val, "/") {
+						// this is a group name, look it up in bmgroup
+						if !parsedBmgroups {
+							perr := s.parseBmgroups(bmgroups)
+							if perr != nil {
+								return perr
+							}
+							parsedBmgroups = true
+						}
+						val = strings.TrimSuffix(val, "/")
+						if n, exists := bmgroups[val]; exists {
+							hosts += n
+						} else {
+							hosts++
+						}
+					} else {
+						hosts++
+					}
+				}
+				s.queues[queue][kind] = hosts
+				updateHighest(kind, hosts)
 			}
 		}
 
@@ -389,6 +411,29 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	return nil
 }
 
+// parseBmgroups parses the output of `bmgroup`, storing group name as a key in
+// the supplied map, with number of hosts in that group as the value.
+func (s *lsf) parseBmgroups(groups map[string]int) error {
+	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup") // #nosec
+	bmgout, err := bmgcmd.StdoutPipe()
+	if err != nil {
+		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bmgroup]: %s", err)}
+	}
+	if err = bmgcmd.Start(); err != nil {
+		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bmgroup]: %s", err)}
+	}
+	bmgScanner := bufio.NewScanner(bmgout)
+	for bmgScanner.Scan() {
+		line := bmgScanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		groups[fields[0]] = len(fields) - 1
+	}
+	return nil
+}
+
 // reserveTimeout achieves the aims of ReserveTimeout().
 func (s *lsf) reserveTimeout(req *Requirements) int {
 	if val, defined := req.Other["rtimeout"]; defined {
@@ -500,18 +545,22 @@ func (s *lsf) generateBsubArgs(queue string, req *Requirements, cmd string, need
 	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
 
 	if val, ok := req.Other["scheduler_misc"]; ok {
-		parts := lsfRFlag.FindStringSubmatch(val)
-		switch {
-		case len(parts) == 2:
-			bsubArgs = append(bsubArgs, "-R", parts[1])
-		case !strings.Contains(val, `"`) && !strings.Contains(val, `'`):
-			parts = strings.Fields(val)
-			bsubArgs = append(bsubArgs, parts...)
-		default:
-			// *** not sure how to handle any arbitrary value supplied, since
-			// we'd have to split flag from value in to separate list elements
-			// or encounter escaped quote issues in the resulting command line
-			s.Warn("scheduler misc option ignored", "misc", val)
+		if strings.Contains(val, `'`) {
+			s.Warn("scheduler misc option ignored due to containing single quotes", "misc", val)
+		} else {
+			r := csv.NewReader(strings.NewReader(val))
+			r.Comma = ' '
+			fields, err := r.Read()
+			if err != nil {
+				s.Warn("scheduler misc option ignored", "misc", val, "err", err)
+			} else {
+				for _, field := range fields {
+					if strings.Contains(field, ` `) {
+						field = `'` + field + `'`
+					}
+					bsubArgs = append(bsubArgs, field)
+				}
+			}
 		}
 	}
 
