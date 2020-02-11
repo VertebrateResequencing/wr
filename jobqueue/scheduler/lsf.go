@@ -442,7 +442,6 @@ func (s *lsf) reserveTimeout(req *Requirements) int {
 			s.Logger.Error(fmt.Sprintf("Failed to convert timeout to integer: %s", err))
 			return defaultReserveTimeout
 		}
-		s.Logger.Debug(fmt.Sprintf("setting runner timeout to %v", timeout))
 		return timeout
 	}
 	return defaultReserveTimeout
@@ -673,14 +672,18 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		// cmds to start running and then get killed.
 		reAid := regexp.MustCompile(`\[(\d+)\]$`)
 		toKill := []string{"-b"}
-		cb := func(matches []string) {
+		cb := func(jobID, stat, jobName string) {
 			count++
-			if count > max && matches[2] != "RUN" {
-				sidaid := matches[1]
-				if aidmatch := reAid.FindStringSubmatch(matches[3]); len(aidmatch) == 2 {
-					sidaid = sidaid + "[" + aidmatch[1] + "]"
+			if count > max && stat != "RUN" {
+				var sidaid string
+				if strings.HasSuffix(jobID, "]") {
+					sidaid = jobID
+				} else if aidmatch := reAid.FindStringSubmatch(jobName); len(aidmatch) == 2 {
+					sidaid = jobID + "[" + aidmatch[1] + "]"
 				}
-				toKill = append(toKill, sidaid)
+				if sidaid != "" {
+					toKill = append(toKill, sidaid)
+				}
 				count--
 			}
 		}
@@ -694,7 +697,7 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 			}
 		}
 	} else {
-		cb := func(matches []string) {
+		cb := func(jobID, stat, jobName string) {
 			count++
 		}
 		err = s.parseBjobs(jobPrefix, cb)
@@ -703,12 +706,11 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 	return count, err
 }
 
-type bjobsCB func(matches []string)
+type bjobsCB func(jobID, stat, jobName string)
 
 // parseBjobs runs bjobs, filters on a job name prefix, excludes exited jobs and
-// gives matches to
-// `^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(jobPrefix\S+)` to your
-// callback for each bjobs output line.
+// gives columns 1 (JOBID), 3 (STAT) and 7 (JOB_NAME) to your callback for each
+// bjobs output line.
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w") // #nosec
 	bjout, err := bjcmd.StdoutPipe()
@@ -721,15 +723,15 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	}
 	bjScanner := bufio.NewScanner(bjout)
 
-	reParse := regexp.MustCompile(`^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(` + jobPrefix + `\S+)`)
 	for bjScanner.Scan() {
 		line := bjScanner.Text()
+		fields := strings.Fields(line)
 
-		if matches := reParse.FindStringSubmatch(line); len(matches) == 4 {
-			if matches[2] == "EXIT" || matches[2] == "DONE" {
+		if len(fields) > 7 {
+			if fields[2] == "EXIT" || fields[2] == "DONE" {
 				continue
 			}
-			callback(matches)
+			callback(fields[0], fields[2], fields[6])
 		}
 	}
 
@@ -758,8 +760,8 @@ func (s *lsf) setBadServerCallBack(cb BadServerCallBack) {}
 // cleanup bkills any remaining jobs we created
 func (s *lsf) cleanup() {
 	toKill := []string{"-b"}
-	cb := func(matches []string) {
-		toKill = append(toKill, matches[1])
+	cb := func(jobID, stat, jobName string) {
+		toKill = append(toKill, jobID)
 	}
 	err := s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
 	if err != nil {
