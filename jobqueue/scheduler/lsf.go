@@ -691,9 +691,9 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 
 		if len(toKill) > 1 {
 			killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
-			errk := killcmd.Run()
-			if errk != nil {
-				s.Warn("checkCmd bkill failed", "err", errk)
+			out, errk := killcmd.CombinedOutput()
+			if errk != nil && !strings.HasPrefix(string(out), "Job has already finished") {
+				s.Warn("checkCmd bkill failed", "cmd", s.bkillExe, "toKill", toKill, "err", errk, "out", string(out))
 			}
 		}
 	} else {
