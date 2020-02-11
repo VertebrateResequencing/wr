@@ -3586,7 +3586,7 @@ func TestJobqueueHighMem(t *testing.T) {
 			defer disconnect(jq2)
 
 			var jobs []*Job
-			cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 8000000000) }'"
+			cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 800000000) }'"
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "run_out_of_mem"})
 			RecMBRound = 1
 			defer func() {
