@@ -728,7 +728,7 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 		fields := strings.Fields(line)
 
 		if len(fields) > 7 {
-			if fields[2] == "EXIT" || fields[2] == "DONE" {
+			if fields[2] == "EXIT" || fields[2] == "DONE" || !strings.HasPrefix(fields[6], jobPrefix) {
 				continue
 			}
 			callback(fields[0], fields[2], fields[6])
