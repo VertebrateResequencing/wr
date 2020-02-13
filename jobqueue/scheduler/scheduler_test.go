@@ -499,16 +499,21 @@ func TestLSF(t *testing.T) {
 
 		Convey("generateBsubArgs() adds in user-specified options", func() {
 			bsubArgs := s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
-			So(strings.HasSuffix(bsubArgs[8], "[1-2]"), ShouldBeTrue)
-			bsubArgs[8] = "random1"
-			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R avx", "-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+			So(strings.HasSuffix(bsubArgs[9], "[1-2]"), ShouldBeTrue)
+			bsubArgs[9] = "random1"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R", "avx", "-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 
 			specifiedOther["scheduler_misc"] = `-R "avx foo"`
 			bsubArgs = s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[9] = "random2"
-			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R", "avx foo", "-J", "random2", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R", "'avx foo'", "-J", "random2", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 
-			specifiedOther["scheduler_misc"] = `-E "un supported"`
+			specifiedOther["scheduler_misc"] = `-E "also supported"`
+			bsubArgs = s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs[9] = "random3"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-E", "'also supported'", "-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			specifiedOther["scheduler_misc"] = `-E "'not supported'"`
 			bsubArgs = s.impl.(*lsf).generateBsubArgs("yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[7] = "random3"
 			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
@@ -574,7 +579,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			Convey("You can Schedule() a new job and have it run while the first is still running", func() {
-				<-time.After(500 * time.Millisecond)
+				<-time.After(3 * time.Second) // *** if the following test fails, it probably just because LSF didn't get any previous jobs running yet; not sure what to do about that
 				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetweenOrEqual, 1, count)
 				So(s.Busy(), ShouldBeTrue)
