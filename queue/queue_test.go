@@ -22,9 +22,10 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
-	"sync"
 	"testing"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	. "github.com/smartystreets/goconvey/convey"
 )

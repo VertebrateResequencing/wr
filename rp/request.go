@@ -21,7 +21,7 @@ package rp
 // This file contains the implementation of request and Receipt.
 
 import (
-	"sync"
+	sync "github.com/sasha-s/go-deadlock"
 )
 
 // Receipt is the unique id of a request

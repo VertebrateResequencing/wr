@@ -31,9 +31,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"

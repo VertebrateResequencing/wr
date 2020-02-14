@@ -80,8 +80,9 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/gofrs/uuid"
