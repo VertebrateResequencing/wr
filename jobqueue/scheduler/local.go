@@ -23,7 +23,6 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
-	sync "github.com/sasha-s/go-deadlock"
 	"math"
 	"os"
 	"os/exec"
@@ -32,6 +31,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"

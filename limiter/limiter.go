@@ -22,8 +22,9 @@ package limiter
 // package, the Limiter.
 
 import (
-	sync "github.com/sasha-s/go-deadlock"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 )
 
 // SetLimitCallback is provided to New(). Your function should take the name of
