@@ -36,10 +36,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	sync "github.com/sasha-s/go-deadlock"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -1122,8 +1123,6 @@ func (s *Server) createQueue() {
 	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 		defer internal.LogPanic(s.Logger, "jobqueue ready added callback", true)
 
-		s.Debug("SetReadyAddedCallback called", "items", len(allitemdata))
-
 		s.ssmutex.RLock()
 		if s.drain || !s.up {
 			s.ssmutex.RUnlock()
@@ -1412,7 +1411,6 @@ func (s *Server) createQueue() {
 				go func(group string) {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners", true)
 					defer s.wg.Done()
-					s.Debug("calling scheduleRunners", "group", group, "count", countIncRunning)
 					s.scheduleRunners(group)
 				}(group)
 			}
@@ -1450,7 +1448,6 @@ func (s *Server) createQueue() {
 
 					if stats.Ready > 0 {
 						s.racmutex.Unlock()
-						s.Debug("forcing a TriggerReadyAddedCallback just in case")
 						q.TriggerReadyAddedCallback()
 					} else {
 						s.racmutex.Unlock()
@@ -2150,7 +2147,6 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		s.Debug("scheduleRunners will Schedule", "group", group, "count", groupCount)
 		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, priority, groupCount)
 		if err != nil {
 			problem := true
