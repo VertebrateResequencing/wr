@@ -22,7 +22,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	sync "github.com/sasha-s/go-deadlock"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -31,6 +30,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -713,7 +714,6 @@ func startJQ(postCreation []byte) {
 	sync.Opts.LogBuf = deadlockBuf
 	sync.Opts.OnPotentialDeadlock = func() {
 		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
-		os.Exit(2)
 	}
 
 	// start the jobqueue server
