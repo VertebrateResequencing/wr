@@ -23,6 +23,7 @@ package queue
 // This file implements the items that are added to queues.
 
 import (
+	"sync/atomic"
 	"time"
 
 	sync "github.com/sasha-s/go-deadlock"
@@ -40,6 +41,10 @@ const (
 	ItemStateDependent ItemState = "dependent"
 	ItemStateRemoved   ItemState = "removed"
 )
+
+// iid is used to give each item a unique incrementing id, necessay when locking
+// items during a sort, for lock order consistency.
+var iid uint64
 
 // Item holds the information about each item in our queue, and has thread-safe
 // functions to update properties as we switch between sub-queues.
@@ -64,6 +69,7 @@ type Item struct {
 	remainingDeps map[string]bool
 	mutex         sync.RWMutex
 	queueIndexes  [5]int
+	iid           uint64
 }
 
 // ItemStats holds information about the Item's state. Remaining is the time
@@ -102,6 +108,7 @@ func newItem(key string, reserveGroup string, data interface{}, priority uint8, 
 		ttr:          ttr,
 		readyAt:      time.Now().Add(delay),
 		creation:     time.Now(),
+		iid:          atomic.AddUint64(&iid, 1),
 	}
 }
 
