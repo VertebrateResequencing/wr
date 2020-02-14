@@ -86,8 +86,9 @@ package queue
 
 import (
 	"errors"
-	sync "github.com/sasha-s/go-deadlock"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/inconshreveable/log15"
 )
