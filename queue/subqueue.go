@@ -23,8 +23,9 @@ package queue
 
 import (
 	"container/heap"
-	sync "github.com/sasha-s/go-deadlock"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"

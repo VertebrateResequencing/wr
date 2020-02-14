@@ -26,10 +26,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	sync "github.com/sasha-s/go-deadlock"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
