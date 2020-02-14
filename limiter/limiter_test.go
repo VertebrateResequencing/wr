@@ -19,10 +19,11 @@
 package limiter
 
 import (
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
