@@ -23,6 +23,7 @@ package jobqueue
 import (
 	"net/http"
 	"strings"
+
 	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/internal"
