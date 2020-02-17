@@ -1745,18 +1745,25 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, 
 	}
 
 	sgroup := job.schedulerGroup
-	var errq error
 	var msg string
+	var bury bool
+	key := job.Key()
 	if job.UntilBuried <= 0 {
-		errq = s.q.Bury(job.Key())
+		bury = true
 		job.State = JobStateBuried
 		msg = "buried job"
 	} else {
-		errq = s.q.Release(job.Key())
 		job.State = JobStateDelayed
 		msg = "released job"
 	}
 	job.Unlock()
+
+	var errq error
+	if bury {
+		errq = s.q.Bury(key)
+	} else {
+		errq = s.q.Release(key)
+	}
 	if errq != nil {
 		return errq
 	}
