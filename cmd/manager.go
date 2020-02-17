@@ -712,6 +712,7 @@ func startJQ(postCreation []byte) {
 
 	deadlockBuf := new(bytes.Buffer)
 	sync.Opts.LogBuf = deadlockBuf
+	sync.Opts.DeadlockTimeout = 5 * time.Minute
 	sync.Opts.OnPotentialDeadlock = func() {
 		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
 	}
