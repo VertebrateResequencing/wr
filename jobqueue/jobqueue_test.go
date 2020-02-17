@@ -71,6 +71,8 @@ func init() {
 	h := l15h.CallerInfoHandler(log15.StderrHandler)
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, h))
 
+	sync.Opts.DeadlockTimeout = 2 * time.Minute
+
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
 	flag.BoolVar(&runnerdebug, "runnerdebug", false, "make the runner create debug files")
