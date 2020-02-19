@@ -3061,6 +3061,7 @@ func TestJobqueueModify(t *testing.T) {
 		}
 
 		reserve := func(schedStr, expected string) *Job {
+			_, _, line, _ := runtime.Caller(1)
 			job, errr := jq.ReserveScheduled(rtime, schedStr)
 			So(errr, ShouldBeNil)
 			if job == nil && schedStr == learnedRgroup {
@@ -3073,16 +3074,18 @@ func TestJobqueueModify(t *testing.T) {
 					job, errr = jq.ReserveScheduled(rtime, "400:30:1:0")
 					So(errr, ShouldBeNil)
 				}
-
-				if job == nil {
-					schedDetails := server.schedulerGroupDetails()
-					if len(schedDetails) > 0 {
-						fmt.Printf("\nschedgrp %s not found, we have:\n", schedStr)
-						for _, val := range schedDetails {
-							fmt.Printf(" - %s\n", val)
-						}
+			}
+			if job == nil {
+				schedDetails := server.schedulerGroupDetails()
+				if len(schedDetails) > 0 {
+					fmt.Printf("\nschedgrp %s not found, we have:\n", schedStr)
+					for _, val := range schedDetails {
+						fmt.Printf(" - %s\n", val)
 					}
+				} else {
+					fmt.Printf("\nschedgrp %s not found, and nothing in the scheduler.\n", schedStr)
 				}
+				fmt.Printf(" *** test from line %d failed\n", line)
 			}
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, expected)
