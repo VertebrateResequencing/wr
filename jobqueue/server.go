@@ -233,14 +233,17 @@ type Server struct {
 	simutex            sync.RWMutex
 	krmutex            sync.RWMutex
 	ssmutex            sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
+	rpmutex            sync.Mutex   // to protect racPending and waitingReserves
 	sync.Mutex
-	sgcmutex    sync.Mutex
-	wsmutex     sync.Mutex
-	up          bool
-	drain       bool
-	blocking    bool
-	racChecking bool
-	killRunners bool
+	sgcmutex        sync.Mutex
+	wsmutex         sync.Mutex
+	up              bool
+	drain           bool
+	blocking        bool
+	racChecking     bool
+	killRunners     bool
+	racPending      bool
+	waitingReserves []chan struct{}
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -1130,6 +1133,19 @@ func (s *Server) createQueue() {
 		}
 		s.ssmutex.RUnlock()
 
+		s.rpmutex.Lock()
+		s.racPending = true
+		s.rpmutex.Unlock()
+		defer func() {
+			s.rpmutex.Lock()
+			s.racPending = false
+			for _, ch := range s.waitingReserves {
+				close(ch)
+			}
+			s.waitingReserves = nil
+			s.rpmutex.Unlock()
+		}()
+
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
@@ -1574,6 +1590,9 @@ func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err e
 	if err != nil {
 		return added, dups, err
 	}
+	s.rpmutex.Lock()
+	s.racPending = true
+	s.rpmutex.Unlock()
 
 	// add to our lookup of job RepGroup to key
 	s.rpl.Lock()
@@ -1716,6 +1735,9 @@ func (s *Server) storeLimitGroups(limitGroups map[string]int) error {
 // need their dependencies updated because they just changed when we stored the
 // jobs.
 func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
+	s.rpmutex.Lock()
+	s.racPending = true
+	s.rpmutex.Unlock()
 	for _, job := range jobs {
 		deps, err := job.Dependencies.incompleteJobKeys(s.db)
 		if err != nil {
@@ -1953,6 +1975,23 @@ func (s *Server) getJobsByKeys(keys []string, getStd bool, getEnv bool) (jobs []
 	}
 
 	return jobs, srerr, qerr
+}
+
+// checkJobByKey checks to see if the given key corresponds to a job currently
+// in the queue, or complete in the database.
+func (s *Server) checkJobByKey(key string) (bool, error) {
+	item, err := s.q.Get(key)
+	if err != nil {
+		if qerr, ok := err.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+			return false, err
+		}
+	}
+	if item != nil {
+		return true, nil
+	}
+
+	found, err := s.db.retrieveCompleteJobsByKeys([]string{key})
+	return len(found) == 1, err
 }
 
 // searchRepGroups looks up the rep groups of all jobs that have ever been added

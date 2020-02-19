@@ -185,6 +185,19 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// first just try to Reserve normally
 				var item *queue.Item
 				var err error
+
+				// don't proceed when we're expecting new/changed items
+				s.rpmutex.Lock()
+				var wch chan struct{}
+				if s.racPending {
+					wch = make(chan struct{})
+					s.waitingReserves = append(s.waitingReserves, wch)
+				}
+				s.rpmutex.Unlock()
+				if wch != nil {
+					<-wch
+				}
+
 				skip := false
 				if cr.SchedulerGroup != "" {
 					// if this is the first job that the client is trying to
@@ -422,6 +435,9 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					}
 					err = s.q.Kick(jobkey)
 					if err == nil {
+						s.rpmutex.Lock()
+						s.racPending = true
+						s.rpmutex.Unlock()
 						job := item.Data().(*Job)
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
@@ -485,9 +501,17 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						toModifyKeys[jobkey] = item.Data().(*Job)
 					}
 
-					modified := cr.Modifier.Modify(toModifyJobs, s)
+					modified, err := cr.Modifier.Modify(toModifyJobs, s)
+					if err != nil {
+						if jqerr, ok := err.(Error); ok {
+							srerr = jqerr.Err
+						} else {
+							srerr = ErrInternalError
+						}
+						qerr = err.Error()
+					}
 
-					if len(modified) > 0 {
+					if err == nil && len(modified) > 0 {
 						var toModify []*Job
 						for _, old := range modified {
 							job := toModifyKeys[old]
