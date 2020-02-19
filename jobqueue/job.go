@@ -1082,7 +1082,7 @@ func (j *JobModifier) SetMonitorDocker(new string) {
 // also need to handle dependencies of a job changing.
 //
 // Returns a REVERSE mapping of new to old Job keys.
-func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
+func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
 	keys := make(map[string]string)
 	for _, job := range jobs {
 		job.Lock()
@@ -1111,8 +1111,12 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
 		}
 		if newKey != before {
 			// check queue and db
-			existing, _, _ := server.getJobsByKeys([]string{newKey}, false, false)
-			if len(existing) != 0 {
+			exists, err := server.checkJobByKey(newKey)
+			if err != nil {
+				job.Unlock()
+				return keys, err
+			}
+			if exists {
 				// duplicate of queued or complete job, ignore
 				job.Unlock()
 				continue
@@ -1204,5 +1208,5 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
 		keys[job.Key()] = before
 		job.Unlock()
 	}
-	return keys
+	return keys, nil
 }
