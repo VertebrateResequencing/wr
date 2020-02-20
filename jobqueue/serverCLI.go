@@ -189,7 +189,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// don't proceed when we're expecting new/changed items
 				s.rpmutex.Lock()
 				var wch chan struct{}
-				if s.racPending {
+				if s.racPending || s.racRunning {
 					wch = make(chan struct{})
 					s.waitingReserves = append(s.waitingReserves, wch)
 				}

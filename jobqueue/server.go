@@ -233,7 +233,7 @@ type Server struct {
 	simutex            sync.RWMutex
 	krmutex            sync.RWMutex
 	ssmutex            sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
-	rpmutex            sync.Mutex   // to protect racPending and waitingReserves
+	rpmutex            sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	sync.Mutex
 	sgcmutex        sync.Mutex
 	wsmutex         sync.Mutex
@@ -243,6 +243,7 @@ type Server struct {
 	racChecking     bool
 	killRunners     bool
 	racPending      bool
+	racRunning      bool
 	waitingReserves []chan struct{}
 }
 
@@ -1134,11 +1135,12 @@ func (s *Server) createQueue() {
 		s.ssmutex.RUnlock()
 
 		s.rpmutex.Lock()
-		s.racPending = true
+		s.racRunning = true
 		s.rpmutex.Unlock()
 		defer func() {
 			s.rpmutex.Lock()
 			s.racPending = false
+			s.racRunning = false
 			for _, ch := range s.waitingReserves {
 				close(ch)
 			}
@@ -1478,6 +1480,21 @@ func (s *Server) createQueue() {
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []interface{}) {
+		if toQ != queue.SubQueueReady {
+			// readyAddedCallback won't be called, cancel racPending
+			defer func() {
+				s.rpmutex.Lock()
+				if s.racPending {
+					s.racPending = false
+					for _, ch := range s.waitingReserves {
+						close(ch)
+					}
+					s.waitingReserves = nil
+				}
+				s.rpmutex.Unlock()
+			}()
+		}
+
 		var from, to JobState
 		if toQ == queue.SubQueueRemoved {
 			// things are removed from the queue if deleted or completed;
@@ -2447,7 +2464,6 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 		s.ssmutex.Unlock()
 		return
 	}
-
 	if stopSigHandling {
 		close(s.stopSigHandling)
 	}
