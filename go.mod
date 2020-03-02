@@ -8,8 +8,6 @@ require (
 	github.com/VertebrateResequencing/muxfys/v4 v4.0.2
 	github.com/VividCortex/ewma v0.0.0-20170804035156-43880d236f69
 	github.com/carbocation/runningvariance v0.0.0-20150817162428-fdcce8a03b6b
-	github.com/coreos/go-etcd v2.0.0+incompatible // indirect
-	github.com/cpuguy83/go-md2man v1.0.10 // indirect
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/docker/distribution v2.7.1+incompatible // indirect
 	github.com/docker/docker v0.0.0-20180524003928-df5175e1ee95
@@ -20,7 +18,6 @@ require (
 	github.com/elazarl/goproxy/ext v0.0.0-20191011121108-aa519ddbe484 // indirect
 	github.com/fanatic/go-infoblox v0.0.0-20190709161059-e25f3820238c
 	github.com/fatih/color v1.9.0
-	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-ini/ini v1.52.0 // indirect
 	github.com/go-ole/go-ole v1.2.4 // indirect
 	github.com/gofrs/uuid v3.2.0+incompatible
@@ -57,7 +54,6 @@ require (
 	github.com/sb10/l15h v0.0.0-20170510122137-64c488bf8e22
 	github.com/sevlyar/go-daemon v0.1.5
 	github.com/shirou/gopsutil v2.20.2+incompatible
-	github.com/shirou/w32 v0.0.0-20160930032740-bb4de0191aa4 // indirect
 	github.com/smartystreets/goconvey v0.0.0-20190731233626-505e41936337
 	github.com/spf13/cobra v0.0.6
 	github.com/spf13/pflag v1.0.5 // indirect
@@ -67,7 +63,6 @@ require (
 	golang.org/x/net v0.0.0-20200301022130-244492dfa37a // indirect
 	golang.org/x/sys v0.0.0-20200302083256-062a44052db1 // indirect
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
-	google.golang.org/appengine v1.6.5 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.52.0 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect
