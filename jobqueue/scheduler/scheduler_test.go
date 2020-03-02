@@ -436,6 +436,11 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
+	if os.Getenv("WR_DISABLE_LSF_TEST") == "true" {
+		Convey("LSF tests disabled since WR_DISABLE_LSF_TEST is set", t, func() {})
+		return
+	}
+
 	var specifiedOther = make(map[string]string)
 	specifiedOther["scheduler_queue"] = "yesterday"
 	specifiedOther["scheduler_misc"] = "-R avx"

@@ -5036,7 +5036,7 @@ func TestJobqueueRunners(t *testing.T) {
 			if err == nil {
 				_, err = exec.LookPath("bqueues")
 			}
-			if err == nil {
+			if err == nil && os.Getenv("WR_DISABLE_LSF_TEST") != "true" {
 				lsfMode = true
 				count = 10000
 				count2 = 1000
