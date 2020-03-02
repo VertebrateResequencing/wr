@@ -44,7 +44,7 @@ require (
 	github.com/opencontainers/go-digest v0.0.0-20180430190053-c9281466c8b2 // indirect
 	github.com/opencontainers/image-spec v0.0.0-20180411145040-e562b0440392 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/pkg/sftp v1.10.1
+	github.com/pkg/sftp v1.11.0
 	github.com/ricochet2200/go-disk-usage v0.0.0-20150921141558-f0d1b743428f
 	github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213edefa
 	github.com/sb10/l15h v0.0.0-20170510122137-64c488bf8e22
