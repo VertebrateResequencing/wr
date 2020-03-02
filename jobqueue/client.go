@@ -529,7 +529,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("could not create working directory: %w", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -589,7 +589,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("could not create lsf emulation directory: %w", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -599,7 +599,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if myerr == nil {
 					myerr = errr
 				} else {
-					myerr = fmt.Errorf("%w (and removing the lsf emulation dir failed: %w)", myerr, errr)
+					myerr = fmt.Errorf("%v (and removing the lsf emulation dir failed: %w)", myerr, errr)
 				}
 			}
 		}()
@@ -643,7 +643,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %w (%s)", err, os.Environ())
 			errb := c.Bury(job, nil, FailReasonMount, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -668,7 +668,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 						if myerr == nil {
 							myerr = errc
 						} else {
-							myerr = fmt.Errorf("%w (and closing dir failed: %w)", myerr, errc)
+							myerr = fmt.Errorf("%v (and closing dir failed: %w)", myerr, errc)
 						}
 					}
 					if (errr == nil || errr == io.EOF) && len(files) == 0 {
@@ -720,7 +720,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if myerr == nil {
 					myerr = errr
 				} else {
-					myerr = fmt.Errorf("%w (and removing the tmpdir failed: %w)", myerr, errr)
+					myerr = fmt.Errorf("%v (and removing the tmpdir failed: %w)", myerr, errr)
 				}
 			}
 		}()
@@ -788,7 +788,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("failed to create docker client: %w", err)
 			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -803,7 +803,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				buryErr := fmt.Errorf("failed to get docker containers: %w", errc)
 				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
 				if errb != nil {
-					buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+					buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 				}
 				return buryErr
 			}
@@ -903,7 +903,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errk == nil {
 					errk = errc
 				} else {
-					errk = fmt.Errorf("%w, and getting child processes failed: %w", errk, errc)
+					errk = fmt.Errorf("%v, and getting child processes failed: %w", errk, errc)
 				}
 			}
 
@@ -913,7 +913,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errk == nil {
 					errk = errd
 				} else {
-					errk = fmt.Errorf("%w, and killing the docker container failed: %w", errk, errd)
+					errk = fmt.Errorf("%v, and killing the docker container failed: %w", errk, errd)
 				}
 			}
 
@@ -924,7 +924,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errk == nil {
 					errk = errc
 				} else {
-					errk = fmt.Errorf("%w, and killing its child process failed: %w", errk, errc)
+					errk = fmt.Errorf("%v, and killing its child process failed: %w", errk, errc)
 				}
 			}
 
@@ -999,7 +999,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 							if myerr == nil {
 								myerr = errg
 							} else {
-								myerr = fmt.Errorf("%w (and finding the docker container had issues: %w)", myerr, errg)
+								myerr = fmt.Errorf("%v (and finding the docker container had issues: %w)", myerr, errg)
 							}
 						}
 					}
@@ -1174,7 +1174,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	if killErr != nil {
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; killing the cmd also failed: %w", myerr, killErr)
+			myerr = fmt.Errorf("%v; killing the cmd also failed: %w", myerr, killErr)
 		} else {
 			myerr = killErr
 		}
@@ -1182,7 +1182,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
+			myerr = fmt.Errorf("%v; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
 		} else {
 			myerr = closeErr
 		}
@@ -1192,7 +1192,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	berr := job.TriggerBehaviours(myerr == nil)
 	if berr != nil {
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; behaviour(s) also had problem(s): %w", myerr, berr)
+			myerr = fmt.Errorf("%v; behaviour(s) also had problem(s): %w", myerr, berr)
 		} else {
 			myerr = berr
 		}
@@ -1216,7 +1216,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; unmounting also caused problem(s): %w", myerr, unmountErr)
+			myerr = fmt.Errorf("%v; unmounting also caused problem(s): %w", myerr, unmountErr)
 		} else {
 			myerr = unmountErr
 		}
