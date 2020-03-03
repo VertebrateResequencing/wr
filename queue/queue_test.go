@@ -1620,14 +1620,14 @@ func TestQueue(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			go func() {
 				t := time.Now()
-				item, err := queue.Reserve("foo", 300*time.Millisecond)
-				rCh <- item != nil && err == nil && time.Since(t) < 250*time.Millisecond
+				item, err := queue.Reserve("foo", 3000*time.Millisecond)
+				rCh <- item != nil && err == nil && time.Since(t) < 2500*time.Millisecond
 			}()
 		}
 
 		addErrCh := make(chan error)
 		go func() {
-			<-time.After(200 * time.Millisecond)
+			<-time.After(2000 * time.Millisecond)
 			_, err1 := queue.Add("key1", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
 			_, err2 := queue.Add("key2", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
 			addErrCh <- err1
