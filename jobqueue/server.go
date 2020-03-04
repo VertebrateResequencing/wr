@@ -641,58 +641,6 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		}
 	}
 
-	// set up responding to command-line clients
-	ignoreClientMessages := true
-	wg.Add(1)
-	go func() {
-		// log panics and die
-		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
-		defer wg.Done()
-
-		for {
-			select {
-			case <-stopClientHandling: // s.shutdown() sends this
-				return
-			default:
-				// receive a clientRequest from a client
-				m, rerr := sock.RecvMsg()
-				if rerr != nil {
-					s.krmutex.RLock()
-					inShutdown := s.killRunners
-					s.krmutex.RUnlock()
-					if !inShutdown && rerr != mangos.ErrRecvTimeout {
-						s.Error("Server socket Receive error", "err", rerr)
-					}
-					continue
-				}
-
-				// ignore messages that were waiting on the socket before we've
-				// even finished starting up
-				if ignoreClientMessages {
-					continue
-				}
-
-				// parse the request, do the desired work and respond to the client
-				wg.Add(1)
-				go func() {
-					// log panics and continue
-					defer internal.LogPanic(s.Logger, "jobqueue server client handling", false)
-					defer wg.Done()
-
-					herr := s.handleRequest(m)
-					if ServerLogClientErrors && herr != nil {
-						s.krmutex.RLock()
-						inShutdown := s.killRunners
-						s.krmutex.RUnlock()
-						if !inShutdown {
-							s.Error("Server handle client request error", "err", herr)
-						}
-					}
-				}()
-			}
-		}
-	}()
-
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
 	go func() {
@@ -862,7 +810,50 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		}
 	}
 
-	ignoreClientMessages = false
+	// now that we're ready, set up responding to command-line clients
+	wg.Add(1)
+	go func() {
+		// log panics and die
+		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
+		defer wg.Done()
+
+		for {
+			select {
+			case <-stopClientHandling: // s.shutdown() sends this
+				return
+			default:
+				// receive a clientRequest from a client
+				m, rerr := sock.RecvMsg()
+				if rerr != nil {
+					s.krmutex.RLock()
+					inShutdown := s.killRunners
+					s.krmutex.RUnlock()
+					if !inShutdown && rerr != mangos.ErrRecvTimeout {
+						s.Error("Server socket Receive error", "err", rerr)
+					}
+					continue
+				}
+
+				// parse the request, do the desired work and respond to the client
+				wg.Add(1)
+				go func() {
+					// log panics and continue
+					defer internal.LogPanic(s.Logger, "jobqueue server client handling", false)
+					defer wg.Done()
+
+					herr := s.handleRequest(m)
+					if ServerLogClientErrors && herr != nil {
+						s.krmutex.RLock()
+						inShutdown := s.killRunners
+						s.krmutex.RUnlock()
+						if !inShutdown {
+							s.Error("Server handle client request error", "err", herr)
+						}
+					}
+				}()
+			}
+		}
+	}()
 
 	return s, msg, token, err
 }
@@ -1639,8 +1630,7 @@ func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool
 			job.schedulerGroup = job.Requirements.Stringify()
 		}
 		if job.BsubMode != "" {
-			atomic.AddUint64(&BsubID, 1)
-			job.BsubID = atomic.LoadUint64(&BsubID)
+			job.BsubID = atomic.AddUint64(&BsubID, 1)
 		}
 
 		if len(job.LimitGroups) > 0 {
