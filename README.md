@@ -55,7 +55,7 @@ Alternatively, build it yourself (at least v1.13 of go is required):
 An example way of setting up a personal Go installation in your home directory
 would be:
 
-        export GOV=1.13.3
+        export GOV=1.14
         wget https://dl.google.com/go/go$GOV.linux-amd64.tar.gz
         tar -xvzf go$GOV.linux-amd64.tar.gz && rm go$GOV.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin
