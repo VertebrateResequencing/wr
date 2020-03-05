@@ -52,6 +52,7 @@ require (
 	github.com/ricochet2200/go-disk-usage v0.0.0-20150921141558-f0d1b743428f
 	github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213edefa
 	github.com/sb10/l15h v0.0.0-20170510122137-64c488bf8e22
+	github.com/sb10/waitgroup v0.0.0-20200305124406-7ed665007efa
 	github.com/sevlyar/go-daemon v0.1.5
 	github.com/shirou/gopsutil v2.20.2+incompatible
 	github.com/smartystreets/goconvey v0.0.0-20190731233626-505e41936337
@@ -59,17 +60,17 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/ugorji/go/codec v1.1.7
 	go.etcd.io/bbolt v1.3.3
-	golang.org/x/crypto v0.0.0-20200221231518-2aa609cf4a9d
+	golang.org/x/crypto v0.0.0-20200302210943-78000ba7a073
 	golang.org/x/net v0.0.0-20200301022130-244492dfa37a // indirect
-	golang.org/x/sys v0.0.0-20200302083256-062a44052db1 // indirect
+	golang.org/x/sys v0.0.0-20200302150141-5c8b2ff67527 // indirect
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.52.0 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect
 	gotest.tools v2.2.0+incompatible // indirect
-	k8s.io/api v0.0.0-20180308224125-73d903622b73
-	k8s.io/apimachinery v0.0.0-20180228050457-302974c03f7e
-	k8s.io/client-go v7.0.0+incompatible
+	k8s.io/api v0.17.3
+	k8s.io/apimachinery v0.17.3
+	k8s.io/client-go v11.0.0+incompatible
 	nanomsg.org/go-mangos v0.0.0-20180815160134-b7ff4263f0d7
 )
 
@@ -90,4 +91,4 @@ replace sync => github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213ed
 
 replace github.com/sasha-s/go-deadlock => github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213edefa
 
-go 1.13
+go 1.14

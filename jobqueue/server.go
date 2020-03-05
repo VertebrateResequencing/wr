@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -51,8 +51,9 @@ import (
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
+	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
-	"nanomsg.org/go-mangos"
+	mangos "nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/rep"
 	"nanomsg.org/go-mangos/transport/tlstcp"
 )
@@ -209,7 +210,7 @@ type Server struct {
 	done               chan error
 	stopSigHandling    chan bool
 	stopClientHandling chan bool
-	wg                 *sync.WaitGroup
+	wg                 *waitgroup.WaitGroup
 	q                  *queue.Queue
 	rpl                *rgToKeys
 	limiter            *limiter.Limiter
@@ -521,7 +522,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	stopSigHandling := make(chan bool, 1)
 	stopClientHandling := make(chan bool)
 	done := make(chan error, 1)
-	wg := &sync.WaitGroup{}
+	wg := waitgroup.New()
 
 	// if we end up spawning clients on other machines, they'll need to know
 	// our non-loopback ip address so they can connect to us
@@ -669,11 +670,11 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// set up the web interface
 	ready := make(chan bool)
-	wg.Add(1)
+	wgk := wg.Add(1)
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(s.Logger, "jobqueue web server", true)
-		defer wg.Done()
+		defer wg.Done(wgk)
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", webInterfaceStatic(s))
@@ -685,10 +686,10 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		mux.HandleFunc(restInfoEndpoint, restInfo(s))
 		mux.HandleFunc(restVersionEndpoint, restVersion(s))
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
-		wg.Add(1)
+		wgk := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(s.Logger, "jobqueue web server listenAndServe", true)
-			defer wg.Done()
+			defer wg.Done(wgk)
 			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && errs != http.ErrServerClosed {
 				s.Error("server web interface had problems", "err", errs)
@@ -696,22 +697,22 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		}()
 		s.httpServer = srv
 
-		wg.Add(1)
+		wgk2 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(s.Logger, "jobqueue web server status casting", true)
-			defer wg.Done()
+			defer wg.Done(wgk2)
 			s.statusCaster.Broadcasting(0)
 		}()
-		wg.Add(1)
+		wgk3 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(s.Logger, "jobqueue web server server casting", true)
-			defer wg.Done()
+			defer wg.Done(wgk3)
 			s.badServerCaster.Broadcasting(0)
 		}()
-		wg.Add(1)
+		wgk4 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(s.Logger, "jobqueue web server scheduler casting", true)
-			defer wg.Done()
+			defer wg.Done(wgk4)
 			s.schedCaster.Broadcasting(0)
 		}()
 
@@ -811,11 +812,11 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 
 	// now that we're ready, set up responding to command-line clients
-	wg.Add(1)
+	wgk = wg.Add(1)
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
-		defer wg.Done()
+		defer wg.Done(wgk)
 
 		for {
 			select {
@@ -835,11 +836,11 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				}
 
 				// parse the request, do the desired work and respond to the client
-				wg.Add(1)
+				wgk2 := wg.Add(1)
 				go func() {
 					// log panics and continue
 					defer internal.LogPanic(s.Logger, "jobqueue server client handling", false)
-					defer wg.Done()
+					defer wg.Done(wgk2)
 
 					herr := s.handleRequest(m)
 					if ServerLogClientErrors && herr != nil {
@@ -1367,10 +1368,10 @@ func (s *Server) createQueue() {
 				if _, needed := groups[group]; !needed {
 					if !still {
 						s.sgroupcounts[group] = 0
-						s.wg.Add(1)
+						wgk := s.wg.Add(1)
 						go func(group string) {
 							defer internal.LogPanic(s.Logger, "jobqueue clear scheduler group", true)
-							defer s.wg.Done()
+							defer s.wg.Done(wgk)
 							s.clearSchedulerGroup(group)
 						}(group)
 					} else {
@@ -1416,10 +1417,10 @@ func (s *Server) createQueue() {
 					}
 				}
 
-				s.wg.Add(1)
+				wgk := s.wg.Add(1)
 				go func(group string) {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners", true)
-					defer s.wg.Done()
+					defer s.wg.Done(wgk)
 					s.scheduleRunners(group)
 				}(group)
 			}
@@ -1439,10 +1440,10 @@ func (s *Server) createQueue() {
 			} else {
 				s.racCheckTimer = time.NewTimer(ServerCheckRunnerTime)
 
-				s.wg.Add(1)
+				wgk := s.wg.Add(1)
 				go func() {
 					defer internal.LogPanic(s.Logger, "jobqueue rac checking", true)
-					defer s.wg.Done()
+					defer s.wg.Done(wgk)
 
 					select {
 					case <-s.racCheckTimer.C:
@@ -2241,10 +2242,10 @@ func (s *Server) scheduleRunners(group string) {
 				s.Warn("Server scheduling runners error", "err", err)
 
 				// retry the schedule in a while
-				s.wg.Add(1)
+				wgk := s.wg.Add(1)
 				go func() {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners retry", true)
-					defer s.wg.Done()
+					defer s.wg.Done(wgk)
 
 					select {
 					case <-time.After(ServerCheckRunnerTime):
@@ -2531,7 +2532,7 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 	}
 
 	// wait for our goroutines to finish
-	s.wg.Wait()
+	s.wg.Wait(5 * time.Second)
 
 	// wait until the ports are really no longer being listened to (which isn't
 	// the same as them being available to be reconnected to, but this is the
