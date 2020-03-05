@@ -41,6 +41,7 @@ import (
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
 	"github.com/sb10/l15h"
+	"github.com/sb10/waitgroup"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
@@ -716,6 +717,7 @@ func startJQ(postCreation []byte) {
 	sync.Opts.OnPotentialDeadlock = func() {
 		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
 	}
+	waitgroup.Opts.Disable = true
 
 	// start the jobqueue server
 	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
