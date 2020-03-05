@@ -1564,6 +1564,8 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.Lock()
+	defer job.Unlock()
 	job.FailReason = failreason
 	if len(stderr) == 1 && stderr[0] != nil {
 		job.StdErrC, err = compress([]byte(stderr[0].Error()))
