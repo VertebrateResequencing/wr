@@ -2531,6 +2531,16 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 		s.Warn("server shutdown database close failed", "err", err)
 	}
 
+	// free any waiting reserves
+	s.rpmutex.Lock()
+	s.racPending = false
+	s.racRunning = false
+	for _, ch := range s.waitingReserves {
+		close(ch)
+	}
+	s.waitingReserves = nil
+	s.rpmutex.Unlock()
+
 	// wait for our goroutines to finish
 	s.wg.Wait(5 * time.Second)
 
