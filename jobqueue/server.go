@@ -1595,13 +1595,16 @@ func (s *Server) createQueue() {
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	added, dups, err = s.q.AddMany(itemdefs)
-	if err != nil {
-		return added, dups, err
-	}
 	s.rpmutex.Lock()
 	s.racPending = true
 	s.rpmutex.Unlock()
+	added, dups, err = s.q.AddMany(itemdefs)
+	if err != nil {
+		s.rpmutex.Lock()
+		s.racPending = false
+		s.rpmutex.Unlock()
+		return added, dups, err
+	}
 
 	// add to our lookup of job RepGroup to key
 	s.rpl.Lock()
