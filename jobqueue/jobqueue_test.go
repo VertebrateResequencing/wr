@@ -3978,7 +3978,9 @@ func TestJobqueueProduction(t *testing.T) {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, job1Cmd)
+				started := make(chan bool)
 				go func() {
+					started <- true
 					erre := jq.Execute(job, config.RunnerExecShell)
 					if erre == nil {
 						fmt.Printf("Execute succeeded when it should have failed\n")
@@ -3988,6 +3990,8 @@ func TestJobqueueProduction(t *testing.T) {
 				}()
 				So(job.Exited, ShouldBeFalse)
 
+				<-started
+				<-time.After(200 * time.Millisecond)
 				ok := jq.ShutdownServer()
 				So(ok, ShouldBeTrue)
 
@@ -3999,8 +4003,9 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldNotBeNil)
 
 				err = jq.Disconnect()
-				So(err, ShouldNotBeNil)
-				So(err.Error(), ShouldEqual, "connection closed")
+				if err != nil {
+					So(err.Error(), ShouldEqual, "connection closed")
+				}
 
 				wipeDevDBOnInit = false
 				server, _, token, errs = serve(serverConfig)
