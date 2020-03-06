@@ -189,6 +189,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// don't proceed when we're expecting new/changed items
 				s.rpmutex.Lock()
 				var wch chan struct{}
+				pen := s.racPending
+				run := s.racRunning
 				if s.racPending || s.racRunning {
 					wch = make(chan struct{})
 					s.waitingReserves = append(s.waitingReserves, wch)
@@ -433,11 +435,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if err != nil || item.Stats().State != queue.ItemStateBury {
 						continue
 					}
+					s.rpmutex.Lock()
+					s.racPending = true
+					s.rpmutex.Unlock()
 					err = s.q.Kick(jobkey)
 					if err == nil {
-						s.rpmutex.Lock()
-						s.racPending = true
-						s.rpmutex.Unlock()
 						job := item.Data().(*Job)
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
@@ -447,6 +449,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						kicked++
 
 						s.db.updateJobAfterChange(job)
+					} else {
+						s.rpmutex.Lock()
+						s.racPending = false
+						s.rpmutex.Unlock()
 					}
 				}
 				sr = &serverResponse{Existed: kicked}
