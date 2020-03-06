@@ -534,7 +534,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 			return buryErr
 		}
 		cmd.Dir = actualCwd
+		job.Lock()
 		job.ActualCwd = actualCwd
+		job.Unlock()
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
 
@@ -1473,6 +1475,8 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.Lock()
+	defer job.Unlock()
 	job.Exited = true
 	job.Exitcode = jes.Exitcode
 	job.PeakRAM = jes.PeakRAM
