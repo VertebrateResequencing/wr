@@ -3024,7 +3024,7 @@ func TestJobqueueModify(t *testing.T) {
 	rgroup := "110:0:1:0"
 	learnedRgroup := "200:30:1:0"
 	learnedRAMNormal := 100
-	learnedRAMExtraRange := []int{200, 400}
+	learnedRAMExtraRange := []int{200, 500}
 	tmp := "/tmp"
 
 	defer os.RemoveAll(filepath.Join(os.TempDir(), AppName+"_cwd"))
@@ -3076,6 +3076,10 @@ func TestJobqueueModify(t *testing.T) {
 				}
 				if job == nil {
 					job, errr = jq.ReserveScheduled(rtime, "500:30:1:0")
+					So(errr, ShouldBeNil)
+				}
+				if job == nil {
+					job, errr = jq.ReserveScheduled(rtime, "600:30:1:0")
 					So(errr, ShouldBeNil)
 				}
 			}
