@@ -133,7 +133,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "shutdown":
 			s.Debug("shutdown requested")
-			s.Stop(true)
+			go s.Stop(true) // server stop can't complete while this client request is pending
 		case "upload":
 			// upload file to us
 			if cr.File == nil {
