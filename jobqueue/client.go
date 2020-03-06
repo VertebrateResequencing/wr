@@ -304,10 +304,25 @@ func (c *Client) ResumeServer() error {
 // we indirectly report if the server was shut down successfully.
 func (c *Client) ShutdownServer() bool {
 	_, err := c.request(&clientRequest{Method: "shutdown"})
-	if err == nil || err.Error() == "receive time out" {
-		return true
+	if err != nil {
+		return false
 	}
-	return false
+
+	// wait a while for the server to stop responding to Pings
+	limit := time.After(120 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	for {
+		select {
+		case <-ticker.C:
+			_, err = c.Ping(10 * time.Millisecond)
+			if err != nil {
+				ticker.Stop()
+				return true
+			}
+		case <-limit:
+			return false
+		}
+	}
 }
 
 // BackupDB backs up the server's database to the given path. Note that

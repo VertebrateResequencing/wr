@@ -3995,13 +3995,12 @@ func TestJobqueueProduction(t *testing.T) {
 				inserts, already, err = jq.Add(jobs, envVars, true)
 				So(err, ShouldNotBeNil)
 
-				<-time.After(2 * time.Second)
-
 				_, err = jq.Ping(10 * time.Millisecond)
 				So(err, ShouldNotBeNil)
 
-				err = jq.Disconnect() // user must always Disconnect before connecting again!
-				So(err, ShouldBeNil)
+				err = jq.Disconnect()
+				So(err, ShouldNotBeNil)
+				So(err.Error(), ShouldEqual, "connection closed")
 
 				wipeDevDBOnInit = false
 				server, _, token, errs = serve(serverConfig)
