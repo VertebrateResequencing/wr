@@ -4010,6 +4010,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				wipeDevDBOnInit = false
 				server, _, token, errs = serve(serverConfig)
+				startedAt := time.Now()
 				wipeDevDBOnInit = true
 				So(errs, ShouldBeNil)
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
@@ -4017,11 +4018,17 @@ func TestJobqueueProduction(t *testing.T) {
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
 				So(err, ShouldBeNil)
+
+				shouldBeLost := false
+				if time.Since(startedAt) > ServerItemTTR {
+					shouldBeLost = true
+				}
+
 				job.RLock()
-				if job.Exited {
+				if !job.Exited {
 					// sometimes the existing runner manages to reconnect to the
 					// new server before this test
-					So(job.Lost, ShouldBeTrue)
+					So(job.Lost, ShouldEqual, shouldBeLost)
 				} else {
 					So(job.Exited, ShouldBeFalse)
 				}
@@ -4035,7 +4042,12 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldBeNil)
 				job.RLock()
 				So(job.Exited, ShouldBeTrue)
-				So(job.Lost, ShouldBeTrue)
+
+				shouldBeLost = false
+				if time.Since(startedAt) > ServerItemTTR {
+					shouldBeLost = true
+				}
+				So(job.Lost, ShouldEqual, shouldBeLost)
 				job.RUnlock()
 			})
 		})
