@@ -628,7 +628,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				req := reqForScheduler(job.Requirements)
 				errr := s.scheduler.Recover(fmt.Sprintf(s.rc, req.Stringify(), s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, &scheduler.RecoveredHostDetails{Host: job.Host, UserName: loginUser, TTD: ttd})
 				if errr != nil {
-					s.Warn("recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host)
+					s.Warn("recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 				}
 			case JobStateBuried:
 				itemdef.StartQueue = queue.SubQueueBury
@@ -1140,6 +1140,10 @@ func (s *Server) createQueue() {
 			s.rpmutex.Unlock()
 		}()
 
+		s.racmutex.RLock()
+		rcSet := s.rc != ""
+		s.racmutex.RUnlock()
+
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
@@ -1288,7 +1292,7 @@ func (s *Server) createQueue() {
 					groupsChangedCounts[prevSchedGroup]++
 					job.setScheduledRunner(false)
 				}
-				if s.rc != "" {
+				if rcSet {
 					errs := q.SetReserveGroup(job.Key(), schedulerGroup)
 					if errs != nil {
 						// we could be trying to set the reserve group after the
@@ -1305,7 +1309,7 @@ func (s *Server) createQueue() {
 				groupToPriority[schedulerGroup] = job.Priority
 			}
 
-			if s.rc != "" {
+			if rcSet {
 				// ignore jobs that would put us over the limit
 				limit, set := groupLimits[schedulerGroup]
 				if !set {
@@ -1351,7 +1355,7 @@ func (s *Server) createQueue() {
 			}
 		}
 
-		if s.rc != "" {
+		if rcSet {
 			// clear out groups we no longer need
 			for group, count := range groupsChangedCounts {
 				s.decrementGroupCount(group, count)
@@ -1570,7 +1574,7 @@ func (s *Server) createQueue() {
 						<-time.After(50 * time.Millisecond)
 
 						// now release it
-						err := s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false)
+						err := s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
 						if err != nil {
 							s.Warn("failed to release job after TTR", "err", err)
 						}
@@ -1624,13 +1628,17 @@ func (s *Server) enqueueItems(itemdefs []*queue.ItemDef) (added, dups int, err e
 // queue. It returns 2 errors; the first is one of our Err constant strings,
 // the second is the actual error with more details.
 func (s *Server) createJobs(inputJobs []*Job, envkey string, ignoreComplete bool) (added, dups, alreadyComplete int, srerr string, qerr error) {
+	s.racmutex.RLock()
+	rcSet := s.rc != ""
+	s.racmutex.RUnlock()
+
 	// create itemdefs for the jobs
 	limitGroups := make(map[string]int)
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
 		job.UntilBuried = job.Retries + 1
-		if s.rc != "" {
+		if rcSet {
 			job.schedulerGroup = job.Requirements.Stringify()
 		}
 		if job.BsubMode != "" {
@@ -1767,11 +1775,50 @@ func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
 
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
-func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool) error {
+func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool, forceBury bool) error {
+	// first check the job hasn't already been released/buried, only attempt
+	// queue changes if not
+	job.RLock()
+	bury := forceBury
+	if !bury && !job.StartTime.IsZero() {
+		bury = job.UntilBuried == 1
+	}
+	key := job.Key()
+	currentState := job.State
+	job.RUnlock()
+
+	item, err := s.q.Get(key)
+	if err != nil {
+		return err
+	}
+
+	var errq error
+	if bury {
+		if item.Stats().State == queue.ItemStateBury {
+			if currentState == JobStateBuried {
+				return nil
+			}
+		} else {
+			errq = s.q.Bury(key)
+		}
+	} else if item.Stats().State == queue.ItemStateDelay {
+		if currentState == JobStateDelayed {
+			return nil
+		}
+	} else {
+		errq = s.q.Release(key)
+	}
+
+	if errq != nil {
+		return errq
+	}
+
 	job.updateAfterExit(endState, s.limiter)
+
 	job.Lock()
-	job.FailReason = failReason
-	if !job.StartTime.IsZero() {
+	if forceBury {
+		job.UntilBuried = 0
+	} else if !job.StartTime.IsZero() {
 		// obey jobs's Retries count by adjusting UntilBuried if a
 		// client reserved this job and started to run the job's cmd
 		job.UntilBuried--
@@ -1779,27 +1826,15 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, 
 
 	sgroup := job.schedulerGroup
 	var msg string
-	var bury bool
-	key := job.Key()
 	if job.UntilBuried <= 0 {
-		bury = true
 		job.State = JobStateBuried
 		msg = "buried job"
 	} else {
 		job.State = JobStateDelayed
 		msg = "released job"
 	}
+	job.FailReason = failReason
 	job.Unlock()
-
-	var errq error
-	if bury {
-		errq = s.q.Bury(key)
-	} else {
-		errq = s.q.Release(key)
-	}
-	if errq != nil {
-		return errq
-	}
 
 	s.decrementGroupCount(job.getSchedulerGroup())
 	s.db.updateJobAfterExit(job, endState.Stdout, endState.Stderr, forceStorage)
@@ -1829,7 +1864,7 @@ func (s *Server) killJob(jobkey string) (bool, error) {
 
 	if job.Lost {
 		job.Unlock()
-		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false)
+		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
 		return true, err
 	}
 
@@ -2276,82 +2311,92 @@ func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int)
 	if len(optionalDrop) == 1 {
 		drop = optionalDrop[0]
 	}
-	if s.rc != "" {
-		doSchedule := false
-		doTrigger := false
-		s.sgcmutex.Lock()
-		if _, existed := s.sgroupcounts[schedulerGroup]; existed {
-			if _, set := s.idtl[schedulerGroup]; set {
-				s.idtl[schedulerGroup] -= drop
-				if s.idtl[schedulerGroup] >= 0 {
-					// we previously ignored jobs due to going over their limit,
-					// and there's still jobs to do, so don't actually decrement
-					// now
-					s.sgcmutex.Unlock()
-					return
-				}
-				delete(s.idtl, schedulerGroup)
-				doTrigger = true
-			}
+	s.racmutex.RLock()
+	rc := s.rc
+	s.racmutex.RUnlock()
+	if rc == "" {
+		return
+	}
 
-			s.sgroupcounts[schedulerGroup] -= drop
-
-			if s.sgroupcounts[schedulerGroup] <= 0 {
+	doSchedule := false
+	doTrigger := false
+	s.sgcmutex.Lock()
+	if _, existed := s.sgroupcounts[schedulerGroup]; existed {
+		if _, set := s.idtl[schedulerGroup]; set {
+			s.idtl[schedulerGroup] -= drop
+			if s.idtl[schedulerGroup] >= 0 {
+				// we previously ignored jobs due to going over their limit,
+				// and there's still jobs to do, so don't actually decrement
+				// now
 				s.sgcmutex.Unlock()
-				s.clearSchedulerGroup(schedulerGroup)
-				if doTrigger {
-					s.q.TriggerReadyAddedCallback()
-				}
 				return
 			}
+			delete(s.idtl, schedulerGroup)
+			doTrigger = true
+		}
 
-			doSchedule = true
-			if _, set := s.sgrouptrigs[schedulerGroup]; set {
-				s.sgrouptrigs[schedulerGroup] += drop
-				if s.sgrouptrigs[schedulerGroup] >= 100 {
-					delete(s.sgrouptrigs, schedulerGroup)
-					if s.sgroupcounts[schedulerGroup] > 10 {
-						doTrigger = true
-					}
+		s.sgroupcounts[schedulerGroup] -= drop
+
+		if s.sgroupcounts[schedulerGroup] <= 0 {
+			s.sgcmutex.Unlock()
+			s.clearSchedulerGroup(schedulerGroup)
+			if doTrigger {
+				s.q.TriggerReadyAddedCallback()
+			}
+			return
+		}
+
+		doSchedule = true
+		if _, set := s.sgrouptrigs[schedulerGroup]; set {
+			s.sgrouptrigs[schedulerGroup] += drop
+			if s.sgrouptrigs[schedulerGroup] >= 100 {
+				delete(s.sgrouptrigs, schedulerGroup)
+				if s.sgroupcounts[schedulerGroup] > 10 {
+					doTrigger = true
 				}
 			}
 		}
-		s.sgcmutex.Unlock()
+	}
+	s.sgcmutex.Unlock()
 
-		if doTrigger {
-			// we most likely have completed 100 more jobs for this group, so
-			// we'll trigger our ready callback which will re-calculate the
-			// best resource requirements for the remaining jobs in the group
-			// and then call scheduleRunners
-			s.q.TriggerReadyAddedCallback()
-		} else if doSchedule {
-			// notify the job scheduler we need less jobs for this job's cmd now;
-			// it will remove extraneous ones from its queue
-			s.scheduleRunners(schedulerGroup)
-		}
+	if doTrigger {
+		// we most likely have completed 100 more jobs for this group, so
+		// we'll trigger our ready callback which will re-calculate the
+		// best resource requirements for the remaining jobs in the group
+		// and then call scheduleRunners
+		s.q.TriggerReadyAddedCallback()
+	} else if doSchedule {
+		// notify the job scheduler we need less jobs for this job's cmd now;
+		// it will remove extraneous ones from its queue
+		s.scheduleRunners(schedulerGroup)
 	}
 }
 
 // when we no longer need a schedulerGroup in the job scheduler, clean up and
 // make sure the job scheduler knows we don't need any runners for this group.
 func (s *Server) clearSchedulerGroup(schedulerGroup string) {
-	if s.rc != "" {
-		s.sgcmutex.Lock()
-		req, hadreq := s.sgtr[schedulerGroup]
-		if !hadreq {
-			s.sgcmutex.Unlock()
-			return
-		}
-		delete(s.sgroupcounts, schedulerGroup)
-		delete(s.idtl, schedulerGroup)
-		delete(s.sgrouptrigs, schedulerGroup)
-		delete(s.sgtr, schedulerGroup)
-		delete(s.sgrouppriority, schedulerGroup)
+	s.racmutex.RLock()
+	rc := s.rc
+	s.racmutex.RUnlock()
+	if rc == "" {
+		return
+	}
+
+	s.sgcmutex.Lock()
+	req, hadreq := s.sgtr[schedulerGroup]
+	if !hadreq {
 		s.sgcmutex.Unlock()
-		err := s.scheduler.Schedule(fmt.Sprintf(s.rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0, 0)
-		if err != nil {
-			s.Warn("clearSchedulerGroup failed", "err", err)
-		}
+		return
+	}
+	delete(s.sgroupcounts, schedulerGroup)
+	delete(s.idtl, schedulerGroup)
+	delete(s.sgrouptrigs, schedulerGroup)
+	delete(s.sgtr, schedulerGroup)
+	delete(s.sgrouppriority, schedulerGroup)
+	s.sgcmutex.Unlock()
+	err := s.scheduler.Schedule(fmt.Sprintf(rc, schedulerGroup, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, 0, 0)
+	if err != nil {
+		s.Warn("clearSchedulerGroup failed", "err", err)
 	}
 }
 

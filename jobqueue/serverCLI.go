@@ -262,7 +262,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "jstart":
 			// update the job's cmd-started-related properties
 			var job *Job
-			_, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				job.Lock()
 				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
@@ -293,7 +293,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "jtouch":
 			var job *Job
 			var item *queue.Item
-			item, job, srerr = s.getij(cr)
+			item, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				// if kill has been called for this job, just return KillCalled
 				job.RLock()
@@ -334,7 +334,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// complete bucket
 			var item *queue.Item
 			var job *Job
-			item, job, srerr = s.getij(cr)
+			item, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				// first check the item is still in the run queue (eg. the job
 				// wasn't released by another process; unlike the other methods,
@@ -385,14 +385,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// move the job from the run queue to the delay queue, unless it has
 			// failed too many times, in which case bury
 			var job *Job
-			_, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr, false)
 			if srerr == "" {
 				if cr.JobEndState == nil {
 					cr.JobEndState = &JobEndState{}
 				}
 				cr.JobEndState.Stdout = cr.Job.StdOutC
 				cr.JobEndState.Stderr = cr.Job.StdErrC
-				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true)
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true, false)
 				if errq != nil {
 					srerr = ErrInternalError
 					qerr = errq.Error()
@@ -400,24 +400,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "jbury":
 			// move the job from the run queue to the bury queue
-			var item *queue.Item
 			var job *Job
-			item, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr, false)
 			if srerr == "" {
-				job.updateAfterExit(cr.JobEndState, s.limiter)
-				job.Lock()
-				job.FailReason = cr.Job.FailReason
-				sgroup := job.schedulerGroup
-				job.State = JobStateBuried
-				job.Unlock()
-				err := s.q.Bury(item.Key)
-				if err != nil {
+				if cr.JobEndState == nil {
+					cr.JobEndState = &JobEndState{}
+				}
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true, true)
+				if errq != nil {
 					srerr = ErrInternalError
-					qerr = err.Error()
-				} else {
-					s.decrementGroupCount(job.getSchedulerGroup())
-					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-					s.Debug("buried job", "cmd", job.Cmd, "schedGrp", sgroup)
+					qerr = errq.Error()
 				}
 			}
 		case "jkick":
@@ -751,14 +743,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 // for the many j* methods in handleRequest, we do this common stuff to get
 // the desired item and job. The returned string is one of our Err* constants.
-func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
+func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job, string) {
 	// clientRequest must have a Job
 	if cr.Job == nil {
 		return nil, nil, ErrBadRequest
 	}
 
 	item, err := s.q.Get(cr.Job.Key())
-	if err != nil || item.Stats().State != queue.ItemStateRun {
+	if err != nil || (checkRunning && item.Stats().State != queue.ItemStateRun) {
 		return item, nil, ErrBadJob
 	}
 	job := item.Data().(*Job)
