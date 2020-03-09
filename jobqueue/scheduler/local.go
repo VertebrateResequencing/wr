@@ -390,7 +390,9 @@ func (s *local) recover(cmd string, req *Requirements, host *RecoveredHostDetail
 	for _, p := range processes {
 		thisCmd, err := p.Cmdline()
 		if err != nil {
-			return err
+			// likely the process stopped existing between the call to
+			// Processes() and now, just ignore this one
+			continue
 		}
 		if cmd == thisCmd {
 			pid := int(p.Pid)
