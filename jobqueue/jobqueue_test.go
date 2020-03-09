@@ -3978,19 +3978,16 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job2.Exitcode, ShouldEqual, 0)
 			})
 
-			Convey("You can reserve & execute the job, shut down the server and then can't add new jobs and the started job did not complete", func() {
+			Convey("You can reserve & execute the job, shut down the server and then can't add new jobs and the started job gets lost and eventually completes", func() {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, job1Cmd)
 				started := make(chan bool)
+				done := make(chan error)
 				go func() {
 					started <- true
 					erre := jq.Execute(job, config.RunnerExecShell)
-					if erre == nil {
-						fmt.Printf("Execute succeeded when it should have failed\n")
-					} else if !strings.Contains(erre.Error(), "receive time out") {
-						fmt.Printf("Execute failed in an unexpected way: %s", erre)
-					}
+					done <- erre
 				}()
 				So(job.Exited, ShouldBeFalse)
 
@@ -4020,7 +4017,26 @@ func TestJobqueueProduction(t *testing.T) {
 
 				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
 				So(err, ShouldBeNil)
-				So(job.Exited, ShouldBeFalse)
+				job.RLock()
+				if job.Exited {
+					// sometimes the existing runner manages to reconnect to the
+					// new server before this test
+					So(job.Lost, ShouldBeTrue)
+				} else {
+					So(job.Exited, ShouldBeFalse)
+				}
+				job.RUnlock()
+
+				erre := <-done
+				So(erre, ShouldNotBeNil)
+				So(erre.Error(), ShouldContainSubstring, "recovered on a new server") // or "receive time out"?
+
+				job, err = jq.GetByEssence(&JobEssence{Cmd: job1Cmd}, false, false)
+				So(err, ShouldBeNil)
+				job.RLock()
+				So(job.Exited, ShouldBeTrue)
+				So(job.Lost, ShouldBeTrue)
+				job.RUnlock()
 			})
 		})
 
