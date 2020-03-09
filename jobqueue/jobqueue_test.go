@@ -4025,7 +4025,7 @@ func TestJobqueueProduction(t *testing.T) {
 				}
 
 				job.RLock()
-				if !job.Exited {
+				if job.Exited {
 					// sometimes the existing runner manages to reconnect to the
 					// new server before this test
 					So(job.Lost, ShouldEqual, shouldBeLost)
