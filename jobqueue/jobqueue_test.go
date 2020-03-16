@@ -5230,6 +5230,12 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		return
 	}
 
+	// because OpenStack can be slow, increase the deadlock timeout
+	sync.Opts.DeadlockTimeout = 5 * time.Minute
+	defer func() {
+		sync.Opts.DeadlockTimeout = 2 * time.Minute
+	}()
+
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
