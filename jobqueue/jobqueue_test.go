@@ -5232,9 +5232,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 	// because OpenStack can be slow, increase the deadlock timeout
 	sync.Opts.DeadlockTimeout = 5 * time.Minute
-	defer func() {
-		sync.Opts.DeadlockTimeout = 2 * time.Minute
-	}()
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -6101,6 +6098,8 @@ func TestJobqueueWithMounts(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
+	sync.Opts.DeadlockTimeout = 2 * time.Minute
 
 	if runtime.NumCPU() == 1 {
 		// we lock up with only 1 proc
