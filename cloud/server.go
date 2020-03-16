@@ -131,6 +131,7 @@ type Server struct {
 	provider          *Provider
 	sshClientConfig   *ssh.ClientConfig
 	usedCores         float64
+	cancels           int
 	usedZeroCores     int // we keep track of how many zero core things are allocated
 	usedDisk          int
 	usedRAM           int
@@ -297,7 +298,10 @@ func (s *Server) Allocate(cores float64, ramMB, diskGB int) bool {
 
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
-		s.cancelDestruction <- true
+		s.cancels++
+		go func() {
+			s.cancelDestruction <- true
+		}()
 	}
 
 	return true
@@ -340,7 +344,7 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 				s.logger.Debug("allocated before entering deathrow")
 				return
 			}
-			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
+			s.cancelDestruction = make(chan bool)
 			s.onDeathrow = true
 			s.mutex.Unlock()
 
@@ -349,8 +353,23 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 			for {
 				select {
 				case <-s.cancelDestruction:
+					// *** this block needed to fail the "Run lots of jobs on a
+					// deathrow server" scheduler test prior to fix, but we have
+					// no reasonable way for a scheduler test to turn this on...
+					// s.mutex.RLock()
+					// if s.cancels <= 5 {
+					// 	s.mutex.RUnlock()
+					// 	<-time.After(2 * time.Second)
+					// } else {
+					// 	s.mutex.RUnlock()
+					// }
 					s.mutex.Lock()
+					for i := 1; i < s.cancels; i++ {
+						<-s.cancelDestruction
+					}
+					s.cancels = 0
 					s.onDeathrow = false
+
 					s.mutex.Unlock()
 					s.logger.Debug("server cancelled deathrow")
 					return

@@ -862,6 +862,34 @@ func TestOpenstack(t *testing.T) {
 			oFile := filepath.Join(tmpdir, "out")
 
 			Convey("Schedule() lets you...", func() {
+				Convey("Run lots of jobs on a deathrow server", func() {
+					count := 10
+					eta := 200
+					oReqs := make(map[string]string)
+					oReqs["cloud_script"] = "touch /tmp/foo" // force a server to be spawned
+					thisReq := &Requirements{1, 1 * time.Minute, 0, 0, oReqs, true, true, true}
+					err := s.Schedule("echo first", thisReq, 0, 1)
+					So(err, ShouldBeNil)
+					So(s.Busy(), ShouldBeTrue)
+
+					// spawn a server, run the first job, get on deathrow
+					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+
+					// now Schedule a bunch of cmds in quick succession
+					var wg sync.WaitGroup
+					for i := 0; i < count; i++ {
+						wg.Add(1)
+						go func(i int) {
+							defer wg.Done()
+							s.Schedule(fmt.Sprintf("echo %d", i), thisReq, 0, count)
+						}(i)
+					}
+					wg.Wait()
+
+					// the test is that we don't hit a deadlock
+					So(waitToFinish(s, eta, 1000), ShouldBeTrue)
+				})
+
 				Convey("Run jobs that use a NFS shared disk", func() {
 					cmd := "touch /shared/test1"
 					other := make(map[string]string)
