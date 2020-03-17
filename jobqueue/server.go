@@ -1368,8 +1368,8 @@ func (s *Server) createQueue() {
 				stillRunning[job.getSchedulerGroup()]++
 			}
 			for group := range s.sgroupcounts {
-				running, still := stillRunning[group]
 				if _, needed := groups[group]; !needed {
+					running, still := stillRunning[group]
 					if !still {
 						s.sgroupcounts[group] = 0
 						wgk := s.wg.Add(1)
@@ -1409,6 +1409,9 @@ func (s *Server) createQueue() {
 				}
 				if groupsScheduledCounts[group] > 0 {
 					countIncRunning -= groupsScheduledCounts[group]
+				}
+				if countIncRunning <= 0 {
+					s.Debug("rac scheduling no jobs", "group", group, "ready", count, "previously", s.sgroupcounts[group], "scheduled", groupsScheduledCounts[group], "todo", countIncRunning)
 				}
 				s.sgroupcounts[group] = countIncRunning
 
