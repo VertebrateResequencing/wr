@@ -689,10 +689,10 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		mux.HandleFunc(restInfoEndpoint, restInfo(s))
 		mux.HandleFunc(restVersionEndpoint, restVersion(s))
 		srv := &http.Server{Addr: httpAddr, Handler: mux}
-		wgk := wg.Add(1)
+		wgk2 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(s.Logger, "jobqueue web server listenAndServe", true)
-			defer wg.Done(wgk)
+			defer wg.Done(wgk2)
 			errs := srv.ListenAndServeTLS(certFile, keyFile)
 			if errs != nil && errs != http.ErrServerClosed {
 				s.Error("server web interface had problems", "err", errs)
@@ -700,22 +700,22 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		}()
 		s.httpServer = srv
 
-		wgk2 := wg.Add(1)
-		go func() {
-			defer internal.LogPanic(s.Logger, "jobqueue web server status casting", true)
-			defer wg.Done(wgk2)
-			s.statusCaster.Broadcasting(0)
-		}()
 		wgk3 := wg.Add(1)
 		go func() {
-			defer internal.LogPanic(s.Logger, "jobqueue web server server casting", true)
+			defer internal.LogPanic(s.Logger, "jobqueue web server status casting", true)
 			defer wg.Done(wgk3)
-			s.badServerCaster.Broadcasting(0)
+			s.statusCaster.Broadcasting(0)
 		}()
 		wgk4 := wg.Add(1)
 		go func() {
-			defer internal.LogPanic(s.Logger, "jobqueue web server scheduler casting", true)
+			defer internal.LogPanic(s.Logger, "jobqueue web server server casting", true)
 			defer wg.Done(wgk4)
+			s.badServerCaster.Broadcasting(0)
+		}()
+		wgk5 := wg.Add(1)
+		go func() {
+			defer internal.LogPanic(s.Logger, "jobqueue web server scheduler casting", true)
+			defer wg.Done(wgk5)
 			s.schedCaster.Broadcasting(0)
 		}()
 
