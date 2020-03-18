@@ -62,6 +62,7 @@ var useCertDomain bool
 var runnerDebug bool
 
 const kubernetes = "kubernetes"
+const deadlockTimeout = 5 * time.Minute
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -713,7 +714,7 @@ func startJQ(postCreation []byte) {
 
 	deadlockBuf := new(bytes.Buffer)
 	sync.Opts.LogBuf = deadlockBuf
-	sync.Opts.DeadlockTimeout = 5 * time.Minute
+	sync.Opts.DeadlockTimeout = deadlockTimeout
 	sync.Opts.OnPotentialDeadlock = func() {
 		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
 	}

@@ -48,6 +48,10 @@ import (
 const gb = uint64(1.07374182e9) // for byte to GB conversion
 const mb100 = uint64(104857600) // 100MB in bytes
 
+// ZeroCoreMultiplier is the multipler of actual cores we use for the maximum of
+// zero core jobs
+const ZeroCoreMultiplier = 2
+
 // for the RandomString implementation
 const (
 	randBytes   = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"

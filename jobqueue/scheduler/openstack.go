@@ -41,9 +41,13 @@ import (
 )
 
 const (
-	unquotadVal           = 1000000 // a "large" number for use when we don't have quota
-	serverNotNeededErrStr = "server not needed"
-	localhostName         = "localhost"
+	unquotadVal                  = 1000000 // a "large" number for use when we don't have quota
+	serverNotNeededErrStr        = "server not needed"
+	localhostName                = "localhost"
+	flavorFailedCacheExpiry      = 15 * time.Minute
+	flavorFailedCacheCleanup     = 30 * time.Minute
+	flavorDeterminedCacheExpiry  = 5 * time.Minute
+	flavorDeterminedCacheCleanup = 10 * time.Minute
 )
 
 // debugCounter and debugEffect are used by tests to prove some bugs
@@ -374,8 +378,8 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 		}
 	}
 
-	s.ffCache = cache.New(15*time.Minute, 30*time.Minute)
-	s.dfCache = cache.New(5*time.Minute, 10*time.Minute)
+	s.ffCache = cache.New(flavorFailedCacheExpiry, flavorFailedCacheCleanup)
+	s.dfCache = cache.New(flavorDeterminedCacheExpiry, flavorDeterminedCacheCleanup)
 
 	return err
 }
@@ -1098,7 +1102,7 @@ func (s *opst) runCmd(cmd string, req *Requirements, reservedCh chan bool, call 
 			}()
 			go func() {
 				select {
-				case <-time.After(30 * time.Second):
+				case <-time.After(reserveChTimeout):
 					ch <- false
 				case <-done:
 					return
