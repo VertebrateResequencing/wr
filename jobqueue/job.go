@@ -718,7 +718,6 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 		j.ActualCwd = jes.Cwd
 	}
 	j.Unlock()
-
 }
 
 // decrementLimitGroups decrements any limit groups of this job that had been
