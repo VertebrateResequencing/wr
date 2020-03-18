@@ -82,7 +82,7 @@ func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 		// a server, because there are still real limits on the number of
 		// processes we can run at once before things start falling over, we
 		// only allow double the actual core count of zero core things to run
-		canDo = f.Cores * 2
+		canDo = f.Cores * internal.ZeroCoreMultiplier
 	} else {
 		canDo = int(math.Floor(float64(f.Cores) / cores))
 	}
@@ -410,7 +410,7 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 		// processes we can run at once before things start falling over, we
 		// only allow double the actual core count of zero core things to run
 		// (on top of up to actual core count of non-zero core things)
-		canDo = s.Flavor.Cores*2 - s.usedZeroCores
+		canDo = s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
 	} else {
 		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}

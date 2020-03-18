@@ -93,11 +93,14 @@ var ServerVersion string
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
 var (
-	ServerInterruptTime   = 1 * time.Second
-	ServerItemTTR         = 60 * time.Second
-	ServerReserveTicker   = 1 * time.Second
-	ServerCheckRunnerTime = 1 * time.Minute
-	ServerLogClientErrors = true
+	ServerInterruptTime                             = 1 * time.Second
+	ServerItemTTR                                   = 60 * time.Second
+	ServerReserveTicker                             = 1 * time.Second
+	ServerCheckRunnerTime                           = 1 * time.Minute
+	ServerShutdownWaitTime                          = 5 * time.Second
+	ServerMaximumRunForResourceRecommendation       = 100
+	ServerMinimumScheduledForResourceRecommendation = 10
+	ServerLogClientErrors                           = true
 )
 
 // BsubID is used to give added jobs a unique (atomically incremented) id when
@@ -1418,7 +1421,7 @@ func (s *Server) createQueue() {
 				// if we got no resource requirement recommendations for
 				// this group, we'll set up a retrigger of this ready
 				// callback after 100 runners have been run
-				if _, noRec := noRecGroups[group]; noRec && count > 100 {
+				if _, noRec := noRecGroups[group]; noRec && count > ServerMaximumRunForResourceRecommendation {
 					if _, existed := s.sgrouptrigs[group]; !existed {
 						s.sgrouptrigs[group] = 0
 					}
@@ -2352,9 +2355,9 @@ func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int)
 		doSchedule = true
 		if _, set := s.sgrouptrigs[schedulerGroup]; set {
 			s.sgrouptrigs[schedulerGroup] += drop
-			if s.sgrouptrigs[schedulerGroup] >= 100 {
+			if s.sgrouptrigs[schedulerGroup] >= ServerMaximumRunForResourceRecommendation {
 				delete(s.sgrouptrigs, schedulerGroup)
-				if s.sgroupcounts[schedulerGroup] > 10 {
+				if s.sgroupcounts[schedulerGroup] > ServerMinimumScheduledForResourceRecommendation {
 					doTrigger = true
 				}
 			}
@@ -2593,7 +2596,7 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 	s.rpmutex.Unlock()
 
 	// wait for our goroutines to finish
-	s.wg.Wait(5 * time.Second)
+	s.wg.Wait(ServerShutdownWaitTime)
 
 	// wait until the ports are really no longer being listened to (which isn't
 	// the same as them being available to be reconnected to, but this is the

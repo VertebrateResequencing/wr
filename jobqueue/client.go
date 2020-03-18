@@ -81,15 +81,18 @@ const localhost = "localhost"
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
 var (
-	ClientTouchInterval               = 15 * time.Second
-	ClientReleaseDelay                = 30 * time.Second
-	ClientPercentMemoryKill           = 90
-	ClientRetryWait                   = 15 * time.Second
-	ClientRetryTime                   = 24 * time.Hour
-	RAMIncreaseMin            float64 = 1000
-	RAMIncreaseMultLow                = 2.0
-	RAMIncreaseMultHigh               = 1.3
-	RAMIncreaseMultBreakpoint float64 = 8192
+	ClientTouchInterval                = 15 * time.Second
+	ClientReleaseDelay                 = 30 * time.Second
+	ClientPercentMemoryKill            = 90
+	ClientRetryWait                    = 15 * time.Second
+	ClientRetryTime                    = 24 * time.Hour
+	ClientShutdownTimeout              = 120 * time.Second
+	ClientShutdownTestInterval         = 100 * time.Millisecond
+	ClientSuggestedPingTimeout         = 10 * time.Millisecond
+	RAMIncreaseMin             float64 = 1000
+	RAMIncreaseMultLow                 = 2.0
+	RAMIncreaseMultHigh                = 1.3
+	RAMIncreaseMultBreakpoint  float64 = 8192
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -309,12 +312,12 @@ func (c *Client) ShutdownServer() bool {
 	}
 
 	// wait a while for the server to stop responding to Pings
-	limit := time.After(120 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	limit := time.After(ClientShutdownTimeout)
+	ticker := time.NewTicker(ClientShutdownTestInterval)
 	for {
 		select {
 		case <-ticker.C:
-			_, err = c.Ping(10 * time.Millisecond)
+			_, err = c.Ping(ClientSuggestedPingTimeout)
 			if err != nil {
 				ticker.Stop()
 				return true

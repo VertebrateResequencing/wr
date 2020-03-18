@@ -45,6 +45,7 @@ const (
 	localPlace          = "localhost"
 	localReserveTimeout = 1
 	priorityScaler      = float64(255) / float64(100)
+	reserveChTimeout    = 30 * time.Second
 )
 
 // cmdProcessSanitiser is used to make cmds look like their process
@@ -723,7 +724,7 @@ func (s *local) canCount(cmd string, req *Requirements, call string) int {
 			// falling over, we only allow double the actual core count of zero
 			// core things to run (on top of up to actual core count of non-zero
 			// core things)
-			canCount2 = s.maxCores*2 - s.zeroCores
+			canCount2 = s.maxCores*internal.ZeroCoreMultiplier - s.zeroCores
 		} else {
 			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
 		}
@@ -760,7 +761,7 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 		}()
 		go func() {
 			select {
-			case <-time.After(30 * time.Second):
+			case <-time.After(reserveChTimeout):
 				ch <- false
 			case <-done:
 				return
