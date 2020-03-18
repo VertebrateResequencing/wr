@@ -5408,8 +5408,8 @@ sudo usermod -aG docker ` + osUser
 			}
 			// (the below used to be over a second ; these tests show we
 			//  improved the behaviour and now react instantly)
-			So(s2.Sub(e1), ShouldBeLessThan, 100*time.Millisecond)
-			So(s3.Sub(e2), ShouldBeLessThan, 100*time.Millisecond)
+			So(s2.Sub(e1), ShouldBeLessThan, 150*time.Millisecond)
+			So(s3.Sub(e2), ShouldBeLessThan, 150*time.Millisecond)
 		})
 
 		Convey("You can modify cloud_config_files of a job", func() {
