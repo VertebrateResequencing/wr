@@ -808,6 +808,22 @@ func TestJobqueueBasics(t *testing.T) {
 
 		server.rc = serverRC // ReserveScheduled() only works if we have an rc
 
+		Convey("You can connect to the server and add jobs and get back their IDs", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+
+			var jobs []*Job
+			req := &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: req, Retries: uint8(0), RepGroup: "test"})
+			jobs = append(jobs, &Job{Cmd: "echo 2", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: req, Retries: uint8(0), RepGroup: "test"})
+			ids, err := jq.AddAndReturnIDs(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(len(ids), ShouldEqual, 2)
+			So(ids[0], ShouldEqual, "9a456dee1e351f82e3d562769c27d803")
+			So(ids[1], ShouldEqual, "2bb7055e49e21ea85066899a5ba38d8e")
+		})
+
 		Convey("You can connect to the server and add jobs to the queue", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
