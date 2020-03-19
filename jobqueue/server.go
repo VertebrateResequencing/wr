@@ -124,6 +124,7 @@ type serverResponse struct {
 	Err        string // string instead of error so we can decode on the client side
 	Added      int
 	Existed    int
+	AddedIDs   []string
 	Modified   map[string]string
 	KillCalled bool
 	Job        *Job
@@ -1846,6 +1847,26 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, 
 	s.db.updateJobAfterExit(job, endState.Stdout, endState.Stderr, forceStorage)
 	s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
 	return nil
+}
+
+// inputToQueuedJobs shows you which of the inputJobs are now actually in the
+// queue
+func (s *Server) inputToQueuedJobs(inputJobs []*Job) []*Job {
+	// *** queue.AddMany doesn't currently return which jobs were added and
+	// which were dups, and server.createJobs doesn't know which were ignored
+	// due to being incomplete, so we do this loop even though it's probably
+	// slow and wasteful?...
+	var jobs []*Job
+	for _, job := range inputJobs {
+		item, qerr := s.q.Get(job.Key())
+		if qerr == nil && item != nil {
+			// append the q's version of the job, not the input job, since the
+			// job may have been a duplicate and we want to return its current
+			// state
+			jobs = append(jobs, s.itemToJob(item, false, false))
+		}
+	}
+	return jobs
 }
 
 // killJob sets the killCalled property on a job, to change the subsequent

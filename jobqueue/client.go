@@ -122,6 +122,7 @@ type clientRequest struct {
 	IgnoreComplete          bool
 	Search                  bool
 	ConfirmDeadCloudServers bool
+	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -374,6 +375,21 @@ func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added,
 		return 0, 0, err
 	}
 	return resp.Added, resp.Existed, err
+}
+
+// AddAndReturnIDs is like Add(), except that the internal IDs of jobs that are
+// now in the queue are returned (including dups, excluding complete jobs). This
+// is potentially expensive, so use Add() if you don't need these.
+func (c *Client) AddAndReturnIDs(jobs []*Job, envVars []string, ignoreComplete bool) ([]string, error) {
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true})
+	if err != nil {
+		return nil, err
+	}
+	return resp.AddedIDs, err
 }
 
 // Modify modifies previously Add()ed jobs that are incomplete and not currently

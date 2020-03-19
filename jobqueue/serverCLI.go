@@ -173,7 +173,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						qerr = err.Error()
 					} else {
 						s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
-						sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+						if cr.ReturnIDs {
+							jobs := s.inputToQueuedJobs(cr.Jobs)
+							var ids []string
+							for _, job := range jobs {
+								ids = append(ids, job.Key())
+							}
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddedIDs: ids}
+						} else {
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+						}
 					}
 				}
 			}
