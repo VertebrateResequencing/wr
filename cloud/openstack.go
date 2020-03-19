@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -64,6 +64,11 @@ import (
 // longer consider the timeout. This is only used for the initial wait time;
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
+
+// minimumServerSpawnTimeoutSecs is the minimum amount of time we wait for
+// servers to change from 'BUILD' state. It can be longer than this based on
+// learning.
+const minimumServerSpawnTimeoutSecs = 180
 
 // invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
 const invalidFlavorIDMsg = "invalid flavor ID"
@@ -813,18 +818,21 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		defer internal.LogPanic(p.Logger, "spawn", false)
 
 		var timeoutS float64
+		var typical int
 		p.stMutex.RLock()
 		if createdVolume {
 			timeoutS = p.spawnTimesVolume.Value() * 4
+			typical = int(p.spawnTimesVolume.Value())
 		} else {
 			timeoutS = p.spawnTimes.Value() * 4
+			typical = int(p.spawnTimes.Value())
 		}
 		p.stMutex.RUnlock()
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
 		}
-		if timeoutS < 90 {
-			timeoutS = 90
+		if timeoutS < minimumServerSpawnTimeoutSecs {
+			timeoutS = minimumServerSpawnTimeoutSecs
 		}
 		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
@@ -855,15 +863,20 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 					ticker.Stop()
 					msg := current.Fault.Message
 					if msg == "" {
-						msg = "the server is in ERROR state following an unknown problem"
+						msg = "unknown problem"
 					}
-					waitForActive <- errors.New(msg)
+					waitForActive <- fmt.Errorf("server %s is in ERROR state: %s", server.ID, msg)
 					return
 				}
 				continue
 			case <-timeout:
 				ticker.Stop()
-				waitForActive <- errors.New("timed out waiting for server to become ACTIVE")
+				current, errf := servers.Get(p.computeClient, server.ID).Extract()
+				status := "unknown"
+				if errf == nil {
+					status = current.Status
+				}
+				waitForActive <- fmt.Errorf("server %s is %s after %ds, timing out on it ever becoming ACTIVE (typical time to becoming active has been %ds)", server.ID, status, int(time.Since(start).Seconds()), typical)
 				return
 			}
 		}
