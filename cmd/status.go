@@ -84,7 +84,10 @@ name to just the first letter, eg. -o c):
     (and you are told how many are not being displayed). A limit of 0 turns off
     grouping and shows all your desired commands individually, but you could hit
     a timeout if retrieving the details of very many (tens of thousands+)
-    commands.
+	commands.
+  "plain" outputs 2 tab separated columns: internal job id and current state of
+	that job. Possible states are: delayed, ready, reserved, running, lost,
+	buried, complete. If any jobs are buried, exits non-0 as well.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
     documentation for wr's REST API.`,
@@ -138,6 +141,18 @@ name to just the first letter, eg. -o c):
 				}
 			}
 			fmt.Printf("complete: %d\nrunning: %d\nready: %d\ndependent: %d\nlost contact: %d\ndelayed: %d\nburied: %d\n", c, ru, re, dep, l, d, b)
+		case "plain", "p":
+			buried := false
+			for _, job := range jobs {
+				fmt.Printf("%s\t%s\n", job.Key(), job.State)
+				if job.State == jobqueue.JobStateBuried {
+					buried = true
+				}
+			}
+			if buried {
+				os.Exit(1)
+			}
+			os.Exit(0)
 		case "summary", "s":
 			counts := make(map[string]map[jobqueue.JobState]int)
 			buried := make(map[string]map[string][]string)
