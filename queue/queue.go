@@ -86,8 +86,9 @@ package queue
 
 import (
 	"errors"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/inconshreveable/log15"
 )
@@ -136,7 +137,7 @@ func (e Error) Error() string {
 type ReadyAddedCallback func(queuename string, allitemdata []interface{})
 
 // ChangedCallback is used as a callback to know when items change sub-queues,
-// telling you what item.Data moved from which sub-queue to which other sub-
+// telling you what item.Data() moved from which sub-queue to which other sub-
 // queue. For new items in the queue, `from` will be SubQueueNew, and for items
 // leaving the queue, `to` will be SubQueueRemoved.
 type ChangedCallback func(from, to SubQueue, data []interface{})
@@ -283,10 +284,11 @@ func (queue *Queue) readyAdded() {
 			var data []interface{}
 			for _, il := range queue.readyQueue.groupedItems {
 				for _, item := range il {
-					data = append(data, item.Data)
+					data = append(data, item.Data())
 				}
 			}
 			queue.mutex.RUnlock()
+			queue.Debug("new ready items, triggering callback")
 			queue.readyAddedCb(queue.Name, data)
 
 			queue.readyAddedCbMutex.Lock()
@@ -304,8 +306,8 @@ func (queue *Queue) readyAdded() {
 // one sub-queue to another. The callback receives the name of the moved-from
 // sub-queue ('new' in the case of entering the queue for the first time), the
 // name of the moved-to sub-queue ('removed' in the case of the item being
-// removed from the queue), and a slice of item.Data of everything that moved in
-// this way. The callback will be initiated in a go routine.
+// removed from the queue), and a slice of item.Data() of everything that moved
+// in this way. The callback will be initiated in a go routine.
 func (queue *Queue) SetChangedCallback(callback ChangedCallback) {
 	queue.changedCb = callback
 }
@@ -316,7 +318,7 @@ func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 	if queue.changedCb != nil {
 		var data []interface{}
 		for _, item := range items {
-			data = append(data, item.Data)
+			data = append(data, item.Data())
 		}
 		go queue.changedCb(from, to, data)
 	}
@@ -627,14 +629,14 @@ func (queue *Queue) Get(key string) (*Item, error) {
 	return item, nil
 }
 
-// GetRunningData gets all the item.Data of items currently in the run sub-
+// GetRunningData gets all the item.Data() of items currently in the run sub-
 // queue.
 func (queue *Queue) GetRunningData() []interface{} {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
 	data := make([]interface{}, 0, len(queue.runQueue.items))
 	for _, item := range queue.runQueue.items {
-		data = append(data, item.Data)
+		data = append(data, item.Data())
 	}
 	return data
 }
@@ -655,7 +657,7 @@ func (queue *Queue) AllItems() []*Item {
 // ttr or dependencies of an item. You must supply all of these as per Add() -
 // just supply the old values of those you are not changing (except for
 // dependencies, which remain optional). The old values can be found by getting
-// the item with Get() (giving you item.Key, item.ReserveGroup, item.Data and
+// the item with Get() (giving you item.Key, item.ReserveGroup, item.Data() and
 // item.UnresolvedDependencies()), and then calling item.Stats() to get
 // stats.Priority, stats.Delay and stats.TTR.
 func (queue *Queue) Update(key string, reserveGroup string, data interface{}, priority uint8, delay time.Duration, ttr time.Duration, deps ...[]string) error {
@@ -674,9 +676,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 	var changedFrom SubQueue
 	var addedReady bool
-	item.mutex.Lock()
-	item.Data = data
-	item.mutex.Unlock()
+	item.SetData(data)
 	if len(deps) == 1 {
 		// check if dependencies actually changed
 		oldDeps := make(map[string]bool)
@@ -1308,7 +1308,7 @@ func (queue *Queue) startTTRProcessing() {
 				}
 
 				// obey the ttr callback
-				moveTo := queue.ttrCb(item.Data)
+				moveTo := queue.ttrCb(item.Data())
 				if moveTo == SubQueueRun {
 					// increase this item's time to release to a year from now,
 					// but keep it in the run queue

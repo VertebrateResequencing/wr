@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -66,6 +66,7 @@ var managerFlavor string
 var flavorSets string
 var postCreationScript string
 var postDeploymentScript string
+var cloudSpawns int
 var cloudGatewayIP string
 var cloudCIDR string
 var cloudDNS string
@@ -166,11 +167,12 @@ subset of your hardware, and other flavors can only be created on a different
 subset of your hardware, then you should describe those flavors as being in
 different sets, using the form f1,f2;f3,f4 where f1 and f2 are in the same set
 and f3 and f4 are in a different set (these names are treated as regular
-expressions). Doing this will result in the following behaviour: if a flavor is
-picked to run a job (according to your --flavor regex), but a server of that
-flavor can't be created due to lack of hardware, then the next best flavor -
-excluding flavors in the initial pick's flavor set - will be picked and tried
-instead.
+expressions). Doing this will result in the following behaviour: a flavor in the
+first set in your list (that matches your --flavor regex and is suitable for the
+job) will be picked, but if a server of that flavor can't be created due to lack
+of hardware, then a flavor from the next set in your list will be picked and
+tried instead. If there is a lack of hardware in all sets, the first is tried
+again.
 
 Deploy can work with any given --os OS image because it uploads wr to any server
 it creates; your OS image does not have to have wr installed on it. The only
@@ -732,6 +734,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVar(&managerFlavor, "manager_flavor", defaultConfig.CloudFlavorManager, "like --flavor, but specific to the first server created to run the manager"+defaultNote)
 	cloudDeployCmd.Flags().StringVar(&flavorSets, "flavor_sets", defaultConfig.CloudFlavorSets, "sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().IntVar(&cloudSpawns, "max_spawns", defaultConfig.CloudSpawns, "maximum number of simultaneous server spawns during scale-up")
 	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().IntVar(&maxManagerRAM, "max_local_ram", -1, "maximum MB of manager memory to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().StringVarP(&postDeploymentScript, "on_success", "x", defaultConfig.DeploySuccessScript, "path to a script to run locally after a successful deployment")
@@ -951,7 +954,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if domainMatchesIP {
 			useCertDomainStr = " --use_cert_domain"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --cloud_spawns %d --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, cloudSpawns, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
 
 		var e string
 		_, e, err = server.RunCmd(ctx, mCmd, false)

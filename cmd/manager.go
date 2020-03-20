@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2019 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -30,6 +31,8 @@ import (
 	"syscall"
 	"time"
 
+	sync "github.com/sasha-s/go-deadlock"
+
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -38,6 +41,7 @@ import (
 	"github.com/inconshreveable/log15"
 	"github.com/kardianos/osext"
 	"github.com/sb10/l15h"
+	"github.com/sb10/waitgroup"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
@@ -58,6 +62,7 @@ var useCertDomain bool
 var runnerDebug bool
 
 const kubernetes = "kubernetes"
+const deadlockTimeout = 5 * time.Minute
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -532,6 +537,7 @@ func init() {
 	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
 	managerStartCmd.Flags().IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(), "maximum number of local cores to use to run cmds; -1 means unlimited")
 	managerStartCmd.Flags().IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM, "maximum MB of local memory to use to run cmds; -1 means unlimited")
+	managerStartCmd.Flags().IntVar(&cloudSpawns, "cloud_spawns", defaultConfig.CloudSpawns, "for cloud schedulers, maximum number of simultaneous server spawns during scale-up")
 	managerStartCmd.Flags().StringVarP(&osPrefix, "cloud_os", "o", defaultConfig.CloudOS, "for cloud schedulers, prefix name of the OS image your servers should use")
 	managerStartCmd.Flags().StringVarP(&osUsername, "cloud_username", "u", defaultConfig.CloudUser, "for cloud schedulers, username needed to log in to the OS image specified by --cloud_os")
 	managerStartCmd.Flags().StringVar(&localUsername, "local_username", realUsername(), fmt.Sprintf("for cloud schedulers, your local username outside of the cloud (max length %d)", maxCloudResourceUsernameLength))
@@ -649,6 +655,7 @@ func startJQ(postCreation []byte) {
 			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
 			StateUpdateFrequency: 1 * time.Minute,
 			MaxInstances:         maxServers,
+			SimultaneousSpawns:   cloudSpawns,
 			MaxLocalCores:        &maxLocalCores,
 			MaxLocalRAM:          &maxLocalRAM,
 			Shell:                config.RunnerExecShell,
@@ -704,6 +711,14 @@ func startJQ(postCreation []byte) {
 	if runnerDebug {
 		runnerCmd += " --debug"
 	}
+
+	deadlockBuf := new(bytes.Buffer)
+	sync.Opts.LogBuf = deadlockBuf
+	sync.Opts.DeadlockTimeout = deadlockTimeout
+	sync.Opts.OnPotentialDeadlock = func() {
+		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
+	}
+	waitgroup.Opts.Disable = true
 
 	// start the jobqueue server
 	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{

@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -31,8 +31,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
@@ -63,6 +64,11 @@ import (
 // longer consider the timeout. This is only used for the initial wait time;
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
+
+// minimumServerSpawnTimeoutSecs is the minimum amount of time we wait for
+// servers to change from 'BUILD' state. It can be longer than this based on
+// learning.
+const minimumServerSpawnTimeoutSecs = 180
 
 // invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
 const invalidFlavorIDMsg = "invalid flavor ID"
@@ -103,6 +109,8 @@ type openstackp struct {
 	ownServer       *servers.Server
 	fmapMutex       sync.RWMutex
 	imapMutex       sync.RWMutex
+	stMutex         sync.RWMutex
+	spMutex         sync.RWMutex
 	createdKeyPair  bool
 	useConfigDrive  bool
 	hasDefaultGroup bool
@@ -740,7 +748,10 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// if we previously had a problem spawning a server, wait before attempting
 	// again
-	if p.spawnFailed {
+	p.spMutex.RLock()
+	sf := p.spawnFailed
+	p.spMutex.RUnlock()
+	if sf {
 		time.Sleep(p.errorBackoff.Duration())
 	}
 
@@ -794,7 +805,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	usingQuotaCh <- true
 
 	if err != nil {
+		p.spMutex.Lock()
 		p.spawnFailed = true
+		p.spMutex.Unlock()
 		return serverID, serverIP, serverName, adminPass, err
 	}
 
@@ -805,16 +818,21 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		defer internal.LogPanic(p.Logger, "spawn", false)
 
 		var timeoutS float64
+		var typical int
+		p.stMutex.RLock()
 		if createdVolume {
 			timeoutS = p.spawnTimesVolume.Value() * 4
+			typical = int(p.spawnTimesVolume.Value())
 		} else {
 			timeoutS = p.spawnTimes.Value() * 4
+			typical = int(p.spawnTimes.Value())
 		}
+		p.stMutex.RUnlock()
 		if timeoutS <= 0 {
 			timeoutS = initialServerSpawnTimeout.Seconds()
 		}
-		if timeoutS < 90 {
-			timeoutS = 90
+		if timeoutS < minimumServerSpawnTimeoutSecs {
+			timeoutS = minimumServerSpawnTimeoutSecs
 		}
 		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
@@ -831,11 +849,13 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
 					spawnSecs := time.Since(start).Seconds()
+					p.stMutex.Lock()
 					if createdVolume {
 						p.spawnTimesVolume.Add(spawnSecs)
 					} else {
 						p.spawnTimes.Add(spawnSecs)
 					}
+					p.stMutex.Unlock()
 					waitForActive <- nil
 					return
 				}
@@ -843,15 +863,20 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 					ticker.Stop()
 					msg := current.Fault.Message
 					if msg == "" {
-						msg = "the server is in ERROR state following an unknown problem"
+						msg = "unknown problem"
 					}
-					waitForActive <- errors.New(msg)
+					waitForActive <- fmt.Errorf("server %s is in ERROR state: %s", server.ID, msg)
 					return
 				}
 				continue
 			case <-timeout:
 				ticker.Stop()
-				waitForActive <- errors.New("timed out waiting for server to become ACTIVE")
+				current, errf := servers.Get(p.computeClient, server.ID).Extract()
+				status := "unknown"
+				if errf == nil {
+					status = current.Status
+				}
+				waitForActive <- fmt.Errorf("server %s is %s after %ds, timing out on it ever becoming ACTIVE (typical time to becoming active has been %ds)", server.ID, status, int(time.Since(start).Seconds()), typical)
 				return
 			}
 		}
@@ -860,17 +885,21 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	if err != nil {
 		// since we're going to return an error that we failed to spawn, try and
 		// delete the bad server in case it is still there
+		p.spMutex.Lock()
 		p.spawnFailed = true
+		p.spMutex.Unlock()
 		delerr := servers.Delete(p.computeClient, server.ID).ExtractErr()
 		if delerr != nil {
 			err = fmt.Errorf("%s\nadditionally, there was an error deleting the bad server: %s", err, delerr)
 		}
 		return serverID, serverIP, serverName, adminPass, err
 	}
+	p.spMutex.Lock()
 	if p.spawnFailed {
 		p.errorBackoff.Reset()
 	}
 	p.spawnFailed = false
+	p.spMutex.Unlock()
 
 	// *** NB. it can still take some number of seconds before I can ssh to it
 

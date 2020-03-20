@@ -23,8 +23,9 @@ package queue
 
 import (
 	"container/heap"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
@@ -269,13 +270,21 @@ func (q *subQueue) Swap(i, j int) {
 	} else {
 		itemList = q.items
 	}
+
 	itemList[i], itemList[j] = itemList[j], itemList[i]
-	itemList[i].mutex.Lock()
-	defer itemList[i].mutex.Unlock()
-	if i != j {
-		itemList[j].mutex.Lock()
-		defer itemList[j].mutex.Unlock()
+	lockFirst := i
+	lockSecond := j
+	if itemList[i].iid > itemList[j].iid {
+		lockFirst = j
+		lockSecond = i
 	}
+	itemList[lockFirst].mutex.Lock()
+	defer itemList[lockFirst].mutex.Unlock()
+	if i != j {
+		itemList[lockSecond].mutex.Lock()
+		defer itemList[lockSecond].mutex.Unlock()
+	}
+
 	itemList[i].queueIndexes[q.sqIndex] = i
 	itemList[j].queueIndexes[q.sqIndex] = j
 }

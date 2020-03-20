@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -32,8 +32,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
@@ -43,7 +44,6 @@ import (
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
 const sshShortTimeOut = 5 * time.Second
-const maxZeroCoreJobs = 1000000 // the maxmimum number of jobs a server has space for when cores request is 0
 
 // maxSSHSessions is the maximum number of sessions we will try and multiplex on
 // each ssh client we make for a server. It doesn't matter if this is lower than
@@ -65,6 +65,43 @@ type Flavor struct {
 	Cores int
 	RAM   int // MB
 	Disk  int // GB
+}
+
+// HasSpaceFor takes the cpu, ram and disk requirements of a command and tells
+// you how many of those commands could run simultaneously on a server of our
+// flavor. Returns 0 if not even 1 command could fit on a server with this
+// flavor.
+func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
+	if internal.FloatLessThan(float64(f.Cores), cores) || (f.RAM < ramMB) || (f.Disk < diskGB) {
+		return 0
+	}
+
+	var canDo int
+	if cores == 0 {
+		// rather than allow an infinite or very large number of cmds to run on
+		// a server, because there are still real limits on the number of
+		// processes we can run at once before things start falling over, we
+		// only allow double the actual core count of zero core things to run
+		canDo = f.Cores * internal.ZeroCoreMultiplier
+	} else {
+		canDo = int(math.Floor(float64(f.Cores) / cores))
+	}
+	if canDo > 1 {
+		var n int
+		if ramMB > 0 {
+			n = f.RAM / ramMB
+			if n < canDo {
+				canDo = n
+			}
+		}
+		if diskGB > 0 {
+			n = f.Disk / diskGB
+			if n < canDo {
+				canDo = n
+			}
+		}
+	}
+	return canDo
 }
 
 // Server provides details of the server that Spawn() created for you, and some
@@ -94,6 +131,8 @@ type Server struct {
 	provider          *Provider
 	sshClientConfig   *ssh.ClientConfig
 	usedCores         float64
+	cancels           int
+	usedZeroCores     int // we keep track of how many zero core things are allocated
 	usedDisk          int
 	usedRAM           int
 	mutex             sync.RWMutex
@@ -234,22 +273,38 @@ func (s *Server) Matches(os string, script []byte, configFiles string, flavor *F
 	return s.OS == os && bytes.Equal(s.Script, script) && s.ConfigFiles == configFiles && (flavor == nil || flavor.ID == s.Flavor.ID) && s.SharedDisk == sharedDisk
 }
 
-// Allocate records that the given resources have now been used up on this
-// server.
-func (s *Server) Allocate(cores float64, ramMB, diskGB int) {
+// Allocate considers the current usage (according to prior calls)
+// and records the given resources have now been used up on this server, if
+// there was enough space. Returns true if there was enough space and the
+// allocation occurred.
+func (s *Server) Allocate(cores float64, ramMB, diskGB int) bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.checkSpace(cores, ramMB, diskGB) == 0 {
+		return false
+	}
+
 	s.used = true
-	s.usedCores = internal.FloatAdd(s.usedCores, cores)
+
+	if cores == 0 {
+		s.usedZeroCores++
+	} else {
+		s.usedCores = internal.FloatAdd(s.usedCores, cores)
+	}
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
 
-	s.logger.Debug("server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+	s.logger.Debug("server allocate", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedZeroCores", s.usedZeroCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the host has initiated its countdown to destruction, cancel that
 	if s.onDeathrow {
-		s.cancelDestruction <- true
+		s.cancels++
+		go func() {
+			s.cancelDestruction <- true
+		}()
 	}
+
+	return true
 }
 
 // Used tells you if this server has ever had Allocate() called on it.
@@ -263,14 +318,18 @@ func (s *Server) Used() bool {
 func (s *Server) Release(cores float64, ramMB, diskGB int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.usedCores = internal.FloatSubtract(s.usedCores, cores)
+	if cores == 0 {
+		s.usedZeroCores--
+	} else {
+		s.usedCores = internal.FloatSubtract(s.usedCores, cores)
+	}
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
-	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
+	s.logger.Debug("server release", "cores", cores, "RAM", ramMB, "disk", diskGB, "usedCores", s.usedCores, "usedZeroCores", s.usedZeroCores, "usedRAM", s.usedRAM, "usedDisk", s.usedDisk)
 
 	// if the server is now doing nothing, we'll initiate a countdown to
 	// destroying the host
-	if s.usedCores <= 0 && s.usedRAM <= 0 && s.TTD.Seconds() > 0 {
+	if s.usedCores <= 0 && s.usedZeroCores <= 0 && s.usedRAM <= 0 && s.TTD.Seconds() > 0 {
 		s.logger.Debug("server idle")
 		go func() {
 			defer internal.LogPanic(s.logger, "server release", false)
@@ -285,7 +344,7 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 				s.logger.Debug("allocated before entering deathrow")
 				return
 			}
-			s.cancelDestruction = make(chan bool, 4) // *** the 4 is a hack to prevent deadlock, should find proper fix...
+			s.cancelDestruction = make(chan bool)
 			s.onDeathrow = true
 			s.mutex.Unlock()
 
@@ -294,8 +353,23 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 			for {
 				select {
 				case <-s.cancelDestruction:
+					// *** this block needed to fail the "Run lots of jobs on a
+					// deathrow server" scheduler test prior to fix, but we have
+					// no reasonable way for a scheduler test to turn this on...
+					// s.mutex.RLock()
+					// if s.cancels <= 5 {
+					// 	s.mutex.RUnlock()
+					// 	<-time.After(2 * time.Second)
+					// } else {
+					// 	s.mutex.RUnlock()
+					// }
 					s.mutex.Lock()
+					for i := 1; i < s.cancels; i++ {
+						<-s.cancelDestruction
+					}
+					s.cancels = 0
 					s.onDeathrow = false
+
 					s.mutex.Unlock()
 					s.logger.Debug("server cancelled deathrow")
 					return
@@ -320,14 +394,25 @@ func (s *Server) Release(cores float64, ramMB, diskGB int) {
 func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+	return s.checkSpace(cores, ramMB, diskGB)
+}
+
+// checkSpace does the work of HasSpaceFor. You must hold a read lock on mutex!
+func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 	if internal.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
+
 	var canDo int
-	if cores > 0 {
-		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
+	if cores == 0 {
+		// rather than allow an infinite or very large number of cmds to run on
+		// this server, because there are still real limits on the number of
+		// processes we can run at once before things start falling over, we
+		// only allow double the actual core count of zero core things to run
+		// (on top of up to actual core count of non-zero core things)
+		canDo = s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
 	} else {
-		canDo = maxZeroCoreJobs
+		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}
 	if canDo > 1 {
 		var n int
@@ -564,6 +649,41 @@ func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
 	s.sshClientSessions[clientIndex]--
 }
 
+// SFTPClient is like sftp.NewClient(), but the underlying
+// clientConn.conn.WriteCloser is mutex protected to avoid data races between
+// closes due to errors and direct Close() calls on the *sftp.Client.
+func SFTPClient(conn *ssh.Client) (*sftp.Client, error) {
+	s, err := conn.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	if err = s.RequestSubsystem("sftp"); err != nil {
+		return nil, err
+	}
+	pw, err := s.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	pw = &threadSafeWriteCloser{WriteCloser: pw}
+	pr, err := s.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	return sftp.NewClientPipe(pr, pw)
+}
+
+type threadSafeWriteCloser struct {
+	io.WriteCloser
+	sync.Mutex
+}
+
+func (c *threadSafeWriteCloser) Close() error {
+	c.Lock()
+	defer c.Unlock()
+	return c.WriteCloser.Close()
+}
+
 // RunCmd runs the given command on the server, optionally in the background.
 // You get the command's STDOUT and STDERR as strings.
 func (s *Server) RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error) {
@@ -648,7 +768,7 @@ func (s *Server) UploadFile(ctx context.Context, source string, dest string) err
 		return err
 	}
 
-	client, err := sftp.NewClient(sshClient)
+	client, err := SFTPClient(sshClient)
 	if err != nil {
 		return err
 	}
@@ -798,7 +918,7 @@ func (s *Server) CreateFile(ctx context.Context, content string, dest string) er
 		return err
 	}
 
-	client, err := sftp.NewClient(sshClient)
+	client, err := SFTPClient(sshClient)
 	if err != nil {
 		return err
 	}
@@ -829,7 +949,7 @@ func (s *Server) DownloadFile(ctx context.Context, source string, dest string) e
 		return err
 	}
 
-	client, err := sftp.NewClient(sshClient)
+	client, err := SFTPClient(sshClient)
 	if err != nil {
 		return err
 	}

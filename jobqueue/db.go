@@ -34,8 +34,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -110,6 +111,7 @@ type db struct {
 	envcache             *lru.ARCCache
 	updatingAfterJobExit int
 	wg                   *sync.WaitGroup
+	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
 	backingUp      bool
 	backupFinal    bool
@@ -418,6 +420,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		}
 		errors := make(chan error, numStores)
 
+		db.wgMutex.Lock()
 		db.wg.Add(1)
 		go func() {
 			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs rglookups", true)
@@ -463,6 +466,7 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 			sort.Sort(encodedJobs)
 			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
 		}()
+		db.wgMutex.Unlock()
 
 		seen := 0
 		for thisErr := range errors {
@@ -978,6 +982,8 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 		return
 	}
 
+	db.wgMutex.Lock()
+	defer db.wgMutex.Unlock()
 	db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterExit", true)
@@ -1062,6 +1068,8 @@ func (db *db) updateJobAfterChange(job *Job) {
 		return
 	}
 
+	db.wgMutex.Lock()
+	defer db.wgMutex.Unlock()
 	db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterChange", true)
@@ -1390,6 +1398,8 @@ func (db *db) retrieve(bucket []byte, key string) []byte {
 // remove does a basic delete of a key from a given bucket. We don't care about
 // errors here.
 func (db *db) remove(bucket []byte, key string) {
+	db.wgMutex.Lock()
+	defer db.wgMutex.Unlock()
 	db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "jobqueue database remove", true)
@@ -1504,11 +1514,15 @@ func (db *db) close() error {
 			close(db.backupStopWait)
 			db.Unlock()
 			<-db.backupNotification
+			db.wgMutex.Lock()
 			db.wg.Wait()
+			db.wgMutex.Unlock()
 			db.Lock()
 		} else {
 			db.Unlock()
+			db.wgMutex.Lock()
 			db.wg.Wait()
+			db.wgMutex.Unlock()
 			db.Lock()
 		}
 
@@ -1612,9 +1626,11 @@ func (db *db) backupToBackupFile(slowBackups bool) {
 	// we most likely triggered this backup immediately following an operation
 	// that alters (the important parts of) the database; wait for those
 	// transactions to actually complete before backing up
+	db.wgMutex.Lock()
 	db.wg.Wait()
 
 	db.wg.Add(1)
+	db.wgMutex.Unlock()
 	defer db.wg.Done()
 
 	// create the new backup file with temp name

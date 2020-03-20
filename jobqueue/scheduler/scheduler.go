@@ -44,8 +44,9 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -300,7 +301,7 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, priority uint8, coun
 	s.limiter[cmd] = count
 	s.Unlock()
 
-	err := s.impl.schedule(cmd, req, priority, count)
+	err := s.impl.schedule(cmd, req.Clone(), priority, count)
 
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {

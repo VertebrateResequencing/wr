@@ -21,6 +21,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -71,6 +72,7 @@ var cmdQueue string
 var cmdMisc string
 var cmdMonitorDocker string
 var rtimeoutint int
+var simpleOutput bool
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
@@ -212,10 +214,9 @@ requirements of the job.
 
 "misc" will be used as-is to form the command line used to submit jobs to
 external job schedulers (eg. LSF). For example, --misc '-R avx' might result
-in a command line containing: bsub -R avx. If possible, avoid including single
-or double quotes within the value passed to --misc, as these cause quoting
-issues and will be ignored. The exception to this is when using the LSF
-scheduler you can say --misc '-R "multiple things"' and it will work.
+in a command line containing: bsub -R avx. To avoid quoting issues, surround
+the --misc value in single quotes and if necessary use double quotes within the
+value; do NOT use single quotes within the value. Eg. --misc '-R "foo bar"'.
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
@@ -341,15 +342,28 @@ new job will have this job's mount and cloud_* options.`,
 
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
-		inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
-		if err != nil {
-			die("%s", err)
-		}
-
-		if defaultedRepG {
-			info("Added %d new commands (%d were duplicates) to the queue using default identifier '%s'", inserts, dups, cmdRepGroup)
+		if simpleOutput {
+			ids, err := jq.AddAndReturnIDs(jobs, envVars, !cmdReRun)
+			if err != nil {
+				die("%s", err)
+			}
+			if len(ids) == 0 {
+				os.Exit(1)
+			}
+			for _, id := range ids {
+				fmt.Printf("%s\n", id)
+			}
 		} else {
-			info("Added %d new commands (%d were duplicates) to the queue", inserts, dups)
+			inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
+			if err != nil {
+				die("%s", err)
+			}
+
+			if defaultedRepG {
+				info("Added %d new commands (%d were duplicates) to the queue using default identifier '%s'", inserts, dups, cmdRepGroup)
+			} else {
+				info("Added %d new commands (%d were duplicates) to the queue", inserts, dups)
+			}
 		}
 	},
 }
@@ -396,6 +410,7 @@ func init() {
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
+	addCmd.Flags().BoolVarP(&simpleOutput, "simple", "s", false, "simplify output to only queued job ids")
 
 	err := addCmd.Flags().MarkHidden("reserve_timeout")
 	if err != nil {

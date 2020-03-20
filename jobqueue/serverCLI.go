@@ -133,7 +133,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "shutdown":
 			s.Debug("shutdown requested")
-			s.Stop(true)
+			go s.Stop(true) // server stop can't complete while this client request is pending
 		case "upload":
 			// upload file to us
 			if cr.File == nil {
@@ -173,7 +173,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						qerr = err.Error()
 					} else {
 						s.Debug("added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
-						sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+						if cr.ReturnIDs {
+							jobs := s.inputToQueuedJobs(cr.Jobs)
+							var ids []string
+							for _, job := range jobs {
+								ids = append(ids, job.Key())
+							}
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete, AddedIDs: ids}
+						} else {
+							sr = &serverResponse{Added: added, Existed: dups + alreadyComplete}
+						}
 					}
 				}
 			}
@@ -185,6 +194,19 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				// first just try to Reserve normally
 				var item *queue.Item
 				var err error
+
+				// don't proceed when we're expecting new/changed items
+				s.rpmutex.Lock()
+				var wch chan struct{}
+				if s.racPending || s.racRunning {
+					wch = make(chan struct{})
+					s.waitingReserves = append(s.waitingReserves, wch)
+				}
+				s.rpmutex.Unlock()
+				if wch != nil {
+					<-wch
+				}
+
 				skip := false
 				if cr.SchedulerGroup != "" {
 					// if this is the first job that the client is trying to
@@ -219,7 +241,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 				if srerr == "" && item != nil {
 					// clean up any past state to have a fresh job ready to run
-					sjob := item.Data.(*Job)
+					sjob := item.Data().(*Job)
 					sjob.Lock()
 					sjob.ReservedBy = cr.ClientID //*** we should unset this on moving out of run state, to save space
 					sjob.Exited = false
@@ -249,7 +271,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "jstart":
 			// update the job's cmd-started-related properties
 			var job *Job
-			_, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				job.Lock()
 				if cr.Job.Pid <= 0 || cr.Job.Host == "" {
@@ -280,7 +302,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 		case "jtouch":
 			var job *Job
 			var item *queue.Item
-			item, job, srerr = s.getij(cr)
+			item, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				// if kill has been called for this job, just return KillCalled
 				job.RLock()
@@ -321,7 +343,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// complete bucket
 			var item *queue.Item
 			var job *Job
-			item, job, srerr = s.getij(cr)
+			item, job, srerr = s.getij(cr, true)
 			if srerr == "" {
 				// first check the item is still in the run queue (eg. the job
 				// wasn't released by another process; unlike the other methods,
@@ -372,14 +394,14 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			// move the job from the run queue to the delay queue, unless it has
 			// failed too many times, in which case bury
 			var job *Job
-			_, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr, false)
 			if srerr == "" {
 				if cr.JobEndState == nil {
 					cr.JobEndState = &JobEndState{}
 				}
 				cr.JobEndState.Stdout = cr.Job.StdOutC
 				cr.JobEndState.Stderr = cr.Job.StdErrC
-				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true)
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true, false)
 				if errq != nil {
 					srerr = ErrInternalError
 					qerr = errq.Error()
@@ -387,24 +409,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			}
 		case "jbury":
 			// move the job from the run queue to the bury queue
-			var item *queue.Item
 			var job *Job
-			item, job, srerr = s.getij(cr)
+			_, job, srerr = s.getij(cr, false)
 			if srerr == "" {
-				job.updateAfterExit(cr.JobEndState, s.limiter)
-				job.Lock()
-				job.FailReason = cr.Job.FailReason
-				sgroup := job.schedulerGroup
-				job.State = JobStateBuried
-				job.Unlock()
-				err := s.q.Bury(item.Key)
-				if err != nil {
+				if cr.JobEndState == nil {
+					cr.JobEndState = &JobEndState{}
+				}
+				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true, true)
+				if errq != nil {
 					srerr = ErrInternalError
-					qerr = err.Error()
-				} else {
-					s.decrementGroupCount(job.getSchedulerGroup())
-					s.db.updateJobAfterExit(job, cr.Job.StdOutC, cr.Job.StdErrC, true)
-					s.Debug("buried job", "cmd", job.Cmd, "schedGrp", sgroup)
+					qerr = errq.Error()
 				}
 			}
 		case "jkick":
@@ -420,9 +434,12 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if err != nil || item.Stats().State != queue.ItemStateBury {
 						continue
 					}
+					s.rpmutex.Lock()
+					s.racPending = true
+					s.rpmutex.Unlock()
 					err = s.q.Kick(jobkey)
 					if err == nil {
-						job := item.Data.(*Job)
+						job := item.Data().(*Job)
 						job.Lock()
 						job.UntilBuried = job.Retries + 1
 						s.Debug("unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
@@ -431,6 +448,10 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						kicked++
 
 						s.db.updateJobAfterChange(job)
+					} else {
+						s.rpmutex.Lock()
+						s.racPending = false
+						s.rpmutex.Unlock()
 					}
 				}
 				sr = &serverResponse{Existed: kicked}
@@ -481,13 +502,21 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 						if iState == queue.ItemStateRun {
 							continue
 						}
-						toModifyJobs = append(toModifyJobs, item.Data.(*Job))
-						toModifyKeys[jobkey] = item.Data.(*Job)
+						toModifyJobs = append(toModifyJobs, item.Data().(*Job))
+						toModifyKeys[jobkey] = item.Data().(*Job)
 					}
 
-					modified := cr.Modifier.Modify(toModifyJobs, s)
+					modified, err := cr.Modifier.Modify(toModifyJobs, s)
+					if err != nil {
+						if jqerr, ok := err.(Error); ok {
+							srerr = jqerr.Err
+						} else {
+							srerr = ErrInternalError
+						}
+						qerr = err.Error()
+					}
 
-					if len(modified) > 0 {
+					if err == nil && len(modified) > 0 {
 						var toModify []*Job
 						for _, old := range modified {
 							job := toModifyKeys[old]
@@ -723,17 +752,17 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 
 // for the many j* methods in handleRequest, we do this common stuff to get
 // the desired item and job. The returned string is one of our Err* constants.
-func (s *Server) getij(cr *clientRequest) (*queue.Item, *Job, string) {
+func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job, string) {
 	// clientRequest must have a Job
 	if cr.Job == nil {
 		return nil, nil, ErrBadRequest
 	}
 
 	item, err := s.q.Get(cr.Job.Key())
-	if err != nil || item.Stats().State != queue.ItemStateRun {
+	if err != nil || (checkRunning && item.Stats().State != queue.ItemStateRun) {
 		return item, nil, ErrBadJob
 	}
-	job := item.Data.(*Job)
+	job := item.Data().(*Job)
 
 	if cr.ClientID != job.ReservedBy {
 		return item, job, ErrMustReserve
@@ -755,7 +784,7 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(item *queue.Item, getStd bool, getEnv bool) *Job {
-	sjob := item.Data.(*Job)
+	sjob := item.Data().(*Job)
 	sjob.RLock()
 
 	stats := item.Stats()
@@ -858,7 +887,7 @@ func (s *Server) reserveWithLimits(group string, wait time.Duration) (*queue.Ite
 		if item == nil {
 			s.limiter.Decrement(limitGroups)
 		} else {
-			item.Data.(*Job).noteIncrementedLimitGroups(limitGroups)
+			item.Data().(*Job).noteIncrementedLimitGroups(limitGroups)
 		}
 	}
 

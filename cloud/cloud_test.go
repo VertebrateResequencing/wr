@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -152,9 +152,10 @@ func TestOpenStack(t *testing.T) {
 				if host == "vr-2-2-02" && len(flavorSets) > 1 {
 					flavors, err := p.CheapestServerFlavors(1, 2048, flavorRegex, flavorSets)
 					So(err, ShouldBeNil)
-					So(len(flavors), ShouldEqual, 2)
+					So(len(flavors), ShouldEqual, 3)
 					So(flavors[0].Name, ShouldEqual, "m1.tiny")
 					So(flavors[1].Name, ShouldEqual, "m2.tiny")
+					So(flavors[2], ShouldBeNil)
 				}
 
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
@@ -239,9 +240,14 @@ func TestOpenStack(t *testing.T) {
 					n := server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, flavor.Cores)
 
-					server.Allocate(float64(flavor.Cores), 100, 0)
+					worked := server.Allocate(float64(flavor.Cores+1), 100, 0)
+					So(worked, ShouldEqual, false)
+					worked = server.Allocate(float64(flavor.Cores), 100, 0)
+					So(worked, ShouldEqual, true)
 					n = server.HasSpaceFor(1, 0, 0)
 					So(n, ShouldEqual, 0)
+					worked = server.Allocate(1, 0, 0)
+					So(worked, ShouldEqual, false)
 
 					server.Release(float64(flavor.Cores), 100, 0)
 					n = server.HasSpaceFor(1, 0, 0)
@@ -450,8 +456,8 @@ func TestOpenStack(t *testing.T) {
 					ok = server3.Alive()
 					So(ok, ShouldBeTrue)
 
-					server3.Allocate(1, 100, 0)
-					server3.Release(1, 100, 0)
+					server3.Allocate(0, 100, 0)
+					server3.Release(0, 100, 0)
 
 					<-time.After(3 * time.Second)
 

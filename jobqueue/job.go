@@ -26,10 +26,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -691,8 +692,15 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited. It also calls decrementLimitGroups().
+// JobEndState indicates the job exited, and if the job wasn't already exited.
+// It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
+	j.RLock()
+	if j.Exited {
+		j.RUnlock()
+		return
+	}
+	j.RUnlock()
 	j.decrementLimitGroups(lim)
 
 	if jes == nil || !jes.Exited {
@@ -700,7 +708,6 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	}
 
 	j.Lock()
-	defer j.Unlock()
 	j.Exited = true
 	j.Exitcode = jes.Exitcode
 	j.PeakRAM = jes.PeakRAM
@@ -710,6 +717,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	if jes.Cwd != "" {
 		j.ActualCwd = jes.Cwd
 	}
+	j.Unlock()
 }
 
 // decrementLimitGroups decrements any limit groups of this job that had been
@@ -1081,7 +1089,7 @@ func (j *JobModifier) SetMonitorDocker(new string) {
 // also need to handle dependencies of a job changing.
 //
 // Returns a REVERSE mapping of new to old Job keys.
-func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
+func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
 	keys := make(map[string]string)
 	for _, job := range jobs {
 		job.Lock()
@@ -1110,8 +1118,12 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
 		}
 		if newKey != before {
 			// check queue and db
-			existing, _, _ := server.getJobsByKeys([]string{newKey}, false, false)
-			if len(existing) != 0 {
+			exists, err := server.checkJobByKey(newKey)
+			if err != nil {
+				job.Unlock()
+				return keys, err
+			}
+			if exists {
 				// duplicate of queued or complete job, ignore
 				job.Unlock()
 				continue
@@ -1203,5 +1215,5 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) map[string]string {
 		keys[job.Key()] = before
 		job.Unlock()
 	}
-	return keys
+	return keys, nil
 }

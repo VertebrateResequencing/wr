@@ -41,5 +41,5 @@ issues:
         - gochecknoglobals
         - gochecknoinits
 
-  new-from-rev: HEAD~
+  new-from-rev: master
 

@@ -81,15 +81,18 @@ const localhost = "localhost"
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
 var (
-	ClientTouchInterval               = 15 * time.Second
-	ClientReleaseDelay                = 30 * time.Second
-	ClientPercentMemoryKill           = 90
-	ClientRetryWait                   = 15 * time.Second
-	ClientRetryTime                   = 24 * time.Hour
-	RAMIncreaseMin            float64 = 1000
-	RAMIncreaseMultLow                = 2.0
-	RAMIncreaseMultHigh               = 1.3
-	RAMIncreaseMultBreakpoint float64 = 8192
+	ClientTouchInterval                = 15 * time.Second
+	ClientReleaseDelay                 = 30 * time.Second
+	ClientPercentMemoryKill            = 90
+	ClientRetryWait                    = 15 * time.Second
+	ClientRetryTime                    = 24 * time.Hour
+	ClientShutdownTimeout              = 120 * time.Second
+	ClientShutdownTestInterval         = 100 * time.Millisecond
+	ClientSuggestedPingTimeout         = 10 * time.Millisecond
+	RAMIncreaseMin             float64 = 1000
+	RAMIncreaseMultLow                 = 2.0
+	RAMIncreaseMultHigh                = 1.3
+	RAMIncreaseMultBreakpoint  float64 = 8192
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -119,6 +122,7 @@ type clientRequest struct {
 	IgnoreComplete          bool
 	Search                  bool
 	ConfirmDeadCloudServers bool
+	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
 }
 
 // Client represents the client side of the socket that the jobqueue server is
@@ -304,10 +308,25 @@ func (c *Client) ResumeServer() error {
 // we indirectly report if the server was shut down successfully.
 func (c *Client) ShutdownServer() bool {
 	_, err := c.request(&clientRequest{Method: "shutdown"})
-	if err == nil || err.Error() == "receive time out" {
-		return true
+	if err != nil {
+		return false
 	}
-	return false
+
+	// wait a while for the server to stop responding to Pings
+	limit := time.After(ClientShutdownTimeout)
+	ticker := time.NewTicker(ClientShutdownTestInterval)
+	for {
+		select {
+		case <-ticker.C:
+			_, err = c.Ping(ClientSuggestedPingTimeout)
+			if err != nil {
+				ticker.Stop()
+				return true
+			}
+		case <-limit:
+			return false
+		}
+	}
 }
 
 // BackupDB backs up the server's database to the given path. Note that
@@ -356,6 +375,21 @@ func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added,
 		return 0, 0, err
 	}
 	return resp.Added, resp.Existed, err
+}
+
+// AddAndReturnIDs is like Add(), except that the internal IDs of jobs that are
+// now in the queue are returned (including dups, excluding complete jobs). This
+// is potentially expensive, so use Add() if you don't need these.
+func (c *Client) AddAndReturnIDs(jobs []*Job, envVars []string, ignoreComplete bool) ([]string, error) {
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true})
+	if err != nil {
+		return nil, err
+	}
+	return resp.AddedIDs, err
 }
 
 // Modify modifies previously Add()ed jobs that are incomplete and not currently
@@ -529,12 +563,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("could not create working directory: %w", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
 		cmd.Dir = actualCwd
+		job.Lock()
 		job.ActualCwd = actualCwd
+		job.Unlock()
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
 
@@ -589,7 +625,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("could not create lsf emulation directory: %w", err)
 			errb := c.Bury(job, nil, FailReasonCwd, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -599,7 +635,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if myerr == nil {
 					myerr = errr
 				} else {
-					myerr = fmt.Errorf("%w (and removing the lsf emulation dir failed: %w)", myerr, errr)
+					myerr = fmt.Errorf("%v (and removing the lsf emulation dir failed: %w)", myerr, errr)
 				}
 			}
 		}()
@@ -643,7 +679,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("failed to mount remote file system(s): %w (%s)", err, os.Environ())
 			errb := c.Bury(job, nil, FailReasonMount, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -668,7 +704,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 						if myerr == nil {
 							myerr = errc
 						} else {
-							myerr = fmt.Errorf("%w (and closing dir failed: %w)", myerr, errc)
+							myerr = fmt.Errorf("%v (and closing dir failed: %w)", myerr, errc)
 						}
 					}
 					if (errr == nil || errr == io.EOF) && len(files) == 0 {
@@ -720,7 +756,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if myerr == nil {
 					myerr = errr
 				} else {
-					myerr = fmt.Errorf("%w (and removing the tmpdir failed: %w)", myerr, errr)
+					myerr = fmt.Errorf("%v (and removing the tmpdir failed: %w)", myerr, errr)
 				}
 			}
 		}()
@@ -788,7 +824,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			buryErr := fmt.Errorf("failed to create docker client: %w", err)
 			errb := c.Bury(job, nil, FailReasonDocker, buryErr)
 			if errb != nil {
-				buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+				buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 			}
 			return buryErr
 		}
@@ -803,7 +839,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				buryErr := fmt.Errorf("failed to get docker containers: %w", errc)
 				errb := c.Bury(job, nil, FailReasonDocker, buryErr)
 				if errb != nil {
-					buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
+					buryErr = fmt.Errorf("%v (and burying the job failed: %w)", buryErr, errb)
 				}
 				return buryErr
 			}
@@ -903,7 +939,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errk == nil {
 					errk = errc
 				} else {
-					errk = fmt.Errorf("%w, and getting child processes failed: %w", errk, errc)
+					errk = fmt.Errorf("%v, and getting child processes failed: %w", errk, errc)
 				}
 			}
 
@@ -913,7 +949,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errk == nil {
 					errk = errd
 				} else {
-					errk = fmt.Errorf("%w, and killing the docker container failed: %w", errk, errd)
+					errk = fmt.Errorf("%v, and killing the docker container failed: %w", errk, errd)
 				}
 			}
 
@@ -924,7 +960,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				if errk == nil {
 					errk = errc
 				} else {
-					errk = fmt.Errorf("%w, and killing its child process failed: %w", errk, errc)
+					errk = fmt.Errorf("%v, and killing its child process failed: %w", errk, errc)
 				}
 			}
 
@@ -999,7 +1035,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 							if myerr == nil {
 								myerr = errg
 							} else {
-								myerr = fmt.Errorf("%w (and finding the docker container had issues: %w)", myerr, errg)
+								myerr = fmt.Errorf("%v (and finding the docker container had issues: %w)", myerr, errg)
 							}
 						}
 					}
@@ -1174,7 +1210,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	if killErr != nil {
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; killing the cmd also failed: %w", myerr, killErr)
+			myerr = fmt.Errorf("%v; killing the cmd also failed: %w", myerr, killErr)
 		} else {
 			myerr = killErr
 		}
@@ -1182,7 +1218,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
+			myerr = fmt.Errorf("%v; closing stderr/out of the cmd also failed: %w", myerr, closeErr)
 		} else {
 			myerr = closeErr
 		}
@@ -1192,7 +1228,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 	berr := job.TriggerBehaviours(myerr == nil)
 	if berr != nil {
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; behaviour(s) also had problem(s): %w", myerr, berr)
+			myerr = fmt.Errorf("%v; behaviour(s) also had problem(s): %w", myerr, berr)
 		} else {
 			myerr = berr
 		}
@@ -1216,7 +1252,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 
 		if myerr != nil {
-			myerr = fmt.Errorf("%w; unmounting also caused problem(s): %w", myerr, unmountErr)
+			myerr = fmt.Errorf("%v; unmounting also caused problem(s): %w", myerr, unmountErr)
 		} else {
 			myerr = unmountErr
 		}
@@ -1473,6 +1509,8 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.Lock()
+	defer job.Unlock()
 	job.Exited = true
 	job.Exitcode = jes.Exitcode
 	job.PeakRAM = jes.PeakRAM
@@ -1564,6 +1602,8 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 	}
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+	job.Lock()
+	defer job.Unlock()
 	job.FailReason = failreason
 	if len(stderr) == 1 && stderr[0] != nil {
 		job.StdErrC, err = compress([]byte(stderr[0].Error()))

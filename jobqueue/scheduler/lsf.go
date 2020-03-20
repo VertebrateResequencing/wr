@@ -23,6 +23,7 @@ package scheduler
 
 import (
 	"bufio"
+	"encoding/csv"
 	"fmt"
 	"math"
 	"os/exec"
@@ -35,9 +36,6 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
 )
-
-// lsfRFlag is a const used to pull out -R options supplied by user
-var lsfRFlag = regexp.MustCompile(`-R\s+["']([^"']+)["']`)
 
 // lsf is our implementer of scheduleri
 type lsf struct {
@@ -115,6 +113,9 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 			}
 		}
 	}
+
+	bmgroups := make(map[string]int)
+	parsedBmgroups := false
 
 	// parse bqueues -l to figure out what usable queues we have
 	bqcmd := exec.Command(s.config.Shell, "-c", "bqueues -l") // #nosec
@@ -260,8 +261,29 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					queue = ""
 				}
 			} else if matches[2] != "all" {
-				s.queues[queue][kind] = len(vals)
-				updateHighest(kind, len(vals))
+				hosts := 0
+				for _, val := range vals {
+					if strings.HasSuffix(val, "/") {
+						// this is a group name, look it up in bmgroup
+						if !parsedBmgroups {
+							perr := s.parseBmgroups(bmgroups)
+							if perr != nil {
+								return perr
+							}
+							parsedBmgroups = true
+						}
+						val = strings.TrimSuffix(val, "/")
+						if n, exists := bmgroups[val]; exists {
+							hosts += n
+						} else {
+							hosts++
+						}
+					} else {
+						hosts++
+					}
+				}
+				s.queues[queue][kind] = hosts
+				updateHighest(kind, hosts)
 			}
 		}
 
@@ -389,6 +411,29 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	return nil
 }
 
+// parseBmgroups parses the output of `bmgroup`, storing group name as a key in
+// the supplied map, with number of hosts in that group as the value.
+func (s *lsf) parseBmgroups(groups map[string]int) error {
+	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup") // #nosec
+	bmgout, err := bmgcmd.StdoutPipe()
+	if err != nil {
+		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bmgroup]: %s", err)}
+	}
+	if err = bmgcmd.Start(); err != nil {
+		return Error{"lsf", "initialize", fmt.Sprintf("failed to start [bmgroup]: %s", err)}
+	}
+	bmgScanner := bufio.NewScanner(bmgout)
+	for bmgScanner.Scan() {
+		line := bmgScanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		groups[fields[0]] = len(fields) - 1
+	}
+	return nil
+}
+
 // reserveTimeout achieves the aims of ReserveTimeout().
 func (s *lsf) reserveTimeout(req *Requirements) int {
 	if val, defined := req.Other["rtimeout"]; defined {
@@ -397,7 +442,6 @@ func (s *lsf) reserveTimeout(req *Requirements) int {
 			s.Logger.Error(fmt.Sprintf("Failed to convert timeout to integer: %s", err))
 			return defaultReserveTimeout
 		}
-		s.Logger.Debug(fmt.Sprintf("setting runner timeout to %v", timeout))
 		return timeout
 	}
 	return defaultReserveTimeout
@@ -500,17 +544,22 @@ func (s *lsf) generateBsubArgs(queue string, req *Requirements, cmd string, need
 	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
 
 	if val, ok := req.Other["scheduler_misc"]; ok {
-		parts := lsfRFlag.FindStringSubmatch(val)
-		switch {
-		case len(parts) == 2:
-			bsubArgs = append(bsubArgs, "-R", parts[1])
-		case !strings.Contains(val, `"`):
-			bsubArgs = append(bsubArgs, val)
-		default:
-			// *** not sure how to handle any arbitrary value supplied, since
-			// we'd have to split flag from value in to separate list elements
-			// or encounter escaped quote issues in the resulting command line
-			s.Warn("scheduler misc option ignored", "misc", val)
+		if strings.Contains(val, `'`) {
+			s.Warn("scheduler misc option ignored due to containing single quotes", "misc", val)
+		} else {
+			r := csv.NewReader(strings.NewReader(val))
+			r.Comma = ' '
+			fields, err := r.Read()
+			if err != nil {
+				s.Warn("scheduler misc option ignored", "misc", val, "err", err)
+			} else {
+				for _, field := range fields {
+					if strings.Contains(field, ` `) {
+						field = `'` + field + `'`
+					}
+					bsubArgs = append(bsubArgs, field)
+				}
+			}
 		}
 	}
 
@@ -623,14 +672,18 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 		// cmds to start running and then get killed.
 		reAid := regexp.MustCompile(`\[(\d+)\]$`)
 		toKill := []string{"-b"}
-		cb := func(matches []string) {
+		cb := func(jobID, stat, jobName string) {
 			count++
-			if count > max && matches[2] != "RUN" {
-				sidaid := matches[1]
-				if aidmatch := reAid.FindStringSubmatch(matches[3]); len(aidmatch) == 2 {
-					sidaid = sidaid + "[" + aidmatch[1] + "]"
+			if count > max && stat != "RUN" {
+				var sidaid string
+				if strings.HasSuffix(jobID, "]") {
+					sidaid = jobID
+				} else if aidmatch := reAid.FindStringSubmatch(jobName); len(aidmatch) == 2 {
+					sidaid = jobID + "[" + aidmatch[1] + "]"
 				}
-				toKill = append(toKill, sidaid)
+				if sidaid != "" {
+					toKill = append(toKill, sidaid)
+				}
 				count--
 			}
 		}
@@ -638,13 +691,13 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 
 		if len(toKill) > 1 {
 			killcmd := exec.Command(s.bkillExe, toKill...) // #nosec
-			errk := killcmd.Run()
-			if errk != nil {
-				s.Warn("checkCmd bkill failed", "err", errk)
+			out, errk := killcmd.CombinedOutput()
+			if errk != nil && !strings.HasPrefix(string(out), "Job has already finished") {
+				s.Warn("checkCmd bkill failed", "cmd", s.bkillExe, "toKill", toKill, "err", errk, "out", string(out))
 			}
 		}
 	} else {
-		cb := func(matches []string) {
+		cb := func(jobID, stat, jobName string) {
 			count++
 		}
 		err = s.parseBjobs(jobPrefix, cb)
@@ -653,12 +706,11 @@ func (s *lsf) checkCmd(cmd string, max int) (count int, err error) {
 	return count, err
 }
 
-type bjobsCB func(matches []string)
+type bjobsCB func(jobID, stat, jobName string)
 
 // parseBjobs runs bjobs, filters on a job name prefix, excludes exited jobs and
-// gives matches to
-// `^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(jobPrefix\S+)` to your
-// callback for each bjobs output line.
+// gives columns 1 (JOBID), 3 (STAT) and 7 (JOB_NAME) to your callback for each
+// bjobs output line.
 func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	bjcmd := exec.Command(s.config.Shell, "-c", s.bjobsExe+" -w") // #nosec
 	bjout, err := bjcmd.StdoutPipe()
@@ -671,15 +723,15 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 	}
 	bjScanner := bufio.NewScanner(bjout)
 
-	reParse := regexp.MustCompile(`^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(` + jobPrefix + `\S+)`)
 	for bjScanner.Scan() {
 		line := bjScanner.Text()
+		fields := strings.Fields(line)
 
-		if matches := reParse.FindStringSubmatch(line); len(matches) == 4 {
-			if matches[2] == "EXIT" || matches[2] == "DONE" {
+		if len(fields) > 7 {
+			if fields[2] == "EXIT" || fields[2] == "DONE" || !strings.HasPrefix(fields[6], jobPrefix) {
 				continue
 			}
-			callback(matches)
+			callback(fields[0], fields[2], fields[6])
 		}
 	}
 
@@ -708,8 +760,8 @@ func (s *lsf) setBadServerCallBack(cb BadServerCallBack) {}
 // cleanup bkills any remaining jobs we created
 func (s *lsf) cleanup() {
 	toKill := []string{"-b"}
-	cb := func(matches []string) {
-		toKill = append(toKill, matches[1])
+	cb := func(jobID, stat, jobName string) {
+		toKill = append(toKill, jobID)
 	}
 	err := s.parseBjobs(fmt.Sprintf("wr%s_", s.config.Deployment[0:1]), cb)
 	if err != nil {

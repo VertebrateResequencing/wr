@@ -23,7 +23,8 @@ package jobqueue
 import (
 	"net/http"
 	"strings"
-	"sync"
+
+	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -475,7 +476,7 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 			}
 			stats := item.Stats()
 			if allowed[stats.State] {
-				job := item.Data.(*Job)
+				job := item.Data().(*Job)
 				job.Lock()
 				job.State = s.itemStateToJobState(stats.State, job.Lost)
 				if job.Exitcode == req.Exitcode && job.FailReason == req.FailReason {
@@ -491,7 +492,7 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 		}
 		stats := item.Stats()
 		if allowed[stats.State] {
-			job := item.Data.(*Job)
+			job := item.Data().(*Job)
 			job.Lock()
 			job.State = s.itemStateToJobState(stats.State, job.Lost)
 			job.Unlock()
