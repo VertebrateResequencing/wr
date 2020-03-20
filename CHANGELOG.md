@@ -5,6 +5,33 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.21.0] - 2020-20-03
+### Added
+- The OpenStack scheduler can now spawn multiple servers at once, increasing the
+  rate of scale up. New cloudspawns config option (defaults to 10).
+- `wr add` now has an -s option which will make it output the internal id of the
+  added job(s).
+- `wr status` now has a "plain" output mode (-o p) that reports just the current
+  state of each job, listed by internal id.
+
+### Changed
+- When OpenStack flavors are picked for you, they are now picked from your
+  --flavor_sets in the order you specify them, meaning you can prefer certain
+  hardware is used and filled up before other hardware.
+- To avoid overloading machines in local or OpenStack mode, there is now a limit
+  of how many zero core jobs will run at once: 2 x physical cores. This is in
+  addition to whatever non-zero core jobs are using. (As before, zero core jobs
+  are also limited by the other requirements such as RAM, so zero core jobs were
+  never unlimited.)
+- Improved logging for certain kinds of errors that result in jobs getting stuck
+  pending
+- Improved logging for OpenStack servers that fail to become ACTIVE.
+
+### Fixed
+- A number of cases of the OpenStack scheduler failing to schedule jobs
+  correctly.
+
+
 ## [0.20.0] - 2019-11-07
 ### Added
 - New `--misc` option for `wr add` to pass options to LSF scheduler.
