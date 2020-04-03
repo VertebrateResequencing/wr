@@ -23,9 +23,11 @@ package internal
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/creasty/defaults"
 	"github.com/inconshreveable/log15"
 	"github.com/jinzhu/configor"
 )
@@ -41,6 +43,12 @@ const (
 
 	// Development is the name of the development deployment, used during testing
 	Development = "development"
+
+	// ConfigSourceEnvVar is a config value source
+	ConfigSourceEnvVar = "env var"
+
+	// ConfigSourceDefault is a config value source
+	ConfigSourceDefault = "default"
 )
 
 // Config holds the configuration options for jobqueue server and client
@@ -82,6 +90,84 @@ type Config struct {
 	CloudSpawns          int    `default:"10"`
 	CloudAutoConfirmDead int    `default:"30"`
 	DeploySuccessScript  string `default:""`
+	sources              map[string]string
+}
+
+// merge compares existing to new Config values, and for each one that has
+// changed, sets the given source on the changed property in our sources,
+// and sets the new value on ourselves.
+func (c *Config) merge(new *Config, source string) {
+	v := reflect.ValueOf(*c)
+	typeOfC := v.Type()
+	vNew := reflect.ValueOf(*new)
+
+	if c.sources == nil {
+		c.sources = make(map[string]string)
+	}
+
+	for i := 0; i < v.NumField(); i++ {
+		property := typeOfC.Field(i).Name
+		if property == "sources" {
+			continue
+		}
+
+		if vNew.Field(i).Interface() != v.Field(i).Interface() {
+			c.sources[property] = source
+
+			adrField := reflect.ValueOf(c).Elem().Field(i)
+			switch typeOfC.Field(i).Type.Kind() {
+			case reflect.String:
+				adrField.SetString(vNew.Field(i).String())
+			case reflect.Int:
+				adrField.SetInt(vNew.Field(i).Int())
+			case reflect.Bool:
+				adrField.SetBool(vNew.Field(i).Bool())
+			}
+		}
+	}
+}
+
+// clone makes a new Config with our values.
+func (c *Config) clone() *Config {
+	new := &Config{}
+
+	v := reflect.ValueOf(*c)
+	typeOfC := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		property := typeOfC.Field(i).Name
+		if property == "sources" {
+			continue
+		}
+
+		adrField := reflect.ValueOf(new).Elem().Field(i)
+		switch typeOfC.Field(i).Type.Kind() {
+		case reflect.String:
+			adrField.SetString(v.Field(i).String())
+		case reflect.Int:
+			adrField.SetInt(v.Field(i).Int())
+		case reflect.Bool:
+			adrField.SetBool(v.Field(i).Bool())
+		}
+	}
+
+	new.sources = make(map[string]string)
+	for key, val := range c.sources {
+		new.sources[key] = val
+	}
+
+	return new
+}
+
+// Source returns where the value of a Config field was defined.
+func (c Config) Source(field string) string {
+	if c.sources == nil {
+		return ConfigSourceDefault
+	}
+	source, set := c.sources[field]
+	if !set {
+		return ConfigSourceDefault
+	}
+	return source
 }
 
 /*
@@ -121,50 +207,58 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	if deployment != Development && deployment != Production {
 		deployment = DefaultDeployment(logger)
 	}
-	err = os.Setenv("CONFIGOR_ENV", deployment)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
-	}
+	// we don't os.Setenv("CONFIGOR_ENV", deployment) to stop configor loading
+	// files we before we want it to
 	err = os.Setenv("CONFIGOR_ENV_PREFIX", "WR")
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
-	ConfigDeploymentBasename := ".wr_config." + deployment + ".yml"
 
-	// read the config files. We have to check file existence before passing
-	// these to configor.Load, or it will complain
-	var configFiles []string
-	configFile := filepath.Join(pwd, configCommonBasename)
-	_, err = os.Stat(configFile)
-	if _, err2 := os.Stat(filepath.Join(pwd, ConfigDeploymentBasename)); err == nil || err2 == nil {
-		configFiles = append(configFiles, configFile)
+	// because we want to know the source of every value, we can't take
+	// advantage of configor.Load() being able to take all env vars and config
+	// files at once. We do it repeatedly and merge results instead
+	config := &Config{}
+	if err := defaults.Set(config); err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
+
+	// load env vars. ManagerUmask is likely to be zero prefixed by user, but
+	// that is not converted to int correctly, so fix first
+	umask := os.Getenv("WR_MANAGERUMASK")
+	if umask != "" && strings.HasPrefix(umask, "0") {
+		umask = strings.TrimLeft(umask, "0")
+		os.Setenv("WR_MANAGERUMASK", umask)
+	}
+	configEnv := &Config{}
+	err = configor.Load(configEnv)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	config.merge(configEnv, ConfigSourceEnvVar)
+
+	// read each config file and merge results
+	configDeploymentBasename := ".wr_config." + deployment + ".yml"
+
+	if configDir := os.Getenv("WR_CONFIG_DIR"); configDir != "" {
+		configLoadFromFile(config, filepath.Join(configDir, configCommonBasename), logger)
+		configLoadFromFile(config, filepath.Join(configDir, configDeploymentBasename), logger)
+	}
+
 	home, herr := os.UserHomeDir()
 	if herr != nil || home == "" {
 		logger.Error("could not find home dir", "err", herr)
 		os.Exit(1)
 	}
-	configFile = filepath.Join(home, configCommonBasename)
-	_, err = os.Stat(configFile)
-	if _, err2 := os.Stat(filepath.Join(home, ConfigDeploymentBasename)); err == nil || err2 == nil {
-		configFiles = append(configFiles, configFile)
-	}
-	if configDir := os.Getenv("WR_CONFIG_DIR"); configDir != "" {
-		configFile = filepath.Join(configDir, configCommonBasename)
-		_, err = os.Stat(configFile)
-		if _, err2 := os.Stat(filepath.Join(configDir, ConfigDeploymentBasename)); err == nil || err2 == nil {
-			configFiles = append(configFiles, configFile)
-		}
-	}
+	configLoadFromFile(config, filepath.Join(home, configCommonBasename), logger)
+	configLoadFromFile(config, filepath.Join(home, configDeploymentBasename), logger)
 
-	config := Config{}
-	err = configor.Load(&config, configFiles...)
-	if err != nil {
-		logger.Error(err.Error())
-		os.Exit(1)
-	}
+	configLoadFromFile(config, filepath.Join(pwd, configCommonBasename), logger)
+	configLoadFromFile(config, filepath.Join(pwd, configDeploymentBasename), logger)
+
+	// adjust properties as needed
 	config.Deployment = deployment
 
 	// convert the possible ~/ in Manager_dir to abs path to user's home
@@ -210,7 +304,22 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 		config.ManagerWeb = calculatePort(config.Deployment, "webi", logger)
 	}
 
-	return config
+	return *config
+}
+
+func configLoadFromFile(config *Config, path string, logger log15.Logger) {
+	_, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+
+	configFile := config.clone()
+	err = configor.Load(configFile, path)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	config.merge(configFile, path)
 }
 
 // IsProduction tells you if we're in the production deployment.

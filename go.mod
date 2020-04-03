@@ -8,6 +8,7 @@ require (
 	github.com/VertebrateResequencing/muxfys/v4 v4.0.2
 	github.com/VividCortex/ewma v0.0.0-20170804035156-43880d236f69
 	github.com/carbocation/runningvariance v0.0.0-20150817162428-fdcce8a03b6b
+	github.com/creasty/defaults v1.3.0
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/docker/distribution v2.7.1+incompatible // indirect
 	github.com/docker/docker v0.0.0-20180524003928-df5175e1ee95

@@ -26,6 +26,7 @@ compile_k8s_tmp: /tmp/wr
 
 test: export CGO_ENABLED = 0
 test:
+	@go test -p 1 -tags netgo -timeout 20m --count 1 ./
 	@go test -p 1 -tags netgo -timeout 20m --count 1 ${PKG_LIST}
 
 test-e2e: compile_k8s_tmp ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
@@ -37,6 +38,7 @@ test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kub
 race: export CGO_ENABLED = 1
 race:
 	# *** -gcflags=all=-d=checkptr=0 is temporarily required until bbolt is fixed (<=1.3.3 has unsafe pointer usage)
+	go test -p 1 -tags netgo -race --count 1 ./
 	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 ./queue
 	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 -timeout 30m ./jobqueue
 	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 -timeout 40m ./jobqueue/scheduler
