@@ -21,6 +21,7 @@ package internal
 // this file implements the config system used by the cmd package
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,6 +31,7 @@ import (
 	"github.com/creasty/defaults"
 	"github.com/inconshreveable/log15"
 	"github.com/jinzhu/configor"
+	"github.com/olekukonko/tablewriter"
 )
 
 const (
@@ -168,6 +170,33 @@ func (c Config) Source(field string) string {
 		return ConfigSourceDefault
 	}
 	return source
+}
+
+func (c Config) String() string {
+	v := reflect.ValueOf(c)
+	typeOfC := v.Type()
+
+	tableString := &strings.Builder{}
+	table := tablewriter.NewWriter(tableString)
+	table.SetHeader([]string{"Config", "Value", "Source"})
+	table.SetAlignment(tablewriter.ALIGN_LEFT)
+
+	for i := 0; i < v.NumField(); i++ {
+		property := typeOfC.Field(i).Name
+		if property == "sources" {
+			continue
+		}
+
+		source := c.sources[property]
+		if source == "" {
+			source = ConfigSourceDefault
+		}
+
+		table.Append([]string{property, fmt.Sprintf("%v", v.Field(i).Interface()), source})
+	}
+
+	table.Render()
+	return tableString.String()
 }
 
 /*
