@@ -10,7 +10,6 @@ env:
   global:
     - KUBERNETES_VERSION=v1.10.0
     - CHANGE_MINIKUBE_NONE_USER=true
-    - WR_MANAGERPORT="11301"
     - GO111MODULE=on
 go:
   - "1.14"
