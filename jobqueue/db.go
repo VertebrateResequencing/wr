@@ -1075,7 +1075,6 @@ func (db *db) updateJobAfterChange(job *Job) {
 	wgk := db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterChange", true)
-		defer db.wg.Done(wgk)
 
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			bjl := tx.Bucket(bucketJobsLive)
@@ -1089,6 +1088,7 @@ func (db *db) updateJobAfterChange(job *Job) {
 			}
 			return bjl.Put(key, encoded)
 		})
+		db.wg.Done(wgk)
 		if err != nil {
 			db.Error("Database operation updateJobAfterChange failed", "err", err)
 			return
