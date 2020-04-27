@@ -964,8 +964,8 @@ func (db *db) retrieveEnv(envkey string) []byte {
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorage bool) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
-	db.RLock()
-	defer db.RUnlock()
+	db.Lock()
+	defer db.Unlock()
 	if db.closed {
 		return
 	}
@@ -984,16 +984,14 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 		return
 	}
 
+	db.updatingAfterJobExit++
+
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 	wgk := db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterExit", true)
-		defer db.wg.Done(wgk)
 
-		db.Lock()
-		db.updatingAfterJobExit++
-		db.Unlock()
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			key := []byte(jobkey)
 
@@ -1041,6 +1039,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 			}
 			return errf
 		})
+		db.wg.Done(wgk)
 		if err != nil {
 			db.Error("Database operation updateJobAfterExit failed", "err", err)
 		}
