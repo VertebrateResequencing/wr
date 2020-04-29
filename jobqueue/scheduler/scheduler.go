@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -177,6 +177,7 @@ type RecoveredHostDetails struct {
 type scheduleri interface {
 	initialize(config interface{}, logger log15.Logger) error                // do any initial set up to be able to use the job scheduler
 	schedule(cmd string, req *Requirements, priority uint8, count int) error // achieve the aims of Schedule()
+	scheduled(cmd string) (int, error)                                       // achieve the aims of Scheduled()
 	recover(cmd string, req *Requirements, host *RecoveredHostDetails) error // achieve the aims of Recover()
 	busy() bool                                                              // achieve the aims of Busy()
 	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
@@ -319,6 +320,12 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, priority uint8, coun
 	s.Unlock()
 
 	return err
+}
+
+// Scheduled tells you how many of the given cmd are currently scheduled in the
+// scheduler.
+func (s *Scheduler) Scheduled(cmd string) (int, error) {
+	return s.impl.scheduled(cmd)
 }
 
 // Recover is used if you had Scheduled some cmds, then you crashed, and now

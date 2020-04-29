@@ -342,6 +342,37 @@ func (s *local) schedule(cmd string, req *Requirements, priority uint8, count in
 	return s.processQueue("schedule")
 }
 
+// scheduled achieves the aims of Scheduled().
+func (s *local) scheduled(cmd string) (int, error) {
+	if s.cleanedUp() {
+		return 0, nil
+	}
+	s.rcMutex.RLock()
+	defer s.rcMutex.RUnlock()
+	if s.queue.Stats().Items == 0 && s.rcount <= 0 {
+		return 0, nil
+	}
+
+	key := jobName(cmd, "n/a", false)
+	item, err := s.queue.Get(key)
+	if err != nil {
+		if qerr, ok := err.(queue.Error); !ok || qerr.Err != queue.ErrNotFound {
+			return 0, err
+		}
+		return 0, nil
+	}
+	if item == nil {
+		return 0, nil
+	}
+
+	j := item.Data().(*job)
+	j.RLock()
+	count := j.count
+	j.RUnlock()
+
+	return count, nil
+}
+
 // checkNeeded takes a cmd, item key, current item.Count and number of cmd
 // currently running. If we do not need to run any more of this cmd, calls
 // cmdNotNeededFunc(cmd).

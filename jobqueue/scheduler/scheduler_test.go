@@ -133,6 +133,9 @@ func TestLocal(t *testing.T) {
 				err = s.Schedule(cmd, possibleReq, 0, count)
 				So(err, ShouldBeNil)
 				So(s.Busy(), ShouldBeTrue)
+				scheduled, err := s.Scheduled(cmd)
+				So(err, ShouldBeNil)
+				So(scheduled, ShouldEqual, count)
 			}
 
 			Convey("It eventually runs them all", func() {
