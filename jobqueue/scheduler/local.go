@@ -306,7 +306,7 @@ func (s *local) schedule(cmd string, req *Requirements, priority uint8, count in
 			if j.priority != priority {
 				err = s.queue.Update(key, "", j, priority, 0*time.Second, 30*time.Second)
 				if err != nil {
-					s.Error("failed to update priority for cmd", "cmd")
+					s.Error("failed to update priority", "cmd", cmd, "err", err)
 				} else {
 					s.Debug("schedule changed priority", "cmd", cmd, "before", j.priority, "now", priority)
 					j.priority = priority
