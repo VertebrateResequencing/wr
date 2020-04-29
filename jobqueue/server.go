@@ -1145,14 +1145,14 @@ func (s *Server) createQueue() {
 		}()
 
 		s.racmutex.RLock()
-		rcSet := s.rc != ""
+		rc := s.rc
 		s.racmutex.RUnlock()
 
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
 		groupToPriority := make(map[string]uint8)
-		groupsScheduledCounts := make(map[string]int)
+		groupsScheduledCounts := make(map[string][]*Job)
 		groupsChangedCounts := make(map[string]int)
 		noRecGroups := make(map[string]bool)
 		groupLimits := make(map[string]int)
@@ -1296,7 +1296,7 @@ func (s *Server) createQueue() {
 					groupsChangedCounts[prevSchedGroup]++
 					job.setScheduledRunner(false)
 				}
-				if rcSet {
+				if rc != "" {
 					errs := q.SetReserveGroup(job.Key(), schedulerGroup)
 					if errs != nil {
 						// we could be trying to set the reserve group after the
@@ -1313,7 +1313,7 @@ func (s *Server) createQueue() {
 				groupToPriority[schedulerGroup] = job.Priority
 			}
 
-			if rcSet {
+			if rc != "" {
 				// ignore jobs that would put us over the limit
 				limit, set := groupLimits[schedulerGroup]
 				if !set {
@@ -1341,7 +1341,7 @@ func (s *Server) createQueue() {
 				}
 
 				if job.getScheduledRunner() {
-					groupsScheduledCounts[schedulerGroup]++
+					groupsScheduledCounts[schedulerGroup] = append(groupsScheduledCounts[schedulerGroup], job)
 				} else {
 					job.setScheduledRunner(true)
 				}
@@ -1359,7 +1359,7 @@ func (s *Server) createQueue() {
 			}
 		}
 
-		if rcSet {
+		if rc != "" {
 			// clear out groups we no longer need
 			for group, count := range groupsChangedCounts {
 				s.decrementGroupCount(group, count)
@@ -1411,11 +1411,30 @@ func (s *Server) createQueue() {
 				if s.sgroupcounts[group] > 0 {
 					countIncRunning += s.sgroupcounts[group]
 				}
-				if groupsScheduledCounts[group] > 0 {
-					countIncRunning -= groupsScheduledCounts[group]
+				alreadyScheduled := len(groupsScheduledCounts[group])
+				if s.sgroupcounts[group] < alreadyScheduled {
+					// *** something weird has happened and we have jobs marked
+					// as having been scheduled, yet we have fewer jobs in the
+					// group scheduled. We could pend forever in this situation,
+					// so check with the scheduler what's really going on
+					schedCmd := s.groupToScheduleCmd(rc, group, s.sgtr[group])
+					actuallyScheduled, err := s.scheduler.Scheduled(schedCmd)
+					if err != nil {
+						s.Error("failed to get scheduled count", "group", group, "err", err)
+					} else if actuallyScheduled < alreadyScheduled {
+						s.Warn("scheduled jobs desynced from scheduler", "group", group, "jobs", alreadyScheduled, "actual", actuallyScheduled)
+						for _, job := range groupsScheduledCounts[group] {
+							job.setScheduledRunner(false)
+							alreadyScheduled--
+							if alreadyScheduled == actuallyScheduled {
+								break
+							}
+						}
+					}
 				}
+				countIncRunning -= alreadyScheduled
 				if countIncRunning <= 0 {
-					s.Debug("rac scheduling no jobs", "group", group, "ready", count, "previously", s.sgroupcounts[group], "scheduled", groupsScheduledCounts[group], "todo", countIncRunning)
+					s.Debug("rac scheduling no jobs", "group", group, "ready", count, "previously", s.sgroupcounts[group], "scheduled", alreadyScheduled, "todo", countIncRunning)
 				}
 				s.sgroupcounts[group] = countIncRunning
 
@@ -2241,6 +2260,10 @@ func (s *Server) schedulerGroupDetails() []string {
 	return result
 }
 
+func (s *Server) groupToScheduleCmd(rc, group string, req *scheduler.Requirements) string {
+	return fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes()))
+}
+
 func (s *Server) scheduleRunners(group string) {
 	s.racmutex.RLock()
 	rc := s.rc
@@ -2266,7 +2289,7 @@ func (s *Server) scheduleRunners(group string) {
 	s.sgcmutex.Unlock()
 
 	if !doClear {
-		err := s.scheduler.Schedule(fmt.Sprintf(rc, group, s.ServerInfo.Deployment, s.ServerInfo.Addr, s.ServerInfo.Host, s.scheduler.ReserveTimeout(req), int(s.scheduler.MaxQueueTime(req).Minutes())), req, priority, groupCount)
+		err := s.scheduler.Schedule(s.groupToScheduleCmd(rc, group, req), req, priority, groupCount)
 		if err != nil {
 			problem := true
 			if serr, ok := err.(scheduler.Error); ok && serr.Err == scheduler.ErrImpossible {
