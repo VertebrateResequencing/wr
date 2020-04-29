@@ -5594,7 +5594,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err := got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "1")
+			So(stdout, ShouldEqual, fmt.Sprintf("%d", cores))
 
 			jm := NewJobModifer()
 			other = make(map[string]string)
@@ -5645,7 +5645,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err = got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "1")
+			So(stdout, ShouldEqual, fmt.Sprintf("%d", cores))
 		})
 
 		Convey("You can modify MonitorDocker of a job", func() {
