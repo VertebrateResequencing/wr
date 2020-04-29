@@ -71,7 +71,7 @@ func init() {
 	h := l15h.CallerInfoHandler(log15.StderrHandler)
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, h))
 
-	sync.Opts.DeadlockTimeout = 2 * time.Minute
+	sync.Opts.DeadlockTimeout = 5 * time.Minute // some openstack behaviour needs a pretty long timeout
 
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
@@ -5246,9 +5246,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		return
 	}
 
-	// because OpenStack can be slow, increase the deadlock timeout
-	sync.Opts.DeadlockTimeout = 5 * time.Minute
-
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
 	ClientReleaseDelay = 100 * time.Millisecond
@@ -6114,8 +6111,6 @@ func TestJobqueueWithMounts(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
-
-	sync.Opts.DeadlockTimeout = 2 * time.Minute
 
 	if runtime.NumCPU() == 1 {
 		// we lock up with only 1 proc
