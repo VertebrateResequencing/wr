@@ -36,14 +36,13 @@ test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kub
 
 race: export CGO_ENABLED = 1
 race:
-	# *** -gcflags=all=-d=checkptr=0 is temporarily required until bbolt is fixed (<=1.3.3 has unsafe pointer usage)
 	go test -p 1 -tags netgo -race --count 1 ./
-	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 ./queue
-	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 -timeout 30m ./jobqueue
-	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 -timeout 40m ./jobqueue/scheduler
-	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 -timeout 40m ./cloud
-	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 ./rp
-	go test -p 1 -tags netgo -race --count 1 -gcflags=all=-d=checkptr=0 ./limiter
+	go test -p 1 -tags netgo -race --count 1 ./queue
+	go test -p 1 -tags netgo -race --count 1 -timeout 30m ./jobqueue
+	go test -p 1 -tags netgo -race --count 1 -timeout 40m ./jobqueue/scheduler
+	go test -p 1 -tags netgo -race --count 1 -timeout 40m ./cloud
+	go test -p 1 -tags netgo -race --count 1 ./rp
+	go test -p 1 -tags netgo -race --count 1 ./limiter
 
 # curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(go env GOPATH)/bin v1.16.0
 lint:
