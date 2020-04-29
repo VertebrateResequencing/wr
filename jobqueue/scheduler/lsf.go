@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -533,6 +533,11 @@ func (s *lsf) schedule(cmd string, req *Requirements, priority uint8, count int)
 	}
 
 	return err
+}
+
+// scheduled achieves the aims of Scheduled().
+func (s *lsf) scheduled(cmd string) (int, error) {
+	return s.checkCmd(cmd, -1)
 }
 
 // generateBsubArgs generates the appropriate bsub args for the given req and
