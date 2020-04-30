@@ -1123,6 +1123,9 @@ func (s *Server) createQueue() {
 	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 		defer internal.LogPanic(s.Logger, "jobqueue ready added callback", true)
 
+		s.Debug("rac started")
+		defer s.Debug("rac finished")
+
 		s.ssmutex.RLock()
 		if s.drain || !s.up {
 			s.ssmutex.RUnlock()
@@ -1150,6 +1153,8 @@ func (s *Server) createQueue() {
 
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]int)
+		groupsRaw := make(map[string]int)
+		groupsLimitSkipped := make(map[string]int)
 		groupToReqs := make(map[string]*scheduler.Requirements)
 		groupToPriority := make(map[string]uint8)
 		groupsScheduledCounts := make(map[string][]*Job)
@@ -1308,6 +1313,7 @@ func (s *Server) createQueue() {
 					}
 				}
 			}
+			groupsRaw[schedulerGroup]++
 
 			if _, defined := groupToPriority[schedulerGroup]; !defined || job.Priority > groupToPriority[schedulerGroup] {
 				groupToPriority[schedulerGroup] = job.Priority
@@ -1332,6 +1338,7 @@ func (s *Server) createQueue() {
 						job.setSchedulerIgnored(true)
 						s.sgcmutex.Unlock()
 					}
+					groupsLimitSkipped[schedulerGroup]++
 					continue
 				} else if job.getSchedulerIgnored() {
 					s.sgcmutex.Lock()
@@ -1360,6 +1367,10 @@ func (s *Server) createQueue() {
 		}
 
 		if rc != "" {
+			for group, count := range groupsRaw {
+				s.Debug("rac saw ready jobs", "group", group, "count", count, "limitskipped", groupsLimitSkipped[group], "alreadyscheduled", len(groupsScheduledCounts[group]))
+			}
+
 			// clear out groups we no longer need
 			for group, count := range groupsChangedCounts {
 				s.decrementGroupCount(group, count)
@@ -1435,6 +1446,8 @@ func (s *Server) createQueue() {
 				countIncRunning -= alreadyScheduled
 				if countIncRunning <= 0 {
 					s.Debug("rac scheduling no jobs", "group", group, "ready", count, "previously", s.sgroupcounts[group], "scheduled", alreadyScheduled, "todo", countIncRunning)
+				} else {
+					s.Debug("rac scheduling jobs", "group", group, "ready", count, "previously", s.sgroupcounts[group], "scheduled", alreadyScheduled, "todo", countIncRunning)
 				}
 				s.sgroupcounts[group] = countIncRunning
 

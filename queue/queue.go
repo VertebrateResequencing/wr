@@ -288,8 +288,9 @@ func (queue *Queue) readyAdded() {
 				}
 			}
 			queue.mutex.RUnlock()
-			queue.Debug("new ready items, triggering callback")
+			queue.Debug("new ready items, triggering callback", "items", len(data))
 			queue.readyAddedCb(queue.Name, data)
+			queue.Debug("finished triggering callback for new ready items", "items", len(data))
 
 			queue.readyAddedCbMutex.Lock()
 			if queue.readyAddedCbRecall {
