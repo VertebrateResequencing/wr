@@ -298,17 +298,21 @@ func (queue *Queue) readyAdded(source string) {
 			queue.readyAddedCbMutex.Lock()
 			recall := false
 			if queue.readyAddedCbRecall {
-				defer queue.readyAdded("recall")
 				recall = true
-				queue.readyAddedCbRecall = false
+			} else {
+				queue.readyAddedCbRunning = false
 			}
-			queue.readyAddedCbRunning = false
 			queue.readyAddedCbMutex.Unlock()
 
 			if recall {
 				// wait before the recall to stop us being constantly
 				// locked getting ready items
 				<-time.After(recallBreak)
+				queue.readyAddedCbMutex.Lock()
+				queue.readyAddedCbRunning = false
+				queue.readyAddedCbRecall = false
+				defer queue.readyAdded("recall")
+				queue.readyAddedCbMutex.Unlock()
 			}
 		}()
 	}
