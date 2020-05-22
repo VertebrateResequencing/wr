@@ -109,6 +109,9 @@ const (
 	SubQueueRemoved   SubQueue = "removed"
 )
 
+// recallBreak is how long we wait before recalling readyAdded.
+const recallBreak = 500 * time.Millisecond
+
 // queue has some typical errors
 var (
 	ErrQueueClosed   = errors.New("queue closed")
@@ -261,14 +264,14 @@ func (queue *Queue) SetReadyAddedCallback(callback ReadyAddedCallback) {
 // readyAddedCallback at times when no new items have been added to the ready
 // queue. It will receive the current set of ready item data.
 func (queue *Queue) TriggerReadyAddedCallback() {
-	queue.readyAdded()
+	queue.readyAdded("triggered")
 }
 
 // readyAdded checks if a readyAddedCallback has been set, and if so calls it
 // in a go routine. It never runs the callback concurrently though: if it is
 // still running from a previous call, we only schedule that the callback be
 // called (once) after the current call completes.
-func (queue *Queue) readyAdded() {
+func (queue *Queue) readyAdded(source string) {
 	if queue.readyAddedCb != nil {
 		queue.readyAddedCbMutex.Lock()
 		if queue.readyAddedCbRunning {
@@ -288,17 +291,25 @@ func (queue *Queue) readyAdded() {
 				}
 			}
 			queue.mutex.RUnlock()
-			queue.Debug("new ready items, triggering callback", "items", len(data))
+			queue.Debug("ready items available, triggering callback", "source", source, "items", len(data))
 			queue.readyAddedCb(queue.Name, data)
-			queue.Debug("finished triggering callback for new ready items", "items", len(data))
+			queue.Debug("finished triggering callback for ready items", "source", source, "items", len(data))
 
 			queue.readyAddedCbMutex.Lock()
+			recall := false
 			if queue.readyAddedCbRecall {
-				defer queue.readyAdded()
+				defer queue.readyAdded("recall")
+				recall = true
 				queue.readyAddedCbRecall = false
 			}
 			queue.readyAddedCbRunning = false
 			queue.readyAddedCbMutex.Unlock()
+
+			if recall {
+				// wait before the recall to stop us being constantly
+				// locked getting ready items
+				<-time.After(recallBreak)
+			}
 		}()
 	}
 }
@@ -463,7 +474,7 @@ func (queue *Queue) handleItemForAdd(item *Item, startQueue SubQueue, delay time
 			queue.readyQueue.push(item)
 			queue.mutex.Unlock()
 			queue.changed(SubQueueNew, SubQueueReady, []*Item{item})
-			queue.readyAdded()
+			queue.readyAdded("new")
 		} else {
 			queue.delayQueue.push(item)
 			queue.mutex.Unlock()
@@ -596,7 +607,7 @@ func (queue *Queue) AddMany(items []*ItemDef) (added, dups int, err error) {
 	queue.mutex.Unlock()
 	if len(addedReadyItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueReady, addedReadyItems)
-		queue.readyAdded()
+		queue.readyAdded("new")
 	}
 	if len(addedDelayItems) > 0 {
 		queue.changed(SubQueueNew, SubQueueDelay, addedDelayItems)
@@ -785,7 +796,7 @@ func (queue *Queue) Update(key string, reserveGroup string, data interface{}, pr
 
 	if addedReady {
 		queue.mutex.Unlock()
-		queue.readyAdded()
+		queue.readyAdded("updated")
 		queue.changed(SubQueueDependent, SubQueueReady, []*Item{item})
 	} else {
 		queue.mutex.Unlock()
@@ -1034,7 +1045,7 @@ func (queue *Queue) Release(key string) error {
 		queue.readyQueue.push(item)
 		queue.mutex.Unlock()
 		queue.changed(SubQueueRun, SubQueueReady, []*Item{item})
-		queue.readyAdded()
+		queue.readyAdded("released")
 	} else {
 		item.restart()
 		queue.delayQueue.push(item)
@@ -1116,7 +1127,7 @@ func (queue *Queue) Kick(key string) error {
 		item.switchBuryReady()
 		queue.mutex.Unlock()
 		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
-		queue.readyAdded()
+		queue.readyAdded("kicked")
 	}
 	return nil
 }
@@ -1193,7 +1204,7 @@ func (queue *Queue) Remove(key string) error {
 	queue.mutex.Unlock()
 	if addedReady {
 		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
-		queue.readyAdded()
+		queue.readyAdded("dependent")
 	}
 
 	return nil
@@ -1256,7 +1267,7 @@ func (queue *Queue) startDelayProcessing() {
 			queue.mutex.Unlock()
 			if addedReady {
 				queue.changed(SubQueueDelay, SubQueueReady, items)
-				queue.readyAdded()
+				queue.readyAdded("delayed")
 			}
 			sendStarted = false
 		case <-queue.delayNotification:
@@ -1348,7 +1359,7 @@ func (queue *Queue) startTTRProcessing() {
 			}
 			if len(readyItems) > 0 {
 				queue.changed(SubQueueRun, SubQueueReady, readyItems)
-				queue.readyAdded()
+				queue.readyAdded("ttr")
 			}
 			sendStarted = false
 		case <-queue.ttrNotification:
