@@ -327,7 +327,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 							s.Debug("removed job", "cmd", job.Cmd)
 							toDelete = append(toDelete, key)
 							if job.State == JobStateReady {
-								s.decrementGroupCount(job.schedulerGroup)
+								s.q.TriggerReadyAddedCallback()
 							}
 						}
 						s.rpl.Lock()

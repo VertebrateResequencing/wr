@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
@@ -214,11 +213,11 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					// working on this schedulerGroup, we'll just act as if
 					// nothing was ready. Likewise if in drain mode.
 					if cr.FirstReserve && s.rc != "" {
-						s.sgcmutex.Lock()
-						if count, existed := s.sgroupcounts[cr.SchedulerGroup]; !existed || count == 0 {
+						s.psgmutex.RLock()
+						if group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]; !existed || group.count == 0 {
 							skip = true
 						}
-						s.sgcmutex.Unlock()
+						s.psgmutex.RUnlock()
 					}
 				}
 
@@ -382,10 +381,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							}
 							s.rpl.Unlock()
 							s.Debug("completed job", "cmd", job.Cmd, "schedGrp", sgroup)
-							go func(group string) {
-								defer internal.LogPanic(s.Logger, "jarchive", true)
-								s.decrementGroupCount(group)
-							}(sgroup)
+							s.q.TriggerReadyAddedCallback()
 						}
 					}
 				}
