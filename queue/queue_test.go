@@ -1546,7 +1546,7 @@ func TestQueue(t *testing.T) {
 		So(added[0], ShouldEqual, 1)
 		callBackLock.RUnlock()
 
-		<-time.After(100 * time.Millisecond)
+		<-time.After(650 * time.Millisecond)
 
 		callBackLock.RLock()
 		So(len(added), ShouldEqual, 2)
