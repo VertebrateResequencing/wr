@@ -1088,6 +1088,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 				stateMutex.Unlock()
 			case <-stopChecking:
+				closeReaders()
 				break CHECKING
 			}
 		}
