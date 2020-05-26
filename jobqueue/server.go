@@ -212,6 +212,8 @@ type sgroup struct {
 
 // clone creates a new copy of the sgroup with the given count
 func (s *sgroup) clone(count int) *sgroup {
+	s.RLock()
+	defer s.RUnlock()
 	return &sgroup{
 		name:     s.name,
 		count:    count,
@@ -2315,7 +2317,9 @@ func (s *Server) scheduleRunners(group *sgroup) {
 					return
 				}
 
+				group.Lock()
 				s.scheduleRunners(group)
+				group.Unlock()
 			}()
 			return
 		}
@@ -2349,7 +2353,9 @@ func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int)
 
 	count := group.decrement(drop)
 	if count >= 0 {
+		group.Lock()
 		s.scheduleRunners(group)
+		group.Unlock()
 	}
 }
 
