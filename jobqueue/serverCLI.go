@@ -381,7 +381,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 							}
 							s.rpl.Unlock()
 							s.Debug("completed job", "cmd", job.Cmd, "schedGrp", sgroup)
-							s.q.TriggerReadyAddedCallback()
+							s.decrementGroupCount(sgroup, 1)
 						}
 					}
 				}

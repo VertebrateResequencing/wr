@@ -204,8 +204,10 @@ type schedulerIssue struct {
 type sgroup struct {
 	name     string
 	count    int
+	skipped  int
 	req      *scheduler.Requirements
 	priority uint8
+	sync.RWMutex
 }
 
 // clone creates a new copy of the sgroup with the given count
@@ -213,9 +215,52 @@ func (s *sgroup) clone(count int) *sgroup {
 	return &sgroup{
 		name:     s.name,
 		count:    count,
+		skipped:  s.skipped,
 		req:      s.req.Clone(),
 		priority: s.priority,
 	}
+}
+
+// decrement is a thread-safe way of dropping the count of the group by the
+// given amount.
+//
+// If the sgroup's skipped is greater than 0, first decrements that and only
+// decrements count if given drop is greater than skipped.
+//
+// Returns the new count, or -1 if the count didn't change.
+func (s *sgroup) decrement(drop int) int {
+	if drop < 1 {
+		return -1
+	}
+	s.Lock()
+	defer s.Unlock()
+
+	if s.skipped > 0 {
+		if drop <= s.skipped {
+			s.skipped -= drop
+			return -1
+		}
+		drop -= s.skipped
+		s.skipped = 0
+	}
+
+	prev := s.count
+	s.count -= drop
+	if s.count < 0 {
+		s.count = 0
+	}
+
+	if s.count == prev {
+		return -1
+	}
+	return s.count
+}
+
+// hasSkips is a thread-safe way of seeing if skipped is greater than 0.
+func (s *sgroup) hasSkips() bool {
+	s.RLock()
+	defer s.RUnlock()
+	return s.skipped > 0
 }
 
 // Server represents the server side of the socket that clients Connect() to.
@@ -1163,8 +1208,6 @@ func (s *Server) createQueue() {
 
 		// calculate, set and count jobs by schedulerGroup
 		groups := make(map[string]*sgroup)
-		groupsRaw := make(map[string]int)
-		groupsLimitSkipped := make(map[string]int)
 		reqGroupToReqs := make(map[string]*scheduler.Requirements)
 		groupLimits := make(map[string]int)
 		for _, inter := range allitemdata {
@@ -1310,7 +1353,6 @@ func (s *Server) createQueue() {
 					}
 				}
 			}
-			groupsRaw[schedulerGroup]++
 
 			if rc != "" {
 				group, set := groups[schedulerGroup]
@@ -1334,7 +1376,7 @@ func (s *Server) createQueue() {
 					limit = groupLimits[schedulerGroup]
 				}
 				if limit >= 0 && group.count == limit {
-					groupsLimitSkipped[schedulerGroup]++
+					group.skipped++
 					continue
 				}
 
@@ -1347,8 +1389,8 @@ func (s *Server) createQueue() {
 		}
 
 		if rc != "" {
-			for group, count := range groupsRaw {
-				s.Debug("rac saw ready jobs", "group", group, "count", count, "limitskipped", groupsLimitSkipped[group])
+			for name, group := range groups {
+				s.Debug("rac saw ready jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 			}
 
 			// add in info for running jobs
@@ -1398,16 +1440,18 @@ func (s *Server) createQueue() {
 			// schedule runners for each group in the job scheduler
 			for name, group := range groups {
 				if group.count <= 0 {
-					s.Debug("rac scheduling no jobs", "group", name, "count", group.count)
+					s.Debug("rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 				} else {
-					s.Debug("rac scheduling jobs", "group", name, "count", group.count)
+					s.Debug("rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 				}
 
 				wgk := s.wg.Add(1)
+				group.Lock()
 				go func(group *sgroup) {
 					defer internal.LogPanic(s.Logger, "jobqueue schedule runners", true)
 					defer s.wg.Done(wgk)
 					s.scheduleRunners(group)
+					group.Unlock()
 				}(group)
 
 				s.previouslyScheduledGroups[name] = group
@@ -1816,7 +1860,7 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, 
 	job.FailReason = failReason
 	job.Unlock()
 
-	s.q.TriggerReadyAddedCallback()
+	s.decrementGroupCount(sgroup)
 	s.db.updateJobAfterExit(job, endState.Stdout, endState.Stderr, forceStorage)
 	s.Debug(msg, "cmd", job.Cmd, "schedGrp", sgroup)
 	return nil
@@ -1882,6 +1926,7 @@ func (s *Server) deleteJobs(keys []string) []string {
 	for {
 		var skippedDeps []string
 		var toDelete []string
+		schedGroups := make(map[string]int)
 		var repGroups []string
 		for _, jobkey := range keys {
 			item, err := s.q.Get(jobkey)
@@ -1909,6 +1954,7 @@ func (s *Server) deleteJobs(keys []string) []string {
 				toDelete = append(toDelete, jobkey)
 
 				job := item.Data().(*Job)
+				schedGroups[job.getSchedulerGroup()]++
 				repGroups = append(repGroups, job.RepGroup)
 				s.Debug("removed job", "cmd", job.Cmd)
 			}
@@ -1922,7 +1968,9 @@ func (s *Server) deleteJobs(keys []string) []string {
 			}
 
 			// update scheduler now we have fewer jobs
-			s.q.TriggerReadyAddedCallback()
+			for sg, count := range schedGroups {
+				s.decrementGroupCount(sg, count)
+			}
 
 			// clean up rpl lookups
 			s.rpl.Lock()
@@ -2271,6 +2319,37 @@ func (s *Server) scheduleRunners(group *sgroup) {
 			}()
 			return
 		}
+	}
+}
+
+// adjust our count of how many jobs with this schedulerGroup we need in the job
+// scheduler. Optionally supply the number to decrement by (default 1).
+func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int) {
+	drop := 1
+	if len(optionalDrop) == 1 {
+		drop = optionalDrop[0]
+	}
+	s.racmutex.RLock()
+	rc := s.rc
+	s.racmutex.RUnlock()
+	if rc == "" {
+		return
+	}
+
+	s.psgmutex.RLock()
+	group, existed := s.previouslyScheduledGroups[schedulerGroup]
+	s.psgmutex.RUnlock()
+	if !existed {
+		return
+	}
+
+	if group.hasSkips() {
+		defer s.q.TriggerReadyAddedCallback()
+	}
+
+	count := group.decrement(drop)
+	if count >= 0 {
+		s.scheduleRunners(group)
 	}
 }
 
