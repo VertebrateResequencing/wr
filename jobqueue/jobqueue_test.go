@@ -5959,10 +5959,13 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 
 			destroyedBadServer := 0
+			var dbsMutex sync.Mutex
 			badServerCB := func(server *cloud.Server) {
 				errf := server.Destroy()
 				if errf == nil {
+					dbsMutex.Lock()
 					destroyedBadServer++
+					dbsMutex.Unlock()
 				}
 			}
 
@@ -6101,7 +6104,9 @@ sudo usermod -aG docker ` + osUser
 			So(<-started, ShouldBeTrue)
 			stopChecking <- true
 			So(<-moreThan2, ShouldBeFalse)
+			dbsMutex.Lock()
 			So(destroyedBadServer, ShouldEqual, 1)
+			dbsMutex.Unlock()
 		})
 
 		Reset(func() {
