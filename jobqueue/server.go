@@ -1437,7 +1437,6 @@ func (s *Server) createQueue() {
 				delete(s.previouslyScheduledGroups, name)
 				s.Debug("rac deleted previous unneeded group", "group", name)
 			}
-			s.psgmutex.Unlock()
 
 			// schedule runners for each group in the job scheduler
 			for name, group := range groups {
@@ -1458,6 +1457,7 @@ func (s *Server) createQueue() {
 
 				s.previouslyScheduledGroups[name] = group
 			}
+			s.psgmutex.Unlock()
 
 			// in the event that the runners we spawn can't reach us temporarily
 			// and just die (or they manage to run and exit due to a limit), we
