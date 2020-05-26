@@ -919,13 +919,17 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 			// new server, and if not, copy it over *** this is just a hack to
 			// get wr working, need to think of a better way of doing this...
 			exe := strings.Split(cmd, " ")[0]
-			var exePath, stdout string
+			var exePath string
 			if exePath, err = exec.LookPath(exe); err == nil {
+				stdCh := make(chan string)
 				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
-					var errRun error
-					stdout, _, errRun = server.RunCmd(ctx, "file "+exePath, false)
+					std, _, errRun := server.RunCmd(ctx, "file "+exePath, false)
+					go func() {
+						stdCh <- std
+					}()
 					return errRun
 				})
+				stdout := <-stdCh
 				if stdout != "" {
 					if strings.Contains(stdout, "No such file") {
 						// *** NB this will fail if exePath is in a dir we can't
