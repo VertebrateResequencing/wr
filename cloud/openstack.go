@@ -996,16 +996,38 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 func (p *openstackp) destroyServer(serverID string) error {
 	err := servers.Delete(p.computeClient, serverID).ExtractErr()
 	if err != nil {
+		if err.Error() == "Resource not found" {
+			return nil
+		}
 		return err
 	}
 
 	// wait for it to really be deleted, or we won't be able to
-	// delete the router and network later; the following returns
-	// an error of "Resource not found" as soon as the server
-	// is not there anymore; we don't care about any others
-	errs := servers.WaitForStatus(p.computeClient, serverID, "xxxx", 60)
-	if errs.Error() != "Resource not found" {
-		p.Warn("server destruction failed", "server", serverID, "err", errs)
+	// delete the router and network later; rather that use
+	// servers.WaitForStatus which could force us to wait on the timeout, we
+	// just wait up to 60s to get a Resource not found error
+	limit := time.After(60 * time.Second)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	var server *servers.Server
+WAIT:
+	for {
+		select {
+		case <-ticker.C:
+			server, err = servers.Get(p.computeClient, serverID).Extract()
+			if err != nil {
+				ticker.Stop()
+				break WAIT
+			}
+		case <-limit:
+			ticker.Stop()
+			break WAIT
+		}
+	}
+	if err == nil {
+		err = fmt.Errorf("server not deleted, still has status '%s'", server.Status)
+	}
+	if err.Error() == "Resource not found" {
+		err = nil
 	}
 	return err
 }
