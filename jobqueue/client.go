@@ -984,7 +984,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 			stateMutex.Lock()
 			killCalled = true
 			stateMutex.Unlock()
-			closeReaders()
 		}
 		wkbsMutex.Unlock()
 
