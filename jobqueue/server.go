@@ -223,6 +223,13 @@ func (s *sgroup) clone(count int) *sgroup {
 	}
 }
 
+// getCount is a thread-safe way of getting the current count
+func (s *sgroup) getCount() int {
+	s.RLock()
+	defer s.RUnlock()
+	return s.count
+}
+
 // decrement is a thread-safe way of dropping the count of the group by the
 // given amount.
 //
@@ -2251,7 +2258,7 @@ func (s *Server) schedulerGroupDetails() []string {
 	result := make([]string, len(s.previouslyScheduledGroups))
 	i := 0
 	for name, group := range s.previouslyScheduledGroups {
-		result[i] = fmt.Sprintf("%s (%d jobs)", name, group.count)
+		result[i] = fmt.Sprintf("%s (%d jobs)", name, group.getCount())
 		i++
 	}
 	return result

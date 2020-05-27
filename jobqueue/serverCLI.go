@@ -214,7 +214,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					// nothing was ready. Likewise if in drain mode.
 					if cr.FirstReserve && s.rc != "" {
 						s.psgmutex.RLock()
-						if group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]; !existed || group.count == 0 {
+						if group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]; !existed || group.getCount() == 0 {
 							skip = true
 						}
 						s.psgmutex.RUnlock()
