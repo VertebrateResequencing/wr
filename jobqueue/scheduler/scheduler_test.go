@@ -1202,11 +1202,21 @@ func TestOpenstack(t *testing.T) {
 			oss := s.impl.(*opst)
 
 			if oss.provider.InCloud() {
+				ignoreServers := make(map[string]bool)
+				oss.serversMutex.RLock()
+				for _, server := range oss.servers {
+					ignoreServers[server.ID] = true
+				}
+				oss.serversMutex.RUnlock()
+
 				getServerFlavors := func() map[int]int {
 					oss.serversMutex.RLock()
 					defer oss.serversMutex.RUnlock()
 					flavors := make(map[int]int)
 					for _, server := range oss.servers {
+						if ignoreServers[server.ID] {
+							continue
+						}
 						flavors[server.Flavor.Cores]++
 					}
 					return flavors
@@ -1237,10 +1247,6 @@ func TestOpenstack(t *testing.T) {
 								}
 							}
 							for cpus := range have {
-								if cpus == 1 {
-									// ignore localhost
-									continue
-								}
 								if _, exists := wanted[cpus]; !exists {
 									ok = false
 									// fmt.Printf("extra flavor %d\n", cpus)
@@ -1262,6 +1268,7 @@ func TestOpenstack(t *testing.T) {
 				}
 
 				other := make(map[string]string)
+				other["cloud_script"] = "echo forced new servers"
 
 				Convey("You can Schedule many cmds and a bunch run right away", func() {
 					smallCmd := "sleep 30"
