@@ -693,7 +693,7 @@ func startJQ(postCreation []byte) {
 			// work
 			provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
 			if errc != nil {
-				die("cloud not connect to %s: %s", scheduler, errc)
+				die("could not connect to %s: %s", scheduler, errc)
 			}
 			if !provider.InCloud() {
 				die("according to hostname, this is not an instance in %s", scheduler)
