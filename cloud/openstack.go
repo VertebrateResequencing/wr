@@ -65,6 +65,10 @@ import (
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
 
+// destroyServerTimeout is how long we wait for server distruction requests to
+// be successful before giving up.
+const destroyServerTimeout = 2 * time.Minute
+
 // minimumServerSpawnTimeoutSecs is the minimum amount of time we wait for
 // servers to change from 'BUILD' state. It can be longer than this based on
 // learning.
@@ -1005,17 +1009,33 @@ func (p *openstackp) destroyServer(serverID string) error {
 	// wait for it to really be deleted, or we won't be able to
 	// delete the router and network later; rather that use
 	// servers.WaitForStatus which could force us to wait on the timeout, we
-	// just wait up to 60s to get a Resource not found error
-	limit := time.After(60 * time.Second)
+	// just wait up to 2mins to get a Resource not found error
+	limit := time.After(destroyServerTimeout)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	var server *servers.Server
 WAIT:
 	for {
 		select {
 		case <-ticker.C:
-			server, err = servers.Get(p.computeClient, serverID).Extract()
-			if err != nil {
+			// servers.Get() call can get stuck for a long time, so let that
+			// time out as well
+			serverCh := make(chan *servers.Server, 1)
+			getErrCh := make(chan error, 1)
+			go func() {
+				s, e := servers.Get(p.computeClient, serverID).Extract()
+				serverCh <- s
+				getErrCh <- e
+			}()
+			select {
+			case server = <-serverCh:
+				err = <-getErrCh
+				if err != nil {
+					ticker.Stop()
+					break WAIT
+				}
+			case <-limit:
 				ticker.Stop()
+				err = fmt.Errorf("server not deleted? timed out getting its status")
 				break WAIT
 			}
 		case <-limit:
