@@ -849,8 +849,10 @@ func (p *Provider) TearDown() error {
 }
 
 // saveResources saves our resources to our savePath, overwriting any existing
-// content. This is not thread safe!
+// content.
 func (p *Provider) saveResources() error {
+	p.Lock()
+	defer p.Unlock()
 	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
@@ -858,8 +860,6 @@ func (p *Provider) saveResources() error {
 	defer internal.LogClose(p.Logger, file, "resource file", "path", p.savePath)
 
 	encoder := gob.NewEncoder(file)
-	p.RLock()
-	defer p.RUnlock()
 	return encoder.Encode(p.resources)
 }
 
