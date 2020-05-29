@@ -3076,8 +3076,12 @@ func TestJobqueueModify(t *testing.T) {
 			So(already, ShouldEqual, 0)
 		}
 
-		reserve := func(schedStr, expected string) *Job {
-			_, _, line, _ := runtime.Caller(1)
+		reserve := func(schedStr, expected string, skip ...int) *Job {
+			s := 1
+			if len(skip) == 1 {
+				s = skip[0]
+			}
+			_, _, line, _ := runtime.Caller(s)
 			job, errr := jq.ReserveScheduled(rtime, schedStr)
 			So(errr, ShouldBeNil)
 			if job == nil && schedStr == learnedRgroup {
@@ -3152,7 +3156,7 @@ func TestJobqueueModify(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(kicked, ShouldEqual, 1)
 
-			job := reserve(schedStr, expectedCmd)
+			job := reserve(schedStr, expectedCmd, 2)
 			return execute(job, false, expectedStdout)
 		}
 
@@ -4041,10 +4045,14 @@ func TestJobqueueProduction(t *testing.T) {
 				}
 
 				job.RLock()
+				notLost := false
 				if job.Exited {
 					// sometimes the existing runner manages to reconnect to the
 					// new server before this test
 					So(job.Lost, ShouldEqual, shouldBeLost)
+					if !job.Lost {
+						notLost = true
+					}
 				} else {
 					So(job.Exited, ShouldBeFalse)
 				}
@@ -4060,7 +4068,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job.Exited, ShouldBeTrue)
 
 				shouldBeLost = false
-				if time.Since(startedAt) > ServerItemTTR {
+				if !notLost && time.Since(startedAt) > ServerItemTTR {
 					shouldBeLost = true
 				}
 				So(job.Lost, ShouldEqual, shouldBeLost)
