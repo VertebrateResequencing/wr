@@ -1062,7 +1062,6 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 	// delete servers, except for ourselves
 	var toDestroy []string
-	t := time.Now()
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err := pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -1110,7 +1109,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 				// fully terminated yet
 				tries := 0
 				for {
-					t = time.Now()
+					t := time.Now()
 					_, errr := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
 					p.Debug("remove router interface", "time", time.Since(t), "routerid", id, "subnetid", subnetid, "err", errr)
 					if errr != nil {
@@ -1125,7 +1124,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 					break
 				}
 			}
-			t = time.Now()
+			t := time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)
@@ -1133,7 +1132,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		// delete network (and its subnet)
 		if id := resources.Details["network"]; id != "" {
-			t = time.Now()
+			t := time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)
@@ -1141,7 +1140,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		// delete secgroup
 		if id := resources.Details["secgroup"]; id != "" {
-			t = time.Now()
+			t := time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)
@@ -1154,7 +1153,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	// we definitely created the key pair this session
 	if id := resources.Details["keypair"]; id != "" {
 		if p.createdKeyPair || p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
-			t = time.Now()
+			t := time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)

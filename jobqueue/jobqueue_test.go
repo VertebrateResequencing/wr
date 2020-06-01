@@ -4621,8 +4621,8 @@ func TestJobqueueRunners(t *testing.T) {
 							continue
 						case <-limit:
 							ticker.Stop()
-							jobs, errj := jq.GetByRepGroup("manually_added", false, 0, "", true, false)
-							timelimitDebug(jobs, errj)
+							gjobs, errj := jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+							timelimitDebug(gjobs, errj)
 							done <- false
 							return
 						}

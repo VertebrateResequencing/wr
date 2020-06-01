@@ -250,8 +250,8 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	// advantage of configor.Load() being able to take all env vars and config
 	// files at once. We do it repeatedly and merge results instead
 	config := &Config{}
-	if err := defaults.Set(config); err != nil {
-		logger.Error(err.Error())
+	if cerr := defaults.Set(config); cerr != nil {
+		logger.Error(cerr.Error())
 		os.Exit(1)
 	}
 
