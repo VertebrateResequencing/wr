@@ -85,7 +85,7 @@ func TestConfig(t *testing.T) {
 		So(config.ManagerSetDomainIP, ShouldBeFalse)
 		So(config.Source("ManagerSetDomainIP"), ShouldEqual, internal.ConfigSourceDefault)
 
-		Convey("These can be overriden with Env Vars", func() {
+		Convey("These can be overridden with Env Vars", func() {
 			os.Setenv("WR_MANAGERPORT", "1234")
 			os.Setenv("WR_MANAGERUMASK", "077")
 			os.Setenv("WR_MANAGERSETDOMAINIP", "true")
@@ -105,7 +105,7 @@ func TestConfig(t *testing.T) {
 			So(config.Source("ManagerSetDomainIP"), ShouldEqual, internal.ConfigSourceEnvVar)
 		})
 
-		Convey("These can be overriden with config files in WR_CONFIG_DIR", func() {
+		Convey("These can be overridden with config files in WR_CONFIG_DIR", func() {
 			dir, err := ioutil.TempDir("", "wr_conf_test")
 			So(err, ShouldBeNil)
 			defer os.RemoveAll(dir)
@@ -152,7 +152,7 @@ func TestConfig(t *testing.T) {
 				So(config.ManagerWeb, ShouldEqual, mweb2)
 				So(config.Source("ManagerWeb"), ShouldEqual, path4)
 
-				Convey("These can be overriden with config files in current dir", func() {
+				Convey("These can be overridden with config files in current dir", func() {
 					pwd, err := os.Getwd()
 					So(err, ShouldBeNil)
 					mport = "1434"
