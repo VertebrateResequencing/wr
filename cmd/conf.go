@@ -617,7 +617,7 @@ deployments where wr itself creates compute nodes, a config file will be created
 on new nodes automatically.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if confDefault {
-			fmt.Printf(defaultYML)
+			fmt.Print(defaultYML)
 			os.Exit(0)
 		}
 
