@@ -127,7 +127,7 @@ func TestConfig(t *testing.T) {
 			So(config.ManagerWeb, ShouldEqual, mweb2)
 			So(config.Source("ManagerWeb"), ShouldEqual, path2)
 
-			Convey("These can be overriden with config files in home dir", func() {
+			Convey("These can be overridden with config files in home dir", func() {
 				realHome, err := os.UserHomeDir()
 				So(err, ShouldBeNil)
 				newHome, err := ioutil.TempDir(dir, "home")
