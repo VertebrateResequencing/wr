@@ -34,6 +34,7 @@ import (
 	"time"
 
 	sync "github.com/sasha-s/go-deadlock"
+	"github.com/sb10/waitgroup"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
@@ -1060,6 +1061,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	var merr *multierror.Error
 
 	// delete servers, except for ourselves
+	var toDestroy []string
 	t := time.Now()
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err := pager.EachPage(func(page pagination.Page) (bool, error) {
@@ -1070,19 +1072,34 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		for _, server := range serverList {
 			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
-				t = time.Now()
-				errd := p.destroyServer(server.ID)
-				p.Debug("delete server", "time", time.Since(t), "id", server.ID)
-				if errd != nil {
-					// ignore errors, just try to delete others
-					p.Warn("server destruction during teardown failed", "server", server.ID, "err", errd)
-				}
+				toDestroy = append(toDestroy, server.ID)
+
 			}
 		}
 
 		return true, nil
 	})
 	merr = p.combineError(merr, err)
+
+	if len(toDestroy) > 0 {
+		wg := waitgroup.New()
+		wgk := wg.Add(len(toDestroy))
+		for _, sid := range toDestroy {
+			go func(id string) {
+				defer internal.LogPanic(p.Logger, "cloud openstack tearDown destroyServer", false)
+				defer wg.Done(wgk)
+
+				t := time.Now()
+				errd := p.destroyServer(id)
+				p.Debug("delete server", "time", time.Since(t), "id", id)
+				if errd != nil {
+					// ignore errors, just try to delete others
+					p.Warn("server destruction during teardown failed", "server", id, "err", errd)
+				}
+			}(sid)
+		}
+		wg.Wait(2 * destroyServerTimeout)
+	}
 
 	if p.ownName == "" {
 		// delete router
