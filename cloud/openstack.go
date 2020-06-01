@@ -1072,7 +1072,6 @@ func (p *openstackp) tearDown(resources *Resources) error {
 		for _, server := range serverList {
 			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
 				toDestroy = append(toDestroy, server.ID)
-
 			}
 		}
 
