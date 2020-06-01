@@ -66,9 +66,17 @@ import (
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
 
-// destroyServerTimeout is how long we wait for server distruction requests to
+// destroyServerTimeout is how long we wait for server destruction requests to
 // be successful before giving up.
 const destroyServerTimeout = 2 * time.Minute
+
+// destroyServersTimeout is how long we wait for multiple server destructions
+// running in parallel to return.
+const destroyServersTimeout = 2 * destroyServerTimeout
+
+// destroyServerCheckFrequency is frequently server status is checked after a
+// destroy request until the server is gone.
+const destroyServerCheckFrequency = 250 * time.Millisecond
 
 // minimumServerSpawnTimeoutSecs is the minimum amount of time we wait for
 // servers to change from 'BUILD' state. It can be longer than this based on
@@ -1012,7 +1020,7 @@ func (p *openstackp) destroyServer(serverID string) error {
 	// servers.WaitForStatus which could force us to wait on the timeout, we
 	// just wait up to 2mins to get a Resource not found error
 	limit := time.After(destroyServerTimeout)
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(destroyServerCheckFrequency)
 	var server *servers.Server
 WAIT:
 	for {
@@ -1096,7 +1104,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 				}
 			}(sid)
 		}
-		wg.Wait(2 * destroyServerTimeout)
+		wg.Wait(destroyServersTimeout)
 	}
 
 	if p.ownName == "" {
