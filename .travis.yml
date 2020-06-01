@@ -12,7 +12,7 @@ env:
     - CHANGE_MINIKUBE_NONE_USER=true
     - GO111MODULE=on
 go:
-  - "1.14"
+  - "1.14.3"
 go_import_path: github.com/VertebrateResequencing/wr
 install:
   - "go mod verify"
