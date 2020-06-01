@@ -130,11 +130,11 @@ func TestLocal(t *testing.T) {
 
 			count := maxCPU * 2
 			sched := func() {
-				err = s.Schedule(cmd, possibleReq, 0, count)
-				So(err, ShouldBeNil)
+				serr := s.Schedule(cmd, possibleReq, 0, count)
+				So(serr, ShouldBeNil)
 				So(s.Busy(), ShouldBeTrue)
-				scheduled, err := s.Scheduled(cmd)
-				So(err, ShouldBeNil)
+				scheduled, serr := s.Scheduled(cmd)
+				So(serr, ShouldBeNil)
 				So(scheduled, ShouldEqual, count)
 			}
 
