@@ -51,6 +51,8 @@ const (
 
 	// ConfigSourceDefault is a config value source
 	ConfigSourceDefault = "default"
+
+	sourcesProperty = "sources"
 )
 
 // Config holds the configuration options for jobqueue server and client
@@ -109,7 +111,7 @@ func (c *Config) merge(new *Config, source string) {
 
 	for i := 0; i < v.NumField(); i++ {
 		property := typeOfC.Field(i).Name
-		if property == "sources" {
+		if property == sourcesProperty {
 			continue
 		}
 
@@ -137,7 +139,7 @@ func (c *Config) clone() *Config {
 	typeOfC := v.Type()
 	for i := 0; i < v.NumField(); i++ {
 		property := typeOfC.Field(i).Name
-		if property == "sources" {
+		if property == sourcesProperty {
 			continue
 		}
 
@@ -183,7 +185,7 @@ func (c Config) String() string {
 
 	for i := 0; i < v.NumField(); i++ {
 		property := typeOfC.Field(i).Name
-		if property == "sources" {
+		if property == sourcesProperty {
 			continue
 		}
 
