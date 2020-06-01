@@ -115,6 +115,7 @@ func TestConfig(t *testing.T) {
 			mweb2 := "1236"
 			path, path2, err := fileTestSetup(dir, mport, mweb1, mweb2)
 			defer fileTestTeardown(path, path2)
+			So(err, ShouldBeNil)
 
 			os.Setenv("WR_CONFIG_DIR", dir)
 			defer func() {
@@ -145,6 +146,7 @@ func TestConfig(t *testing.T) {
 				mweb2 = "1336"
 				path3, path4, err := fileTestSetup(home, mport, mweb1, mweb2)
 				defer fileTestTeardown(path3, path4)
+				So(err, ShouldBeNil)
 
 				config = internal.ConfigLoad("development", false, testLogger)
 				So(config.ManagerPort, ShouldEqual, mport)
@@ -160,6 +162,7 @@ func TestConfig(t *testing.T) {
 					mweb2 = "1436"
 					path5, path6, err := fileTestSetup(pwd, mport, mweb1, mweb2)
 					defer fileTestTeardown(path5, path6)
+					So(err, ShouldBeNil)
 
 					config = internal.ConfigLoad("development", false, testLogger)
 					So(config.ManagerPort, ShouldEqual, mport)
