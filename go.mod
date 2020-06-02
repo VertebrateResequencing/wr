@@ -8,6 +8,7 @@ require (
 	github.com/VertebrateResequencing/muxfys/v4 v4.0.2
 	github.com/VividCortex/ewma v0.0.0-20170804035156-43880d236f69
 	github.com/carbocation/runningvariance v0.0.0-20150817162428-fdcce8a03b6b
+	github.com/creasty/defaults v1.3.0
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/docker/distribution v2.7.1+incompatible // indirect
 	github.com/docker/docker v0.0.0-20180524003928-df5175e1ee95
@@ -42,6 +43,7 @@ require (
 	github.com/minio/minio-go/v6 v6.0.49 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.1 // indirect
+	github.com/olekukonko/tablewriter v0.0.4
 	github.com/onsi/ginkgo v1.8.0 // indirect
 	github.com/onsi/gomega v1.5.0 // indirect
 	github.com/opencontainers/go-digest v0.0.0-20180430190053-c9281466c8b2 // indirect
@@ -59,7 +61,7 @@ require (
 	github.com/spf13/cobra v0.0.6
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/ugorji/go/codec v1.1.7
-	go.etcd.io/bbolt v1.3.3
+	go.etcd.io/bbolt v1.3.4
 	golang.org/x/crypto v0.0.0-20200302210943-78000ba7a073
 	golang.org/x/net v0.0.0-20200301022130-244492dfa37a // indirect
 	golang.org/x/sys v0.0.0-20200302150141-5c8b2ff67527 // indirect

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	sync "github.com/sasha-s/go-deadlock"
+	"github.com/sb10/waitgroup"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
@@ -64,6 +65,18 @@ import (
 // longer consider the timeout. This is only used for the initial wait time;
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
+
+// destroyServerTimeout is how long we wait for server destruction requests to
+// be successful before giving up.
+const destroyServerTimeout = 2 * time.Minute
+
+// destroyServersTimeout is how long we wait for multiple server destructions
+// running in parallel to return.
+const destroyServersTimeout = 2 * destroyServerTimeout
+
+// destroyServerCheckFrequency is frequently server status is checked after a
+// destroy request until the server is gone.
+const destroyServerCheckFrequency = 250 * time.Millisecond
 
 // minimumServerSpawnTimeoutSecs is the minimum amount of time we wait for
 // servers to change from 'BUILD' state. It can be longer than this based on
@@ -996,16 +1009,54 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 func (p *openstackp) destroyServer(serverID string) error {
 	err := servers.Delete(p.computeClient, serverID).ExtractErr()
 	if err != nil {
+		if err.Error() == "Resource not found" {
+			return nil
+		}
 		return err
 	}
 
 	// wait for it to really be deleted, or we won't be able to
-	// delete the router and network later; the following returns
-	// an error of "Resource not found" as soon as the server
-	// is not there anymore; we don't care about any others
-	errs := servers.WaitForStatus(p.computeClient, serverID, "xxxx", 60)
-	if errs.Error() != "Resource not found" {
-		p.Warn("server destruction failed", "server", serverID, "err", errs)
+	// delete the router and network later; rather that use
+	// servers.WaitForStatus which could force us to wait on the timeout, we
+	// just wait up to 2mins to get a Resource not found error
+	limit := time.After(destroyServerTimeout)
+	ticker := time.NewTicker(destroyServerCheckFrequency)
+	var server *servers.Server
+WAIT:
+	for {
+		select {
+		case <-ticker.C:
+			// servers.Get() call can get stuck for a long time, so let that
+			// time out as well
+			serverCh := make(chan *servers.Server, 1)
+			getErrCh := make(chan error, 1)
+			go func() {
+				s, e := servers.Get(p.computeClient, serverID).Extract()
+				serverCh <- s
+				getErrCh <- e
+			}()
+			select {
+			case server = <-serverCh:
+				err = <-getErrCh
+				if err != nil {
+					ticker.Stop()
+					break WAIT
+				}
+			case <-limit:
+				ticker.Stop()
+				err = fmt.Errorf("server not deleted? timed out getting its status")
+				break WAIT
+			}
+		case <-limit:
+			ticker.Stop()
+			break WAIT
+		}
+	}
+	if err == nil {
+		err = fmt.Errorf("server not deleted, still has status '%s'", server.Status)
+	}
+	if err.Error() == "Resource not found" {
+		err = nil
 	}
 	return err
 }
@@ -1018,7 +1069,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	var merr *multierror.Error
 
 	// delete servers, except for ourselves
-	t := time.Now()
+	var toDestroy []string
 	pager := servers.List(p.computeClient, servers.ListOpts{})
 	err := pager.EachPage(func(page pagination.Page) (bool, error) {
 		serverList, err := servers.ExtractServers(page)
@@ -1028,19 +1079,33 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		for _, server := range serverList {
 			if p.ownName != server.Name && strings.HasPrefix(server.Name, resources.ResourceName) {
-				t = time.Now()
-				errd := p.destroyServer(server.ID)
-				p.Debug("delete server", "time", time.Since(t), "id", server.ID)
-				if errd != nil {
-					// ignore errors, just try to delete others
-					p.Warn("server destruction during teardown failed", "server", server.ID, "err", errd)
-				}
+				toDestroy = append(toDestroy, server.ID)
 			}
 		}
 
 		return true, nil
 	})
 	merr = p.combineError(merr, err)
+
+	if len(toDestroy) > 0 {
+		wg := waitgroup.New()
+		wgk := wg.Add(len(toDestroy))
+		for _, sid := range toDestroy {
+			go func(id string) {
+				defer internal.LogPanic(p.Logger, "cloud openstack tearDown destroyServer", false)
+				defer wg.Done(wgk)
+
+				t := time.Now()
+				errd := p.destroyServer(id)
+				p.Debug("delete server", "time", time.Since(t), "id", id)
+				if errd != nil {
+					// ignore errors, just try to delete others
+					p.Warn("server destruction during teardown failed", "server", id, "err", errd)
+				}
+			}(sid)
+		}
+		wg.Wait(destroyServersTimeout)
+	}
 
 	if p.ownName == "" {
 		// delete router
@@ -1051,7 +1116,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 				// fully terminated yet
 				tries := 0
 				for {
-					t = time.Now()
+					t := time.Now()
 					_, errr := routers.RemoveInterface(p.networkClient, id, routers.RemoveInterfaceOpts{SubnetID: subnetid}).Extract()
 					p.Debug("remove router interface", "time", time.Since(t), "routerid", id, "subnetid", subnetid, "err", errr)
 					if errr != nil {
@@ -1066,7 +1131,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 					break
 				}
 			}
-			t = time.Now()
+			t := time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)
@@ -1074,7 +1139,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		// delete network (and its subnet)
 		if id := resources.Details["network"]; id != "" {
-			t = time.Now()
+			t := time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)
@@ -1082,7 +1147,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 		// delete secgroup
 		if id := resources.Details["secgroup"]; id != "" {
-			t = time.Now()
+			t := time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)
@@ -1095,7 +1160,7 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	// we definitely created the key pair this session
 	if id := resources.Details["keypair"]; id != "" {
 		if p.createdKeyPair || p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
-			t = time.Now()
+			t := time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
 			merr = p.combineError(merr, err)

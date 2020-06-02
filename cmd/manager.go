@@ -693,7 +693,7 @@ func startJQ(postCreation []byte) {
 			// work
 			provider, errc := cloud.New(scheduler, cloudResourceName(localUsername), filepath.Join(config.ManagerDir, "cloud_resources."+scheduler), appLogger)
 			if errc != nil {
-				die("cloud not connect to %s: %s", scheduler, errc)
+				die("could not connect to %s: %s", scheduler, errc)
 			}
 			if !provider.InCloud() {
 				die("according to hostname, this is not an instance in %s", scheduler)
@@ -712,13 +712,20 @@ func startJQ(postCreation []byte) {
 		runnerCmd += " --debug"
 	}
 
+	var wgDebug strings.Builder
 	deadlockBuf := new(bytes.Buffer)
 	sync.Opts.LogBuf = deadlockBuf
 	sync.Opts.DeadlockTimeout = deadlockTimeout
 	sync.Opts.OnPotentialDeadlock = func() {
+		wgMsg := wgDebug.String()
+		if wgMsg != "" {
+			serverLogger.Warn("waitgroups waiting", "msgs", wgMsg)
+			wgDebug.Reset()
+		}
 		serverLogger.Crit("deadlock", "err", deadlockBuf.String())
 	}
-	waitgroup.Opts.Disable = true
+	waitgroup.Opts.Logger = &wgDebug
+	waitgroup.Opts.Disable = false
 
 	// start the jobqueue server
 	server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
@@ -755,6 +762,12 @@ func startJQ(postCreation []byte) {
 
 	// block forever while the jobqueue does its work
 	err = server.Block()
+
+	wgMsg := wgDebug.String()
+	if wgMsg != "" {
+		serverLogger.Warn("waitgroups waiting", "msgs", wgMsg)
+	}
+
 	if err != nil {
 		saddr := sAddr(server.ServerInfo)
 		jqerr, ok := err.(jobqueue.Error)

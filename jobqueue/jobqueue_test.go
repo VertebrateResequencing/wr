@@ -71,7 +71,7 @@ func init() {
 	h := l15h.CallerInfoHandler(log15.StderrHandler)
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, h))
 
-	sync.Opts.DeadlockTimeout = 2 * time.Minute
+	sync.Opts.DeadlockTimeout = 5 * time.Minute // some openstack behaviour needs a pretty long timeout
 
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
@@ -3076,8 +3076,12 @@ func TestJobqueueModify(t *testing.T) {
 			So(already, ShouldEqual, 0)
 		}
 
-		reserve := func(schedStr, expected string) *Job {
-			_, _, line, _ := runtime.Caller(1)
+		reserve := func(schedStr, expected string, skip ...int) *Job {
+			s := 1
+			if len(skip) == 1 {
+				s = skip[0]
+			}
+			_, _, line, _ := runtime.Caller(s)
 			job, errr := jq.ReserveScheduled(rtime, schedStr)
 			So(errr, ShouldBeNil)
 			if job == nil && schedStr == learnedRgroup {
@@ -3152,7 +3156,7 @@ func TestJobqueueModify(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(kicked, ShouldEqual, 1)
 
-			job := reserve(schedStr, expectedCmd)
+			job := reserve(schedStr, expectedCmd, 2)
 			return execute(job, false, expectedStdout)
 		}
 
@@ -4041,10 +4045,14 @@ func TestJobqueueProduction(t *testing.T) {
 				}
 
 				job.RLock()
+				notLost := false
 				if job.Exited {
 					// sometimes the existing runner manages to reconnect to the
 					// new server before this test
 					So(job.Lost, ShouldEqual, shouldBeLost)
+					if !job.Lost {
+						notLost = true
+					}
 				} else {
 					So(job.Exited, ShouldBeFalse)
 				}
@@ -4060,7 +4068,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(job.Exited, ShouldBeTrue)
 
 				shouldBeLost = false
-				if time.Since(startedAt) > ServerItemTTR {
+				if !notLost && time.Since(startedAt) > ServerItemTTR {
 					shouldBeLost = true
 				}
 				So(job.Lost, ShouldEqual, shouldBeLost)
@@ -4338,7 +4346,8 @@ func TestJobqueueRunners(t *testing.T) {
 			defer disconnect(jq)
 
 			var jobs []*Job
-			jobs = append(jobs, &Job{Cmd: "sleep 20", Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			cmd := "perl -e 'for (1..20) { sleep(1) }'"
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
 			So(inserts, ShouldEqual, 1)
@@ -4371,14 +4380,14 @@ func TestJobqueueRunners(t *testing.T) {
 			}()
 			So(<-started, ShouldBeTrue)
 
-			killCount, err := jq.Kill([]*JobEssence{{Cmd: "sleep 20"}})
+			killCount, err := jq.Kill([]*JobEssence{{Cmd: cmd}})
 			So(err, ShouldBeNil)
 			So(killCount, ShouldEqual, 1)
 
 			// wait for the job to get killed
 			killed := make(chan bool, 1)
 			go func() {
-				limit := time.After(20 * time.Second)
+				limit := time.After(25 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
@@ -4395,6 +4404,8 @@ func TestJobqueueRunners(t *testing.T) {
 						continue
 					case <-limit:
 						ticker.Stop()
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+						timelimitDebug(jobs, err)
 						killed <- false
 						return
 					}
@@ -4424,7 +4435,7 @@ func TestJobqueueRunners(t *testing.T) {
 			var jobs []*Job
 			count := maxCPU * 2
 			for i := 0; i < count; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), Override: 2, RepGroup: "manually_added"})
 			}
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -4581,7 +4592,7 @@ func TestJobqueueRunners(t *testing.T) {
 			jobMB := int(math.Floor(float64(maxMem) / float64(maxCPU*2)))
 			count := maxCPU * 3
 			for i := 0; i < count; i++ {
-				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), RepGroup: "manually_added"})
+				jobs = append(jobs, &Job{Cmd: fmt.Sprintf("sleep 2 && perl -e 'open($fh, q[>%d]); print $fh q[foo]; close($fh)'", i), Cwd: tmpdir, ReqGroup: "perl", Requirements: &jqs.Requirements{RAM: jobMB, Time: 1 * time.Second, Cores: 0}, Retries: uint8(0), Override: 2, RepGroup: "manually_added"})
 			}
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -4610,6 +4621,8 @@ func TestJobqueueRunners(t *testing.T) {
 							continue
 						case <-limit:
 							ticker.Stop()
+							gjobs, errj := jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+							timelimitDebug(gjobs, errj)
 							done <- false
 							return
 						}
@@ -4993,11 +5006,11 @@ func TestJobqueueRunners(t *testing.T) {
 								done <- true
 								return
 							} else if fourHundredCount == 0 {
-								server.sgcmutex.Lock()
-								if countg, existed := server.sgroupcounts["400:0:1:0"]; existed {
-									fourHundredCount = countg
+								server.psgmutex.RLock()
+								if group, existed := server.previouslyScheduledGroups["400:0:1:0"]; existed {
+									fourHundredCount = group.count
 								}
-								server.sgcmutex.Unlock()
+								server.psgmutex.RUnlock()
 							}
 							continue
 						case <-limit:
@@ -5040,11 +5053,11 @@ func TestJobqueueRunners(t *testing.T) {
 									return
 								}
 							} else if twoHundredCount == 0 {
-								server.sgcmutex.Lock()
-								if countg, existed := server.sgroupcounts["200:30:1:0"]; existed {
-									twoHundredCount = countg
+								server.psgmutex.RLock()
+								if group, existed := server.previouslyScheduledGroups["200:30:1:0"]; existed {
+									twoHundredCount = group.count
 								}
-								server.sgcmutex.Unlock()
+								server.psgmutex.RUnlock()
 							}
 							continue
 						case <-limit:
@@ -5245,9 +5258,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		SkipConvey("Skipping the OpenStack tests", t, func() {})
 		return
 	}
-
-	// because OpenStack can be slow, increase the deadlock timeout
-	sync.Opts.DeadlockTimeout = 5 * time.Minute
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
@@ -5594,7 +5604,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err := got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "1")
+			So(stdout, ShouldEqual, fmt.Sprintf("%d", cores))
 
 			jm := NewJobModifer()
 			other = make(map[string]string)
@@ -5645,7 +5655,7 @@ sudo usermod -aG docker ` + osUser
 			So(len(got), ShouldEqual, 1)
 			stdout, err = got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "1")
+			So(stdout, ShouldEqual, fmt.Sprintf("%d", cores))
 		})
 
 		Convey("You can modify MonitorDocker of a job", func() {
@@ -5957,10 +5967,13 @@ sudo usermod -aG docker ` + osUser
 			So(err, ShouldBeNil)
 
 			destroyedBadServer := 0
+			var dbsMutex sync.Mutex
 			badServerCB := func(server *cloud.Server) {
 				errf := server.Destroy()
 				if errf == nil {
+					dbsMutex.Lock()
 					destroyedBadServer++
+					dbsMutex.Unlock()
 				}
 			}
 
@@ -6029,14 +6042,15 @@ sudo usermod -aG docker ` + osUser
 				for {
 					select {
 					case <-ticker.C:
-						server.sgcmutex.Lock()
-						if server.sgroupcounts[schedGrp] > 2 {
+						server.psgmutex.RLock()
+						group, exists := server.previouslyScheduledGroups[schedGrp]
+						if exists && group.count > 2 {
 							ticker.Stop()
 							moreThan2 <- true
-							server.sgcmutex.Unlock()
+							server.psgmutex.RUnlock()
 							return
 						}
-						server.sgcmutex.Unlock()
+						server.psgmutex.RUnlock()
 					case <-stopChecking:
 						ticker.Stop()
 						moreThan2 <- false
@@ -6098,7 +6112,9 @@ sudo usermod -aG docker ` + osUser
 			So(<-started, ShouldBeTrue)
 			stopChecking <- true
 			So(<-moreThan2, ShouldBeFalse)
+			dbsMutex.Lock()
 			So(destroyedBadServer, ShouldEqual, 1)
+			dbsMutex.Unlock()
 		})
 
 		Reset(func() {
@@ -6114,8 +6130,6 @@ func TestJobqueueWithMounts(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
-
-	sync.Opts.DeadlockTimeout = 2 * time.Minute
 
 	if runtime.NumCPU() == 1 {
 		// we lock up with only 1 proc
@@ -6749,6 +6763,21 @@ func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
 	log.Printf("Was able to get all %d jobs in that batch in %s\n", 1+jobs[0].Similar, e)
 }
 */
+
+func timelimitDebug(jobs []*Job, err error) {
+	if err != nil {
+		fmt.Printf("\ntime limit reached, but err getting jobs: %s\n", err)
+	} else {
+		fmt.Printf("\ntime limit reached, jobs:\n")
+		for _, job := range jobs {
+			stderr, errs := job.StdErr()
+			if errs != nil {
+				fmt.Printf(" problem getting stderr: %s\n", errs)
+			}
+			fmt.Printf(" [%s]: %s (%s)\n", job.Cmd, job.State, stderr)
+		}
+	}
+}
 
 func disconnect(client *Client) {
 	err := client.Disconnect()

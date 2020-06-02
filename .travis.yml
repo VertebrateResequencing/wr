@@ -10,10 +10,9 @@ env:
   global:
     - KUBERNETES_VERSION=v1.10.0
     - CHANGE_MINIKUBE_NONE_USER=true
-    - WR_MANAGERPORT="11301"
     - GO111MODULE=on
 go:
-  - "1.14"
+  - "1.14.3"
 go_import_path: github.com/VertebrateResequencing/wr
 install:
   - "go mod verify"
@@ -21,6 +20,7 @@ jobs:
   include:
     -
       script:
+        - "go test -tags netgo -coverprofile=main.coverprofile -covermode count -failfast ./ || travis_terminate 1"
         - "go test -tags netgo -coverprofile=queue.coverprofile -covermode count -failfast ./queue || travis_terminate 1"
         - "go test -tags netgo -coverprofile=sched.coverprofile -covermode count -failfast ./jobqueue/scheduler || travis_terminate 1"
         - "go test -tags netgo -v -coverprofile=jq.coverprofile -covermode count -failfast ./jobqueue || travis_terminate 1"

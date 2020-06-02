@@ -984,7 +984,6 @@ func (c *Client) Execute(job *Job, shell string) error {
 			stateMutex.Lock()
 			killCalled = true
 			stateMutex.Unlock()
-			closeReaders()
 		}
 		wkbsMutex.Unlock()
 
@@ -1006,7 +1005,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-resourceTicker.C:
 				// always see if we've run out of disk space on the machine, in
 				// which case abort
-				if internal.NoDiskSpaceLeft(filepath.Dir(job.Cwd)) {
+				if internal.NoDiskSpaceLeft(job.Cwd) {
 					killErr = killCmd()
 					stateMutex.Lock()
 					ranoutDisk = true
@@ -1088,6 +1087,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 				}
 				stateMutex.Unlock()
 			case <-stopChecking:
+				closeReaders()
 				break CHECKING
 			}
 		}

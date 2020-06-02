@@ -42,15 +42,17 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/inconshreveable/log15"
+	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
 )
 
 const (
-	dbDelimiter               = "_::_"
-	jobStatWindowPercent      = float32(5)
-	dbFilePermission          = 0600
-	minimumTimeBetweenBackups = 30 * time.Second
+	dbDelimiter                   = "_::_"
+	jobStatWindowPercent          = float32(5)
+	dbFilePermission              = 0600
+	minimumTimeBetweenBackups     = 30 * time.Second
+	dbRunningTransactionsWaitTime = 1 * time.Minute
 )
 
 var (
@@ -110,7 +112,7 @@ type db struct {
 	bolt                 *bolt.DB
 	envcache             *lru.ARCCache
 	updatingAfterJobExit int
-	wg                   *sync.WaitGroup
+	wg                   *waitgroup.WaitGroup
 	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
 	backingUp      bool
@@ -314,7 +316,7 @@ func initDB(dbFile string, dbBkFile string, deployment string, logger log15.Logg
 		backupNotification: make(chan bool),
 		backupWait:         minimumTimeBetweenBackups,
 		backupStopWait:     make(chan bool),
-		wg:                 &sync.WaitGroup{},
+		wg:                 waitgroup.New(),
 		Logger:             l,
 	}
 	if fs != nil {
@@ -421,48 +423,48 @@ func (db *db) storeNewJobs(jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, j
 		errors := make(chan error, numStores)
 
 		db.wgMutex.Lock()
-		db.wg.Add(1)
+		wgk := db.wg.Add(1)
 		go func() {
 			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs rglookups", true)
-			defer db.wg.Done()
+			defer db.wg.Done(wgk)
 			sort.Sort(rgLookups)
 			errors <- db.storeBatched(bucketRTK, rgLookups, db.storeLookups)
 		}()
 
 		if len(rgs) > 0 {
-			db.wg.Add(1)
+			wgk2 := db.wg.Add(1)
 			go func() {
 				defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs repGroups", true)
-				defer db.wg.Done()
+				defer db.wg.Done(wgk2)
 				sort.Sort(rgs)
 				errors <- db.storeBatched(bucketRGs, rgs, db.storeLookups)
 			}()
 		}
 
 		if len(dgLookups) > 0 {
-			db.wg.Add(1)
+			wgk3 := db.wg.Add(1)
 			go func() {
 				defer internal.LogPanic(db.Logger, "jobqueue database dgLookups", true)
-				defer db.wg.Done()
+				defer db.wg.Done(wgk3)
 				sort.Sort(dgLookups)
 				errors <- db.storeBatched(bucketDTK, dgLookups, db.storeLookups)
 			}()
 		}
 
 		if len(rdgLookups) > 0 {
-			db.wg.Add(1)
+			wgk4 := db.wg.Add(1)
 			go func() {
 				defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs rdgLookups", true)
-				defer db.wg.Done()
+				defer db.wg.Done(wgk4)
 				sort.Sort(rdgLookups)
 				errors <- db.storeBatched(bucketRDTK, rdgLookups, db.storeLookups)
 			}()
 		}
 
-		db.wg.Add(1)
+		wgk5 := db.wg.Add(1)
 		go func() {
 			defer internal.LogPanic(db.Logger, "jobqueue database storeNewJobs encodedJobs", true)
-			defer db.wg.Done()
+			defer db.wg.Done(wgk5)
 			sort.Sort(encodedJobs)
 			errors <- db.storeBatched(bucketJobsLive, encodedJobs, db.storeEncodedJobs)
 		}()
@@ -962,8 +964,8 @@ func (db *db) retrieveEnv(envkey string) []byte {
 func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorage bool) {
 	var encoded []byte
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
-	db.RLock()
-	defer db.RUnlock()
+	db.Lock()
+	defer db.Unlock()
 	if db.closed {
 		return
 	}
@@ -982,16 +984,14 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 		return
 	}
 
+	db.updatingAfterJobExit++
+
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
-	db.wg.Add(1)
+	wgk := db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterExit", true)
-		defer db.wg.Done()
 
-		db.Lock()
-		db.updatingAfterJobExit++
-		db.Unlock()
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			key := []byte(jobkey)
 
@@ -1039,6 +1039,7 @@ func (db *db) updateJobAfterExit(job *Job, stdo []byte, stde []byte, forceStorag
 			}
 			return errf
 		})
+		db.wg.Done(wgk)
 		if err != nil {
 			db.Error("Database operation updateJobAfterExit failed", "err", err)
 		}
@@ -1070,10 +1071,9 @@ func (db *db) updateJobAfterChange(job *Job) {
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
-	db.wg.Add(1)
+	wgk := db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "updateJobAfterChange", true)
-		defer db.wg.Done()
 
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			bjl := tx.Bucket(bucketJobsLive)
@@ -1087,6 +1087,7 @@ func (db *db) updateJobAfterChange(job *Job) {
 			}
 			return bjl.Put(key, encoded)
 		})
+		db.wg.Done(wgk)
 		if err != nil {
 			db.Error("Database operation updateJobAfterChange failed", "err", err)
 			return
@@ -1400,10 +1401,10 @@ func (db *db) retrieve(bucket []byte, key string) []byte {
 func (db *db) remove(bucket []byte, key string) {
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
-	db.wg.Add(1)
+	wgk := db.wg.Add(1)
 	go func() {
 		defer internal.LogPanic(db.Logger, "jobqueue database remove", true)
-		defer db.wg.Done()
+		defer db.wg.Done(wgk)
 		err := db.bolt.Batch(func(tx *bolt.Tx) error {
 			b := tx.Bucket(bucket)
 			return b.Delete([]byte(key))
@@ -1515,13 +1516,13 @@ func (db *db) close() error {
 			db.Unlock()
 			<-db.backupNotification
 			db.wgMutex.Lock()
-			db.wg.Wait()
+			db.wg.Wait(dbRunningTransactionsWaitTime)
 			db.wgMutex.Unlock()
 			db.Lock()
 		} else {
 			db.Unlock()
 			db.wgMutex.Lock()
-			db.wg.Wait()
+			db.wg.Wait(dbRunningTransactionsWaitTime)
 			db.wgMutex.Unlock()
 			db.Lock()
 		}
@@ -1627,11 +1628,11 @@ func (db *db) backupToBackupFile(slowBackups bool) {
 	// that alters (the important parts of) the database; wait for those
 	// transactions to actually complete before backing up
 	db.wgMutex.Lock()
-	db.wg.Wait()
+	db.wg.Wait(dbRunningTransactionsWaitTime)
 
-	db.wg.Add(1)
+	wgk := db.wg.Add(1)
 	db.wgMutex.Unlock()
-	defer db.wg.Done()
+	defer db.wg.Done(wgk)
 
 	// create the new backup file with temp name
 	tmpBackupPath := db.backupPath + ".tmp"

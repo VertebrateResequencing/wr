@@ -5,7 +5,29 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
-## [0.21.0] - 2020-20-03
+## [0.22.0] - 2020-06-02
+### Added
+- New `wr conf` command that shows current configuration.
+
+### Changed
+- Additional and improved logging or normal operation and errors.
+- API change: jobqueue.Scheduler has new method Scheduled().
+
+### Fixed
+- Critical fix for database lockups resulting in state not being saved or backed
+  up.
+- Critical fix for jobs getting stuck pending.
+- LSF queue picking heuristics fixed for systems with nested and duplicated
+  host definitions.
+- OpenStack resources file getting corrupt.
+- No longer crashes when trying to terminate many OpenStack servers at once, and
+  OpenStack is non-responsive.
+- Fixed various edge-case concurrency bugs.
+- Jobs were failing when they detect / has run out disk space; now they check
+  the correct volume the working directory is mounted to instead.
+
+
+## [0.21.0] - 2020-03-20
 ### Added
 - The OpenStack scheduler can now spawn multiple servers at once, increasing the
   rate of scale up. New cloudspawns config option (defaults to 10).

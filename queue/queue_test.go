@@ -1546,7 +1546,7 @@ func TestQueue(t *testing.T) {
 		So(added[0], ShouldEqual, 1)
 		callBackLock.RUnlock()
 
-		<-time.After(100 * time.Millisecond)
+		<-time.After(650 * time.Millisecond)
 
 		callBackLock.RLock()
 		So(len(added), ShouldEqual, 2)
@@ -1616,23 +1616,37 @@ func TestQueue(t *testing.T) {
 		// queue takes ~15ms instead of ~0.1ms, so the times here allow for that
 		// kind of leeway
 
+		willReserve := make(map[int]chan bool)
+		willReserve[1] = make(chan bool)
+		willReserve[2] = make(chan bool)
+		addTimes := make(map[int]chan time.Time)
+		addTimes[1] = make(chan time.Time)
+		addTimes[2] = make(chan time.Time)
 		rCh := make(chan bool)
-		for i := 0; i < 2; i++ {
-			go func() {
+		for i := 1; i <= 2; i++ {
+			go func(i int) {
+				willReserve[i] <- true
 				t := time.Now()
 				item, err := queue.Reserve("foo", 3000*time.Millisecond)
-				rCh <- item != nil && err == nil && time.Since(t) < 2500*time.Millisecond
-			}()
+				addT := <-addTimes[i]
+				ok := item != nil && err == nil && time.Since(t) < 2500*time.Millisecond && time.Since(t) > 2000*time.Millisecond && time.Since(addT) < 10*time.Millisecond
+				if !ok {
+					fmt.Printf("\nitem: %v, err: [%s], time passed: %s, since add: %s\n", item != nil, err, time.Since(t), time.Since(addT))
+				}
+				rCh <- ok
+			}(i)
 		}
 
 		addErrCh := make(chan error)
-		go func() {
-			<-time.After(2000 * time.Millisecond)
-			_, err1 := queue.Add("key1", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
-			_, err2 := queue.Add("key2", "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
-			addErrCh <- err1
-			addErrCh <- err2
-		}()
+		for i := 1; i <= 2; i++ {
+			go func(i int) {
+				<-willReserve[i]
+				<-time.After(2000 * time.Millisecond)
+				_, err := queue.Add(fmt.Sprintf("key%d", i), "foo", "data", 0, 0*time.Millisecond, 10*time.Millisecond, "")
+				addTimes[i] <- time.Now()
+				addErrCh <- err
+			}(i)
+		}
 
 		So(<-addErrCh, ShouldBeNil)
 		So(<-addErrCh, ShouldBeNil)

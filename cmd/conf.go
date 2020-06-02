@@ -1,31 +1,31 @@
-# The format of this file is YAML
-#
-# wr will load its configuration settings from one or more files named
-# .wr_config[.production|.development].yml found in these directories, in
-# order of precedence:
-# 1) The current directory
-# 2) Your home directory
-# 3) The directory pointed to by the environment variable $WR_CONFIG_DIR
-#
-# .wr_config.yml files are always read, and can be used to define settings
-# common to both production and development deployments.
-# .wr_config.production.yml files are only read in a production context:
-# either a --deployment production option has been passed to the wr
-# executable, or the environment variable $WR_DEPLOYMENT has been set to
-# 'production'.
-# A similar story applies for .wr_config.development.yml files, which are
-# used when things are set to 'development'.
-# The default deployment is production (unless you're in the git repository for
-# wr, in which case it is development).
-#
-# If a setting is found in none of the files read, then an environment variable
-# is checked: WR_<setting name in caps>. Eg. to define the managerscheduler
-# option you might do:
-# export WR_MANAGERSCHEDULER="lsf"
-#
-# Note that all worker nodes need to be able to see your desired set of config
-# files, so either define them in environment variables or put the config files
-# on a disc that is mounted and shared across all your compute nodes.
+// Copyright © 2020 Genome Research Limited
+// Author: Sendu Bala <sb10@sanger.ac.uk>.
+//
+//  This file is part of wr.
+//
+//  wr is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU Lesser General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  wr is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU Lesser General Public License for more details.
+//
+//  You should have received a copy of the GNU Lesser General Public License
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
+
+package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+const defaultYML = `# The format of this file is YAML
 
 # managerport: What port should the wr manager listen on?
 # This defaults to "xxxxx", where xxxxx is 1021 + 4*[your user id] + 0 if
@@ -83,7 +83,7 @@ managerhost: "localhost"
 # their defaults.
 #
 # The files stored in here are, by default, the manager's pid file, log file and
-# database related files. Files needed by `wr cloud deploy` are also stored
+# database related files. Files needed by 'wr cloud deploy' are also stored
 # here.
 managerdir: "~/.wr"
 
@@ -133,7 +133,7 @@ managerdbfile: "db"
 # location like: s3://mybucket/subpath/my_wr_db.backup
 # If your credentials are specified in a non-default profile you can instead say
 # something like: s3://profile_name@mybucket/subpath/my_wr_db.backup
-# Credential specification is as per `wr mount -h` (basically, have an ~/.s3cfg
+# Credential specification is as per 'wr mount -h' (basically, have an ~/.s3cfg
 # file). Ensure that only you have read permission for the S3 location you
 # specify.
 # NB: for S3 backups to work, you must be able to carry out fuse mounts, which
@@ -202,7 +202,7 @@ managerkeyfile: "key.pem"
 # this file will also be created (generation will fail if this file already
 # exists). It contains the certificate for a CA that was used to sign
 # managercertfile. This ca.pem can then be passed to clients to establish trust
-# in managercertfile, eg. `curl --cacert ~/.wr_production/ca.pem [...]`.
+# in managercertfile, eg. 'curl --cacert ~/.wr_production/ca.pem [...]'.
 #
 # If you're using your own managercertfile and managerkeyfile, you should set
 # this to the cert of the CA you used to sign your managercertfile, if any
@@ -228,14 +228,14 @@ managercertdomain: "localhost"
 
 # managersetdomainip: Should your domain's IP be set after the manager starts?
 # This defaults to false, meaning nothing is attempted. It is overridden by the
-# --set_domain_ip option to `wr manager start` and `wr cloud deploy`.
+# --set_domain_ip option to 'wr manager start' and 'wr cloud deploy'.
 #
 # Making this option true will result in infoblox being used to first delete all
 # A records for managercertdomain, then create an A record for managercertdomain
 # that points to the IP address of the server that the manager was started on.
 #
-# The above will happen only after a successful `wr manager start` or
-# `wr cloud deploy`, and is an easy alternative to the deploysuccessscript
+# The above will happen only after a successful 'wr manager start' or
+# 'wr cloud deploy', and is an easy alternative to the deploysuccessscript
 # option for the later.
 #
 # Requires the environment variables INFOBLOX_HOST, INFOBLOX_USER and
@@ -283,8 +283,8 @@ runnerexecshell: "bash"
 
 # cloudflavor: What server flavors can be automatically picked?
 # Without being set, any available flavor can be picked. It is overridden by
-# the --flavor option to `wr cloud deploy` and the --cloud_flavor option of
-# `wr manager start`.
+# the --flavor option to 'wr cloud deploy' and the --cloud_flavor option of
+# 'wr manager start'.
 # Note, this is regular expression in a string, and could be something like
 # "^m.*$" to only pick flavors that have names beginning with the letter 'm'.
 #
@@ -298,18 +298,18 @@ runnerexecshell: "bash"
 
 # cloudflavormanager: What server flavors can be used for the manager?
 # Without being set, any available flavor can be picked. It is overridden by
-# the --manager_flavor option to `wr cloud deploy`.
+# the --manager_flavor option to 'wr cloud deploy'.
 # 
 # This is like cloudflavor, but only applies to the first server created on
-# which `wr manager` is started.
+# which 'wr manager' is started.
 #
 # If blank, defaults to the value of cloudflavor.
 # cloudflavormanager: ""
 
 # cloudflavorsets: What server flavors are assigned to different hardware?
 # Without being provided, all flavors are assumed to be able to be used on all
-# available hardware. This is overridden by the --flavor_sets option to `wr
-# cloud deploy` and the --cloud_flavor_sets option of `wr manager start`.
+# available hardware. This is overridden by the --flavor_sets option to 'wr
+# cloud deploy' and the --cloud_flavor_sets option of 'wr manager start'.
 # Note, this takes the form f1,f2;f3,f4 to describe flavors f1 and f2 being in
 # the same set, and flavors f3 and f4 being in a different set. Flavors in the
 # same set should be those that can only be used on a certain subset of your
@@ -334,7 +334,7 @@ runnerexecshell: "bash"
 
 # cloudkeepalive: How long should idle spawned server stay alive?
 # This defaults to 120. It is overridden by the --keepalive option to
-# `wr cloud deploy` and the --cloud_keepalive option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_keepalive option of 'wr manager start'.
 # Note, this is a number (no quotes) of seconds.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -350,8 +350,8 @@ cloudkeepalive: 120
 
 # cloudautoconfirmdead: How long should dead spawned servers be kept?
 # This defaults to 30. It is overridden by the --auto_confirm_dead option to
-# `wr cloud deploy` and the --cloud_auto_confirm_dead option of
-# `wr manager start`.
+# 'wr cloud deploy' and the --cloud_auto_confirm_dead option of
+# 'wr manager start'.
 # Note, this is a number (no quotes) of minutes.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -370,7 +370,7 @@ cloudkeepalive: 120
 # of a new server on which to run commands.
 #
 # If you wish to investigate all instances of your servers becoming "dead", you
-# can use `wr cloud servers` to find out about them and manually confirm them
+# can use 'wr cloud servers' to find out about them and manually confirm them
 # dead, destroying them if they still exist.
 #
 # For unattended usage, however, you can configure this to a > 0 value and wr
@@ -385,7 +385,7 @@ cloudautoconfirmdead: 30
 
 # cloudservers: How many additional cloud servers can be spawned?
 # This defaults to -1. It is overridden by the --max_servers option to
-# `wr cloud deploy` and the --cloud_servers option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_servers option of 'wr manager start'.
 # Note, this is a number (no quotes).
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -397,15 +397,15 @@ cloudautoconfirmdead: 30
 # 0 means don't spawn any servers; jobs will only run on the same server that
 # the manager is running on (if possible).
 #
-# If this cloudservers value gets used as the default of `wr cloud deploy`, it
+# If this cloudservers value gets used as the default of 'wr cloud deploy', it
 # is incremented by 1, since deploy's --max_servers option has a slightly
 # different meaning to start's --cloud_servers option, as it includes the
-# initial server that gets created to run `wr manager`.
+# initial server that gets created to run 'wr manager'.
 cloudservers: -1
 
 # cloudspawns: How many cloud servers can be spawned simultaneously?
 # This defaults to 10. It is overridden by the --max_spawns option to
-# `wr cloud deploy` and the --cloud_spawns option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_spawns option of 'wr manager start'.
 # Note, this is a number (no quotes).
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -418,7 +418,7 @@ cloudspawns: 10
 
 # cloudcidr: What should be the CIDR of the created subnet?
 # This defaults to "192.168.0.0/18". It is overridden by the --network_cidr
-# option to `wr cloud deploy` and the --cloud_cidr option of `wr manager start`.
+# option to 'wr cloud deploy' and the --cloud_cidr option of 'wr manager start'.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
@@ -431,8 +431,8 @@ cloudcidr: "192.168.0.0/18"
 
 # cloudgateway: What should be the gateway IP of the created subnet?
 # This defaults to "192.168.0.1". It is overridden by the --network_gateway_ip
-# option to `wr cloud deploy` and the --cloud_gateway_ip option of
-# `wr manager start`.
+# option to 'wr cloud deploy' and the --cloud_gateway_ip option of
+# 'wr manager start'.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
@@ -444,7 +444,7 @@ cloudgateway: "192.168.0.1"
 
 # clouddns: What DNS name servers should be configured on spawned servers?
 # This defaults to "8.8.4.4,8.8.8.8". It is overridden by the --network_dns
-# option to `wr cloud deploy` and the --cloud_dns option of `wr manager start`.
+# option to 'wr cloud deploy' and the --cloud_dns option of 'wr manager start'.
 # Note, this is a comma separated string of 1 or more name servers.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -458,7 +458,7 @@ clouddns: "8.8.4.4,8.8.8.8"
 
 # cloudos: What OS image should be used for spawned servers?
 # This defaults to "bionic-server". It is overridden by the --os option to
-# `wr cloud deploy` and the --cloud_os option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_os option of 'wr manager start'.
 # Note, this is the string prefix name or complete ID of an image that is
 # available to you.
 #
@@ -468,7 +468,7 @@ cloudos: "bionic-server"
 
 # containerimage:  What container image should be used for spawned pods? This
 # defaults to "ubuntu:latest". It is overridden by the --container_image option
-# to `wr k8s deploy` and the --cloud_os option of `wr manager start`.
+# to 'wr k8s deploy' and the --cloud_os option of 'wr manager start'.
 # The image should have bash, and tar installed. The image should also have sudo
 # installed if it is required in a post creation script you intend to use.
 # By default, the images are pulled from docker hub. Others public registries
@@ -479,7 +479,7 @@ containerimage: "ubuntu:latest"
 
 # clouduser: What username should be used to log in to cloudos images?
 # This defaults to "ubuntu". It is overridden by the --username option to
-# `wr cloud deploy` and the --cloud_username option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_username option of 'wr manager start'.
 #
 # This option is only relevant when you are using a cloud scheduler such as
 # OpenStack.
@@ -490,7 +490,7 @@ clouduser: "ubuntu"
 
 # cloudram: How much RAM must a server have to run cloudos?
 # This defaults to 2048. It is overridden by the --os_ram option to
-# `wr cloud deploy` and the --cloud_ram option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_ram option of 'wr manager start'.
 # Note, this is a number (no quotes) in MB.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -503,7 +503,7 @@ cloudram: 2048
 
 # clouddisk: What should the minimum disk space of spawned servers be?
 # This defaults to 1. It is overridden by the --os_disk option to
-# `wr cloud deploy` and the --cloud_disk option of `wr manager start`.
+# 'wr cloud deploy' and the --cloud_disk option of 'wr manager start'.
 # Note, this is a number (no quotes) in GB.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -519,8 +519,8 @@ clouddisk: 1
 
 # cloudscript: What script should run on newly spawned servers?
 # If unset, nothing is run. It is overridden by the --script option to
-# `wr cloud deploy` and the --cloud_script option of `wr manager start`. (It is
-# NOT used as the default of --cloud_script for `wr add`.)
+# 'wr cloud deploy' and the --cloud_script option of 'wr manager start'. (It is
+# NOT used as the default of --cloud_script for 'wr add'.)
 # Note, this is the absolute path to a local bash script.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -534,9 +534,9 @@ clouddisk: 1
 
 # cloudconfigfiles: What config files should be copied to newly spawned servers?
 # This defaults to "~/.s3cfg,~/.aws/credentials,~/.aws/config". It is overridden
-# by the --config_files option to `wr cloud deploy`, and the
-# --cloud_config_files option of `wr manager start`. (It is NOT used as the
-# default of --cloud_config_files for `wr add`.)
+# by the --config_files option to 'wr cloud deploy', and the
+# --cloud_config_files option of 'wr manager start'. (It is NOT used as the
+# default of --cloud_config_files for 'wr add'.)
 # Note, this is a comma separated string of paths.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -551,7 +551,7 @@ clouddisk: 1
 # "~/.s3cfg.openstack:~/.s3cfg".
 #
 # Examples of files you might need to copy over are your s3 configuration files.
-# You'll need these on your cloud servers if you plan on `wr add`ing any
+# You'll need these on your cloud servers if you plan on 'wr add'ing any
 # commands with --mounts.
 #
 # If you specify files that don't exist locally, they are silently ignored.
@@ -559,12 +559,75 @@ cloudconfigfiles: "~/.s3cfg,~/.aws/credentials,~/.aws/config"
 
 # deploysuccessscript: What script should run locally after cloud deploy?
 # If unset, nothing is run. It is overridden by the --on_sucess option to
-# `wr cloud deploy`.
+# 'wr cloud deploy'.
 # Note, this is the absolute path to an executable.
 #
-# After you run `wr cloud deploy`, if it succeeds, the executable you supply
+# After you run 'wr cloud deploy', if it succeeds, the executable you supply
 # here will run with the environment variables WR_MANAGERIP and
 # WR_MANAGERCERTDOMAIN set. Your executable might update your local DNS entries
 # so that you can access wr's REST API using the domain that your TLS
 # certificate is valid for.
 # deploysuccessscript: ""
+`
+
+// options for this cmd
+var confDefault bool
+
+// confCmd represents the conf command
+var confCmd = &cobra.Command{
+	Use:   "conf",
+	Short: "See wr's configuration",
+	Long: `See the configuration values wr will use.
+
+(Note, these are the values based on your current environment, not the values
+that a particular manager used when it started.)
+
+This command also shows where a particular value was defined.
+
+For a list of all possible configuration settings, their descriptions and
+default values in the yml format suitable for using as one of your config files,
+use the --default option.
+
+wr will load its configuration settings from one or more files named
+.wr_config[.production|.development].yml found in these directories, in order of
+precedence:
+1) The current directory
+2) Your home directory
+3) The directory pointed to by the environment variable $WR_CONFIG_DIR
+
+.wr_config.yml files are always read, and can be used to define settings common
+to both production and development deployments.
+.wr_config.production.yml files are only read in a production context:
+either a --deployment production option has been passed to the wr executable, or
+the environment variable $WR_DEPLOYMENT has been set to 'production'.
+A similar story applies for .wr_config.development.yml files, which are used
+when things are set to 'development'.
+The default deployment is production (unless you're in the git repository for
+wr, in which case it is development).
+
+If a setting is found in none of the files read, then an environment variable is
+checked: WR_<setting name in caps>. Eg. to define the managerscheduler
+option you might do:
+export WR_MANAGERSCHEDULER="lsf"
+
+Note that all worker nodes need to be able to see your desired set of config
+files, so either define them in environment variables or put the config files
+on a disc that is mounted and shared across all your compute nodes. In cloud
+deployments where wr itself creates compute nodes, a config file will be created
+on new nodes automatically.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if confDefault {
+			fmt.Print(defaultYML)
+			os.Exit(0)
+		}
+
+		fmt.Printf("%s", config)
+	},
+}
+
+func init() {
+	RootCmd.AddCommand(confCmd)
+
+	// flags specific to this sub-command
+	confCmd.Flags().BoolVarP(&confDefault, "default", "d", false, "print default config yml file to STDOUT")
+}

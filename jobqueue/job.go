@@ -289,14 +289,6 @@ type Job struct {
 	// the Jobs they're allowed to ReserveFiltered().
 	schedulerGroup string
 
-	// the server uses this to track if it already scheduled a runner for this
-	// job.
-	scheduledRunner bool
-
-	// the server uses this to track if it already ignored this job during
-	// scheduling, due to hitting a limit.
-	schedulerIgnored bool
-
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
 	// later; this is purely client side.
 	mountedFS []*muxfys.MuxFys
@@ -738,38 +730,6 @@ func (j *Job) Key() string {
 		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
 	}
 	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
-}
-
-// getScheduledRunner provides a thread-safe way of getting the scheduledRunner
-// property of a Job.
-func (j *Job) getScheduledRunner() bool {
-	j.RLock()
-	defer j.RUnlock()
-	return j.scheduledRunner
-}
-
-// setScheduledRunner provides a thread-safe way of setting the scheduledRunner
-// property of a Job.
-func (j *Job) setScheduledRunner(newval bool) {
-	j.Lock()
-	defer j.Unlock()
-	j.scheduledRunner = newval
-}
-
-// setSchedulerIgnored provides a thread-safe way of setting the
-// schedulerIgnored property of a Job.
-func (j *Job) setSchedulerIgnored(newval bool) {
-	j.Lock()
-	defer j.Unlock()
-	j.schedulerIgnored = newval
-}
-
-// getSchedulerIgnored provides a thread-safe way of getting the
-// schedulerIgnored property of a Job.
-func (j *Job) getSchedulerIgnored() bool {
-	j.RLock()
-	defer j.RUnlock()
-	return j.schedulerIgnored
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,

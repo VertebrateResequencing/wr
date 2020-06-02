@@ -75,18 +75,19 @@ you can instead replace `make` above with:
 
 Usage instructions
 ------------------
-The download .zip should contain the wr executable, this README.md, a
-CHANGELOG.md and an example config file called wr_config.yml, which details all
-the config options available. The main things you need to know are:
+The download .zip should contain the wr executable, this README.md, and a
+CHANGELOG.md. Running `wr conf --default` will print an example config file
+which details all the config options available. The main things you need to
+know are:
 
 * You can use the wr executable directly from where you extracted it, or
   move it to where you normally install software to.
 * Use the -h option on wr and all its sub commands to get further help
   and instructions.
 * The default config should be fine for most people, but if you want to change
-  something, copy the example config file to ~/.wr_config.yml and make
-  changes to that. Alternatively, as the example config file explains, add
-  environment variables to your shell login script and then source it.
+  something, run `wr conf --default > ~/.wr_config.yml` and make changes to 
+  that. Alternatively, as the example config file explains, add environment
+  variables to your shell login script and then source it.
   If you'll be using OpenStack, it is strongly recommended to configure
   database backups to go to S3.
 * The wr executable must be available at that same absolute path on all

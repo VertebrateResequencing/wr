@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2020 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -114,7 +114,7 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 		}
 	}
 
-	bmgroups := make(map[string]int)
+	bmgroups := make(map[string]map[string]bool)
 	parsedBmgroups := false
 
 	// parse bqueues -l to figure out what usable queues we have
@@ -261,7 +261,7 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					queue = ""
 				}
 			} else if matches[2] != "all" {
-				hosts := 0
+				hosts := make(map[string]bool)
 				for _, val := range vals {
 					if strings.HasSuffix(val, "/") {
 						// this is a group name, look it up in bmgroup
@@ -273,17 +273,19 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 							parsedBmgroups = true
 						}
 						val = strings.TrimSuffix(val, "/")
-						if n, exists := bmgroups[val]; exists {
-							hosts += n
+						if servers, exists := bmgroups[val]; exists {
+							for server := range servers {
+								hosts[server] = true
+							}
 						} else {
-							hosts++
+							hosts[val] = true
 						}
 					} else {
-						hosts++
+						hosts[val] = true
 					}
 				}
-				s.queues[queue][kind] = hosts
-				updateHighest(kind, hosts)
+				s.queues[queue][kind] = len(hosts)
+				updateHighest(kind, len(hosts))
 			}
 		}
 
@@ -412,8 +414,8 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 }
 
 // parseBmgroups parses the output of `bmgroup`, storing group name as a key in
-// the supplied map, with number of hosts in that group as the value.
-func (s *lsf) parseBmgroups(groups map[string]int) error {
+// the supplied map, with a map of hosts in that group as the value.
+func (s *lsf) parseBmgroups(groups map[string]map[string]bool) error {
 	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup") // #nosec
 	bmgout, err := bmgcmd.StdoutPipe()
 	if err != nil {
@@ -429,7 +431,22 @@ func (s *lsf) parseBmgroups(groups map[string]int) error {
 		if len(fields) < 2 {
 			continue
 		}
-		groups[fields[0]] = len(fields) - 1
+		for i, field := range fields {
+			if i == 0 {
+				continue
+			}
+			if groups[fields[0]] == nil {
+				groups[fields[0]] = make(map[string]bool)
+			}
+			if strings.HasSuffix(field, "/") {
+				lookup := strings.TrimSuffix(field, "/")
+				for server := range groups[lookup] {
+					groups[fields[0]][server] = true
+				}
+			} else {
+				groups[fields[0]][field] = true
+			}
+		}
 	}
 	return nil
 }
@@ -533,6 +550,11 @@ func (s *lsf) schedule(cmd string, req *Requirements, priority uint8, count int)
 	}
 
 	return err
+}
+
+// scheduled achieves the aims of Scheduled().
+func (s *lsf) scheduled(cmd string) (int, error) {
+	return s.checkCmd(cmd, -1)
 }
 
 // generateBsubArgs generates the appropriate bsub args for the given req and
