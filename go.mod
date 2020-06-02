@@ -21,7 +21,7 @@ require (
 	github.com/fatih/color v1.9.0
 	github.com/go-ini/ini v1.52.0 // indirect
 	github.com/go-ole/go-ole v1.2.4 // indirect
-	github.com/gofrs/uuid v3.2.0+incompatible
+	github.com/gofrs/uuid v3.3.0+incompatible
 	github.com/gogo/protobuf v1.3.1 // indirect
 	github.com/golang/protobuf v1.3.4 // indirect
 	github.com/google/gofuzz v1.1.0 // indirect
