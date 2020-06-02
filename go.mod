@@ -30,7 +30,7 @@ require (
 	github.com/gorilla/websocket v1.4.1
 	github.com/gotestyourself/gotestyourself v2.2.0+incompatible // indirect
 	github.com/grafov/bcast v0.0.0-20190217190352-1447f067e08d
-	github.com/hashicorp/go-multierror v1.0.0
+	github.com/hashicorp/go-multierror v1.1.0
 	github.com/hashicorp/golang-lru v0.5.4
 	github.com/howeyc/gopass v0.0.0-20190910152052-7cb4b85ec19c // indirect
 	github.com/imdario/mergo v0.3.8 // indirect
