@@ -85,9 +85,9 @@ know are:
 * Use the -h option on wr and all its sub commands to get further help
   and instructions.
 * The default config should be fine for most people, but if you want to change
-  something, copy the example config file to ~/.wr_config.yml and make
-  changes to that. Alternatively, as the example config file explains, add
-  environment variables to your shell login script and then source it.
+  something, run `wr conf --default > ~/.wr_config.yml` and make changes to 
+  that. Alternatively, as the example config file explains, add environment
+  variables to your shell login script and then source it.
   If you'll be using OpenStack, it is strongly recommended to configure
   database backups to go to S3.
 * The wr executable must be available at that same absolute path on all
