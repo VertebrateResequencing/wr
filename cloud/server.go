@@ -409,8 +409,14 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 		// this server, because there are still real limits on the number of
 		// processes we can run at once before things start falling over, we
 		// only allow double the actual core count of zero core things to run
-		// (on top of up to actual core count of non-zero core things)
-		canDo = s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
+		// (on top of up to actual core count of non-zero core things).
+		// On a server with "zero" cores, we also allow a reasonable number of
+		// zero core jobs to run
+		if s.Flavor.Cores == 0 {
+			canDo = internal.ZeroCoreMultiplier*internal.ZeroCoreMultiplier - s.usedZeroCores
+		} else {
+			canDo = s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
+		}
 	} else {
 		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}

@@ -179,9 +179,8 @@ type ConfigOpenStack struct {
 
 	// MaxLocalCores is the maximum number of cores that can be used to run
 	// commands on the same instance the manager is running on. -1 (the default)
-	// means all cores can be used. 0 disables running commands on the manager's
-	// instance. To distinguish "not defined" from 0, the value is a reference
-	// to an int.
+	// means all cores can be used. 0 will only allow 0 core cmds to run on it.
+	// To distinguish "not defined" from 0, the value is a reference to an int.
 	MaxLocalCores *int
 
 	// MaxLocalRAM is the maximum number of MB of memory that can be used to run

@@ -142,8 +142,12 @@ contain your credentials for connecting to your s3 bucket(s).
 
 The --max_local_cores and --max_local_memory options specify how much of the
 cloud server that runs wr manager itself should also be used to run commands.
-To have an uncontended manager, you could set --max_local_cores to 0, and wr
-will run all commands on additional spawned cloud servers.
+To have an uncontended manager, you could set --max_local_memory to 0, and wr
+will run all commands on additional spawned cloud servers. If you don't set
+--max_local_memory to 0, but do set --max_local_cores to 0, up to four 0-core
+jobs will be allowed to run on the manager's server, but nothing else will. This
+is useful if you don't want to waste resources or spend time spawning servers to
+run trivial commands that complete near instantly.
 
 The --on_success optional value is the path to some executable that you want to
 run locally after the deployment is successful. The executable will be run with
