@@ -769,7 +769,9 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 	sf := p.spawnFailed
 	p.spMutex.RUnlock()
 	if sf {
-		time.Sleep(p.errorBackoff.Duration())
+		wait := p.errorBackoff.Duration()
+		p.Warn("server spawn waiting due to prior failures", "wait", wait)
+		time.Sleep(wait)
 	}
 
 	// we'll use the security group we created, and the "default" one if it
