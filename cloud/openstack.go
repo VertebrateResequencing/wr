@@ -66,6 +66,10 @@ import (
 // subsequently we learn how long recent builds actually take.
 const initialServerSpawnTimeout = 20 * time.Minute
 
+// maxServerErrorBackoff is the most time we will wait before trying to create
+// another server, following a series of creation failures.
+const maxServerErrorBackoff = 1 * time.Minute
+
 // destroyServerTimeout is how long we wait for server destruction requests to
 // be successful before giving up.
 const destroyServerTimeout = 2 * time.Minute
@@ -220,8 +224,8 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	// with a Backoff
 	p.errorBackoff = &backoff.Backoff{
 		Min:    1 * time.Second,
-		Max:    initialServerSpawnTimeout,
-		Factor: 3,
+		Max:    maxServerErrorBackoff,
+		Factor: 1.5,
 		Jitter: true,
 	}
 
@@ -791,6 +795,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		UserData:       sentinelInitScript,
 	}
 	var createdVolume bool
+	t := time.Now()
 	if diskGB > flavor.Disk {
 		server, err = bootfromvolume.Create(p.computeClient, keypairs.CreateOptsExt{
 			CreateOptsBuilder: bootfromvolume.CreateOptsExt{
@@ -814,6 +819,11 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			KeyName:           resources.ResourceName,
 		}).Extract()
 	}
+
+	if server != nil {
+		serverID = server.ID
+	}
+	p.Debug("server create attempted", "took", time.Since(t), "id", serverID, "worked", err == nil)
 
 	usingQuotaCh <- true
 
@@ -850,10 +860,12 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		timeout := time.After(time.Duration(timeoutS) * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		start := time.Now()
+		attempts := 0
 		for {
 			select {
 			case <-ticker.C:
-				current, errf := servers.Get(p.computeClient, server.ID).Extract()
+				current, errf := servers.Get(p.computeClient, serverID).Extract()
+				attempts++
 				if errf != nil {
 					ticker.Stop()
 					waitForActive <- errf
@@ -861,6 +873,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 				}
 				if current.Status == "ACTIVE" {
 					ticker.Stop()
+					p.Debug("server became ACTIVE", "id", serverID, "took", time.Since(start), "polls", attempts)
 					spawnSecs := time.Since(start).Seconds()
 					p.stMutex.Lock()
 					if createdVolume {
@@ -878,13 +891,13 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 					if msg == "" {
 						msg = "unknown problem"
 					}
-					waitForActive <- fmt.Errorf("server %s is in ERROR state: %s", server.ID, msg)
+					waitForActive <- fmt.Errorf("server %s is in ERROR state after %s and %d polls: %s", serverID, time.Since(start), attempts, msg)
 					return
 				}
 				continue
 			case <-timeout:
 				ticker.Stop()
-				current, errf := servers.Get(p.computeClient, server.ID).Extract()
+				current, errf := servers.Get(p.computeClient, serverID).Extract()
 				status := "unknown"
 				if errf == nil {
 					status = current.Status
@@ -916,7 +929,6 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 	// *** NB. it can still take some number of seconds before I can ssh to it
 
-	serverID = server.ID
 	adminPass = server.AdminPass
 
 	// get the servers IP; if we error for any reason we'll delete the server
