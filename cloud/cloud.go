@@ -114,8 +114,9 @@ const sentinelFilePath = "/tmp/.wr_cloud_sentinel"
 // create sentinelFilePath. We also try to turn off requiretty in /etc/sudoers,
 // to allow postCreationScripts passed to WaitUntilReady() to be run with sudo.
 // And we try to enable user_allow_other in fuse.conf to allow user mounts to
-// work.
-var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\ntouch " + sentinelFilePath)
+// work. And we try to enable system requests to do clean shutdowns (176 means
+// s, u and o can be sent to /proc/sysrq-trigger).
+var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/Defaults\\t!requiretty/' /etc/sudoers\nsed -i '/user_allow_other/s/^#//g' /etc/fuse.conf\nchmod o+r /etc/fuse.conf\nsudo sysctl -w kernel.sysrq=176\ntouch " + sentinelFilePath)
 
 // sentinelTimeOut is how long we wait for sentinelFilePath to be created before
 // we give up and return an error from WaitUntilReady().
@@ -124,6 +125,19 @@ var sentinelTimeOut = 10 * time.Minute
 // pcsTimeOut is how long we wait for a user's post creation script to exit
 // before we give up and return an error from WaitUntilReady().
 var pcsTimeOut = 15 * time.Minute
+
+// cleanShutDownCmd should be executed before terminating a server. It forces a
+// sync of filesystems, then remounts them read-only. It does not send 'o' to
+// /proc/sysrq-trigger to trigger an actual shutdown, because that can
+// immediately sever the connection over which you are trying to run this
+// command, resulting in you waiting on a timeout instead of knowing if the
+// command completed successfully.
+// 'sync' on any modern system should wait for writes to complete, and ought to
+// be all we really need. Using /proc/sysrq-trigger is just to be extra sure,
+// *** though we don't wait and confirm dmesg actaully reports "Emergency Sync
+// complete", because I don't know of a distrubution and shell agnostic way of
+// doing that wait.
+const cleanShutDownCmd = `sync && echo 's' | sudo tee -a /proc/sysrq-trigger > /dev/null && echo 'u' | sudo tee -a /proc/sysrq-trigger > /dev/null`
 
 // defaultDNSNameServers holds some public (google) dns name server addresses
 // for use when creating cloud subnets that need internet access.
@@ -657,7 +671,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 	}()
 	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.resources, os, flavorID, diskGB, externalIP, usingQuota)
 
-	if err != nil && serverID == "" {
+	if err != nil {
 		return nil, err
 	}
 
