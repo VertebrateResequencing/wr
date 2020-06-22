@@ -399,6 +399,9 @@ func (s *Server) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 
 // checkSpace does the work of HasSpaceFor. You must hold a read lock on mutex!
 func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
+	if s.destroyed {
+		return 0
+	}
 	if internal.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
@@ -646,13 +649,19 @@ func (s *Server) SSHSession(ctx context.Context) (*ssh.Session, int, error) {
 // good, on the assumption there is now "space" for a new session.
 func (s *Server) CloseSSHSession(session *ssh.Session, clientIndex int) {
 	err := session.Close()
-	if err != nil && err.Error() != "EOF" && !strings.Contains(err.Error(), "use of closed network connection") {
-		s.logger.Warn("failed to close ssh session", "err", err)
-	}
+	s.closeWarning(err)
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.sshClientSessions[clientIndex]--
+}
+
+// closeWarning warns about the given error if not nil, unless it is expected
+// in a close situation.
+func (s *Server) closeWarning(err error) {
+	if err != nil && err.Error() != "EOF" && !strings.Contains(err.Error(), "use of closed network connection") {
+		s.logger.Warn("failed to close ssh session", "err", err)
+	}
 }
 
 // SFTPClient is like sftp.NewClient(), but the underlying
@@ -1189,7 +1198,6 @@ func (s *Server) PermanentProblem() string {
 func (s *Server) Destroy() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-
 	if s.destroyed {
 		return nil
 	}
@@ -1204,16 +1212,36 @@ func (s *Server) Destroy() error {
 		ch <- true
 	}
 
+	s.toBeDestroyed = false
+	s.destroyed = true
+
+	if s.sshStarted {
+		s.mutex.Unlock()
+		// sync the filesystem
+		t := time.Now()
+		session, clientIndex, err := s.SSHSession(context.Background())
+		if err != nil {
+			s.logger.Warn("failed to ssh to cleanly shutdown", "took", time.Since(t), "err", err)
+		} else {
+			t = time.Now()
+			stdo, stde, err := s.RunCmd(context.Background(), cleanShutDownCmd, false)
+			rt := time.Since(t)
+			if err != nil {
+				s.logger.Warn("clean shutdown failed", "took", rt, "err", err, "stdout", stdo, "stderr", stde)
+			} else if rt > 10*time.Second {
+				s.logger.Warn("clean shutdown took a long time", "took", rt, "stdout", stdo)
+			}
+			s.CloseSSHSession(session, clientIndex)
+		}
+		s.mutex.Lock()
+	}
+
 	// explicitly close any client connections
 	for _, client := range s.sshClients {
 		err := client.Close()
-		if err != nil {
-			s.logger.Warn("client connection failed to close prior to server destruction", "err", err)
-		}
+		s.closeWarning(err)
 	}
 
-	s.toBeDestroyed = false
-	s.destroyed = true
 	if s.goneBad.IsZero() {
 		s.goneBad = time.Now()
 	}
