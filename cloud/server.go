@@ -505,6 +505,12 @@ func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	hostAndPort := s.IP + ":22"
 	client, err := sshDial(ctx, hostAndPort, s.sshClientConfig, s.logger)
 	if err != nil {
+		// if we're trying to destroy this server, just give up straight away
+		if s.destroyed {
+			return nil, index, err
+		}
+
+		// otherwise, keep trying
 		limit := time.After(sshTimeOut)
 		ticker := time.NewTicker(1 * time.Second)
 		ticks := 0
