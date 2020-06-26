@@ -26,7 +26,7 @@ require (
 	github.com/golang/protobuf v1.3.4 // indirect
 	github.com/google/gofuzz v1.1.0 // indirect
 	github.com/googleapis/gnostic v0.4.1 // indirect
-	github.com/gophercloud/gophercloud v0.8.0
+	github.com/gophercloud/gophercloud v0.12.0
 	github.com/gorilla/websocket v1.4.1
 	github.com/gotestyourself/gotestyourself v2.2.0+incompatible // indirect
 	github.com/grafov/bcast v0.0.0-20190217190352-1447f067e08d
