@@ -133,10 +133,12 @@ var pcsTimeOut = 15 * time.Minute
 // command, resulting in you waiting on a timeout instead of knowing if the
 // command completed successfully.
 // 'sync' on any modern system should wait for writes to complete, and ought to
-// be all we really need. Using /proc/sysrq-trigger is just to be extra sure,
-// *** though we don't wait and confirm dmesg actaully reports "Emergency Sync
-// complete", because I don't know of a distrubution and shell agnostic way of
-// doing that wait.
+// be all we really need. Some client/server filesystems may benefit from an
+// explicit umount as well, but `umount -a` will tend to just fail because the
+// filesystems are busy. We can't generically only umount a particular fs that
+// was used for writing job output. Using /proc/sysrq-trigger lets us at least
+// request a ro remount (should be equivalent of umount as far as letting fs
+// servers know we're done), even if we don't know if it succeeds.
 const cleanShutDownCmd = `sync && echo 's' | sudo tee -a /proc/sysrq-trigger > /dev/null && echo 'u' | sudo tee -a /proc/sysrq-trigger > /dev/null`
 
 // defaultDNSNameServers holds some public (google) dns name server addresses
