@@ -5,6 +5,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.23.0] - 2020-07-14
+### Changed
+- When using the OpenStack scheduler, `wr manager start --max_cores 0` (or
+  `wr cloud deploy --max_local_cores 0`) now allows 0-cpu jobs to run on the
+  manager's instance. To fully disable all jobs from running on the manager's
+  instance, use `--max_ram 0`.
+- When using the OpenStack scheduler, if servers fail to spawn, the error
+  backoff now results in a maximum wait time of 1min between spawn attempts,
+  intead of 20mins. These waits are now also logged.
+- Improved logging when an OpenStack server fails to spawn, to include the
+  flavor attempted.
+
+### Fixed
+- It was possible in some rare cases where jobs wrote to a distributed
+  filesystem in OpenStack, that writes of the last job before the server was
+  scaled down would not persist to disk. Now wr will attempt to sync all
+  filysystems and remount them read-only before destroying servers.
+
+
 ## [0.22.0] - 2020-06-02
 ### Added
 - New `wr conf` command that shows current configuration.
