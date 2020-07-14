@@ -179,9 +179,8 @@ type ConfigOpenStack struct {
 
 	// MaxLocalCores is the maximum number of cores that can be used to run
 	// commands on the same instance the manager is running on. -1 (the default)
-	// means all cores can be used. 0 disables running commands on the manager's
-	// instance. To distinguish "not defined" from 0, the value is a reference
-	// to an int.
+	// means all cores can be used. 0 will only allow 0 core cmds to run on it.
+	// To distinguish "not defined" from 0, the value is a reference to an int.
 	MaxLocalCores *int
 
 	// MaxLocalRAM is the maximum number of MB of memory that can be used to run
@@ -832,7 +831,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	// since we can have many simultaneous calls to this method running at once,
 	// we make a new logger with a unique "call" context key to keep track of
 	// which spawn call is doing what
-	logger := s.Logger.New("call", call)
+	logger := s.Logger.New("call", call, "flavor", flavor.Name)
 
 	volumeAffected := req.Disk > flavor.Disk
 
@@ -884,7 +883,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 
 	// spawn
 	failMsg := "server failed spawn"
-	logger.Debug("will spawn new server", "flavor", flavor.Name, "cmd", cmd)
+	logger.Debug("will spawn new server", "cmd", cmd)
 	tSpawn := time.Now()
 	server, err := s.provider.Spawn(requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime, false, usingQuotaCB)
 	serverID := "failed"
@@ -992,7 +991,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 			}
 		} else if s.provider.ErrIsNoHardware(err) {
 			s.ffCache.Set(flavor.ID, true, cache.DefaultExpiration)
-			s.Warn("server failed to spawn due to lack of hardware", "flavor", flavor.Name)
+			logger.Warn("server failed to spawn due to lack of hardware")
 		}
 		if err.Error() != serverNotNeededErrStr {
 			s.notifyMessage(fmt.Sprintf("OpenStack: Failed to create a usable server: %s", err))
@@ -1001,14 +1000,14 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 	}
 
 	if _, failed := s.ffCache.Get(flavor.ID); failed {
-		s.Debug("server successfully spawned on previously failed flavor", "flavor", flavor.Name)
+		logger.Debug("server successfully spawned on previously failed flavor")
 		s.ffCache.Delete(flavor.ID)
 	}
 
 	s.serversMutex.Lock()
 	s.spawnedServers[server.ID] = server
 	s.serversMutex.Unlock()
-	logger.Debug("server became usable", "flavor", flavor.Name)
+	logger.Debug("server became usable")
 }
 
 // actOnServerIfNeeded runs the given code unless cleanup() has been called, or
