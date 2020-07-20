@@ -1005,7 +1005,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			warn("Once you're done debugging, hit return to teardown")
 			var response string
 			_, errs := fmt.Scanln(&response)
-			if errs != nil {
+			if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
 				warn("failed to read your response: %s", errs)
 			}
 			teardown(provider)
