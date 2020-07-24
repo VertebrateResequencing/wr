@@ -1006,7 +1006,7 @@ func (p *openstackp) getServerIP(serverID string) (string, error) {
 	return "", nil
 }
 
-// checkServer achieves the aims of CheckServer()
+// checkServer achieves the aims of CheckServer().
 func (p *openstackp) checkServer(serverID string) (bool, error) {
 	server, err := servers.Get(p.computeClient, serverID).Extract()
 	if err != nil {
@@ -1019,7 +1019,20 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 	return server.Status == "ACTIVE", nil
 }
 
-// destroyServer achieves the aims of DestroyServer()
+// checkServer achieves the aims of ServerIsKnown().
+func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
+	server, err := servers.Get(p.computeClient, serverID).Extract()
+	if err != nil {
+		if err.Error() == "Resource not found" {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return server != nil, nil
+}
+
+// destroyServer achieves the aims of DestroyServer().
 func (p *openstackp) destroyServer(serverID string) error {
 	err := servers.Delete(p.computeClient, serverID).ExtractErr()
 	if err != nil {
@@ -1101,7 +1114,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	})
 	merr = p.combineError(merr, err)
 
+	var didSomething bool
 	if len(toDestroy) > 0 {
+		didSomething = true
 		wg := waitgroup.New()
 		wgk := wg.Add(len(toDestroy))
 		for _, sid := range toDestroy {
@@ -1148,6 +1163,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
+			if err == nil {
+				didSomething = true
+			}
 			merr = p.combineError(merr, err)
 		}
 
@@ -1156,6 +1174,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
+			if err == nil {
+				didSomething = true
+			}
 			merr = p.combineError(merr, err)
 		}
 
@@ -1164,6 +1185,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
+			if err == nil {
+				didSomething = true
+			}
 			merr = p.combineError(merr, err)
 		}
 	}
@@ -1177,12 +1201,18 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
+			// keypairs are not credential-specific enough, so we don't consider
+			// deleting one as didSomething
 			merr = p.combineError(merr, err)
 			resources.PrivateKey = ""
 		}
 	}
 
-	return merr.ErrorOrNil()
+	rerr := merr.ErrorOrNil()
+	if rerr == nil && !didSomething {
+		return fmt.Errorf("nothing to tear down; did you deploy with the current credentials?")
+	}
+	return rerr
 }
 
 // combineError Append()s the given err on merr, but ignores err if it is

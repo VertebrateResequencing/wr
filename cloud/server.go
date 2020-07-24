@@ -1284,7 +1284,8 @@ func (s *Server) Destroyed() bool {
 
 // Alive tells you if a server is usable. It first does the same check as
 // Destroyed() before calling out to the provider. Supplying an optional boolean
-// will double check the server to make sure it can be ssh'd to.
+// will double check the server to make sure it can be ssh'd to. If the server
+// doesn't exist, it will be removed from the provider's resources file.
 func (s *Server) Alive(checkSSH ...bool) bool {
 	s.mutex.Lock()
 	if s.destroyed || s.toBeDestroyed {
@@ -1309,4 +1310,18 @@ func (s *Server) Alive(checkSSH ...bool) bool {
 	}
 
 	return true
+}
+
+// Known tells you if a server exists according to the provider. This can
+// return false even if the server exists, because the credentials you used for
+// the provider are different to the ones used to create this server. If the
+// server isn't known about, the provider's resource file is NOT updated,
+// because this indicates you're using the wrong resource file for these
+// credentials.
+func (s *Server) Known() bool {
+	known, err := s.provider.ServerIsKnown(s.ID)
+	if err != nil {
+		s.logger.Warn("could not check if the server is known about", "err", err)
+	}
+	return known
 }
