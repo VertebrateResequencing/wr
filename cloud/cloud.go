@@ -221,6 +221,8 @@ type provideri interface {
 	errIsNoHardware(err error) bool
 	// achieve the aims of CheckServer()
 	checkServer(serverID string) (bool, error)
+	// achieve the aims of serverIsKnown()
+	serverIsKnown(serverID string) (bool, error)
 	// achieve the aims of DestroyServer()
 	destroyServer(serverID string) error
 	// achieve the aims of TearDown()
@@ -745,6 +747,16 @@ func (p *Provider) CheckServer(serverID string) (working bool, err error) {
 	}
 
 	return working, err
+}
+
+// ServerIsKnown asks the provider if the given server (id retrieved via Spawn()
+// or Servers()) is known about by this provider. If this returns false, it
+// doesn't necessarily mean the server doesn't exist; it could mean you supplied
+// the wrong credentials for the resources file you passed to New(). For that
+// reason, the resources file is not updated if this returns false, and
+// Servers() will continue to return a server with the given serverID.
+func (p *Provider) ServerIsKnown(serverID string) (known bool, err error) {
+	return p.impl.serverIsKnown(serverID)
 }
 
 // DestroyServer destroys a server given its id, that you would have gotten from
