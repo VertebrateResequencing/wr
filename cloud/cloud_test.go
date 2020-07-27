@@ -158,6 +158,22 @@ func TestOpenStack(t *testing.T) {
 					So(flavors[2], ShouldBeNil)
 				}
 
+				Convey("TearDown deletes all the resources that deploy made", func() {
+					err := p.TearDown()
+
+					if p.InCloud() {
+						// the deploy didn't actually create anything that
+						// teardown would delete, so it complains
+						So(err, ShouldNotBeNil)
+						So(err.Error(), ShouldContainSubstring, "nothing to tear down")
+					} else {
+						So(err, ShouldBeNil)
+					}
+
+					// *** should really use openstack API to confirm everything is
+					// really deleted...
+				})
+
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
 					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldNotBeNil)
@@ -521,14 +537,6 @@ func TestOpenStack(t *testing.T) {
 					stdout, _, err := server.RunCmd(context.Background(), "df -h .", false)
 					So(err, ShouldBeNil)
 					So(stdout, ShouldContainSubstring, fmt.Sprintf("%dG", flavor.Disk+10))
-				})
-
-				Convey("TearDown deletes all the resources that deploy made", func() {
-					err := p.TearDown()
-					So(err, ShouldBeNil)
-
-					// *** should really use openstack API to confirm everything is
-					// really deleted...
 				})
 
 				Reset(func() {
