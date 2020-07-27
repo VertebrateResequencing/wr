@@ -172,7 +172,12 @@ func TestOpenStack(t *testing.T) {
 					So(p.resources.Servers[server.ID], ShouldNotBeNil)
 					So(p.resources.Servers[server.ID].IP, ShouldEqual, server.IP)
 
-					ok, err := p.CheckServer(server.ID)
+					ok, err := p.ServerIsKnown(server.ID)
+					So(err, ShouldBeNil)
+					So(ok, ShouldBeTrue)
+					// *** negative tests of ServerIsKnown are not possible without mocks, since with the real system we need an alternate set of working credentials
+
+					ok, err = p.CheckServer(server.ID)
 					So(err, ShouldBeNil)
 					So(ok, ShouldBeTrue)
 
@@ -528,7 +533,7 @@ func TestOpenStack(t *testing.T) {
 
 				Reset(func() {
 					errd := p.TearDown()
-					if errd != nil {
+					if errd != nil && !strings.Contains(errd.Error(), "nothing to tear down") {
 						fmt.Printf("reset p.Teardown failed: %s", errd)
 					}
 				})
@@ -537,7 +542,7 @@ func TestOpenStack(t *testing.T) {
 			// *** we need all the tests for negative and failure cases
 
 			errd := p.TearDown()
-			if errd != nil {
+			if errd != nil && !strings.Contains(errd.Error(), "nothing to tear down") {
 				fmt.Printf("ending p.Teardown failed: %s", errd)
 			}
 		})
