@@ -70,6 +70,7 @@ const (
 	ErrUnknown          = "unknown error"
 	ErrClosedInt        = "queues closed due to SIGINT"
 	ErrClosedTerm       = "queues closed due to SIGTERM"
+	ErrClosedCert       = "queues closed due to certificate expiry"
 	ErrClosedStop       = "queues closed due to manual Stop()"
 	ErrQueueClosed      = "queue closed"
 	ErrNoHost           = "could not determine the non-loopback ip address of this host"
@@ -563,6 +564,26 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		return s, msg, token, err
 	}
 
+	// check certificate expiry, because everything breaks with generic errors
+	// when it expires
+	expiry, err := internal.CertExpiry(caFile)
+	if err != nil {
+		return s, msg, token, err
+	}
+	if time.Now().After(expiry) {
+		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
+	}
+	expiry2, err := internal.CertExpiry(certFile)
+	if err != nil {
+		return s, msg, token, err
+	}
+	if time.Now().After(expiry2) {
+		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: certFile}
+	}
+	if expiry2.Before(expiry) {
+		expiry = expiry2
+	}
+
 	// have mangos listen using TLS over TCP
 	sock.AddTransport(tlstcp.NewTransport())
 	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -712,6 +733,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
+	certExpired := time.After(time.Until(expiry))
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
@@ -729,6 +751,9 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				signal.Stop(sigs)
 				s.shutdown(reason, true, false)
 				return
+			case <-certExpired:
+				signal.Stop(sigs)
+				s.shutdown(ErrClosedCert, true, false)
 			case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
 				signal.Stop(sigs)
 				return
