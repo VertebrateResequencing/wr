@@ -167,6 +167,14 @@ type envStr struct {
 // while connecting, but for all subsequent interactions with it using the
 // returned Client.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
+	expiry, err := internal.CertExpiry(caFile)
+	if err != nil {
+		return nil, err
+	}
+	if time.Now().After(expiry) {
+		return nil, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
+	}
+
 	sock, err := req.NewSocket()
 	if err != nil {
 		return nil, err

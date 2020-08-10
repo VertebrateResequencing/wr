@@ -140,6 +140,33 @@ func TestJobqueueUtils(t *testing.T) {
 		So(token3, ShouldResemble, token2)
 		So(tokenMatches(token2, token3), ShouldBeTrue)
 	})
+
+	Convey("GenerateCerts creates certificate files", t, func() {
+		certtmpdir, err := ioutil.TempDir("", "wr_jobqueue_cert_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(certtmpdir)
+
+		caFile := filepath.Join(certtmpdir, "ca.pem")
+		certFile := filepath.Join(certtmpdir, "cert.pem")
+		keyFile := filepath.Join(certtmpdir, "key.pem")
+		certDomain := "localhost"
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(caFile)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(certFile)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(keyFile)
+		So(err, ShouldBeNil)
+
+		Convey("CertExpiry shows they expire in a year", func() {
+			expiry, err := internal.CertExpiry(caFile)
+			So(err, ShouldBeNil)
+			So(expiry, ShouldHappenBetween, time.Now().Add(364*24*time.Hour), time.Now().Add(366*24*time.Hour))
+		})
+	})
 }
 
 func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jqs.Requirements, time.Duration) {
