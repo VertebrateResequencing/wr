@@ -100,6 +100,7 @@ var (
 	ErrBadFlavor       = "no server flavor with that id/name exists"
 	ErrBadRegex        = "your flavor regular expression was not valid"
 	ErrBadCIDR         = "no subnet matches your supplied CIDR"
+	ErrNoTearDown      = "nothing to tear down; did you deploy with the current credentials?"
 )
 
 // sshTimeOut is how long we wait for ssh to work when an ssh request is made to

@@ -1323,5 +1323,6 @@ func (s *Server) Known() bool {
 	if err != nil {
 		s.logger.Warn("could not check if the server is known about", "err", err)
 	}
+
 	return known
 }
