@@ -1026,6 +1026,7 @@ func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
 		if err.Error() == "Resource not found" {
 			return false, nil
 		}
+
 		return false, err
 	}
 
@@ -1210,8 +1211,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 
 	rerr := merr.ErrorOrNil()
 	if rerr == nil && !didSomething {
-		return fmt.Errorf("nothing to tear down; did you deploy with the current credentials?")
+		return Error{"openstack", "tearDown", ErrNoTearDown}
 	}
+
 	return rerr
 }
 
@@ -1221,6 +1223,7 @@ func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror
 	if err != nil && !strings.Contains(err.Error(), "Resource not found") {
 		merr = multierror.Append(merr, err)
 	}
+
 	return merr
 }
 
