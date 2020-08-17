@@ -434,8 +434,17 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 
 	p.Lock()
 	defer p.Unlock()
-	if len(p.resources.Servers) > 0 {
-		p.madeHeadNode = true
+	for _, server := range p.resources.Servers {
+		if server.IsHeadNode {
+			known, errk := p.ServerIsKnown(server.ID)
+			if errk != nil {
+				return errk
+			}
+			if known {
+				p.madeHeadNode = true
+				break
+			}
+		}
 	}
 
 	// record any existing servers that we may have spawned previously, then we
