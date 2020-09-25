@@ -41,12 +41,8 @@ import (
 
 	infoblox "github.com/fanatic/go-infoblox"
 	"github.com/inconshreveable/log15"
-	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/shirou/gopsutil/mem"
 )
-
-const gb = uint64(1.07374182e9) // for byte to GB conversion
-const mb100 = uint64(104857600) // 100MB in bytes
 
 // ZeroCoreMultiplier is the multipler of actual cores we use for the maximum of
 // zero core jobs
@@ -199,20 +195,6 @@ func ProcMeminfoMBs() (int, error) {
 
 	// convert bytes to MB
 	return int((v.Total / 1024) / 1024), err
-}
-
-// DiskSize returns the size of the disk (mounted at the given directory, "."
-// for current) in GB.
-func DiskSize(dir string) int {
-	usage := du.NewDiskUsage(dir)
-	return int(usage.Size() / gb)
-}
-
-// NoDiskSpaceLeft tells you if the disk (mounted at the given directory, "."
-// for current) has no more space left (or is within 100MB of being full).
-func NoDiskSpaceLeft(dir string) bool {
-	usage := du.NewDiskUsage(dir)
-	return usage.Free() < mb100
 }
 
 // LogClose is for use to Close() an object during a defer when you don't care
