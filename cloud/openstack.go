@@ -52,6 +52,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
 	"github.com/hashicorp/go-multierror"
 	"github.com/inconshreveable/log15"
 	"github.com/jpillora/backoff"
@@ -481,7 +482,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 		// work out our network uuid, needed for spawning later
 	NETWORKS:
 		for networkName := range p.ownServer.Addresses {
-			networkUUID, erri := networks.IDFromName(p.networkClient, networkName)
+			networkUUID, erri := networksutil.IDFromName(p.networkClient, networkName)
 			if erri != nil {
 				return erri
 			}
@@ -512,7 +513,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 
 	// get/create network
 	var network *networks.Network
-	networkID, err := networks.IDFromName(p.networkClient, resources.ResourceName)
+	networkID, err := networksutil.IDFromName(p.networkClient, resources.ResourceName)
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrResourceNotFound); notfound {
 			// create a network for ourselves
@@ -577,7 +578,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 	if routerID == "" {
 		// get the external network id
 		if p.externalNetworkID == "" {
-			p.externalNetworkID, err = networks.IDFromName(p.networkClient, p.poolName)
+			p.externalNetworkID, err = networksutil.IDFromName(p.networkClient, p.poolName)
 			if err != nil {
 				return err
 			}
