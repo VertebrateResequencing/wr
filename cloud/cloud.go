@@ -75,6 +75,7 @@ than 1 process at a time.
 package cloud
 
 import (
+	"context"
 	"encoding/gob"
 	"os"
 	"regexp"
@@ -87,6 +88,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
+	"github.com/wtsi-ssg/wr/fs/local"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -442,6 +444,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 			}
 			if known {
 				p.madeHeadNode = true
+
 				break
 			}
 		}
@@ -823,7 +826,7 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 		return nil, err
 	}
 
-	diskSize := internal.DiskSize(".")
+	diskSize := local.NewVolume(".").Size(context.Background())
 
 	ip, err := internal.CurrentIP(cidr[0])
 	if err != nil {
