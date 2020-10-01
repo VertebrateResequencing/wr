@@ -102,6 +102,7 @@ var (
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
+	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
 )
 
 // BsubID is used to give added jobs a unique (atomically incremented) id when
@@ -2520,7 +2521,7 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 
 	// wait for the runners to actually die
 	if wait {
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(serverShutdownRunnerTickerTime)
 		for range ticker.C {
 			if !s.HasRunners() {
 				ticker.Stop()
