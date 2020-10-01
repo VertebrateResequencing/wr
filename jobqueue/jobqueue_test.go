@@ -50,6 +50,10 @@ import (
 
 const serverRC = `echo %s %s %s %s %d %d`
 
+// httpServerShutdownTime is the time that go 1.15 http.Server{}.Shutdown()
+// takes to return when there were listeners.
+const httpServerShutdownTime = 505 * time.Millisecond
+
 var runnermode bool
 var runnerfail bool
 var runnerdebug bool
@@ -87,6 +91,10 @@ func init() {
 	flag.BoolVar(&serverKeepDB, "keepdb", false, "have the server keep its database when it starts")
 	flag.BoolVar(&serverEnableRunners, "enablerunners", false, "have the server spawn runners for jobs")
 	ServerLogClientErrors = false
+}
+
+func serverShutDownTime() time.Duration {
+	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -411,15 +419,22 @@ func TestJobqueueSignal(t *testing.T) {
 			fmt.Printf("failed to disconnect: %s\n", errd)
 		}
 
+		waited := make(chan bool)
+		go func() {
+			errw := serverCmd.Wait()
+			if errw != nil {
+				fmt.Printf("failed to reap server pid: %s\n", errw)
+			}
+			waited <- true
+		}()
+
+		<-time.After(serverShutDownTime())
 		errk := syscall.Kill(serverPid, syscall.SIGTERM)
 		if errk != nil {
 			fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
 		}
 
-		errw := serverCmd.Wait()
-		if errw != nil {
-			fmt.Printf("failed to reap server pid: %s\n", errw)
-		}
+		<-waited
 		alreadyKilled[serverPid] = true
 	}
 
@@ -1217,8 +1232,7 @@ func TestJobqueueBasics(t *testing.T) {
 				if errk != nil {
 					fmt.Printf("failed to send SIGTERM: %s\n", errk)
 				}
-				<-time.After(ClientTouchInterval)
-				<-time.After(ClientTouchInterval)
+				<-time.After(serverShutDownTime())
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
@@ -1237,8 +1251,7 @@ func TestJobqueueBasics(t *testing.T) {
 				if errk != nil {
 					fmt.Printf("failed to send SIGINT: %s\n", errk)
 				}
-				<-time.After(ClientTouchInterval)
-				<-time.After(ClientTouchInterval)
+				<-time.After(serverShutDownTime())
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok = err.(Error)
