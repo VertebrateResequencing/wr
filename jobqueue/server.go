@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -103,6 +104,11 @@ var (
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
 	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
+
+	// httpServerShutdownTime is the time we'll wait before forcing
+	// http.Server{}.Shutdown() to complete, otherwise it takes 500ms if there
+	// were listeners.
+	httpServerShutdownTime = 1 * time.Millisecond
 )
 
 // BsubID is used to give added jobs a unique (atomically incremented) id when
@@ -2547,13 +2553,17 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 	}
 	s.wsmutex.Unlock()
 
-	// graceful shutdown of http server
+	// not-fully graceful shutdown of http server, since it takes too long to
+	// shutdown normally due to a fixed 500ms poll
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func() {
+		<-time.After(httpServerShutdownTime)
+		cancel()
+	}()
 	err := s.httpServer.Shutdown(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		s.Warn("server shutdown of web interface failed", "err", err)
 	}
-	cancel()
 
 	// close our command line interface
 	close(s.stopClientHandling)
