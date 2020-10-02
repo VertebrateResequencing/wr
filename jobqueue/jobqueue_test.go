@@ -90,7 +90,7 @@ func init() {
 }
 
 func serverShutDownTime() time.Duration {
-	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime
+	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 5*time.Millisecond
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -424,7 +424,7 @@ func TestJobqueueSignal(t *testing.T) {
 			waited <- true
 		}()
 
-		<-time.After(serverShutDownTime())
+		<-time.After(500 * time.Millisecond)
 		errk := syscall.Kill(serverPid, syscall.SIGTERM)
 		if errk != nil {
 			fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
@@ -754,7 +754,6 @@ func TestJobqueueSignal(t *testing.T) {
 			serverPid = serverCmd.Process.Pid
 			So(errf, ShouldBeNil)
 			So(jq, ShouldNotBeNil)
-			newServerStartedAt := time.Now()
 
 			// add a new job which should wait until job 1 completes, since it
 			// uses all CPUs
@@ -786,7 +785,7 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateComplete)
-			So(job.EndTime, ShouldHappenAfter, newServerStartedAt)
+			So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime.Add(10*time.Second))
 
 			job2, err := jq2.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
 			So(err, ShouldBeNil)
