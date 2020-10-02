@@ -50,10 +50,6 @@ import (
 
 const serverRC = `echo %s %s %s %s %d %d`
 
-// httpServerShutdownTime is the time that go 1.15 http.Server{}.Shutdown()
-// takes to return when there were listeners.
-const httpServerShutdownTime = 505 * time.Millisecond
-
 var runnermode bool
 var runnerfail bool
 var runnerdebug bool
