@@ -785,7 +785,7 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateComplete)
-			So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime.Add(10*time.Second))
+			So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime.Add(9900*time.Millisecond))
 
 			job2, err := jq2.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
 			So(err, ShouldBeNil)
