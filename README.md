@@ -1,6 +1,7 @@
 wr - workflow runner
 ====================
 
+[![Gitter](https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667)](https://gitter.im/wtsi-wr??utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=body_badge)
 [![GoDoc](https://godoc.org/github.com/VertebrateResequencing/wr?status.svg)](https://godoc.org/github.com/VertebrateResequencing/wr)
 [![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
 develop branch:
@@ -32,30 +33,28 @@ performance](https://github.com/VertebrateResequencing/muxfys).
 ***Current Status***
 
 wr is still being actively developed, with some significant features
-unimplemented, and some likelihood of encountering bugs.
+unimplemented, but is production ready.
 
-That said, it is being used in production by multiple groups at the Sanger
-Institute in a number of different ways:
+It is being used in production by multiple groups at the Sanger Institute in a
+number of different ways:
 * Custom workflow script modified to call `wr add` with dependency infomation.
 * Nextflow front end with a wr backend (see the [wiki](https://github.com/VertebrateResequencing/wr/wiki/Nextflow))
 * Cromwell front end with a wr backend (see the [wiki](https://github.com/VertebrateResequencing/wr/wiki/Cromwell))
 
 wr has processed hundreds of TB of data and run millions of commands.
 
-So if you want to be adventurous and provide feedback...
-
 Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.13 of go is required):
+Alternatively, build it yourself (at least v1.15 of go is required):
 
 1. Install go on your machine according to:
 [golang.org/doc/install](https://golang.org/doc/install)
 An example way of setting up a personal Go installation in your home directory
 would be:
 
-        export GOV=1.14
+        export GOV=1.15.2
         wget https://dl.google.com/go/go$GOV.linux-amd64.tar.gz
         tar -xvzf go$GOV.linux-amd64.tar.gz && rm go$GOV.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin
