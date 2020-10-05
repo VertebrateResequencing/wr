@@ -52,6 +52,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
 	"github.com/hashicorp/go-multierror"
 	"github.com/inconshreveable/log15"
 	"github.com/jpillora/backoff"
@@ -481,7 +482,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 		// work out our network uuid, needed for spawning later
 	NETWORKS:
 		for networkName := range p.ownServer.Addresses {
-			networkUUID, erri := networks.IDFromName(p.networkClient, networkName)
+			networkUUID, erri := networksutil.IDFromName(p.networkClient, networkName)
 			if erri != nil {
 				return erri
 			}
@@ -512,7 +513,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 
 	// get/create network
 	var network *networks.Network
-	networkID, err := networks.IDFromName(p.networkClient, resources.ResourceName)
+	networkID, err := networksutil.IDFromName(p.networkClient, resources.ResourceName)
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrResourceNotFound); notfound {
 			// create a network for ourselves
@@ -577,7 +578,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 	if routerID == "" {
 		// get the external network id
 		if p.externalNetworkID == "" {
-			p.externalNetworkID, err = networks.IDFromName(p.networkClient, p.poolName)
+			p.externalNetworkID, err = networksutil.IDFromName(p.networkClient, p.poolName)
 			if err != nil {
 				return err
 			}
@@ -1006,7 +1007,7 @@ func (p *openstackp) getServerIP(serverID string) (string, error) {
 	return "", nil
 }
 
-// checkServer achieves the aims of CheckServer()
+// checkServer achieves the aims of CheckServer().
 func (p *openstackp) checkServer(serverID string) (bool, error) {
 	server, err := servers.Get(p.computeClient, serverID).Extract()
 	if err != nil {
@@ -1019,7 +1020,21 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 	return server.Status == "ACTIVE", nil
 }
 
-// destroyServer achieves the aims of DestroyServer()
+// checkServer achieves the aims of ServerIsKnown().
+func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
+	server, err := servers.Get(p.computeClient, serverID).Extract()
+	if err != nil {
+		if err.Error() == "Resource not found" {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return server != nil, nil
+}
+
+// destroyServer achieves the aims of DestroyServer().
 func (p *openstackp) destroyServer(serverID string) error {
 	err := servers.Delete(p.computeClient, serverID).ExtractErr()
 	if err != nil {
@@ -1101,7 +1116,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 	})
 	merr = p.combineError(merr, err)
 
+	var didSomething bool
 	if len(toDestroy) > 0 {
+		didSomething = true
 		wg := waitgroup.New()
 		wgk := wg.Add(len(toDestroy))
 		for _, sid := range toDestroy {
@@ -1148,6 +1165,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := routers.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete router", "time", time.Since(t), "id", id, "err", err)
+			if err == nil {
+				didSomething = true
+			}
 			merr = p.combineError(merr, err)
 		}
 
@@ -1156,6 +1176,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := networks.Delete(p.networkClient, id).ExtractErr()
 			p.Debug("delete network (auto-deletes subnet)", "time", time.Since(t), "id", id, "err", err)
+			if err == nil {
+				didSomething = true
+			}
 			merr = p.combineError(merr, err)
 		}
 
@@ -1164,6 +1187,9 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := secgroups.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete security group", "time", time.Since(t), "id", id, "err", err)
+			if err == nil {
+				didSomething = true
+			}
 			merr = p.combineError(merr, err)
 		}
 	}
@@ -1177,12 +1203,19 @@ func (p *openstackp) tearDown(resources *Resources) error {
 			t := time.Now()
 			err := keypairs.Delete(p.computeClient, id).ExtractErr()
 			p.Debug("delete keypair", "time", time.Since(t), "id", id, "err", err)
+			// keypairs are not credential-specific enough, so we don't consider
+			// deleting one as didSomething
 			merr = p.combineError(merr, err)
 			resources.PrivateKey = ""
 		}
 	}
 
-	return merr.ErrorOrNil()
+	rerr := merr.ErrorOrNil()
+	if rerr == nil && !didSomething {
+		return Error{"openstack", "tearDown", ErrNoTearDown}
+	}
+
+	return rerr
 }
 
 // combineError Append()s the given err on merr, but ignores err if it is
@@ -1191,6 +1224,7 @@ func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror
 	if err != nil && !strings.Contains(err.Error(), "Resource not found") {
 		merr = multierror.Append(merr, err)
 	}
+
 	return merr
 }
 

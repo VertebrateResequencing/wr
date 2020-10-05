@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -70,6 +71,7 @@ const (
 	ErrUnknown          = "unknown error"
 	ErrClosedInt        = "queues closed due to SIGINT"
 	ErrClosedTerm       = "queues closed due to SIGTERM"
+	ErrClosedCert       = "queues closed due to certificate expiry"
 	ErrClosedStop       = "queues closed due to manual Stop()"
 	ErrQueueClosed      = "queue closed"
 	ErrNoHost           = "could not determine the non-loopback ip address of this host"
@@ -101,6 +103,12 @@ var (
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
+	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
+
+	// httpServerShutdownTime is the time we'll wait before forcing
+	// http.Server{}.Shutdown() to complete, otherwise it takes 500ms if there
+	// were listeners.
+	httpServerShutdownTime = 1 * time.Millisecond
 )
 
 // BsubID is used to give added jobs a unique (atomically incremented) id when
@@ -563,6 +571,26 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		return s, msg, token, err
 	}
 
+	// check certificate expiry, because everything breaks with generic errors
+	// when it expires
+	expiry, err := internal.CertExpiry(caFile)
+	if err != nil {
+		return s, msg, token, err
+	}
+	if time.Now().After(expiry) {
+		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
+	}
+	expiry2, err := internal.CertExpiry(certFile)
+	if err != nil {
+		return s, msg, token, err
+	}
+	if time.Now().After(expiry2) {
+		return s, msg, token, internal.CertError{Type: internal.ErrExpiredCert, Path: certFile}
+	}
+	if expiry2.Before(expiry) {
+		expiry = expiry2
+	}
+
 	// have mangos listen using TLS over TCP
 	sock.AddTransport(tlstcp.NewTransport())
 	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -712,6 +740,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
+	certExpired := time.After(time.Until(expiry))
 	go func() {
 		// log panics and die
 		defer internal.LogPanic(s.Logger, "jobqueue serving", true)
@@ -729,6 +758,9 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				signal.Stop(sigs)
 				s.shutdown(reason, true, false)
 				return
+			case <-certExpired:
+				signal.Stop(sigs)
+				s.shutdown(ErrClosedCert, true, false)
 			case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
 				signal.Stop(sigs)
 				return
@@ -2495,7 +2527,7 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 
 	// wait for the runners to actually die
 	if wait {
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(serverShutdownRunnerTickerTime)
 		for range ticker.C {
 			if !s.HasRunners() {
 				ticker.Stop()
@@ -2521,13 +2553,17 @@ func (s *Server) shutdown(reason string, wait bool, stopSigHandling bool) {
 	}
 	s.wsmutex.Unlock()
 
-	// graceful shutdown of http server
+	// not-fully graceful shutdown of http server, since it takes too long to
+	// shutdown normally due to a fixed 500ms poll
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func() {
+		<-time.After(httpServerShutdownTime)
+		cancel()
+	}()
 	err := s.httpServer.Shutdown(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		s.Warn("server shutdown of web interface failed", "err", err)
 	}
-	cancel()
 
 	// close our command line interface
 	close(s.stopClientHandling)

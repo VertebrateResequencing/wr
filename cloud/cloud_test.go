@@ -158,6 +158,22 @@ func TestOpenStack(t *testing.T) {
 					So(flavors[2], ShouldBeNil)
 				}
 
+				Convey("TearDown deletes all the resources that deploy made", func() {
+					err := p.TearDown()
+
+					if p.InCloud() {
+						// the deploy didn't actually create anything that
+						// teardown would delete, so it complains
+						So(err, ShouldNotBeNil)
+						So(err.Error(), ShouldContainSubstring, "nothing to tear down")
+					} else {
+						So(err, ShouldBeNil)
+					}
+
+					// *** should really use openstack API to confirm everything is
+					// really deleted...
+				})
+
 				Convey("Once deployed you can Spawn a server with an external ip", func() {
 					server, err := p.Spawn("osPrefix", osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldNotBeNil)
@@ -172,7 +188,12 @@ func TestOpenStack(t *testing.T) {
 					So(p.resources.Servers[server.ID], ShouldNotBeNil)
 					So(p.resources.Servers[server.ID].IP, ShouldEqual, server.IP)
 
-					ok, err := p.CheckServer(server.ID)
+					ok, err := p.ServerIsKnown(server.ID)
+					So(err, ShouldBeNil)
+					So(ok, ShouldBeTrue)
+					// *** negative tests of ServerIsKnown are not possible without mocks, since with the real system we need an alternate set of working credentials
+
+					ok, err = p.CheckServer(server.ID)
 					So(err, ShouldBeNil)
 					So(ok, ShouldBeTrue)
 
@@ -518,17 +539,9 @@ func TestOpenStack(t *testing.T) {
 					So(stdout, ShouldContainSubstring, fmt.Sprintf("%dG", flavor.Disk+10))
 				})
 
-				Convey("TearDown deletes all the resources that deploy made", func() {
-					err := p.TearDown()
-					So(err, ShouldBeNil)
-
-					// *** should really use openstack API to confirm everything is
-					// really deleted...
-				})
-
 				Reset(func() {
 					errd := p.TearDown()
-					if errd != nil {
+					if errd != nil && !strings.Contains(errd.Error(), "nothing to tear down") {
 						fmt.Printf("reset p.Teardown failed: %s", errd)
 					}
 				})
@@ -537,7 +550,7 @@ func TestOpenStack(t *testing.T) {
 			// *** we need all the tests for negative and failure cases
 
 			errd := p.TearDown()
-			if errd != nil {
+			if errd != nil && !strings.Contains(errd.Error(), "nothing to tear down") {
 				fmt.Printf("ending p.Teardown failed: %s", errd)
 			}
 		})

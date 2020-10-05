@@ -5,6 +5,15 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.23.1] - 2020-10-05
+### Fixed
+- If a cloud deploy fails, you are asked to hit return after investigating,
+  before it tears down. An extraneous warning message is no longer displayed
+  when you do this.
+- When checking for reminaing disk space, if the filesystem returns 0, it is
+  now re-checked a few times before killing the job.
+
+
 ## [0.23.0] - 2020-07-14
 ### Changed
 - When using the OpenStack scheduler, `wr manager start --max_cores 0` (or

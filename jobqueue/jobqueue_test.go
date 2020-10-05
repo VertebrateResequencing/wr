@@ -89,6 +89,10 @@ func init() {
 	ServerLogClientErrors = false
 }
 
+func serverShutDownTime() time.Duration {
+	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 5*time.Millisecond
+}
+
 func TestJobqueueUtils(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -139,6 +143,33 @@ func TestJobqueueUtils(t *testing.T) {
 		So(len(token3), ShouldEqual, tokenLength)
 		So(token3, ShouldResemble, token2)
 		So(tokenMatches(token2, token3), ShouldBeTrue)
+	})
+
+	Convey("GenerateCerts creates certificate files", t, func() {
+		certtmpdir, err := ioutil.TempDir("", "wr_jobqueue_cert_dir_")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(certtmpdir)
+
+		caFile := filepath.Join(certtmpdir, "ca.pem")
+		certFile := filepath.Join(certtmpdir, "cert.pem")
+		keyFile := filepath.Join(certtmpdir, "key.pem")
+		certDomain := "localhost"
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(caFile)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(certFile)
+		So(err, ShouldBeNil)
+		_, err = os.Stat(keyFile)
+		So(err, ShouldBeNil)
+
+		Convey("CertExpiry shows they expire in a year", func() {
+			expiry, err := internal.CertExpiry(caFile)
+			So(err, ShouldBeNil)
+			So(expiry, ShouldHappenBetween, time.Now().Add(364*24*time.Hour), time.Now().Add(366*24*time.Hour))
+		})
 	})
 }
 
@@ -384,15 +415,22 @@ func TestJobqueueSignal(t *testing.T) {
 			fmt.Printf("failed to disconnect: %s\n", errd)
 		}
 
+		waited := make(chan bool)
+		go func() {
+			errw := serverCmd.Wait()
+			if errw != nil {
+				fmt.Printf("failed to reap server pid: %s\n", errw)
+			}
+			waited <- true
+		}()
+
+		<-time.After(500 * time.Millisecond)
 		errk := syscall.Kill(serverPid, syscall.SIGTERM)
 		if errk != nil {
 			fmt.Printf("failed to send SIGTERM to server: %s\n", errk)
 		}
 
-		errw := serverCmd.Wait()
-		if errw != nil {
-			fmt.Printf("failed to reap server pid: %s\n", errw)
-		}
+		<-waited
 		alreadyKilled[serverPid] = true
 	}
 
@@ -716,7 +754,6 @@ func TestJobqueueSignal(t *testing.T) {
 			serverPid = serverCmd.Process.Pid
 			So(errf, ShouldBeNil)
 			So(jq, ShouldNotBeNil)
-			newServerStartedAt := time.Now()
 
 			// add a new job which should wait until job 1 completes, since it
 			// uses all CPUs
@@ -748,7 +785,7 @@ func TestJobqueueSignal(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.Cmd, ShouldEqual, cmd)
 			So(job.State, ShouldEqual, JobStateComplete)
-			So(job.EndTime, ShouldHappenAfter, newServerStartedAt)
+			So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime.Add(9900*time.Millisecond))
 
 			job2, err := jq2.GetByEssence(&JobEssence{Cmd: cmd2}, false, false)
 			So(err, ShouldBeNil)
@@ -1190,8 +1227,7 @@ func TestJobqueueBasics(t *testing.T) {
 				if errk != nil {
 					fmt.Printf("failed to send SIGTERM: %s\n", errk)
 				}
-				<-time.After(ClientTouchInterval)
-				<-time.After(ClientTouchInterval)
+				<-time.After(serverShutDownTime())
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
@@ -1210,8 +1246,7 @@ func TestJobqueueBasics(t *testing.T) {
 				if errk != nil {
 					fmt.Printf("failed to send SIGINT: %s\n", errk)
 				}
-				<-time.After(ClientTouchInterval)
-				<-time.After(ClientTouchInterval)
+				<-time.After(serverShutDownTime())
 				_, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 				So(err, ShouldNotBeNil)
 				jqerr, ok = err.(Error)

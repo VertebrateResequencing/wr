@@ -1447,7 +1447,7 @@ func (s *opst) cleanup() {
 
 	// teardown any cloud resources created
 	err = s.provider.TearDown()
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "nothing to tear down") {
 		s.Warn("cleanup teardown failed", "err", err)
 	}
 }

@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -43,6 +44,7 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
+	"github.com/wtsi-ssg/wr/fs/local"
 	"nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/req"
 	"nanomsg.org/go-mangos/transport/tlstcp"
@@ -167,6 +169,14 @@ type envStr struct {
 // while connecting, but for all subsequent interactions with it using the
 // returned Client.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
+	expiry, err := internal.CertExpiry(caFile)
+	if err != nil {
+		return nil, err
+	}
+	if time.Now().After(expiry) {
+		return nil, internal.CertError{Type: internal.ErrExpiredCert, Path: caFile}
+	}
+
 	sock, err := req.NewSocket()
 	if err != nil {
 		return nil, err
@@ -987,6 +997,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 		}
 		wkbsMutex.Unlock()
 
+		volume := local.NewVolume(job.Cwd)
+		volumeCtx := context.Background()
+
 	CHECKING:
 		for {
 			select {
@@ -1005,7 +1018,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 			case <-resourceTicker.C:
 				// always see if we've run out of disk space on the machine, in
 				// which case abort
-				if internal.NoDiskSpaceLeft(job.Cwd) {
+				if volume.NoSpaceLeft(volumeCtx) {
 					killErr = killCmd()
 					stateMutex.Lock()
 					ranoutDisk = true

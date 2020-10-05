@@ -75,6 +75,7 @@ than 1 process at a time.
 package cloud
 
 import (
+	"context"
 	"encoding/gob"
 	"os"
 	"regexp"
@@ -87,6 +88,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
+	"github.com/wtsi-ssg/wr/fs/local"
 )
 
 // Err* constants are found in the returned Errors under err.Err, so you can
@@ -100,6 +102,7 @@ var (
 	ErrBadFlavor       = "no server flavor with that id/name exists"
 	ErrBadRegex        = "your flavor regular expression was not valid"
 	ErrBadCIDR         = "no subnet matches your supplied CIDR"
+	ErrNoTearDown      = "nothing to tear down; did you deploy with the current credentials?"
 )
 
 // sshTimeOut is how long we wait for ssh to work when an ssh request is made to
@@ -221,6 +224,8 @@ type provideri interface {
 	errIsNoHardware(err error) bool
 	// achieve the aims of CheckServer()
 	checkServer(serverID string) (bool, error)
+	// achieve the aims of serverIsKnown()
+	serverIsKnown(serverID string) (bool, error)
 	// achieve the aims of DestroyServer()
 	destroyServer(serverID string) error
 	// achieve the aims of TearDown()
@@ -431,8 +436,18 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 
 	p.Lock()
 	defer p.Unlock()
-	if len(p.resources.Servers) > 0 {
-		p.madeHeadNode = true
+	for _, server := range p.resources.Servers {
+		if server.IsHeadNode {
+			known, errk := p.ServerIsKnown(server.ID)
+			if errk != nil {
+				return errk
+			}
+			if known {
+				p.madeHeadNode = true
+
+				break
+			}
+		}
 	}
 
 	// record any existing servers that we may have spawned previously, then we
@@ -747,6 +762,16 @@ func (p *Provider) CheckServer(serverID string) (working bool, err error) {
 	return working, err
 }
 
+// ServerIsKnown asks the provider if the given server (id retrieved via Spawn()
+// or Servers()) is known about by this provider. If this returns false, it
+// doesn't necessarily mean the server doesn't exist; it could mean you supplied
+// the wrong credentials for the resources file you passed to New(). For that
+// reason, the resources file is not updated if this returns false, and
+// Servers() will continue to return a server with the given serverID.
+func (p *Provider) ServerIsKnown(serverID string) (known bool, err error) {
+	return p.impl.serverIsKnown(serverID)
+}
+
 // DestroyServer destroys a server given its id, that you would have gotten from
 // the ID property of Spawn()'s return value.
 func (p *Provider) DestroyServer(serverID string) error {
@@ -801,7 +826,7 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 		return nil, err
 	}
 
-	diskSize := internal.DiskSize(".")
+	diskSize := local.NewVolume(".").Size(context.Background())
 
 	ip, err := internal.CurrentIP(cidr[0])
 	if err != nil {

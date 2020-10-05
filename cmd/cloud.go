@@ -468,6 +468,11 @@ and accessible.`,
 		if err != nil {
 			die("failed to connect to %s: %s", providerName, err)
 		}
+		headNode := provider.HeadNode()
+		var headNodeKnown bool
+		if headNode != nil {
+			headNodeKnown = headNode.Known()
+		}
 
 		// now check if the ssh forwarding is up
 		fmPidFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".fm.pid")
@@ -480,6 +485,10 @@ and accessible.`,
 		if fmRunning {
 			jq := connect(1*time.Second, true)
 			if jq != nil {
+				if !headNodeKnown {
+					die("was able to connect to the manager, but the deployed node is reported as non-existent; are you using the same credentials you deployed this manager with?")
+				}
+
 				var syncMsg string
 				if internal.IsRemote(config.ManagerDbBkFile) {
 					if _, errf := os.Stat(config.ManagerDbFile); !os.IsNotExist(errf) {
@@ -544,8 +553,7 @@ and accessible.`,
 		// copy over any manager logs that got created locally (ignore errors,
 		// and overwrite any existing file) *** currently missing the final
 		// shutdown message doing things this way, but ok?...
-		headNode := provider.HeadNode()
-		if headNode != nil && headNode.Alive() {
+		if headNodeKnown && headNode.Alive() {
 			cloudLogFilePath := config.ManagerLogFile + "." + providerName
 			errf := headNode.DownloadFile(context.Background(), filepath.Join("./.wr_"+config.Deployment, "log"), cloudLogFilePath)
 
@@ -1005,7 +1013,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			warn("Once you're done debugging, hit return to teardown")
 			var response string
 			_, errs := fmt.Scanln(&response)
-			if errs != nil {
+			if errs != nil && !strings.Contains(errs.Error(), "unexpected newline") {
 				warn("failed to read your response: %s", errs)
 			}
 			teardown(provider)

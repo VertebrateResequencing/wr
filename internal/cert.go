@@ -26,11 +26,13 @@ package internal
 import (
 	crand "crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -38,6 +40,29 @@ import (
 )
 
 const validFor = 365 * 24 * time.Hour
+
+// Err* constants are found in our returned CertError under err.Type, so you can
+// cast and check if it's a certain type of error.
+const (
+	ErrParseCert   = "could not be parsed"
+	ErrExpiredCert = "is expired"
+)
+
+// CertError records a certificate-related error.
+type CertError struct {
+	Type string // ErrParseCert or ErrExpiredCert
+	Path string // path to the certificate file
+	Err  error  // In the case of ErrParseCert, the parsing error
+}
+
+func (e CertError) Error() string {
+	msg := e.Path + " " + e.Type
+	if e.Err != nil {
+		msg += " [" + e.Err.Error() + "]"
+	}
+
+	return msg
+}
 
 // CheckCerts checks if the given cert and key file are readable. If one or
 // both of them are not, returns an error.
@@ -48,6 +73,40 @@ func CheckCerts(serverPemFile string, serverKeyFile string) error {
 		return err
 	}
 	return nil
+}
+
+// CertExpiry returns the time that the certificate given by the path to a pem
+// file will expire.
+func CertExpiry(certFile string) (time.Time, error) {
+	certPEMBlock, err := ioutil.ReadFile(certFile)
+	if err != nil {
+		return time.Now(), err
+	}
+
+	var cert tls.Certificate
+	for {
+		var certDERBlock *pem.Block
+		certDERBlock, certPEMBlock = pem.Decode(certPEMBlock)
+		if certDERBlock == nil {
+			break
+		}
+		if certDERBlock.Type == "CERTIFICATE" {
+			cert.Certificate = append(cert.Certificate, certDERBlock.Bytes)
+		}
+	}
+
+	if len(cert.Certificate) == 0 {
+		return time.Now(), CertError{Type: ErrParseCert, Path: certFile}
+	}
+
+	// We don't need to parse the public key for TLS, but we so do anyway
+	// to check that it looks sane and matches the private key.
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return time.Now(), CertError{Type: ErrParseCert, Path: certFile, Err: err}
+	}
+
+	return x509Cert.NotAfter, nil
 }
 
 // GenerateCerts creates a CA certificate which is used to sign a created server
