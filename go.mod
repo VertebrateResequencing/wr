@@ -59,7 +59,7 @@ require (
 	github.com/sevlyar/go-daemon v0.1.5
 	github.com/shirou/gopsutil v2.20.8+incompatible
 	github.com/smartystreets/goconvey v1.6.4
-	github.com/spf13/cobra v1.0.0
+	github.com/spf13/cobra v1.1.1
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/ugorji/go/codec v1.1.8
 	github.com/wtsi-ssg/wr v0.1.1
