@@ -135,6 +135,7 @@ type openstackp struct {
 	hasDefaultGroup bool
 	spawnFailed     bool
 	networks        []servers.Network
+	createdPorts    map[string][]string
 }
 
 // requiredEnv returns envs that are definitely required.
@@ -231,6 +232,8 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 		Factor: 1.5,
 		Jitter: true,
 	}
+
+	p.createdPorts = make(map[string][]string)
 
 	return err
 }
@@ -998,6 +1001,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 			portCreateOtps := ports.CreateOpts{
 				AdminStateUp: gophercloud.Enabled,
 				NetworkID:    network.UUID,
+				Name:         fmt.Sprintf("%s-%s-%d", resources.ResourceName, serverID, i),
 			}
 
 			port, errC := ports.Create(p.networkClient, portCreateOtps).Extract()
@@ -1006,6 +1010,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 				continue
 			}
+			p.createdPorts[serverID] = append(p.createdPorts[serverID], port.ID)
 
 			attachOpts := attachinterfaces.CreateOpts{
 				PortID: port.ID,
@@ -1016,7 +1021,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 
 				continue
 			} else {
-				p.Debug("attached port for extra network", "server", serverID, "network", network.UUID)
+				p.Debug("attached port for extra network", "server", serverID, "network", network.UUID, "port", port.ID)
 			}
 		}
 	}
@@ -1135,6 +1140,18 @@ WAIT:
 	if err.Error() == "Resource not found" {
 		err = nil
 	}
+
+	// and delete any ports we made for this server
+	if createdPorts, created := p.createdPorts[serverID]; created {
+		for _, uuid := range createdPorts {
+			errP := ports.Delete(p.networkClient, uuid).ExtractErr()
+			if errP != nil {
+				p.Warn("failed to delete a port", "id", uuid, "server", serverID)
+			}
+		}
+		delete(p.createdPorts, serverID)
+	}
+
 	return err
 }
 
