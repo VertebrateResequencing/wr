@@ -103,15 +103,23 @@ var managerStartCmd = &cobra.Command{
 If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
+To use the openstack scheduler, see 'wr cloud deploy -h' for the details of
+which environment variables you need to use. That help also explains some of the
+--cloud* options in further detail.
+
 If using the openstack scheduler, note that you must be running on an OpenStack
 server already. Be sure to set --local_username to your username outside of the
 cloud, so that resources created will not conflict with anyone else in your
-tenant (project) also running wr.
-Instead you can use 'wr cloud deploy -p openstack' to create an OpenStack server
-on which wr manager will be started in OpenStack mode for you. See 'wr cloud
-deploy -h' for the details of which environment variables you need to use the
-OpenStack scheduler. That help also explains some of the --cloud* options in
-further detail.
+tenant (project) also running wr. When wr creates worker instances, they will
+automatically use the same networks as the manager's server. The first network
+attached to workers will be the one that matches the --cloud_cidr, and the
+default (if any) and a custom security group will be applied. If there are any
+other networks, they will also be attached to the worker instances, but with no
+security groups.
+
+Instead of creating your own openstack network and instance to start the
+manager on, you can use 'wr cloud deploy -p openstack' to create an OpenStack
+server on which wr manager will be started in OpenStack mode for you. 
 
 Similarly, If using the Kubernetes scheduler you must already be running in a
 pod. Be sure to pass a namespace for wr to use that will not have another wr
