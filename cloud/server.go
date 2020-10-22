@@ -196,6 +196,9 @@ SENTINEL:
 		case <-limit:
 			ticker.Stop()
 			return errors.New("cloud server never became ready to use")
+		case <-ctx.Done():
+			ticker.Stop()
+			return errors.New("cloud server waiting for ready was cancelled")
 		}
 	}
 
