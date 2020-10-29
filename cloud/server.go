@@ -43,7 +43,7 @@ import (
 )
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
-const sshShortTimeOut = 5 * time.Second
+const sshShortTimeOut = 15 * time.Second
 
 // maxSSHSessions is the maximum number of sessions we will try and multiplex on
 // each ssh client we make for a server. It doesn't matter if this is lower than
@@ -196,6 +196,9 @@ SENTINEL:
 		case <-limit:
 			ticker.Stop()
 			return errors.New("cloud server never became ready to use")
+		case <-ctx.Done():
+			ticker.Stop()
+			return errors.New("cloud server waiting for ready was cancelled")
 		}
 	}
 

@@ -588,7 +588,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			Convey("You can Schedule() a new job and have it run while the first is still running", func() {
-				<-time.After(3 * time.Second) // *** if the following test fails, it probably just because LSF didn't get any previous jobs running yet; not sure what to do about that
+				<-time.After(6 * time.Second) // *** if the following test fails, it probably just because LSF didn't get any previous jobs running yet; not sure what to do about that
 				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetweenOrEqual, 1, count)
 				So(s.Busy(), ShouldBeTrue)
@@ -618,7 +618,7 @@ func TestLSF(t *testing.T) {
 			So(s.Busy(), ShouldBeTrue)
 
 			Convey("It runs some of them and you can Schedule() again to drop the count", func() {
-				So(waitToFinish(s, 3, 1000), ShouldBeFalse)
+				So(waitToFinish(s, 6, 1000), ShouldBeFalse)
 				numfiles := testDirForFiles(tmpdir, 1)
 				So(numfiles, ShouldBeBetween, 1, count-(maxCPU*2)-2)
 

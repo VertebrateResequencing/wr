@@ -5072,7 +5072,7 @@ func TestJobqueueRunners(t *testing.T) {
 				done = make(chan bool, 1)
 				twoHundredCount := 0
 				go func() {
-					limit := time.After(180 * time.Second)
+					limit := time.After(360 * time.Second)
 					ticker := time.NewTicker(50 * time.Millisecond)
 					for {
 						select {
@@ -6281,7 +6281,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			<-time.After(4 * time.Second)
+			<-time.After(8 * time.Second)
 
 			info, err := os.Stat(config.ManagerDbFile)
 			So(err, ShouldBeNil)

@@ -311,7 +311,7 @@ func (s *Scheduler) Schedule(cmd string, req *Requirements, priority uint8, coun
 				defer internal.LogPanic(s.Logger, "schedule recall", true)
 				errf := s.Schedule(cmd, req, priority, newcount)
 				if errf != nil {
-					s.Error("schedule recall", "err", err)
+					s.Error("schedule recall", "err", errf)
 				}
 			}()
 		}

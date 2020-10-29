@@ -40,6 +40,7 @@ import (
 	"github.com/VividCortex/ewma"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/attachinterfaces"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
@@ -50,6 +51,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
 	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
@@ -110,7 +112,6 @@ type openstackp struct {
 	lastFlavorCache   time.Time
 	externalNetworkID string
 	networkName       string
-	networkUUID       string
 	ownName           string
 	poolName          string
 	securityGroup     string
@@ -133,6 +134,8 @@ type openstackp struct {
 	useConfigDrive  bool
 	hasDefaultGroup bool
 	spawnFailed     bool
+	networks        []servers.Network
+	createdPorts    map[string][]string
 }
 
 // requiredEnv returns envs that are definitely required.
@@ -229,6 +232,8 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 		Factor: 1.5,
 		Jitter: true,
 	}
+
+	p.createdPorts = make(map[string][]string)
 
 	return err
 }
@@ -478,14 +483,16 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 	}
 
 	// don't create any more resources if we're already running in OpenStack
+	var mainNetworkUUID string
+	var otherNetworkUUIDs []string
 	if p.inCloud() {
 		// work out our network uuid, needed for spawning later
-	NETWORKS:
 		for networkName := range p.ownServer.Addresses {
 			networkUUID, erri := networksutil.IDFromName(p.networkClient, networkName)
 			if erri != nil {
 				return erri
 			}
+
 			if networkUUID != "" {
 				network, errg := networks.Get(p.networkClient, networkUUID).Extract()
 				if errg != nil {
@@ -498,16 +505,27 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 					}
 					if subnet.CIDR == cidr {
 						p.networkName = networkName
-						p.networkUUID = networkUUID
-						break NETWORKS
+						mainNetworkUUID = networkUUID
+
+						break
 					}
+				}
+
+				if networkUUID != mainNetworkUUID {
+					otherNetworkUUIDs = append(otherNetworkUUIDs, networkUUID)
 				}
 			}
 		}
 
-		if p.networkUUID == "" {
+		if mainNetworkUUID == "" {
 			return Error{"openstack", "deploy", ErrBadCIDR}
 		}
+
+		p.networks = append(p.networks, servers.Network{UUID: mainNetworkUUID})
+		for _, uuid := range otherNetworkUUIDs {
+			p.networks = append(p.networks, servers.Network{UUID: uuid})
+		}
+
 		return nil
 	}
 
@@ -533,7 +551,7 @@ func (p *openstackp) deploy(resources *Resources, requiredPorts []int, useConfig
 	}
 	resources.Details["network"] = networkID
 	p.networkName = resources.ResourceName
-	p.networkUUID = networkID
+	p.networks = append(p.networks, servers.Network{UUID: networkID})
 
 	// get/create subnet
 	var subnetID string
@@ -793,7 +811,7 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		FlavorRef:      flavorID,
 		ImageRef:       image.ID,
 		SecurityGroups: secGroups,
-		Networks:       []servers.Network{{UUID: p.networkUUID}},
+		Networks:       []servers.Network{p.networks[0]},
 		ConfigDrive:    &p.useConfigDrive,
 		UserData:       sentinelInitScript,
 	}
@@ -973,6 +991,41 @@ func (p *openstackp) spawn(resources *Resources, osPrefix string, flavorID strin
 		}
 	}
 
+	// if we have multiple networks, add ports for the others
+	if len(p.networks) > 1 {
+		for i, network := range p.networks {
+			if i == 0 {
+				continue
+			}
+
+			portCreateOtps := ports.CreateOpts{
+				AdminStateUp: gophercloud.Enabled,
+				NetworkID:    network.UUID,
+				Name:         fmt.Sprintf("%s-%s-%d", resources.ResourceName, serverID, i),
+			}
+
+			port, errC := ports.Create(p.networkClient, portCreateOtps).Extract()
+			if errC != nil {
+				p.Warn("failed to create port", "err", errC, "network", network.UUID)
+
+				continue
+			}
+			p.createdPorts[serverID] = append(p.createdPorts[serverID], port.ID)
+
+			attachOpts := attachinterfaces.CreateOpts{
+				PortID: port.ID,
+			}
+			_, errC = attachinterfaces.Create(p.computeClient, serverID, attachOpts).Extract()
+			if errC != nil {
+				p.Warn("failed to attach port", "err", errC, "network", network.UUID, "port", port.ID, "server", serverID)
+
+				continue
+			} else {
+				p.Debug("attached port for extra network", "server", serverID, "network", network.UUID, "port", port.ID)
+			}
+		}
+	}
+
 	return serverID, serverIP, serverName, adminPass, err
 }
 
@@ -1087,6 +1140,18 @@ WAIT:
 	if err.Error() == "Resource not found" {
 		err = nil
 	}
+
+	// and delete any ports we made for this server
+	if createdPorts, created := p.createdPorts[serverID]; created {
+		for _, uuid := range createdPorts {
+			errP := ports.Delete(p.networkClient, uuid).ExtractErr()
+			if errP != nil {
+				p.Warn("failed to delete a port", "id", uuid, "server", serverID)
+			}
+		}
+		delete(p.createdPorts, serverID)
+	}
+
 	return err
 }
 
