@@ -2392,9 +2392,8 @@ func (s *Server) decrementGroupCount(schedulerGroup string, optionalDrop ...int)
 
 	count := group.decrement(drop)
 	if count >= 0 {
-		group.Lock()
-		s.scheduleRunners(group)
-		group.Unlock()
+		clone := group.clone(count)
+		s.scheduleRunners(clone)
 	}
 }
 
