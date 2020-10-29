@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.23.2] - 2020-10-29
+### Changed
+- OpenStack worker instances that are spawned now attach all the networks
+  that were attached to the manager's instance, not just the one that matches
+  the configured CIDR (but that is still the only one with wr's security groups
+  applied).
+
+### Fixed
+- Major performance reversion when using LSF fixed.
+- Increased TCP timeout for ssh to newly spawned OpenStack instances, to allow
+  slower systems to work.
+
+
 ## [0.23.1] - 2020-10-05
 ### Fixed
 - If a cloud deploy fails, you are asked to hit return after investigating,
