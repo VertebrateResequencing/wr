@@ -72,7 +72,7 @@ require (
 	gopkg.in/ini.v1 v1.61.0 // indirect
 	gotest.tools v2.2.0+incompatible // indirect
 	k8s.io/api v0.19.2
-	k8s.io/apimachinery v0.19.2
+	k8s.io/apimachinery v0.20.2
 	k8s.io/client-go v11.0.0+incompatible
 	nanomsg.org/go-mangos v0.0.0-20180815160134-b7ff4263f0d7
 )
