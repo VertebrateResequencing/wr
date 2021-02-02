@@ -20,6 +20,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -41,6 +42,8 @@ import (
 )
 
 func TestREST(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode {
 		return
 	}
@@ -395,7 +398,7 @@ func TestREST(t *testing.T) {
 				})
 
 				Convey("Once executed...", func() {
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
