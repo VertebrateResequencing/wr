@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/syslog"
 	"path/filepath"
@@ -58,6 +59,8 @@ runner stops picking up new commands and exits instead; max_time does not cause
 the runner to kill itself if the cmd it is running takes longer than max_time to
 complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.Background()
+
 		if runtime.NumCPU() == 1 {
 			// we might lock up with only 1 proc if we mount
 			runtime.GOMAXPROCS(2)
@@ -208,7 +211,7 @@ complete.`,
 			}
 
 			info("will start executing [%s]", job.Cmd)
-			err = jq.Execute(job, config.RunnerExecShell)
+			err = jq.Execute(ctx, job, config.RunnerExecShell)
 			numrun++
 			if err != nil {
 				warn("%s", err)
