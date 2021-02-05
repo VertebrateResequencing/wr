@@ -53,7 +53,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of commands",
 	Long: `You can find the status of commands you've previously added using
-"wr add" or "wr setup" by running this command.
+"wr add" by running this command.
 
 Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, you will get the status of all your currently
