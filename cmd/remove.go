@@ -25,6 +25,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var onlyBuried bool
+
 // removeCmd represents the remove command
 var removeCmd = &cobra.Command{
 	Use:   "remove",
@@ -82,7 +84,14 @@ command line of a job with dependants, you can either:
 			}
 		}()
 
-		jobs := getJobs(jq, jobqueue.JobStateDeletable, cmdAll, 0, false, false)
+		cmdState := jobqueue.JobStateDeletable
+		desc := "incomplete, non-running"
+		if onlyBuried {
+			cmdState = jobqueue.JobStateBuried
+			desc = "buried"
+		}
+
+		jobs := getJobs(jq, cmdState, cmdAll, 0, false, false)
 
 		if len(jobs) == 0 {
 			die("No matching jobs found")
@@ -93,7 +102,7 @@ command line of a job with dependants, you can either:
 		if err != nil {
 			die("failed to remove desired jobs: %s", err)
 		}
-		info("Removed %d incomplete, non-running commands (out of %d eligible)", removed, len(jobs))
+		info("Removed %d %s commands (out of %d eligible)", removed, desc, len(jobs))
 	},
 }
 
@@ -110,6 +119,7 @@ func init() {
 	removeCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "", "working dir that the command(s) specified by -l or -f were set to run in")
 	removeCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	removeCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	removeCmd.Flags().BoolVarP(&onlyBuried, "buried", "b", false, "only delete jobs that are currently buried")
 
 	removeCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
