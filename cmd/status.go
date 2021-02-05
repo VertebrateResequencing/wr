@@ -42,6 +42,7 @@ var cmdIDIsSubStr bool
 var cmdIDIsInternal bool
 var cmdLine string
 var showBuried bool
+var showRunning bool
 var showStd bool
 var showEnv bool
 var outputFormat string
@@ -99,6 +100,8 @@ name to just the first letter, eg. -o c):
 		var cmdState jobqueue.JobState
 		if showBuried {
 			cmdState = jobqueue.JobStateBuried
+		} else if showRunning {
+			cmdState = jobqueue.JobStateRunning
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
@@ -426,6 +429,7 @@ func init() {
 	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	statusCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
+	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "in -o d mode, except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details", "['counts','summary','details','json'] output format")
