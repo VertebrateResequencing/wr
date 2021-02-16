@@ -42,17 +42,19 @@ var cmdIDIsSubStr bool
 var cmdIDIsInternal bool
 var cmdLine string
 var showBuried bool
+var showRunning bool
 var showStd bool
 var showEnv bool
 var outputFormat string
 var statusLimit int
+var fromHost string
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of commands",
 	Long: `You can find the status of commands you've previously added using
-"wr add" or "wr setup" by running this command.
+"wr add" by running this command.
 
 Specify one of the flags -f, -l  or -i to choose which commands you want the
 status of. If none are supplied, you will get the status of all your currently
@@ -68,7 +70,7 @@ The file to provide -f is in the format taken by "wr add".
 
 In -f and -l mode you must provide the cwd the commands were set to run in, if
 CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
-options that was used when the command was added, if any. You can do this by
+option that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.
 
@@ -99,6 +101,8 @@ name to just the first letter, eg. -o c):
 		var cmdState jobqueue.JobState
 		if showBuried {
 			cmdState = jobqueue.JobStateBuried
+		} else if showRunning {
+			cmdState = jobqueue.JobStateRunning
 		}
 		timeout := time.Duration(timeoutint) * time.Second
 
@@ -118,6 +122,16 @@ name to just the first letter, eg. -o c):
 		}
 		jobs := getJobs(jq, cmdState, set == 0, statusLimit, showStd, showEnv)
 		showextra := cmdFileStatus == ""
+
+		if fromHost != "" {
+			var subset []*jobqueue.Job
+			for _, job := range jobs {
+				if job.Host == fromHost || job.HostID == fromHost || job.HostIP == fromHost {
+					subset = append(subset, job)
+				}
+			}
+			jobs = subset
+		}
 
 		switch outputFormat {
 		case "counts", "c":
@@ -426,6 +440,8 @@ func init() {
 	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	statusCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
+	statusCmd.Flags().StringVar(&fromHost, "host", "", "filter output to only show the status of commands that ran on the given host (ID, name or IP)")
+	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "in -o d mode, except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details", "['counts','summary','details','json'] output format")
