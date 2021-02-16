@@ -1042,25 +1042,27 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				var cpuS int
 				if monitorDocker {
 					if dockerContainerID == "" {
+						var dockerContainers []*container.Container
+						var dockerContainer *container.Container
 						var errg error
 						if getFirstDockerContainer {
 							// look for a new container
-							dockerContainers, errc := dockerClient.GetNewContainers(ctx)
-							if errc == nil {
+							dockerContainers, errg = dockerClient.GetNewContainers(ctx)
+							if len(dockerContainers) > 0 {
 								dockerContainerID = dockerContainers[0].ID
 							}
 						} else if cmd.Dir == "" {
 							// job.MonitorDocker might be a name of
 							// a new container
-							dockerContainer, errc := dockerClient.GetNewContainerByName(ctx, job.MonitorDocker)
-							if errc == nil {
+							dockerContainer, errg = dockerClient.GetNewContainerByName(ctx, job.MonitorDocker)
+							if dockerContainer != nil {
 								dockerContainerID = dockerContainer.ID
 							}
 						} else {
 							// job.MonitorDocker might be a file path containing the id of
 							// a container
-							dockerContainer, errc := dockerClient.GetContainerByPath(ctx, job.MonitorDocker, cmd.Dir)
-							if errc == nil {
+							dockerContainer, errg = dockerClient.GetContainerByPath(ctx, job.MonitorDocker, cmd.Dir)
+							if dockerContainer != nil {
 								dockerContainerID = dockerContainer.ID
 							}
 						}

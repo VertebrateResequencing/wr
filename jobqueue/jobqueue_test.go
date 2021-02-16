@@ -5893,6 +5893,77 @@ sudo usermod -aG docker ` + osUser
 			// is also immediately killed...
 		})
 
+		Convey("You can run a cmd to try getting memory and cpu usage when no docker containers are running", func() {
+			var jobs []*Job
+			other := make(map[string]string)
+			other["cloud_script"] = dockerInstallScript
+
+			Convey("when docker is not installed", func() {
+				jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1}, Override: uint8(2), Retries: uint8(0), RepGroup: "noDocker", MonitorDocker: "?"})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				waitRun(done)
+
+				got, err := jq.GetByRepGroup("noDocker", false, 0, JobStateComplete, false, false)
+				So(len(got), ShouldBeZeroValue)
+				So(err, ShouldBeNil)
+			})
+
+			Convey("when no relevant containers are running", func() {
+				jobs = append(jobs, &Job{Cmd: "sleep 30", Cwd: "/tmp", ReqGroup: "nodocker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "no_docker", MonitorDocker: "?"})
+
+				dockerName := "jobqueue_test." + internal.RandomString()
+				wrongDockerName := internal.RandomString()
+				jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongnamed_docker", MonitorDocker: wrongDockerName})
+
+				dockerCidFile := "jobqueue_test.cidfile"
+				wrongDockerCidFile := "jobqueue_wrong.cidfile"
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongcidfile_docker", MonitorDocker: wrongDockerCidFile})
+
+				dockerCidFile = "uuid-20181127.cidfile"
+				wrongDockerUUID := internal.RandomString() + "*" + internal.RandomString()
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongcidglob_docker", MonitorDocker: wrongDockerUUID})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 4)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				waitRun(done)
+
+				usedMinRAM := 100
+				got, err := jq.GetByRepGroup("no_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 5*time.Millisecond)
+
+				got, err = jq.GetByRepGroup("wrongnamed_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
+
+				got, err = jq.GetByRepGroup("wrongcidfile_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
+
+				got, err = jq.GetByRepGroup("wrongcidglob_docker", false, 0, JobStateComplete, false, false)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+			})
+		})
+
 		Convey("You can run a cmd with a per-cmd set of config files", func() {
 			// create a config file locally
 			localConfigPath := filepath.Join(runnertmpdir, "test.config")
