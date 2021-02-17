@@ -5354,6 +5354,8 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		StateUpdateFrequency: 1 * time.Second,
 		Shell:                "bash",
 		MaxInstances:         -1,
+		CIDR:                 "192.168.252.0/24",
+		GatewayIP:            "192.168.252.1",
 		Umask:                config.ManagerUmask,
 	}
 	cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
@@ -5375,6 +5377,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
+		CIDR:            "192.168.252.0/24",
 		RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
 		Logger:          testLogger,
 	}
