@@ -1051,19 +1051,19 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 							if len(dockerContainers) > 0 {
 								dockerContainerID = dockerContainers[0].ID
 							}
-						} else if cmd.Dir == "" {
+						} else {
 							// job.MonitorDocker might be a name of
 							// a new container
 							dockerContainer, errg = dockerClient.GetNewContainerByName(ctx, job.MonitorDocker)
 							if dockerContainer != nil {
 								dockerContainerID = dockerContainer.ID
-							}
-						} else {
-							// job.MonitorDocker might be a file path containing the id of
-							// a container
-							dockerContainer, errg = dockerClient.GetContainerByPath(ctx, job.MonitorDocker, cmd.Dir)
-							if dockerContainer != nil {
-								dockerContainerID = dockerContainer.ID
+							} else {
+								// job.MonitorDocker might be a file path containing the id of
+								// a container
+								dockerContainer, errg = dockerClient.GetContainerByPath(ctx, job.MonitorDocker, cmd.Dir)
+								if dockerContainer != nil {
+									dockerContainerID = dockerContainer.ID
+								}
 							}
 						}
 						if errg != nil {

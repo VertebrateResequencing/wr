@@ -5354,8 +5354,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		StateUpdateFrequency: 1 * time.Second,
 		Shell:                "bash",
 		MaxInstances:         -1,
-		CIDR:                 "192.168.252.0/24",
-		GatewayIP:            "192.168.252.1",
 		Umask:                config.ManagerUmask,
 	}
 	cloudConfig.AddConfigFile(config.ManagerTokenFile + ":~/.wr_" + config.Deployment + "/client.token")
@@ -5377,7 +5375,6 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 		CertDomain:      config.ManagerCertDomain,
 		KeyFile:         config.ManagerKeyFile,
 		Deployment:      config.Deployment,
-		CIDR:            "192.168.252.0/24",
 		RunnerCmd:       runnerCmd + " --runnermode --schedgrp '%s' --rdeployment %s --rserver '%s' --rdomain %s --rtimeout %d --maxmins %d --tmpdir " + runnertmpdir,
 		Logger:          testLogger,
 	}
@@ -5896,7 +5893,7 @@ sudo usermod -aG docker ` + osUser
 			// is also immediately killed...
 		})
 
-		Convey("You can run a cmd to try getting memory and cpu usage when no docker containers are running", func() {
+		Convey("You can run a cmd to get the memory and cpu usage when no docker containers are running", func() {
 			var jobs []*Job
 			other := make(map[string]string)
 			other["cloud_script"] = dockerInstallScript
@@ -5962,8 +5959,10 @@ sudo usermod -aG docker ` + osUser
 				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
 
 				got, err = jq.GetByRepGroup("wrongcidglob_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
 				So(len(got), ShouldEqual, 1)
 				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
 			})
 		})
 
