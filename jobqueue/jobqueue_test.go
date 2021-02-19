@@ -5817,14 +5817,21 @@ sudo usermod -aG docker ` + osUser
 			other := make(map[string]string)
 			other["cloud_script"] = dockerInstallScript
 
+			other["dep_grps"] = "firstDocker"
 			jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "first_docker", MonitorDocker: "?"})
 
+			other["dep_grps"] = "namedDocker"
+			other["deps"] = "firstDocker"
 			dockerName := "jobqueue_test." + internal.RandomString()
 			jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "named_docker", MonitorDocker: dockerName})
 
+			other["dep_grps"] = "cidDocker"
+			other["deps"] = "namedDocker"
 			dockerCidFile := "jobqueue_test.cidfile"
 			jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
 
+			other["dep_grps"] = "cidGlobDocker"
+			other["deps"] = "cidDocker"
 			dockerCidFile = "uuid-20181127.cidfile"
 			jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidglob_docker", MonitorDocker: "uuid-*.cidfile"})
 
@@ -5916,16 +5923,23 @@ sudo usermod -aG docker ` + osUser
 			})
 
 			Convey("when no relevant containers are running", func() {
+				other["dep_grps"] = "noDocker"
 				jobs = append(jobs, &Job{Cmd: "sleep 30", Cwd: "/tmp", ReqGroup: "nodocker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "no_docker", MonitorDocker: "?"})
 
+				other["dep_grps"] = "wrongDockerName"
+				other["deps"] = "noDocker"
 				dockerName := "jobqueue_test." + internal.RandomString()
 				wrongDockerName := internal.RandomString()
 				jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongnamed_docker", MonitorDocker: wrongDockerName})
 
+				other["dep_grps"] = "wrongCidFileDocker"
+				other["deps"] = "wrongDockerName"
 				dockerCidFile := "jobqueue_test.cidfile"
 				wrongDockerCidFile := "jobqueue_wrong.cidfile"
 				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongcidfile_docker", MonitorDocker: wrongDockerCidFile})
 
+				other["dep_grps"] = "wrongCidGlobDocker"
+				other["deps"] = "wrongCidFileDocker"
 				dockerCidFile = "uuid-20181127.cidfile"
 				wrongDockerUUID := internal.RandomString() + "*" + internal.RandomString()
 				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongcidglob_docker", MonitorDocker: wrongDockerUUID})
