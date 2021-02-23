@@ -22,7 +22,7 @@ require (
 	github.com/gofrs/uuid v3.3.0+incompatible
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/googleapis/gnostic v0.5.1 // indirect
-	github.com/gophercloud/gophercloud v0.12.0
+	github.com/gophercloud/gophercloud v0.15.0
 	github.com/gophercloud/utils v0.0.0-20200918191848-da0e919a012a
 	github.com/gorilla/websocket v1.4.2
 	github.com/grafov/bcast v0.0.0-20190217190352-1447f067e08d
