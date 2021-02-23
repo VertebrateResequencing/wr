@@ -19,7 +19,7 @@ require (
 	github.com/fatih/color v1.9.0
 	github.com/go-ini/ini v1.61.0 // indirect
 	github.com/go-ole/go-ole v1.2.4 // indirect
-	github.com/gofrs/uuid v3.3.0+incompatible
+	github.com/gofrs/uuid v3.4.0+incompatible
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/googleapis/gnostic v0.5.1 // indirect
 	github.com/gophercloud/gophercloud v0.12.0
