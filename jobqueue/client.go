@@ -41,9 +41,12 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/docker/docker/client"
 	"github.com/gofrs/uuid"
 	"github.com/inconshreveable/log15"
 	"github.com/ugorji/go/codec"
+	"github.com/wtsi-ssg/wr/container"
+	"github.com/wtsi-ssg/wr/container/docker"
 	"github.com/wtsi-ssg/wr/fs/local"
 	"nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/req"
@@ -514,9 +517,8 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // You have to have been the one to Reserve() the supplied Job, or this will
 // immediately return an error. NB: the peak RAM tracking assumes we are running
 // on a modern linux system with /proc/*/smaps.
-func (c *Client) Execute(job *Job, shell string) error {
+func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	logger := c.Logger.New("job", job.Key())
-
 	// quickly check upfront that we Reserve()d the job; this isn't required
 	// for other methods since the server does this check and returns an error,
 	// but in this case we want to avoid starting to execute the command before
@@ -824,11 +826,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 	// if docker monitoring has been requested, try and get the docker client
 	// now and fail early if we can't
-	var dockerClient *internal.DockerClient
+	var dockerClient *container.Operator
+	var dockerInterator *docker.Interactor
+	var cli *client.Client
+
 	var monitorDocker, getFirstDockerContainer bool
 	if job.MonitorDocker != "" {
 		monitorDocker = true
-		dockerClient, err = internal.NewDockerClient()
+		cli, err = client.NewEnvClient()
 		if err != nil {
 			stopTouching <- true
 			buryErr := fmt.Errorf("failed to create docker client: %w", err)
@@ -839,11 +844,14 @@ func (c *Client) Execute(job *Job, shell string) error {
 			return buryErr
 		}
 
+		dockerInterator = docker.NewInteractor(cli)
+		dockerClient = container.NewOperator(dockerInterator)
+
 		// if we've been asked to monitor the first container that appears,
 		// remember existing containers
 		if job.MonitorDocker == "?" {
 			getFirstDockerContainer = true
-			errc := dockerClient.RememberCurrentContainerIDs()
+			errc := dockerClient.RememberCurrentContainers(ctx)
 			if errc != nil {
 				stopTouching <- true
 				buryErr := fmt.Errorf("failed to get docker containers: %w", errc)
@@ -955,7 +963,7 @@ func (c *Client) Execute(job *Job, shell string) error {
 
 			if dockerContainerID != "" {
 				// kill the docker container as well
-				errd := dockerClient.KillContainer(dockerContainerID)
+				errd := dockerClient.KillContainer(ctx, dockerContainerID)
 				if errk == nil {
 					errk = errd
 				} else {
@@ -1034,14 +1042,29 @@ func (c *Client) Execute(job *Job, shell string) error {
 				var cpuS int
 				if monitorDocker {
 					if dockerContainerID == "" {
+						var dockerContainers []*container.Container
+						var dockerContainer *container.Container
 						var errg error
 						if getFirstDockerContainer {
 							// look for a new container
-							dockerContainerID, errg = dockerClient.GetNewDockerContainerID()
+							dockerContainers, errg = dockerClient.GetNewContainers(ctx)
+							if len(dockerContainers) > 0 {
+								dockerContainerID = dockerContainers[0].ID
+							}
 						} else {
-							// job.MonitorDocker might be a file path or name of
+							// job.MonitorDocker might be a name of
 							// a new container
-							dockerContainerID, errg = dockerClient.GetNewDockerContainerIDByName(job.MonitorDocker, cmd.Dir)
+							dockerContainer, errg = dockerClient.GetNewContainerByName(ctx, job.MonitorDocker)
+							if dockerContainer != nil {
+								dockerContainerID = dockerContainer.ID
+							} else {
+								// job.MonitorDocker might be a file path containing the id of
+								// a container
+								dockerContainer, errg = dockerClient.GetContainerByPath(ctx, job.MonitorDocker, cmd.Dir)
+								if dockerContainer != nil {
+									dockerContainerID = dockerContainer.ID
+								}
+							}
 						}
 						if errg != nil {
 							if myerr == nil {
@@ -1053,8 +1076,9 @@ func (c *Client) Execute(job *Job, shell string) error {
 					}
 
 					if dockerContainerID != "" {
-						dockerMem, thisDockerCPU, errs := dockerClient.ContainerStats(dockerContainerID)
+						dockerStats, errs := dockerInterator.ContainerStats(ctx, dockerContainerID)
 						if errs == nil {
+							dockerMem, thisDockerCPU := dockerStats.MemoryMB, dockerStats.CPUSec
 							if dockerMem > mem {
 								mem = dockerMem
 							}

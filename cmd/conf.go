@@ -425,7 +425,7 @@ cloudspawns: 10
 #
 # wr creates a network and subnet in the cloud in which any spawned servers are
 # created. The CIDR determines the possible IP addresses the spawned servers can
-# have. For example, with the default CIDR you will be able to spawn 6381
+# have. For example, with the default CIDR you will be able to spawn 16381
 # servers with IPs starting from 192.168.0.1 and going up to 192.168.63.254.
 cloudcidr: "192.168.0.0/18"
 

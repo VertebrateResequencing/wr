@@ -19,6 +19,7 @@
 package jobqueue
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -359,6 +360,8 @@ func waitUntilPidsAreGone(pids map[int]bool, seconds int) bool {
 }
 
 func TestJobqueueSignal(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode {
 		return
 	}
@@ -480,7 +483,7 @@ func TestJobqueueSignal(t *testing.T) {
 
 				j1worked := make(chan bool)
 				go func() {
-					err := jq.Execute(job, config.RunnerExecShell)
+					err := jq.Execute(ctx, job, config.RunnerExecShell)
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal && job.State == JobStateBuried && job.Exited && job.Exitcode == -1 && job.FailReason == FailReasonSignal {
 							j1worked <- true
@@ -491,7 +494,7 @@ func TestJobqueueSignal(t *testing.T) {
 
 				j2worked := make(chan bool)
 				go func() {
-					err := jq.Execute(job2, config.RunnerExecShell)
+					err := jq.Execute(ctx, job2, config.RunnerExecShell)
 					if err != nil {
 						if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonTime && job2.State == JobStateBuried && job2.Exited && job2.Exitcode == -1 && job2.FailReason == FailReasonTime {
 							j2worked <- true
@@ -591,7 +594,7 @@ func TestJobqueueSignal(t *testing.T) {
 			go func() {
 				errch := make(chan error)
 				go func() {
-					errch <- jq.Execute(job, config.RunnerExecShell)
+					errch <- jq.Execute(ctx, job, config.RunnerExecShell)
 				}()
 				select {
 				case erre := <-errch:
@@ -620,7 +623,7 @@ func TestJobqueueSignal(t *testing.T) {
 			go func() {
 				errch := make(chan error)
 				go func() {
-					errch <- jq.Execute(job2, config.RunnerExecShell)
+					errch <- jq.Execute(ctx, job2, config.RunnerExecShell)
 				}()
 				select {
 				case erre := <-errch:
@@ -821,6 +824,8 @@ func TestJobqueueSignal(t *testing.T) {
 }
 
 func TestJobqueueBasics(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -1140,7 +1145,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(env, ShouldNotBeEmpty)
 
 				os.Setenv("wr_jobqueue_test_no_envvar", "b")
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				So(job.FailReason, ShouldEqual, FailReasonExit)
 				stdout, err := job.StdOut()
@@ -1172,7 +1177,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(env, ShouldNotBeEmpty)
 
 				os.Setenv("wr_jobqueue_test_no_envvar", "b")
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				So(job.FailReason, ShouldEqual, FailReasonExit)
 				stdout, err = job.StdOut()
@@ -1211,7 +1216,7 @@ func TestJobqueueBasics(t *testing.T) {
 				So(env, ShouldNotBeEmpty)
 
 				os.Setenv("wr_jobqueue_test_no_envvar", "b")
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				So(job.FailReason, ShouldEqual, FailReasonExit)
 				stdout, err := job.StdOut()
@@ -1275,6 +1280,8 @@ func TestJobqueueBasics(t *testing.T) {
 }
 
 func TestJobqueueMedium(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -1310,7 +1317,7 @@ func TestJobqueueMedium(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			Convey("You can't execute a job without reserving it", func() {
-				err := jq.Execute(jobs[0], config.RunnerExecShell)
+				err := jq.Execute(ctx, jobs[0], config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				jqerr, ok := err.(Error)
 				So(ok, ShouldBeTrue)
@@ -1333,7 +1340,7 @@ func TestJobqueueMedium(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, "sleep 0.1 && true")
 				So(job2.State, ShouldEqual, JobStateReserved)
 
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, JobStateComplete)
 				So(job.Exited, ShouldBeTrue)
@@ -1381,7 +1388,7 @@ func TestJobqueueMedium(t *testing.T) {
 				So(job.Attempts, ShouldEqual, 0)
 				So(job.UntilBuried, ShouldEqual, 3)
 
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldNotBeNil)
 				So(err.Error(), ShouldEqual, "command [sleep 0.1 && false] exited with code 1, which may be a temporary issue, so it will be tried again")
 				So(job.State, ShouldEqual, JobStateDelayed)
@@ -1452,7 +1459,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job2.State, ShouldEqual, JobStateReserved)
 
 					Convey("After 2 retries (3 attempts) it gets buried", func() {
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
 						So(job.State, ShouldEqual, JobStateDelayed)
 						So(job.Exited, ShouldBeTrue)
@@ -1468,7 +1475,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
 
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
 						So(job.State, ShouldEqual, JobStateBuried)
 						So(job.Exited, ShouldBeTrue)
@@ -1555,7 +1562,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | true")
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -1568,7 +1575,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && true | false | true")
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [sleep 0.1 && true | false | true] exited with code 1, which may be a temporary issue, so it will be tried again") //*** can fail with a receive time out; why?!
 					So(job.State, ShouldEqual, JobStateDelayed)
@@ -1590,7 +1597,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "awesjnalakjf --foo")
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "command [awesjnalakjf --foo] exited with code 127 (command not found), which seems permanent, so it has been buried")
 					So(job.State, ShouldEqual, JobStateBuried)
@@ -1627,7 +1634,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.State, ShouldEqual, JobStateReserved)
 					So(job.Requirements.RAM, ShouldEqual, 10)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -1683,7 +1690,7 @@ func TestJobqueueMedium(t *testing.T) {
 						ech <- errk
 					}()
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					var jqerr Error
 					if !errors.As(err, &jqerr) {
@@ -1738,7 +1745,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -1761,7 +1768,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.Cmd, ShouldEqual, cmd)
 						So(job.State, ShouldEqual, JobStateReserved)
 
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 						So(job.State, ShouldEqual, JobStateComplete)
 						So(job.Exited, ShouldBeTrue)
@@ -1790,7 +1797,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'")
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -1821,7 +1828,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'")
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
@@ -1886,7 +1893,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, "perl -e 'for (1..60) { print $_ x 130, qq[p\\n]; warn $_ x 130, qq[w\\n] } die'")
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
@@ -1939,7 +1946,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, progressCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
@@ -1966,7 +1973,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, progressCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
@@ -1995,7 +2002,7 @@ func TestJobqueueMedium(t *testing.T) {
 					// wait for the job to finish executing
 					done := make(chan bool, 1)
 					go func() {
-						go execute(jq, job, config.RunnerExecShell, true)
+						go execute(ctx, jq, job, config.RunnerExecShell, true)
 
 						limit := time.After(10 * time.Second)
 						ticker := time.NewTicker(500 * time.Millisecond)
@@ -2055,7 +2062,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "touch bar")
 					So(job.State, ShouldEqual, JobStateReserved)
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -2076,7 +2083,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job.Cmd, ShouldEqual, "touch bar && false")
 					So(job.State, ShouldEqual, JobStateReserved)
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
@@ -2109,7 +2116,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job.Cmd, ShouldEqual, cmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					So(job.State, ShouldEqual, JobStateComplete)
 					So(job.Exited, ShouldBeTrue)
@@ -2149,7 +2156,7 @@ func TestJobqueueMedium(t *testing.T) {
 						lostCh <- true
 					}()
 
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 
 					job2, err = jq2.GetByEssence(&JobEssence{Cmd: cmd}, true, false)
@@ -2181,7 +2188,7 @@ func TestJobqueueMedium(t *testing.T) {
 				for i := 0; i < 3; i++ {
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
-					err = jq.Execute(job, config.RunnerExecShell)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 				}
 
@@ -2198,7 +2205,7 @@ func TestJobqueueMedium(t *testing.T) {
 					for i := 0; i < 4; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
 
@@ -2237,7 +2244,7 @@ func TestJobqueueMedium(t *testing.T) {
 					for i := 0; i < 4; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
 					job, err := jq.Reserve(10 * time.Millisecond)
@@ -2286,7 +2293,7 @@ func TestJobqueueMedium(t *testing.T) {
 				j1, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(j1.RepGroup, ShouldEqual, "dep1")
-				err = jq.Execute(j1, config.RunnerExecShell)
+				err = jq.Execute(ctx, j1, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
 				<-time.After(6 * time.Millisecond)
@@ -2368,7 +2375,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
-						err = jq.Execute(j4, config.RunnerExecShell)
+						err = jq.Execute(ctx, j4, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep6", false, 0, "", false, false)
@@ -2379,7 +2386,7 @@ func TestJobqueueMedium(t *testing.T) {
 						touchLock.Lock()
 						touchJ3 = false
 						touchLock.Unlock()
-						err = jq.Execute(j3, config.RunnerExecShell)
+						err = jq.Execute(ctx, j3, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep6", false, 0, "", false, false)
@@ -2395,7 +2402,7 @@ func TestJobqueueMedium(t *testing.T) {
 						touchLock.Lock()
 						touchJ2 = false
 						touchLock.Unlock()
-						err = jq.Execute(j2, config.RunnerExecShell)
+						err = jq.Execute(ctx, j2, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep5", false, 0, "", false, false)
@@ -2435,7 +2442,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
-						err = jq.Execute(j5, config.RunnerExecShell)
+						err = jq.Execute(ctx, j5, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep8", false, 0, "", false, false)
@@ -2451,7 +2458,7 @@ func TestJobqueueMedium(t *testing.T) {
 						touchLock.Lock()
 						touchJ6 = false
 						touchLock.Unlock()
-						err = jq.Execute(j6, config.RunnerExecShell)
+						err = jq.Execute(ctx, j6, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep7", false, 0, "", false, false)
@@ -2466,7 +2473,7 @@ func TestJobqueueMedium(t *testing.T) {
 					for i := 0; i < 2; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
 
@@ -2487,7 +2494,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(jNil, ShouldBeNil)
 
-					err = jq.Execute(j5, config.RunnerExecShell)
+					err = jq.Execute(ctx, j5, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 
 					j4, err := jq.Reserve(50 * time.Millisecond)
@@ -2521,7 +2528,7 @@ func TestJobqueueMedium(t *testing.T) {
 				j1, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(j1.RepGroup, ShouldEqual, "dep1")
-				err = jq.Execute(j1, config.RunnerExecShell)
+				err = jq.Execute(ctx, j1, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
 				<-time.After(6 * time.Millisecond)
@@ -2603,7 +2610,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
-						err = jq.Execute(j4, config.RunnerExecShell)
+						err = jq.Execute(ctx, j4, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep6", false, 0, "", false, false)
@@ -2614,7 +2621,7 @@ func TestJobqueueMedium(t *testing.T) {
 						touchLock.Lock()
 						touchJ3 = false
 						touchLock.Unlock()
-						err = jq.Execute(j3, config.RunnerExecShell)
+						err = jq.Execute(ctx, j3, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep6", false, 0, "", false, false)
@@ -2630,7 +2637,7 @@ func TestJobqueueMedium(t *testing.T) {
 						touchLock.Lock()
 						touchJ2 = false
 						touchLock.Unlock()
-						err = jq.Execute(j2, config.RunnerExecShell)
+						err = jq.Execute(ctx, j2, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep5", false, 0, "", false, false)
@@ -2670,7 +2677,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(len(gottenJobs), ShouldEqual, 1)
 						So(gottenJobs[0].State, ShouldEqual, JobStateDependent)
 
-						err = jq.Execute(j5, config.RunnerExecShell)
+						err = jq.Execute(ctx, j5, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep8", false, 0, "", false, false)
@@ -2686,7 +2693,7 @@ func TestJobqueueMedium(t *testing.T) {
 						touchLock.Lock()
 						touchJ6 = false
 						touchLock.Unlock()
-						err = jq.Execute(j6, config.RunnerExecShell)
+						err = jq.Execute(ctx, j6, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 
 						gottenJobs, err = jq.GetByRepGroup("dep7", false, 0, "", false, false)
@@ -2718,12 +2725,12 @@ func TestJobqueueMedium(t *testing.T) {
 							j7, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(j7.RepGroup, ShouldEqual, "dep7")
-							err = jq.Execute(j7, config.RunnerExecShell)
+							err = jq.Execute(ctx, j7, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 							j8, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(j8.RepGroup, ShouldEqual, "dep8")
-							err = jq.Execute(j8, config.RunnerExecShell)
+							err = jq.Execute(ctx, j8, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", false, 0, "", false, false)
@@ -2746,7 +2753,7 @@ func TestJobqueueMedium(t *testing.T) {
 							j9, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(j9.RepGroup, ShouldEqual, "dep9")
-							err = jq.Execute(j9, config.RunnerExecShell)
+							err = jq.Execute(ctx, j9, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", false, 0, "", false, false)
@@ -2757,7 +2764,7 @@ func TestJobqueueMedium(t *testing.T) {
 							faf, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(faf.RepGroup, ShouldEqual, "afterfinal")
-							err = jq.Execute(faf, config.RunnerExecShell)
+							err = jq.Execute(ctx, faf, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", false, 0, "", false, false)
@@ -2788,7 +2795,7 @@ func TestJobqueueMedium(t *testing.T) {
 							j9, err = jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(j9.RepGroup, ShouldEqual, "dep9")
-							err = jq.Execute(j9, config.RunnerExecShell)
+							err = jq.Execute(ctx, j9, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", false, 0, "", false, false)
@@ -2799,7 +2806,7 @@ func TestJobqueueMedium(t *testing.T) {
 							faf, err = jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(faf.RepGroup, ShouldEqual, "afterfinal")
-							err = jq.Execute(faf, config.RunnerExecShell)
+							err = jq.Execute(ctx, faf, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 
 							gottenJobs, err = jq.GetByRepGroup("afterfinal", false, 0, "", false, false)
@@ -2815,7 +2822,7 @@ func TestJobqueueMedium(t *testing.T) {
 							faaf, err := jq.Reserve(50 * time.Millisecond)
 							So(err, ShouldBeNil)
 							So(faaf.RepGroup, ShouldEqual, "after-afterfinal")
-							err = jq.Execute(faaf, config.RunnerExecShell)
+							err = jq.Execute(ctx, faaf, config.RunnerExecShell)
 							So(err, ShouldBeNil)
 
 							gottenJobs, err = jq.GetByRepGroup("after-afterfinal", false, 0, "", false, false)
@@ -2848,7 +2855,7 @@ func TestJobqueueMedium(t *testing.T) {
 					for i := 0; i < 2; i++ {
 						job, err := jq.Reserve(50 * time.Millisecond)
 						So(err, ShouldBeNil)
-						err = jq.Execute(job, config.RunnerExecShell)
+						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldBeNil)
 					}
 
@@ -2869,7 +2876,7 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(jNil, ShouldBeNil)
 
-					err = jq.Execute(j5, config.RunnerExecShell)
+					err = jq.Execute(ctx, j5, config.RunnerExecShell)
 					So(err, ShouldBeNil)
 
 					j4, err := jq.Reserve(50 * time.Millisecond)
@@ -2892,6 +2899,8 @@ func TestJobqueueMedium(t *testing.T) {
 }
 
 func TestJobqueueLimitGroups(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -2966,20 +2975,20 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				}()
 
 				for i := 1; i <= 3; i++ {
-					err = jq.Execute(jobs[0], config.RunnerExecShell)
+					err = jq.Execute(ctx, jobs[0], config.RunnerExecShell)
 					So(err, ShouldBeNil)
 					jobs = reserveJobs()
 					So(len(jobs), ShouldEqual, 1)
 				}
 
-				err = jq.Execute(jobs[0], config.RunnerExecShell)
+				err = jq.Execute(ctx, jobs[0], config.RunnerExecShell)
 				So(err, ShouldBeNil)
 
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 0)
 
 				stopTouching <- true
-				err = jq.Execute(finalJob, config.RunnerExecShell)
+				err = jq.Execute(ctx, finalJob, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				jobs = reserveJobs()
 				So(len(jobs), ShouldEqual, 0)
@@ -3067,6 +3076,8 @@ func jobsToJobEssenses(jobs []*Job) []*JobEssence {
 }
 
 func TestJobqueueModify(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -3165,7 +3176,7 @@ func TestJobqueueModify(t *testing.T) {
 		}
 
 		execute := func(job *Job, shouldWork bool, expectedStdout string) *Job {
-			err := jq.Execute(job, config.RunnerExecShell)
+			err := jq.Execute(ctx, job, config.RunnerExecShell)
 			if shouldWork {
 				So(err, ShouldBeNil)
 			} else {
@@ -3628,6 +3639,8 @@ func TestJobqueueModify(t *testing.T) {
 }
 
 func TestJobqueueHighMem(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -3672,7 +3685,7 @@ func TestJobqueueHighMem(t *testing.T) {
 			So(job.State, ShouldEqual, JobStateReserved)
 
 			ClientPercentMemoryKill = 1
-			err = jq.Execute(job, config.RunnerExecShell)
+			err = jq.Execute(ctx, job, config.RunnerExecShell)
 			ClientPercentMemoryKill = 90
 			So(err, ShouldNotBeNil)
 			jqerr, ok := err.(Error)
@@ -3707,6 +3720,8 @@ func TestJobqueueHighMem(t *testing.T) {
 }
 
 func TestJobqueueProduction(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -3889,7 +3904,7 @@ func TestJobqueueProduction(t *testing.T) {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, "echo 1")
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, JobStateComplete)
 				So(job.Exited, ShouldBeTrue)
@@ -3907,7 +3922,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job, ShouldNotBeNil)
 				So(job.Cmd, ShouldEqual, "echo 2")
-				err = jq.Execute(job, config.RunnerExecShell)
+				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, JobStateComplete)
 				So(job.Exited, ShouldBeTrue)
@@ -3986,7 +4001,7 @@ func TestJobqueueProduction(t *testing.T) {
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, job1Cmd)
-				go execute(jq, job, config.RunnerExecShell)
+				go execute(ctx, jq, job, config.RunnerExecShell)
 				So(job.Exited, ShouldBeFalse)
 
 				running, etc, err := jq.DrainServer()
@@ -4026,7 +4041,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(job2, ShouldNotBeNil)
 				So(job2.Cmd, ShouldEqual, "echo added")
-				err = jq.Execute(job2, config.RunnerExecShell)
+				err = jq.Execute(ctx, job2, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job2.State, ShouldEqual, JobStateComplete)
 				So(job2.Exited, ShouldBeTrue)
@@ -4041,7 +4056,7 @@ func TestJobqueueProduction(t *testing.T) {
 				done := make(chan error)
 				go func() {
 					started <- true
-					erre := jq.Execute(job, config.RunnerExecShell)
+					erre := jq.Execute(ctx, job, config.RunnerExecShell)
 					done <- erre
 				}()
 				So(job.Exited, ShouldBeFalse)
@@ -4127,7 +4142,7 @@ func TestJobqueueProduction(t *testing.T) {
 			job, err := jq.Reserve(50 * time.Millisecond)
 			So(err, ShouldBeNil)
 			So(job.Cmd, ShouldEqual, job1Cmd)
-			err = jq.Execute(job, config.RunnerExecShell)
+			err = jq.Execute(ctx, job, config.RunnerExecShell)
 			So(err, ShouldNotBeNil)
 			So(job.Exited, ShouldBeTrue)
 
@@ -4164,6 +4179,8 @@ func TestJobqueueProduction(t *testing.T) {
 }
 
 func TestJobqueueRunners(t *testing.T) {
+	ctx := context.Background()
+
 	if servermode {
 		return
 	}
@@ -4172,7 +4189,7 @@ func TestJobqueueRunners(t *testing.T) {
 		// we have a full test of Serve() below that needs a client executable;
 		// we say this test script is that exe, and when --runnermode is passed
 		// to us we skip all tests and just act like a runner
-		runner()
+		runner(ctx)
 		return
 	}
 	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
@@ -5798,16 +5815,22 @@ sudo usermod -aG docker ` + osUser
 		Convey("You can run cmds that start docker containers and get correct memory and cpu usage", func() {
 			var jobs []*Job
 			other := make(map[string]string)
-			other["cloud_script"] = dockerInstallScript
+			other["cloud_script"] = dockerInstallScript + "\necho 1"
 
 			jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "first_docker", MonitorDocker: "?"})
 
+			other = make(map[string]string)
+			other["cloud_script"] = dockerInstallScript + "\necho 2"
 			dockerName := "jobqueue_test." + internal.RandomString()
 			jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "named_docker", MonitorDocker: dockerName})
 
+			other = make(map[string]string)
+			other["cloud_script"] = dockerInstallScript + "\necho 3"
 			dockerCidFile := "jobqueue_test.cidfile"
 			jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidfile_docker", MonitorDocker: dockerCidFile})
 
+			other = make(map[string]string)
+			other["cloud_script"] = dockerInstallScript + "\necho 4"
 			dockerCidFile = "uuid-20181127.cidfile"
 			jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "cidglob_docker", MonitorDocker: "uuid-*.cidfile"})
 
@@ -5874,6 +5897,85 @@ sudo usermod -aG docker ` + osUser
 
 			// *** want to test that when we kill a running job, its docker
 			// is also immediately killed...
+		})
+
+		Convey("You can run a cmd to get the memory and cpu usage when no docker containers are running", func() {
+			var jobs []*Job
+
+			Convey("when docker is not installed", func() {
+				jobs = append(jobs, &Job{Cmd: "docker run sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1}, Override: uint8(2), Retries: uint8(0), RepGroup: "noDocker", MonitorDocker: "?"})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				waitRun(done)
+
+				got, err := jq.GetByRepGroup("noDocker", false, 0, JobStateComplete, false, false)
+				So(len(got), ShouldBeZeroValue)
+				So(err, ShouldBeNil)
+			})
+
+			Convey("when no relevant containers are running", func() {
+				other := make(map[string]string)
+				other["cloud_script"] = dockerInstallScript + "\necho 1"
+				jobs = append(jobs, &Job{Cmd: "sleep 30", Cwd: "/tmp", ReqGroup: "nodocker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "no_docker", MonitorDocker: "?"})
+
+				other = make(map[string]string)
+				other["cloud_script"] = dockerInstallScript + "\necho 2"
+				dockerName := "jobqueue_test." + internal.RandomString()
+				wrongDockerName := internal.RandomString()
+				jobs = append(jobs, &Job{Cmd: "docker run --name " + dockerName + " sendu/usememory:v1", Cwd: "/tmp", ReqGroup: "docker", Requirements: &jqs.Requirements{RAM: 3, Time: 5 * time.Second, Cores: 1, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongnamed_docker", MonitorDocker: wrongDockerName})
+
+				other = make(map[string]string)
+				other["cloud_script"] = dockerInstallScript + "\necho 3"
+				dockerCidFile := "jobqueue_test.cidfile"
+				wrongDockerCidFile := "jobqueue_wrong.cidfile"
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongcidfile_docker", MonitorDocker: wrongDockerCidFile})
+
+				other = make(map[string]string)
+				other["cloud_script"] = dockerInstallScript + "\necho 4"
+				dockerCidFile = "uuid-20181127.cidfile"
+				wrongDockerUUID := internal.RandomString() + "*" + internal.RandomString()
+				jobs = append(jobs, &Job{Cmd: "docker run --cidfile " + dockerCidFile + " sendu/usecpu:v1 && rm " + dockerCidFile, Cwd: "/tmp", ReqGroup: "docker2", Requirements: &jqs.Requirements{RAM: 1, Time: 5 * time.Second, Cores: 2, Other: other}, Override: uint8(2), Retries: uint8(0), RepGroup: "wrongcidglob_docker", MonitorDocker: wrongDockerUUID})
+
+				inserts, already, err := jq.Add(jobs, envVars, true)
+				So(err, ShouldBeNil)
+				So(inserts, ShouldEqual, 4)
+				So(already, ShouldEqual, 0)
+
+				// wait for the jobs to get run
+				done := make(chan bool, 1)
+				waitRun(done)
+
+				usedMinRAM := 100
+				got, err := jq.GetByRepGroup("no_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 5*time.Millisecond)
+
+				got, err = jq.GetByRepGroup("wrongnamed_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
+
+				got, err = jq.GetByRepGroup("wrongcidfile_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
+
+				got, err = jq.GetByRepGroup("wrongcidglob_docker", false, 0, JobStateComplete, false, false)
+				So(err, ShouldBeNil)
+				So(len(got), ShouldEqual, 1)
+				So(got[0].PeakRAM, ShouldBeLessThanOrEqualTo, usedMinRAM)
+				So(got[0].CPUtime, ShouldBeLessThan, 100*time.Millisecond)
+			})
 		})
 
 		Convey("You can run a cmd with a per-cmd set of config files", func() {
@@ -6162,6 +6264,8 @@ sudo usermod -aG docker ` + osUser
 }
 
 func TestJobqueueWithMounts(t *testing.T) {
+	ctx := context.Background()
+
 	if runnermode || servermode {
 		return
 	}
@@ -6381,7 +6485,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(job.RepGroup, ShouldEqual, "s3")
 
 			// muxfys.SetLogHandler(log15.StderrHandler)
-			jeerr := jq.Execute(job, config.RunnerExecShell)
+			jeerr := jq.Execute(ctx, job, config.RunnerExecShell)
 			So(jeerr, ShouldBeNil)
 
 			job, err = jq.GetByEssence(&JobEssence{Cmd: "cat numalphanum.txt && cat bar"}, false, false)
@@ -6482,7 +6586,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.RepGroup, ShouldEqual, "s3")
 
-			jeerr := jq.Execute(job, config.RunnerExecShell)
+			jeerr := jq.Execute(ctx, job, config.RunnerExecShell)
 			So(jeerr, ShouldNotBeNil)
 
 			got, err := jq.GetByRepGroup("s3", false, 0, JobStateBuried, false, false)
@@ -6514,7 +6618,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.RepGroup, ShouldEqual, "s3")
 
-			jeerr = jq.Execute(job, config.RunnerExecShell)
+			jeerr = jq.Execute(ctx, job, config.RunnerExecShell)
 			So(jeerr, ShouldBeNil)
 
 			got, err = jq.GetByRepGroup("s3", false, 0, JobStateComplete, false, false)
@@ -6821,8 +6925,8 @@ func disconnect(client *Client) {
 	}
 }
 
-func execute(client *Client, job *Job, shell string, failExpected ...bool) {
-	err := client.Execute(job, shell)
+func execute(ctx context.Context, client *Client, job *Job, shell string, failExpected ...bool) {
+	err := client.Execute(ctx, job, shell)
 	if err != nil && !(len(failExpected) == 1 && failExpected[0]) {
 		fmt.Printf("client.Execute() failed: %s", err)
 	}
@@ -6835,7 +6939,7 @@ func touch(client *Client, job *Job) {
 	}
 }
 
-func runner() {
+func runner(ctx context.Context) {
 	if runnerfail && runnermodetmpdir != "" {
 		// simulate loss of network connectivity between a spawned runner and
 		// the manager by just exiting without reserving any job
@@ -6901,7 +7005,7 @@ func runner() {
 		n++
 
 		// actually run the cmd
-		err = jq.Execute(job, config.RunnerExecShell)
+		err = jq.Execute(ctx, job, config.RunnerExecShell)
 		if err != nil {
 			if jqerr, ok := err.(Error); ok && jqerr.Err == FailReasonSignal {
 				break
