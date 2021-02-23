@@ -16,7 +16,7 @@ require (
 	github.com/elazarl/goproxy v0.0.0-20190421051319-9d40249d3c2f // indirect
 	github.com/elazarl/goproxy/ext v0.0.0-20191011121108-aa519ddbe484 // indirect
 	github.com/fanatic/go-infoblox v0.0.0-20190709161059-e25f3820238c
-	github.com/fatih/color v1.9.0
+	github.com/fatih/color v1.10.0
 	github.com/go-ini/ini v1.61.0 // indirect
 	github.com/go-ole/go-ole v1.2.4 // indirect
 	github.com/gofrs/uuid v3.3.0+incompatible
