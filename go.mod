@@ -22,7 +22,7 @@ require (
 	github.com/gofrs/uuid v3.3.0+incompatible
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/googleapis/gnostic v0.5.1 // indirect
-	github.com/gophercloud/gophercloud v0.12.0
+	github.com/gophercloud/gophercloud v0.16.0
 	github.com/gophercloud/utils v0.0.0-20200918191848-da0e919a012a
 	github.com/gorilla/websocket v1.4.2
 	github.com/grafov/bcast v0.0.0-20190217190352-1447f067e08d
@@ -57,9 +57,8 @@ require (
 	github.com/ugorji/go/codec v1.1.8
 	github.com/wtsi-ssg/wr v0.1.2
 	go.etcd.io/bbolt v1.3.5
-	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
+	golang.org/x/crypto v0.0.0-20201221181555-eec23a3978ad
 	golang.org/x/net v0.0.0-20200925080053-05aa5d4ee321 // indirect
-	golang.org/x/sys v0.0.0-20200923182605-d9f96fdee20d // indirect
 	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.61.0 // indirect
