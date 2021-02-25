@@ -5,6 +5,20 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.23.3] - 2021-02-26
+### Added
+- `wr status` now has a `--hosts` option to filter for jobs that ran on the
+  given host.
+- `wr status` now has a --running` option to only show jobs that are currently
+  running.
+- `wr remove` now has a `--buried` flag, to only remove buried jobs.
+
+### Changed
+- Container interaction code refactored. No change in behaviour, but will allow
+  for possible future features such as native container support and singularity
+  support.
+
+
 ## [0.23.2] - 2020-10-29
 ### Changed
 - OpenStack worker instances that are spawned now attach all the networks
