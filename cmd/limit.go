@@ -1,4 +1,4 @@
-// Copyright © 2019 Genome Research Limited
+// Copyright © 2019, 2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -51,7 +51,9 @@ Suffixing the name with :n, where n is an integer, will set the group's limit to
 that number.
 
 Setting a limit of 0 stops any more jobs in that group from running. Setting a
-limit of -1 makes that group unlimited.`,
+limit of -1 makes that group unlimited.
+
+Supplying no options lists all limits that are currently in place.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if limitGroup == "" {
 			die("--group required")
