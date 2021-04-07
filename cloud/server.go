@@ -127,7 +127,6 @@ type Server struct {
 	cancelDestruction chan bool
 	cancelID          int
 	cancelRunCmd      map[int]chan bool
-	location          *time.Location
 	provider          *Provider
 	sshClientConfig   *ssh.ClientConfig
 	usedCores         float64
@@ -836,11 +835,6 @@ func (s *Server) UploadFile(ctx context.Context, source string, dest string) err
 //
 // NB: currently only works if the server supports the command 'pwd'.
 func (s *Server) CopyOver(ctx context.Context, files string) error {
-	timezone, err := s.GetTimeZone(ctx)
-	if err != nil {
-		return err
-	}
-
 	for _, path := range strings.Split(files, ",") {
 		split := strings.Split(path, ":")
 		var localPath, remotePath string
@@ -854,8 +848,7 @@ func (s *Server) CopyOver(ctx context.Context, files string) error {
 
 		// ignore if it doesn't exist locally
 		localPath = internal.TildaToHome(localPath)
-		var info os.FileInfo
-		info, err = os.Stat(localPath)
+		info, err := os.Stat(localPath)
 		if err != nil {
 			err = nil
 			continue
@@ -885,13 +878,13 @@ func (s *Server) CopyOver(ctx context.Context, files string) error {
 
 		// sometimes the mtime of the file matters, so we try and set that on
 		// the remote copy
-		timestamp := info.ModTime().UTC().In(timezone).Format(touchStampFormat)
-		_, _, err = s.RunCmd(ctx, fmt.Sprintf("touch -t %s %s", timestamp, remotePath), false)
+		_, _, err = s.RunCmd(ctx, fmt.Sprintf("touch -d %s %s", info.ModTime().Format(touchStampFormat), remotePath), false)
 		if err != nil {
 			return err
 		}
 	}
-	return err
+
+	return nil
 }
 
 // HomeDir gets the absolute path to the server's home directory. Depends on
@@ -909,30 +902,6 @@ func (s *Server) HomeDir(ctx context.Context) (string, error) {
 	}
 	s.homeDir = strings.TrimSuffix(stdout, "\n")
 	return s.homeDir, nil
-}
-
-// GetTimeZone gets the server's time zone as a fixed time.Location in the fake
-// timezone 'SER'; you should only rely on the offset to convert times.
-func (s *Server) GetTimeZone(ctx context.Context) (*time.Location, error) {
-	if s.location != nil {
-		return s.location, nil
-	}
-
-	serverDate, _, err := s.RunCmd(ctx, `date +%z`, false)
-	if err != nil {
-		return nil, err
-	}
-	serverDate = strings.TrimSpace(serverDate)
-
-	t, err := time.Parse("-0700", serverDate)
-	if err != nil {
-		return nil, err
-	}
-	_, offset := t.Zone()
-
-	location := time.FixedZone("SER", offset)
-	s.location = location
-	return location, err
 }
 
 // CreateFile creates a new file with the given content on the server.

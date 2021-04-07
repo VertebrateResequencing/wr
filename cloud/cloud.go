@@ -153,8 +153,8 @@ var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 const defaultGateWayIP = "192.168.0.1"
 const defaultCIDR = "192.168.0.0/18"
 
-// touchStampFormat is the time format expected by `touch -t`.
-const touchStampFormat = "200601021504.05"
+// touchStampFormat is the time format we use for `touch -d`.
+const touchStampFormat = "2006-01-02T15:04:05-0700"
 
 // hostNameRegex is used by nameToHostName() to make strings valid hostnames.
 var hostNameRegex = regexp.MustCompile(`[^a-z0-9\-]+`)
