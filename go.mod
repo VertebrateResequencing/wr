@@ -37,6 +37,7 @@ require (
 	github.com/json-iterator/go v1.1.10 // indirect
 	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0
 	github.com/klauspost/cpuid v1.3.1 // indirect
+	github.com/manifoldco/promptui v0.8.0
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/minio/minio-go/v6 v6.0.57 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -55,7 +56,7 @@ require (
 	github.com/spf13/cobra v1.0.0
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/ugorji/go/codec v1.1.8
-	github.com/wtsi-ssg/wr v0.1.2
+	github.com/wtsi-ssg/wr v0.2.0
 	go.etcd.io/bbolt v1.3.5
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
 	golang.org/x/net v0.0.0-20200925080053-05aa5d4ee321 // indirect
