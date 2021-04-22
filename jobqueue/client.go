@@ -1784,6 +1784,16 @@ func (c *Client) GetOrSetLimitGroup(group string) (int, error) {
 	return resp.Limit, err
 }
 
+// GetLimitGroups returns all currently known about limit groups, and the limit
+// they are set to.
+func (c *Client) GetLimitGroups() (map[string]int, error) {
+	resp, err := c.request(&clientRequest{Method: "getlgs"})
+	if err != nil {
+		return nil, err
+	}
+	return resp.LimitGroups, err
+}
+
 // UploadFile uploads a local file to the machine where the server is running,
 // so you can add cloud jobs that need a script or config file on your local
 // machine to be copied over to created cloud instances.

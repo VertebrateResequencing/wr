@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -55,8 +56,8 @@ limit of -1 makes that group unlimited.
 
 Supplying no options lists all limits that are currently in place.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if limitGroup == "" {
-			die("--group required")
+		if len(args) > 0 {
+			die("Did you mean to specify --group?")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
@@ -68,6 +69,24 @@ Supplying no options lists all limits that are currently in place.`,
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
+
+		if limitGroup == "" {
+			limits, err := jq.GetLimitGroups()
+			if err != nil {
+				die(err.Error())
+			}
+
+			keys := make([]string, 0, len(limits))
+			for key := range limits {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+
+			for _, key := range keys {
+				fmt.Printf("%s: %d\n", key, limits[key])
+			}
+			return
+		}
 
 		limit, err := jq.GetOrSetLimitGroup(limitGroup)
 		if err != nil {

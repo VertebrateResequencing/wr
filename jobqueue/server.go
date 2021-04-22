@@ -129,20 +129,21 @@ func (e Error) Error() string {
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
-	Err        string // string instead of error so we can decode on the client side
-	Added      int
-	Existed    int
-	AddedIDs   []string
-	Modified   map[string]string
-	KillCalled bool
-	Job        *Job
-	Jobs       []*Job
-	Limit      int
-	SInfo      *ServerInfo
-	SStats     *ServerStats
-	DB         []byte
-	Path       string
-	BadServers []*BadServer
+	Err         string // string instead of error so we can decode on the client side
+	Added       int
+	Existed     int
+	AddedIDs    []string
+	Modified    map[string]string
+	KillCalled  bool
+	Job         *Job
+	Jobs        []*Job
+	Limit       int
+	LimitGroups map[string]int
+	SInfo       *ServerInfo
+	SStats      *ServerStats
+	DB          []byte
+	Path        string
+	BadServers  []*BadServer
 }
 
 // ServerInfo holds basic addressing info about the server.
@@ -2424,17 +2425,15 @@ func (s *Server) getSetLimitGroup(group string) (int, string, error) {
 		return 0, ErrBadLimitGroup, err
 	}
 	if suffixed {
-		limitGroups := make(map[string]int)
-		limitGroups[name] = limit
-		changed, removed, err := s.db.storeLimitGroups(limitGroups)
+		_, removed, err := s.db.storeLimitGroups(map[string]int{name: limit})
 		if err != nil {
 			return -1, ErrDBError, err
 		}
-		for _, group := range changed {
-			s.limiter.SetLimit(group, uint(limit))
+		if limit >= 0 {
+			s.limiter.SetLimit(name, uint(limit))
 		}
-		for _, group := range removed {
-			s.limiter.RemoveLimit(group)
+		for _, g := range removed {
+			s.limiter.RemoveLimit(g)
 		}
 		s.q.TriggerReadyAddedCallback()
 		return limit, "", nil

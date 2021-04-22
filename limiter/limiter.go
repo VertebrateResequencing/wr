@@ -75,6 +75,20 @@ func (l *Limiter) GetLimit(name string) int {
 	return int(group.limit)
 }
 
+// GetLimits tells you the current limit of all currently set groups.
+func (l *Limiter) GetLimits() map[string]int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	limits := make(map[string]int, len(l.groups))
+
+	for name, group := range l.groups {
+		limits[name] = int(group.limit)
+	}
+
+	return limits
+}
+
 // RemoveLimit removes the given group from memory. If your callback also begins
 // returning -1 for this group, the group effectively becomes unlimited.
 func (l *Limiter) RemoveLimit(name string) {

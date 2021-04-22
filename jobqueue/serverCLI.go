@@ -715,6 +715,8 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					sr = &serverResponse{Limit: limit}
 				}
 			}
+		case "getlgs":
+			sr = &serverResponse{LimitGroups: s.limiter.GetLimits()}
 		default:
 			srerr = ErrUnknownCommand
 		}
