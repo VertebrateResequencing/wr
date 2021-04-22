@@ -71,7 +71,8 @@ Supplying no options lists all limits that are currently in place.`,
 		}()
 
 		if limitGroup == "" {
-			limits, err := jq.GetLimitGroups()
+			var limits map[string]int
+			limits, err = jq.GetLimitGroups()
 			if err != nil {
 				die(err.Error())
 			}
@@ -85,6 +86,7 @@ Supplying no options lists all limits that are currently in place.`,
 			for _, key := range keys {
 				fmt.Printf("%s: %d\n", key, limits[key])
 			}
+
 			return
 		}
 

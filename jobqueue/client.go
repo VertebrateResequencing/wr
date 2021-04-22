@@ -1791,6 +1791,7 @@ func (c *Client) GetLimitGroups() (map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return resp.LimitGroups, err
 }
 
