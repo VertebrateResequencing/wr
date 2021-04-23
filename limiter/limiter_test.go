@@ -188,6 +188,13 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment(two), ShouldBeFalse)
 		})
 
+		Convey("You can set multiple limits and then get them all", func() {
+			l.SetLimit("l1", 1)
+			l.SetLimit("l2", 2)
+			lgs := l.GetLimits()
+			So(lgs, ShouldResemble, map[string]int{"l1": 1, "l2": 2})
+		})
+
 		Convey("You can have limits of 0 and also RemoveLimit()s", func() {
 			l.SetLimit("l2", 0)
 			So(l.Increment([]string{"l2"}), ShouldBeFalse)

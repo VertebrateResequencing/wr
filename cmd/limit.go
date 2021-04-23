@@ -1,4 +1,4 @@
-// Copyright © 2019 Genome Research Limited
+// Copyright © 2019, 2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -51,10 +52,12 @@ Suffixing the name with :n, where n is an integer, will set the group's limit to
 that number.
 
 Setting a limit of 0 stops any more jobs in that group from running. Setting a
-limit of -1 makes that group unlimited.`,
+limit of -1 makes that group unlimited.
+
+Supplying no options lists all limits that are currently in place.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if limitGroup == "" {
-			die("--group required")
+		if len(args) > 0 {
+			die("Did you mean to specify --group?")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
@@ -66,6 +69,26 @@ limit of -1 makes that group unlimited.`,
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
+
+		if limitGroup == "" {
+			var limits map[string]int
+			limits, err = jq.GetLimitGroups()
+			if err != nil {
+				die(err.Error())
+			}
+
+			keys := make([]string, 0, len(limits))
+			for key := range limits {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+
+			for _, key := range keys {
+				fmt.Printf("%s: %d\n", key, limits[key])
+			}
+
+			return
+		}
 
 		limit, err := jq.GetOrSetLimitGroup(limitGroup)
 		if err != nil {
