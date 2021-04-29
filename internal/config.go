@@ -31,7 +31,9 @@ import (
 	"github.com/creasty/defaults"
 	"github.com/inconshreveable/log15"
 	"github.com/jinzhu/configor"
+	"github.com/manifoldco/promptui"
 	"github.com/olekukonko/tablewriter"
+	"github.com/wtsi-ssg/wr/network/port"
 )
 
 const (
@@ -53,6 +55,12 @@ const (
 	ConfigSourceDefault = "default"
 
 	sourcesProperty = "sources"
+
+	portsNeeded      = 4
+	portsProdDevDiff = 2
+	portsCmdWebDiff  = 1
+	portsMinPort     = 1021
+	portsMaxPort     = 65535
 )
 
 // Config holds the configuration options for jobqueue server and client
@@ -329,10 +337,10 @@ func ConfigLoad(deployment string, useparentdir bool, logger log15.Logger) Confi
 	// if not explicitly set, calculate ports that no one else would be
 	// assigned by us (and hope no other software is using it...)
 	if config.ManagerPort == "" {
-		config.ManagerPort = calculatePort(config.Deployment, "cli", logger)
+		config.ManagerPort = calculatePort(config, "cli", logger)
 	}
 	if config.ManagerWeb == "" {
-		config.ManagerWeb = calculatePort(config.Deployment, "webi", logger)
+		config.ManagerWeb = calculatePort(config, "webi", logger)
 	}
 
 	return *config
@@ -407,7 +415,7 @@ func DefaultServer(logger log15.Logger) (server string) {
 
 // Calculate a port number that will be unique to this user, deployment and
 // ptype ("cli" or "webi").
-func calculatePort(deployment string, ptype string, logger log15.Logger) (port string) {
+func calculatePort(config *Config, ptype string, logger log15.Logger) (port string) {
 	uid, err := Userid()
 	if err != nil {
 		logger.Error(err.Error())
@@ -417,24 +425,95 @@ func calculatePort(deployment string, ptype string, logger log15.Logger) (port s
 	// our port must be greater than 1024, and by basing on user id we can
 	// avoid conflicts with other users of wr on the same machine; we
 	// multiply by 4 because we have to reserve 4 ports for each user
-	pn := 1021 + (uid * 4)
+	pn := portsMinPort + (uid * portsNeeded)
 
-	// maximum port number is 65535
-	if pn+3 > 65535 {
-		logger.Error("Could not calculate a suitable unique port number for you, since your user id is so large; please manually set your manager_port and manager_web config options.")
-		os.Exit(1)
+	found := false
+	if pn+portsNeeded-1 > portsMaxPort {
+		pn = findPorts(logger)
+		found = true
 	}
 
-	if deployment == Development {
-		pn += 2
+	if config.Deployment == Development {
+		pn += portsProdDevDiff
 	}
 	if ptype == "webi" {
-		pn++
+		pn += portsCmdWebDiff
+	} else if found {
+		config.ManagerWeb = strconv.Itoa(pn + portsCmdWebDiff)
 	}
 
 	// it's easier for the things that use this port number if it's a string
 	// (because it's used as part of a connection string)
 	return strconv.Itoa(pn)
+}
+
+// findPorts asks the OS for an available port range, then asks the user if
+// they'd like to use it and writes it to their config file.
+func findPorts(logger log15.Logger) int {
+	checker, err := port.NewChecker("localhost")
+	if err != nil {
+		exitDueToNoPorts(err, "localhost couldn't be connected to", logger)
+	}
+
+	min, max, err := checker.AvailableRange(portsNeeded)
+	if err != nil {
+		exitDueToNoPorts(err, "available localhost ports couldn't be checked", logger)
+	}
+
+	fmt.Printf("The default ports couldn't be used for you, but ports %d..%d are available right now.\nYou could use these for your managerport and managerweb config options in production and development.\n", min, max)
+	prompt := promptui.Select{
+		Label:    "Write them to your config files at ~/.wr_config.production.yml and ~/.wr_config.development.yml?",
+		Items:    []string{"Yes", "No"},
+		HideHelp: true,
+	}
+
+	_, result, err := prompt.Run()
+	if err != nil {
+		exitDueToNoPorts(err, "didn't understand your response", logger)
+	}
+
+	if result == "No" {
+		exitDueToNoPorts(nil, "you chose not to use suggested ports", logger)
+	}
+
+	writePortsToConfigFiles(min, logger)
+
+	return min
+}
+
+// exitDueToNoPorts exits non-zero with an error because we can't continue
+// without knowing our ports.
+func exitDueToNoPorts(err error, msg string, logger log15.Logger) {
+	logger.Error("The default ports couldn't be used for you; please manually set your manager_port and manager_web config options.", "msg", msg, "err", err)
+	os.Exit(1)
+}
+
+func writePortsToConfigFiles(pn int, logger log15.Logger) {
+	home, herr := os.UserHomeDir()
+	if herr != nil || home == "" {
+		logger.Error("could not find home dir", "err", herr)
+		os.Exit(1)
+	}
+
+	writePortsToConfigFile(pn, home, Production, logger)
+	writePortsToConfigFile(pn+portsProdDevDiff, home, Development, logger)
+}
+
+func writePortsToConfigFile(pn int, home, deployment string, logger log15.Logger) {
+	f, err := os.OpenFile(filepath.Join(home, ".wr_config."+deployment+".yml"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		logger.Error("could not open config file.", "err", err)
+		os.Exit(1)
+	}
+
+	if _, err := f.WriteString(fmt.Sprintf("managerport: \"%d\"\nmanagerweb: \"%d\"\n", pn, pn+portsCmdWebDiff)); err != nil {
+		logger.Error("could not write to config file.", "err", err)
+		f.Close()
+		os.Exit(1)
+	}
+
+	f.Close()
 }
 
 // InS3 tells you if a path is to a file in S3.
