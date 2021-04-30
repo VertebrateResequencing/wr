@@ -5,6 +5,21 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.23.4] - 2021-04-30
+### Added
+- `wr limit` with no argurments now lists all currently set limit groups and
+  their current limits.
+
+### Changed
+- If your user id is high, wr used to not be able to give you default ports to
+  use. Now it suggets ports you can use and writes them to your config files if
+  desired.
+
+### Fixed
+- Timestamps of files copied to cloud servers now match regardless of local and
+  remote timezones and across daylight savings transitions.
+
+
 ## [0.23.3] - 2021-02-26
 ### Added
 - `wr status` now has a `--hosts` option to filter for jobs that ran on the
