@@ -34,6 +34,12 @@ linters-settings:
     simple: true
     range-loops: true
     for-loops: true
+  gocyclo:
+    # minimal code complexity to report, 30 by default (but we recommend 10-20)
+    min-complexity: 10
+  dupl:
+    # tokens count to trigger issue, 150 by default
+    threshold: 100
 
 linters:
   disable-all: true
@@ -50,6 +56,7 @@ linters:
     - varcheck
     - cyclop
     - dogsled
+    - dupl
     - durationcheck
     - errorlint
     - exportloopref
@@ -95,7 +102,6 @@ linters:
   #   - asciicheck
   #   - bodyclose
   #   - depguard
-  #   - dupl
   #   - exhaustive
   #   - exhaustivestruct
   #   - gofmt
@@ -124,6 +130,14 @@ issues:
         - errcheck
         - dupl
         - gosec
+        - gochecknoglobals
+        - gochecknoinits
+    - path: cmd/
+      linters:
+        - gocyclo
+        - dupl
+        - gochecknoglobals
+        - gochecknoinits
   max-issues-per-linter: 0
   max-same-issues: 0
   new-from-rev: master

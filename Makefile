@@ -48,9 +48,6 @@ race:
 lint:
 	@golangci-lint run
 
-lintextra:
-	@golangci-lint run -c .golangci_extra.yml
-
 clean:
 	@rm -f ./wr
 	@rm -f ./dist.zip
