@@ -44,7 +44,7 @@ race:
 	go test -p 1 -tags netgo -race --count 1 ./rp
 	go test -p 1 -tags netgo -race --count 1 ./limiter
 
-# curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(go env GOPATH)/bin v1.16.0
+# curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.39.0
 lint:
 	@golangci-lint run
 
