@@ -22,7 +22,6 @@ package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"syscall"
 	"time"
@@ -119,7 +118,7 @@ func initConfig() {
 // token reads and returns the token from the file created when the manager
 // starts.
 func token() ([]byte, error) {
-	token, err := ioutil.ReadFile(config.ManagerTokenFile)
+	token, err := os.ReadFile(config.ManagerTokenFile)
 	if err != nil {
 		return nil, err
 	}

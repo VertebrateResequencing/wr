@@ -32,7 +32,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -78,7 +77,7 @@ func CheckCerts(serverPemFile string, serverKeyFile string) error {
 // CertExpiry returns the time that the certificate given by the path to a pem
 // file will expire.
 func CertExpiry(certFile string) (time.Time, error) {
-	certPEMBlock, err := ioutil.ReadFile(certFile)
+	certPEMBlock, err := os.ReadFile(certFile)
 	if err != nil {
 		return time.Now(), err
 	}

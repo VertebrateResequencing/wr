@@ -21,7 +21,6 @@ package cloud
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -72,7 +71,7 @@ func TestOpenStack(t *testing.T) {
 	if osPrefix == "" || osUser == "" || localUser == "" || flavorRegex == "" {
 		SkipConvey("Without our special OS_OS_PREFIX, OS_OS_USERNAME, OS_LOCAL_USERNAME and OS_FLAVOR_REGEX environment variables, we'll skip openstack tests", t, func() {})
 	} else {
-		crdir, err := ioutil.TempDir("", "wr_testing_cr")
+		crdir, err := os.MkdirTemp("", "wr_testing_cr")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -306,7 +305,7 @@ func TestOpenStack(t *testing.T) {
 						So(stdout, ShouldEqual, "my content")
 
 						localFile := filepath.Join(crdir, "source")
-						err = ioutil.WriteFile(localFile, []byte("uploadable content"), 0644)
+						err = os.WriteFile(localFile, []byte("uploadable content"), 0644)
 						So(err, ShouldBeNil)
 
 						err = server.UploadFile(context.Background(), localFile, "/tmp/foo/bar/a/c/file")

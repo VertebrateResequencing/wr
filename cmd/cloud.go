@@ -22,7 +22,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,7 +226,7 @@ within OpenStack.`,
 		var postCreation []byte
 		if postCreationScript != "" {
 			var err error
-			postCreation, err = ioutil.ReadFile(postCreationScript)
+			postCreation, err = os.ReadFile(postCreationScript)
 			if err != nil {
 				die("--script %s could not be read: %s", postCreationScript, err)
 			}
@@ -829,7 +828,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		die("failed to upload wr cloud resources file to the server at %s: %s", server.IP, err)
 	}
 	localKeyFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
-	if err = ioutil.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600); err != nil {
+	if err = os.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600); err != nil {
 		teardown(provider)
 		die("failed to create key file %s: %s", localKeyFile, err)
 	}
@@ -1047,7 +1046,7 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 	}
 
 	// store ssh's pid to file
-	err = ioutil.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
+	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
 
 	// don't cmd.Wait(); ssh will continue running in the background after we
 	// exit
@@ -1057,7 +1056,7 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 
 func checkProcess(pidPath string) (pid int, running bool) {
 	// read file (treat errors such as file not existing as no process)
-	pidBytes, err := ioutil.ReadFile(pidPath)
+	pidBytes, err := os.ReadFile(pidPath)
 	if err != nil {
 		return pid, running
 	}

@@ -285,7 +285,7 @@ func (s *opst) initialize(config interface{}, logger log15.Logger) error {
 
 	// to debug spawned servers that don't work correctly:
 	// keyFile := filepath.Join("/tmp", "key")
-	// ioutil.WriteFile(keyFile, []byte(provider.PrivateKey()), 0600)
+	// os.WriteFile(keyFile, []byte(provider.PrivateKey()), 0600)
 
 	// query our quota maximums for cpu and memory and total number of
 	// instances; 0 will mean unlimited

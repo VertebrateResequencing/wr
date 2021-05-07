@@ -24,7 +24,6 @@ import (
 	"crypto/md5"
 	"encoding/gob"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,7 +88,7 @@ func init() {
 		panic(err)
 	}
 
-	token, err = ioutil.ReadFile(config.ManagerTokenFile)
+	token, err = os.ReadFile(config.ManagerTokenFile)
 	if err != nil {
 		panic(err)
 	}

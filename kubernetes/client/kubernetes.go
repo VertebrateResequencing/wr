@@ -31,7 +31,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -675,7 +674,7 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 // but takes a path to a file as input.
 func (p *Kubernetesp) CreateInitScriptConfigMapFromFile(scriptPath string) (*apiv1.ConfigMap, error) {
 	// read in the script given
-	buf, err := ioutil.ReadFile(scriptPath)
+	buf, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return nil, err
 	}
