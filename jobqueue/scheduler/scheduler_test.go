@@ -21,6 +21,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -1359,7 +1360,7 @@ func TestOpenstack(t *testing.T) {
 	}
 }
 
-func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {
+func getInfoOfFilesInDir(tmpdir string, expected int) []fs.DirEntry {
 	files, err := os.ReadDir(tmpdir)
 	if err != nil {
 		log.Fatal(err)
@@ -1386,7 +1387,11 @@ func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 func mtimesOfFilesInDir(tmpdir string, expected int) []time.Time {
 	files := getInfoOfFilesInDir(tmpdir, expected)
 	times := make([]time.Time, 0, len(files))
-	for _, info := range files {
+	for _, entry := range files {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
 		times = append(times, info.ModTime())
 		os.Remove(filepath.Join(tmpdir, info.Name()))
 	}
