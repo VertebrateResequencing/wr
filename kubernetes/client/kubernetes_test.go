@@ -20,7 +20,6 @@ package client_test
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"strings"
@@ -254,7 +253,7 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", "configMapFromFileTest")
+	dir, err := os.MkdirTemp("", "configMapFromFileTest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +261,7 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	for _, c := range cases {
-		err := ioutil.WriteFile(dir+c.filePath, []byte(c.fileData), 0644)
+		err := os.WriteFile(dir+c.filePath, []byte(c.fileData), 0644)
 		if err != nil {
 			t.Error(fmt.Errorf("Failed to write file to %s: %s", dir+c.filePath, err))
 		}

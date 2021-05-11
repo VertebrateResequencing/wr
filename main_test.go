@@ -20,7 +20,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,7 +105,7 @@ func TestConfig(t *testing.T) {
 		})
 
 		Convey("These can be overridden with config files in WR_CONFIG_DIR", func() {
-			dir, err := ioutil.TempDir("", "wr_conf_test")
+			dir, err := os.MkdirTemp("", "wr_conf_test")
 			So(err, ShouldBeNil)
 			defer os.RemoveAll(dir)
 
@@ -131,7 +130,7 @@ func TestConfig(t *testing.T) {
 			Convey("These can be overridden with config files in home dir", func() {
 				realHome, err := os.UserHomeDir()
 				So(err, ShouldBeNil)
-				newHome, err := ioutil.TempDir(dir, "home")
+				newHome, err := os.MkdirTemp(dir, "home")
 				So(err, ShouldBeNil)
 				os.Setenv("HOME", newHome)
 				defer func() {

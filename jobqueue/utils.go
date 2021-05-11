@@ -30,7 +30,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,7 +64,7 @@ var ellipses = []byte("[...]\n")
 // to the caller for subsequent client authentication. If the given file exists
 // and contains a single 43 byte string, then that is used as the token instead.
 func generateToken(tokenFile string) ([]byte, error) {
-	if token, err := ioutil.ReadFile(tokenFile); err == nil && len(token) == tokenLength {
+	if token, err := os.ReadFile(tokenFile); err == nil && len(token) == tokenLength {
 		return token, nil
 	}
 
@@ -491,7 +490,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	// multiple queues, so we must still create a unique dir at the leaf of our
 	// hashed dir structure, to avoid any conflict of multiple processes using
 	// the same working directory
-	dir, err = ioutil.TempDir(dir, leaf)
+	dir, err = os.MkdirTemp(dir, leaf)
 	if err != nil {
 		return cwd, tmpDir, err
 	}
@@ -557,7 +556,7 @@ func removeAllExcept(path string, exceptions []string) error {
 // removeWithExceptions is the recursive part of removeAllExcept's
 // implementation that does the real work of deleting stuff.
 func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
-	entries, errr := ioutil.ReadDir(path)
+	entries, errr := os.ReadDir(path)
 	if errr != nil {
 		return errr
 	}
@@ -594,7 +593,7 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 // this happens in memory, only suitable for small files!
 func compressFile(path string) ([]byte, error) {
 	path = internal.TildaToHome(path)
-	content, err := ioutil.ReadFile(path)
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}

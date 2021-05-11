@@ -21,7 +21,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -93,12 +93,12 @@ func TestLocal(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			tmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_immediate_output_dir_")
+			tmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_immediate_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
 			defer os.RemoveAll(tmpdir)
-			tmpdir2, err := ioutil.TempDir("", "wr_schedulers_local_test_end_output_dir_")
+			tmpdir2, err := os.MkdirTemp("", "wr_schedulers_local_test_end_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -262,12 +262,12 @@ func TestLocal(t *testing.T) {
 
 		if maxCPU > 2 {
 			Convey("Schedule() does bin packing and fills up the machine with different size cmds", func() {
-				smallTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_small_output_dir_")
+				smallTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_small_output_dir_")
 				if err != nil {
 					log.Fatal(err)
 				}
 				defer os.RemoveAll(smallTmpdir)
-				bigTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_big_output_dir_")
+				bigTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_big_output_dir_")
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -339,12 +339,12 @@ func TestLocal(t *testing.T) {
 			})
 
 			Convey("Priority overrides bin-packing for smaller cmds", func() {
-				smallTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_small_output_dir_")
+				smallTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_small_output_dir_")
 				if err != nil {
 					log.Fatal(err)
 				}
 				defer os.RemoveAll(smallTmpdir)
-				bigTmpdir, err := ioutil.TempDir("", "wr_schedulers_local_test_big_output_dir_")
+				bigTmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_big_output_dir_")
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -393,7 +393,7 @@ func TestLocal(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(s, ShouldNotBeNil)
 
-			tmpDir, err := ioutil.TempDir("", "wr_schedulers_local_test_slee[_output_dir_")
+			tmpDir, err := os.MkdirTemp("", "wr_schedulers_local_test_slee[_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -541,7 +541,7 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
-			// tmpdir, err := ioutil.TempDir("", "wr_schedulers_lsf_test_output_dir_")
+			// tmpdir, err := os.MkdirTemp("", "wr_schedulers_lsf_test_output_dir_")
 			// if err != nil {
 			// 	log.Fatal(err)
 			// }
@@ -554,7 +554,7 @@ func TestLSF(t *testing.T) {
 			// failing; instead we assume, since this is LSF, that our current
 			// directory is on a shared disk, and just have all the jobs write
 			// their files here directly
-			tmpdir, err := ioutil.TempDir("./", "wr_schedulers_lsf_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("./", "wr_schedulers_lsf_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -604,7 +604,7 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Schedule() lets you schedule more jobs than could reasonably start all at once", func() {
-			tmpdir, err := ioutil.TempDir("./", "wr_schedulers_lsf_test_output_dir_")
+			tmpdir, err := os.MkdirTemp("./", "wr_schedulers_lsf_test_output_dir_")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -682,7 +682,7 @@ func TestOpenstack(t *testing.T) {
 	}
 
 	Convey("You can get a new openstack scheduler", t, func() {
-		tmpdir, errt := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
+		tmpdir, errt := os.MkdirTemp("", "wr_schedulers_openstack_test_output_dir_")
 		if errt != nil {
 			log.Fatal(errt)
 		}
@@ -1186,7 +1186,7 @@ func TestOpenstack(t *testing.T) {
 
 	if novaCmd != "" {
 		Convey("You can get a new openstack scheduler that can do multiple spawns", t, func() {
-			tmpdir, errt := ioutil.TempDir("", "wr_schedulers_openstack_test_output_dir_")
+			tmpdir, errt := os.MkdirTemp("", "wr_schedulers_openstack_test_output_dir_")
 			if errt != nil {
 				log.Fatal(errt)
 			}
@@ -1360,8 +1360,8 @@ func TestOpenstack(t *testing.T) {
 	}
 }
 
-func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {
-	files, err := ioutil.ReadDir(tmpdir)
+func getInfoOfFilesInDir(tmpdir string, expected int) []fs.DirEntry {
+	files, err := os.ReadDir(tmpdir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1372,7 +1372,7 @@ func getInfoOfFilesInDir(tmpdir string, expected int) []os.FileInfo {
 		if err != nil {
 			log.Fatal(err)
 		}
-		files, err = ioutil.ReadDir(tmpdir)
+		files, err = os.ReadDir(tmpdir)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1387,7 +1387,11 @@ func testDirForFiles(tmpdir string, expected int) (numfiles int) {
 func mtimesOfFilesInDir(tmpdir string, expected int) []time.Time {
 	files := getInfoOfFilesInDir(tmpdir, expected)
 	times := make([]time.Time, 0, len(files))
-	for _, info := range files {
+	for _, entry := range files {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
 		times = append(times, info.ModTime())
 		os.Remove(filepath.Join(tmpdir, info.Name()))
 	}

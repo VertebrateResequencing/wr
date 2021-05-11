@@ -25,7 +25,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -51,7 +51,7 @@ func TestREST(t *testing.T) {
 	testLogger := log15.New()
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
 
-	dir, errt := ioutil.TempDir("", "wr_rest_tests")
+	dir, errt := os.MkdirTemp("", "wr_rest_tests")
 	if errt != nil {
 		log.Fatalf("could not create tempdir: %s\n", errt)
 	}
@@ -101,7 +101,7 @@ func TestREST(t *testing.T) {
 		bearer := "Bearer " + string(token)
 
 		tlsConfig := &tls.Config{ServerName: config.ManagerCertDomain}
-		caCert, errr := ioutil.ReadFile(config.ManagerCAFile)
+		caCert, errr := os.ReadFile(config.ManagerCAFile)
 		if errr == nil {
 			certPool := x509.NewCertPool()
 			certPool.AppendCertsFromPEM(caCert)
@@ -140,7 +140,7 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Authorization", bearer)
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 
 			var jstati []JStatus
@@ -165,7 +165,7 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Content-Type", "application/json")
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
@@ -196,7 +196,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
+				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -211,7 +211,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
+				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -225,7 +225,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
+				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati2 []JStatus
@@ -242,7 +242,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
+				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -261,7 +261,7 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
+					responseData, err = io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
@@ -278,7 +278,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
+				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				So(response.Status, ShouldEqual, "400 Bad Request")
@@ -289,7 +289,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err = client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err = ioutil.ReadAll(response.Body)
+				responseData, err = io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -334,7 +334,7 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
+					responseData, err = io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
@@ -350,7 +350,7 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
+					responseData, err = io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					jstati = []JStatus{}
@@ -371,7 +371,7 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
+					responseData, err = io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					var jstati []JStatus
@@ -387,7 +387,7 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
+					responseData, err = io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 
 					jstati = []JStatus{}
@@ -410,7 +410,7 @@ func TestREST(t *testing.T) {
 						req.Header.Add("Authorization", bearer)
 						response, err := client.Do(req)
 						So(err, ShouldBeNil)
-						responseData, err := ioutil.ReadAll(response.Body)
+						responseData, err := io.ReadAll(response.Body)
 						So(err, ShouldBeNil)
 
 						var jstati []JStatus
@@ -428,7 +428,7 @@ func TestREST(t *testing.T) {
 						req.Header.Add("Authorization", bearer)
 						response, err = client.Do(req)
 						So(err, ShouldBeNil)
-						responseData, err = ioutil.ReadAll(response.Body)
+						responseData, err = io.ReadAll(response.Body)
 						So(err, ShouldBeNil)
 
 						var jstati2 []JStatus
@@ -446,7 +446,7 @@ func TestREST(t *testing.T) {
 						req.Header.Add("Authorization", bearer)
 						response, err = client.Do(req)
 						So(err, ShouldBeNil)
-						responseData, err = ioutil.ReadAll(response.Body)
+						responseData, err = io.ReadAll(response.Body)
 						So(err, ShouldBeNil)
 
 						var jstati3 []JStatus
@@ -466,7 +466,7 @@ func TestREST(t *testing.T) {
 						req.Header.Add("Authorization", bearer)
 						response, err := client.Do(req)
 						So(err, ShouldBeNil)
-						responseData, err := ioutil.ReadAll(response.Body)
+						responseData, err := io.ReadAll(response.Body)
 						So(err, ShouldBeNil)
 
 						var jstati []JStatus
@@ -491,7 +491,7 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Content-Type", "application/json")
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
@@ -511,7 +511,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err := io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var jstati []JStatus
@@ -534,7 +534,7 @@ func TestREST(t *testing.T) {
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
 			So(response.StatusCode, ShouldEqual, 400)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 			So(string(responseData), ShouldEqual, "there was a problem interpreting your job: cmd was not specified\n")
 		})
@@ -552,7 +552,7 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Content-Type", "application/json")
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 			var jstati []JStatus
 			err = json.Unmarshal(responseData, &jstati)
@@ -578,7 +578,7 @@ func TestREST(t *testing.T) {
 			uploadedScript := filepath.Join(dir, "cloud.script.uploaded")
 
 			scriptContent := []byte("echo 1\n")
-			err := ioutil.WriteFile(cloudScript, scriptContent, 0600)
+			err := os.WriteFile(cloudScript, scriptContent, 0600)
 			So(err, ShouldBeNil)
 
 			_, err = os.Stat(uploadedScript)
@@ -605,13 +605,13 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err := io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 				file.Close()
 
 				_, err = os.Stat(uploadedScript)
 				So(err, ShouldBeNil)
-				content, err := ioutil.ReadFile(uploadedScript)
+				content, err := os.ReadFile(uploadedScript)
 				So(err, ShouldBeNil)
 				So(content, ShouldResemble, scriptContent)
 
@@ -638,13 +638,13 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err := client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err := ioutil.ReadAll(response.Body)
+					responseData, err := io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 					file.Close()
 
 					info, err := os.Stat(md5Path)
 					So(err, ShouldBeNil)
-					content, err := ioutil.ReadFile(md5Path)
+					content, err := os.ReadFile(md5Path)
 					So(err, ShouldBeNil)
 					So(content, ShouldResemble, scriptContent)
 
@@ -662,7 +662,7 @@ func TestREST(t *testing.T) {
 					req.Header.Add("Authorization", bearer)
 					response, err = client.Do(req)
 					So(err, ShouldBeNil)
-					responseData, err = ioutil.ReadAll(response.Body)
+					responseData, err = io.ReadAll(response.Body)
 					So(err, ShouldBeNil)
 					file.Close()
 
@@ -684,7 +684,7 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Authorization", bearer)
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 
 			var sis []*schedulerIssue
@@ -714,7 +714,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err := io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var sis []*schedulerIssue
@@ -734,7 +734,7 @@ func TestREST(t *testing.T) {
 			req.Header.Add("Authorization", bearer)
 			response, err := client.Do(req)
 			So(err, ShouldBeNil)
-			responseData, err := ioutil.ReadAll(response.Body)
+			responseData, err := io.ReadAll(response.Body)
 			So(err, ShouldBeNil)
 
 			var servers []*BadServer
@@ -759,7 +759,7 @@ func TestREST(t *testing.T) {
 				req.Header.Add("Authorization", bearer)
 				response, err := client.Do(req)
 				So(err, ShouldBeNil)
-				responseData, err := ioutil.ReadAll(response.Body)
+				responseData, err := io.ReadAll(response.Body)
 				So(err, ShouldBeNil)
 
 				var servers []*BadServer

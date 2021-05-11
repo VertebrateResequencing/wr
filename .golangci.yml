@@ -16,13 +16,6 @@ linters-settings:
     check-blank: true
   govet:
     check-shadowing: true
-  goimports:
-    # put imports beginning with prefix after 3rd-party packages;
-    # it's a comma-separated list of prefixes
-    # local-prefixes: github.com/VertebrateResequencing/wr
-  maligned:
-    # print struct with more effective memory layout or not, false by default
-    suggest-new: true
   unused:
     # treat code as a program (not a library) and report unused exported identifiers; default is false.
     # XXX: if you enable this setting, unused will report a lot of false-positives in text editors:
@@ -41,44 +34,92 @@ linters-settings:
     simple: true
     range-loops: true
     for-loops: true
+  gocyclo:
+    # minimal code complexity to report, 30 by default (but we recommend 10-20)
+    min-complexity: 10
+  dupl:
+    # tokens count to trigger issue, 150 by default
+    threshold: 100
 
 linters:
-  enable-all: true
-  # enable:
-  #   - deadcode
-  #   - errcheck
-  #   - gosimple
-  #   - govet
-  #   - ineffassign
-  #   - staticcheck
-  #   - structcheck
-  #   - typecheck
-  #   - unused
-  #   - varcheck
-  #   - goconst
-  #   - gocritic
-  #   - goimports
-  #   - golint
-  #   - gosec
-  #   - interfacer
-  #   - maligned
-  #   - misspell
-  #   - nakedret
-  #   - prealloc
-  #   - scopelint
-  #   - stylecheck
-  #   - unconvert
-  #   - unparam
-  disable-all: false
-  disable:
-    - depguard
+  disable-all: true
+  enable:
+    - deadcode
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - structcheck
+    - typecheck
+    - unused
+    - varcheck
+    - cyclop
+    - dogsled
     - dupl
+    - durationcheck
+    - errorlint
+    - exportloopref
+    - forbidigo
+    - forcetypeassert
+    - funlen
+    - gci
     - gochecknoglobals
     - gochecknoinits
+    - gocognit
+    - goconst
+    - gocritic
     - gocyclo
-    - gofmt
+    - godot
+    - godox
+    - goerr113
+    - goimports
+    - golint
+    - gomnd
+    - gosec
+    - ifshort
+    - importas
     - lll
+    - makezero
+    - misspell
+    - nakedret
+    - nestif
+    - nilerr
+    - nlreturn
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - rowserrcheck
+    - stylecheck
+    - thelper
+    - unconvert
+    - unparam
+    - wastedassign
+    - whitespace
     - wsl
+  # disable:
+  #   - asciicheck
+  #   - bodyclose
+  #   - depguard
+  #   - exhaustive
+  #   - exhaustivestruct
+  #   - gofmt
+  #   - gofumpt
+  #   - goheader
+  #   - gomoddirectives
+  #   - gomodguard
+  #   - goprintffuncname
+  #   - interfacer
+  #   - maligned
+  #   - paralleltest
+  #   - promlinter
+  #   - revive
+  #   - sqlclosecheck
+  #   - tagliatelle
+  #   - testpackage
+  #   - tparallel
+  #   - wrapcheck
 
 issues:
   exclude-rules:
@@ -89,6 +130,14 @@ issues:
         - errcheck
         - dupl
         - gosec
+        - gochecknoglobals
+        - gochecknoinits
+    - path: cmd/
+      linters:
+        - gocyclo
+        - dupl
+        - gochecknoglobals
+        - gochecknoinits
   max-issues-per-linter: 0
   max-same-issues: 0
   new-from-rev: master

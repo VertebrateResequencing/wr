@@ -22,7 +22,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -155,7 +154,7 @@ fully.`,
 		var extraArgs []string
 		if postCreationScript != "" {
 			var err error
-			postCreation, err = ioutil.ReadFile(postCreationScript)
+			postCreation, err = os.ReadFile(postCreationScript)
 			if err != nil {
 				die("--cloud_script %s could not be read: %s", postCreationScript, err)
 			}

@@ -24,7 +24,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -236,7 +235,7 @@ func (b *Behaviour) cleanup(j *Job, all bool) error {
 
 		// finally delete everything inside workSpace except for cwd and the
 		// cache dirs, incase a job.Cmd did something like `touch ../foo`
-		entries, err := ioutil.ReadDir(workSpace)
+		entries, err := os.ReadDir(workSpace)
 		if err != nil {
 			return err
 		}

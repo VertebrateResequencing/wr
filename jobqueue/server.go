@@ -27,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"net/http"
@@ -600,7 +599,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 	}
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
 	listenOpts := make(map[string]interface{})
-	caCert, err := ioutil.ReadFile(caFile)
+	caCert, err := os.ReadFile(caFile)
 	if err == nil {
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(caCert)
@@ -906,7 +905,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 
 	// store token on disk
 	if config.TokenFile != "" {
-		err = ioutil.WriteFile(config.TokenFile, token, 0600)
+		err = os.WriteFile(config.TokenFile, token, 0600)
 		if err != nil {
 			return s, msg, token, err
 		}
@@ -1130,7 +1129,7 @@ func (s *Server) uploadFile(source io.Reader, savePath string) (string, error) {
 				return "", err
 			}
 		}
-		file, err = ioutil.TempFile(s.uploadDir, "file_upload")
+		file, err = os.CreateTemp(s.uploadDir, "file_upload")
 		if err != nil {
 			s.Error("uploadFile temp file create error", "err", err)
 			return "", err

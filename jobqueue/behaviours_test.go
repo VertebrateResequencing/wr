@@ -21,7 +21,6 @@ package jobqueue
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +42,7 @@ func TestBehaviours(t *testing.T) {
 		b9 := &Behaviour{When: OnSuccess | OnFailure, Do: Cleanup}
 		b10 := &Behaviour{When: 10, Do: Cleanup}
 
-		cwd, err := ioutil.TempDir("", "wr_jobqueue_test_behaviour_dir_")
+		cwd, err := os.MkdirTemp("", "wr_jobqueue_test_behaviour_dir_")
 		So(err, ShouldBeNil)
 		defer os.RemoveAll(cwd)
 		actualCwd := filepath.Join(cwd, "a", "b", "c", "def", "cwd")

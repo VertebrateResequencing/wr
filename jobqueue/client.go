@@ -28,7 +28,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -196,7 +195,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 
 	sock.AddTransport(tlstcp.NewTransport())
 	tlsConfig := &tls.Config{ServerName: certDomain}
-	caCert, err := ioutil.ReadFile(caFile)
+	caCert, err := os.ReadFile(caFile)
 	if err == nil {
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(caCert)
@@ -350,7 +349,7 @@ func (c *Client) BackupDB(path string) error {
 		return err
 	}
 	tmpPath := path + ".tmp"
-	err = ioutil.WriteFile(tmpPath, resp.DB, dbFilePermission)
+	err = os.WriteFile(tmpPath, resp.DB, dbFilePermission)
 	if err != nil {
 		rerr := os.Remove(tmpPath)
 		if rerr != nil {
@@ -631,7 +630,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	var prependPath string
 	if job.BsubMode != "" {
 		// create our bsub symlinks in a tmp dir
-		prependPath, err = ioutil.TempDir("", lsfEmulationDir)
+		prependPath, err = os.MkdirTemp("", lsfEmulationDir)
 		if err != nil {
 			stopTouching <- true
 			buryErr := fmt.Errorf("could not create lsf emulation directory: %w", err)

@@ -21,7 +21,6 @@ package deployment_test
 import (
 	"encoding/gob"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -162,7 +161,7 @@ func TestDeploy(t *testing.T) {
 
 		// Now the deployment will be waiting for an attach to copy the binary
 		// to boot from.
-		dir, err = ioutil.TempDir("", "deploy")
+		dir, err = os.MkdirTemp("", "deploy")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -25,7 +25,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -240,7 +239,7 @@ func Which(exeName string) string {
 		if err != nil || !stat.IsDir() {
 			continue
 		}
-		exes, err := ioutil.ReadDir(dir)
+		exes, err := os.ReadDir(dir)
 		if err != nil {
 			continue
 		}
@@ -300,7 +299,7 @@ func InfobloxSetDomainIP(domain, ip string) error {
 
 	// turn off logging built in to go-infoblox
 	log.SetFlags(0)
-	log.SetOutput(ioutil.Discard)
+	log.SetOutput(io.Discard)
 
 	// check env vars are defined
 	host := os.Getenv("INFOBLOX_HOST")
@@ -487,7 +486,7 @@ func currentIPFallback(ipNet *net.IPNet) (string, error) {
 // to an absolute path, in order to find the file.
 func PathToContent(path string) (string, error) {
 	absPath := TildaToHome(path)
-	contents, err := ioutil.ReadFile(absPath)
+	contents, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("path [%s] could not be read: %s", absPath, err)
 	}

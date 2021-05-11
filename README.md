@@ -47,14 +47,14 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.15 of go is required):
+Alternatively, build it yourself (at least v1.16 of go is required):
 
 1. Install go on your machine according to:
 [golang.org/doc/install](https://golang.org/doc/install)
 An example way of setting up a personal Go installation in your home directory
 would be:
 
-        export GOV=1.15.2
+        export GOV=1.16.3
         wget https://dl.google.com/go/go$GOV.linux-amd64.tar.gz
         tar -xvzf go$GOV.linux-amd64.tar.gz && rm go$GOV.linux-amd64.tar.gz
         export PATH=$PATH:$HOME/go/bin

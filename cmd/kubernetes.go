@@ -22,7 +22,6 @@ import (
 	"bufio"
 	"encoding/gob"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -156,7 +155,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 		var extraArgs []string
 		if podPostCreationScript != "" {
 			var err error
-			postCreation, err = ioutil.ReadFile(podPostCreationScript)
+			postCreation, err = os.ReadFile(podPostCreationScript)
 			if err != nil {
 				die("--script %s could not be read: %s", podPostCreationScript, err)
 			}
@@ -323,7 +322,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 
 		// later we will copy a file that configures wr with the correct ports
 		// and db backup; create that as a temp file now
-		tmpConfigFile, errt := ioutil.TempFile("", ".wr_k8s_config")
+		tmpConfigFile, errt := os.CreateTemp("", ".wr_k8s_config")
 		if errt != nil {
 			die("cannot create temporary config file: %s", errt)
 		}
@@ -374,7 +373,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			token := stdOut
 
 			// Write token to file
-			err = ioutil.WriteFile(config.ManagerTokenFile, []byte(token), 0644)
+			err = os.WriteFile(config.ManagerTokenFile, []byte(token), 0644)
 			if err != nil {
 				warn("Failed to write token to file: %s", err)
 			}
@@ -667,11 +666,11 @@ accessible.`,
 		}
 
 		// write logs to file
-		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0644)
+		err = os.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0644)
 		if err != nil {
 			warn("failed to write kubeSchedulerLog to file: %s", err)
 		}
-		err = ioutil.WriteFile(config.ManagerDir+"/kubeSchedulerControllerLog", []byte(kubeSchedulerControllerLog), 0644)
+		err = os.WriteFile(config.ManagerDir+"/kubeSchedulerControllerLog", []byte(kubeSchedulerControllerLog), 0644)
 		if err != nil {
 			warn("failed to write kubeSchedulerControllerLog to file: %s", err)
 		}
@@ -681,7 +680,7 @@ accessible.`,
 		if errl != nil {
 			warn("error retrieving log file: %s", errl)
 		}
-		errf := ioutil.WriteFile(config.ManagerDir+"/log", []byte(log), 0644)
+		errf := os.WriteFile(config.ManagerDir+"/log", []byte(log), 0644)
 		if errf != nil {
 			warn("failed to write log to file: %s", errf)
 		}
