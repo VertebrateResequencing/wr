@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math"
 	"os"
@@ -147,9 +148,7 @@ func TestJobqueueUtils(t *testing.T) {
 
 	Convey("GenerateCerts creates certificate files", t, func() {
 		certtmpdir, err := os.MkdirTemp("", "wr_jobqueue_cert_dir_")
-		if err != nil {
-			log.Fatal(err)
-		}
+		So(err, ShouldBeNil)
 		defer os.RemoveAll(certtmpdir)
 
 		caFile := filepath.Join(certtmpdir, "ca.pem")
@@ -170,6 +169,41 @@ func TestJobqueueUtils(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(expiry, ShouldHappenBetween, time.Now().Add(364*24*time.Hour), time.Now().Add(366*24*time.Hour))
 		})
+	})
+
+	Convey("currentDisk works recursively with ignores", t, func() {
+		dir, err := os.MkdirTemp("", "wr_currentDisk_test")
+		So(err, ShouldBeNil)
+		defer os.RemoveAll(dir)
+
+		subdir := filepath.Join(dir, ".mnt", "sub")
+		err = os.MkdirAll(subdir, fs.ModePerm)
+		So(err, ShouldBeNil)
+
+		createLargeFile := func(path string, size int64) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			err = f.Truncate(size)
+			if err != nil {
+				return err
+			}
+			return f.Close()
+		}
+
+		err = createLargeFile(filepath.Join(dir, "a.txt"), 1024*1024)
+		So(err, ShouldBeNil)
+		err = createLargeFile(filepath.Join(subdir, "b.txt"), 1024*1024)
+		So(err, ShouldBeNil)
+
+		s, err := currentDisk(dir)
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, 2)
+
+		s, err = currentDisk(dir, map[string]bool{subdir: true})
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, 1)
 	})
 }
 
