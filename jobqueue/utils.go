@@ -249,7 +249,7 @@ func currentDisk(path string, ignore ...map[string]bool) (int64, error) {
 			if skip[abs] {
 				continue
 			}
-			recurse, errr := currentDisk(abs)
+			recurse, errr := currentDisk(abs, ignore...)
 			if errr != nil {
 				return disk, errr
 			}
