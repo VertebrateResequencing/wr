@@ -5,7 +5,6 @@ go 1.16
 require (
 	cloud.google.com/go v0.81.0 // indirect
 	code.cloudfoundry.org/bytefmt v0.0.0-20200131002437-cf55d5288a48
-	github.com/Microsoft/go-winio v0.5.0 // indirect
 	github.com/StackExchange/wmi v0.0.0-20210224194228-fe8f1750fd46 // indirect
 	github.com/VertebrateResequencing/muxfys/v4 v4.0.3
 	github.com/VividCortex/ewma v1.2.0
@@ -40,12 +39,9 @@ require (
 	github.com/jinzhu/configor v1.2.1
 	github.com/jpillora/backoff v1.0.0
 	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0
-	github.com/lunixbochs/vtclean v1.0.0 // indirect
-	github.com/manifoldco/promptui v0.8.0
 	github.com/mattn/go-isatty v0.0.13 // indirect
 	github.com/mattn/go-runewidth v0.0.12 // indirect
 	github.com/moby/term v0.0.0-20201216013528-df9cb8a40635 // indirect
-	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/sftp v1.13.0
@@ -59,14 +55,12 @@ require (
 	github.com/spf13/cobra v1.1.3
 	github.com/tklauser/go-sysconf v0.3.5 // indirect
 	github.com/ugorji/go/codec v1.2.5
-	github.com/wtsi-ssg/wr v0.2.1
+	github.com/wtsi-ssg/wr v0.2.3
 	go.etcd.io/bbolt v1.3.5
 	golang.org/x/crypto v0.0.0-20210711020723-a769d52b0f97
 	golang.org/x/oauth2 v0.0.0-20210427180440-81ed05c6b58c // indirect
 	golang.org/x/term v0.0.0-20210503060354-a79de5458b56 // indirect
 	golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba // indirect
-	google.golang.org/genproto v0.0.0-20210503173045-b96a97608f20 // indirect
-	google.golang.org/grpc v1.37.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/api v0.21.0
 	k8s.io/apimachinery v0.21.0
