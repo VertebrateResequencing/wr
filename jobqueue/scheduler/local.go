@@ -34,6 +34,7 @@ import (
 
 	sync "github.com/sasha-s/go-deadlock"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/inconshreveable/log15"
@@ -940,6 +941,11 @@ func (s *local) busy() bool {
 // hostToID always returns an empty string, since we're not in the cloud.
 func (s *local) hostToID(host string) string {
 	return ""
+}
+
+// getServer always returns nil, since we don't need to ssh to ourselves.
+func (s *local) getServer(host string) *cloud.Server {
+	return nil
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

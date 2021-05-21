@@ -1,4 +1,4 @@
-// Copyright © 2016-2020 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -40,6 +40,7 @@ must add a case for it to New() and rebuild.
 package scheduler
 
 import (
+	"context"
 	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
 	"sort"
@@ -183,6 +184,7 @@ type scheduleri interface {
 	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration                            // achieve the aims of MaxQueueTime(), return 0 for infinite queue time
 	hostToID(host string) string                                             // achieve the aims of HostToID()
+	getServer(host string) *cloud.Server                                     // get a *cloud.Server that can be used to run commands over ssh on the given host
 	setMessageCallBack(MessageCallBack)                                      // achieve the aims of SetMessageCallBack()
 	setBadServerCallBack(BadServerCallBack)                                  // achieve the aims of SetBadServerCallBack()
 	cleanup()                                                                // do any clean up once you've finished using the job scheduler
@@ -374,6 +376,25 @@ func (s *Scheduler) MaxQueueTime(req *Requirements) time.Duration {
 // the scheduler is cloud based. Otherwise this just returns an empty string.
 func (s *Scheduler) HostToID(host string) string {
 	return s.impl.hostToID(host)
+}
+
+// ProcessNotRunngingOnHost will ssh to the given host and check if the given
+// process id is still running. Returns true if it isn't. Returns false if it is
+// running, or if the ssh wasn't possible. This is to find out if a process is
+// really dead, or if there might just be a temporary networking problem where
+// ssh might fail. The ssh attempt can be cancelled using the supplied context.
+func (s *Scheduler) ProcessNotRunngingOnHost(ctx context.Context, pid int, host string) bool {
+	server := s.impl.getServer(host)
+	if server == nil {
+		return false
+	}
+
+	stdo, _, err := server.RunCmd(ctx, fmt.Sprintf("ps -p %d | wc -l", pid), false)
+	if err != nil || stdo != "1\n" {
+		return false
+	}
+
+	return true
 }
 
 // Cleanup means you've finished using a scheduler and it can delete any

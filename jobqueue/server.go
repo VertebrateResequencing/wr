@@ -95,7 +95,7 @@ var ServerVersion string
 // as fields of a config struct...)
 var (
 	ServerInterruptTime                             = 1 * time.Second
-	ServerItemTTR                                   = 60 * time.Second
+	ServerItemTTR                                   = 15 * time.Second
 	ServerReserveTicker                             = 1 * time.Second
 	ServerCheckRunnerTime                           = 1 * time.Minute
 	ServerShutdownWaitTime                          = 5 * time.Second
@@ -1630,7 +1630,9 @@ func (s *Server) createQueue() {
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
 
-			if job.killCalled {
+			if !job.killCalled && s.confirmJobDead(job) {
+				go s.killJob(job)
+			} else if job.killCalled {
 				defer func() {
 					go func() {
 						defer internal.LogPanic(s.Logger, "jobqueue ttr callback releaseJob", true)
@@ -1838,6 +1840,19 @@ func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
 	return srerr, qerr
 }
 
+// confirmJobDead() checks if the actual PID isn't running on the job's host.
+//  You must hold the job.Lock() before calling this.
+func (s *Server) confirmJobDead(job *Job) bool {
+	if job.Pid == 0 {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return s.scheduler.ProcessNotRunngingOnHost(ctx, job.Pid, job.Host)
+}
+
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
 func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool, forceBury bool) error {
@@ -1937,24 +1952,28 @@ func (s *Server) inputToQueuedJobs(inputJobs []*Job) []*Job {
 //
 // If the job wasn't running, returned bool will be false and nothing will have
 // been done.
-func (s *Server) killJob(jobkey string) (bool, error) {
-	item, err := s.q.Get(jobkey)
-	if err != nil || item.Stats().State != queue.ItemStateRun {
-		return false, err
-	}
-
-	job := item.Data().(*Job)
+func (s *Server) killJob(job *Job) (bool, error) {
 	job.Lock()
 	job.killCalled = true
 
 	if job.Lost {
 		job.Unlock()
-		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
+		err := s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
 		return true, err
 	}
 
 	job.Unlock()
-	return true, err
+	return true, nil
+}
+
+// jobKeyToJob gets a Job given its key.
+func (s *Server) jobKeyToJob(jobkey string) (*Job, error) {
+	item, err := s.q.Get(jobkey)
+	if err != nil || item.Stats().State != queue.ItemStateRun {
+		return nil, err
+	}
+
+	return item.Data().(*Job), nil
 }
 
 // deleteJobs deletes the jobs with the given keys from the
@@ -2042,7 +2061,7 @@ func (s *Server) killJobsOnServers(serverIDs map[string]bool) []*Job {
 		lost := s.getJobsCurrent(0, JobStateLost, false, false)
 		for _, job := range append(running, lost...) {
 			if serverIDs[job.HostID] {
-				k, err := s.killJob(job.Key())
+				k, err := s.killJob(job)
 				if err != nil {
 					s.Error("failed to kill a job after destroying its server: %s", err)
 				} else if k {

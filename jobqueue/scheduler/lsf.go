@@ -26,13 +26,16 @@ import (
 	"encoding/csv"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
+	"os/user"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
 )
@@ -50,6 +53,7 @@ type lsf struct {
 	bsubExe            string
 	bjobsExe           string
 	bkillExe           string
+	privateKey         string
 	log15.Logger
 }
 
@@ -409,6 +413,13 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	// we prefer the order described there
 	//*** we probably don't need this if we won't be having a global max
 	// specified by the user
+
+	// if a job becomes lost, scheduler needs to ssh to the host to check on the
+	// process, so we store our private key, currently taken from hardcoded
+	// path
+	if content, err := os.ReadFile(internal.TildaToHome("~/.ssh/id_rsa")); err == nil {
+		s.privateKey = string(content)
+	}
 
 	return nil
 }
@@ -770,6 +781,16 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 // hostToID always returns an empty string, since we're not in the cloud.
 func (s *lsf) hostToID(host string) string {
 	return ""
+}
+
+// getServer returns a Server for the given host.
+func (s *lsf) getServer(host string) *cloud.Server {
+	name := "unknown"
+	if user, err := user.Current(); err == nil {
+		name = user.Username
+	}
+
+	return cloud.NewServer(name, host, s.privateKey, s.Logger)
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

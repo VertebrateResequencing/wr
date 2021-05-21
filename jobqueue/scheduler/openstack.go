@@ -1361,6 +1361,11 @@ func (s *opst) hostToID(host string) string {
 	return server.ID
 }
 
+// getServer returns a Server for the given host.
+func (s *opst) getServer(host string) *cloud.Server {
+	return s.provider.GetServerByName(host)
+}
+
 // setMessageCallBack sets the given callback.
 func (s *opst) setMessageCallBack(cb MessageCallBack) {
 	s.cbmutex.Lock()

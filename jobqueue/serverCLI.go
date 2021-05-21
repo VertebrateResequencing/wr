@@ -610,10 +610,16 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 			} else {
 				killable := 0
 				for _, jobkey := range cr.Keys {
-					k, err := s.killJob(jobkey)
+					job, err := s.jobKeyToJob(jobkey)
 					if err != nil {
 						continue
 					}
+
+					k, err := s.killJob(job)
+					if err != nil {
+						continue
+					}
+
 					if k {
 						killable++
 					}

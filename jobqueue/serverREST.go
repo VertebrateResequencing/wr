@@ -838,7 +838,7 @@ func restJobsCancel(r *http.Request, s *Server) ([]*Job, int, error) {
 		}
 	} else {
 		for _, job := range jobs {
-			k, err := s.killJob(job.Key())
+			k, err := s.killJob(job)
 			if err != nil {
 				return handled, http.StatusInternalServerError, err
 			}
