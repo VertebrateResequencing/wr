@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -34,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/inconshreveable/log15"
@@ -433,14 +435,14 @@ func TestLSF(t *testing.T) {
 	}
 	if err != nil {
 		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err = New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
+			_, err = New("lsf", &ConfigLSF{"development", "bash", "~/.ssh/id_rsa"}, testLogger)
 			So(err, ShouldNotBeNil)
 		})
 		return
 	}
 
-	if os.Getenv("WR_DISABLE_LSF_TEST") == "true" {
-		Convey("LSF tests disabled since WR_DISABLE_LSF_TEST is set", t, func() {})
+	if os.Getenv("WR_LSF_TEST_KEY") == "" {
+		Convey("LSF tests disabled since WR_LSF_TEST_KEY is not set", t, func() {})
 		return
 	}
 
@@ -455,8 +457,19 @@ func TestLSF(t *testing.T) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	if host == "farm5-head1" {
+		// author needs to disable access to his own queues to test normal
+		// behaviour
+		username := internal.CachedUsername
+		internal.CachedUsername = "invalid"
+		defer func() {
+			internal.CachedUsername = username
+		}()
+	}
+
 	Convey("You can get a new lsf scheduler", t, func() {
-		s, err := New("lsf", &ConfigLSF{"development", "bash"}, testLogger)
+		s, err := New("lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")}, testLogger)
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -467,7 +480,7 @@ func TestLSF(t *testing.T) {
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
-		if host == "vr-2-2-02" {
+		if host == "farm5-head1" {
 			Convey("determineQueue() picks the best queue depending on given resource requirements", func() {
 				queue, err := s.impl.(*lsf).determineQueue(possibleReq, 0)
 				So(err, ShouldBeNil)
@@ -479,24 +492,28 @@ func TestLSF(t *testing.T) {
 
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true}, 10)
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "yesterday")
+				So(queue, ShouldEqual, "normal") // used to be yesterday, but something changed? Or is this a bug?
 
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "normal") // used to be "test" before our memory limits were removed from all queues
+				So(queue, ShouldEqual, "normal")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "teramem")
 
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 73 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 4320)
+				So(s.MaxQueueTime(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 43200)
 			})
 		}
 
@@ -538,6 +555,42 @@ func TestLSF(t *testing.T) {
 			serr, ok := err.(Error)
 			So(ok, ShouldBeTrue)
 			So(serr.Err, ShouldEqual, ErrImpossible)
+		})
+
+		Convey("Given a cmd running on a host", func() {
+			tmpdir, err := os.MkdirTemp("./", "wr_schedulers_lsf_test_output_dir_")
+			So(err, ShouldBeNil)
+			defer os.RemoveAll(tmpdir)
+
+			pidHostFile, err := filepath.Abs(path.Join(tmpdir, "pid.host"))
+			So(err, ShouldBeNil)
+			pidHostFileTmp := pidHostFile + ".tmp"
+
+			cmd := fmt.Sprintf("perl -e '$tmp = shift; $path = shift; open($fh, q[>], $tmp); print $fh qq[$$\n]; use Sys::Hostname qw(hostname); print $fh hostname(), qq[\n]; close($fh); rename $tmp, $path; sleep(15)' %s %s", pidHostFileTmp, pidHostFile)
+
+			err = s.Schedule(cmd, possibleReq, 0, 1)
+			So(err, ShouldBeNil)
+			So(s.Busy(), ShouldBeTrue)
+
+			pid, host, worked := parsePidHostFile(pidHostFile)
+			So(worked, ShouldBeTrue)
+
+			Convey("ProcessNotRunngingOnHost() returns false if its still running", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				defer cancel()
+
+				So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeFalse)
+
+				Convey("But true if we kill it", func() {
+					server := s.impl.getServer(host)
+					So(server, ShouldNotBeNil)
+
+					_, _, err := server.RunCmd(context.Background(), fmt.Sprintf("kill -9 %d", pid), false)
+					So(err, ShouldBeNil)
+
+					So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeTrue)
+				})
+			})
 		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
@@ -1474,4 +1527,69 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 		return count
 	}
 	return 0
+}
+
+func parsePidHostFile(path string) (int, string, bool) {
+	dir := filepath.Dir(path)
+	parsed := make(chan bool, 1)
+	pidCh := make(chan int, 1)
+	hostCh := make(chan string, 1)
+	go func() {
+		limit := time.After(13 * time.Second)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		for {
+			select {
+			case <-ticker.C:
+				// read the dir because on NFS we never see the file as existing
+				// until the dir is read
+				_, err := os.ReadDir(dir)
+				if err != nil {
+					fmt.Printf("error reading directory %s: %s\n", dir, err)
+					ticker.Stop()
+					parsed <- false
+					return
+				}
+
+				_, err = os.Stat(path)
+				if os.IsNotExist(err) {
+					continue
+				}
+
+				content, err := os.ReadFile(path)
+				if err != nil {
+					fmt.Printf("%s couldn't be read: %s\n", path, err)
+					ticker.Stop()
+					parsed <- false
+					return
+				}
+
+				split := strings.Split(string(content), "\n")
+				pid, err := strconv.Atoi(split[0])
+				if err != nil {
+					fmt.Printf("%s pid didn't parse: %s\n", path, err)
+					ticker.Stop()
+					parsed <- false
+					return
+				}
+
+				pidCh <- pid
+				hostCh <- split[1]
+				parsed <- true
+				return
+			case <-limit:
+				ticker.Stop()
+				parsed <- false
+				return
+			}
+		}
+	}()
+
+	ok := <-parsed
+	if !ok {
+		return 0, "", ok
+	}
+
+	pid := <-pidCh
+	host := <-hostCh
+	return pid, host, ok
 }

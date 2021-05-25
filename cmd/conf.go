@@ -281,6 +281,13 @@ manageruploaddir: "uploads"
 # recommended.
 runnerexecshell: "bash"
 
+# privatekeypath: path to your private key.
+# This defaults to ~/.ssh/id_rsa.
+#
+# This may be used by some schedulers (currently only LSF) to ssh to servers in
+# order to check on jobs that lose contact with the wr manager.
+privatekeypath: "~/.ssh/id_rsa"
+
 # cloudflavor: What server flavors can be automatically picked?
 # Without being set, any available flavor can be picked. It is overridden by
 # the --flavor option to 'wr cloud deploy' and the --cloud_flavor option of

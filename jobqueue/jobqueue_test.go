@@ -5190,13 +5190,15 @@ func TestJobqueueRunners(t *testing.T) {
 			if err == nil {
 				_, err = exec.LookPath("bqueues")
 			}
-			if err == nil && os.Getenv("WR_DISABLE_LSF_TEST") != "true" {
+
+			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
+			if err == nil && privateKeyPath != "" {
 				lsfMode = true
 				count = 10000
 				count2 = 1000
 				lsfConfig := runningConfig
 				lsfConfig.SchedulerName = "lsf"
-				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing"}
+				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing", PrivateKeyPath: privateKeyPath}
 				server.Stop(true)
 				server, _, token, errs = serve(lsfConfig)
 				So(errs, ShouldBeNil)

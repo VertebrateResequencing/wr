@@ -470,7 +470,11 @@ func (s *Server) createSSHClientConfig() error {
 	// parse private key and make config
 	signer, err := ssh.ParsePrivateKey([]byte(s.PrivateKey))
 	if err != nil {
-		s.logger.Error("failed to parse private key", "path", s.provider.savePath, "err", err)
+		path := "unknown"
+		if s.provider != nil {
+			path = s.provider.savePath
+		}
+		s.logger.Error("failed to parse private key", "path", path, "err", err)
 		return err
 	}
 	s.sshClientConfig = &ssh.ClientConfig{
@@ -481,6 +485,7 @@ func (s *Server) createSSHClientConfig() error {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
 		Timeout:         sshShortTimeOut,
 	}
+
 	return nil
 }
 
