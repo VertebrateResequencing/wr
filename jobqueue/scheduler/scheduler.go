@@ -173,6 +173,14 @@ type RecoveredHostDetails struct {
 	TTD      time.Duration // frequency to check if the host is idle, and if so destroy it
 }
 
+// Host interface let's us run a command on a local or remote host.
+type Host interface {
+	// RunCmd runs the given cmd on the host, optionally in the background,
+	// cancellable with the context, returning stdout, stderr from the command,
+	// or an error if running the command wasn't possible.
+	RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+}
+
 // scheduleri interface must be satisfied to add support for a particular job
 // scheduler.
 type scheduleri interface {
@@ -184,7 +192,7 @@ type scheduleri interface {
 	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration                            // achieve the aims of MaxQueueTime(), return 0 for infinite queue time
 	hostToID(host string) string                                             // achieve the aims of HostToID()
-	getServer(host string) *cloud.Server                                     // get a *cloud.Server that can be used to run commands over ssh on the given host
+	getHost(host string) Host                                                // get a Host that can be used to run commands over ssh on the given host
 	setMessageCallBack(MessageCallBack)                                      // achieve the aims of SetMessageCallBack()
 	setBadServerCallBack(BadServerCallBack)                                  // achieve the aims of SetBadServerCallBack()
 	cleanup()                                                                // do any clean up once you've finished using the job scheduler
@@ -384,7 +392,7 @@ func (s *Scheduler) HostToID(host string) string {
 // really dead, or if there might just be a temporary networking problem where
 // ssh might fail. The ssh attempt can be cancelled using the supplied context.
 func (s *Scheduler) ProcessNotRunngingOnHost(ctx context.Context, pid int, host string) bool {
-	server := s.impl.getServer(host)
+	server := s.impl.getHost(host)
 	if server == nil {
 		return false
 	}

@@ -1361,8 +1361,8 @@ func (s *opst) hostToID(host string) string {
 	return server.ID
 }
 
-// getServer returns a Server for the given host.
-func (s *opst) getServer(host string) *cloud.Server {
+// getHost returns a cloud.Server for the given host.
+func (s *opst) getHost(host string) Host {
 	return s.provider.GetServerByName(host)
 }
 

@@ -773,8 +773,8 @@ func (s *lsf) hostToID(host string) string {
 	return ""
 }
 
-// getServer returns a Server for the given host.
-func (s *lsf) getServer(host string) *cloud.Server {
+// getHost returns a cloud.Server for the given host.
+func (s *lsf) getHost(host string) Host {
 	name := "unknown"
 	if user, err := user.Current(); err == nil {
 		name = user.Username

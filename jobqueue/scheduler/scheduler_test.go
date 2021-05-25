@@ -94,6 +94,10 @@ func TestLocal(t *testing.T) {
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
 
+		Convey("Given a running command", func() {
+			testProcessNotRunning(s, possibleReq)
+		})
+
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
 			tmpdir, err := os.MkdirTemp("", "wr_schedulers_local_test_immediate_output_dir_")
 			if err != nil {
@@ -434,7 +438,7 @@ func TestLSF(t *testing.T) {
 		_, err = exec.LookPath("bqueues")
 	}
 	if err != nil {
-		Convey("You can't get a new lsf scheduler without LSF being installed", t, func() {
+		SkipConvey("You can't get a new lsf scheduler without LSF being installed", t, func() {
 			_, err = New("lsf", &ConfigLSF{"development", "bash", "~/.ssh/id_rsa"}, testLogger)
 			So(err, ShouldNotBeNil)
 		})
@@ -442,7 +446,7 @@ func TestLSF(t *testing.T) {
 	}
 
 	if os.Getenv("WR_LSF_TEST_KEY") == "" {
-		Convey("LSF tests disabled since WR_LSF_TEST_KEY is not set", t, func() {})
+		SkipConvey("LSF tests disabled since WR_LSF_TEST_KEY is not set", t, func() {})
 		return
 	}
 
@@ -558,40 +562,15 @@ func TestLSF(t *testing.T) {
 		})
 
 		Convey("Given a cmd running on a host", func() {
-			tmpdir, err := os.MkdirTemp("./", "wr_schedulers_lsf_test_output_dir_")
-			So(err, ShouldBeNil)
-			defer os.RemoveAll(tmpdir)
-
-			pidHostFile, err := filepath.Abs(path.Join(tmpdir, "pid.host"))
-			So(err, ShouldBeNil)
-			pidHostFileTmp := pidHostFile + ".tmp"
-
-			cmd := fmt.Sprintf("perl -e '$tmp = shift; $path = shift; open($fh, q[>], $tmp); print $fh qq[$$\n]; use Sys::Hostname qw(hostname); print $fh hostname(), qq[\n]; close($fh); rename $tmp, $path; sleep(15)' %s %s", pidHostFileTmp, pidHostFile)
-
-			err = s.Schedule(cmd, possibleReq, 0, 1)
-			So(err, ShouldBeNil)
-			So(s.Busy(), ShouldBeTrue)
-
-			pid, host, worked := parsePidHostFile(pidHostFile)
-			So(worked, ShouldBeTrue)
-
-			Convey("ProcessNotRunngingOnHost() returns false if its still running", func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-				defer cancel()
-
-				So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeFalse)
-
-				Convey("But true if we kill it", func() {
-					server := s.impl.getServer(host)
-					So(server, ShouldNotBeNil)
-
-					_, _, err := server.RunCmd(context.Background(), fmt.Sprintf("kill -9 %d", pid), false)
-					So(err, ShouldBeNil)
-
-					So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeTrue)
-				})
-			})
+			testProcessNotRunning(s, possibleReq)
 		})
+
+		// following tests are unreliable due to needing LSF nodes to be all
+		// working well and for there to be capacity to run jobs
+		if os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") == "true" {
+			SkipConvey("Further LSF tests disabled since WR_DISABLE_UNRELIABLE_LSF_TESTS is set", func() {})
+			return
+		}
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
 			// tmpdir, err := os.MkdirTemp("", "wr_schedulers_lsf_test_output_dir_")
@@ -1527,6 +1506,46 @@ func novaCountServers(novaCmd string, rName, osPrefix string, flavor ...string) 
 		return count
 	}
 	return 0
+}
+
+func testProcessNotRunning(s *Scheduler, r *Requirements) {
+	tmpdir, err := os.MkdirTemp("./", "wr_schedulers_test_output_dir_")
+	So(err, ShouldBeNil)
+	defer os.RemoveAll(tmpdir)
+
+	pidHostFile, err := filepath.Abs(path.Join(tmpdir, "pid.host"))
+	So(err, ShouldBeNil)
+	pidHostFileTmp := pidHostFile + ".tmp"
+
+	cmd := fmt.Sprintf("perl -e '$tmp = shift; $path = shift; open($fh, q[>], $tmp); print $fh qq[$$\n]; use Sys::Hostname qw(hostname); print $fh hostname(), qq[\n]; close($fh); rename $tmp, $path; for (1..15) { sleep(1) }' %s %s", pidHostFileTmp, pidHostFile)
+
+	err = s.Schedule(cmd, r, 0, 1)
+	So(err, ShouldBeNil)
+	So(s.Busy(), ShouldBeTrue)
+
+	pid, host, worked := parsePidHostFile(pidHostFile)
+	So(worked, ShouldBeTrue)
+
+	Convey("ProcessNotRunngingOnHost() returns false if its still running", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeFalse)
+
+		Convey("But true if we kill it", func() {
+			server := s.impl.getHost(host)
+			So(server, ShouldNotBeNil)
+
+			_, _, err := server.RunCmd(context.Background(), fmt.Sprintf("kill -9 %d", pid), false)
+			So(err, ShouldBeNil)
+			<-time.After(1 * time.Second)
+
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel2()
+
+			So(s.ProcessNotRunngingOnHost(ctx2, pid, host), ShouldBeTrue)
+		})
+	})
 }
 
 func parsePidHostFile(path string) (int, string, bool) {
