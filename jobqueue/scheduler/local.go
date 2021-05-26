@@ -807,6 +807,7 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 	}
 
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
+	ec.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err := ec.Start()
 	if err != nil {
 		s.Error("runCmd start", "cmd", cmd, "err", err)
@@ -966,28 +967,32 @@ func (l *localHost) RunCmd(ctx context.Context, cmd string, background bool) (st
 
 		ec := exec.Command(l.shell, "-c", cmd) // #nosec
 
-		stdoutp, err := ec.StdoutPipe()
-		if err != nil {
-			done <- err
+		stdoutp, errs := ec.StdoutPipe()
+		if errs != nil {
+			done <- errs
+
 			return
 		}
 
-		stderrp, err := ec.StderrPipe()
-		if err != nil {
-			done <- err
+		stderrp, errs := ec.StderrPipe()
+		if errs != nil {
+			done <- errs
+
 			return
 		}
 
-		if err := ec.Start(); err != nil {
-			done <- err
+		if errs := ec.Start(); errs != nil {
+			done <- errs
+
 			return
 		}
 
 		stdout, erro := io.ReadAll(stdoutp)
 		stderr, erre := io.ReadAll(stderrp)
 
-		if err := ec.Wait(); err != nil {
-			done <- err
+		if errw := ec.Wait(); errw != nil {
+			done <- errw
+
 			return
 		}
 

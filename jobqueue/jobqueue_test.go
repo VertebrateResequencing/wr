@@ -91,7 +91,10 @@ func init() {
 }
 
 func serverShutDownTime() time.Duration {
-	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 5*time.Millisecond
+	// golang can't actually do exec.Command.Start() in parallel and has a
+	// global lock on them, so we have to allow the 35ms of time to any pending
+	// starts to resolve before we can shut down.
+	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 35*time.Millisecond
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -181,14 +184,15 @@ func TestJobqueueUtils(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		createLargeFile := func(path string, size int64) error {
-			f, err := os.Create(path)
-			if err != nil {
-				return err
+			f, errc := os.Create(path)
+			if errc != nil {
+				return errc
 			}
-			err = f.Truncate(size)
-			if err != nil {
-				return err
+			errc = f.Truncate(size)
+			if errc != nil {
+				return errc
 			}
+
 			return f.Close()
 		}
 
@@ -4264,6 +4268,100 @@ func TestJobqueueRunners(t *testing.T) {
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
 
+		Convey("You can connect, and add a job and then manually kill both the runner and process", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+
+			var jobs []*Job
+			cmd := "perl -e 'for (1..20) { sleep(1) }'"
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// wait for the job to start running
+			started := make(chan bool, 1)
+			go func() {
+				limit := time.After(10 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == 1 {
+							ticker.Stop()
+							started <- true
+
+							return
+						}
+
+						continue
+					case <-limit:
+						ticker.Stop()
+						started <- false
+
+						return
+					}
+				}
+			}()
+			So(<-started, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+
+			ec := exec.Command("bash", "-c", fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobs[0].Pid))
+			out, err := ec.CombinedOutput()
+			So(err, ShouldBeNil)
+			pgid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+			So(err, ShouldBeNil)
+			syscall.Kill(-pgid, syscall.SIGKILL)
+
+			// wait for the job to become lost and then buried
+			killed := make(chan bool, 1)
+			go func() {
+				limit := time.After(ServerItemTTR + 5*time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == 1 {
+							ticker.Stop()
+							killed <- true
+
+							return
+						}
+
+						continue
+					case <-limit:
+						ticker.Stop()
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+						timelimitDebug(jobs, err)
+						killed <- false
+
+						return
+					}
+				}
+			}()
+			So(<-killed, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].State, ShouldEqual, JobStateBuried)
+			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
+			So(jobs[0].Exitcode, ShouldEqual, -1)
+		})
+
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -5192,7 +5290,7 @@ func TestJobqueueRunners(t *testing.T) {
 			}
 
 			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
-			if err == nil && privateKeyPath != "" {
+			if err == nil && privateKeyPath != "" && os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") != "true" {
 				lsfMode = true
 				count = 10000
 				count2 = 1000
@@ -6266,6 +6364,7 @@ sudo usermod -aG docker ` + osUser
 							toKill, err := server.jobKeyToJob(killedJobEssence.JobKey)
 							if err != nil {
 								gotLost <- false
+
 								return
 							}
 							e, err := server.killJob(toKill)
@@ -6273,11 +6372,13 @@ sudo usermod -aG docker ` + osUser
 								gotLost <- false
 							}
 							gotLost <- true
+
 							return
 						}
 					case <-limit:
 						ticker.Stop()
 						gotLost <- false
+
 						return
 					}
 				}

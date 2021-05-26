@@ -569,6 +569,7 @@ func TestLSF(t *testing.T) {
 		// working well and for there to be capacity to run jobs
 		if os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") == "true" {
 			SkipConvey("Further LSF tests disabled since WR_DISABLE_UNRELIABLE_LSF_TESTS is set", func() {})
+
 			return
 		}
 

@@ -95,7 +95,7 @@ var ServerVersion string
 // as fields of a config struct...)
 var (
 	ServerInterruptTime                             = 1 * time.Second
-	ServerItemTTR                                   = 15 * time.Second
+	ServerItemTTR                                   = 60 * time.Second
 	ServerReserveTicker                             = 1 * time.Second
 	ServerCheckRunnerTime                           = 1 * time.Minute
 	ServerShutdownWaitTime                          = 5 * time.Second
@@ -1631,7 +1631,12 @@ func (s *Server) createQueue() {
 			job.EndTime = time.Now()
 
 			if !job.killCalled && s.confirmJobDead(job) {
-				go s.killJob(job)
+				go func() {
+					_, errk := s.killJob(job)
+					if errk != nil {
+						s.Warn("failed to kill a job after TTR", "err", errk)
+					}
+				}()
 			} else if job.killCalled {
 				defer func() {
 					go func() {
@@ -1847,7 +1852,7 @@ func (s *Server) confirmJobDead(job *Job) bool {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ServerShutdownWaitTime)
 	defer cancel()
 
 	return s.scheduler.ProcessNotRunngingOnHost(ctx, job.Pid, job.Host)
@@ -1954,6 +1959,11 @@ func (s *Server) inputToQueuedJobs(inputJobs []*Job) []*Job {
 // been done.
 func (s *Server) killJob(job *Job) (bool, error) {
 	job.Lock()
+	if job.State != JobStateRunning {
+		job.Unlock()
+
+		return false, nil
+	}
 	job.killCalled = true
 
 	if job.Lost {
