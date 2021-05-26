@@ -340,7 +340,7 @@ func webInterfaceStatusWS(s *Server) http.HandlerFunc {
 					case "kill":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
 						for _, job := range jobs {
-							_, err := s.killJob(job)
+							_, err := s.killJob(job.Key())
 							if err != nil {
 								s.Warn("web interface kill job failed", "err", err)
 							}

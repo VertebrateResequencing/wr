@@ -6361,13 +6361,7 @@ sudo usermod -aG docker ` + osUser
 						}
 						if job.State == JobStateLost {
 							ticker.Stop()
-							toKill, err := server.jobKeyToJob(killedJobEssence.JobKey)
-							if err != nil {
-								gotLost <- false
-
-								return
-							}
-							e, err := server.killJob(toKill)
+							e, err := server.killJob(killedJobEssence.JobKey)
 							if !e || err != nil {
 								gotLost <- false
 							}

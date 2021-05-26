@@ -1631,12 +1631,12 @@ func (s *Server) createQueue() {
 			job.EndTime = time.Now()
 
 			if !job.killCalled && s.confirmJobDead(job) {
-				go func() {
-					_, errk := s.killJob(job)
+				go func(key string) {
+					_, errk := s.killJob(key)
 					if errk != nil {
 						s.Warn("failed to kill a job after TTR", "err", errk)
 					}
-				}()
+				}(job.Key())
 			} else if job.killCalled {
 				defer func() {
 					go func() {
@@ -1957,33 +1957,24 @@ func (s *Server) inputToQueuedJobs(inputJobs []*Job) []*Job {
 //
 // If the job wasn't running, returned bool will be false and nothing will have
 // been done.
-func (s *Server) killJob(job *Job) (bool, error) {
-	job.Lock()
-	if job.State != JobStateRunning {
-		job.Unlock()
-
-		return false, nil
+func (s *Server) killJob(jobkey string) (bool, error) {
+	item, err := s.q.Get(jobkey)
+	if err != nil || item.Stats().State != queue.ItemStateRun {
+		return false, err
 	}
+
+	job := item.Data().(*Job)
+	job.Lock()
 	job.killCalled = true
 
 	if job.Lost {
 		job.Unlock()
-		err := s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
+		err = s.releaseJob(job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
 		return true, err
 	}
 
 	job.Unlock()
-	return true, nil
-}
-
-// jobKeyToJob gets a Job given its key.
-func (s *Server) jobKeyToJob(jobkey string) (*Job, error) {
-	item, err := s.q.Get(jobkey)
-	if err != nil || item.Stats().State != queue.ItemStateRun {
-		return nil, err
-	}
-
-	return item.Data().(*Job), nil
+	return true, err
 }
 
 // deleteJobs deletes the jobs with the given keys from the
@@ -2071,7 +2062,7 @@ func (s *Server) killJobsOnServers(serverIDs map[string]bool) []*Job {
 		lost := s.getJobsCurrent(0, JobStateLost, false, false)
 		for _, job := range append(running, lost...) {
 			if serverIDs[job.HostID] {
-				k, err := s.killJob(job)
+				k, err := s.killJob(job.Key())
 				if err != nil {
 					s.Error("failed to kill a job after destroying its server: %s", err)
 				} else if k {
