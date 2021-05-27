@@ -317,15 +317,16 @@ type Server struct {
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	sync.Mutex
-	wsmutex         sync.Mutex
-	up              bool
-	drain           bool
-	blocking        bool
-	racChecking     bool
-	killRunners     bool
-	racPending      bool
-	racRunning      bool
-	waitingReserves []chan struct{}
+	wsmutex              sync.Mutex
+	up                   bool
+	drain                bool
+	blocking             bool
+	racChecking          bool
+	killRunners          bool
+	racPending           bool
+	racRunning           bool
+	waitingReserves      []chan struct{}
+	recoveredRunningJobs map[string]bool
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -677,6 +678,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               bcast.NewGroup(),
 		schedIssues:               make(map[string]*schedulerIssue),
+		recoveredRunningJobs:      make(map[string]bool),
 		Logger:                    serverLogger,
 	}
 
@@ -726,6 +728,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				if errr != nil {
 					s.Warn("recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 				}
+				s.recoveredRunningJobs[job.Key()] = true
 			case JobStateBuried:
 				itemdef.StartQueue = queue.SubQueueBury
 			}
@@ -1630,7 +1633,10 @@ func (s *Server) createQueue() {
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
 
-			if !job.killCalled && s.confirmJobDead(job) {
+			// we don't test recovered jobs are dead because they might have
+			// exited while the server wasn't running, and we want the existing
+			// client to tell us if it should be archived or buried
+			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDead(job) {
 				go func(key string) {
 					_, errk := s.killJob(key)
 					if errk != nil {

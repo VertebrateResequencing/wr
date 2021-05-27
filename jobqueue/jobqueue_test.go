@@ -92,9 +92,9 @@ func init() {
 
 func serverShutDownTime() time.Duration {
 	// golang can't actually do exec.Command.Start() in parallel and has a
-	// global lock on them, so we have to allow the 35ms of time to any pending
+	// global lock on them, so we have to allow the 500ms of time to any pending
 	// starts to resolve before we can shut down.
-	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 35*time.Millisecond
+	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -295,13 +295,14 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 // --servermode runs.
 func runServer() {
 	// uncomment and set a log path to debug server issues in TestJobqueueSignal
-	// f, err := os.OpenFile("/path", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// fh, err := log15.FileHandler("/log", log15.LogfmtFormat())
 	// if err != nil {
 	// 	log.Fatalf("error opening file: %v", err)
 	// }
-	// defer f.Close()
-	// log.SetOutput(f)
-	pid := os.Getpid()
+	// h := l15h.CallerInfoHandler(fh)
+	// testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, h))
+	// pid := os.Getpid()
+	// testLogger = testLogger.New("pid", pid)
 
 	_, serverConfig, _, _, _ := jobqueueTestInit(false)
 
@@ -312,7 +313,8 @@ func runServer() {
 	if serverEnableRunners {
 		self, err := os.Executable()
 		if err != nil {
-			log.Fatal(err)
+			testLogger.Crit("os.Executable() failed", "err", err)
+			os.Exit(1)
 		}
 
 		// we can't use the --tmpdir option, since that means the runner cmds
@@ -324,25 +326,26 @@ func runServer() {
 	ServerItemTTR = 200 * time.Millisecond
 	server, msg, _, err := serve(serverConfig)
 	if err != nil {
-		log.Fatalf("[pid %d] test daemon failed to start: %s\n", pid, err)
+		testLogger.Crit("test daemon failed to start", "err", err)
+		os.Exit(1)
 	}
 	if msg != "" {
-		log.Println(msg)
+		testLogger.Warn(msg)
 	}
 
 	// we'll Block() later, but just in case the parent tests bomb out
 	// without killing us, we'll stop after 20s
 	go func() {
 		<-time.After(20 * time.Second)
-		log.Printf("[pid %d] test daemon stopping after 20s\n", pid)
+		testLogger.Warn("test daemon stopping after 20s")
 		server.Stop(true)
 	}()
 
-	log.Printf("[pid %d] test daemon up, will block\n", pid)
+	testLogger.Warn("test daemon up, will block")
 
 	// wait until we are killed
 	err = server.Block()
-	log.Printf("[pid %d] test daemon exiting due to %s\n", pid, err)
+	testLogger.Warn("test daemon exiting", "reason", err)
 	os.Exit(0)
 }
 
