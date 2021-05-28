@@ -18,12 +18,12 @@ jobs:
   include:
     -
       script:
-        - "go test -tags netgo -coverprofile=main.coverprofile -covermode count -failfast ./ || travis_terminate 1"
-        - "go test -tags netgo -coverprofile=queue.coverprofile -covermode count -failfast ./queue || travis_terminate 1"
-        - "go test -tags netgo -coverprofile=sched.coverprofile -covermode count -failfast ./jobqueue/scheduler || travis_terminate 1"
-        - "go test -tags netgo -v -coverprofile=jq.coverprofile -covermode count -failfast ./jobqueue || travis_terminate 1"
-        - "go test -tags netgo -coverprofile=cloud.coverprofile -covermode count -failfast ./cloud || travis_terminate 1"
-        - "go test -tags netgo -coverprofile=rp.coverprofile -covermode count -failfast ./rp || travis_terminate 1"
+        - "go test -mod=mod -tags netgo -coverprofile=main.coverprofile -covermode count -failfast ./ || travis_terminate 1"
+        - "go test -mod=mod -tags netgo -coverprofile=queue.coverprofile -covermode count -failfast ./queue || travis_terminate 1"
+        - "go test -mod=mod -tags netgo -coverprofile=sched.coverprofile -covermode count -failfast ./jobqueue/scheduler || travis_terminate 1"
+        - "go test -mod=mod -tags netgo -v -coverprofile=jq.coverprofile -covermode count -failfast ./jobqueue || travis_terminate 1"
+        - "go test -mod=mod -tags netgo -coverprofile=cloud.coverprofile -covermode count -failfast ./cloud || travis_terminate 1"
+        - "go test -mod=mod -tags netgo -coverprofile=rp.coverprofile -covermode count -failfast ./rp || travis_terminate 1"
         - "$HOME/gopath/bin/gover || travis_terminate 1"
         - "$HOME/gopath/bin/goveralls -coverprofile=gover.coverprofile -service travis-ci"
       stage: Tests
