@@ -434,6 +434,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 		return err
 	}
 
+	privateKey := p.PrivateKey()
 	p.Lock()
 	defer p.Unlock()
 	for _, server := range p.resources.Servers {
@@ -465,7 +466,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 			Name:         details[2],
 			IP:           details[1],
 			AdminPass:    details[3],
-			PrivateKey:   p.PrivateKey(),
+			PrivateKey:   privateKey,
 			provider:     p,
 			cancelRunCmd: make(map[int]chan bool),
 			logger:       p.Logger.New("server", details[0]),
