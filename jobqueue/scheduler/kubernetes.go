@@ -695,8 +695,8 @@ func (s *k8s) generateResourceRequirements(req *Requirements) apiv1.ResourceRequ
 }
 
 // getHost always returns nil since this isn't implemented for kubernetes (yet).
-func (s *k8s) getHost(host string) Host {
-	return nil
+func (s *k8s) getHost(host string) (Host, bool) {
+	return nil, false
 }
 
 // recover achieves the aims of Recover(). We don't have to do anything, since

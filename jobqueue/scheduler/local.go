@@ -1020,8 +1020,8 @@ func (l *localHost) RunCmd(ctx context.Context, cmd string, background bool) (st
 
 // getHost returns an implementation of the Host interface that can be used
 // to run commands on localhost.
-func (s *local) getHost(host string) Host {
-	return &localHost{logger: s.Logger, shell: s.config.Shell}
+func (s *local) getHost(host string) (Host, bool) {
+	return &localHost{logger: s.Logger, shell: s.config.Shell}, true
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

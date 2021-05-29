@@ -774,13 +774,18 @@ func (s *lsf) hostToID(host string) string {
 }
 
 // getHost returns a cloud.Server for the given host.
-func (s *lsf) getHost(host string) Host {
+func (s *lsf) getHost(host string) (Host, bool) {
 	name := "unknown"
 	if user, err := user.Current(); err == nil {
 		name = user.Username
 	}
 
-	return cloud.NewServer(name, host, s.privateKey, s.Logger)
+	server := cloud.NewServer(name, host, s.privateKey, s.Logger)
+	if server == nil {
+		return nil, false
+	}
+
+	return server, true
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

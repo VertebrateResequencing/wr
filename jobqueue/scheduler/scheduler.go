@@ -192,7 +192,7 @@ type scheduleri interface {
 	reserveTimeout(req *Requirements) int                                    // achieve the aims of ReserveTimeout()
 	maxQueueTime(req *Requirements) time.Duration                            // achieve the aims of MaxQueueTime(), return 0 for infinite queue time
 	hostToID(host string) string                                             // achieve the aims of HostToID()
-	getHost(host string) Host                                                // get a Host that can be used to run commands over ssh on the given host
+	getHost(host string) (Host, bool)                                        // get a Host that can be used to run commands over ssh on the given host, return false boolean if not such host exists
 	setMessageCallBack(MessageCallBack)                                      // achieve the aims of SetMessageCallBack()
 	setBadServerCallBack(BadServerCallBack)                                  // achieve the aims of SetBadServerCallBack()
 	cleanup()                                                                // do any clean up once you've finished using the job scheduler
@@ -391,13 +391,13 @@ func (s *Scheduler) HostToID(host string) string {
 // running, or if the ssh wasn't possible. This is to find out if a process is
 // really dead, or if there might just be a temporary networking problem where
 // ssh might fail. The ssh attempt can be cancelled using the supplied context.
-func (s *Scheduler) ProcessNotRunngingOnHost(ctx context.Context, pid int, host string) bool {
-	server := s.impl.getHost(host)
-	if server == nil {
+func (s *Scheduler) ProcessNotRunngingOnHost(ctx context.Context, pid int, hostName string) bool {
+	host, ok := s.impl.getHost(hostName)
+	if !ok {
 		return false
 	}
 
-	stdo, _, err := server.RunCmd(ctx, fmt.Sprintf("ps -p %d | wc -l", pid), false)
+	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -p %d | wc -l", pid), false)
 	if err != nil || stdo != "1\n" {
 		return false
 	}

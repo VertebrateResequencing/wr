@@ -1534,7 +1534,8 @@ func testProcessNotRunning(s *Scheduler, r *Requirements) {
 		So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeFalse)
 
 		Convey("But true if we kill it", func() {
-			server := s.impl.getHost(host)
+			server, exists := s.impl.getHost(host)
+			So(exists, ShouldBeTrue)
 			So(server, ShouldNotBeNil)
 
 			_, _, err := server.RunCmd(context.Background(), fmt.Sprintf("kill -9 %d", pid), false)

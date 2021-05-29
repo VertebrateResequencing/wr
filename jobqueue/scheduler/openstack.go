@@ -1362,8 +1362,13 @@ func (s *opst) hostToID(host string) string {
 }
 
 // getHost returns a cloud.Server for the given host.
-func (s *opst) getHost(host string) Host {
-	return s.provider.GetServerByName(host)
+func (s *opst) getHost(host string) (Host, bool) {
+	server := s.provider.GetServerByName(host)
+	if server == nil {
+		return nil, false
+	}
+
+	return server, true
 }
 
 // setMessageCallBack sets the given callback.
