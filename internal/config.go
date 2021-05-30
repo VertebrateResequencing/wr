@@ -90,8 +90,8 @@ type Config struct {
 	CloudFlavorSets      string `default:""`
 	CloudKeepAlive       int    `default:"120"`
 	CloudServers         int    `default:"-1"`
-	CloudCIDR            string `default:"192.168.0.0/18"`
-	CloudGateway         string `default:"192.168.0.1"`
+	CloudCIDR            string `default:"192.168.64.0/18"`
+	CloudGateway         string `default:"192.168.64.1"`
 	CloudDNS             string `default:"8.8.4.4,8.8.8.8"`
 	CloudOS              string `default:"bionic-server"`
 	ContainerImage       string `default:"ubuntu:latest"`

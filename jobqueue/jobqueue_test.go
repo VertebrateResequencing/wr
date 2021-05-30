@@ -49,6 +49,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const maxSpawnTime = 240 * time.Second
 const serverRC = `echo %s %s %s %s %d %d`
 
 var runnermode bool
@@ -5517,11 +5518,12 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 	dockerInstallScript := `sudo mkdir -p /etc/docker/
 sudo bash -c "echo '{ \"bip\": \"192.168.3.3/24\", \"dns\": [\"8.8.8.8\",\"8.8.4.4\"], \"mtu\": 1380 }' > /etc/docker/daemon.json"
-sudo apt-get -y install --no-install-recommends apt-transport-https ca-certificates curl software-properties-common
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-sudo apt-get -yq update
-sudo apt-get -y install docker-ce
+sudo DEBIAN_FRONTEND=noninteractive apt-get -yq update
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y install apt-transport-https ca-certificates curl gnupg lsb-release && >&2 echo installed deps
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo DEBIAN_FRONTEND=noninteractive apt-get -yq update
+sudo >&2 apt-get -y install docker-ce docker-ce-cli containerd.io && >&2 echo installed docker
 sudo usermod -aG docker ` + osUser
 
 	Convey("You can connect with an OpenStack scheduler", t, func() {
@@ -5537,7 +5539,7 @@ sudo usermod -aG docker ` + osUser
 		defer disconnect(jq)
 
 		waitRun := func(done chan bool) {
-			limit := time.After(180 * time.Second)
+			limit := time.After(maxSpawnTime)
 			ticker := time.NewTicker(1 * time.Second)
 			for {
 				select {
@@ -5672,7 +5674,7 @@ sudo usermod -aG docker ` + osUser
 			// now that the "config" file is copied to where we're trying to
 			// ls, the job should complete
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -5736,7 +5738,7 @@ sudo usermod -aG docker ` + osUser
 			// now that the cloud script touches the file we're trying to
 			// ls, the job should complete
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -5978,7 +5980,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6155,7 +6157,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the job to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6206,7 +6208,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(240 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6265,7 +6267,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to start running
 			started := make(chan bool, 1)
 			waitForBothRunning := func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
