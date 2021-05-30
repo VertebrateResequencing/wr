@@ -137,11 +137,13 @@ and if true will completely delete the actual working directory created when
 cwd_matters is false (no effect when cwd_matters is true); "cleanup", which is
 like cleanup_all except that it doesn't delete files that have been specified as
 inputs or outputs [since you can't currently specify this, the current behaviour
-is identical to cleanup_all]; and "run", which takes a string command to run
-after the main cmd runs. For example [{"run":"cp error.log
-/shared/logs/this.log"},{"cleanup":true}] would copy a log file that your cmd
-generated to describe its problems to some shared location and then delete all
-files created by your cmd.
+is identical to cleanup_all]; "run", which takes a string command to run after
+the main cmd runs; and "remove", which takes a boolean value and if true that
+means that if the cmd gets buried, it will then immediately be removed from the
+queue (useful for Cromwell compatibility).
+For example [{"run":"cp error.log /shared/logs/this.log"},{"cleanup":true}]
+would copy a log file that your cmd generated to describe its problems to some
+shared location and then delete all files created by your cmd.
 
 "on_success" is exactly like on_failure, except that the behaviours trigger when
 your cmd exits 0.

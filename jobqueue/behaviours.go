@@ -1,4 +1,4 @@
-// Copyright © 2017, 2018 Genome Research Limited
+// Copyright © 2017, 2018, 2019, 2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -87,6 +87,16 @@ const (
 	// for situations where you want to store a desire to change another
 	// Behaviour to turn it off.
 	Nothing
+
+	// Remove is a BehaviourAction that requests the Job is removed from the
+	// queue after being buried. Useful when working with another workflow
+	// management system that keeps track of jobs itself and may try to add
+	// failed jobs again, in which case they mustn't be in the queue.
+	//
+	// Unlike other behaviours, the action doesn't occur when Trigger()ed, but
+	// rather RemoveRequested() should be called after a Job is buried to ask if
+	// it should be removed.
+	Remove
 )
 
 // Behaviour describes something that should happen in response to a Job's Cmd
@@ -113,7 +123,7 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 		return b.run(j)
 	case CopyToManager:
 		return b.copyToManager(j)
-	case Nothing:
+	case Remove, Nothing:
 		return nil
 	}
 	return fmt.Errorf("invalid status %d", status)
@@ -144,6 +154,8 @@ func (b *Behaviour) fillBVJM(bvjm *bvjMapping) {
 		bvj = BehaviourViaJSON{Cleanup: true}
 	case CleanupAll:
 		bvj = BehaviourViaJSON{CleanupAll: true}
+	case Remove:
+		bvj = BehaviourViaJSON{Remove: true}
 	case Nothing:
 		bvj = BehaviourViaJSON{Nothing: true}
 	default:
@@ -335,6 +347,17 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	return merr.ErrorOrNil()
 }
 
+// RemovalRequested tells you if one of the behaviours is Remove.
+func (bs Behaviours) RemovalRequested() bool {
+	for _, b := range bs {
+		if b.Do == Remove {
+			return true
+		}
+	}
+
+	return false
+}
+
 // String provides a nice string representation of Behaviours for user
 // interface display purposes. It takes the form of a JSON string that can
 // be converted back to Behaviours using a BehavioursViaJSON for each key. The
@@ -366,6 +389,7 @@ type BehaviourViaJSON struct {
 	CopyToManager []string `json:"copy_to_manager,omitempty"`
 	Cleanup       bool     `json:"cleanup,omitempty"`
 	CleanupAll    bool     `json:"cleanup_all,omitempty"`
+	Remove        bool     `json:"remove,omitempty"`
 	Nothing       bool     `json:"nothing,omitempty"`
 }
 
@@ -385,6 +409,8 @@ func (bj BehaviourViaJSON) Behaviour(when BehaviourTrigger) *Behaviour {
 		do = Cleanup
 	case bj.CleanupAll:
 		do = CleanupAll
+	case bj.Remove:
+		do = Remove
 	default:
 		do = Nothing
 	}

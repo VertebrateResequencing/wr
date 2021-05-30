@@ -455,6 +455,11 @@ func (j *Job) TriggerBehaviours(success bool) error {
 	return j.Behaviours.Trigger(success, j)
 }
 
+// RemovalRequested tells you if this Job's Behaviours include the 'Remove' one.
+func (j *Job) RemovalRequested() bool {
+	return j.Behaviours.RemovalRequested()
+}
+
 // Mount uses the Job's MountConfigs to mount the remote file systems at the
 // desired mount points. If a mount point is unspecified, mounts in the sub
 // folder Cwd/mnt if CwdMatters (and unspecified CacheBase becomes Cwd),

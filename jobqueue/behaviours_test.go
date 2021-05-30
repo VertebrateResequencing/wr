@@ -1,4 +1,4 @@
-// Copyright © 2017, 2018 Genome Research Limited
+// Copyright © 2017, 2018, 2019, 2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -41,6 +41,7 @@ func TestBehaviours(t *testing.T) {
 		b8 := &Behaviour{When: OnSuccess, Do: CopyToManager, Arg: "a.file"}
 		b9 := &Behaviour{When: OnSuccess | OnFailure, Do: Cleanup}
 		b10 := &Behaviour{When: 10, Do: Cleanup}
+		b11 := &Behaviour{When: OnFailure, Do: Remove}
 
 		cwd, err := os.MkdirTemp("", "wr_jobqueue_test_behaviour_dir_")
 		So(err, ShouldBeNil)
@@ -69,6 +70,7 @@ func TestBehaviours(t *testing.T) {
 			So(b8.String(), ShouldEqual, `{"on_success":[{"copy_to_manager":["!invalid!"]}]}`)
 			So(b9.String(), ShouldEqual, `{"on_failure|success":[{"cleanup":true}]}`)
 			So(b10.String(), ShouldEqual, "{}")
+			So(b11.String(), ShouldEqual, `{"on_failure":[{"remove":true}]}`)
 
 			Convey("Behaviours can be nicely stringified", func() {
 				bs := Behaviours{b1, b4}
@@ -127,6 +129,17 @@ func TestBehaviours(t *testing.T) {
 			So(err, ShouldBeNil)
 			_, err = os.Stat(cwd)
 			So(err, ShouldBeNil)
+
+			err = b11.Trigger(OnExit, job2)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("RemovalRequested works", func() {
+			bs := Behaviours{b1, b11}
+			So(bs.RemovalRequested(), ShouldBeTrue)
+
+			bs = Behaviours{b1, b2}
+			So(bs.RemovalRequested(), ShouldBeFalse)
 		})
 
 		Convey("CleanupAll works when actual cwd contains root-owned files", func() {
@@ -201,11 +214,11 @@ func TestBehaviours(t *testing.T) {
 	})
 
 	Convey("You can go from JSON to Behaviours", t, func() {
-		jsonStr := `[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true}]`
+		jsonStr := `[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}]`
 		var bjs BehavioursViaJSON
 		err := json.Unmarshal([]byte(jsonStr), &bjs)
 		So(err, ShouldBeNil)
-		So(len(bjs), ShouldEqual, 3)
+		So(len(bjs), ShouldEqual, 4)
 
 		bs := bjs.Behaviours(OnFailure)
 
@@ -220,6 +233,9 @@ func TestBehaviours(t *testing.T) {
 		So(bs[2].When, ShouldEqual, OnFailure)
 		So(bs[2].Do, ShouldEqual, CleanupAll)
 
+		So(bs[3].When, ShouldEqual, OnFailure)
+		So(bs[3].Do, ShouldEqual, Remove)
+
 		jsonStr = `[{"cleanup":true}]`
 		var bjs2 BehavioursViaJSON
 		err = json.Unmarshal([]byte(jsonStr), &bjs2)
@@ -228,8 +244,8 @@ func TestBehaviours(t *testing.T) {
 
 		bs = append(bs, bjs2.Behaviours(OnSuccess)...)
 
-		So(bs[3].When, ShouldEqual, OnSuccess)
-		So(bs[3].Do, ShouldEqual, Cleanup)
+		So(bs[4].When, ShouldEqual, OnSuccess)
+		So(bs[4].Do, ShouldEqual, Cleanup)
 
 		jsonStr = `[{"run":"true"}]`
 		var bjs3 BehavioursViaJSON
@@ -239,12 +255,12 @@ func TestBehaviours(t *testing.T) {
 
 		bs = append(bs, bjs3.Behaviours(OnExit)...)
 
-		So(bs[4].When, ShouldEqual, OnExit)
-		So(bs[4].Do, ShouldEqual, Run)
-		So(bs[4].Arg, ShouldEqual, "true")
+		So(bs[5].When, ShouldEqual, OnExit)
+		So(bs[5].Do, ShouldEqual, Run)
+		So(bs[5].Arg, ShouldEqual, "true")
 
 		Convey("You can convert back to JSON", func() {
-			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
+			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
 		})
 	})
 }

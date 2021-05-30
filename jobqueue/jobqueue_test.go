@@ -2093,11 +2093,14 @@ func TestJobqueueMedium(t *testing.T) {
 					b1 := &Behaviour{When: OnSuccess, Do: CleanupAll}
 					b2 := &Behaviour{When: OnFailure, Do: Run, Arg: "touch foo"}
 					bs := Behaviours{b1, b2}
+					b3 := &Behaviour{When: OnFailure, Do: Remove}
+					bs2 := Behaviours{b3}
 					jobs = append(jobs, &Job{Cmd: "touch bar", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_pass", Behaviours: bs})
 					jobs = append(jobs, &Job{Cmd: "touch bar && false", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail", Behaviours: bs})
+					jobs = append(jobs, &Job{Cmd: "touch car && false", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_delete", Behaviours: bs2})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
-					So(inserts, ShouldEqual, 2)
+					So(inserts, ShouldEqual, 3)
 
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
@@ -2142,6 +2145,25 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(len(entries), ShouldEqual, 1)
 					So(entries[0].Name(), ShouldEqual, "jobqueue_cwd")
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "touch car && false")
+					So(job.State, ShouldEqual, JobStateReserved)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
+
+					<-time.After(100 * time.Millisecond)
+					jobs, err = jq.GetByRepGroup("should_fail", false, 0, JobStateBuried, false, false)
+					So(err, ShouldBeNil)
+					So(len(jobs), ShouldEqual, 1)
+					jobs, err = jq.GetByRepGroup("should_delete", false, 0, JobStateBuried, false, false)
+					So(err, ShouldBeNil)
+					So(len(jobs), ShouldEqual, 0)
 				})
 
 				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {

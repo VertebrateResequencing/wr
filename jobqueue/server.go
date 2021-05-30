@@ -1641,6 +1641,11 @@ func (s *Server) createQueue() {
 					_, errk := s.killJob(key)
 					if errk != nil {
 						s.Warn("failed to kill a job after TTR", "err", errk)
+					} else {
+						errt := job.TriggerBehaviours(false)
+						if errt != nil {
+							s.Warn("failed to run behaviours for a killed lost job", "err", errt)
+						}
 					}
 				}(job.Key())
 			} else if job.killCalled {
@@ -1891,6 +1896,9 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, 
 			}
 		} else {
 			errq = s.q.Bury(key)
+			if errq == nil {
+				s.deleteJobIfRequested(job)
+			}
 		}
 	} else if item.Stats().State == queue.ItemStateDelay {
 		if currentState == JobStateDelayed {
@@ -2057,6 +2065,14 @@ func (s *Server) deleteJobs(keys []string) []string {
 		break
 	}
 	return deleted
+}
+
+// deleteJobIfRequested checks the job's behaviours and deletes the job if
+// requested.
+func (s *Server) deleteJobIfRequested(job *Job) {
+	if job.RemovalRequested() {
+		go s.deleteJobs([]string{job.Key()})
+	}
 }
 
 // killJobsOnServers kills running and confirms lost jobs that were running on
@@ -2359,6 +2375,8 @@ func (s *Server) scheduleRunners(group *sgroup) {
 				errb := s.q.Bury(item.Key)
 				if errb != nil {
 					s.Warn("scheduleRunners failed to bury an item", "err", errb)
+				} else {
+					s.deleteJobIfRequested(job)
 				}
 			}
 			s.q.TriggerReadyAddedCallback()
