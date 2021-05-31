@@ -26,7 +26,7 @@ compile_k8s_tmp: /tmp/wr
 
 test: export CGO_ENABLED = 0
 test:
-	@go test -p 1 -tags netgo -timeout 20m --count 1 ${PKG_LIST}
+	@go test -p 1 -tags netgo -timeout 40m --count 1 ${PKG_LIST}
 
 test-e2e: compile_k8s_tmp ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
 	./kubernetes/run-e2e.sh
