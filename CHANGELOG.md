@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
+## [0.24.0] - 2021-05-31
+### Added
+- A new "Remove" behaviour has been added that will result in jobs that get
+  buried to be fully removed from the queue, as if they had never been added.
+  This is useful when using wr as a Cromwell backend, where Cromwell may wish
+  to retry a failed job by adding it back to the queue, but that wouldn't be
+  possible if the job was buried. See updated guidance on the wiki for Cromwell
+  usage: https://github.com/VertebrateResequencing/wr/wiki/Cromwell
+- `wr kill` has a new --age option to only kill jobs that have been running
+  longer than the given age, or in --confirmdead mode, that have been lost at
+  least that long.
+
+### Changed
+- Lost jobs are now automatically checked to see if the process is still running
+  on the host; if not, the jobs are "killed" (to enter the buried state). If
+  it's not possible to access the host to check, jobs remain lost as before.
+  To enable this to work with the LSF scheduler, there is a new PrivateKeyPath
+  config option where you can specify a key that the manager can use to ssh to
+  hosts where jobs are lost.
+- For the OpenStack scheduler, the default CIDR and Gateway have been changed
+  from 192.168.0.0/18 & 192.168.0.1 to 192.168.64.0/18 & 192.168.64.1. This is
+  to make it more likely that there will not be issues using images on which
+  docker is installed.
+
+### Fixed
+- Critical performance and accuracy fix when using S3 mounts mounted in nested
+  subdirs (eg. when using Nextflow). Now jobs will no longer stat every file in
+  the S3 bucket for vastly increased speed and corrected peak disk usage
+  reporting.
+- Picking the "best" queue automatically when using the LSF scheduler has been
+  fixed to properly parse bqueues output to understand queue configuration
+  correctly.
+
 
 ## [0.23.4] - 2021-04-30
 ### Added
