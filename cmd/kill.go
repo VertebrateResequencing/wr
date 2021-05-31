@@ -27,6 +27,7 @@ import (
 
 // options for this cmd
 var confirmDead bool
+var cmdAge string
 
 // killCmd represents the kill command
 var killCmd = &cobra.Command{
@@ -85,6 +86,36 @@ same file you gave to "wr add" in -f mode.`,
 			die("No matching jobs found")
 		}
 
+		var age time.Duration
+		if cmdAge != "" {
+			age, err = time.ParseDuration(cmdAge)
+			if err != nil {
+				die("--age was not specified correctly: %s", err)
+			}
+		}
+
+		if age != 0 {
+			var oldJobs []*jobqueue.Job
+			for _, job := range jobs {
+				var thisAge time.Duration
+				if confirmDead {
+					thisAge = time.Since(job.EndTime)
+				} else {
+					thisAge = job.WallTime()
+				}
+
+				if thisAge >= age {
+					oldJobs = append(oldJobs, job)
+				}
+			}
+
+			jobs = oldJobs
+		}
+
+		if len(jobs) == 0 {
+			die("No matching jobs were older than %s", cmdAge)
+		}
+
 		jes := jobsToJobEssenses(jobs)
 		killed, err := jq.Kill(jes)
 		if err != nil {
@@ -108,6 +139,7 @@ func init() {
 	killCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	killCmd.Flags().StringVar(&mountSimple, "mounts", "", "mounts that the command(s) specified by -l or -f were set to use (simple format)")
 	killCmd.Flags().BoolVar(&confirmDead, "confirmdead", false, "only confirm that lost contact jobs are dead")
+	killCmd.Flags().StringVar(&cmdAge, "age", "", "only kill jobs that have been running longer than this (or in --confirmdead mode, that have been lost longer than this). [specify units such as m for minutes or h for hours]")
 
 	killCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
