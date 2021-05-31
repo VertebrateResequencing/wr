@@ -208,15 +208,15 @@ type ConfigOpenStack struct {
 
 	// CIDR describes the range of network ips that can be used to spawn
 	// OpenStack servers on which to run our commands. The default is
-	// "192.168.0.0/18", which allows for 16381 servers to be spawned. This
-	// range ends at 192.168.63.254. If already in OpenStack, this chooses which
-	// existing network (that the current host is attached to) to use.
+	// "192.168.64.0/18", which allows for 16384 servers to be spawned. This
+	// range ends at 192.168.127.255. If already in OpenStack, this chooses
+	// which existing network (that the current host is attached to) to use.
 	// Otherwise, this results in the creation of an appropriately configured
 	// network and subnet.
 	CIDR string
 
 	// GatewayIP is the gateway ip address for the subnet that will be created
-	// with the given CIDR. It defaults to 192.168.0.1.
+	// with the given CIDR. It defaults to 192.168.64.1.
 	GatewayIP string
 
 	// DNSNameServers is a slice of DNS IP addresses to use for lookups on the
@@ -902,7 +902,7 @@ func (s *opst) spawn(req *Requirements, flavor *cloud.Flavor, requestedOS string
 		err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
 			return server.WaitUntilReady(ctx, requestedConfigFiles, requestedScript)
 		})
-		logger.Debug("waited for server to become ready", "took", time.Since(tReady))
+		logger.Debug("waited for server to become ready", "took", time.Since(tReady), "err", err)
 
 		if err == nil && needsSharedDisk {
 			s.serversMutex.RLock()
@@ -1359,6 +1359,16 @@ func (s *opst) hostToID(host string) string {
 		return ""
 	}
 	return server.ID
+}
+
+// getHost returns a cloud.Server for the given host.
+func (s *opst) getHost(host string) (Host, bool) {
+	server := s.provider.GetServerByName(host)
+	if server == nil {
+		return nil, false
+	}
+
+	return server, true
 }
 
 // setMessageCallBack sets the given callback.

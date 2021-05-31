@@ -55,7 +55,7 @@ const (
 	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
 )
 
-var username string
+var CachedUsername string
 var userid int
 
 // SortMapKeysByIntValue sorts the keys of a map[string]int by its values,
@@ -134,14 +134,14 @@ func DedupSortStrings(s []string) []string {
 // with static compilation as it avoids the use of os/user. It will only work
 // on linux-like systems where 'id -u -n' works.
 func Username() (string, error) {
-	if username == "" {
+	if CachedUsername == "" {
 		var err error
-		username, err = parseIDCmd("-u", "-n")
+		CachedUsername, err = parseIDCmd("-u", "-n")
 		if err != nil {
 			return "", err
 		}
 	}
-	return username, nil
+	return CachedUsername, nil
 }
 
 // Userid returns the user id of the current user. This avoids problems

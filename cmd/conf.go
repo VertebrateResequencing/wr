@@ -281,6 +281,13 @@ manageruploaddir: "uploads"
 # recommended.
 runnerexecshell: "bash"
 
+# privatekeypath: path to your private key.
+# This defaults to ~/.ssh/id_rsa.
+#
+# This may be used by some schedulers (currently only LSF) to ssh to servers in
+# order to check on jobs that lose contact with the wr manager.
+privatekeypath: "~/.ssh/id_rsa"
+
 # cloudflavor: What server flavors can be automatically picked?
 # Without being set, any available flavor can be picked. It is overridden by
 # the --flavor option to 'wr cloud deploy' and the --cloud_flavor option of
@@ -417,7 +424,7 @@ cloudservers: -1
 cloudspawns: 10
 
 # cloudcidr: What should be the CIDR of the created subnet?
-# This defaults to "192.168.0.0/18". It is overridden by the --network_cidr
+# This defaults to "192.168.64.0/18". It is overridden by the --network_cidr
 # option to 'wr cloud deploy' and the --cloud_cidr option of 'wr manager start'.
 #
 # This option is only relevant when you are using a cloud scheduler such as
@@ -425,12 +432,12 @@ cloudspawns: 10
 #
 # wr creates a network and subnet in the cloud in which any spawned servers are
 # created. The CIDR determines the possible IP addresses the spawned servers can
-# have. For example, with the default CIDR you will be able to spawn 16381
-# servers with IPs starting from 192.168.0.1 and going up to 192.168.63.254.
-cloudcidr: "192.168.0.0/18"
+# have. For example, with the default CIDR you will be able to spawn 16384
+# servers with IPs starting from 192.168.64.0 and going up to 192.168.127.255.
+cloudcidr: "192.168.64.0/18"
 
 # cloudgateway: What should be the gateway IP of the created subnet?
-# This defaults to "192.168.0.1". It is overridden by the --network_gateway_ip
+# This defaults to "192.168.64.1". It is overridden by the --network_gateway_ip
 # option to 'wr cloud deploy' and the --cloud_gateway_ip option of
 # 'wr manager start'.
 #
@@ -440,7 +447,7 @@ cloudcidr: "192.168.0.0/18"
 # wr creates a network and subnet in the cloud in which any spawned servers are
 # created. The subnet needs a gateway, and you should normally set its IP to the
 # start of the range of your cloudcidr.
-cloudgateway: "192.168.0.1"
+cloudgateway: "192.168.64.1"
 
 # clouddns: What DNS name servers should be configured on spawned servers?
 # This defaults to "8.8.4.4,8.8.8.8". It is overridden by the --network_dns

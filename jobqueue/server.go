@@ -317,15 +317,16 @@ type Server struct {
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	sync.Mutex
-	wsmutex         sync.Mutex
-	up              bool
-	drain           bool
-	blocking        bool
-	racChecking     bool
-	killRunners     bool
-	racPending      bool
-	racRunning      bool
-	waitingReserves []chan struct{}
+	wsmutex              sync.Mutex
+	up                   bool
+	drain                bool
+	blocking             bool
+	racChecking          bool
+	killRunners          bool
+	racPending           bool
+	racRunning           bool
+	waitingReserves      []chan struct{}
+	recoveredRunningJobs map[string]bool
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -677,6 +678,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               bcast.NewGroup(),
 		schedIssues:               make(map[string]*schedulerIssue),
+		recoveredRunningJobs:      make(map[string]bool),
 		Logger:                    serverLogger,
 	}
 
@@ -726,6 +728,7 @@ func Serve(config ServerConfig) (s *Server, msg string, token []byte, err error)
 				if errr != nil {
 					s.Warn("recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 				}
+				s.recoveredRunningJobs[job.Key()] = true
 			case JobStateBuried:
 				itemdef.StartQueue = queue.SubQueueBury
 			}
@@ -1630,7 +1633,22 @@ func (s *Server) createQueue() {
 			job.FailReason = FailReasonLost
 			job.EndTime = time.Now()
 
-			if job.killCalled {
+			// we don't test recovered jobs are dead because they might have
+			// exited while the server wasn't running, and we want the existing
+			// client to tell us if it should be archived or buried
+			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDead(job) {
+				go func(key string) {
+					_, errk := s.killJob(key)
+					if errk != nil {
+						s.Warn("failed to kill a job after TTR", "err", errk)
+					} else {
+						errt := job.TriggerBehaviours(false)
+						if errt != nil {
+							s.Warn("failed to run behaviours for a killed lost job", "err", errt)
+						}
+					}
+				}(job.Key())
+			} else if job.killCalled {
 				defer func() {
 					go func() {
 						defer internal.LogPanic(s.Logger, "jobqueue ttr callback releaseJob", true)
@@ -1838,6 +1856,19 @@ func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
 	return srerr, qerr
 }
 
+// confirmJobDead() checks if the actual PID isn't running on the job's host.
+//  You must hold the job.Lock() before calling this.
+func (s *Server) confirmJobDead(job *Job) bool {
+	if job.Pid == 0 {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ServerShutdownWaitTime)
+	defer cancel()
+
+	return s.scheduler.ProcessNotRunngingOnHost(ctx, job.Pid, job.Host)
+}
+
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
 func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, forceStorage bool, forceBury bool) error {
@@ -1865,6 +1896,9 @@ func (s *Server) releaseJob(job *Job, endState *JobEndState, failReason string, 
 			}
 		} else {
 			errq = s.q.Bury(key)
+			if errq == nil {
+				s.deleteJobIfRequested(job)
+			}
 		}
 	} else if item.Stats().State == queue.ItemStateDelay {
 		if currentState == JobStateDelayed {
@@ -2031,6 +2065,14 @@ func (s *Server) deleteJobs(keys []string) []string {
 		break
 	}
 	return deleted
+}
+
+// deleteJobIfRequested checks the job's behaviours and deletes the job if
+// requested.
+func (s *Server) deleteJobIfRequested(job *Job) {
+	if job.RemovalRequested() {
+		go s.deleteJobs([]string{job.Key()})
+	}
 }
 
 // killJobsOnServers kills running and confirms lost jobs that were running on
@@ -2333,6 +2375,8 @@ func (s *Server) scheduleRunners(group *sgroup) {
 				errb := s.q.Bury(item.Key)
 				if errb != nil {
 					s.Warn("scheduleRunners failed to bury an item", "err", errb)
+				} else {
+					s.deleteJobIfRequested(job)
 				}
 			}
 			s.q.TriggerReadyAddedCallback()

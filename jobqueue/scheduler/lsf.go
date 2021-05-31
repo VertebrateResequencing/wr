@@ -26,13 +26,16 @@ import (
 	"encoding/csv"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
+	"os/user"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/inconshreveable/log15"
 )
@@ -50,18 +53,23 @@ type lsf struct {
 	bsubExe            string
 	bjobsExe           string
 	bkillExe           string
+	privateKey         string
 	log15.Logger
 }
 
 // ConfigLSF represents the configuration options required by the LSF scheduler.
 // All are required with no usable defaults.
 type ConfigLSF struct {
-	// deployment is one of "development" or "production".
+	// Deployment is one of "development" or "production".
 	Deployment string
 
-	// shell is the shell to use to run the commands to interact with your job
+	// Shell is the shell to use to run the commands to interact with your job
 	// scheduler; 'bash' is recommended.
 	Shell string
+
+	// PrivateKeyPath is the path to your private key that can be used to ssh
+	// to LSF farm nodes to check on jobs if they become non-responsive.
+	PrivateKeyPath string
 }
 
 // initialize finds out about lsf's hosts and queues
@@ -144,9 +152,9 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	reDefaultLimits := regexp.MustCompile(`^DEFAULT LIMITS:`)
 	reDefaultsFinished := regexp.MustCompile(`^MAXIMUM LIMITS:|^SCHEDULING PARAMETERS`)
 	reMemlimit := regexp.MustCompile(`MEMLIMIT`)
-	reNumUnit := regexp.MustCompile(`(\d+) (\w)`)
+	reNumUnit := regexp.MustCompile(`(\d+(?:\.\d+)?) (\w)`)
 	reRunLimit := regexp.MustCompile(`RUNLIMIT`)
-	reParseRunlimit := regexp.MustCompile(`^\s*(\d+)(?:\.0)? min`)
+	reParseRunlimit := regexp.MustCompile(`^\s*(\d+)(?:\.\d+)? min`)
 	reUserHosts := regexp.MustCompile(`^(USERS|HOSTS):\s+(.+?)\s*$`)
 	reChunkJobSize := regexp.MustCompile(`^CHUNK_JOB_SIZE:\s+(\d+)`)
 	for bqScanner.Scan() {
@@ -190,10 +198,9 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 		case reDefaultLimits.MatchString(line):
 			lookingAtDefaults = true
 			continue
-		case reDefaultsFinished.MatchString(line):
+		case reDefaultsFinished.MatchString(line) || !lookingAtDefaults:
 			lookingAtDefaults = false
-			continue
-		case !lookingAtDefaults:
+
 			switch {
 			case reMemlimit.MatchString(line):
 				nextIsMemlimit = 0
@@ -206,7 +213,7 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 				continue
 			case nextIsMemlimit > 0:
 				if matches := reNumUnit.FindAllStringSubmatch(line, -1); matches != nil && len(matches) >= nextIsMemlimit-1 {
-					val, err := strconv.Atoi(matches[nextIsMemlimit-1][1])
+					val, err := strconv.ParseFloat(matches[nextIsMemlimit-1][1], 32)
 					if err != nil {
 						return Error{"lsf", "initialize", fmt.Sprintf("failed to parse [bqueues -l]: %s", err)}
 					}
@@ -219,8 +226,8 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 					case "K":
 						val /= 1000
 					}
-					s.queues[queue]["memlimit"] = val
-					updateHighest("memlimit", val)
+					s.queues[queue]["memlimit"] = int(val)
+					updateHighest("memlimit", int(val))
 				}
 				nextIsMemlimit = 0
 			case reRunLimit.MatchString(line):
@@ -306,26 +313,25 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	}
 
 	// for each criteria we're going to sort the queues on later, hard-code
-	// [weight, sort-order, significant_change, highest_multiplier]. We want to
-	// avoid chunked queues because that means jobs will run sequentially
-	// instead of in parallel. For time and memory, prefer the queue that is
-	// more limited, since we suppose they might be less busy or will at least
-	// become free sooner
+	// [weight, sort-order]. We want to avoid chunked queues because that means
+	// jobs will run sequentially instead of in parallel. For time and memory,
+	// prefer the queue that is more limited, since we suppose they might be
+	// less busy or will at least become free sooner
 	criteriaHandling := map[string][]int{
-		"hosts":      {10, 1, 25, 2}, // weight, sort order, significant change, default multiplier
-		"max_user":   {6, 1, 10, 10},
-		"max":        {5, 1, 20, 5},
-		"prio":       {4, 1, 50, 0},
-		"chunk_size": {10000, 0, 1, 0},
-		"runlimit":   {2, 0, 3600, 12},
-		"memlimit":   {2, 0, 16000, 10},
+		"hosts":      {10, 1}, // weight, sort order
+		"max_user":   {6, 1},
+		"max":        {5, 1},
+		"prio":       {4, 1},
+		"chunk_size": {10000, 0},
+		"runlimit":   {2, 0},
+		"memlimit":   {2, 0},
 	}
 
 	// fill in some default values for the criteria on all the queues
 	defaults := map[string]int{"runlimit": 31536000, "memlimit": 10000000, "max": 10000000, "max_user": 10000000, "users": 10000000, "hosts": 10000000, "chunk_size": 0}
 	for criterion, highest := range highest {
 		if highest > 0 {
-			defaults[criterion] = highest + (criteriaHandling[criterion][2] * criteriaHandling[criterion][3])
+			defaults[criterion] = highest + 1
 		}
 	}
 	for _, qmap := range s.queues {
@@ -341,28 +347,17 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	punishedForMax := make(map[string][2]int)
 	for _, criterion := range []string{"max_user", "max", "hosts", "prio", "chunk_size", "runlimit", "memlimit"} { // instead of range over criteriaHandling, because max_user must come first
 		// sort queues by this criterion
-		reverse := false
-		if criteriaHandling[criterion][1] == 1 {
-			reverse = true
-		}
-		sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, reverse)
+		sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, criteriaHandling[criterion][1] == 1)
 
 		weight := criteriaHandling[criterion][0]
-		significantChange := criteriaHandling[criterion][2]
 		prevVal := -1
 		rank := 0
 		for _, queue := range sorted {
 			val := s.queues[queue][criterion]
 			if prevVal != -1 {
 				diff := int(math.Abs(float64(val) - float64(prevVal)))
-				if diff >= significantChange {
-					if criterion == "runlimit" {
-						// because the variance in runlimit can be so massive,
-						// increase rank sequentially
-						rank++
-					} else {
-						rank += int(math.Ceil(float64(diff) / float64(significantChange)))
-					}
+				if diff >= 1 {
+					rank++
 				}
 			}
 			punishment := rank * weight
@@ -409,6 +404,12 @@ func (s *lsf) initialize(config interface{}, logger log15.Logger) error {
 	// we prefer the order described there
 	//*** we probably don't need this if we won't be having a global max
 	// specified by the user
+
+	// if a job becomes lost, scheduler needs to ssh to the host to check on the
+	// process, so we store our private key
+	if content, err := os.ReadFile(internal.TildaToHome(s.config.PrivateKeyPath)); err == nil {
+		s.privateKey = string(content)
+	}
 
 	return nil
 }
@@ -770,6 +771,21 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 // hostToID always returns an empty string, since we're not in the cloud.
 func (s *lsf) hostToID(host string) string {
 	return ""
+}
+
+// getHost returns a cloud.Server for the given host.
+func (s *lsf) getHost(host string) (Host, bool) {
+	name := "unknown"
+	if user, err := user.Current(); err == nil {
+		name = user.Username
+	}
+
+	server := cloud.NewServer(name, host, s.privateKey, s.Logger)
+	if server == nil {
+		return nil, false
+	}
+
+	return server, true
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

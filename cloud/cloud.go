@@ -44,8 +44,8 @@ than 1 process at a time.
 		"/home/username/.wr-production/created_cloud_resources")
     err = provider.Deploy(&cloud.DeployConfig{
         RequiredPorts:  []int{22},
-        GatewayIP:      "192.168.0.1",
-        CIDR:           "192.168.0.0/18",
+        GatewayIP:      "192.168.64.1",
+        CIDR:           "192.168.64.0/18",
         DNSNameServers: [...]string{"8.8.4.4", "8.8.8.8"},
     })
 
@@ -148,10 +148,10 @@ const cleanShutDownCmd = `sync && echo 's' | sudo tee -a /proc/sysrq-trigger > /
 // for use when creating cloud subnets that need internet access.
 var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
-// defaultCIDR is a useful range allowing 16382 servers to be spawned, with a
+// defaultCIDR is a useful range allowing 16384 servers to be spawned, with a
 // defaultGateWayIP at the start of that range.
-const defaultGateWayIP = "192.168.0.1"
-const defaultCIDR = "192.168.0.0/18"
+const defaultGateWayIP = "192.168.64.1"
+const defaultCIDR = "192.168.64.0/18"
 
 // touchStampFormat is the time format we use for `touch -d`.
 const touchStampFormat = "2006-01-02T15:04:05-0700"
@@ -264,12 +264,13 @@ type DeployConfig struct {
 	// CIDR is used to either determine which existing network (that the current
 	// cloud host is attached to) to spawn new servers on, or to define the
 	// properties of the network and subnet if those need to be created. CIDR
-	// defaults to 192.168.0.0:18, allowing for 16381 servers to be Spawn()d
-	// later, with a maximum ip of 192.168.63.254.
+	// defaults to 192.168.64.0/18, allowing for 16384 servers to be Spawn()d
+	// later, with a maximum ip of 192.168.127.255.
 	CIDR string
 
 	// GatewayIP is used if a network and subnet needed to be created, and is
-	// the gateway IP address of the created subnet. It defaults to 192.168.0.1.
+	// the gateway IP address of the created subnet. It defaults to
+	// 192.168.64.1.
 	GatewayIP string
 
 	// DNSNameServers is a slice of DNS name server IPs. It defaults to
@@ -434,6 +435,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 		return err
 	}
 
+	privateKey := p.PrivateKey()
 	p.Lock()
 	defer p.Unlock()
 	for _, server := range p.resources.Servers {
@@ -465,6 +467,7 @@ func (p *Provider) Deploy(config *DeployConfig) error {
 			Name:         details[2],
 			IP:           details[1],
 			AdminPass:    details[3],
+			PrivateKey:   privateKey,
 			provider:     p,
 			cancelRunCmd: make(map[int]chan bool),
 			logger:       p.Logger.New("server", details[0]),
@@ -703,6 +706,7 @@ func (p *Provider) Spawn(os string, osUser string, flavorID string, diskGB int, 
 		IP:           serverIP,
 		OS:           os,
 		AdminPass:    adminPass,
+		PrivateKey:   p.PrivateKey(),
 		UserName:     osUser,
 		Flavor:       f,
 		Disk:         maxDisk,

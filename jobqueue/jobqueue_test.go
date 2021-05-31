@@ -49,6 +49,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const maxSpawnTime = 240 * time.Second
 const serverRC = `echo %s %s %s %s %d %d`
 
 var runnermode bool
@@ -91,7 +92,10 @@ func init() {
 }
 
 func serverShutDownTime() time.Duration {
-	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 5*time.Millisecond
+	// golang can't actually do exec.Command.Start() in parallel and has a
+	// global lock on them, so we have to allow the 500ms of time to any pending
+	// starts to resolve before we can shut down.
+	return ClientTouchInterval + httpServerShutdownTime + serverShutdownRunnerTickerTime + 500*time.Millisecond
 }
 
 func TestJobqueueUtils(t *testing.T) {
@@ -181,14 +185,15 @@ func TestJobqueueUtils(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		createLargeFile := func(path string, size int64) error {
-			f, err := os.Create(path)
-			if err != nil {
-				return err
+			f, errc := os.Create(path)
+			if errc != nil {
+				return errc
 			}
-			err = f.Truncate(size)
-			if err != nil {
-				return err
+			errc = f.Truncate(size)
+			if errc != nil {
+				return errc
 			}
+
 			return f.Close()
 		}
 
@@ -291,13 +296,14 @@ func startServer(serverExe string, keepDB, enableRunners bool, config internal.C
 // --servermode runs.
 func runServer() {
 	// uncomment and set a log path to debug server issues in TestJobqueueSignal
-	// f, err := os.OpenFile("/path", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// fh, err := log15.FileHandler("/log", log15.LogfmtFormat())
 	// if err != nil {
 	// 	log.Fatalf("error opening file: %v", err)
 	// }
-	// defer f.Close()
-	// log.SetOutput(f)
-	pid := os.Getpid()
+	// h := l15h.CallerInfoHandler(fh)
+	// testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, h))
+	// pid := os.Getpid()
+	// testLogger = testLogger.New("pid", pid)
 
 	_, serverConfig, _, _, _ := jobqueueTestInit(false)
 
@@ -308,7 +314,8 @@ func runServer() {
 	if serverEnableRunners {
 		self, err := os.Executable()
 		if err != nil {
-			log.Fatal(err)
+			testLogger.Crit("os.Executable() failed", "err", err)
+			os.Exit(1)
 		}
 
 		// we can't use the --tmpdir option, since that means the runner cmds
@@ -320,25 +327,26 @@ func runServer() {
 	ServerItemTTR = 200 * time.Millisecond
 	server, msg, _, err := serve(serverConfig)
 	if err != nil {
-		log.Fatalf("[pid %d] test daemon failed to start: %s\n", pid, err)
+		testLogger.Crit("test daemon failed to start", "err", err)
+		os.Exit(1)
 	}
 	if msg != "" {
-		log.Println(msg)
+		testLogger.Warn(msg)
 	}
 
 	// we'll Block() later, but just in case the parent tests bomb out
 	// without killing us, we'll stop after 20s
 	go func() {
 		<-time.After(20 * time.Second)
-		log.Printf("[pid %d] test daemon stopping after 20s\n", pid)
+		testLogger.Warn("test daemon stopping after 20s")
 		server.Stop(true)
 	}()
 
-	log.Printf("[pid %d] test daemon up, will block\n", pid)
+	testLogger.Warn("test daemon up, will block")
 
 	// wait until we are killed
 	err = server.Block()
-	log.Printf("[pid %d] test daemon exiting due to %s\n", pid, err)
+	testLogger.Warn("test daemon exiting", "reason", err)
 	os.Exit(0)
 }
 
@@ -2085,11 +2093,14 @@ func TestJobqueueMedium(t *testing.T) {
 					b1 := &Behaviour{When: OnSuccess, Do: CleanupAll}
 					b2 := &Behaviour{When: OnFailure, Do: Run, Arg: "touch foo"}
 					bs := Behaviours{b1, b2}
+					b3 := &Behaviour{When: OnFailure, Do: Remove}
+					bs2 := Behaviours{b3}
 					jobs = append(jobs, &Job{Cmd: "touch bar", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_pass", Behaviours: bs})
 					jobs = append(jobs, &Job{Cmd: "touch bar && false", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail", Behaviours: bs})
+					jobs = append(jobs, &Job{Cmd: "touch car && false", Cwd: cwd, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_delete", Behaviours: bs2})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
-					So(inserts, ShouldEqual, 2)
+					So(inserts, ShouldEqual, 3)
 
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
@@ -2134,6 +2145,25 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(len(entries), ShouldEqual, 1)
 					So(entries[0].Name(), ShouldEqual, "jobqueue_cwd")
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "touch car && false")
+					So(job.State, ShouldEqual, JobStateReserved)
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exited, ShouldBeTrue)
+					So(job.Exitcode, ShouldEqual, 1)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
+
+					<-time.After(100 * time.Millisecond)
+					jobs, err = jq.GetByRepGroup("should_fail", false, 0, JobStateBuried, false, false)
+					So(err, ShouldBeNil)
+					So(len(jobs), ShouldEqual, 1)
+					jobs, err = jq.GetByRepGroup("should_delete", false, 0, JobStateBuried, false, false)
+					So(err, ShouldBeNil)
+					So(len(jobs), ShouldEqual, 0)
 				})
 
 				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {
@@ -4264,6 +4294,100 @@ func TestJobqueueRunners(t *testing.T) {
 		maxCPU := runtime.NumCPU()
 		runtime.GOMAXPROCS(maxCPU)
 
+		Convey("You can connect, and add a job and then manually kill both the runner and process", func() {
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+
+			var jobs []*Job
+			cmd := "perl -e 'for (1..20) { sleep(1) }'"
+			jobs = append(jobs, &Job{Cmd: cmd, Cwd: "/tmp", ReqGroup: "sleep", Requirements: &jqs.Requirements{RAM: 1, Time: 20 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
+			inserts, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			// wait for the job to start running
+			started := make(chan bool, 1)
+			go func() {
+				limit := time.After(10 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == 1 {
+							ticker.Stop()
+							started <- true
+
+							return
+						}
+
+						continue
+					case <-limit:
+						ticker.Stop()
+						started <- false
+
+						return
+					}
+				}
+			}()
+			So(<-started, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+
+			ec := exec.Command("bash", "-c", fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobs[0].Pid))
+			out, err := ec.CombinedOutput()
+			So(err, ShouldBeNil)
+			pgid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+			So(err, ShouldBeNil)
+			syscall.Kill(-pgid, syscall.SIGKILL)
+
+			// wait for the job to become lost and then buried
+			killed := make(chan bool, 1)
+			go func() {
+				limit := time.After(ServerItemTTR + 5*time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
+						if err != nil {
+							continue
+						}
+						if len(jobs) == 1 {
+							ticker.Stop()
+							killed <- true
+
+							return
+						}
+
+						continue
+					case <-limit:
+						ticker.Stop()
+						jobs, err = jq.GetByRepGroup("manually_added", false, 0, "", true, false)
+						timelimitDebug(jobs, err)
+						killed <- false
+
+						return
+					}
+				}
+			}()
+			So(<-killed, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].State, ShouldEqual, JobStateBuried)
+			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
+			So(jobs[0].Exitcode, ShouldEqual, -1)
+		})
+
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 			So(err, ShouldBeNil)
@@ -5190,13 +5314,15 @@ func TestJobqueueRunners(t *testing.T) {
 			if err == nil {
 				_, err = exec.LookPath("bqueues")
 			}
-			if err == nil && os.Getenv("WR_DISABLE_LSF_TEST") != "true" {
+
+			privateKeyPath := os.Getenv("WR_LSF_TEST_KEY")
+			if err == nil && privateKeyPath != "" && os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") != "true" {
 				lsfMode = true
 				count = 10000
 				count2 = 1000
 				lsfConfig := runningConfig
 				lsfConfig.SchedulerName = "lsf"
-				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing"}
+				lsfConfig.SchedulerConfig = &jqs.ConfigLSF{Shell: config.RunnerExecShell, Deployment: "testing", PrivateKeyPath: privateKeyPath}
 				server.Stop(true)
 				server, _, token, errs = serve(lsfConfig)
 				So(errs, ShouldBeNil)
@@ -5414,11 +5540,12 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 	dockerInstallScript := `sudo mkdir -p /etc/docker/
 sudo bash -c "echo '{ \"bip\": \"192.168.3.3/24\", \"dns\": [\"8.8.8.8\",\"8.8.4.4\"], \"mtu\": 1380 }' > /etc/docker/daemon.json"
-sudo apt-get -y install --no-install-recommends apt-transport-https ca-certificates curl software-properties-common
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-sudo apt-get -yq update
-sudo apt-get -y install docker-ce
+sudo DEBIAN_FRONTEND=noninteractive apt-get -yq update
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y install apt-transport-https ca-certificates curl gnupg lsb-release && >&2 echo installed deps
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo DEBIAN_FRONTEND=noninteractive apt-get -yq update
+sudo >&2 apt-get -y install docker-ce docker-ce-cli containerd.io && >&2 echo installed docker
 sudo usermod -aG docker ` + osUser
 
 	Convey("You can connect with an OpenStack scheduler", t, func() {
@@ -5434,7 +5561,7 @@ sudo usermod -aG docker ` + osUser
 		defer disconnect(jq)
 
 		waitRun := func(done chan bool) {
-			limit := time.After(180 * time.Second)
+			limit := time.After(maxSpawnTime)
 			ticker := time.NewTicker(1 * time.Second)
 			for {
 				select {
@@ -5569,7 +5696,7 @@ sudo usermod -aG docker ` + osUser
 			// now that the "config" file is copied to where we're trying to
 			// ls, the job should complete
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -5633,7 +5760,7 @@ sudo usermod -aG docker ` + osUser
 			// now that the cloud script touches the file we're trying to
 			// ls, the job should complete
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -5875,7 +6002,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6052,7 +6179,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the job to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6103,7 +6230,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to get run
 			done := make(chan bool, 1)
 			go func() {
-				limit := time.After(240 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6162,7 +6289,7 @@ sudo usermod -aG docker ` + osUser
 			// wait for the jobs to start running
 			started := make(chan bool, 1)
 			waitForBothRunning := func() {
-				limit := time.After(180 * time.Second)
+				limit := time.After(maxSpawnTime)
 				ticker := time.NewTicker(1 * time.Second)
 				for {
 					select {
@@ -6266,11 +6393,13 @@ sudo usermod -aG docker ` + osUser
 								gotLost <- false
 							}
 							gotLost <- true
+
 							return
 						}
 					case <-limit:
 						ticker.Stop()
 						gotLost <- false
+
 						return
 					}
 				}

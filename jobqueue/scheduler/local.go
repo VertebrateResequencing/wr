@@ -23,6 +23,8 @@ package scheduler
 // may not be very efficient with the machine's resources.
 
 import (
+	"context"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -805,6 +807,7 @@ func (s *local) runCmd(cmd string, req *Requirements, reservedCh chan bool, call
 	}
 
 	ec := exec.Command(s.config.Shell, "-c", cmd) // #nosec
+	ec.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err := ec.Start()
 	if err != nil {
 		s.Error("runCmd start", "cmd", cmd, "err", err)
@@ -940,6 +943,85 @@ func (s *local) busy() bool {
 // hostToID always returns an empty string, since we're not in the cloud.
 func (s *local) hostToID(host string) string {
 	return ""
+}
+
+// localHost implements the Host interface.
+type localHost struct {
+	logger log15.Logger
+	shell  string
+}
+
+// RunCmd runs the given command on localhost, optionally in the background.
+// You get the command's STDOUT and STDERR as strings.
+func (l *localHost) RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error) {
+	done := make(chan error, 1)
+	outCh := make(chan string, 1)
+	errCh := make(chan string, 1)
+
+	go func() {
+		defer internal.LogPanic(l.logger, "localHost RunCmd", false)
+
+		if background {
+			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
+		}
+
+		ec := exec.Command(l.shell, "-c", cmd) // #nosec
+
+		stdoutp, errs := ec.StdoutPipe()
+		if errs != nil {
+			done <- errs
+
+			return
+		}
+
+		stderrp, errs := ec.StderrPipe()
+		if errs != nil {
+			done <- errs
+
+			return
+		}
+
+		if errs := ec.Start(); errs != nil {
+			done <- errs
+
+			return
+		}
+
+		stdout, erro := io.ReadAll(stdoutp)
+		stderr, erre := io.ReadAll(stderrp)
+
+		if errw := ec.Wait(); errw != nil {
+			done <- errw
+
+			return
+		}
+
+		if erro == nil && len(stdout) > 0 {
+			outCh <- string(stdout)
+		} else {
+			outCh <- ""
+		}
+		if erre == nil && len(stderr) > 0 {
+			errCh <- string(stderr)
+		} else {
+			errCh <- ""
+		}
+		done <- nil
+	}()
+
+	err = <-done
+	if err == nil {
+		stdout = <-outCh
+		stderr = <-errCh
+	}
+
+	return stdout, stderr, err
+}
+
+// getHost returns an implementation of the Host interface that can be used
+// to run commands on localhost.
+func (s *local) getHost(host string) (Host, bool) {
+	return &localHost{logger: s.Logger, shell: s.config.Shell}, true
 }
 
 // setMessageCallBack does nothing at the moment, since we don't generate any

@@ -111,6 +111,7 @@ type Server struct {
 	sshClients        []*ssh.Client
 	sshClientSessions []int
 	AdminPass         string
+	PrivateKey        string // PEM format string of a private key that can be used to SSH to the server
 	ID                string
 	IP                string // ip address that you could SSH to
 	Name              string // ought to correspond to the hostname
@@ -146,6 +147,19 @@ type Server struct {
 	sshStarted        bool
 	createdShare      bool
 	used              bool
+}
+
+// NewServer returns a Server with the minimal details set needed to SSH to it
+// and use the various SSH-requiring methods. You will need to manually set
+// other properties for other functionality to work.
+func NewServer(username, ip, key string, logger log15.Logger) *Server {
+	return &Server{
+		UserName:     username,
+		IP:           ip,
+		PrivateKey:   key,
+		logger:       logger,
+		cancelRunCmd: make(map[int]chan bool),
+	}
 }
 
 // WaitUntilReady waits for the server to become fully ready: the boot process
@@ -445,15 +459,22 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 
 // createSSHClientConfig creates an ssh client config and stores it on self.
 func (s *Server) createSSHClientConfig() error {
-	if s.provider.PrivateKey() == "" {
-		s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
+	if s.PrivateKey == "" {
+		if s.provider != nil && s.provider.PrivateKey() == "" {
+			s.logger.Error("resource file did not contain the ssh key", "path", s.provider.savePath)
+		}
+
 		return errors.New("missing ssh key")
 	}
 
 	// parse private key and make config
-	signer, err := ssh.ParsePrivateKey([]byte(s.provider.PrivateKey()))
+	signer, err := ssh.ParsePrivateKey([]byte(s.PrivateKey))
 	if err != nil {
-		s.logger.Error("failed to parse private key", "path", s.provider.savePath, "err", err)
+		path := "unknown"
+		if s.provider != nil {
+			path = s.provider.savePath
+		}
+		s.logger.Error("failed to parse private key", "path", path, "err", err)
 		return err
 	}
 	s.sshClientConfig = &ssh.ClientConfig{
@@ -464,6 +485,7 @@ func (s *Server) createSSHClientConfig() error {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // *** don't currently know the server's host key, want to use ssh.FixedHostKey(publicKey) instead...
 		Timeout:         sshShortTimeOut,
 	}
+
 	return nil
 }
 
@@ -475,7 +497,6 @@ func (s *Server) createSSHClientConfig() error {
 func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-
 	// return a client that is still good (most likely to be a more recent
 	// client)
 	numClients := len(s.sshClients)

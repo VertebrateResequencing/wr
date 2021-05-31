@@ -400,6 +400,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true, false)
 				if errq != nil {
 					srerr = ErrInternalError
+					s.Warn("releaseJob failed", "err", errq)
 					qerr = errq.Error()
 				}
 			}
@@ -414,6 +415,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 				errq := s.releaseJob(job, cr.JobEndState, cr.Job.FailReason, true, true)
 				if errq != nil {
 					srerr = ErrInternalError
+					s.Warn("releaseJob to bury failed", "err", errq)
 					qerr = errq.Error()
 				}
 			}
@@ -614,6 +616,7 @@ func (s *Server) handleRequest(m *mangos.Message) error {
 					if err != nil {
 						continue
 					}
+
 					if k {
 						killable++
 					}

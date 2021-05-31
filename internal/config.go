@@ -83,14 +83,15 @@ type Config struct {
 	ManagerCertDomain    string `default:"localhost"`
 	ManagerSetDomainIP   bool   `default:"false"`
 	RunnerExecShell      string `default:"bash"`
+	PrivateKeyPath       string `default:"~/.ssh/id_rsa"`
 	Deployment           string `default:"production"`
 	CloudFlavor          string `default:""`
 	CloudFlavorManager   string `default:""`
 	CloudFlavorSets      string `default:""`
 	CloudKeepAlive       int    `default:"120"`
 	CloudServers         int    `default:"-1"`
-	CloudCIDR            string `default:"192.168.0.0/18"`
-	CloudGateway         string `default:"192.168.0.1"`
+	CloudCIDR            string `default:"192.168.64.0/18"`
+	CloudGateway         string `default:"192.168.64.1"`
 	CloudDNS             string `default:"8.8.4.4,8.8.8.8"`
 	CloudOS              string `default:"bionic-server"`
 	ContainerImage       string `default:"ubuntu:latest"`

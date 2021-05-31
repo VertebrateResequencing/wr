@@ -634,7 +634,11 @@ func startJQ(postCreation []byte) {
 			MaxRAM:   maxLocalRAM,
 		}
 	case "lsf":
-		schedulerConfig = &jqs.ConfigLSF{Deployment: config.Deployment, Shell: config.RunnerExecShell}
+		schedulerConfig = &jqs.ConfigLSF{
+			Deployment:     config.Deployment,
+			Shell:          config.RunnerExecShell,
+			PrivateKeyPath: config.PrivateKeyPath,
+		}
 	case "openstack":
 		mport, errf := strconv.Atoi(config.ManagerPort)
 		if errf != nil {
