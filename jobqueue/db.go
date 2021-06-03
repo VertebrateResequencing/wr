@@ -76,8 +76,8 @@ var (
 // Rec* variables are only exported for testing purposes (*** though they should
 // probably be user configurable somewhere...).
 var (
-	RecMBRound  = 100  // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
-	RecSecRound = 1800 // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
+	RecMBRound  = 100 // when we recommend amount of memory to reserve for a job, we round up to the nearest RecMBRound MBs
+	RecSecRound = 1   // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
 
 // sobsd ('slice of byte slice doublets') implements sort interface so we can
@@ -1297,8 +1297,8 @@ func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
 // that previously ran with the given reqGroup. If there are too few prior
 // values to calculate a 95th percentile, or if the 95th percentile is very
 // close to the maximum value, returns the maximum value instead. In either
-// case, the true value is rounded up to the nearest 30mins (but returned in
-// seconds). Returns 0 if there are no prior values.
+// case, the true value is rounded up to the nearest second. Returns 0 if there
+// are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
 	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, RecSecRound)
 }

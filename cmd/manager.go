@@ -363,13 +363,18 @@ down will be lost.`,
 			die("even though I was able to connect to the manager, it failed to enter drain mode: %s", err)
 		}
 
+		completeMsg := "have already completed"
+		if etc > 0 {
+			completeMsg = fmt.Sprintf("complete in less than %s", etc)
+		}
+
 		if numLeft == 0 {
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
 			deleteToken()
 		} else if numLeft == 1 {
-			info("wr manager running on port %s is now draining; there is a job still running, and it should complete in less than %s", config.ManagerPort, etc)
+			info("wr manager running on port %s is now draining; there is a job still running, and it should %s", config.ManagerPort, completeMsg)
 		} else {
-			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should complete in less than %s", config.ManagerPort, numLeft, etc)
+			info("wr manager running on port %s is now draining; there are %d jobs still running, and they should %s", config.ManagerPort, numLeft, completeMsg)
 		}
 
 		err = jq.Disconnect()

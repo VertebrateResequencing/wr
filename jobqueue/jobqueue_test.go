@@ -3004,7 +3004,7 @@ func TestJobqueueLimitGroups(t *testing.T) {
 			reserveJobs := func() []*Job {
 				var jobs []*Job
 				for i := 1; i <= 5; i++ {
-					job, errr := jq.ReserveScheduled(25*time.Millisecond, "110:0:1:0~a,b")
+					job, errr := jq.ReserveScheduled(25*time.Millisecond, "110:30:1:0~a,b")
 					So(errr, ShouldBeNil)
 					if job != nil {
 						jobs = append(jobs, job)
@@ -3146,7 +3146,7 @@ func TestJobqueueModify(t *testing.T) {
 	}
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 	rtime := 50 * time.Millisecond
-	rgroup := "110:0:1:0"
+	rgroup := "110:30:1:0"
 	learnedRgroup := "200:30:1:0"
 	learnedRAMNormal := 100
 	learnedRAMExtraRange := []int{200, 500}
@@ -3388,8 +3388,8 @@ func TestJobqueueModify(t *testing.T) {
 			add(1)
 
 			// if the modify of initial didn't work, we'd have no learning of
-			// the modified reqgroup, so it would get 400:0:1:0 as its scheduler
-			// group. But due to learning, the RAM is 100 and the time changed
+			// the modified reqgroup, so it would get 400:30:1:0 as its scheduler
+			// group. But due to learning, the RAM is 100
 			job = reserve(learnedRgroup, cmd)
 			if job.Requirements.RAM != learnedRAMNormal {
 				So(job.Requirements.RAM, ShouldBeBetweenOrEqual, learnedRAMExtraRange[0], learnedRAMExtraRange[1])
@@ -3409,7 +3409,7 @@ func TestJobqueueModify(t *testing.T) {
 			jm.SetRequirements(&jqs.Requirements{RAM: 100, Time: 10 * time.Second, Cores: 0, CoresSet: true, Disk: 0, Other: make(map[string]string)})
 			modify("a", 1)
 
-			job := reserve("200:0:0:0", cmd)
+			job := reserve("200:30:0:0", cmd)
 			So(job.Requirements.RAM, ShouldEqual, 100)
 			So(job.Requirements.Cores, ShouldEqual, 0)
 			So(job.Requirements.Disk, ShouldEqual, 0)
@@ -3419,10 +3419,10 @@ func TestJobqueueModify(t *testing.T) {
 			other := make(map[string]string)
 			other["foo"] = "bar"
 			jm = NewJobModifer()
-			jm.SetRequirements(&jqs.Requirements{RAM: 600, Time: 20 * time.Minute, Cores: 0, Disk: 5, DiskSet: true, Other: other, OtherSet: true})
+			jm.SetRequirements(&jqs.Requirements{RAM: 600, Time: 40 * time.Minute, Cores: 0, Disk: 5, DiskSet: true, Other: other, OtherSet: true})
 			modify("a", 1)
 
-			job = reserve("700:20:0:5:cfd399e4a9dba25ac14a2454ce3e8d24", cmd)
+			job = reserve("700:60:0:5:cfd399e4a9dba25ac14a2454ce3e8d24", cmd)
 			So(job.Requirements.RAM, ShouldEqual, 600)
 			So(job.Requirements.Cores, ShouldEqual, 0)
 			So(job.Requirements.Disk, ShouldEqual, 5)
@@ -3433,7 +3433,7 @@ func TestJobqueueModify(t *testing.T) {
 			jm.SetRequirements(&jqs.Requirements{Cores: 0.5, CoresSet: true, Disk: 0, DiskSet: true, Other: make(map[string]string), OtherSet: true})
 			modify("a", 1)
 
-			job = reserve("700:20:0.5:0", cmd)
+			job = reserve("700:60:0.5:0", cmd)
 			So(job.Requirements.RAM, ShouldEqual, 600)
 			So(job.Requirements.Cores, ShouldEqual, 0.5)
 			So(job.Requirements.Disk, ShouldEqual, 0)
@@ -3456,11 +3456,10 @@ func TestJobqueueModify(t *testing.T) {
 			jm.SetOverride(uint8(0))
 			modify("a", 1)
 
-			// by turning off override, we enable the learned values, which is
-			// a minimum of 30 mins
+			// by turning off override, we enable the learned values
 
 			job = kick("a", learnedRgroup, cmd, "a")
-			So(job.Requirements.Time, ShouldEqual, 30*time.Minute)
+			So(job.Requirements.Time, ShouldEqual, 1*time.Second)
 		})
 
 		Convey("You can modify the retries of a job", func() {
@@ -3488,9 +3487,9 @@ func TestJobqueueModify(t *testing.T) {
 			add(3)
 
 			jobA := reserve(rgroup, "echo a")
-			reserve("500:0:1:0", "echo b")
+			reserve("500:30:1:0", "echo b")
 
-			jobC, err := jq.ReserveScheduled(rtime, "900:0:1:0")
+			jobC, err := jq.ReserveScheduled(rtime, "900:30:1:0")
 			So(err, ShouldBeNil)
 			So(jobC, ShouldBeNil)
 
@@ -3502,7 +3501,7 @@ func TestJobqueueModify(t *testing.T) {
 			// without the modification, we'd also need to execute job b before
 			// the following reserve would work
 
-			reserve("900:0:1:0", "echo c")
+			reserve("900:30:1:0", "echo c")
 		})
 
 		Convey("You can modify the command line of a job that other jobs depend on", func() {
@@ -3514,7 +3513,7 @@ func TestJobqueueModify(t *testing.T) {
 			job = execute(job, false, "a")
 			So(job.State, ShouldEqual, JobStateBuried)
 
-			job, err := jq.ReserveScheduled(rtime, "700:0:1:0")
+			job, err := jq.ReserveScheduled(rtime, "700:30:1:0")
 			So(err, ShouldBeNil)
 			So(job, ShouldBeNil)
 
@@ -3531,7 +3530,7 @@ func TestJobqueueModify(t *testing.T) {
 			job = reserve(rgroup, "echo a && true")
 			execute(job, true, "")
 
-			reserve("500:0:1:0", "echo b && true")
+			reserve("500:30:1:0", "echo b && true")
 		})
 
 		Convey("You can modify the behaviours of a job", func() {
@@ -5216,7 +5215,7 @@ func TestJobqueueRunners(t *testing.T) {
 								return
 							} else if fourHundredCount == 0 {
 								server.psgmutex.RLock()
-								if group, existed := server.previouslyScheduledGroups["400:0:1:0"]; existed {
+								if group, existed := server.previouslyScheduledGroups["400:30:1:0"]; existed {
 									fourHundredCount = group.count
 								}
 								server.psgmutex.RUnlock()

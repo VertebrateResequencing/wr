@@ -1089,7 +1089,7 @@ func (s *Server) GetServerStats() *ServerStats {
 		job.RUnlock()
 	}
 
-	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
+	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Second).Sub(time.Now().Truncate(time.Second))}
 }
 
 // BackupDB lets you do a manual live backup of the server's database to a given
