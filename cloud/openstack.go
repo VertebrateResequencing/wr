@@ -54,6 +54,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	"github.com/gophercloud/utils/openstack/clientconfig"
 	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
 	"github.com/hashicorp/go-multierror"
 	"github.com/inconshreveable/log15"
@@ -153,21 +154,6 @@ func (p *openstackp) maybeEnv() []string {
 func (p *openstackp) initialize(logger log15.Logger) error {
 	p.Logger = logger.New("cloud", "openstack")
 
-	// gophercloud uses non-standard env var names, so convert if necessary
-	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_PROJECT_DOMAIN_ID") != "" {
-		err := os.Setenv("OS_DOMAIN_ID", os.Getenv("OS_PROJECT_DOMAIN_ID"))
-		if err != nil {
-			return err
-		}
-	}
-
-	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_DOMAIN_NAME") == "" && os.Getenv("OS_USER_DOMAIN_NAME") != "" {
-		err := os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
-		if err != nil {
-			return err
-		}
-	}
-
 	// we use a non-standard env var to find the default network from which to
 	// get floating IPs from, which defaults depending on age of OpenStack
 	// installation
@@ -181,16 +167,17 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	}
 
 	// authenticate
-	opts, err := openstack.AuthOptionsFromEnv()
+	opts, err := clientconfig.AuthOptions(&clientconfig.ClientOpts{})
 	if err != nil {
 		return err
 	}
+
+	opts.AllowReauth = true
 	if opts.TenantID == "" {
 		return fmt.Errorf("either OS_TENANT_ID or OS_PROJECT_ID must be set")
 	}
 	p.tenantID = opts.TenantID
-	opts.AllowReauth = true
-	provider, err := openstack.AuthenticatedClient(opts)
+	provider, err := openstack.AuthenticatedClient(*opts)
 	if err != nil {
 		return err
 	}
