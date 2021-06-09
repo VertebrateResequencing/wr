@@ -96,6 +96,21 @@ func TestOpenStack(t *testing.T) {
 			So(vars, ShouldResemble, []string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME", "OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"})
 		})
 
+		if os.Getenv("OS_PROJECT_NAME") != "" && os.Getenv("OS_PROJECT_ID") != "" {
+			Convey("You can get a new OpenStack Provider with both OS_PROJECT_NAME and OS_PROJECT_ID set", t, func() {
+				p, err := New("openstack", resourceName, crfileprefix, testLogger)
+				So(err, ShouldBeNil)
+				So(p, ShouldNotBeNil)
+			})
+
+			Convey("You can get a new OpenStack Provider with just OS_PROJECT_NAME set", t, func() {
+				os.Unsetenv("OS_PROJECT_ID")
+				p, err := New("openstack", resourceName, crfileprefix, testLogger)
+				So(err, ShouldBeNil)
+				So(p, ShouldNotBeNil)
+			})
+		}
+
 		Convey("You can get a new OpenStack Provider", t, func() {
 			p, err := New("openstack", resourceName, crfileprefix, testLogger)
 			So(err, ShouldBeNil)
