@@ -3460,6 +3460,15 @@ func TestJobqueueModify(t *testing.T) {
 
 			job = kick("a", learnedRgroup, cmd, "a")
 			So(job.Requirements.Time, ShouldEqual, 1*time.Second)
+			stats := server.GetServerStats()
+			So(stats.ETC, ShouldEqual, 0*time.Second)
+
+			_, err := jq.Kick(jobsToJobEssenses([]*Job{job}))
+			So(err, ShouldBeNil)
+			job = reserve(learnedRgroup, cmd)
+			jq.Started(job, 1)
+			stats = server.GetServerStats()
+			So(stats.ETC, ShouldEqual, 1*time.Second)
 		})
 
 		Convey("You can modify the retries of a job", func() {
