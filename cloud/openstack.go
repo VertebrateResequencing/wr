@@ -158,6 +158,9 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	// we use a non-standard env var to find the default network from which to
 	// get floating IPs from, which defaults depending on age of OpenStack
 	// installation
+	// *** A Nova "pool" can be thought of as a Neutron public subnet. It should
+	// be possible to query/search for a subnet using the Neutron API without
+	// having to provide a project ID and pool name.
 	p.poolName = os.Getenv("OS_POOL_NAME")
 	if p.poolName == "" {
 		if os.Getenv("OS_TENANT_ID") != "" {
