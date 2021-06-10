@@ -1067,7 +1067,8 @@ func (s *Server) Resume() (bool, error) {
 // server's queue.
 func (s *Server) GetServerStats() *ServerStats {
 	var delayed, ready, running, buried int
-	var etc time.Time
+	now := time.Now()
+	etc := now
 
 	stats := s.q.Stats()
 	delayed += stats.Delayed
@@ -1089,7 +1090,7 @@ func (s *Server) GetServerStats() *ServerStats {
 		job.RUnlock()
 	}
 
-	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Minute).Sub(time.Now().Truncate(time.Minute))}
+	return &ServerStats{Delayed: delayed, Ready: ready, Running: running, Buried: buried, ETC: etc.Truncate(time.Second).Sub(now.Truncate(time.Second))}
 }
 
 // BackupDB lets you do a manual live backup of the server's database to a given

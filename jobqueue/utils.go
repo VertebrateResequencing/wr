@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -51,6 +52,10 @@ const mkHashedLevels = 4
 
 // tokenLength is the fixed size of our authentication token
 const tokenLength = 43
+
+const reqSchedSpecialRAM = 924
+const reqSchedExtraRAM = 100
+const reqSchedTimeRound = 30 * time.Minute
 
 var pss = []byte("Pss:")
 
@@ -603,20 +608,24 @@ func compressFile(path string) ([]byte, error) {
 // reqForScheduler takes a job's Requirements and returns a possibly modified
 // version if using less than 924MB memory to have +100MB memory to allow some
 // leeway in case the job scheduler calculates used memory differently, and for
-// other memory usage vagaries.
+// other memory usage vagaries. It also rounds up the Time to the nearest half
+// hour.
 func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
-	if req.RAM < 924 {
-		// our req will be like the jobs but with memory + 100 to
-		// allow some leeway in case the job scheduler calculates
-		// used memory differently, and for other memory usage
-		// vagaries
-		req = &scheduler.Requirements{
-			RAM:   req.RAM + 100,
-			Time:  req.Time,
-			Cores: req.Cores,
-			Disk:  req.Disk,
-			Other: req.Other,
-		}
+	ram := req.RAM
+	if ram < reqSchedSpecialRAM {
+		ram += reqSchedExtraRAM
 	}
-	return req
+
+	d := req.Time.Round(reqSchedTimeRound)
+	if d < req.Time {
+		d += reqSchedTimeRound
+	}
+
+	return &scheduler.Requirements{
+		RAM:   ram,
+		Time:  d,
+		Cores: req.Cores,
+		Disk:  req.Disk,
+		Other: req.Other,
+	}
 }
