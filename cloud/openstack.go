@@ -1,4 +1,4 @@
-// Copyright © 2016-2020 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -49,11 +49,13 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/images"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
+	"github.com/gophercloud/utils/openstack/clientconfig"
 	networksutil "github.com/gophercloud/utils/openstack/networking/v2/networks"
 	"github.com/hashicorp/go-multierror"
 	"github.com/inconshreveable/log15"
@@ -153,24 +155,12 @@ func (p *openstackp) maybeEnv() []string {
 func (p *openstackp) initialize(logger log15.Logger) error {
 	p.Logger = logger.New("cloud", "openstack")
 
-	// gophercloud uses non-standard env var names, so convert if necessary
-	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_PROJECT_DOMAIN_ID") != "" {
-		err := os.Setenv("OS_DOMAIN_ID", os.Getenv("OS_PROJECT_DOMAIN_ID"))
-		if err != nil {
-			return err
-		}
-	}
-
-	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_DOMAIN_NAME") == "" && os.Getenv("OS_USER_DOMAIN_NAME") != "" {
-		err := os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
-		if err != nil {
-			return err
-		}
-	}
-
 	// we use a non-standard env var to find the default network from which to
 	// get floating IPs from, which defaults depending on age of OpenStack
 	// installation
+	// *** A Nova "pool" can be thought of as a Neutron public subnet. It should
+	// be possible to query/search for a subnet using the Neutron API without
+	// having to provide a project ID and pool name.
 	p.poolName = os.Getenv("OS_POOL_NAME")
 	if p.poolName == "" {
 		if os.Getenv("OS_TENANT_ID") != "" {
@@ -181,33 +171,50 @@ func (p *openstackp) initialize(logger log15.Logger) error {
 	}
 
 	// authenticate
-	opts, err := openstack.AuthOptionsFromEnv()
+	opts, err := clientconfig.AuthOptions(&clientconfig.ClientOpts{})
 	if err != nil {
 		return err
 	}
-	if opts.TenantID == "" {
-		return fmt.Errorf("either OS_TENANT_ID or OS_PROJECT_ID must be set")
-	}
-	p.tenantID = opts.TenantID
+
 	opts.AllowReauth = true
-	provider, err := openstack.AuthenticatedClient(opts)
+
+	provider, err := openstack.AuthenticatedClient(*opts)
 	if err != nil {
 		return err
+	}
+
+	endpoint := gophercloud.EndpointOpts{
+		Region: os.Getenv("OS_REGION_NAME"),
 	}
 
 	// make a compute client
-	p.computeClient, err = openstack.NewComputeV2(provider, gophercloud.EndpointOpts{
-		Region: os.Getenv("OS_REGION_NAME"),
-	})
+	p.computeClient, err = openstack.NewComputeV2(provider, endpoint)
 	if err != nil {
 		return err
 	}
 
+	if opts.TenantID == "" {
+		identityClient, erri := openstack.NewIdentityV3(provider, endpoint)
+		if erri != nil {
+			return err
+		}
+
+		project, erri := tokens.Create(identityClient, opts).ExtractProject()
+		if erri != nil {
+			return err
+		}
+
+		if project.ID == "" {
+			return fmt.Errorf("either OS_TENANT_ID or OS_PROJECT_ID must be set")
+		}
+
+		p.tenantID = project.ID
+	} else {
+		p.tenantID = opts.TenantID
+	}
+
 	// make a network client
-	p.networkClient, err = openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{
-		//Name:   "neutron", //*** "services can have the same Type but a different Name, which is why [...] Name [is] sometimes needed... but how do I see the available names?
-		Region: os.Getenv("OS_REGION_NAME"),
-	})
+	p.networkClient, err = openstack.NewNetworkV2(provider, endpoint)
 	if err != nil {
 		return err
 	}
