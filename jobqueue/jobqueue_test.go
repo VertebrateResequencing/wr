@@ -878,11 +878,18 @@ func TestJobqueueBasics(t *testing.T) {
 	var token []byte
 	var errs error
 	Convey("Without the jobserver being up, clients can't connect and time out", t, func() {
+		os.Remove(config.ManagerTokenFile)
+
 		_, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldNotBeNil)
 		jqerr, ok := err.(Error)
 		So(ok, ShouldBeTrue)
 		So(jqerr.Err, ShouldEqual, ErrNoServer)
+
+		jq, err := ConnectUsingConfig("development", clientConnectTime, testLogger)
+		So(jq, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "could not read token file")
 	})
 
 	Convey("Once the jobqueue server is up", t, func() {
@@ -890,6 +897,12 @@ func TestJobqueueBasics(t *testing.T) {
 		So(errs, ShouldBeNil)
 
 		server.rc = serverRC // ReserveScheduled() only works if we have an rc
+
+		Convey("You can connect to the server using config", func() {
+			jq, err := ConnectUsingConfig("development", clientConnectTime, testLogger)
+			So(err, ShouldBeNil)
+			defer disconnect(jq)
+		})
 
 		Convey("You can connect to the server and add jobs and get back their IDs", func() {
 			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)

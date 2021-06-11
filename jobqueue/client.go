@@ -250,6 +250,21 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	return c, err
 }
 
+// ConnectUsingConfig calls Config(), supplying values from user configuration
+// available in the environment (config files and environment variables). To
+// load the correct config, a deployment must be provided ('production' or
+// 'development', whichever was used when starting the server).
+func ConnectUsingConfig(deployment string, timeout time.Duration, logger log15.Logger) (*Client, error) {
+	config := internal.ConfigLoad(deployment, false, logger)
+
+	token, err := os.ReadFile(config.ManagerTokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not read token file; has the manager been started? [%w]", err)
+	}
+
+	return Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile, config.ManagerCertDomain, token, timeout)
+}
+
 // Disconnect closes the connection to the jobqueue server. It is CRITICAL that
 // you call Disconnect() before calling Connect() again in the same process.
 func (c *Client) Disconnect() error {
