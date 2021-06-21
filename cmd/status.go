@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -288,9 +288,15 @@ name to just the first letter, eg. -o c):
 						homeChanged = "Changed home: true\n"
 					}
 				}
-				var limitGroups string
+				var groups string
+				if len(job.DepGroups) > 0 {
+					groups = fmt.Sprintf("Dependency groups: %s; ", strings.Join(job.DepGroups, ", "))
+				}
+				if len(job.Dependencies) > 0 {
+					groups += fmt.Sprintf("Dependencies: %s; ", strings.Join(job.Dependencies.Stringify(), ", "))
+				}
 				if len(job.LimitGroups) > 0 {
-					limitGroups = fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
+					groups += fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
 				}
 				var dockerMonitored string
 				if job.MonitorDocker != "" {
@@ -312,7 +318,7 @@ name to just the first letter, eg. -o c):
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, limitGroups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, groups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:
