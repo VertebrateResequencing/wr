@@ -924,7 +924,7 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 			s.serversMutex.RLock()
 			localhostIP := s.servers[localhostName].IP
 			s.serversMutex.RUnlock()
-			err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.MountSharedDisk(context.Background(), localhostIP) })
+			err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error { return server.MountSharedDisk(ctx, localhostIP) })
 		}
 
 		if err == nil {
@@ -1165,7 +1165,7 @@ func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reserv
 			cmd = fmt.Sprintf("(umask %d && %s)", s.config.Umask, cmd)
 		}
 		clog.Debug(ctx, "running command remotely", "cmd", cmd)
-		_, _, err = server.RunCmd(context.Background(), cmd, false)
+		_, _, err = server.RunCmd(ctx, cmd, false)
 
 		// if we got an error running the command, we won't use this server
 		// again
@@ -1330,7 +1330,7 @@ func (s *opst) recover(ctx context.Context, cmd string, req *Requirements, host 
 			select {
 			case <-ticker.C:
 				active := true
-				so, se, errr := server.RunCmd(context.Background(), "pgrep -f '"+cmd+"'", false)
+				so, se, errr := server.RunCmd(ctx, "pgrep -f '"+cmd+"'", false)
 				if errr != nil {
 					// *** assume the error is because a process with cmd
 					// doesn't exist, not because prgrep failed for some other

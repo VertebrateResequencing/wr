@@ -758,7 +758,7 @@ func (p *Provider) CheckServer(ctx context.Context, serverID string) (working bo
 		if _, present := p.resources.Servers[serverID]; present {
 			delete(p.resources.Servers, serverID)
 			p.Unlock()
-			err = p.saveResources(p.cloudContext(ctx))
+			err = p.saveResources(ctx)
 		} else {
 			p.Unlock()
 		}
