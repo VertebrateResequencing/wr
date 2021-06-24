@@ -249,8 +249,7 @@ func TestConfig(t *testing.T) {
 
 			writePortsToConfigFiles(ctx, pn)
 
-			prodDep := Production
-			pathProd := filepath.Join(tempHome, ".wr_config."+prodDep+".yml")
+			pathProd := filepath.Join(tempHome, ".wr_config."+Production+".yml")
 			content, err := fl.ToString(pathProd)
 			expected := expectedManagerPort
 			So(err, ShouldBeNil)
@@ -468,6 +467,22 @@ func TestConfig(t *testing.T) {
 			So(defConfig.ManagerTokenFile, ShouldEqual, "~/.wr/client.token")
 			So(defConfig.ManagerLogFile, ShouldEqual, "~/.wr/log")
 			So(defConfig.ManagerUploadDir, ShouldEqual, "~/.wr/uploads")
+		})
+
+		Convey("it can convert the relative to an actual Abs path", func() {
+			tempHome, err := os.MkdirTemp("", "temp_home")
+			if err != nil {
+				clog.Fatal(ctx, "err", err)
+			}
+
+			So(defConfig.ManagerDBFile, ShouldEqual, "db")
+
+			defConfig.ManagerDir = filepath.Join(tempHome, ".wr")
+			defConfig.ManagerDBFile = "db"
+
+			defConfig.convRelativeToAbsPaths()
+
+			So(defConfig.ManagerDBFile, ShouldStartWith, os.TempDir())
 		})
 
 		Convey("and user id and deployment type, it can adjust config properties", func() {

@@ -499,6 +499,7 @@ func (s *Server) createSSHClientConfig(ctx context.Context) error {
 // created if necessary. You get back the client's index, so that if this client
 // fails to create a session you can mark this client as bad.
 func (s *Server) SSHClient(ctx context.Context) (*ssh.Client, int, error) {
+	ctx = clog.ContextWithServerID(ctx, s.ID)
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	// return a client that is still good (most likely to be a more recent

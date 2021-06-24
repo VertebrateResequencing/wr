@@ -60,7 +60,7 @@ func TestREST(t *testing.T) {
 
 	// load our config to know where our development manager port is supposed to
 	// be; we'll use that to test jobqueue
-	config := internal.ConfigLoadFromParentDir(ctx, "development")
+	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,

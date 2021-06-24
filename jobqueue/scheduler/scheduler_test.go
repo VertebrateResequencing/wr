@@ -37,6 +37,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	sync "github.com/sasha-s/go-deadlock"
+	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
@@ -64,8 +65,22 @@ func TestLocal(t *testing.T) {
 		possibleReq := &Requirements{1, 1 * time.Second, 1, 20, otherReqs, true, true, true}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
 
+		Convey("Debug log contains context based on scheduler type", func() {
+			ctx = s.typeContext(ctx)
+			buff := clog.ToBufferAtLevel("debug")
+			clog.Debug(ctx, "msg", "foo", 1)
+			So(buff.String(), ShouldContainSubstring, "schedulertype=local")
+		})
+
 		Convey("ReserveTimeout() returns 1 second", func() {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
+
+			Convey("It can log error with scheduler type context for wrong timeout reqs", func() {
+				buff := clog.ToBufferAtLevel("error")
+				otherReqs["rtimeout"] = "foo"
+				_ = s.ReserveTimeout(ctx, &Requirements{Other: otherReqs})
+				So(buff.String(), ShouldContainSubstring, "schedulertype=local")
+			})
 		})
 
 		Convey("MaxQueueTime() returns req time plus 1m", func() {
@@ -393,7 +408,6 @@ func TestLocal(t *testing.T) {
 		// wait a while for any remaining jobs to finish
 		So(waitToFinish(ctx, s, 30, 100), ShouldBeTrue)
 	})
-
 	if maxCPU > 1 {
 		Convey("You can get a new local scheduler that uses less than all CPUs", t, func() {
 			s, err := New(ctx, "local", &ConfigLocal{"bash", 1 * time.Second, 1, 0})
