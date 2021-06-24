@@ -342,7 +342,8 @@ func runServer(ctx context.Context) {
 
 	// wait until we are killed
 	err = server.Block()
-	clog.Fatal(ctx, "test daemon exiting", "reason", err)
+	clog.Warn(ctx, "test daemon exiting", "reason", err)
+	os.Exit(0)
 }
 
 // serve calls Serve() but with a retry for 5s on failure. This allows time for
@@ -5531,7 +5532,8 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	var server *Server
 	var token []byte
 	var errs error
-	config := internal.ConfigLoadFromParentDir(ctx, "development")
+	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
+
 	addr := "localhost:" + config.ManagerPort
 
 	setDomainIP(config.ManagerCertDomain)
@@ -6512,7 +6514,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 	ServerItemTTR = 10 * time.Second
 	ClientTouchInterval = 50 * time.Millisecond
 
-	config := internal.ConfigLoadFromParentDir(ctx, "development")
+	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
 	addr := "localhost:" + config.ManagerPort
 	serverConfig := ServerConfig{
 		Port:            config.ManagerPort,

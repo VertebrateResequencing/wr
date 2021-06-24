@@ -93,7 +93,7 @@ type stateUpdater func(ctx context.Context)
 // (Their reason for being is the same as for canCounters.) The reservedCh
 // should be sent true as soon as resources have been reserved to run the cmd,
 // or sent false if something went wrong before that.
-type cmdRunner func(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool, call string) error
+type cmdRunner func(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool) error
 
 // postProcessors are functions used by processQueue() to do something after
 // a postProcess() call does work.
@@ -176,7 +176,6 @@ type job struct {
 // initialize finds out about the local machine. Compatible with amd64 archs
 // only!
 func (s *local) initialize(ctx context.Context, config interface{}) error {
-	ctx = clog.ContextWithSchedulerType(ctx, "local")
 	s.config = config.(*ConfigLocal)
 	s.maxCores = runtime.NumCPU()
 	if s.config.MaxCores > 0 && s.config.MaxCores < s.maxCores {
@@ -631,6 +630,8 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 
 		// now see if there's remaining capacity to run the job
 		call := logext.RandId(8)
+		ctx = clog.ContextWithCallValue(ctx, call)
+
 		canCount := s.canCountFunc(ctx, cmd, req, call)
 		clog.Debug(ctx, "processQueue canCount", "can", canCount, "running", running, "should", shouldCount)
 		if canCount > shouldCount {
@@ -660,7 +661,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 				defer internal.LogPanic(ctx, "processQueue runCmd loop", true)
 
 				clog.Debug(ctx, "will run cmd", "cmd", cmd, "call", call)
-				err := s.runCmdFunc(ctx, cmd, req, reserved, call)
+				err := s.runCmdFunc(ctx, cmd, req, reserved)
 				clog.Debug(ctx, "ran cmd", "cmd", cmd, "call", call)
 
 				j.Lock()
@@ -782,7 +783,7 @@ func (s *local) cant(ctx context.Context, desired int, cmd string, req *Requirem
 // NB: we only return an error if we can't start the cmd, not if the command
 // fails (schedule() only guarantees that the cmds are run count times, not that
 // they run /successful/ that many times).
-func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool, call string) error {
+func (s *local) runCmd(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool) error {
 	sr := func(v bool) {
 		// *** reservedCh is buffered and sending on it should never
 		// block, but somehow we have gotten stuck here before; make

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/wtsi-ssg/wr/clog"
 )
 
 func TestUtility(t *testing.T) {
@@ -116,6 +117,13 @@ func TestOpenStack(t *testing.T) {
 			// indirectly tested
 			inCloud := p.InCloud()
 
+			Convey("Debug log contains cloud context type as openstack", func() {
+				ctx = p.cloudContext(ctx)
+				buff := clog.ToBufferAtLevel("debug")
+				clog.Debug(ctx, "msg", "foo", 1)
+				So(buff.String(), ShouldContainSubstring, "cloudtype=openstack")
+			})
+
 			Convey("You can get your quota details", func() {
 				q, err := p.GetQuota(ctx)
 				So(err, ShouldBeNil)
@@ -187,6 +195,8 @@ func TestOpenStack(t *testing.T) {
 					So(err, ShouldNotBeNil)
 					So(err.Error(), ShouldEqual, "no OS image with prefix [osPrefix] was found")
 
+					buff := clog.ToBufferAtLevel("debug")
+
 					server, err := p.Spawn(ctx, osPrefix, osUser, flavor.ID, 1, 0*time.Second, true)
 					So(err, ShouldBeNil)
 					So(server.ID, ShouldNotBeBlank)
@@ -195,6 +205,7 @@ func TestOpenStack(t *testing.T) {
 					So(server.IP, ShouldNotStartWith, "192")
 					So(p.resources.Servers[server.ID], ShouldNotBeNil)
 					So(p.resources.Servers[server.ID].IP, ShouldEqual, server.IP)
+					So(buff.String(), ShouldContainSubstring, "cloudtype=openstack")
 
 					ok, err := p.ServerIsKnown(server.ID)
 					So(err, ShouldBeNil)

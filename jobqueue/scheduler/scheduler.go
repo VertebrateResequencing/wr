@@ -249,23 +249,28 @@ func New(ctx context.Context, name string, config interface{}) (*Scheduler, erro
 
 	s.Name = name
 	s.limiter = make(map[string]int)
-	err := s.impl.initialize(ctx, config)
+	err := s.impl.initialize(s.typeContext(ctx), config)
 
 	return s, err
+}
+
+// typeContext returns a context based on the scheduler type.
+func (s *Scheduler) typeContext(ctx context.Context) context.Context {
+	return clog.ContextWithSchedulerType(ctx, s.Name)
 }
 
 // SetMessageCallBack sets the function that will be called when a scheduler has
 // some message that could be informative to end users wondering why something
 // is not getting scheduled. The message typically describes an error condition.
 func (s *Scheduler) SetMessageCallBack(ctx context.Context, cb MessageCallBack) {
-	s.impl.setMessageCallBack(ctx, cb)
+	s.impl.setMessageCallBack(s.typeContext(ctx), cb)
 }
 
 // SetBadServerCallBack sets the function that will be called when a cloud
 // scheduler discovers that one of the servers it spawned seems to no longer be
 // functional or reachable. Only relevant for cloud schedulers.
 func (s *Scheduler) SetBadServerCallBack(ctx context.Context, cb BadServerCallBack) {
-	s.impl.setBadServerCallBack(ctx, cb)
+	s.impl.setBadServerCallBack(s.typeContext(ctx), cb)
 }
 
 // Schedule gets your cmd scheduled in the job scheduler. You give it a command
@@ -302,7 +307,7 @@ func (s *Scheduler) Schedule(ctx context.Context, cmd string, req *Requirements,
 	s.limiter[cmd] = count
 	s.Unlock()
 
-	err := s.impl.schedule(ctx, cmd, req.Clone(), priority, count)
+	err := s.impl.schedule(s.typeContext(ctx), cmd, req.Clone(), priority, count)
 
 	s.Lock()
 	if newcount, limited := s.limiter[cmd]; limited {
@@ -325,7 +330,7 @@ func (s *Scheduler) Schedule(ctx context.Context, cmd string, req *Requirements,
 // Scheduled tells you how many of the given cmd are currently scheduled in the
 // scheduler.
 func (s *Scheduler) Scheduled(ctx context.Context, cmd string) (int, error) {
-	return s.impl.scheduled(ctx, cmd)
+	return s.impl.scheduled(s.typeContext(ctx), cmd)
 }
 
 // Recover is used if you had Scheduled some cmds, then you crashed, and now
@@ -338,7 +343,7 @@ func (s *Scheduler) Scheduled(ctx context.Context, cmd string) (int, error) {
 // The cmd and req ought to exactly match those previously supplied to
 // Schedule() before your crash.
 func (s *Scheduler) Recover(ctx context.Context, cmd string, req *Requirements, host *RecoveredHostDetails) error {
-	return s.impl.recover(ctx, cmd, req, host)
+	return s.impl.recover(s.typeContext(ctx), cmd, req, host)
 }
 
 // Busy reports true if there are any Schedule()d cmds still in the job
@@ -346,13 +351,13 @@ func (s *Scheduler) Recover(ctx context.Context, cmd string, req *Requirements, 
 // you want to avoid shutting down the server while there are still clients
 // running/ about to run.
 func (s *Scheduler) Busy(ctx context.Context) bool {
-	return s.impl.busy(ctx)
+	return s.impl.busy(s.typeContext(ctx))
 }
 
 // ReserveTimeout returns the number of seconds that runners spawned in this
 // scheduler should wait for new jobs to appear in the manager's queue.
 func (s *Scheduler) ReserveTimeout(ctx context.Context, req *Requirements) int {
-	return s.impl.reserveTimeout(ctx, req)
+	return s.impl.reserveTimeout(s.typeContext(ctx), req)
 }
 
 // MaxQueueTime returns the maximum amount of time that jobs with the given
@@ -398,7 +403,7 @@ func (s *Scheduler) ProcessNotRunngingOnHost(ctx context.Context, pid int, hostN
 // Cleanup means you've finished using a scheduler and it can delete any
 // remaining jobs in its system and clean up any other used resources.
 func (s *Scheduler) Cleanup(ctx context.Context) {
-	s.impl.cleanup(ctx)
+	s.impl.cleanup(s.typeContext(ctx))
 }
 
 // jobName could be useful to a scheduleri implementer if it needs a constant-

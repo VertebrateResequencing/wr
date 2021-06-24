@@ -153,21 +153,6 @@ func (p *openstackp) maybeEnv() []string {
 // initialize uses our required environment variables to authenticate with
 // OpenStack and create some clients we will use in the other methods.
 func (p *openstackp) initialize() error {
-	// gophercloud uses non-standard env var names, so convert if necessary
-	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_PROJECT_DOMAIN_ID") != "" {
-		err := os.Setenv("OS_DOMAIN_ID", os.Getenv("OS_PROJECT_DOMAIN_ID"))
-		if err != nil {
-			return err
-		}
-	}
-
-	if os.Getenv("OS_DOMAIN_ID") == "" && os.Getenv("OS_DOMAIN_NAME") == "" && os.Getenv("OS_USER_DOMAIN_NAME") != "" {
-		err := os.Setenv("OS_DOMAIN_NAME", os.Getenv("OS_USER_DOMAIN_NAME"))
-		if err != nil {
-			return err
-		}
-	}
-
 	// we use a non-standard env var to find the default network from which to
 	// get floating IPs from, which defaults depending on age of OpenStack
 	// installation

@@ -779,9 +779,12 @@ func startJQ(ctx context.Context, postCreation []byte) {
 
 	logStarted(server.ServerInfo, token)
 
-	if err = clog.ToFileAtLevel(config.ManagerLogFile, "warn"); err != nil {
+	fileHandler, err = clog.CreateFileHandlerAtLevel(config.ManagerLogFile, logLevel)
+	if err != nil {
 		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
 	}
+
+	clog.AddHandler(fileHandler)
 
 	// block forever while the jobqueue does its work
 	err = server.Block()

@@ -442,6 +442,7 @@ func (s *opst) maxCPU() int {
 // cache based on the "call" argument that processQueue sent in to canCount and
 // runCmd, which in turn pass through to here.
 func (s *opst) determineFlavor(ctx context.Context, req *Requirements, call string) (*cloud.Flavor, error) {
+	ctx = clog.ContextWithCallValue(ctx, call)
 	if call != "" {
 		if flavor, cached := s.dfCache.Get(call); cached {
 			return flavor.(*cloud.Flavor), nil
@@ -571,6 +572,7 @@ func (s *opst) serverReqs(ctx context.Context, req *Requirements) (osPrefix stri
 // canCount tells you how many jobs with the given RAM and core requirements it
 // is possible to run, given remaining resources in existing servers.
 func (s *opst) canCount(ctx context.Context, cmd string, req *Requirements, call string) int {
+	ctx = clog.ContextWithCallValue(ctx, call)
 	if s.cleanedUp() {
 		return 0
 	}
@@ -607,6 +609,7 @@ func (s *opst) canCount(ctx context.Context, cmd string, req *Requirements, call
 // If there is enough quota to spawn new servers, and we are not already in the
 // middle of spawning too many servers, we spawn instances in the background.
 func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *Requirements, call string) {
+	ctx = clog.ContextWithCallValue(ctx, call)
 	s.spawnMutex.Lock()
 	defer s.spawnMutex.Unlock()
 	var spawningTotal int
@@ -666,7 +669,7 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 		go func() {
 			defer internal.LogPanic(ctx, "spawnMultiple", false)
 
-			s.spawn(ctx, reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd, call)
+			s.spawn(ctx, reqForSpawn, flavor, requestedOS, requestedScript, requestedConfigFiles, needsSharedDisk, cmd)
 
 			s.spawnMutex.Lock()
 			s.spawningNow[cmd]--
@@ -692,6 +695,7 @@ func (s *opst) spawnMultiple(ctx context.Context, desired int, cmd string, req *
 // Returns the number of servers that can be spawned, and the flavor that should
 // be spawned (if number greater than 0). Errors are simply Warn()ed.
 func (s *opst) checkQuota(ctx context.Context, req *Requirements, requestedFlavor *cloud.Flavor, call string) (int, *cloud.Flavor) {
+	ctx = clog.ContextWithCallValue(ctx, call)
 	s.resourceMutex.RLock()
 	defer s.resourceMutex.RUnlock()
 
@@ -838,7 +842,8 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 // spawn creates a new instance in OpenStack. Errors are not returned but are
 // logged, and problematic servers are terminated.
 func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavor, requestedOS string, requestedScript []byte,
-	requestedConfigFiles string, needsSharedDisk bool, cmd string, call string) {
+	requestedConfigFiles string, needsSharedDisk bool, cmd string) {
+	ctx = clog.ContextWithServerFlavor(ctx, flavor.Name)
 	volumeAffected := req.Disk > flavor.Disk
 
 	// because spawning can take a while, we record that we're going to use
@@ -896,6 +901,12 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 	server, err := s.provider.Spawn(ctx, requestedOS, osUser, flavor.ID, req.Disk, s.config.ServerKeepTime,
 		false, usingQuotaCB)
 
+	serverID := "failed"
+	if server != nil {
+		serverID = server.ID
+	}
+
+	ctx = clog.ContextWithServerID(ctx, serverID)
 	clog.Debug(ctx, "spawned server", "took", time.Since(tSpawn))
 
 	if err == nil && server != nil {
@@ -1077,7 +1088,7 @@ func (s *opst) cmdNotNeeded(cmd string) {
 // if we can't start the cmd, not if the command fails (schedule() only
 // guarantees that the cmds are run count times, not that they are /successful/
 // that many times).
-func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool, call string) error {
+func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool) error {
 	requestedOS, requestedScript, requestedConfigFiles, requestedFlavor, needsSharedDisk, err := s.serverReqs(ctx, req)
 	if err != nil {
 		return err
@@ -1148,7 +1159,7 @@ func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reserv
 			<-reserved
 		}()
 
-		err = s.local.runCmd(ctx, cmd, req, reserved, call)
+		err = s.local.runCmd(ctx, cmd, req, reserved)
 	} else {
 		if s.config.Umask > 0 {
 			cmd = fmt.Sprintf("(umask %d && %s)", s.config.Umask, cmd)

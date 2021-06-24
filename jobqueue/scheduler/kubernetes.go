@@ -405,7 +405,7 @@ func (s *k8s) cant(ctx context.Context, desired int, cmd string, req *Requiremen
 
 // RunFunc calls spawn() and exits with an error = nil when pod has terminated
 // (Runner exited). Or an error if there was a problem.
-func (s *k8s) runCmd(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool, call string) error {
+func (s *k8s) runCmd(ctx context.Context, cmd string, req *Requirements, reservedCh chan bool) error {
 	s.Debug("RunCmd Called", "cmd", cmd, "requirements", req)
 	// The first 'argument' to cmd will be the absolute path to the manager's
 	// executable. Work out the local binary's name from localBinaryPath.
