@@ -153,19 +153,20 @@ func cloudResourceName(username string) string {
 // info is a convenience to log a message at the Info level.
 func info(msg string, a ...interface{}) {
 	ctx := context.Background()
-	clog.Info(ctx, fmt.Sprintf(msg), a...)
+	clog.Info(ctx, fmt.Sprintf(msg, a...))
 }
 
 // warn is a convenience to log a message at the Warn level.
 func warn(msg string, a ...interface{}) {
 	ctx := context.Background()
-	clog.Warn(ctx, fmt.Sprintf(msg), a...)
+	clog.Warn(ctx, fmt.Sprintf(msg, a...))
 }
 
 // die is a convenience to log a message at the Error level and exit non zero.
 func die(msg string, a ...interface{}) {
 	ctx := context.Background()
-	clog.Fatal(ctx, fmt.Sprintf(msg), a...)
+	clog.Error(ctx, fmt.Sprintf(msg, a...))
+	os.Exit(1)
 }
 
 // createWorkingDir ensures the main working directory is available

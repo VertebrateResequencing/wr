@@ -266,9 +266,6 @@ within OpenStack.`,
 			info("created a new key and certificate for TLS")
 		}
 
-		// for debug purposes, set up logging to STDERR
-		setupLogging(kubeDebug)
-
 		// get all necessary cloud resources in place
 		mp, err := strconv.Atoi(config.ManagerPort)
 		if err != nil {
@@ -461,10 +458,6 @@ and accessible.`,
 		if providerName == "" {
 			die("--provider is required")
 		}
-
-		// before stopping the manager, make sure we can interact with the
-		// provider - that our credentials are correct
-		setupLogging(kubeDebug)
 
 		provider, err := cloud.New(ctx, providerName, cloudResourceName(cloudResourceNameUniquer),
 			filepath.Join(config.ManagerDir, "cloud_resources."+providerName))
