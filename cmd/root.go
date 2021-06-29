@@ -302,14 +302,3 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 	}
 	return jq
 }
-
-// setupLogging is a function to provide a new logger who's logging depends on
-// debug.
-func setupLogging(debug bool) {
-	// Set up logging for both commands
-	// for debug purposes, set up logging to STDERR
-	clog.ToDefault()
-	if debug {
-		clog.ToDefaultAtLevel("debug")
-	}
-}

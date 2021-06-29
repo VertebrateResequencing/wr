@@ -560,7 +560,6 @@ database locally, which is only possible while the pod is still up and
 accessible.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
-		setupLogging(kubeDebug)
 
 		// before stopping the manager, make sure we can interact with the
 		// cluster - that our credentials are correct.
