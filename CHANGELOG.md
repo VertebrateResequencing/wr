@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
+
+## [0.25.0] - 2021-06-30
+### Added
+- New ConnectUsingConfig() client method to make it easier for external go
+  packages to connect to a wr manager using the go API.
+- `wr status` now outputs dependency groups and dependencies of jobs.
+
+### Changed
+- When using the OpenStack scheduler, if you set the OS_PROJECT_NAME environment
+  variable, you no longer also need to set OS_PROJECT_ID. This makes it easier
+  to switch between projects by just exporting a different OS_PROJECT_NAME.
+- For scheduling purposes, the time jobs take are now rounded up to the nearest
+  half hour, while for completion estimates during drain, the reported time to
+  completion is to the nearest second.
+
+### Fixed
+- Time to completion estimates during drain can no longer become negative (when
+  jobs are running longer than expected).
+
+
 ## [0.24.0] - 2021-05-31
 ### Added
 - A new "Remove" behaviour has been added that will result in jobs that get
