@@ -250,7 +250,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 	return c, err
 }
 
-// ConnectUsingConfig calls Config(), supplying values from user configuration
+// ConnectUsingConfig calls Connect(), supplying values from user configuration
 // available in the environment (config files and environment variables). To
 // load the correct config, a deployment must be provided ('production' or
 // 'development', whichever was used when starting the server).
