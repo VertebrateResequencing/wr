@@ -965,7 +965,7 @@ func (l *localHost) RunCmd(ctx context.Context, cmd string, background bool) (st
 			cmd = "sh -c 'nohup " + cmd + " > /dev/null 2>&1 &'"
 		}
 
-		ec := exec.Command(l.shell, "-c", cmd) // #nosec
+		ec := exec.CommandContext(ctx, l.shell, "-c", cmd) // #nosec
 
 		stdoutp, errs := ec.StdoutPipe()
 		if errs != nil {

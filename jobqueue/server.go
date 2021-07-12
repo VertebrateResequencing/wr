@@ -99,7 +99,8 @@ var (
 	ServerReserveTicker                             = 1 * time.Second
 	ServerCheckRunnerTime                           = 1 * time.Minute
 	ServerShutdownWaitTime                          = 5 * time.Second
-	ServerLostJobDeadCheckTime                      = 1 * time.Hour
+	ServerLostJobCheckTimeout                       = 15 * time.Second
+	ServerLostJobCheckRetryTime                     = 30 * time.Minute
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
@@ -1858,13 +1859,16 @@ func (s *Server) confirmJobDeadAndKill(job *Job) bool {
 	if !s.confirmJobDead(job) {
 		go func() {
 			select {
-			case <-time.After(ServerLostJobDeadCheckTime):
+			case <-time.After(ServerLostJobCheckRetryTime):
 				item, err := s.q.Get(job.Key())
 				if err != nil || item.Stats().State != queue.ItemStateRun {
 					return
 				}
 
-				s.confirmJobDeadAndKill(item.Data().(*Job))
+				job = item.Data().(*Job)
+				if job.State == JobStateRunning && job.Lost {
+					s.confirmJobDeadAndKill(job)
+				}
 			case <-s.stopClientHandling:
 				return
 			}
@@ -1895,7 +1899,7 @@ func (s *Server) confirmJobDead(job *Job) bool {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ServerShutdownWaitTime)
+	ctx, cancel := context.WithTimeout(context.Background(), ServerLostJobCheckTimeout)
 	defer cancel()
 
 	return s.scheduler.ProcessNotRunngingOnHost(ctx, job.Pid, job.Host)
