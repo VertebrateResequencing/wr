@@ -4362,6 +4362,16 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 
+			// initially, we force us to fail to be able to check if the job
+			// is really dead or not, so that we can test this scenario
+			ServerLostJobCheckTimeout = 1 * time.Nanosecond
+			ServerLostJobCheckRetryTime = 2 * time.Second
+
+			defer func() {
+				ServerLostJobCheckTimeout = 5 * time.Second
+				ServerLostJobCheckRetryTime = 1 * time.Hour
+			}()
+
 			ec := exec.Command("bash", "-c", fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobs[0].Pid))
 			out, err := ec.CombinedOutput()
 			So(err, ShouldBeNil)
@@ -4371,18 +4381,40 @@ func TestJobqueueRunners(t *testing.T) {
 
 			// wait for the job to become lost and then buried
 			killed := make(chan bool, 1)
+			checkLost := true
+			var timeToBury time.Duration
 			go func() {
+				var lostTime time.Time
 				limit := time.After(ServerItemTTR + 5*time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
 				for {
 					select {
 					case <-ticker.C:
+						if checkLost {
+							jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateLost, false, false)
+							if err != nil {
+								continue
+							}
+
+							if len(jobs) == 1 {
+								checkLost = false
+								lostTime = time.Now()
+
+								// re-enable our ability to check the job is
+								// really dead
+								ServerLostJobCheckTimeout = 5 * time.Second
+							} else {
+								continue
+							}
+						}
+
 						jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateBuried, false, false)
 						if err != nil {
 							continue
 						}
 						if len(jobs) == 1 {
 							ticker.Stop()
+							timeToBury = time.Since(lostTime)
 							killed <- true
 
 							return
@@ -4407,6 +4439,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
 			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
 			So(jobs[0].Exitcode, ShouldEqual, -1)
+			So(timeToBury, ShouldBeGreaterThan, ServerLostJobCheckRetryTime)
 		})
 
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {

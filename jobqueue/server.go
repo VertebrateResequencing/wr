@@ -99,6 +99,8 @@ var (
 	ServerReserveTicker                             = 1 * time.Second
 	ServerCheckRunnerTime                           = 1 * time.Minute
 	ServerShutdownWaitTime                          = 5 * time.Second
+	ServerLostJobCheckTimeout                       = 15 * time.Second
+	ServerLostJobCheckRetryTime                     = 30 * time.Minute
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
@@ -1637,18 +1639,8 @@ func (s *Server) createQueue() {
 			// we don't test recovered jobs are dead because they might have
 			// exited while the server wasn't running, and we want the existing
 			// client to tell us if it should be archived or buried
-			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDead(job) {
-				go func(key string) {
-					_, errk := s.killJob(key)
-					if errk != nil {
-						s.Warn("failed to kill a job after TTR", "err", errk)
-					} else {
-						errt := job.TriggerBehaviours(false)
-						if errt != nil {
-							s.Warn("failed to run behaviours for a killed lost job", "err", errt)
-						}
-					}
-				}(job.Key())
+			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDeadAndKill(job) {
+				s.Info("killed a job after confirming it was dead", "key", job.Key())
 			} else if job.killCalled {
 				defer func() {
 					go func() {
@@ -1857,6 +1849,49 @@ func (s *Server) updateJobDependencies(jobs []*Job) (srerr string, qerr error) {
 	return srerr, qerr
 }
 
+// confirmJobDeadAndKill calls and returns the value of confirmJobDead(). If
+// true, kills the job and triggers behaviours in a goroutine. If false,
+// arranges to re-call this in an hour. This is so that if we can't currently
+// confirm the job is dead due to an ssh issue, but later on the job really does
+// die because the server it was running on gets rebooted, we eventually
+// auto-kill the job.
+func (s *Server) confirmJobDeadAndKill(job *Job) bool {
+	if !s.confirmJobDead(job) {
+		go func() {
+			select {
+			case <-time.After(ServerLostJobCheckRetryTime):
+				item, err := s.q.Get(job.Key())
+				if err != nil || item.Stats().State != queue.ItemStateRun {
+					return
+				}
+
+				job = item.Data().(*Job)
+				if job.State == JobStateRunning && job.Lost {
+					s.confirmJobDeadAndKill(job)
+				}
+			case <-s.stopClientHandling:
+				return
+			}
+		}()
+
+		return false
+	}
+
+	go func() {
+		_, errk := s.killJob(job.Key())
+		if errk != nil {
+			s.Warn("failed to kill a job after TTR", "err", errk)
+		} else {
+			errt := job.TriggerBehaviours(false)
+			if errt != nil {
+				s.Warn("failed to run behaviours for a killed lost job", "err", errt)
+			}
+		}
+	}()
+
+	return true
+}
+
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
 //  You must hold the job.Lock() before calling this.
 func (s *Server) confirmJobDead(job *Job) bool {
@@ -1864,7 +1899,7 @@ func (s *Server) confirmJobDead(job *Job) bool {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ServerShutdownWaitTime)
+	ctx, cancel := context.WithTimeout(context.Background(), ServerLostJobCheckTimeout)
 	defer cancel()
 
 	return s.scheduler.ProcessNotRunngingOnHost(ctx, job.Pid, job.Host)
