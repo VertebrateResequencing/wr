@@ -1728,7 +1728,7 @@ func (db *db) backup(w io.Writer) error {
 func stripBucketFromS3Path(path string) (string, error) {
 	if idx := strings.IndexByte(path, '/'); idx >= 0 {
 		return path[idx+1:], nil
-	} else {
-		return "", Error{Err: ErrS3DBBackupPath}
 	}
+
+	return "", Error{Err: ErrS3DBBackupPath}
 }

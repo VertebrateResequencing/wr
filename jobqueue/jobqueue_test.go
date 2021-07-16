@@ -6553,9 +6553,9 @@ func TestJobqueueWithMounts(t *testing.T) {
 			// stop the server
 			server.Stop(true)
 
-			err := server.db.s3accessor.DeleteFile(s3BkPath)
-			if err != nil {
-				t.Logf("deleting s3 db backup failed: %s", err)
+			errd := server.db.s3accessor.DeleteFile(s3BkPath)
+			if errd != nil {
+				t.Logf("deleting s3 db backup failed: %s", errd)
 			}
 		}()
 
