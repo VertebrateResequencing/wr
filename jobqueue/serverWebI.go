@@ -99,8 +99,8 @@ type JStatus struct {
 	Pid           int
 	Walltime      float64
 	CPUtime       float64
-	Started       int64
-	Ended         int64
+	Started       *int64
+	Ended         *int64
 	Similar       int
 	Attempts      uint32
 	HomeChanged   bool
