@@ -797,7 +797,8 @@ func (j *Job) ToStatus() (JStatus, error) {
 	for key, val := range j.Requirements.Other {
 		ot = append(ot, key+":"+val)
 	}
-	return JStatus{
+
+	js := JStatus{
 		Key:           j.Key(),
 		RepGroup:      j.RepGroup,
 		LimitGroups:   j.LimitGroups,
@@ -827,14 +828,24 @@ func (j *Job) ToStatus() (JStatus, error) {
 		HostIP:        j.HostIP,
 		Walltime:      j.WallTime().Seconds(),
 		CPUtime:       j.CPUtime.Seconds(),
-		Started:       j.StartTime.Unix(),
-		Ended:         j.EndTime.Unix(),
 		Attempts:      j.Attempts,
 		Similar:       j.Similar,
 		StdErr:        stderr,
 		StdOut:        stdout,
 		Env:           env,
-	}, nil
+	}
+
+	if !j.StartTime.IsZero() {
+		i := j.StartTime.Unix()
+		js.Started = &i
+	}
+
+	if !j.EndTime.IsZero() {
+		i := j.EndTime.Unix()
+		js.Ended = &i
+	}
+
+	return js, nil
 }
 
 // JobEssence struct describes the essential aspects of a Job that make it

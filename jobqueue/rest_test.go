@@ -189,6 +189,8 @@ func TestREST(t *testing.T) {
 			So(jstati[2].ExpectedRAM, ShouldEqual, 50)
 			So(jstati[2].ExpectedTime, ShouldEqual, 120)
 			So(jstati[2].Cores, ShouldEqual, 2)
+			So(jstati[2].Started, ShouldBeNil)
+			So(jstati[2].Ended, ShouldBeNil)
 
 			Convey("You can GET the current status of all jobs", func() {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
@@ -329,6 +331,21 @@ func TestREST(t *testing.T) {
 					err = jq.Started(job, 1)
 					So(err, ShouldBeNil)
 
+					req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/db1e7d99becace3306c1c2470331c78e", nil)
+					So(err, ShouldBeNil)
+					req.Header.Add("Authorization", bearer)
+					response, err = client.Do(req)
+					So(err, ShouldBeNil)
+					responseData, err = io.ReadAll(response.Body)
+					So(err, ShouldBeNil)
+
+					jstati = []JStatus{}
+					err = json.Unmarshal(responseData, &jstati)
+					So(err, ShouldBeNil)
+					So(len(jstati), ShouldEqual, 1)
+					So(jstati[0].Started, ShouldNotBeNil)
+					So(jstati[0].Ended, ShouldBeNil)
+
 					req, errr := http.NewRequest(http.MethodDelete, jobsEndPoint+"/rp1?state=running", nil)
 					So(errr, ShouldBeNil)
 					req.Header.Add("Authorization", bearer)
@@ -358,6 +375,8 @@ func TestREST(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(len(jstati), ShouldEqual, 1)
 					So(jstati[0].State, ShouldEqual, JobStateBuried)
+					So(jstati[0].Started, ShouldNotBeNil)
+					So(jstati[0].Ended, ShouldBeNil)
 				})
 
 				Convey("You can DELETE lost jobs to bury them", func() {
@@ -398,6 +417,7 @@ func TestREST(t *testing.T) {
 				})
 
 				Convey("Once executed...", func() {
+					t := time.Now()
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
 					So(job.State, ShouldEqual, JobStateBuried)
@@ -440,6 +460,10 @@ func TestREST(t *testing.T) {
 						So(jstati2[0].CwdBase, ShouldEqual, "/tmp")
 						So(jstati2[0].State, ShouldEqual, "buried")
 						So(jstati2[0].StdOut, ShouldEqual, "3")
+						So(jstati2[0].Started, ShouldNotBeNil)
+						So(*jstati2[0].Started, ShouldBeGreaterThanOrEqualTo, t.Unix())
+						So(jstati2[0].Ended, ShouldNotBeNil)
+						So(*jstati2[0].Ended, ShouldBeGreaterThanOrEqualTo, t.Unix())
 
 						req, err = http.NewRequest(http.MethodGet, jobsEndPoint+"/?state=buried&std=false", nil)
 						So(err, ShouldBeNil)

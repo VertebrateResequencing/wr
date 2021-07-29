@@ -11,7 +11,7 @@ require (
 	github.com/VividCortex/ewma v1.2.0
 	github.com/alexflint/go-filemutex v1.1.0 // indirect
 	github.com/carbocation/runningvariance v0.0.0-20150817162428-fdcce8a03b6b
-	github.com/containerd/containerd v1.5.0 // indirect
+	github.com/containerd/containerd v1.5.4 // indirect
 	github.com/creasty/defaults v1.5.1
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/docker/docker v20.10.6+incompatible
