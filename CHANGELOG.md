@@ -5,6 +5,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.26.0] - 2021-07-30
+### Changed
+- Lost jobs are regularly rechecked to confirm if they are dead, if checks are
+  initially not possible. For example, this helps in the situation where a) a
+  worker node locks up, becoming non-responsive to ssh, such that we can't check
+  if the job process is still running or not; then b) the worker node gets
+  rebooted many hours later, such that we can ssh to it and now confirm the
+  process no longer exists, and can therefore mark it buried.
+- If you configure your database backups to go to S3, S3 access is now direct
+  (with temp files on the local filesystem), instead of via a fuse filesystem
+  mount. This lets it work on systems where fuse is not enabled, and avoids
+  problems if the fuse mount fails. It temporarily doubles local disk usage
+  during backups though.
+
+### Fixed
+- The REST API now returns JSON with null values for Started and Ended times
+  that are not set, instead of large negative values.
+
+
 ## [0.25.0] - 2021-06-30
 ### Added
 - New ConnectUsingConfig() client method to make it easier for external go
