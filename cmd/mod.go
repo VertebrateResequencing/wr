@@ -230,7 +230,7 @@ new internal ids is printed.`,
 			if cmdCloudConfigs == "" {
 				otherSet = true
 			} else {
-				other["cloud_config_files"] = copyCloudConfigFiles(jq, cmdCloudConfigs)
+				other["cloud_config_files"] = copyCloudConfigFiles(ctx, jq, cmdCloudConfigs)
 			}
 		}
 		if cmdCloudSharedDisk {
@@ -328,7 +328,7 @@ new internal ids is printed.`,
 				jm.SetMountConfigs(nil)
 			} else {
 				// set mounts
-				jm.SetMountConfigs(mountParse(mountJSON, mountSimple))
+				jm.SetMountConfigs(mountParse(ctx, mountJSON, mountSimple))
 			}
 		}
 		if cobraCmd.Flags().Changed("env") {

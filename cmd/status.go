@@ -512,7 +512,7 @@ func getJobs(ctx context.Context, jq *jobqueue.Client, cmdState jobqueue.JobStat
 		// get job that has the supplied command
 		var defaultMounts jobqueue.MountConfigs
 		if mountJSON != "" || mountSimple != "" {
-			defaultMounts = mountParse(mountJSON, mountSimple)
+			defaultMounts = mountParse(ctx, mountJSON, mountSimple)
 		}
 		var job *jobqueue.Job
 		job, err = jq.GetByEssence(&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)

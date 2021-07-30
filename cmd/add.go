@@ -456,7 +456,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 	// locations, and adjust cloudConfigFiles to make sense from the manager's
 	// perspective
 	if !isLocal && cmdCloudConfigs != "" {
-		cmdCloudConfigs = copyCloudConfigFiles(jq, cmdCloudConfigs)
+		cmdCloudConfigs = copyCloudConfigFiles(ctx, jq, cmdCloudConfigs)
 	}
 
 	bsubMode := ""
@@ -563,7 +563,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 	}
 
 	if mountJSON != "" || mountSimple != "" {
-		jd.MountConfigs = mountParse(mountJSON, mountSimple)
+		jd.MountConfigs = mountParse(ctx, mountJSON, mountSimple)
 	}
 
 	// open file or set up to read from STDIN
@@ -650,7 +650,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 		}
 
 		if !isLocal && jvj.CloudConfigFiles != "" {
-			jvj.CloudConfigFiles = copyCloudConfigFiles(jq, jvj.CloudConfigFiles)
+			jvj.CloudConfigFiles = copyCloudConfigFiles(ctx, jq, jvj.CloudConfigFiles)
 		}
 
 		job, errf := jvj.Convert(jd)
@@ -673,7 +673,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 // path based on the file's MD5, and then returns an altered input value to use
 // the MD5 paths as the sources, keeping the desired destinations. It does not
 // alter path specs for config files that don't exist locally.
-func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
+func copyCloudConfigFiles(ctx context.Context, jq *jobqueue.Client, configFiles string) string {
 	cfs := strings.Split(configFiles, ",")
 	remoteConfigFiles := make([]string, 0, len(cfs))
 	for _, cf := range cfs {
