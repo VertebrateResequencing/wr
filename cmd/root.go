@@ -152,20 +152,17 @@ func cloudResourceName(username string) string {
 
 // info is a convenience to log a message at the Info level.
 func info(msg string, a ...interface{}) {
-	ctx := context.Background()
-	clog.Info(ctx, fmt.Sprintf(msg, a...))
+	clog.Info(context.Background(), fmt.Sprintf(msg, a...))
 }
 
 // warn is a convenience to log a message at the Warn level.
 func warn(msg string, a ...interface{}) {
-	ctx := context.Background()
-	clog.Warn(ctx, fmt.Sprintf(msg, a...))
+	clog.Warn(context.Background(), fmt.Sprintf(msg, a...))
 }
 
 // die is a convenience to log a message at the Error level and exit non zero.
 func die(msg string, a ...interface{}) {
-	ctx := context.Background()
-	clog.Error(ctx, fmt.Sprintf(msg, a...))
+	clog.Error(context.Background(), fmt.Sprintf(msg, a...))
 	os.Exit(1)
 }
 
@@ -206,7 +203,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	args = append(args, extraArgs...)
 
-	context := &daemon.Context{
+	dContext := &daemon.Context{
 		PidFileName: pidFile,
 		PidFilePerm: 0644,
 		WorkDir:     "/",
@@ -214,7 +211,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 		Umask:       umask,
 	}
 
-	child, err := context.Reborn()
+	child, err := dContext.Reborn()
 	if err != nil {
 		// try again, deleting the pidFile first
 		errr := os.Remove(pidFile)
@@ -222,12 +219,12 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 			warn("failed to delete existing pid file: %s", errr)
 		}
 
-		child, err = context.Reborn()
+		child, err = dContext.Reborn()
 		if err != nil {
 			die("failed to daemonize: %s", err)
 		}
 	}
-	return child, context
+	return child, dContext
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and

@@ -227,7 +227,8 @@ fully.`,
 				if err != nil {
 					warn("token could not be read! [%s]", err)
 				}
-				logStarted(jq.ServerInfo, token)
+
+				logStarted(ctx, jq.ServerInfo, token)
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer func() {
@@ -251,6 +252,7 @@ var managerStopCmd = &cobra.Command{
 Note that any runners that are currently running will die, along with any
 commands they were running. It is more graceful to use 'drain' instead.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.Background()
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
 		// eventualities we check the pid file first, try and terminate its pid,
@@ -276,7 +278,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
-				deleteToken()
+				deleteToken(ctx)
 				return
 			}
 		} else {
@@ -321,7 +323,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
-			deleteToken()
+			deleteToken(ctx)
 		} else {
 			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
@@ -348,6 +350,7 @@ also configuring an S3 location for your database backup, as otherwise any
 changes to the database between calling drain and the manager finally shutting
 down will be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.Background()
 		// first try and connect
 		jq := connect(5*time.Second, true)
 		if jq == nil {
@@ -371,7 +374,7 @@ down will be lost.`,
 
 		if numLeft == 0 {
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
-			deleteToken()
+			deleteToken(ctx)
 		} else if numLeft == 1 {
 			info("wr manager running on port %s is now draining; there is a job still running, and it should %s",
 				config.ManagerPort, completeMsg)
@@ -580,7 +583,7 @@ func init() {
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
 
-func logStarted(s *jobqueue.ServerInfo, token []byte) {
+func logStarted(ctx context.Context, s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager %s started on %s, pid %d", jobqueue.ServerVersion, sAddr(s), s.PID)
 
 	// go back to just stderr so we don't log token to file (this doesn't affect
@@ -610,9 +613,13 @@ func startJQ(ctx context.Context, postCreation []byte) {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	// change the logger to log to both STDERR and our configured log file;
-	// we also create a new logger for internal use by the server later
-	clog.ToDefault()
+	// change the logger to log to both STDERR and our configured log file
+	fileHandler, err := clog.CreateFileHandlerAtLevel(config.ManagerLogFile, "info")
+	if err != nil {
+		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
+	}
+
+	clog.AddHandler(fileHandler)
 
 	logLevel := "warn"
 
@@ -620,13 +627,11 @@ func startJQ(ctx context.Context, postCreation []byte) {
 		logLevel = "debug"
 	}
 
-	fileHandler, err := clog.CreateFileHandlerAtLevel(config.ManagerLogFile, logLevel)
-
+	// create a file handler context for internal use by the server
+	ctxf, err := clog.ContextWithFileHandler(ctx, config.ManagerLogFile, logLevel)
 	if err != nil {
 		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
 	}
-
-	clog.AddHandler(fileHandler)
 
 	// we will spawn runners, which means we need to know the path to ourselves
 	// in case we're not in the user's $PATH
@@ -752,7 +757,7 @@ func startJQ(ctx context.Context, postCreation []byte) {
 	waitgroup.Opts.Disable = false
 
 	// start the jobqueue server
-	server, msg, token, err := jobqueue.Serve(ctx, jobqueue.ServerConfig{
+	server, msg, token, err := jobqueue.Serve(ctxf, jobqueue.ServerConfig{
 		Port:            config.ManagerPort,
 		WebPort:         config.ManagerWeb,
 		SchedulerName:   scheduler,
@@ -780,13 +785,9 @@ func startJQ(ctx context.Context, postCreation []byte) {
 		die("wr manager failed to start : %s", err)
 	}
 
-	logStarted(server.ServerInfo, token)
-
-	fileHandler, err = clog.CreateFileHandlerAtLevel(config.ManagerLogFile, logLevel)
-	if err != nil {
-		warn("wr manager could not log to %s: %s", config.ManagerLogFile, err)
-	}
-
+	logStarted(ctx, server.ServerInfo, token)
+	// logStarted disabled logging to file; re-adding file handler
+	// to get final message below
 	clog.AddHandler(fileHandler)
 
 	// block forever while the jobqueue does its work
@@ -817,7 +818,7 @@ func startJQ(ctx context.Context, postCreation []byte) {
 // so that the next time the manager is started it will create a new token.
 // For un-clean exits of the manager, we should keep the token so the manager
 // re-uses it, allowing any runners to reconnect.
-func deleteToken() {
+func deleteToken(ctx context.Context) {
 	err := os.Remove(config.ManagerTokenFile)
 	if err != nil && !os.IsNotExist(err) {
 		warn("could not remove token file [%s]: %s", config.ManagerTokenFile, err)

@@ -275,8 +275,10 @@ func TestConfig(t *testing.T) {
 				tempHome, d1 := getTempHome(ctx)
 				defer d1()
 
-				fsi, err := ft.NewMockStdIn("y")
+				fsi, err := ft.NewMockStdIn()
 				So(err, ShouldBeNil)
+
+				_ = fsi.WriteString("y")
 
 				min := findPorts(ctx, checker)
 				So(min, ShouldNotBeEmpty)
@@ -290,8 +292,10 @@ func TestConfig(t *testing.T) {
 				tempHome, d1 := getTempHome(ctx)
 				defer d1()
 
-				fsi, err := ft.NewMockStdIn("n")
+				fsi, err := ft.NewMockStdIn()
 				So(err, ShouldBeNil)
+
+				_ = fsi.WriteString("n")
 
 				os.Setenv("WR_FATAL_EXIT_TEST", "1")
 				defer os.Unsetenv("WR_FATAL_EXIT_TEST")
@@ -393,8 +397,10 @@ func TestConfig(t *testing.T) {
 					_, d1 := getTempHome(ctx)
 					defer d1()
 
-					fsi, err := ft.NewMockStdIn("y")
+					fsi, err := ft.NewMockStdIn()
 					So(err, ShouldBeNil)
+
+					_ = fsi.WriteString("y")
 
 					portCli := calculatePort(ctx, defConfig, uid, localhost, "cli")
 

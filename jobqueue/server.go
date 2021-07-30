@@ -1639,23 +1639,8 @@ func (s *Server) createQueue(ctx context.Context) {
 			// we don't test recovered jobs are dead because they might have
 			// exited while the server wasn't running, and we want the existing
 			// client to tell us if it should be archived or buried
-<<<<<<< HEAD
-			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDeadAndKill(job) {
-				s.Info("killed a job after confirming it was dead", "key", job.Key())
-=======
-			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDead(job) {
-				go func(key string) {
-					_, errk := s.killJob(ctx, key)
-					if errk != nil {
-						clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
-					} else {
-						errt := job.TriggerBehaviours(false)
-						if errt != nil {
-							clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
-						}
-					}
-				}(job.Key())
->>>>>>> Update config package and replace logging to clog
+			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDeadAndKill(ctx, job) {
+				clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
 			} else if job.killCalled {
 				defer func() {
 					go func() {
@@ -1870,7 +1855,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 // confirm the job is dead due to an ssh issue, but later on the job really does
 // die because the server it was running on gets rebooted, we eventually
 // auto-kill the job.
-func (s *Server) confirmJobDeadAndKill(job *Job) bool {
+func (s *Server) confirmJobDeadAndKill(ctx context.Context, job *Job) bool {
 	if !s.confirmJobDead(job) {
 		go func() {
 			select {
@@ -1882,7 +1867,7 @@ func (s *Server) confirmJobDeadAndKill(job *Job) bool {
 
 				job = item.Data().(*Job)
 				if job.State == JobStateRunning && job.Lost {
-					s.confirmJobDeadAndKill(job)
+					s.confirmJobDeadAndKill(ctx, job)
 				}
 			case <-s.stopClientHandling:
 				return
@@ -1893,13 +1878,13 @@ func (s *Server) confirmJobDeadAndKill(job *Job) bool {
 	}
 
 	go func() {
-		_, errk := s.killJob(job.Key())
+		_, errk := s.killJob(ctx, job.Key())
 		if errk != nil {
-			s.Warn("failed to kill a job after TTR", "err", errk)
+			clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
 		} else {
 			errt := job.TriggerBehaviours(false)
 			if errt != nil {
-				s.Warn("failed to run behaviours for a killed lost job", "err", errt)
+				clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
 			}
 		}
 	}()

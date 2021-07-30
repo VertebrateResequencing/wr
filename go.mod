@@ -84,3 +84,5 @@ replace k8s.io/client-go => k8s.io/client-go v7.0.0+incompatible
 replace github.com/googleapis/gnostic => github.com/googleapis/gnostic v0.4.1-0.20200130232022-81b31a2e6e4e
 
 replace github.com/docker/spdystream => github.com/docker/spdystream v0.1.0
+
+replace github.com/wtsi-ssg/wr => /home/ubuntu/jul29/wr-1

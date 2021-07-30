@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/signal"
@@ -179,6 +180,7 @@ Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Note that when
 not cached, only serial writes are possible.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.Background()
 		// set up logging
 		logLevel := log15.LvlWarn
 		if mountVerbose {
@@ -188,7 +190,7 @@ not cached, only serial writes are possible.`,
 
 		// mount everything
 		var mounted []*muxfys.MuxFys
-		for _, mc := range mountParse(mountJSON, mountSimple) {
+		for _, mc := range mountParse(ctx, mountJSON, mountSimple) {
 			var rcs []*muxfys.RemoteConfig
 			for _, mt := range mc.Targets {
 				accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
@@ -264,7 +266,7 @@ func init() {
 
 // mountParse takes possible json string or simple string (as per `wr mount -h`)
 // and parses exactly 1 of them to a MountConfig for each mount defined.
-func mountParse(jsonString, simpleString string) jobqueue.MountConfigs {
+func mountParse(ctx context.Context, jsonString, simpleString string) jobqueue.MountConfigs {
 	if jsonString == "" && simpleString == "" {
 		die("--mounts or --mount_json is required")
 	}
@@ -273,14 +275,14 @@ func mountParse(jsonString, simpleString string) jobqueue.MountConfigs {
 	}
 
 	if jsonString != "" {
-		return mountParseJSON(jsonString)
+		return mountParseJSON(ctx, jsonString)
 	}
-	return mountParseSimple(simpleString)
+	return mountParseSimple(ctx, simpleString)
 }
 
 // mountParseJSON takes a json string (as per `wr mount --help`) and parses it
 // to a MountConfig for each mount defined.
-func mountParseJSON(jsonString string) jobqueue.MountConfigs {
+func mountParseJSON(ctx context.Context, jsonString string) jobqueue.MountConfigs {
 	var mcs jobqueue.MountConfigs
 	err := json.Unmarshal([]byte(jsonString), &mcs)
 	if err != nil {
@@ -292,7 +294,7 @@ func mountParseJSON(jsonString string) jobqueue.MountConfigs {
 // mountParseSimple takes a comma-separated list of [c|u][r|w]:bucket[/path] and
 // parses it to a MountConfig in a MountConfigs (to match the output type of
 // mountParseJSON).
-func mountParseSimple(simpleString string) jobqueue.MountConfigs {
+func mountParseSimple(ctx context.Context, simpleString string) jobqueue.MountConfigs {
 	ss := strings.Split(simpleString, ",")
 	targets := make([]jobqueue.MountTarget, 0, len(ss))
 	for _, simple := range ss {
