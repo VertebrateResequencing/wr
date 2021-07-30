@@ -106,9 +106,6 @@ type db struct {
 	backupPath           string
 	backupPathTmp        string
 	ch                   codec.Handle
-	backupLast           time.Time
-	backupPath           string
-	ch                   codec.Handle
 	backupStopWait       chan bool
 	backupMount          *muxfys.MuxFys
 	backupNotification   chan bool
@@ -204,7 +201,7 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 		}
 
 		if errr != nil && !os.IsNotExist(errr) {
-			clog.Warn(ctx, "Failed to remove database backup file", "path", bkPath, "err", errr)
+			clog.Warn(ctx, "Failed to remove database backup file", "path", dbBkFile, "err", errr)
 		}
 	}
 
@@ -242,7 +239,7 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 				defer func() {
 					errr := os.Remove(bkPath)
 					if errr != nil {
-						l.Warn("failed to remove temporary s3 download of database backup", "err", errr)
+						clog.Warn(ctx, "failed to remove temporary s3 download of database backup", "err", errr)
 					}
 				}()
 			}
@@ -1686,20 +1683,20 @@ func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
 			// upload to s3 then delete it
 			errr := db.s3accessor.UploadFile(tmpBackupPath, db.backupPath, "application/octet-stream")
 			if errr != nil {
-				db.Warn("Uploading new database backup file to S3 failed",
+				clog.Warn(ctx, "Uploading new database backup file to S3 failed",
 					"source", tmpBackupPath, "dest", db.backupPath, "err", errr)
 			}
 
 			errr = os.Remove(tmpBackupPath)
 
 			if errr != nil {
-				db.Warn("failed to delete temporary backup file after uploading to s3", "path", tmpBackupPath, "err", errr)
+				clog.Warn(ctx, "failed to delete temporary backup file after uploading to s3", "path", tmpBackupPath, "err", errr)
 			}
 		} else {
 			// move it over any old backup
 			errr := os.Rename(tmpBackupPath, db.backupPath)
 			if errr != nil {
-				db.Warn("Renaming new database backup file failed", "source", tmpBackupPath, "dest", db.backupPath, "err", errr)
+				clog.Warn(ctx, "Renaming new database backup file failed", "source", tmpBackupPath, "dest", db.backupPath, "err", errr)
 			}
 		}
 	}

@@ -6533,17 +6533,12 @@ func TestJobqueueWithMounts(t *testing.T) {
 	Convey("You can bring up a server configured with an S3 db backup", t, func() {
 		s3ServerConfig := serverConfig
 		s3ServerConfig.DBFileBackup = fmt.Sprintf("s3://default@%s/db.bk", s3Path)
-<<<<<<< HEAD
-		localBkPath := config.ManagerDbFile + ".s3backup_tmp"
+		localBkPath := config.ManagerDBFile + ".s3backup_tmp"
 		s3BkPath := filepath.Join(s3Path, "db.bk.development")
 		s3BkPath, err := stripBucketFromS3Path(s3BkPath)
 		So(err, ShouldBeNil)
 
-		os.Remove(config.ManagerDbFile)
-=======
-		localBkPath := filepath.Join(filepath.Dir(config.ManagerDBFile), ".db_bk_mount", s3Path, "db.bk.development")
 		os.Remove(config.ManagerDBFile)
->>>>>>> Update config package and replace logging to clog
 		forceBackups = true
 		defer func() {
 			forceBackups = false
@@ -6561,7 +6556,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			}
 		}()
 
-		_, err := os.Stat(config.ManagerDBFile)
+		_, err = os.Stat(config.ManagerDBFile)
 		So(err, ShouldBeNil)
 		_, err = os.Stat(localBkPath)
 		So(err, ShouldNotBeNil)
