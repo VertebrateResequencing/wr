@@ -364,7 +364,7 @@ within OpenStack.`,
 				teardown(ctx, provider)
 				die("failed to launch a server in %s: %s", providerName, errf)
 			}
-			errf = server.WaitUntilReady(context.Background(), cloudConfigFiles, postCreation)
+			errf = server.WaitUntilReady(ctx, cloudConfigFiles, postCreation)
 			if errf != nil {
 				teardown(ctx, provider)
 				die("failed to launch a server in %s: %s", providerName, errf)

@@ -19,7 +19,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -91,7 +90,6 @@ be silently ignored.
 Because modifying a command may change its internal id, a mapping of old to
 new internal ids is printed.`,
 	Run: func(cobraCmd *cobra.Command, args []string) {
-		ctx := context.Background()
 		// check the command line options
 		if cmdAll && cmdIDStatus != "" {
 			die("-a and -i are mutually exclusive")
@@ -126,7 +124,7 @@ new internal ids is printed.`,
 		}()
 
 		// get the job(s) user wishes to modify
-		jobs := getJobs(ctx, jq, jobqueue.JobStateDeletable, cmdAll, 0, false, false)
+		jobs := getJobs(jq, jobqueue.JobStateDeletable, cmdAll, 0, false, false)
 
 		if len(jobs) == 0 {
 			die("No matching jobs found")
@@ -230,7 +228,7 @@ new internal ids is printed.`,
 			if cmdCloudConfigs == "" {
 				otherSet = true
 			} else {
-				other["cloud_config_files"] = copyCloudConfigFiles(ctx, jq, cmdCloudConfigs)
+				other["cloud_config_files"] = copyCloudConfigFiles(jq, cmdCloudConfigs)
 			}
 		}
 		if cmdCloudSharedDisk {
@@ -328,7 +326,7 @@ new internal ids is printed.`,
 				jm.SetMountConfigs(nil)
 			} else {
 				// set mounts
-				jm.SetMountConfigs(mountParse(ctx, mountJSON, mountSimple))
+				jm.SetMountConfigs(mountParse(mountJSON, mountSimple))
 			}
 		}
 		if cobraCmd.Flags().Changed("env") {

@@ -327,6 +327,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 								clog.Warn(ctx, "failed to remove job", "cmd", job.Cmd, "err", err)
 								continue
 							}
+
 							s.db.deleteLiveJob(ctx, key)
 							clog.Debug(ctx, "removed job", "cmd", job.Cmd)
 							toDelete = append(toDelete, key)

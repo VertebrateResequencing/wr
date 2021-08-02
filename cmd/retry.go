@@ -19,7 +19,6 @@
 package cmd
 
 import (
-	"context"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -53,7 +52,6 @@ options that was used when the command was added, if any. You can do this by
 using the -c and --mounts/--mounts_json options in -l mode, or by providing the
 same file you gave to "wr add" in -f mode.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
 		set := countGetJobArgs()
 		if set > 1 {
 			die("-f, -i, -l and -a are mutually exclusive; only specify one of them")
@@ -72,7 +70,7 @@ same file you gave to "wr add" in -f mode.`,
 			}
 		}()
 
-		jobs := getJobs(ctx, jq, jobqueue.JobStateBuried, cmdAll, 0, false, false)
+		jobs := getJobs(jq, jobqueue.JobStateBuried, cmdAll, 0, false, false)
 
 		if len(jobs) == 0 {
 			die("No matching jobs found")

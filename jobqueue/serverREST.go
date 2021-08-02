@@ -827,6 +827,7 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 		for i, job := range jobs {
 			keys[i] = job.Key()
 		}
+
 		deleted := s.deleteJobs(ctx, keys)
 		d := make(map[string]bool, len(deleted))
 		for _, key := range deleted {

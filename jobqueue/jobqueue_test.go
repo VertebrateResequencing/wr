@@ -299,7 +299,6 @@ func runServer(ctx context.Context) {
 	// testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, h))
 	// pid := os.Getpid()
 	// testLogger = testLogger.New("pid", pid)
-
 	_, serverConfig, _, _, _ := jobqueueTestInit(false)
 
 	if serverKeepDB {
@@ -5531,6 +5530,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 	var server *Server
 	var token []byte
 	var errs error
+
 	config := internal.ConfigLoadFromParentDir(ctx, internal.Development)
 
 	addr := "localhost:" + config.ManagerPort

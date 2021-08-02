@@ -402,6 +402,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, false)
 				if errq != nil {
 					srerr = ErrInternalError
+
 					clog.Warn(ctx, "releaseJob failed", "err", errq)
 					qerr = errq.Error()
 				}
@@ -414,9 +415,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				if cr.JobEndState == nil {
 					cr.JobEndState = &JobEndState{}
 				}
+
 				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, true)
 				if errq != nil {
 					srerr = ErrInternalError
+
 					clog.Warn(ctx, "releaseJob to bury failed", "err", errq)
 					qerr = errq.Error()
 				}
@@ -877,6 +880,7 @@ func (s *Server) reserveWithLimits(ctx context.Context, group string, wait time.
 			// than it is to Reserve first and then Release if at the limit,
 			// because Releasing causes scheduler churn
 			t := time.Now()
+
 			if !s.limiter.Increment(ctx, limitGroups, wait) {
 				return nil, queue.Error{Queue: s.q.Name, Op: "Reserve", Item: "", Err: queue.ErrNothingReady}
 			}

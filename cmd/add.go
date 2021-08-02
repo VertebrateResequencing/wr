@@ -321,7 +321,6 @@ this manager session) job id, and turns on bsub emulation, which means that if
 your Cmd calls bsub, it will instead result in a command being added to wr. The
 new job will have this job's mount and cloud_* options.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
-		ctx := context.Background()
 		// check the command line options
 		if cmdFile == "" {
 			die("--file is required")
@@ -337,7 +336,7 @@ new job will have this job's mount and cloud_* options.`,
 			}
 		}()
 
-		jobs, isLocal, defaultedRepG := parseCmdFile(ctx, jq, combraCmd.Flags().Changed("disk"))
+		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"))
 
 		var envVars []string
 		if isLocal {
@@ -442,7 +441,7 @@ func groupsToDeps(groups string) (deps jobqueue.Dependencies) {
 // defaults specified in other command line args. Returns job slice, bool for if
 // the manager is on the same host as us, and bool for if any job defaulted to
 // the default repgrp.
-func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, bool) {
+func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, bool) {
 	var isLocal bool
 	currentIP, errc := internal.CurrentIP("")
 	if errc != nil {
@@ -456,7 +455,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 	// locations, and adjust cloudConfigFiles to make sense from the manager's
 	// perspective
 	if !isLocal && cmdCloudConfigs != "" {
-		cmdCloudConfigs = copyCloudConfigFiles(ctx, jq, cmdCloudConfigs)
+		cmdCloudConfigs = copyCloudConfigFiles(jq, cmdCloudConfigs)
 	}
 
 	bsubMode := ""
@@ -563,7 +562,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 	}
 
 	if mountJSON != "" || mountSimple != "" {
-		jd.MountConfigs = mountParse(ctx, mountJSON, mountSimple)
+		jd.MountConfigs = mountParse(mountJSON, mountSimple)
 	}
 
 	// open file or set up to read from STDIN
@@ -575,7 +574,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 		if err != nil {
 			die("could not open file '%s': %s", cmdFile, err)
 		}
-		defer internal.LogClose(ctx, reader.(*os.File), "cmds file", "path", cmdFile)
+		defer internal.LogClose(context.Background(), reader.(*os.File), "cmds file", "path", cmdFile)
 	}
 
 	// we'll default to pwd if the manager is on the same host as us, or if
@@ -650,7 +649,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 		}
 
 		if !isLocal && jvj.CloudConfigFiles != "" {
-			jvj.CloudConfigFiles = copyCloudConfigFiles(ctx, jq, jvj.CloudConfigFiles)
+			jvj.CloudConfigFiles = copyCloudConfigFiles(jq, jvj.CloudConfigFiles)
 		}
 
 		job, errf := jvj.Convert(jd)
@@ -673,7 +672,7 @@ func parseCmdFile(ctx context.Context, jq *jobqueue.Client, diskSet bool) ([]*jo
 // path based on the file's MD5, and then returns an altered input value to use
 // the MD5 paths as the sources, keeping the desired destinations. It does not
 // alter path specs for config files that don't exist locally.
-func copyCloudConfigFiles(ctx context.Context, jq *jobqueue.Client, configFiles string) string {
+func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 	cfs := strings.Split(configFiles, ",")
 	remoteConfigFiles := make([]string, 0, len(cfs))
 	for _, cf := range cfs {

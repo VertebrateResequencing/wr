@@ -1116,6 +1116,7 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 			clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
 			return
 		}
+
 		db.backgroundBackup(ctx)
 	}()
 }
@@ -1615,6 +1616,7 @@ func (db *db) backgroundBackup(ctx context.Context) {
 		}
 
 		start := time.Now()
+
 		db.backupToBackupFile(ctx, slowBackups)
 
 		db.Lock()

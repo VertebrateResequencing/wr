@@ -290,7 +290,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				kubeDeploy = true
 			} else {
 				// Read the namespace resource file
-				resources, err := openResources(ctx, resourcePath)
+				resources, err := openResources(resourcePath)
 				if err != nil {
 					die("failed to open resource file with path %s: %s", resourcePath, err)
 				}
@@ -357,7 +357,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			// determine the name of the pod to fetch the client.token from.
 
 			// Read the manager pod's name from resource file
-			resources, err := openResources(ctx, resourcePath)
+			resources, err := openResources(resourcePath)
 			if err != nil {
 				die("failed to open resource file with path %s: %s", resourcePath, err)
 			}
@@ -461,7 +461,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				}
 				internal.LogClose(ctx, file, "resource file", "path", resourcePath)
 			} else {
-				resources, erro := openResources(ctx, resourcePath)
+				resources, erro := openResources(resourcePath)
 				if erro != nil {
 					die("failed to open resource file with path %s: %s", resourcePath, erro)
 				}
@@ -575,7 +575,7 @@ accessible.`,
 
 		resourcePath := filepath.Join(config.ManagerDir, "kubernetes_resources")
 
-		resources, err := openResources(ctx, resourcePath)
+		resources, err := openResources(resourcePath)
 		if err != nil {
 			die("failed to open resource file with path %s: %s", resourcePath, err)
 		}
@@ -741,13 +741,12 @@ accessible.`,
 }
 
 func init() {
-	ctx := context.Background()
 	RootCmd.AddCommand(kubeCmd)
 	kubeCmd.AddCommand(kubeDeployCmd)
 	kubeCmd.AddCommand(kubeTearDownCmd)
 
 	// flags specific to these sub-commands
-	defaultConfig := internal.DefaultConfig(ctx)
+	defaultConfig := internal.DefaultConfig(context.Background())
 	defaultKubeConfig := client.AuthConfig{}.ConfigPath()
 	kubeDeployCmd.Flags().StringVarP(&podPostCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each pod created")
 	kubeDeployCmd.Flags().IntVarP(&serverKeepAlive, "keepalive", "k", defaultConfig.CloudKeepAlive, "how long in seconds to keep idle spawned pods alive for; 0 means forever")
@@ -831,7 +830,7 @@ func rewriteConfigFiles(configFiles string) []client.FilePair {
 }
 
 // Open a resource file with the provided path
-func openResources(ctx context.Context, resourcePath string) (*cloud.Resources, error) {
+func openResources(resourcePath string) (*cloud.Resources, error) {
 	resources := &cloud.Resources{}
 	file, err := os.Open(resourcePath)
 	if err != nil {
@@ -843,7 +842,7 @@ func openResources(ctx context.Context, resourcePath string) (*cloud.Resources, 
 		die("error decoding resource file %s: %s", resourcePath, err)
 	}
 
-	internal.LogClose(ctx, file, "resource file", "path", resourcePath)
+	internal.LogClose(context.Background(), file, "resource file", "path", resourcePath)
 
 	return resources, err
 }

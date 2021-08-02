@@ -96,12 +96,11 @@ func ExecuteLSF(cmd string) {
 }
 
 func init() {
-	ctx := context.Background()
 	// set up logging to stderr
 	clog.ToDefaultAtLevel("info")
 
 	// global flags
-	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(ctx),
+	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(context.Background()),
 		"use production or development config")
 
 	cobra.OnInitialize(initConfig)
@@ -109,8 +108,7 @@ func init() {
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	ctx := context.Background()
-	config = internal.ConfigLoadFromCurrentDir(ctx, deployment)
+	config = internal.ConfigLoadFromCurrentDir(context.Background(), deployment)
 	addr = config.ManagerHost + ":" + config.ManagerPort
 	caFile = config.ManagerCAFile
 }

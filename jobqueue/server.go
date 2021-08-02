@@ -492,6 +492,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	} else {
 		serverLogger = serverLogger.New()
 	}
+
 	defer internal.LogPanic(ctx, "jobqueue serve", true)
 
 	// generate a secure token for clients to authenticate with
@@ -737,6 +738,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 			itemdefs = append(itemdefs, itemdef)
 		}
+
 		_, _, err = s.enqueueItems(ctx, itemdefs)
 		if err != nil {
 			return nil, msg, token, err
@@ -1225,8 +1227,8 @@ func (s *Server) createQueue(ctx context.Context) {
 	q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
 		defer internal.LogPanic(ctx, "jobqueue ready added callback", true)
 
-		clog.Error(ctx, "rac started")
-		defer clog.Error(ctx, "rac finished")
+		clog.Debug(ctx, "rac started")
+		defer clog.Debug(ctx, "rac finished")
 
 		s.ssmutex.RLock()
 		if s.drain || !s.up {
@@ -1437,7 +1439,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 		if rc != "" {
 			for name, group := range groups {
-				clog.Error(ctx, "rac saw ready jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
+				clog.Debug(ctx, "rac saw ready jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 			}
 
 			// add in info for running jobs
@@ -1476,19 +1478,19 @@ func (s *Server) createQueue(ctx context.Context) {
 				go func(group *sgroup) {
 					defer internal.LogPanic(ctx, "jobqueue unschedule runners", true)
 					defer s.wg.Done(wgk)
-					clog.Error(ctx, "rac unscheduling uneeded group", "group", group.name)
+					clog.Debug(ctx, "rac unscheduling uneeded group", "group", group.name)
 					s.scheduleRunners(ctx, group)
 				}(group.clone(0))
 				delete(s.previouslyScheduledGroups, name)
-				clog.Error(ctx, "rac deleted previous unneeded group", "group", name)
+				clog.Debug(ctx, "rac deleted previous unneeded group", "group", name)
 			}
 
 			// schedule runners for each group in the job scheduler
 			for name, group := range groups {
 				if group.count <= 0 {
-					clog.Error(ctx, "rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
+					clog.Debug(ctx, "rac scheduling no jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 				} else {
-					clog.Error(ctx, "rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
+					clog.Debug(ctx, "rac scheduling jobs", "group", name, "count", group.count, "limitskipped", group.skipped)
 				}
 
 				wgk := s.wg.Add(1)
@@ -1840,6 +1842,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 			qerr = err
 			break
 		}
+
 		thisErr := s.q.Update(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, ServerItemTTR, deps)
 		if thisErr != nil {
 			qerr = thisErr
@@ -1973,7 +1976,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 
 	s.decrementGroupCount(ctx, sgroup)
 	s.db.updateJobAfterExit(ctx, job, endState.Stdout, endState.Stderr, forceStorage)
-	clog.Error(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
+	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
 	return nil
 }
 
@@ -2059,6 +2062,7 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 				}
 				continue
 			}
+
 			err = s.q.Remove(ctx, jobkey)
 			if err == nil {
 				deleted = append(deleted, jobkey)
@@ -2067,7 +2071,7 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 				job := item.Data().(*Job)
 				schedGroups[job.getSchedulerGroup()]++
 				repGroups = append(repGroups, job.RepGroup)
-				clog.Error(ctx, "removed job", "cmd", job.Cmd)
+				clog.Debug(ctx, "removed job", "cmd", job.Cmd)
 			}
 		}
 
@@ -2141,7 +2145,8 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 				}
 			}
 		}
-		clog.Error(ctx, "killed jobs on bad servers", "number", len(jobs))
+
+		clog.Debug(ctx, "killed jobs on bad servers", "number", len(jobs))
 	}
 	return jobs
 }
@@ -2514,9 +2519,11 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (int, strin
 		for _, g := range removed {
 			s.limiter.RemoveLimit(g)
 		}
+
 		s.q.TriggerReadyAddedCallback(ctx)
 		return limit, "", nil
 	}
+
 	return s.limiter.GetLimit(ctx, name), "", nil
 }
 
@@ -2597,6 +2604,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	s.krmutex.Lock()
 	s.killRunners = true
 	s.krmutex.Unlock()
+
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
 		<-time.After(ClientTouchInterval)

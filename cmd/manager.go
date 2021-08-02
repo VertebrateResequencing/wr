@@ -139,7 +139,6 @@ OpenStack, and if a key with that name already exists, the manager will not be
 able to create a new one (or get the existing one), and so will not function
 fully.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
 		// first we need our working directory to exist
 		createWorkingDir()
 
@@ -200,7 +199,7 @@ fully.`,
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
-			startJQ(ctx, postCreation)
+			startJQ(postCreation)
 		} else {
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
@@ -228,7 +227,7 @@ fully.`,
 					warn("token could not be read! [%s]", err)
 				}
 
-				logStarted(ctx, jq.ServerInfo, token)
+				logStarted(jq.ServerInfo, token)
 			} else {
 				// daemonized child, that will run until signalled to stop
 				defer func() {
@@ -237,7 +236,7 @@ fully.`,
 						warn("daemon release failed: %s", err)
 					}
 				}()
-				startJQ(ctx, postCreation)
+				startJQ(postCreation)
 			}
 		}
 	},
@@ -252,7 +251,6 @@ var managerStopCmd = &cobra.Command{
 Note that any runners that are currently running will die, along with any
 commands they were running. It is more graceful to use 'drain' instead.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all
 		// eventualities we check the pid file first, try and terminate its pid,
@@ -278,7 +276,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 				warn("according to the pid file %s, wr manager was running with pid %d, and I terminated that pid, but the manager is still up on port %s!", config.ManagerPidFile, pid, config.ManagerPort)
 			} else {
 				info("wr manager running on port %s was gracefully shut down", config.ManagerPort)
-				deleteToken(ctx)
+				deleteToken()
 				return
 			}
 		} else {
@@ -323,7 +321,7 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 
 		if stopped {
 			info("wr manager running at %s was gracefully shut down", sAddr)
-			deleteToken(ctx)
+			deleteToken()
 		} else {
 			die("I've tried everything; giving up trying to stop the manager at %s", sAddr)
 		}
@@ -350,7 +348,6 @@ also configuring an S3 location for your database backup, as otherwise any
 changes to the database between calling drain and the manager finally shutting
 down will be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
 		// first try and connect
 		jq := connect(5*time.Second, true)
 		if jq == nil {
@@ -374,7 +371,7 @@ down will be lost.`,
 
 		if numLeft == 0 {
 			info("wr manager running on port %s is drained: there were no jobs still running, so the manger should stop right away.", config.ManagerPort)
-			deleteToken(ctx)
+			deleteToken()
 		} else if numLeft == 1 {
 			info("wr manager running on port %s is now draining; there is a job still running, and it should %s",
 				config.ManagerPort, completeMsg)
@@ -535,7 +532,6 @@ func reportLiveStatus(jq *jobqueue.Client) {
 }
 
 func init() {
-	ctx := context.Background()
 	defaultMaxRAM, err := internal.ProcMeminfoMBs()
 	if err != nil {
 		defaultMaxRAM = 0
@@ -551,7 +547,7 @@ func init() {
 	managerCmd.AddCommand(managerBackupCmd)
 
 	// flags specific to these sub-commands
-	defaultConfig := internal.DefaultConfig(ctx)
+	defaultConfig := internal.DefaultConfig(context.Background())
 	managerStartCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	managerStartCmd.Flags().StringVarP(&scheduler, "scheduler", "s", defaultConfig.ManagerScheduler, "['local','lsf','openstack'] job scheduler")
 	managerStartCmd.Flags().IntVarP(&managerTimeoutSeconds, "timeout", "t", 10, "how long to wait in seconds for the manager to start up")
@@ -583,7 +579,7 @@ func init() {
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
 
-func logStarted(ctx context.Context, s *jobqueue.ServerInfo, token []byte) {
+func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	info("wr manager %s started on %s, pid %d", jobqueue.ServerVersion, sAddr(s), s.PID)
 
 	// go back to just stderr so we don't log token to file (this doesn't affect
@@ -605,7 +601,9 @@ func logStarted(ctx context.Context, s *jobqueue.ServerInfo, token []byte) {
 	}
 }
 
-func startJQ(ctx context.Context, postCreation []byte) {
+func startJQ(postCreation []byte) {
+	ctx := context.Background()
+
 	if runtime.NumCPU() == 1 {
 		// we might lock up with only 1 proc if we mount
 		runtime.GOMAXPROCS(2)
@@ -747,11 +745,11 @@ func startJQ(ctx context.Context, postCreation []byte) {
 	sync.Opts.OnPotentialDeadlock = func() {
 		wgMsg := wgDebug.String()
 		if wgMsg != "" {
-			clog.Warn(ctx, "waitgroups waiting", "msgs", wgMsg)
+			clog.Warn(ctxf, "waitgroups waiting", "msgs", wgMsg)
 			wgDebug.Reset()
 		}
 
-		clog.Crit(ctx, "deadlock", "err", deadlockBuf.String())
+		clog.Crit(ctxf, "deadlock", "err", deadlockBuf.String())
 	}
 	waitgroup.Opts.Logger = &wgDebug
 	waitgroup.Opts.Disable = false
@@ -785,7 +783,7 @@ func startJQ(ctx context.Context, postCreation []byte) {
 		die("wr manager failed to start : %s", err)
 	}
 
-	logStarted(ctx, server.ServerInfo, token)
+	logStarted(server.ServerInfo, token)
 	// logStarted disabled logging to file; re-adding file handler
 	// to get final message below
 	clog.AddHandler(fileHandler)
@@ -795,7 +793,7 @@ func startJQ(ctx context.Context, postCreation []byte) {
 
 	wgMsg := wgDebug.String()
 	if wgMsg != "" {
-		clog.Warn(ctx, "waitgroups waiting", "msgs", wgMsg)
+		clog.Warn(ctxf, "waitgroups waiting", "msgs", wgMsg)
 	}
 
 	if err != nil {
@@ -818,7 +816,7 @@ func startJQ(ctx context.Context, postCreation []byte) {
 // so that the next time the manager is started it will create a new token.
 // For un-clean exits of the manager, we should keep the token so the manager
 // re-uses it, allowing any runners to reconnect.
-func deleteToken(ctx context.Context) {
+func deleteToken() {
 	err := os.Remove(config.ManagerTokenFile)
 	if err != nil && !os.IsNotExist(err) {
 		warn("could not remove token file [%s]: %s", config.ManagerTokenFile, err)
