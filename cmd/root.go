@@ -225,6 +225,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 			die("failed to daemonize: %s", err)
 		}
 	}
+
 	return child, context
 }
 
