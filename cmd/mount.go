@@ -275,6 +275,7 @@ func mountParse(jsonString, simpleString string) jobqueue.MountConfigs {
 	if jsonString != "" {
 		return mountParseJSON(jsonString)
 	}
+
 	return mountParseSimple(simpleString)
 }
 
@@ -286,6 +287,7 @@ func mountParseJSON(jsonString string) jobqueue.MountConfigs {
 	if err != nil {
 		die("had a problem with the provided mount JSON (%s): %s", jsonString, err)
 	}
+
 	return mcs
 }
 
@@ -340,5 +342,6 @@ func mountParseSimple(simpleString string) jobqueue.MountConfigs {
 	}
 
 	var mcs jobqueue.MountConfigs
+
 	return append(mcs, jobqueue.MountConfig{Targets: targets})
 }
