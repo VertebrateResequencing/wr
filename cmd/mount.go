@@ -248,7 +248,6 @@ not cached, only serial writes are possible.`,
 					fs.Error("Failed to unmount", "err", err)
 				}
 			}
-
 			return
 		}
 	},
