@@ -52,7 +52,7 @@ require (
 	github.com/spf13/cobra v1.1.3
 	github.com/tklauser/go-sysconf v0.3.6 // indirect
 	github.com/ugorji/go/codec v1.2.6
-	github.com/wtsi-ssg/wr v0.2.6
+	github.com/wtsi-ssg/wr v0.3.0
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/crypto v0.0.0-20210711020723-a769d52b0f97
 	golang.org/x/oauth2 v0.0.0-20210622215436-a8dc77f794b6 // indirect
@@ -84,5 +84,3 @@ replace k8s.io/client-go => k8s.io/client-go v7.0.0+incompatible
 replace github.com/googleapis/gnostic => github.com/googleapis/gnostic v0.4.1-0.20200130232022-81b31a2e6e4e
 
 replace github.com/docker/spdystream => github.com/docker/spdystream v0.1.0
-
-replace github.com/wtsi-ssg/wr => /home/ubuntu/jul29/wr-1
