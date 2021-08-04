@@ -77,8 +77,9 @@ func TestLocal(t *testing.T) {
 
 			Convey("It can log error with scheduler type context for wrong timeout reqs", func() {
 				buff := clog.ToBufferAtLevel("error")
-				otherReqs["rtimeout"] = "foo"
-				_ = s.ReserveTimeout(ctx, &Requirements{Other: otherReqs})
+				var otherRTReqs = make(map[string]string)
+				otherRTReqs["rtimeout"] = "foo"
+				_ = s.ReserveTimeout(ctx, &Requirements{Other: otherRTReqs})
 				So(buff.String(), ShouldContainSubstring, "schedulertype=local")
 			})
 		})
