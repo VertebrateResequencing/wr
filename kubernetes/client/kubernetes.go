@@ -1,4 +1,4 @@
-// Copyright © 2018, 2021 Genome Research Limited
+// Copyright © 2018-2019, 2021 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.

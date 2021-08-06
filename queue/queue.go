@@ -1,4 +1,4 @@
-// Copyright © 2016-2019, 2021 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 // This file was based on: Diego Bernardes de Sousa Pinto's
 // https://github.com/diegobernardes/ttlcache
@@ -1209,7 +1209,7 @@ func (queue *Queue) Remove(ctx context.Context, key string) error {
 // depending upon it. You'd want to check this before Remove()ing this item if
 // you're removing it because it was undesired as opposed to complete, as
 // Remove() always triggers dependent items to become ready.
-func (queue *Queue) HasDependents(ctx context.Context, key string) (bool, error) {
+func (queue *Queue) HasDependents(key string) (bool, error) {
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
 

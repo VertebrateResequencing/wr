@@ -1,4 +1,4 @@
-// Copyright © 2016, 2018, 2019, 2021 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -1280,17 +1280,17 @@ func TestQueue(t *testing.T) {
 		})
 
 		Convey("HasDependents works", func() {
-			hasDeps, err := queue.HasDependents(ctx, "key_8")
+			hasDeps, err := queue.HasDependents("key_8")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeFalse)
-			hasDeps, err = queue.HasDependents(ctx, "key_2")
+			hasDeps, err = queue.HasDependents("key_2")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeTrue)
 
 			err = queue.Remove(ctx, "key_5")
 			So(err, ShouldBeNil)
 
-			hasDeps, err = queue.HasDependents(ctx, "key_2")
+			hasDeps, err = queue.HasDependents("key_2")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeFalse)
 		})
@@ -1301,7 +1301,7 @@ func TestQueue(t *testing.T) {
 			fourStats := four.Stats()
 			So(four.Dependencies(), ShouldResemble, []string{"key_1"})
 			So(fourStats.State, ShouldEqual, ItemStateDependent)
-			hasDeps, err := queue.HasDependents(ctx, "key_1")
+			hasDeps, err := queue.HasDependents("key_1")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeTrue)
 
@@ -1310,7 +1310,7 @@ func TestQueue(t *testing.T) {
 
 			So(four.Dependencies(), ShouldResemble, []string{})
 			So(four.Stats().State, ShouldEqual, ItemStateReady)
-			hasDeps, err = queue.HasDependents(ctx, "key_1")
+			hasDeps, err = queue.HasDependents("key_1")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeTrue)
 
@@ -1327,7 +1327,7 @@ func TestQueue(t *testing.T) {
 			So(fiveStats.State, ShouldEqual, ItemStateDependent)
 
 			So(five.Dependencies(), ShouldResemble, []string{"key_2", "key_3"})
-			hasDeps, err = queue.HasDependents(ctx, "key_1")
+			hasDeps, err = queue.HasDependents("key_1")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeFalse)
 
@@ -1344,7 +1344,7 @@ func TestQueue(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			So(five.Dependencies(), ShouldResemble, []string{"key_2", "key_1", "key_3"})
-			hasDeps, err = queue.HasDependents(ctx, "key_1")
+			hasDeps, err = queue.HasDependents("key_1")
 			So(err, ShouldBeNil)
 			So(hasDeps, ShouldBeTrue)
 			fiveStats = five.Stats()

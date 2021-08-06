@@ -1,4 +1,4 @@
-// Copyright © 2016-2018, 2021 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -317,7 +317,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							// dependencies, as *queue would regard that as
 							// satisfying the dependency and downstream jobs
 							// would start
-							hasDeps, err := s.q.HasDependents(ctx, key)
+							hasDeps, err := s.q.HasDependents(key)
 							if err != nil || hasDeps {
 								continue
 							}

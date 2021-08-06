@@ -1,4 +1,4 @@
-// Copyright © 2018, 2021 Genome Research Limited
+// Copyright © 2018-2019, 2021 Genome Research Limited
 // Author: Theo Barber-Bany <tb15@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -166,8 +166,7 @@ func (c *ConfigKubernetes) GetServerKeepTime() time.Duration {
 func (s *k8s) initialize(ctx context.Context, config interface{}) error {
 	s.config = config.(*ConfigKubernetes)
 
-	var logger log15.Logger
-	s.Logger = logger.New("scheduler", "kubernetes")
+	s.Logger = log15.New("scheduler", "kubernetes")
 
 	kubeLogFile := filepath.Join(s.config.ManagerDir, kubeSchedulerLog)
 	fh, err := log15.FileHandler(kubeLogFile, log15.LogfmtFormat())

@@ -2055,7 +2055,7 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 			// we can't allow the removal of jobs that have
 			// dependencies, as *queue would regard that as satisfying
 			// the dependency and downstream jobs would start
-			hasDeps, err := s.q.HasDependents(ctx, jobkey)
+			hasDeps, err := s.q.HasDependents(jobkey)
 			if err != nil || hasDeps {
 				if hasDeps {
 					skippedDeps = append(skippedDeps, jobkey)
