@@ -846,7 +846,6 @@ func (p *Provider) LocalhostServer(os string, postCreationScript []byte, configF
 
 	return &Server{
 		Name:        "localhost",
-		ID:          "localhost",
 		IP:          ip,
 		OS:          os,
 		UserName:    user,

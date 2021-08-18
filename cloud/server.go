@@ -44,6 +44,7 @@ import (
 
 const sharePath = "/shared" // mount point for the *SharedDisk methods
 const sshShortTimeOut = 15 * time.Second
+const localhostName = "localhost"
 
 // maxSSHSessions is the maximum number of sessions we will try and multiplex on
 // each ssh client we make for a server. It doesn't matter if this is lower than
@@ -293,7 +294,12 @@ func (s *Server) Matches(os string, script []byte, configFiles string, flavor *F
 // there was enough space. Returns true if there was enough space and the
 // allocation occurred.
 func (s *Server) Allocate(ctx context.Context, cores float64, ramMB, diskGB int) bool {
-	ctx = clog.ContextWithServerID(ctx, s.ID)
+	if s.Name == localhostName {
+		ctx = clog.ContextWithServerID(ctx, localhostName)
+	} else {
+		ctx = clog.ContextWithServerID(ctx, s.ID)
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if s.checkSpace(cores, ramMB, diskGB) == 0 {
@@ -333,7 +339,12 @@ func (s *Server) Used() bool {
 
 // Release records that the given resources have now been freed.
 func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) {
-	ctx = clog.ContextWithServerID(ctx, s.ID)
+	if s.Name == localhostName {
+		ctx = clog.ContextWithServerID(ctx, localhostName)
+	} else {
+		ctx = clog.ContextWithServerID(ctx, s.ID)
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if cores == 0 {
