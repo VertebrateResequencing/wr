@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -573,7 +574,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		if err != nil {
 			die("could not open file '%s': %s", cmdFile, err)
 		}
-		defer internal.LogClose(appLogger, reader.(*os.File), "cmds file", "path", cmdFile)
+		defer internal.LogClose(context.Background(), reader.(*os.File), "cmds file", "path", cmdFile)
 	}
 
 	// we'll default to pwd if the manager is on the same host as us, or if

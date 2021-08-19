@@ -1,4 +1,4 @@
-// Copyright © 2016-2018 Genome Research Limited
+// Copyright © 2016-2018, 2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -21,6 +21,7 @@ package cmd
 // this is the cobra file that enables subcommands and handles command-line args
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"syscall"
@@ -28,10 +29,9 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/inconshreveable/log15"
-	"github.com/sb10/l15h"
 	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
+	"github.com/wtsi-ssg/wr/clog"
 )
 
 // maxCloudResourceUsernameLength is the maximum length that cloud username can
@@ -41,12 +41,9 @@ import (
 // length 36 and a prefix length 1, leaving 18 characters for the username.
 const maxCloudResourceUsernameLength = 18
 
-// appLogger is used for logging events in our commands
-var appLogger = log15.New()
-
 // these variables are accessible by all subcommands.
 var deployment string
-var config internal.Config
+var config *internal.Config
 
 // these are shared by some of the subcommands.
 var addr string
@@ -100,17 +97,18 @@ func ExecuteLSF(cmd string) {
 
 func init() {
 	// set up logging to stderr
-	appLogger.SetHandler(log15.LvlFilterHandler(log15.LvlInfo, log15.StderrHandler))
+	clog.ToDefaultAtLevel("info")
 
 	// global flags
-	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(appLogger), "use production or development config")
+	RootCmd.PersistentFlags().StringVar(&deployment, "deployment", internal.DefaultDeployment(context.Background()),
+		"use production or development config")
 
 	cobra.OnInitialize(initConfig)
 }
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	config = internal.ConfigLoad(deployment, false, appLogger)
+	config = internal.ConfigLoadFromCurrentDir(context.Background(), deployment)
 	addr = config.ManagerHost + ":" + config.ManagerPort
 	caFile = config.ManagerCAFile
 }
@@ -152,17 +150,17 @@ func cloudResourceName(username string) string {
 
 // info is a convenience to log a message at the Info level.
 func info(msg string, a ...interface{}) {
-	appLogger.Info(fmt.Sprintf(msg, a...))
+	clog.Info(context.Background(), fmt.Sprintf(msg, a...))
 }
 
 // warn is a convenience to log a message at the Warn level.
 func warn(msg string, a ...interface{}) {
-	appLogger.Warn(fmt.Sprintf(msg, a...))
+	clog.Warn(context.Background(), fmt.Sprintf(msg, a...))
 }
 
 // die is a convenience to log a message at the Error level and exit non zero.
 func die(msg string, a ...interface{}) {
-	appLogger.Error(fmt.Sprintf(msg, a...))
+	clog.Error(context.Background(), fmt.Sprintf(msg, a...))
 	os.Exit(1)
 }
 
@@ -203,7 +201,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	args = append(args, extraArgs...)
 
-	context := &daemon.Context{
+	dContext := &daemon.Context{
 		PidFileName: pidFile,
 		PidFilePerm: 0644,
 		WorkDir:     "/",
@@ -211,7 +209,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 		Umask:       umask,
 	}
 
-	child, err := context.Reborn()
+	child, err := dContext.Reborn()
 	if err != nil {
 		// try again, deleting the pidFile first
 		errr := os.Remove(pidFile)
@@ -219,12 +217,12 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 			warn("failed to delete existing pid file: %s", errr)
 		}
 
-		child, err = context.Reborn()
+		child, err = dContext.Reborn()
 		if err != nil {
 			die("failed to daemonize: %s", err)
 		}
 	}
-	return child, context
+	return child, dContext
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
@@ -298,18 +296,4 @@ func connect(wait time.Duration, expectedToBeDown ...bool) *jobqueue.Client {
 		die("%s", err)
 	}
 	return jq
-}
-
-// setupLogging is a function to provide a new logger who's logging depends on
-// debug.
-func setupLogging(debug bool) log15.Logger {
-	// Set up logging for both commands
-	// for debug purposes, set up logging to STDERR
-	myLogger := log15.New()
-	logLevel := log15.LvlWarn
-	if debug {
-		logLevel = log15.LvlDebug
-	}
-	myLogger.SetHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
-	return myLogger
 }
