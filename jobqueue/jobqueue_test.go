@@ -5635,6 +5635,61 @@ sudo usermod -aG docker ` + osUser
 			}
 		}
 
+		Convey("You can add a job that runs on localhost", func() {
+			buff := clog.ToBufferAtLevel("debug")
+			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(tmpdir)
+
+			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
+
+			var jobs []*Job
+			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: tmpdir, ReqGroup: "test1", Requirements: zeroReq, Retries: uint8(0), Override: uint8(2), RepGroup: "chain", DepGroups: []string{"1"}})
+
+			insert, already, err := jq.Add(jobs, envVars, true)
+			So(err, ShouldBeNil)
+			So(insert, ShouldEqual, 1)
+			So(already, ShouldEqual, 0)
+
+			done := make(chan bool, 1)
+			go func() {
+				limit := time.After(30 * time.Second)
+				ticker := time.NewTicker(500 * time.Millisecond)
+				for {
+					select {
+					case <-ticker.C:
+						if !server.HasRunners(ctx) {
+							ticker.Stop()
+							done <- true
+							return
+						}
+						continue
+					case <-limit:
+						ticker.Stop()
+						done <- false
+						return
+					}
+				}
+			}()
+			So(<-done, ShouldBeTrue)
+
+			jobs, err = jq.GetByRepGroup("chain", false, 0, JobStateComplete, false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+
+			for _, m := range strings.Split(buff.String(), "\n") {
+				if strings.Contains(m, "server allocate") {
+					So(m, ShouldContainSubstring, "serverid=localhost")
+				}
+
+				if strings.Contains(m, "server release") {
+					So(m, ShouldContainSubstring, "serverid=localhost")
+				}
+			}
+		})
+
 		Convey("You can add a chain of jobs that run quickly one after the other", func() {
 			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
 			if err != nil {

@@ -472,7 +472,7 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 	}
 
 	return err
-}
+} 
 
 // InCloud tells you if your process is currently running on a cloud server
 // where the *Server related methods will all work correctly. (That is, if this
