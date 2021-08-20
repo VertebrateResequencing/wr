@@ -201,6 +201,7 @@ fully.`,
 			syscall.Umask(config.ManagerUmask)
 			startJQ(postCreation)
 		} else {
+			config.ToEnv()
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
 			if child != nil {
 				// parent; wait a while for our child to bring up the manager

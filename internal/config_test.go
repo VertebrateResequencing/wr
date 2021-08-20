@@ -778,6 +778,18 @@ func TestConfig(t *testing.T) {
 			config := ConfigLoadFromCurrentDir(ctx, "testing")
 			So(config, ShouldNotBeNil)
 			So(config.IsProduction(), ShouldBeTrue)
+
+			Convey("config values can be exported as env vars", func() {
+				config.ToEnv()
+				So(os.Getenv("WR_MANAGERWEB"), ShouldEqual, config.ManagerWeb)
+				So(os.Getenv("WR_MANAGERDIR"), ShouldEqual, config.ManagerDir)
+
+				if config.ManagerSetDomainIP {
+					So(os.Getenv("WR_MANAGERSETDOMAINIP"), ShouldEqual, "true")
+				} else {
+					So(os.Getenv("WR_MANAGERSETDOMAINIP"), ShouldEqual, "false")
+				}
+			})
 		})
 
 		Convey("It can get the default config", func() {

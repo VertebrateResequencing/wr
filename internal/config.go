@@ -191,6 +191,21 @@ func (c Config) String() string {
 	return tableString.String()
 }
 
+// ToEnv sets all config values as environment variables.
+func (c Config) ToEnv() {
+	vals := reflect.ValueOf(c)
+	typeOfC := vals.Type()
+
+	for i := 0; i < vals.NumField(); i++ {
+		property := typeOfC.Field(i).Name
+		if property == sourcesProperty {
+			continue
+		}
+
+		os.Setenv("WR_"+strings.ToUpper(property), fmt.Sprintf("%v", vals.Field(i).Interface()))
+	}
+}
+
 // ConfigLoadFromCurrentDir loads and returns the config from current directory.
 func ConfigLoadFromCurrentDir(ctx context.Context, deployment string) *Config {
 	pwd, uid := getPWDAndUID(ctx)
