@@ -1515,8 +1515,8 @@ func TestJobqueueMedium(t *testing.T) {
 					So(job2.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin)
 					So(job2.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*2)
 
-					<-time.After(100 * time.Millisecond)
-					job, err = jq.Reserve(100 * time.Millisecond)
+					<-time.After(ClientReleaseDelayMin)
+					job, err = jq.Reserve(ClientReleaseDelayMin)
 					So(err, ShouldBeNil)
 					So(job, ShouldNotBeNil)
 					So(job.Cmd, ShouldEqual, "sleep 0.1 && false")
@@ -1538,9 +1538,10 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.UntilBuried, ShouldEqual, 1)
 						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin*2)
 						So(job.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*3)
+						delayEnd := job.EndTime.Add(job.DelayTime)
 
-						<-time.After(100 * time.Millisecond)
-						job, err = jq.Reserve(100 * time.Millisecond)
+						<-time.After(ClientReleaseDelayMin)
+						job, err = jq.Reserve(time.Until(delayEnd) - 10*time.Millisecond)
 						So(err, ShouldBeNil)
 						So(job, ShouldBeNil)
 						job, err = jq2.GetByEssence(&JobEssence{Cmd: "sleep 0.1 && false"}, false, false)
