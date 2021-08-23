@@ -1512,6 +1512,8 @@ func TestJobqueueMedium(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateDelayed)
+					So(job2.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin)
+					So(job2.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*2)
 
 					<-time.After(100 * time.Millisecond)
 					job, err = jq.Reserve(100 * time.Millisecond)
@@ -1534,6 +1536,8 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.Exitcode, ShouldEqual, 1)
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
+						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin*2)
+						So(job.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*3)
 
 						<-time.After(100 * time.Millisecond)
 						job, err = jq.Reserve(100 * time.Millisecond)
@@ -1550,6 +1554,8 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.State, ShouldEqual, JobStateReserved)
 						So(job.Attempts, ShouldEqual, 2)
 						So(job.UntilBuried, ShouldEqual, 1)
+						So(job.DelayTime, ShouldBeGreaterThanOrEqualTo, ClientReleaseDelayMin*4)
+						So(job.DelayTime, ShouldBeLessThan, ClientReleaseDelayMin*5)
 
 						err = jq.Execute(ctx, job, config.RunnerExecShell)
 						So(err, ShouldNotBeNil)
@@ -1871,7 +1877,7 @@ func TestJobqueueMedium(t *testing.T) {
 						So(job.State, ShouldEqual, JobStateComplete)
 						So(job.Exited, ShouldBeTrue)
 						So(job.Exitcode, ShouldEqual, 0)
-						So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()/2) // *** this is a bad test that fails all the time;
+						So(job.CPUtime, ShouldBeGreaterThanOrEqualTo, job.WallTime()/10) // *** this is a bad test that fails all the time;
 						// we actually expect it be greater than walltime, but sometimes it's less
 					})
 				}

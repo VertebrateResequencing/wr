@@ -289,6 +289,8 @@ type Job struct {
 	// unique (for this manager session) id of the job submission, present if
 	// BsubMode was set when the job was added.
 	BsubID uint64
+	// delay is the duration we would next spend in the delay queue
+	DelayTime time.Duration
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().

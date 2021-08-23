@@ -259,7 +259,10 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					ub := sjob.UntilBuried
 					sjob.Unlock()
 
-					s.setItemDelay(ctx, item.Key, retries, ub)
+					delay := s.setItemDelay(ctx, item.Key, retries, ub)
+					sjob.Lock()
+					sjob.DelayTime = delay
+					sjob.Unlock()
 
 					// make a copy of the job with some extra stuff filled in (that
 					// we don't want taking up memory here) for the client
@@ -787,14 +790,16 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 }
 
 // setItemDelay is called when a job is reserved, and sets the item's delay to
-// a value based on a backoff.
-func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, untilBuried uint8) {
+// a value based on a backoff. Returns the delay that was set.
+func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, untilBuried uint8) time.Duration {
 	delay := calculateItemDelay(int(maxRetries) - int(untilBuried) + 1)
 
 	errd := s.q.SetDelay(key, delay)
 	if errd != nil {
 		clog.Warn(ctx, "reserve queue SetDelay failed", "err", errd)
 	}
+
+	return delay
 }
 
 // for the many get* methods in handleRequest, we do this common stuff to get
@@ -825,6 +830,7 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		Requirements:          req,
 		Priority:              sjob.Priority,
 		Retries:               sjob.Retries,
+		DelayTime:             sjob.DelayTime,
 		NoRetriesOverWalltime: sjob.NoRetriesOverWalltime,
 		PeakRAM:               sjob.PeakRAM,
 		PeakDisk:              sjob.PeakDisk,

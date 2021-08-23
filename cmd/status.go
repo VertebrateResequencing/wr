@@ -322,7 +322,9 @@ name to just the first letter, eg. -o c):
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:
-					fmt.Printf("Status: delayed following a temporary problem, will become ready soon (attempted at %s)\n", job.StartTime.Format(shortTimeFormat))
+					ready := job.EndTime.Add(job.DelayTime)
+					fmt.Printf("Status: delayed following a problem, prior to retrying; will become ready in %s (attempted at %s)\n",
+						time.Until(ready).Round(time.Second), job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
 				case jobqueue.JobStateDependent:
