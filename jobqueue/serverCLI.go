@@ -255,12 +255,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sjob.PeakDisk = 0
 					sjob.Exitcode = -1
 					sgroup := sjob.schedulerGroup
+					retries := sjob.Retries
+					ub := sjob.UntilBuried
 					sjob.Unlock()
 
-					errd := s.q.SetDelay(item.Key, ClientReleaseDelay)
-					if errd != nil {
-						clog.Warn(ctx, "reserve queue SetDelay failed", "err", errd)
-					}
+					s.setItemDelay(ctx, item.Key, retries, ub)
 
 					// make a copy of the job with some extra stuff filled in (that
 					// we don't want taking up memory here) for the client
@@ -785,6 +784,17 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 		state = JobStateLost
 	}
 	return state
+}
+
+// setItemDelay is called when a job is reserved, and sets the item's delay to
+// a value based on a backoff.
+func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, untilBuried uint8) {
+	delay := calculateItemDelay(int(maxRetries) - int(untilBuried) + 1)
+
+	errd := s.q.SetDelay(key, delay)
+	if errd != nil {
+		clog.Warn(ctx, "reserve queue SetDelay failed", "err", errd)
+	}
 }
 
 // for the many get* methods in handleRequest, we do this common stuff to get

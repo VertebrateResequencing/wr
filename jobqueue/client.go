@@ -85,18 +85,20 @@ const localhost = "localhost"
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
 var (
-	ClientTouchInterval                = 15 * time.Second
-	ClientReleaseDelay                 = 30 * time.Second
-	ClientPercentMemoryKill            = 90
-	ClientRetryWait                    = 15 * time.Second
-	ClientRetryTime                    = 24 * time.Hour
-	ClientShutdownTimeout              = 120 * time.Second
-	ClientShutdownTestInterval         = 100 * time.Millisecond
-	ClientSuggestedPingTimeout         = 10 * time.Millisecond
-	RAMIncreaseMin             float64 = 1000
-	RAMIncreaseMultLow                 = 2.0
-	RAMIncreaseMultHigh                = 1.3
-	RAMIncreaseMultBreakpoint  float64 = 8192
+	ClientTouchInterval                  = 15 * time.Second
+	ClientReleaseDelayMin                = 30 * time.Second
+	ClientReleaseDelayMax                = 3600 * time.Second
+	ClientReleaseDelayStepFactor float64 = 2
+	ClientPercentMemoryKill              = 90
+	ClientRetryWait                      = 15 * time.Second
+	ClientRetryTime                      = 24 * time.Hour
+	ClientShutdownTimeout                = 120 * time.Second
+	ClientShutdownTestInterval           = 100 * time.Millisecond
+	ClientSuggestedPingTimeout           = 10 * time.Millisecond
+	RAMIncreaseMin               float64 = 1000
+	RAMIncreaseMultLow                   = 2.0
+	RAMIncreaseMultHigh                  = 1.3
+	RAMIncreaseMultBreakpoint    float64 = 8192
 )
 
 // clientRequest is the struct that clients send to the server over the network

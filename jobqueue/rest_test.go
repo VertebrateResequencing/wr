@@ -87,7 +87,7 @@ func TestREST(t *testing.T) {
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
-	ClientReleaseDelay = 100 * time.Millisecond
+	ClientReleaseDelayMin = 100 * time.Millisecond
 	ServerItemTTR = 200 * time.Millisecond
 	ClientTouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
