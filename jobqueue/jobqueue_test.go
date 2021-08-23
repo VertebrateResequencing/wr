@@ -1601,6 +1601,28 @@ func TestJobqueueMedium(t *testing.T) {
 						})
 					})
 				})
+
+				Convey("A job with retries that fails after NoRetriesOverWalltime is immediately buried", func() {
+					var jobs2 []*Job
+					jobs2 = append(jobs2, &Job{Cmd: "sleep 0.5 && false", Cwd: "/tmp", ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(1), NoRetriesOverWalltime: 10 * time.Millisecond, RepGroup: "manually_added"})
+					inserts, already, err := jq.Add(jobs2, envVars, true)
+					So(err, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+					So(already, ShouldEqual, 0)
+
+					job, err = jq.Reserve(50 * time.Millisecond)
+					So(err, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "sleep 0.5 && false")
+					So(job.State, ShouldEqual, JobStateReserved)
+					So(job.Attempts, ShouldEqual, 0)
+					So(job.UntilBuried, ShouldEqual, 2)
+
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(err.Error(), ShouldEqual, "command [sleep 0.5 && false] exited with code 1, after the noretries time, so will not be be tried again")
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exited, ShouldBeTrue)
+				})
 			})
 
 			Convey("Jobs can be deleted in any state except running", func() {
@@ -3507,7 +3529,7 @@ func TestJobqueueModify(t *testing.T) {
 			So(stats.ETC, ShouldEqual, 1*time.Second)
 		})
 
-		Convey("You can modify the retries of a job", func() {
+		Convey("You can modify the retries and noretries of a job", func() {
 			cmd := "false"
 			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: tmp, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})
 			add(1)
@@ -3517,12 +3539,18 @@ func TestJobqueueModify(t *testing.T) {
 			So(job.State, ShouldEqual, JobStateBuried)
 			So(job.Retries, ShouldEqual, 0)
 
-			jm.SetRetries(uint8(1))
+			jm.SetRetries(uint8(3))
 			modify("a", 1)
 
 			job = kick("a", rgroup, cmd, "")
 			So(job.State, ShouldEqual, JobStateReady)
-			So(job.Retries, ShouldEqual, 1)
+			So(job.Retries, ShouldEqual, 3)
+
+			jm.SetNoRetriesOverWalltime(1 * time.Millisecond)
+			modify("a", 1)
+
+			job = reserve(rgroup, cmd)
+			So(job.NoRetriesOverWalltime, ShouldEqual, 1*time.Millisecond)
 		})
 
 		Convey("You can modify the dependencies of a job", func() {

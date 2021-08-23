@@ -1189,6 +1189,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	var mayBeTemp string
 	if job.UntilBuried > 1 {
 		mayBeTemp = ", which may be a temporary issue, so it will be tried again"
+
 	}
 	if err != nil {
 		// there was a problem running the command
@@ -1228,6 +1229,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					dobury = true
 					failreason = FailReasonKilled
 					myerr = Error{"Execute", job.Key(), FailReasonKilled}
+				case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
+					dobury = true
+					failreason = FailReasonExit
+					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, ", after the noretries time, so will not be be tried again")
 				default:
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)

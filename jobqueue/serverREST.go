@@ -84,15 +84,16 @@ type JobViaJSON struct {
 	BsubMode         string   `json:"bsub_mode"`
 	CPUs             *float64 `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
-	Disk        *int `json:"disk"`
-	Override    *int `json:"override"`
-	Priority    *int `json:"priority"`
-	Retries     *int `json:"retries"`
-	CloudOSRam  *int `json:"cloud_ram"`
-	RTimeout    *int `json:"reserve_timeout"`
-	CwdMatters  bool `json:"cwd_matters"`
-	ChangeHome  bool `json:"change_home"`
-	CloudShared bool `json:"cloud_shared"`
+	Disk                  *int   `json:"disk"`
+	Override              *int   `json:"override"`
+	Priority              *int   `json:"priority"`
+	Retries               *int   `json:"retries"`
+	NoRetriesOverWalltime string `json:"no_retry_over_walltime"`
+	CloudOSRam            *int   `json:"cloud_ram"`
+	RTimeout              *int   `json:"reserve_timeout"`
+	CwdMatters            bool   `json:"cwd_matters"`
+	ChangeHome            bool   `json:"change_home"`
+	CloudShared           bool   `json:"cloud_shared"`
 }
 
 // JobDefaults is supplied to JobViaJSON.Convert() to provide default values for
@@ -134,6 +135,9 @@ type JobDefaults struct {
 	Override int
 	Priority int
 	Retries  int
+	// NoRetriesOverWalltime is the amount of time that a cmd can run for and
+	// then fail and still automatically retry.
+	NoRetriesOverWalltime time.Duration
 	// CloudOSRam is the number of Megabytes that CloudOS needs to run. Defaults
 	// to 1000.
 	CloudOSRam int
@@ -208,7 +212,7 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	var mb, disk, override, priority, retries int
 	var diskSet bool
 	var cpus float64
-	var dur time.Duration
+	var dur, noRetry time.Duration
 	var envOverride []byte
 	var limitGroups, depGroups []string
 	var deps Dependencies
@@ -313,6 +317,16 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}
 	if retries < 0 || retries > 255 {
 		return nil, fmt.Errorf("retries value (%d) is not in the range 0..255", retries)
+	}
+
+	if jvj.NoRetriesOverWalltime == "" {
+		noRetry = jd.NoRetriesOverWalltime
+	} else {
+		var err error
+		noRetry, err = time.ParseDuration(jvj.NoRetriesOverWalltime)
+		if err != nil {
+			return nil, fmt.Errorf("time value (%s) was not specified correctly: %s", jvj.NoRetriesOverWalltime, err)
+		}
 	}
 
 	if len(jvj.LimitGrps) == 0 {
@@ -458,24 +472,25 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	}
 
 	return &Job{
-		RepGroup:      repg,
-		Cmd:           cmd,
-		Cwd:           cwd,
-		CwdMatters:    cwdMatters,
-		ChangeHome:    changeHome,
-		ReqGroup:      rg,
-		Requirements:  &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, DiskSet: diskSet, Other: other},
-		Override:      uint8(override),
-		Priority:      uint8(priority),
-		Retries:       uint8(retries),
-		LimitGroups:   limitGroups,
-		DepGroups:     depGroups,
-		Dependencies:  deps,
-		EnvOverride:   envOverride,
-		Behaviours:    behaviours,
-		MountConfigs:  mounts,
-		MonitorDocker: monitorDocker,
-		BsubMode:      bsubMode,
+		RepGroup:              repg,
+		Cmd:                   cmd,
+		Cwd:                   cwd,
+		CwdMatters:            cwdMatters,
+		ChangeHome:            changeHome,
+		ReqGroup:              rg,
+		Requirements:          &jqs.Requirements{RAM: mb, Time: dur, Cores: cpus, Disk: disk, DiskSet: diskSet, Other: other},
+		Override:              uint8(override),
+		Priority:              uint8(priority),
+		Retries:               uint8(retries),
+		NoRetriesOverWalltime: noRetry,
+		LimitGroups:           limitGroups,
+		DepGroups:             depGroups,
+		Dependencies:          deps,
+		EnvOverride:           envOverride,
+		Behaviours:            behaviours,
+		MountConfigs:          mounts,
+		MonitorDocker:         monitorDocker,
+		BsubMode:              bsubMode,
 	}, nil
 }
 
@@ -705,6 +720,13 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 	if r.Form.Get("time") != "" {
 		var err error
 		jd.Time, err = time.ParseDuration(r.Form.Get("time"))
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+	}
+	if r.Form.Get("no_retry_over_walltime") != "" {
+		var err error
+		jd.NoRetriesOverWalltime, err = time.ParseDuration(r.Form.Get("no_retry_over_walltime"))
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}

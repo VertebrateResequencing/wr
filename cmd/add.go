@@ -72,6 +72,7 @@ var cmdFlavor string
 var cmdQueue string
 var cmdMisc string
 var cmdMonitorDocker string
+var cmdNoRetry string
 var rtimeoutint int
 var simpleOutput bool
 
@@ -236,7 +237,18 @@ fails. Automatic retries are helpful in the case of transient errors, or errors
 due to running out of memory or time (when retried, they will be retried with
 more memory/time reserved). Once this number of retries is reached, the command
 will be 'buried' until you take manual action to fix the problem and press the
-retry button in the web interface.
+retry button in the web interface or use "wr retry". When a command fails, if
+there are retries remaining, before the command is run again there will be a
+delay, and the length of the delay depends on the number of attempts so far,
+increasing from 30s by a factor of 2 each attempt, up to a maximuim of 1hr. The
+delay time is also jittered by up to 30s, to avoid the thundering herd problem.
+
+"no_retry_over_walltime" defines a time which if a command runs longer than and
+fails, it will be immediately buried, regardless of the "retries" value. This is
+useful for commands that might fail quickly due to some transient initialization
+issue, and would likely succeed if retried, but are always expected to fail if
+they get past initialization and then fail. The default value of 0 time disables
+this feature and jobs will always retry according to "retries".
 
 "rep_grp" is an arbitrary group you can give your commands so you can query
 their status later. This is only used for reporting and presentation purposes
@@ -390,6 +402,7 @@ func init() {
 	addCmd.Flags().IntVarP(&cmdOvr, "override", "o", 0, "[0|1|2] should your mem/time estimates override? (default 0)")
 	addCmd.Flags().IntVarP(&cmdPri, "priority", "p", 0, "[0-255] command priority (default 0)")
 	addCmd.Flags().IntVarP(&cmdRet, "retries", "r", 3, "[0-255] number of automatic retries for failed commands")
+	addCmd.Flags().StringVarP(&cmdNoRetry, "no_retry_over_walltime", "n", "", "do not retry if cmd runs longer than this [specify units such as m for minutes or h for hours]")
 	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
 	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
 	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
@@ -514,6 +527,15 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		jd.Time, err = time.ParseDuration(cmdTime)
 		if err != nil {
 			die("--time was not specified correctly: %s", err)
+		}
+	}
+
+	if cmdNoRetry == "" {
+		jd.NoRetriesOverWalltime = 0 * time.Second
+	} else {
+		jd.NoRetriesOverWalltime, err = time.ParseDuration(cmdNoRetry)
+		if err != nil {
+			die("--no_retry_over_walltime was not specified correctly: %s", err)
 		}
 	}
 
