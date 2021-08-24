@@ -4502,7 +4502,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
 			So(jobs[0].FailReason, ShouldEqual, FailReasonLost)
 			So(jobs[0].Exitcode, ShouldEqual, -1)
-			So(timeToBury, ShouldBeGreaterThan, ServerLostJobCheckRetryTime)
+			So(timeToBury, ShouldBeGreaterThanOrEqualTo, ServerLostJobCheckRetryTime-1*time.Millisecond)
 		})
 
 		Convey("You can connect, and add jobs with limits, and they run without delays", func() {
