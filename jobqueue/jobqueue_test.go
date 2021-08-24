@@ -3538,7 +3538,7 @@ func TestJobqueueModify(t *testing.T) {
 			job = reserve(learnedRgroup, cmd)
 			jq.Started(job, 1)
 			stats = server.GetServerStats()
-			So(stats.ETC, ShouldEqual, 1*time.Second)
+			So(stats.ETC, ShouldEqual, job.Requirements.Time)
 		})
 
 		Convey("You can modify the retries and noretries of a job", func() {
