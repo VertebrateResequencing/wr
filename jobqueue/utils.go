@@ -30,6 +30,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,6 +41,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/dgryski/go-farm"
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/jpillora/backoff"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -628,4 +630,20 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 		Disk:  req.Disk,
 		Other: req.Other,
 	}
+}
+
+// calculateItemDelay returns a delay based on a backoff and the number of
+// previous delays.
+func calculateItemDelay(numPreviousDelays int) time.Duration {
+	b := &backoff.Backoff{
+		Min:    ClientReleaseDelayMin,
+		Max:    ClientReleaseDelayMax,
+		Factor: ClientReleaseDelayStepFactor,
+		Jitter: false, // don't like the behaviour of it's jitter
+	}
+
+	d := b.ForAttempt(float64(numPreviousDelays))
+	d -= time.Duration(rand.Float64()*float64(ClientReleaseDelayMin) - float64(ClientReleaseDelayMin)) // #nosec
+
+	return d
 }

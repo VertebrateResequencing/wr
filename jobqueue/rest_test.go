@@ -87,7 +87,7 @@ func TestREST(t *testing.T) {
 
 	ServerInterruptTime = 10 * time.Millisecond
 	ServerReserveTicker = 10 * time.Millisecond
-	ClientReleaseDelay = 100 * time.Millisecond
+	ClientReleaseDelayMin = 100 * time.Millisecond
 	ServerItemTTR = 200 * time.Millisecond
 	ClientTouchInterval = 50 * time.Millisecond
 	clientConnectTime := 1500 * time.Millisecond
@@ -97,6 +97,10 @@ func TestREST(t *testing.T) {
 	Convey("Once the jobqueue server is up", t, func() {
 		server, _, token, errt = Serve(ctx, serverConfig)
 		So(errt, ShouldBeNil)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+		defer disconnect(jq)
 
 		bearer := "Bearer " + string(token)
 
@@ -151,9 +155,9 @@ func TestREST(t *testing.T) {
 
 		Convey("You can POST to add jobs to the queue", func() {
 			var inputJobs []*JobViaJSON
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1"})
-			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
 			pri := 2
+			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 1 && true", RepGrp: "rp1", Retries: &pri, NoRetriesOverWalltime: "5m"})
+			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 2 && true", RepGrp: "rp2", Cwd: "/tmp/foo"})
 			cpus := float64(2)
 			inputJobs = append(inputJobs, &JobViaJSON{Cmd: "echo 3 && false", CwdMatters: true, RepGrp: "rp1", Memory: "50M", CPUs: &cpus, Time: "2m", Priority: &pri, Env: []string{"foo=bar", "test=case"}})
 			jsonValue, err := json.Marshal(inputJobs)
@@ -191,6 +195,17 @@ func TestREST(t *testing.T) {
 			So(jstati[2].Cores, ShouldEqual, 2)
 			So(jstati[2].Started, ShouldBeNil)
 			So(jstati[2].Ended, ShouldBeNil)
+
+			job, err := jq.GetByEssence(&JobEssence{Cmd: "echo 1 && true"}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Retries, ShouldEqual, 2)
+			So(job.NoRetriesOverWalltime, ShouldEqual, 5*time.Minute)
+			job, err = jq.GetByEssence(&JobEssence{Cmd: "echo 3 && false", Cwd: "/tmp"}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Retries, ShouldEqual, 0)
+			So(job.NoRetriesOverWalltime, ShouldEqual, 0)
 
 			Convey("You can GET the current status of all jobs", func() {
 				req, err := http.NewRequest(http.MethodGet, jobsEndPoint, nil)
@@ -307,15 +322,6 @@ func TestREST(t *testing.T) {
 			})
 
 			Convey("Once one of the jobs has changed state", func() {
-				jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-				So(err, ShouldBeNil)
-				defer func() {
-					err = jq.Disconnect()
-					if err != nil {
-						fmt.Printf("jq.Disconnect failed: %s\n", err)
-					}
-				}()
-
 				job, err := jq.Reserve(50 * time.Millisecond)
 				So(err, ShouldBeNil)
 				So(job.Cmd, ShouldEqual, "echo 3 && false")
@@ -570,7 +576,7 @@ func TestREST(t *testing.T) {
 			bs := fmt.Sprintf("&on_success=%s&on_failure=%s&on_exit=%s", url.QueryEscape(`[{"cleanup":true}]`), url.QueryEscape(`[{"run":"foo"}]`), url.QueryEscape(`[{"cleanup_all":true}]`))
 			mountJSON := `[{"Mount":"/tmp/wr_mnt","Targets":[{"Profile":"default","Path":"mybucket/subdir","Write":true}]}]`
 			mounts := fmt.Sprintf("&mounts=%s", url.QueryEscape(mountJSON))
-			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m"+bs+mounts, bytes.NewBuffer(jsonValue))
+			req, err := http.NewRequest(http.MethodPost, jobsEndPoint+"/?rep_grp=defaultedRepGrp&cwd=/tmp/foo&cpus=2&dep_grps=a,b,c&deps=x,y&change_home=true&memory=3G&time=4m&no_retry_over_walltime=5m"+bs+mounts, bytes.NewBuffer(jsonValue))
 			So(err, ShouldBeNil)
 			req.Header.Add("Authorization", bearer)
 			req.Header.Add("Content-Type", "application/json")
@@ -595,6 +601,12 @@ func TestREST(t *testing.T) {
 			So(jstati[0].ExpectedTime, ShouldEqual, 240)
 			So(jstati[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"foo"}],"on_success":[{"cleanup":true}],"on_exit":[{"cleanup_all":true}]}`)
 			So(jstati[0].Mounts, ShouldEqual, mountJSON)
+
+			job, err := jq.GetByEssence(&JobEssence{JobKey: "b17c665295e0a3fcf2e07c6d7ad6ddd4"}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Retries, ShouldEqual, 0)
+			So(job.NoRetriesOverWalltime, ShouldEqual, 5*time.Minute)
 		})
 
 		Convey("Trying to POST a job with a non-existent cloud_script fails", func() {

@@ -255,12 +255,14 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					sjob.PeakDisk = 0
 					sjob.Exitcode = -1
 					sgroup := sjob.schedulerGroup
+					retries := sjob.Retries
+					ub := sjob.UntilBuried
 					sjob.Unlock()
 
-					errd := s.q.SetDelay(item.Key, ClientReleaseDelay)
-					if errd != nil {
-						clog.Warn(ctx, "reserve queue SetDelay failed", "err", errd)
-					}
+					delay := s.setItemDelay(ctx, item.Key, retries, ub)
+					sjob.Lock()
+					sjob.DelayTime = delay
+					sjob.Unlock()
 
 					// make a copy of the job with some extra stuff filled in (that
 					// we don't want taking up memory here) for the client
@@ -787,6 +789,19 @@ func (s *Server) itemStateToJobState(itemState queue.ItemState, lost bool) JobSt
 	return state
 }
 
+// setItemDelay is called when a job is reserved, and sets the item's delay to
+// a value based on a backoff. Returns the delay that was set.
+func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, untilBuried uint8) time.Duration {
+	delay := calculateItemDelay(int(maxRetries) - int(untilBuried) + 1)
+
+	errd := s.q.SetDelay(key, delay)
+	if errd != nil {
+		clog.Warn(ctx, "reserve queue SetDelay failed", "err", errd)
+	}
+
+	return delay
+}
+
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, getEnv bool) *Job {
@@ -803,42 +818,44 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 	req := &scheduler.Requirements{}
 	*req = *sjob.Requirements // copy reqs since server changes these, avoiding a race condition
 	job := &Job{
-		RepGroup:      sjob.RepGroup,
-		ReqGroup:      sjob.ReqGroup,
-		LimitGroups:   sjob.LimitGroups,
-		DepGroups:     sjob.DepGroups,
-		Cmd:           sjob.Cmd,
-		Cwd:           sjob.Cwd,
-		CwdMatters:    sjob.CwdMatters,
-		ChangeHome:    sjob.ChangeHome,
-		ActualCwd:     sjob.ActualCwd,
-		Requirements:  req,
-		Priority:      sjob.Priority,
-		Retries:       sjob.Retries,
-		PeakRAM:       sjob.PeakRAM,
-		PeakDisk:      sjob.PeakDisk,
-		Exited:        sjob.Exited,
-		Exitcode:      sjob.Exitcode,
-		FailReason:    sjob.FailReason,
-		StartTime:     sjob.StartTime,
-		EndTime:       sjob.EndTime,
-		Pid:           sjob.Pid,
-		Host:          sjob.Host,
-		HostID:        sjob.HostID,
-		HostIP:        sjob.HostIP,
-		CPUtime:       sjob.CPUtime,
-		State:         state,
-		Attempts:      sjob.Attempts,
-		UntilBuried:   sjob.UntilBuried,
-		ReservedBy:    sjob.ReservedBy,
-		EnvKey:        sjob.EnvKey,
-		EnvOverride:   sjob.EnvOverride,
-		Dependencies:  sjob.Dependencies,
-		Behaviours:    sjob.Behaviours,
-		MountConfigs:  sjob.MountConfigs,
-		MonitorDocker: sjob.MonitorDocker,
-		BsubMode:      sjob.BsubMode,
-		BsubID:        sjob.BsubID,
+		RepGroup:              sjob.RepGroup,
+		ReqGroup:              sjob.ReqGroup,
+		LimitGroups:           sjob.LimitGroups,
+		DepGroups:             sjob.DepGroups,
+		Cmd:                   sjob.Cmd,
+		Cwd:                   sjob.Cwd,
+		CwdMatters:            sjob.CwdMatters,
+		ChangeHome:            sjob.ChangeHome,
+		ActualCwd:             sjob.ActualCwd,
+		Requirements:          req,
+		Priority:              sjob.Priority,
+		Retries:               sjob.Retries,
+		DelayTime:             sjob.DelayTime,
+		NoRetriesOverWalltime: sjob.NoRetriesOverWalltime,
+		PeakRAM:               sjob.PeakRAM,
+		PeakDisk:              sjob.PeakDisk,
+		Exited:                sjob.Exited,
+		Exitcode:              sjob.Exitcode,
+		FailReason:            sjob.FailReason,
+		StartTime:             sjob.StartTime,
+		EndTime:               sjob.EndTime,
+		Pid:                   sjob.Pid,
+		Host:                  sjob.Host,
+		HostID:                sjob.HostID,
+		HostIP:                sjob.HostIP,
+		CPUtime:               sjob.CPUtime,
+		State:                 state,
+		Attempts:              sjob.Attempts,
+		UntilBuried:           sjob.UntilBuried,
+		ReservedBy:            sjob.ReservedBy,
+		EnvKey:                sjob.EnvKey,
+		EnvOverride:           sjob.EnvOverride,
+		Dependencies:          sjob.Dependencies,
+		Behaviours:            sjob.Behaviours,
+		MountConfigs:          sjob.MountConfigs,
+		MonitorDocker:         sjob.MonitorDocker,
+		BsubMode:              sjob.BsubMode,
+		BsubID:                sjob.BsubID,
 	}
 
 	if state == JobStateReserved && !sjob.StartTime.IsZero() {

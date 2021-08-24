@@ -1,4 +1,4 @@
-// Copyright © 2016-2019 Genome Research Limited
+// Copyright © 2016-2021 Genome Research Limited
 // Author: Sendu Bala <sb10@sanger.ac.uk>.
 //
 //  This file is part of wr.
@@ -154,6 +154,11 @@ type Job struct {
 	// Retries is the number of times to retry running a Cmd if it fails.
 	Retries uint8
 
+	// NoRetriesOverWalltime is the amount of time that a cmd can run for and
+	// then fail and still automatically retry. If it runs longer than this
+	// duration and fails, it will instead be immediately buried.
+	NoRetriesOverWalltime time.Duration
+
 	// LimitGroups are names of limit groups that this job belongs to. If any
 	// of these groups are defined (elsewhere) to have a limit, then if as many
 	// other jobs as the limit are currently running, this job will not start
@@ -284,6 +289,8 @@ type Job struct {
 	// unique (for this manager session) id of the job submission, present if
 	// BsubMode was set when the job was added.
 	BsubID uint64
+	// delay is the duration we would next spend in the delay queue
+	DelayTime time.Duration
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -898,37 +905,39 @@ func (j *JobEssence) Stringify() string {
 // alone. The only thing you can't set is RepGroup. The methods on this struct
 // are not thread safe. Do not set any of the properties directly yourself.
 type JobModifier struct {
-	EnvOverride      []byte
-	LimitGroups      []string
-	DepGroups        []string
-	Dependencies     Dependencies
-	Behaviours       Behaviours
-	MountConfigs     MountConfigs
-	Cmd              string
-	Cwd              string
-	ReqGroup         string
-	BsubMode         string
-	MonitorDocker    string
-	Requirements     *scheduler.Requirements
-	CwdMatters       bool
-	CwdMattersSet    bool
-	ChangeHome       bool
-	ChangeHomeSet    bool
-	ReqGroupSet      bool
-	Override         uint8
-	OverrideSet      bool
-	Priority         uint8
-	PrioritySet      bool
-	Retries          uint8
-	RetriesSet       bool
-	EnvOverrideSet   bool
-	LimitGroupsSet   bool
-	DepGroupsSet     bool
-	DependenciesSet  bool
-	BehavioursSet    bool
-	MountConfigsSet  bool
-	BsubModeSet      bool
-	MonitorDockerSet bool
+	EnvOverride              []byte
+	LimitGroups              []string
+	DepGroups                []string
+	Dependencies             Dependencies
+	Behaviours               Behaviours
+	MountConfigs             MountConfigs
+	Cmd                      string
+	Cwd                      string
+	ReqGroup                 string
+	BsubMode                 string
+	MonitorDocker            string
+	Requirements             *scheduler.Requirements
+	CwdMatters               bool
+	CwdMattersSet            bool
+	ChangeHome               bool
+	ChangeHomeSet            bool
+	ReqGroupSet              bool
+	Override                 uint8
+	OverrideSet              bool
+	Priority                 uint8
+	PrioritySet              bool
+	Retries                  uint8
+	RetriesSet               bool
+	NoRetriesOverWalltime    time.Duration
+	NoRetriesOverWalltimeSet bool
+	EnvOverrideSet           bool
+	LimitGroupsSet           bool
+	DepGroupsSet             bool
+	DependenciesSet          bool
+	BehavioursSet            bool
+	MountConfigsSet          bool
+	BsubModeSet              bool
+	MonitorDockerSet         bool
 }
 
 // NewJobModifer is a convenience for making a new JobModifer, that you can call
@@ -993,6 +1002,13 @@ func (j *JobModifier) SetPriority(new uint8) {
 func (j *JobModifier) SetRetries(new uint8) {
 	j.Retries = new
 	j.RetriesSet = true
+}
+
+// SetNoRetriesOverWalltime notes that you want to modify the
+// NoRetriesOverWalltime of Jobs.
+func (j *JobModifier) SetNoRetriesOverWalltime(new time.Duration) {
+	j.NoRetriesOverWalltime = new
+	j.NoRetriesOverWalltimeSet = true
 }
 
 // SetEnvOverride notes that you want to modify the EnvOverride of Jobs. The
@@ -1149,6 +1165,9 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		}
 		if j.RetriesSet {
 			job.Retries = j.Retries
+		}
+		if j.NoRetriesOverWalltimeSet {
+			job.NoRetriesOverWalltime = j.NoRetriesOverWalltime
 		}
 		if j.EnvOverrideSet {
 			job.EnvOverride = j.EnvOverride

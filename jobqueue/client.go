@@ -85,18 +85,20 @@ const localhost = "localhost"
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
 var (
-	ClientTouchInterval                = 15 * time.Second
-	ClientReleaseDelay                 = 30 * time.Second
-	ClientPercentMemoryKill            = 90
-	ClientRetryWait                    = 15 * time.Second
-	ClientRetryTime                    = 24 * time.Hour
-	ClientShutdownTimeout              = 120 * time.Second
-	ClientShutdownTestInterval         = 100 * time.Millisecond
-	ClientSuggestedPingTimeout         = 10 * time.Millisecond
-	RAMIncreaseMin             float64 = 1000
-	RAMIncreaseMultLow                 = 2.0
-	RAMIncreaseMultHigh                = 1.3
-	RAMIncreaseMultBreakpoint  float64 = 8192
+	ClientTouchInterval                  = 15 * time.Second
+	ClientReleaseDelayMin                = 30 * time.Second
+	ClientReleaseDelayMax                = 3600 * time.Second
+	ClientReleaseDelayStepFactor float64 = 2
+	ClientPercentMemoryKill              = 90
+	ClientRetryWait                      = 15 * time.Second
+	ClientRetryTime                      = 24 * time.Hour
+	ClientShutdownTimeout                = 120 * time.Second
+	ClientShutdownTestInterval           = 100 * time.Millisecond
+	ClientSuggestedPingTimeout           = 10 * time.Millisecond
+	RAMIncreaseMin               float64 = 1000
+	RAMIncreaseMultLow                   = 2.0
+	RAMIncreaseMultHigh                  = 1.3
+	RAMIncreaseMultBreakpoint    float64 = 8192
 )
 
 // clientRequest is the struct that clients send to the server over the network
@@ -1187,6 +1189,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	var mayBeTemp string
 	if job.UntilBuried > 1 {
 		mayBeTemp = ", which may be a temporary issue, so it will be tried again"
+
 	}
 	if err != nil {
 		// there was a problem running the command
@@ -1226,6 +1229,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					dobury = true
 					failreason = FailReasonKilled
 					myerr = Error{"Execute", job.Key(), FailReasonKilled}
+				case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
+					dobury = true
+					failreason = FailReasonExit
+					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, ", after the noretries time, so will not be be tried again")
 				default:
 					failreason = FailReasonExit
 					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
