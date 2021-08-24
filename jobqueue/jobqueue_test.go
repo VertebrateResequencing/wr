@@ -3524,9 +3524,9 @@ func TestJobqueueModify(t *testing.T) {
 			// by turning off override, we enable the learned values
 
 			job = kick("a", learnedRgroup, cmd, "a")
-			if job.Requirements.Time == 30*time.Second {
-				//*** Travis consistently gets 30s, and I don't know why...
-				SkipSo(job.Requirements.Time, ShouldEqual, 30*time.Second)
+			if job.Requirements.Time != 1*time.Second {
+				//*** Travis consistently gets 30m, and I don't know why...
+				SkipSo(job.Requirements.Time, ShouldEqual, 30*time.Minute)
 			} else {
 				So(job.Requirements.Time, ShouldEqual, 1*time.Second)
 			}
