@@ -142,7 +142,9 @@ type ConfigOpenStack struct {
 
 	// PostCreationForcedCommand is a command you want to always execute after
 	// a server is Spawn(ed), regardless of any
-	// Requirements.Other["cloud_script"] value.
+	// Requirements.Other["cloud_script"] value. Unlike PostCreationScript, this
+	// command will be run after the executable in the spawn cmd has been
+	// uploaded to the server.
 	PostCreationForcedCommand string
 
 	// ConfigFiles is a comma separated list of paths to config files that
@@ -329,7 +331,7 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 
 	// initialise our servers with details of ourself
 	s.servers = make(map[string]*cloud.Server)
-	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.appendForcedScript(s.config.PostCreationScript), s.config.ConfigFiles, s.config.CIDR)
+	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript, s.config.ConfigFiles, s.config.CIDR)
 	if err != nil {
 		return err
 	}
@@ -382,16 +384,6 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 	s.dfCache = cache.New(flavorDeterminedCacheExpiry, flavorDeterminedCacheCleanup)
 
 	return err
-}
-
-// appendForcedScript appends our PostCreationForcedCommand to the given script,
-// if we have one.
-func (s *opst) appendForcedScript(script []byte) []byte {
-	if s.config.PostCreationForcedCommand != "" {
-		script = append(script, []byte("\n"+s.config.PostCreationForcedCommand)...)
-	}
-
-	return script
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met,
@@ -554,8 +546,6 @@ func (s *opst) serverReqs(ctx context.Context, req *Requirements) (osPrefix stri
 	} else {
 		osScript = s.config.PostCreationScript
 	}
-
-	osScript = s.appendForcedScript(osScript)
 
 	if val, defined := req.Other["cloud_config_files"]; defined {
 		if s.config.ConfigFiles != "" {
@@ -997,6 +987,13 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 				}
 			} else {
 				err = fmt.Errorf("could not look for exe [%s]: %s", exePath, err)
+			}
+
+			if err == nil && s.config.PostCreationForcedCommand != "" {
+				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
+					_, _, errRun := server.RunCmd(ctx, s.config.PostCreationForcedCommand, false)
+					return errRun
+				})
 			}
 		}
 	}
