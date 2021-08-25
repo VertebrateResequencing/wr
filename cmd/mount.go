@@ -29,6 +29,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/inconshreveable/log15"
 	"github.com/sb10/l15h"
+	"github.com/sevlyar/go-daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -52,15 +53,10 @@ S3 bucket for general use, but note that it is only designed as a temporary
 mount since it won't notice externally altered or added files in directories you
 already accessed. It also only allows yourself access to the files.
 
-Since this command doesn't run as a daemon, you'll have to either keep it
-running in the foreground and open up a new terminal to actually explore your
-mount point, or you'll have to run this command in the background:
-$ wr mount -m '...' &
+This command runs as a daemon, meaning it will run in the background.
 When you're finished with your mount, you must either send SIGTERM to its
-process id (using the 'kill' command) or bring 'wr mount' back to the
-foreground:
-$ fg
-And then kill it by hitting ctrl-c.
+process id (using the 'kill' command) or run it in -f mode and kill it with
+ctrl-c.
 NB: if you are writing to your mount point, it's very important to kill it
 cleanly using one of these methods once you're done, since uploads only occur
 when you do this!
@@ -186,69 +182,29 @@ not cached, only serial writes are possible.`,
 		}
 		muxfys.SetLogHandler(log15.LvlFilterHandler(logLevel, l15h.CallerInfoHandler(log15.StderrHandler)))
 
-		// mount everything
-		var mounted []*muxfys.MuxFys
-		for _, mc := range mountParse(mountJSON, mountSimple) {
-			var rcs []*muxfys.RemoteConfig
-			for _, mt := range mc.Targets {
-				accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
-				if err != nil {
-					die("had a problem reading S3 config values from the environment: %s", err)
-				}
-				accessor, err := muxfys.NewS3Accessor(accessorConfig)
-				if err != nil {
-					die("had a problem creating an S3 accessor: %s", err)
-				}
-
-				rc := &muxfys.RemoteConfig{
-					Accessor:  accessor,
-					CacheData: mt.Cache,
-					CacheDir:  mt.CacheDir,
-					Write:     mt.Write,
-				}
-
-				rcs = append(rcs, rc)
+		// now daemonize unless in foreground mode
+		if foreground {
+			mountAndWait()
+		} else {
+			dContext := &daemon.Context{
+				WorkDir: "/",
 			}
 
-			retries := 10
-			if mc.Retries > 0 {
-				retries = mc.Retries
-			}
-
-			cfg := &muxfys.Config{
-				Mount:     mc.Mount,
-				CacheBase: mc.CacheBase,
-				Retries:   retries,
-				Verbose:   mc.Verbose,
-			}
-
-			fs, err := muxfys.New(cfg)
+			child, err := dContext.Reborn()
 			if err != nil {
-				die("bad configuration: %s\n", err)
+				die("failed to daemonize: %s", err)
 			}
 
-			err = fs.Mount(rcs...)
-			if err != nil {
-				die("could not mount: %s\n", err)
+			if child == nil {
+				// daemonized child, that will run until signalled to stop
+				defer func() {
+					err := dContext.Release()
+					if err != nil {
+						warn("daemon release failed: %s", err)
+					}
+				}()
+				mountAndWait()
 			}
-
-			mounted = append(mounted, fs)
-			// (we can't use each fs's UnmountOnDeath() function because they
-			// won't wait for each other)
-		}
-
-		// wait for death
-		if len(mounted) > 0 {
-			deathSignals := make(chan os.Signal, 2)
-			signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
-			<-deathSignals
-			for _, fs := range mounted {
-				err := fs.Unmount()
-				if err != nil {
-					fs.Error("Failed to unmount", "err", err)
-				}
-			}
-			return
 		}
 	},
 }
@@ -259,7 +215,76 @@ func init() {
 	// flags specific to this sub-command
 	mountCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "mount parameters JSON (see --help)")
 	mountCmd.Flags().StringVarP(&mountSimple, "mounts", "m", "", "comma-separated list of [c|u][r|w]:bucket[/path] (see --help)")
+	mountCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
+}
+
+// mountAndWait does the main work of this cmd.
+func mountAndWait() {
+	// mount everything
+	var mounted []*muxfys.MuxFys
+	for _, mc := range mountParse(mountJSON, mountSimple) {
+		var rcs []*muxfys.RemoteConfig
+		for _, mt := range mc.Targets {
+			accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
+			if err != nil {
+				die("had a problem reading S3 config values from the environment: %s", err)
+			}
+			accessor, err := muxfys.NewS3Accessor(accessorConfig)
+			if err != nil {
+				die("had a problem creating an S3 accessor: %s", err)
+			}
+
+			rc := &muxfys.RemoteConfig{
+				Accessor:  accessor,
+				CacheData: mt.Cache,
+				CacheDir:  mt.CacheDir,
+				Write:     mt.Write,
+			}
+
+			rcs = append(rcs, rc)
+		}
+
+		retries := 10
+		if mc.Retries > 0 {
+			retries = mc.Retries
+		}
+
+		cfg := &muxfys.Config{
+			Mount:     mc.Mount,
+			CacheBase: mc.CacheBase,
+			Retries:   retries,
+			Verbose:   mc.Verbose,
+		}
+
+		fs, err := muxfys.New(cfg)
+		if err != nil {
+			die("bad configuration: %s\n", err)
+		}
+
+		err = fs.Mount(rcs...)
+		if err != nil {
+			die("could not mount: %s\n", err)
+		}
+
+		mounted = append(mounted, fs)
+		// (we can't use each fs's UnmountOnDeath() function because they
+		// won't wait for each other)
+	}
+
+	// wait for death
+	if len(mounted) > 0 {
+		deathSignals := make(chan os.Signal, 2)
+		signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+		<-deathSignals
+		for _, fs := range mounted {
+			err := fs.Unmount()
+			if err != nil {
+				fs.Error("Failed to unmount", "err", err)
+			}
+		}
+		return
+	}
 }
 
 // mountParse takes possible json string or simple string (as per `wr mount -h`)
