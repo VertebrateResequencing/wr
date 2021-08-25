@@ -173,6 +173,10 @@ fully.`,
 			}
 		}
 
+		if mountJSON != "" {
+			mountParseJSON(mountJSON) // just to check the sytax and fail early
+		}
+
 		if scheduler == kubernetes {
 			if len(kubeNamespace) == 0 {
 				die("namespace must be specified when using the kubernetes scheduler")
@@ -572,6 +576,7 @@ func init() {
 	managerStartCmd.Flags().BoolVar(&cloudUseConfigDrive, "cloud_use_config_drives", false, "for cloud schedulers, spawn servers with configuration drives")
 	managerStartCmd.Flags().BoolVar(&cloudNoSecurityGroups, "cloud_disable_security_groups", false, "for cloud schedulers, disable the use of security groups on spawned servers")
 	managerStartCmd.Flags().StringVar(&cloudConfigFiles, "cloud_config_files", defaultConfig.CloudConfigFiles, "for cloud schedulers, comma separated paths of config files to copy to spawned servers")
+	managerStartCmd.Flags().StringVarP(&mountJSON, "cloud_mount_json", "j", "", "for cloud schedulers, remote file systems to mount on all servers at bootup, in JSON format; see 'wr mount -h'")
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&useCertDomain, "use_cert_domain", false, "if cert domain is configured, provide it to spawned clients instead of our IP address")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
@@ -665,28 +670,34 @@ func startJQ(postCreation []byte) {
 			serverPorts = []int{22, mport}
 		}
 
+		var postCreationForcedCommand string
+		if mountJSON != "" {
+			postCreationForcedCommand = fmt.Sprintf("%s mount -j '%s'", exe, mountJSON)
+		}
+
 		schedulerConfig = &jqs.ConfigOpenStack{
-			ResourceName:         cloudResourceName(localUsername),
-			SavePath:             filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
-			ServerPorts:          serverPorts,
-			UseConfigDrive:       cloudUseConfigDrive,
-			OSPrefix:             osPrefix,
-			OSUser:               osUsername,
-			OSRAM:                osRAM,
-			OSDisk:               osDisk,
-			FlavorRegex:          flavorRegex,
-			FlavorSets:           flavorSets,
-			PostCreationScript:   postCreation,
-			ConfigFiles:          cloudConfigFiles,
-			ServerKeepTime:       time.Duration(serverKeepAlive) * time.Second,
-			StateUpdateFrequency: 1 * time.Minute,
-			MaxInstances:         maxServers,
-			SimultaneousSpawns:   cloudSpawns,
-			MaxLocalCores:        &maxLocalCores,
-			MaxLocalRAM:          &maxLocalRAM,
-			Shell:                config.RunnerExecShell,
-			CIDR:                 cloudCIDR,
-			Umask:                config.ManagerUmask,
+			ResourceName:              cloudResourceName(localUsername),
+			SavePath:                  filepath.Join(config.ManagerDir, "cloud_resources.openstack"),
+			ServerPorts:               serverPorts,
+			UseConfigDrive:            cloudUseConfigDrive,
+			OSPrefix:                  osPrefix,
+			OSUser:                    osUsername,
+			OSRAM:                     osRAM,
+			OSDisk:                    osDisk,
+			FlavorRegex:               flavorRegex,
+			FlavorSets:                flavorSets,
+			PostCreationScript:        postCreation,
+			PostCreationForcedCommand: postCreationForcedCommand,
+			ConfigFiles:               cloudConfigFiles,
+			ServerKeepTime:            time.Duration(serverKeepAlive) * time.Second,
+			StateUpdateFrequency:      1 * time.Minute,
+			MaxInstances:              maxServers,
+			SimultaneousSpawns:        cloudSpawns,
+			MaxLocalCores:             &maxLocalCores,
+			MaxLocalRAM:               &maxLocalRAM,
+			Shell:                     config.RunnerExecShell,
+			CIDR:                      cloudCIDR,
+			Umask:                     config.ManagerUmask,
 		}
 		serverCIDR = cloudCIDR
 	case kubernetes:

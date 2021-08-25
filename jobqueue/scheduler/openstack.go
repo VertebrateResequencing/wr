@@ -140,6 +140,11 @@ type ConfigOpenStack struct {
 	// Requirements.Other["cloud_script"] value.)
 	PostCreationScript []byte
 
+	// PostCreationForcedCommand is a command you want to always execute after
+	// a server is Spawn(ed), regardless of any
+	// Requirements.Other["cloud_script"] value.
+	PostCreationForcedCommand string
+
 	// ConfigFiles is a comma separated list of paths to config files that
 	// should be copied over to all spawned servers. Absolute paths are copied
 	// over to the same absolute path on the new server. To handle a config file
@@ -324,7 +329,7 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 
 	// initialise our servers with details of ourself
 	s.servers = make(map[string]*cloud.Server)
-	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.config.PostCreationScript, s.config.ConfigFiles, s.config.CIDR)
+	localhost, err := provider.LocalhostServer(s.config.OSPrefix, s.appendForcedScript(s.config.PostCreationScript), s.config.ConfigFiles, s.config.CIDR)
 	if err != nil {
 		return err
 	}
@@ -377,6 +382,16 @@ func (s *opst) initialize(ctx context.Context, config interface{}) error {
 	s.dfCache = cache.New(flavorDeterminedCacheExpiry, flavorDeterminedCacheCleanup)
 
 	return err
+}
+
+// appendForcedScript appends our PostCreationForcedCommand to the given script,
+// if we have one.
+func (s *opst) appendForcedScript(script []byte) []byte {
+	if s.config.PostCreationForcedCommand != "" {
+		script = append(script, []byte("\n"+s.config.PostCreationForcedCommand)...)
+	}
+
+	return script
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met,
@@ -539,6 +554,8 @@ func (s *opst) serverReqs(ctx context.Context, req *Requirements) (osPrefix stri
 	} else {
 		osScript = s.config.PostCreationScript
 	}
+
+	osScript = s.appendForcedScript(osScript)
 
 	if val, defined := req.Other["cloud_config_files"]; defined {
 		if s.config.ConfigFiles != "" {

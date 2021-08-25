@@ -177,6 +177,20 @@ of hardware, then a flavor from the next set in your list will be picked and
 tried instead. If there is a lack of hardware in all sets, the first is tried
 again.
 
+The --mount_json option describes the remote file systems or object stores you
+would like to be fuse mounted on each server that is created. See the help text
+for 'wr mount' for an explanation of how to formulate the value. Be sure to
+specify a fixed absolute path for the mountpoint (a sub-directory of /tmp is
+recommended to avoid permission issues), and you should almost certainly enable
+caching. Jobs you add can then access files from the mountpoint.
+For example (all on one line): --mount_json '[{"Mount":"/tmp/mnt","Targets":
+[{"Path":"mybucket/subdir","CacheDir":"/tmp/mnt_cache"}]}]'
+NB: this has the standard limitations of 'wr mount' mounts, in particular each
+mount on different servers will not see files created by other servers after
+they have read a directory. This mount is only really suitable for reading
+stable files, eg. a pre-populated singularity cache that all servers need
+access to.
+
 Deploy can work with any given --os OS image because it uploads wr to any server
 it creates; your OS image does not have to have wr installed on it. The only
 requirements of the OS image are that it support ssh and sftp on port 22, and
@@ -231,6 +245,10 @@ within OpenStack.`,
 			if err != nil {
 				die("--script %s could not be read: %s", postCreationScript, err)
 			}
+		}
+
+		if mountJSON != "" {
+			mountParseJSON(mountJSON) // just to check the sytax and fail early
 		}
 
 		if len(cloudResourceNameUniquer) > maxCloudResourceUsernameLength {
@@ -757,6 +775,7 @@ func init() {
 	cloudDeployCmd.Flags().IntVar(&cloudServersAutoConfirmDead, "auto_confirm_dead", defaultConfig.CloudAutoConfirmDead, "how long to wait in minutes before destroying bad servers; 0 means forever")
 	cloudDeployCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	cloudDeployCmd.Flags().BoolVar(&cloudDebug, "debug", false, "include extra debugging information in the logs, and have runners log to syslog on their machines")
+	cloudDeployCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "", "remote file systems to mount on all servers at bootup, in JSON format; see 'wr mount -h'")
 
 	cloudTearDownCmd.Flags().StringVarP(&providerName, "provider", "p", "openstack", "['openstack'] cloud provider")
 	cloudTearDownCmd.Flags().StringVar(&cloudResourceNameUniquer, "resource_name", realUsername(), "name you set during deploy")
@@ -878,6 +897,15 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		}
 	}
 
+	// mount remote filesystem
+	if mountJSON != "" {
+		warn("will mount...")
+		_, stde, errf := server.RunCmd(ctx, fmt.Sprintf("%s mount -j '%s'", remoteExe, mountJSON), false)
+		if errf != nil {
+			warn("failed to mount: %s\nstderr: %s\n", errf, stde)
+		}
+	}
+
 	// start up the manager
 	var alreadyStarted bool
 	if wrMayHaveStarted {
@@ -955,6 +983,11 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			osDiskArg = " -d " + strconv.Itoa(osDisk)
 		}
 
+		var mountsArg string
+		if mountJSON != "" {
+			mountsArg = " --cloud_mount_json '" + mountJSON + "'"
+		}
+
 		// get the manager running
 		m := cloudMaxServers - 1
 		debugStr := ""
@@ -965,7 +998,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if domainMatchesIP {
 			useCertDomainStr = " --use_cert_domain"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --cloud_spawns %d --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, cloudSpawns, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --cloud_spawns %d --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, mountsArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, cloudSpawns, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
 
 		var e string
 		_, e, err = server.RunCmd(ctx, mCmd, false)
