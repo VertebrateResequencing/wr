@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -86,6 +87,10 @@ const (
 	ServerModeNormal    = "started"
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
+
+	bitsForRootRSAKey   int = 2048                                 // bits for root rsa key.
+	bitsForServerRSAKey int = 2048                                 // bits for server rsa key.
+	certFileFlags       int = os.O_RDWR | os.O_CREATE | os.O_TRUNC // certFileFlags are the certificate file flags.
 )
 
 // ServerVersion gets set during build:
@@ -514,7 +519,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	var certMsg string
 	if err != nil {
 		// if not, generate our own
-		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain,
+			bitsForRootRSAKey, bitsForRootRSAKey, crand.Reader, certFileFlags)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
 			return s, msg, token, err

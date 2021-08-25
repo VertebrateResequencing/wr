@@ -21,6 +21,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -51,6 +52,13 @@ const wrConfigFileName = ".wr_config.yml"
 // wrEnvFileName is the name of our environment variables file, which we need
 // when we start the manager on our created cloud server
 const wrEnvFileName = ".wr_envvars"
+
+// bits for rsa keys.
+const bitsForRootRSAKey int = 2048
+const bitsForServerRSAKey int = 2048
+
+// certFileFlags are the certificate file flags.
+const certFileFlags int = os.O_RDWR | os.O_CREATE | os.O_TRUNC
 
 // options for this cmd
 var providerName string
@@ -259,7 +267,8 @@ within OpenStack.`,
 		// if we don't have any, generate them now
 		err = internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
 		if err != nil {
-			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile, config.ManagerCertDomain)
+			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile,
+				config.ManagerCertDomain, bitsForRootRSAKey, bitsForServerRSAKey, crand.Reader, certFileFlags)
 			if err != nil {
 				die("could not generate certs: %s", err)
 			}
