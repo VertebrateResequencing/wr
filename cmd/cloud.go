@@ -899,7 +899,6 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 
 	// mount remote filesystem
 	if mountJSON != "" {
-		warn("will mount...")
 		_, stde, errf := server.RunCmd(ctx, fmt.Sprintf("%s mount -j '%s'", remoteExe, mountJSON), false)
 		if errf != nil {
 			warn("failed to mount: %s\nstderr: %s\n", errf, stde)
