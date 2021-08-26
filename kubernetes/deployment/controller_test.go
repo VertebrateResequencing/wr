@@ -41,13 +41,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// bits needed for rsa key.
-const bitsForRootRSAKey int = 2048
-const bitsForServerRSAKey int = 2048
-
-// certFileFlags are the certificate file flags.
-const certFileFlags int = os.O_RDWR | os.O_CREATE | os.O_TRUNC
-
 var dc kubedeployment.Controller
 var autherr error
 var nsErr error
@@ -203,8 +196,8 @@ func TestDeploy(t *testing.T) {
 		certFile := dir + "/cert.pem"
 		keyFile := dir + "/key.pem"
 		wrDir := "/wr-tmp/.wr_production/"
-		err = internal.GenerateCerts(caFile, certFile, keyFile, "localhost", bitsForRootRSAKey, bitsForServerRSAKey,
-			crand.Reader, certFileFlags)
+		err = internal.GenerateCerts(caFile, certFile, keyFile, "localhost", internal.DefaultBitsForRootRSAKey,
+			internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
 		if err != nil {
 			t.Errorf("failed to generate certificates: %s", err)
 		}

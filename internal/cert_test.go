@@ -35,9 +35,8 @@ import (
 )
 
 const (
-	bitsForRootRSAKey int         = 2048
-	blockFileWrite    int         = os.O_RDONLY | os.O_CREATE | os.O_TRUNC
-	fileMode          os.FileMode = 0600
+	blockFileWrite int         = os.O_RDONLY | os.O_CREATE | os.O_TRUNC
+	fileMode       os.FileMode = 0600
 )
 
 func TestCert(t *testing.T) {
@@ -59,7 +58,7 @@ func TestCert(t *testing.T) {
 		})
 
 		Convey("Given an RSA key and a certificate template", func() {
-			rsaKey, err := rsa.GenerateKey(crand.Reader, bitsForRootRSAKey)
+			rsaKey, err := rsa.GenerateKey(crand.Reader, DefaultBitsForRootRSAKey)
 			So(err, ShouldBeNil)
 			So(rsaKey, ShouldNotBeNil)
 
@@ -161,7 +160,7 @@ func TestCert(t *testing.T) {
 		})
 
 		Convey("and an RSA key, it can generate both root and server certificates", func() {
-			rsaKey, err := rsa.GenerateKey(crand.Reader, bitsForRootRSAKey)
+			rsaKey, err := rsa.GenerateKey(crand.Reader, DefaultBitsForRootRSAKey)
 			So(err, ShouldBeNil)
 
 			err = generateCertificates(caFile, certDomain, rsaKey, rsaKey, certFile, crand.Reader, certFileFlags)
@@ -187,23 +186,23 @@ func TestCert(t *testing.T) {
 
 		Convey("it can generate the root and server certificate", func() {
 			Convey("not when zero bits for root rsa key is used", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, 0, bitsForRootRSAKey, crand.Reader, certFileFlags)
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain, 0, DefaultBitsForRootRSAKey, crand.Reader, certFileFlags)
 				So(err, ShouldNotBeNil)
 			})
 
 			Convey("not when zero bits for server rsa key is used", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, bitsForRootRSAKey, 0, crand.Reader, certFileFlags)
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, 0, crand.Reader, certFileFlags)
 				So(err, ShouldNotBeNil)
 			})
 
 			Convey("not when files cannot be written", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, bitsForRootRSAKey, bitsForRootRSAKey, crand.Reader,
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader,
 					blockFileWrite)
 				So(err, ShouldNotBeNil)
 			})
 
 			Convey("when bits and file flags are correct", func() {
-				err := GenerateCerts(caFile, certFile, keyFile, certDomain, bitsForRootRSAKey, bitsForRootRSAKey, crand.Reader,
+				err := GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader,
 					certFileFlags)
 				So(err, ShouldBeNil)
 
@@ -213,7 +212,7 @@ func TestCert(t *testing.T) {
 				})
 
 				Convey("trying to generate certificates again will fail", func() {
-					err = GenerateCerts(caFile, certFile, keyFile, certDomain, bitsForRootRSAKey, bitsForRootRSAKey, crand.Reader,
+					err = GenerateCerts(caFile, certFile, keyFile, certDomain, DefaultBitsForRootRSAKey, DefaultBitsForRootRSAKey, crand.Reader,
 						certFileFlags)
 					So(err, ShouldNotBeNil)
 				})

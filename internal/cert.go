@@ -52,6 +52,13 @@ const (
 
 	// serverKeyMode is the file mode for server key file.
 	serverKeyMode os.FileMode = 0600
+
+	// bits for rsa keys.
+	DefaultBitsForRootRSAKey   int = 2048
+	DefualtBitsForServerRSAKey int = 2048
+
+	// certFileFlags are the certificate file flags.
+	DefaultCertFileFlags int = os.O_RDWR | os.O_CREATE | os.O_TRUNC
 )
 
 // CertificateErr is supplied to CertError to define the certain type of

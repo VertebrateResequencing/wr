@@ -87,10 +87,6 @@ const (
 	ServerModeNormal    = "started"
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
-
-	bitsForRootRSAKey   int = 2048                                 // bits for root rsa key.
-	bitsForServerRSAKey int = 2048                                 // bits for server rsa key.
-	certFileFlags       int = os.O_RDWR | os.O_CREATE | os.O_TRUNC // certFileFlags are the certificate file flags.
 )
 
 // ServerVersion gets set during build:
@@ -520,7 +516,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		// if not, generate our own
 		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain,
-			bitsForRootRSAKey, bitsForServerRSAKey, crand.Reader, certFileFlags)
+			internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
 			return s, msg, token, err

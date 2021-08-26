@@ -214,7 +214,8 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 		err := internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
 		if err != nil {
 			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile,
-				config.ManagerCertDomain, bitsForRootRSAKey, bitsForServerRSAKey, crand.Reader, certFileFlags)
+				config.ManagerCertDomain, internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey,
+				crand.Reader, internal.DefaultCertFileFlags)
 			if err != nil {
 				die("could not generate certs: %s", err)
 			}

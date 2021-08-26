@@ -53,13 +53,6 @@ const wrConfigFileName = ".wr_config.yml"
 // when we start the manager on our created cloud server
 const wrEnvFileName = ".wr_envvars"
 
-// bits for rsa keys.
-const bitsForRootRSAKey int = 2048
-const bitsForServerRSAKey int = 2048
-
-// certFileFlags are the certificate file flags.
-const certFileFlags int = os.O_RDWR | os.O_CREATE | os.O_TRUNC
-
 // options for this cmd
 var providerName string
 var cloudMaxServers int
@@ -286,7 +279,7 @@ within OpenStack.`,
 		err = internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
 		if err != nil {
 			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile,
-				config.ManagerCertDomain, bitsForRootRSAKey, bitsForServerRSAKey, crand.Reader, certFileFlags)
+				config.ManagerCertDomain, internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
 			if err != nil {
 				die("could not generate certs: %s", err)
 			}
