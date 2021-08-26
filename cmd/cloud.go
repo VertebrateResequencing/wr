@@ -21,6 +21,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -277,7 +278,8 @@ within OpenStack.`,
 		// if we don't have any, generate them now
 		err = internal.CheckCerts(config.ManagerCertFile, config.ManagerKeyFile)
 		if err != nil {
-			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile, config.ManagerCertDomain)
+			err = internal.GenerateCerts(config.ManagerCAFile, config.ManagerCertFile, config.ManagerKeyFile,
+				config.ManagerCertDomain, internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
 			if err != nil {
 				die("could not generate certs: %s", err)
 			}

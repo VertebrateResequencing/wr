@@ -20,6 +20,7 @@ package jobqueue
 
 import (
 	"context"
+	crand "crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -154,7 +155,9 @@ func TestJobqueueUtils(t *testing.T) {
 		certFile := filepath.Join(certtmpdir, "cert.pem")
 		keyFile := filepath.Join(certtmpdir, "key.pem")
 		certDomain := "localhost"
-		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain, internal.DefaultBitsForRootRSAKey,
+			internal.DefualtBitsForServerRSAKey, crand.Reader,
+			internal.DefaultCertFileFlags)
 		So(err, ShouldBeNil)
 		_, err = os.Stat(caFile)
 		So(err, ShouldBeNil)

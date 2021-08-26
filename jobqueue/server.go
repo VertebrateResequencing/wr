@@ -22,6 +22,7 @@ package jobqueue
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -514,7 +515,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	var certMsg string
 	if err != nil {
 		// if not, generate our own
-		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain)
+		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain,
+			internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey, crand.Reader, internal.DefaultCertFileFlags)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
 			return s, msg, token, err
