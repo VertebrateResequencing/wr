@@ -433,32 +433,17 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
-				kicked := 0
-				for _, jobkey := range cr.Keys {
-					item, err := s.q.Get(jobkey)
+				var jobs []*Job
+				for _, key := range cr.Keys {
+					item, err := s.q.Get(key)
 					if err != nil || item.Stats().State != queue.ItemStateBury {
 						continue
 					}
-					s.rpmutex.Lock()
-					s.racPending = true
-					s.rpmutex.Unlock()
-					err = s.q.Kick(ctx, jobkey)
-					if err == nil {
-						job := item.Data().(*Job)
-						job.Lock()
-						job.UntilBuried = job.Retries + 1
-						clog.Debug(ctx, "unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
-						job.State = JobStateReady
-						job.Unlock()
-						kicked++
 
-						s.db.updateJobAfterChange(ctx, job)
-					} else {
-						s.rpmutex.Lock()
-						s.racPending = false
-						s.rpmutex.Unlock()
-					}
+					jobs = append(jobs, item.Data().(*Job))
 				}
+
+				kicked := s.kickJobs(ctx, jobs)
 				sr = &serverResponse{Existed: kicked}
 			}
 		case "jdel":
@@ -467,7 +452,22 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			if cr.Keys == nil {
 				srerr = ErrBadRequest
 			} else {
-				deleted := s.deleteJobs(ctx, cr.Keys)
+				var jobs []*Job
+				for _, key := range cr.Keys {
+					item, err := s.q.Get(key)
+					if err != nil || item == nil {
+						continue
+					}
+
+					iState := item.Stats().State
+					if iState == queue.ItemStateRun {
+						continue
+					}
+
+					jobs = append(jobs, item.Data().(*Job))
+				}
+
+				deleted := s.deleteJobs(ctx, jobs)
 				clog.Debug(ctx, "deleted jobs", "count", len(deleted))
 				sr = &serverResponse{Existed: len(deleted)}
 			}

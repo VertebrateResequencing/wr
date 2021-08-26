@@ -845,12 +845,8 @@ func restJobsCancel(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 	returnStatus := http.StatusAccepted
 	if state == JobStateDeletable {
 		returnStatus = http.StatusOK
-		keys := make([]string, len(jobs))
-		for i, job := range jobs {
-			keys[i] = job.Key()
-		}
 
-		deleted := s.deleteJobs(ctx, keys)
+		deleted := s.deleteJobs(ctx, jobs)
 		d := make(map[string]bool, len(deleted))
 		for _, key := range deleted {
 			d[key] = true
