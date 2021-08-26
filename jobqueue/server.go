@@ -2032,27 +2032,19 @@ func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
 	return true, err
 }
 
-// deleteJobs deletes the jobs with the given keys from the
-// bury/delay/dependent/ready queue and the live bucket. Does not delete jobs
-// that have jobs dependant upon them, unless all those dependants were also
-// supplied to this method at the same time (in any order). Returns the keys of
-// jobs actually deleted.
-func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
+// deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue
+// and the live bucket. Does not delete jobs that have jobs dependant upon them,
+// unless all those dependants were also supplied to this method at the same
+// time (in any order). Returns the keys of jobs actually deleted.
+func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 	var deleted []string
 	for {
-		var skippedDeps []string
+		var skippedDeps []*Job
 		var toDelete []string
 		schedGroups := make(map[string]int)
 		var repGroups []string
-		for _, jobkey := range keys {
-			item, err := s.q.Get(jobkey)
-			if err != nil || item == nil {
-				continue
-			}
-			iState := item.Stats().State
-			if iState == queue.ItemStateRun {
-				continue
-			}
+		for _, job := range jobs {
+			jobkey := job.Key()
 
 			// we can't allow the removal of jobs that have
 			// dependencies, as *queue would regard that as satisfying
@@ -2060,7 +2052,7 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 			hasDeps, err := s.q.HasDependents(jobkey)
 			if err != nil || hasDeps {
 				if hasDeps {
-					skippedDeps = append(skippedDeps, jobkey)
+					skippedDeps = append(skippedDeps, job)
 				}
 				continue
 			}
@@ -2070,7 +2062,6 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 				deleted = append(deleted, jobkey)
 				toDelete = append(toDelete, jobkey)
 
-				job := item.Data().(*Job)
 				schedGroups[job.getSchedulerGroup()]++
 				repGroups = append(repGroups, job.RepGroup)
 				clog.Debug(ctx, "removed job", "cmd", job.Cmd)
@@ -2100,12 +2091,13 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 			// can remove everything desired by going down the
 			// dependency tree
 			if len(skippedDeps) > 0 {
-				keys = skippedDeps
+				jobs = skippedDeps
 				continue
 			}
 		}
 		break
 	}
+
 	return deleted
 }
 
@@ -2113,7 +2105,7 @@ func (s *Server) deleteJobs(ctx context.Context, keys []string) []string {
 // requested.
 func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
 	if job.RemovalRequested() {
-		go s.deleteJobs(ctx, []string{job.Key()})
+		go s.deleteJobs(ctx, []*Job{job})
 	}
 }
 
@@ -2151,6 +2143,32 @@ func (s *Server) killJobsOnServers(ctx context.Context, serverIDs map[string]boo
 		clog.Debug(ctx, "killed jobs on bad servers", "number", len(jobs))
 	}
 	return jobs
+}
+
+// kickJobs unburies the given jobs and returns the number affected.
+func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
+	for _, job := range jobs {
+		s.rpmutex.Lock()
+		s.racPending = true
+		s.rpmutex.Unlock()
+		err := s.q.Kick(ctx, job.Key())
+		if err == nil {
+			job.Lock()
+			job.UntilBuried = job.Retries + 1
+			clog.Debug(ctx, "unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
+			job.State = JobStateReady
+			job.Unlock()
+			kicked++
+
+			s.db.updateJobAfterChange(ctx, job)
+		} else {
+			s.rpmutex.Lock()
+			s.racPending = false
+			s.rpmutex.Unlock()
+		}
+	}
+
+	return kicked
 }
 
 // getJobsByKeys gets jobs with the given keys (current and complete).

@@ -300,46 +300,11 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						}
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
-						for _, job := range jobs {
-							err := s.q.Kick(ctx, job.Key())
-							if err != nil {
-								continue
-							}
-							job.UntilBuried = job.Retries + 1
-						}
+						s.kickJobs(ctx, jobs)
 					case "remove":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury, queue.ItemStateDelay, queue.ItemStateDependent, queue.ItemStateReady})
-						var toDelete []string
-						for _, job := range jobs {
-							key := job.Key()
-
-							// we can't allow the removal of jobs that have
-							// dependencies, as *queue would regard that as
-							// satisfying the dependency and downstream jobs
-							// would start
-							hasDeps, err := s.q.HasDependents(key)
-							if err != nil || hasDeps {
-								continue
-							}
-
-							err = s.q.Remove(ctx, key)
-							if err != nil {
-								clog.Warn(ctx, "failed to remove job", "cmd", job.Cmd, "err", err)
-								continue
-							}
-
-							s.db.deleteLiveJob(ctx, key)
-							clog.Debug(ctx, "removed job", "cmd", job.Cmd)
-							toDelete = append(toDelete, key)
-							if job.State == JobStateReady {
-								s.decrementGroupCount(ctx, job.getSchedulerGroup(), 1)
-							}
-						}
-						s.rpl.Lock()
-						for _, key := range toDelete {
-							delete(s.rpl.lookup[req.RepGroup], key)
-						}
-						s.rpl.Unlock()
+						deleted := s.deleteJobs(ctx, jobs)
+						clog.Debug(ctx, "removed jobs", "count", len(deleted))
 					case "kill":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateRun})
 						for _, job := range jobs {
