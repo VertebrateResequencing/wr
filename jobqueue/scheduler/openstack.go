@@ -140,6 +140,13 @@ type ConfigOpenStack struct {
 	// Requirements.Other["cloud_script"] value.)
 	PostCreationScript []byte
 
+	// PostCreationForcedCommand is a command you want to always execute after
+	// a server is Spawn(ed), regardless of any
+	// Requirements.Other["cloud_script"] value. Unlike PostCreationScript, this
+	// command will be run after the executable in the spawn cmd has been
+	// uploaded to the server.
+	PostCreationForcedCommand string
+
 	// ConfigFiles is a comma separated list of paths to config files that
 	// should be copied over to all spawned servers. Absolute paths are copied
 	// over to the same absolute path on the new server. To handle a config file
@@ -980,6 +987,13 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 				}
 			} else {
 				err = fmt.Errorf("could not look for exe [%s]: %s", exePath, err)
+			}
+
+			if err == nil && s.config.PostCreationForcedCommand != "" {
+				err = s.actOnServerIfNeeded(server, cmd, func(ctx context.Context) error {
+					_, _, errRun := server.RunCmd(ctx, s.config.PostCreationForcedCommand, false)
+					return errRun
+				})
 			}
 		}
 	}

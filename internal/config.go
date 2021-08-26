@@ -202,7 +202,12 @@ func (c Config) ToEnv() {
 			continue
 		}
 
-		os.Setenv("WR_"+strings.ToUpper(property), fmt.Sprintf("%v", vals.Field(i).Interface()))
+		value := fmt.Sprintf("%v", vals.Field(i).Interface())
+		if property == "ManagerDir" {
+			value = strings.TrimSuffix(value, "_"+c.Deployment)
+		}
+
+		os.Setenv("WR_"+strings.ToUpper(property), value)
 	}
 }
 

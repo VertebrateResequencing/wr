@@ -782,7 +782,10 @@ func TestConfig(t *testing.T) {
 			Convey("config values can be exported as env vars", func() {
 				config.ToEnv()
 				So(os.Getenv("WR_MANAGERWEB"), ShouldEqual, config.ManagerWeb)
-				So(os.Getenv("WR_MANAGERDIR"), ShouldEqual, config.ManagerDir)
+				So(os.Getenv("WR_RUNNEREXECSHELL"), ShouldEqual, config.RunnerExecShell)
+				So(os.Getenv("WR_MANAGERDIR"), ShouldEqual, TildaToHome("~/.wr"))
+				So(os.Getenv("WR_MANAGERDIR"), ShouldNotEqual, config.ManagerDir)
+				So(os.Getenv("WR_MANAGERLOGFILE"), ShouldEqual, filepath.Join(config.ManagerDir, "log"))
 
 				if config.ManagerSetDomainIP {
 					So(os.Getenv("WR_MANAGERSETDOMAINIP"), ShouldEqual, "true")

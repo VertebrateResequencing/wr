@@ -696,18 +696,19 @@ func TestOpenstack(t *testing.T) {
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	rName := "wr-testing-" + localUser
 	config := &ConfigOpenStack{
-		ResourceName:         rName,
-		OSPrefix:             osPrefix,
-		OSUser:               osUser,
-		OSRAM:                2048,
-		FlavorRegex:          flavorRegex,
-		FlavorSets:           os.Getenv("OS_FLAVOR_SETS"),
-		ServerPorts:          []int{22},
-		ServerKeepTime:       15 * time.Second,
-		StateUpdateFrequency: 1 * time.Second,
-		Shell:                "bash",
-		MaxInstances:         -1,
-		SimultaneousSpawns:   1,
+		ResourceName:              rName,
+		OSPrefix:                  osPrefix,
+		OSUser:                    osUser,
+		OSRAM:                     2048,
+		FlavorRegex:               flavorRegex,
+		FlavorSets:                os.Getenv("OS_FLAVOR_SETS"),
+		ServerPorts:               []int{22},
+		ServerKeepTime:            15 * time.Second,
+		StateUpdateFrequency:      1 * time.Second,
+		Shell:                     "bash",
+		MaxInstances:              -1,
+		SimultaneousSpawns:        1,
+		PostCreationForcedCommand: "echo bar > /tmp/foo",
 	}
 	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
@@ -747,147 +748,63 @@ func TestOpenstack(t *testing.T) {
 
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 1, otherReqs, true, true, true}
 		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
+
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
 		})
 
 		// author specific tests, based on hostname, where we know what the
 		// expected server types are
-		if host == "vr-2-2-02" {
+		if host == "farm5-head1" {
 			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
 				flavor, err := oss.determineFlavor(ctx, possibleReq, "a")
 				So(err, ShouldBeNil)
 
-				if os.Getenv("OS_TENANT_ID") != "" {
-					// author's pre-pike install
-					So(flavor.ID, ShouldEqual, "2000")
-					So(flavor.RAM, ShouldEqual, 1024)
-					So(flavor.Disk, ShouldEqual, 8)
-					So(flavor.Cores, ShouldEqual, 1)
+				So(flavor.ID, ShouldEqual, "2100")
+				So(flavor.RAM, ShouldEqual, 11190)
+				So(flavor.Disk, ShouldEqual, 26)
+				So(flavor.Cores, ShouldEqual, 1)
 
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 1, 20, otherReqs,
-						true, true, true}, "b")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2000") // we now ignore the 20GB disk requirement
+				flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 1, 30, otherReqs,
+					true, true, true}, "l")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2100")
 
-					flavor, err = oss.determineFlavor(ctx, oss.reqForSpawn(possibleReq), "c")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2001")
-					So(flavor.RAM, ShouldEqual, 4096)
+				flavor, err = oss.determineFlavor(ctx, oss.reqForSpawn(possibleReq), "m")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2100")
 
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 2, 1, otherReqs,
-						true, true, true}, "d")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2001")
-					So(flavor.RAM, ShouldEqual, 4096)
-					So(flavor.Disk, ShouldEqual, 12)
-					So(flavor.Cores, ShouldEqual, 2)
+				flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 2, 1, otherReqs,
+					true, true, true}, "n")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2101")
+				So(flavor.RAM, ShouldEqual, 23800)
+				So(flavor.Disk, ShouldEqual, 53)
+				So(flavor.Cores, ShouldEqual, 2)
 
-					flavor, err = oss.determineFlavor(ctx, &Requirements{5000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "e")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2002")
-					So(flavor.RAM, ShouldEqual, 16384)
-					So(flavor.Disk, ShouldEqual, 20)
-					So(flavor.Cores, ShouldEqual, 4)
+				flavor, err = oss.determineFlavor(ctx, &Requirements{30000, 1 * time.Minute, 1, 1, otherReqs,
+					true, true, true}, "o")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2102")
+				So(flavor.RAM, ShouldEqual, 47600)
+				So(flavor.Disk, ShouldEqual, 106)
+				So(flavor.Cores, ShouldEqual, 4)
 
-					flavor, err = oss.determineFlavor(ctx, &Requirements{64000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "f")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2003")
-					So(flavor.RAM, ShouldEqual, 65536)
-					So(flavor.Disk, ShouldEqual, 20)
-					So(flavor.Cores, ShouldEqual, 8)
+				flavor, err = oss.determineFlavor(ctx, &Requirements{64000, 1 * time.Minute, 1, 1, otherReqs,
+					true, true, true}, "p")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2103")
+				So(flavor.RAM, ShouldEqual, 95200)
+				So(flavor.Disk, ShouldEqual, 213)
+				So(flavor.Cores, ShouldEqual, 8)
 
-					flavor, err = oss.determineFlavor(ctx, &Requirements{66000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "g")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2004")
-					So(flavor.RAM, ShouldEqual, 122880)
-					So(flavor.Disk, ShouldEqual, 128)
-					So(flavor.Cores, ShouldEqual, 16)
+				flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 3, 1, otherReqs, true, true, true}, "r")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2102")
 
-					flavor, err = oss.determineFlavor(ctx, &Requirements{261000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "h")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2005")
-					So(flavor.RAM, ShouldEqual, 262144)
-					So(flavor.Disk, ShouldEqual, 128)
-					So(flavor.Cores, ShouldEqual, 52)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{263000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "i")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2006")
-					So(flavor.RAM, ShouldEqual, 496640)
-					So(flavor.Disk, ShouldEqual, 128)
-					So(flavor.Cores, ShouldEqual, 56)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 3, 1, otherReqs,
-						true, true, true}, "j")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2002")
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 5, 1, otherReqs,
-						true, true, true}, "k")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2003")
-				} else {
-					// author's pike install
-					So(flavor.ID, ShouldEqual, "2000")
-					So(flavor.RAM, ShouldEqual, 8600)
-					So(flavor.Disk, ShouldEqual, 15)
-					So(flavor.Cores, ShouldEqual, 1)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 1, 20, otherReqs,
-						true, true, true}, "l")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2000")
-
-					flavor, err = oss.determineFlavor(ctx, oss.reqForSpawn(possibleReq), "m")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2000")
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 2, 1, otherReqs,
-						true, true, true}, "n")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2001")
-					So(flavor.RAM, ShouldEqual, 17200)
-					So(flavor.Disk, ShouldEqual, 31)
-					So(flavor.Cores, ShouldEqual, 2)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{30000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "o")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2002")
-					So(flavor.RAM, ShouldEqual, 34400)
-					So(flavor.Disk, ShouldEqual, 62)
-					So(flavor.Cores, ShouldEqual, 4)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{64000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "p")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2003")
-					So(flavor.RAM, ShouldEqual, 68800)
-					So(flavor.Disk, ShouldEqual, 125)
-					So(flavor.Cores, ShouldEqual, 8)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{120000, 1 * time.Minute, 1, 1, otherReqs,
-						true, true, true}, "q")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2004")
-					So(flavor.RAM, ShouldEqual, 137600)
-					So(flavor.Disk, ShouldEqual, 250)
-					So(flavor.Cores, ShouldEqual, 16)
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 3, 1, otherReqs, true, true, true}, "r")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2002")
-
-					flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 5, 1, otherReqs, true, true, true}, "s")
-					So(err, ShouldBeNil)
-					So(flavor.ID, ShouldEqual, "2003")
-				}
+				flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 5, 1, otherReqs, true, true, true}, "s")
+				So(err, ShouldBeNil)
+				So(flavor.ID, ShouldEqual, "2103")
 			})
 
 			Convey("MaxQueueTime() always returns enough time to complete 1 job, plus a minute leeway", func() {
@@ -958,7 +875,7 @@ func TestOpenstack(t *testing.T) {
 					So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
 				})
 
-				Convey("Run jobs that use a NFS shared disk", func() {
+				Convey("Run jobs that use a NFS shared disk and rely on the ForcedCommand having run", func() {
 					cmd := "touch /shared/test1"
 					other := make(map[string]string)
 					other["cloud_shared"] = "true"
@@ -973,7 +890,7 @@ func TestOpenstack(t *testing.T) {
 						}
 					}
 					remoteReq.Other = other
-					cmd = "touch /shared/test2"
+					cmd = "cat /tmp/foo > /shared/test2"
 					err = s.Schedule(ctx, cmd, remoteReq, 0, 1)
 					So(err, ShouldBeNil)
 
@@ -982,8 +899,9 @@ func TestOpenstack(t *testing.T) {
 
 					_, err = os.Stat("/shared/test1")
 					So(err, ShouldBeNil)
-					_, err = os.Stat("/shared/test2")
+					content, err := os.ReadFile("/shared/test2")
 					So(err, ShouldBeNil)
+					So(string(content), ShouldEqual, "bar\n")
 
 					err = os.Remove("/shared/test1")
 					So(err, ShouldBeNil)
