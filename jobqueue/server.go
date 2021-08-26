@@ -520,7 +520,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		// if not, generate our own
 		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain,
-			bitsForRootRSAKey, bitsForRootRSAKey, crand.Reader, certFileFlags)
+			bitsForRootRSAKey, bitsForServerRSAKey, crand.Reader, certFileFlags)
 		if err != nil {
 			serverLogger.Error("GenerateCerts failed", "err", err)
 			return s, msg, token, err
