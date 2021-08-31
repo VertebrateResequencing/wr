@@ -5,6 +5,32 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.27.0] - 2021-08-31
+### Added
+- `wr add` has new --no_retry_over_walltime option which prevents retries if the
+  job takes longer than the given walltime before failing. This lets you only
+  retry jobs if they fail quickly, eg. during initialization.
+- New `--mount_json` option added to `wr cloud deploy` (and corresponding
+  `--cloud_mount_json` added to `wr manager start`), which lets you mount an s3
+  bucket on all servers that get created when using the OpenStack scheduler.
+  This is useful for eg. a pre-populated singularity cache that all jobs need
+  access to.
+
+### Changed
+- Jobs with remaining retries used to enter the delay state for a fixed 30s
+  after failing. Now the time they are delayed has a jittered backoff,
+  increasing by a factor of 2 each attempt to a maximum delay of 1hr.
+  `wr status` will tell you when a delayed job will become ready for scheduling
+  again.
+- Logging and certifacte code refactored; no significant change in behaviour
+  except for slightly different log output.
+
+### Fixed
+- `wr manager start` previously resulted in the manager ignoring config options
+  specified in .wr_config* files placed in the current working directory.
+- Web interface job removal and retrying is now as fast as the CLI.
+
+
 ## [0.26.0] - 2021-07-30
 ### Changed
 - Lost jobs are regularly rechecked to confirm if they are dead, if checks are
