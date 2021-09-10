@@ -36,6 +36,7 @@ import (
 
 	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
+	mth "github.com/wtsi-ssg/wr/math"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -761,7 +762,7 @@ func (s *local) canCount(ctx context.Context, cmd string, req *Requirements, cal
 			// core things)
 			canCount2 = s.maxCores*internal.ZeroCoreMultiplier - s.zeroCores
 		} else {
-			canCount2 = int(math.Floor(internal.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
+			canCount2 = int(math.Floor(mth.FloatSubtract(float64(s.maxCores), s.cores) / req.Cores))
 		}
 		if canCount2 < canCount {
 			canCount = canCount2

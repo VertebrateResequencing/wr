@@ -36,6 +36,7 @@ import (
 
 	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
+	mth "github.com/wtsi-ssg/wr/math"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/pkg/sftp"
@@ -73,7 +74,7 @@ type Flavor struct {
 // flavor. Returns 0 if not even 1 command could fit on a server with this
 // flavor.
 func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
-	if internal.FloatLessThan(float64(f.Cores), cores) || (f.RAM < ramMB) || (f.Disk < diskGB) {
+	if mth.FloatLessThan(float64(f.Cores), cores) || (f.RAM < ramMB) || (f.Disk < diskGB) {
 		return 0
 	}
 
@@ -307,7 +308,7 @@ func (s *Server) Allocate(ctx context.Context, cores float64, ramMB, diskGB int)
 	if cores == 0 {
 		s.usedZeroCores++
 	} else {
-		s.usedCores = internal.FloatAdd(s.usedCores, cores)
+		s.usedCores = mth.FloatAdd(s.usedCores, cores)
 	}
 	s.usedRAM += ramMB
 	s.usedDisk += diskGB
@@ -352,7 +353,7 @@ func (s *Server) Release(ctx context.Context, cores float64, ramMB, diskGB int) 
 	if cores == 0 {
 		s.usedZeroCores--
 	} else {
-		s.usedCores = internal.FloatSubtract(s.usedCores, cores)
+		s.usedCores = mth.FloatSubtract(s.usedCores, cores)
 	}
 	s.usedRAM -= ramMB
 	s.usedDisk -= diskGB
@@ -434,7 +435,7 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 	if s.destroyed {
 		return 0
 	}
-	if internal.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
+	if mth.FloatLessThan(float64(s.Flavor.Cores)-s.usedCores, cores) || (s.Flavor.RAM-s.usedRAM < ramMB) || (s.Disk-s.usedDisk < diskGB) {
 		return 0
 	}
 
@@ -453,7 +454,7 @@ func (s *Server) checkSpace(cores float64, ramMB, diskGB int) int {
 			canDo = s.Flavor.Cores*internal.ZeroCoreMultiplier - s.usedZeroCores
 		}
 	} else {
-		canDo = int(math.Floor(internal.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
+		canDo = int(math.Floor(mth.FloatSubtract(float64(s.Flavor.Cores), s.usedCores) / cores))
 	}
 	if canDo > 1 {
 		var n int
