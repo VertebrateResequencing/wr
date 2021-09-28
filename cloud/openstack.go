@@ -381,7 +381,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 	p.useConfigDrive = useConfigDrive
 
 	// get/create key pair
-	kp, err := keypairs.Get(p.computeClient, resources.ResourceName).Extract()
+	kp, err := keypairs.Get(p.computeClient, resources.ResourceName, nil).Extract()
 	if err != nil {
 		if _, notfound := err.(gophercloud.ErrDefault404); notfound {
 			// create a new keypair; we can't just let Openstack create one for
@@ -1274,7 +1274,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 	if id := resources.Details["keypair"]; id != "" {
 		if p.createdKeyPair || p.ownName == "" || (p.securityGroup != "" && p.securityGroup != id) {
 			t := time.Now()
-			err := keypairs.Delete(p.computeClient, id).ExtractErr()
+			err := keypairs.Delete(p.computeClient, id, nil).ExtractErr()
 			clog.Debug(ctx, "delete keypair", "time", time.Since(t), "id", id, "err", err)
 			// keypairs are not credential-specific enough, so we don't consider
 			// deleting one as didSomething
