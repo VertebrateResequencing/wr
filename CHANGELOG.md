@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.28.0] - 2021-09-30
+### Added
+- New `--destroy_script` option added to `wr cloud deploy` (and corresponding
+  `--cloud_destroy_script` option added to `wr manager start`, along with a
+  clouddestroyscript config option) that lets you define a bash script that will
+  be run prior to destoying OpenStack worker instances during scaledown or
+  teardown.
+
+### Fixed
+- Avoided a case where the queue could get locked up while checking if servers
+  were dead.
+
+
 ## [0.27.0] - 2021-08-31
 ### Added
 - `wr add` has new --no_retry_over_walltime option which prevents retries if the
