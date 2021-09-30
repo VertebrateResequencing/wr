@@ -539,6 +539,18 @@ clouddisk: 1
 # that reason, consider creating a new image instead and setting cloudos.
 # cloudscript: ""
 
+# clouddestroyscript: What script should run on servers before destoying them?
+# If unset, nothing is run. It is overridden by the --destroy_script option to
+# 'wr cloud deploy' and the --cloud_destroy_script option of 'wr manager start'.
+# Note, this is the absolute path to a local bash script.
+#
+# This option is only relevant when you are using a cloud scheduler such as
+# OpenStack.
+#
+# When wr destoys a server it created, clouddestroyscript will be run on it
+# first. Note that there is a time limit of 15 mins for the script to run.
+# clouddestroyscript: ""
+
 # cloudconfigfiles: What config files should be copied to newly spawned servers?
 # This defaults to "~/.s3cfg,~/.aws/credentials,~/.aws/config". It is overridden
 # by the --config_files option to 'wr cloud deploy', and the

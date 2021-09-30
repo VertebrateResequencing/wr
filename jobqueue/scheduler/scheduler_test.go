@@ -695,6 +695,7 @@ func TestOpenstack(t *testing.T) {
 	localUser := os.Getenv("OS_LOCAL_USERNAME")
 	flavorRegex := os.Getenv("OS_FLAVOR_REGEX")
 	rName := "wr-testing-" + localUser
+	keepTime := 5 * time.Second
 	config := &ConfigOpenStack{
 		ResourceName:              rName,
 		OSPrefix:                  osPrefix,
@@ -703,12 +704,14 @@ func TestOpenstack(t *testing.T) {
 		FlavorRegex:               flavorRegex,
 		FlavorSets:                os.Getenv("OS_FLAVOR_SETS"),
 		ServerPorts:               []int{22},
-		ServerKeepTime:            15 * time.Second,
+		ServerKeepTime:            keepTime,
 		StateUpdateFrequency:      1 * time.Second,
 		Shell:                     "bash",
 		MaxInstances:              -1,
 		SimultaneousSpawns:        1,
+		PostCreationScript:        []byte("#!/bin/bash\necho b > /tmp/a"),
 		PostCreationForcedCommand: "echo bar > /tmp/foo",
+		PreDestroyScript:          []byte("#!/bin/bash\n[ -d /shared/ ] && cat /tmp/a > /shared/test4 || true"),
 	}
 	if osPrefix == "" || osUser == "" || localUser == "" {
 		Convey("You can't get a new openstack scheduler without the required environment variables", t, func() {
@@ -875,7 +878,7 @@ func TestOpenstack(t *testing.T) {
 					So(waitToFinish(ctx, s, eta, 1000), ShouldBeTrue)
 				})
 
-				Convey("Run jobs that use a NFS shared disk and rely on the ForcedCommand having run", func() {
+				Convey("Run jobs that use a NFS shared disk and rely on the PostCreationScript, ForcedCommand having run, and the PreDestroyScript runs on scale down", func() {
 					cmd := "touch /shared/test1"
 					other := make(map[string]string)
 					other["cloud_shared"] = "true"
@@ -890,7 +893,7 @@ func TestOpenstack(t *testing.T) {
 						}
 					}
 					remoteReq.Other = other
-					cmd = "cat /tmp/foo > /shared/test2"
+					cmd = "cat /tmp/foo > /shared/test2; cat /tmp/a > /shared/test3"
 					err = s.Schedule(ctx, cmd, remoteReq, 0, 1)
 					So(err, ShouldBeNil)
 
@@ -899,13 +902,27 @@ func TestOpenstack(t *testing.T) {
 
 					_, err = os.Stat("/shared/test1")
 					So(err, ShouldBeNil)
+
 					content, err := os.ReadFile("/shared/test2")
 					So(err, ShouldBeNil)
 					So(string(content), ShouldEqual, "bar\n")
 
+					content, err = os.ReadFile("/shared/test3")
+					So(err, ShouldBeNil)
+					So(string(content), ShouldEqual, "b\n")
+
+					<-time.After(keepTime)
+					content, err = os.ReadFile("/shared/test4")
+					So(err, ShouldBeNil)
+					So(string(content), ShouldEqual, "b\n")
+
 					err = os.Remove("/shared/test1")
 					So(err, ShouldBeNil)
 					err = os.Remove("/shared/test2")
+					So(err, ShouldBeNil)
+					err = os.Remove("/shared/test3")
+					So(err, ShouldBeNil)
+					err = os.Remove("/shared/test4")
 					So(err, ShouldBeNil)
 				})
 

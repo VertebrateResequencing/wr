@@ -1643,11 +1643,17 @@ func (s *Server) createQueue(ctx context.Context) {
 			// we don't test recovered jobs are dead because they might have
 			// exited while the server wasn't running, and we want the existing
 			// client to tell us if it should be archived or buried
-			if !job.killCalled && !s.recoveredRunningJobs[job.Key()] && s.confirmJobDeadAndKill(ctx, job) {
-				clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
-			} else if job.killCalled {
-				defer func() {
-					go func() {
+			defer func() {
+				killCalled := job.killCalled
+				jobKey := job.Key()
+				jobHost := job.Host
+				jobPID := job.Pid
+				job.Unlock()
+
+				go func() {
+					if !killCalled && !s.recoveredRunningJobs[jobKey] && s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID) {
+						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
+					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
 
 						// wait for the item to go back to run queue
@@ -1658,16 +1664,15 @@ func (s *Server) createQueue(ctx context.Context) {
 						if err != nil {
 							clog.Warn(ctx, "failed to release job after TTR", "err", err)
 						}
-					}()
+					}
 				}()
-			}
+			}()
 
 			// since our changed callback won't be called, send out this
 			// transition from running to lost state
 			defer s.statusCaster.Send(&jstateCount{"+all+", JobStateRunning, JobStateLost, 1})
 			defer s.statusCaster.Send(&jstateCount{job.RepGroup, JobStateRunning, JobStateLost, 1})
 
-			job.Unlock()
 			return queue.SubQueueRun
 		}
 
@@ -1860,19 +1865,19 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 // confirm the job is dead due to an ssh issue, but later on the job really does
 // die because the server it was running on gets rebooted, we eventually
 // auto-kill the job.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, job *Job) bool {
-	if !s.confirmJobDead(job) {
+func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string, jobPID int) bool {
+	if !s.confirmJobDead(jobPID, jobHost) {
 		go func() {
 			select {
 			case <-time.After(ServerLostJobCheckRetryTime):
-				item, err := s.q.Get(job.Key())
+				item, err := s.q.Get(jobKey)
 				if err != nil || item.Stats().State != queue.ItemStateRun {
 					return
 				}
 
-				job = item.Data().(*Job)
+				job := item.Data().(*Job)
 				if job.State == JobStateRunning && job.Lost {
-					s.confirmJobDeadAndKill(ctx, job)
+					s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid)
 				}
 			case <-s.stopClientHandling:
 				return
@@ -1883,10 +1888,17 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, job *Job) bool {
 	}
 
 	go func() {
-		_, errk := s.killJob(ctx, job.Key())
+		_, errk := s.killJob(ctx, jobKey)
 		if errk != nil {
 			clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
 		} else {
+			item, errg := s.q.Get(jobKey)
+			if errg != nil {
+				clog.Warn(ctx, "failed to get a killed lost job", "err", errg)
+				return
+			}
+
+			job := item.Data().(*Job)
 			errt := job.TriggerBehaviours(false)
 			if errt != nil {
 				clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
@@ -1899,15 +1911,15 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, job *Job) bool {
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
 //  You must hold the job.Lock() before calling this.
-func (s *Server) confirmJobDead(job *Job) bool {
-	if job.Pid == 0 {
+func (s *Server) confirmJobDead(jobPID int, jobHost string) bool {
+	if jobPID == 0 {
 		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), ServerLostJobCheckTimeout)
 	defer cancel()
 
-	return s.scheduler.ProcessNotRunngingOnHost(ctx, job.Pid, job.Host)
+	return s.scheduler.ProcessNotRunngingOnHost(ctx, jobPID, jobHost)
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates

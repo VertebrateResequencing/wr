@@ -4395,7 +4395,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(already, ShouldEqual, 0)
 
 			// wait for the job to start running
-			started := make(chan bool, 1)
+			started := make(chan int, 1)
 			go func() {
 				limit := time.After(10 * time.Second)
 				ticker := time.NewTicker(50 * time.Millisecond)
@@ -4408,7 +4408,7 @@ func TestJobqueueRunners(t *testing.T) {
 						}
 						if len(jobs) == 1 {
 							ticker.Stop()
-							started <- true
+							started <- jobs[0].Pid
 
 							return
 						}
@@ -4416,13 +4416,14 @@ func TestJobqueueRunners(t *testing.T) {
 						continue
 					case <-limit:
 						ticker.Stop()
-						started <- false
+						started <- 0
 
 						return
 					}
 				}
 			}()
-			So(<-started, ShouldBeTrue)
+			jobPID := <-started
+			So(jobPID, ShouldNotEqual, 0)
 
 			jobs, err = jq.GetByRepGroup("manually_added", false, 0, JobStateRunning, false, false)
 			So(err, ShouldBeNil)
@@ -4438,10 +4439,14 @@ func TestJobqueueRunners(t *testing.T) {
 				ServerLostJobCheckRetryTime = 1 * time.Hour
 			}()
 
-			ec := exec.Command("bash", "-c", fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobs[0].Pid))
+			pscmd := fmt.Sprintf("ps -o 'pgid' -p %d | tail -n 1", jobPID)
+			ec := exec.Command("bash", "-c", pscmd)
 			out, err := ec.CombinedOutput()
 			So(err, ShouldBeNil)
 			pgid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+			if err != nil {
+				fmt.Printf("\nps cmd [%s] failed\n", pscmd)
+			}
 			So(err, ShouldBeNil)
 			syscall.Kill(-pgid, syscall.SIGKILL)
 
