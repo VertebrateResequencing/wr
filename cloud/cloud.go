@@ -126,7 +126,8 @@ var sentinelInitScript = []byte("#!/bin/bash\nsed -i 's/^Defaults\\s*requiretty/
 var sentinelTimeOut = 10 * time.Minute
 
 // pcsTimeOut is how long we wait for a user's post creation script to exit
-// before we give up and return an error from WaitUntilReady().
+// before we give up and return an error from WaitUntilReady(). The same timeout
+// is also used for user's pre destroy script.
 var pcsTimeOut = 15 * time.Minute
 
 // cleanShutDownCmd should be executed before terminating a server. It forces a
@@ -472,7 +473,7 @@ func (p *Provider) Deploy(ctx context.Context, config *DeployConfig) error {
 	}
 
 	return err
-} 
+}
 
 // InCloud tells you if your process is currently running on a cloud server
 // where the *Server related methods will all work correctly. (That is, if this

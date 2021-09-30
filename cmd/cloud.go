@@ -65,6 +65,7 @@ var flavorRegex string
 var managerFlavor string
 var flavorSets string
 var postCreationScript string
+var preDestroyScript string
 var postDeploymentScript string
 var cloudSpawns int
 var cloudGatewayIP string
@@ -126,6 +127,13 @@ defined by --username; if necessary, your bash script may have to prefix its
 commands with 'sudo' if the command would only work as root user. Also, there is
 a time limit of 15 mins for the script to run. If you're installing lots of
 software, consider creating a new image instead, and using the --os option.
+
+The --destroy_script option is similar to --script, but this script is run
+before any created cloud server is destroyed as part of scaling or tearing down.
+While all filesystems are synced and mounted read-only before a server is
+destroyed, you might still need to run a special command to properly unmount
+particular network filesystems, and --destroy_script can be used for that
+purpose.
 
 The --config_files option lets you specify comma separated arbitrary text file
 paths that should be copied from your local system to any created cloud servers.
@@ -763,6 +771,7 @@ func init() {
 	cloudDeployCmd.Flags().StringVar(&managerFlavor, "manager_flavor", defaultConfig.CloudFlavorManager, "like --flavor, but specific to the first server created to run the manager"+defaultNote)
 	cloudDeployCmd.Flags().StringVar(&flavorSets, "flavor_sets", defaultConfig.CloudFlavorSets, "sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	cloudDeployCmd.Flags().StringVarP(&postCreationScript, "script", "s", defaultConfig.CloudScript, "path to a start-up script that will be run on each server created")
+	cloudDeployCmd.Flags().StringVarP(&preDestroyScript, "destroy_script", "y", defaultConfig.CloudDestroyScript, "path to a script that will be run on each server before destruction")
 	cloudDeployCmd.Flags().IntVar(&cloudSpawns, "max_spawns", defaultConfig.CloudSpawns, "maximum number of simultaneous server spawns during scale-up")
 	cloudDeployCmd.Flags().IntVar(&maxManagerCores, "max_local_cores", -1, "maximum number of manager cores to use to run cmds; -1 means unlimited")
 	cloudDeployCmd.Flags().IntVar(&maxManagerRAM, "max_local_ram", -1, "maximum MB of manager memory to use to run cmds; -1 means unlimited")
@@ -955,6 +964,20 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 			postCreationArg = " -p " + remoteScriptFile
 		}
 
+		var preDestroyArg string
+		if preDestroyScript != "" {
+			// copy over the pre destroy script to the server so remote
+			// manager can use it
+			remoteScriptFile := filepath.Join("./.wr_"+config.Deployment, "cloud_resources."+providerName+".destroy_script")
+			err = server.UploadFile(ctx, preDestroyScript, remoteScriptFile)
+			if err != nil && !wrMayHaveStarted {
+				teardown(ctx, provider)
+				die("failed to upload wr cloud destroy script file to the server at %s: %s", server.IP, err)
+			}
+
+			preDestroyArg = " -y " + remoteScriptFile
+		}
+
 		var configFilesArg string
 		if cloudConfigFiles != "" {
 			// strip any local file locations
@@ -999,7 +1022,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 		if domainMatchesIP {
 			useCertDomainStr = " --use_cert_domain"
 		}
-		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --cloud_spawns %d --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, flavorArg, osDiskArg, mountsArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, cloudSpawns, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
+		mCmd := fmt.Sprintf("source %s && %s manager start --deployment %s -s %s -k %d -o '%s' -r %d -m %d -u %s%s%s%s%s%s%s  --cloud_cidr '%s' --local_username '%s' --cloud_spawns %d --max_cores %d --max_ram %d --timeout %d --cloud_auto_confirm_dead %d%s%s && rm %s", wrEnvFileName, remoteExe, config.Deployment, providerName, serverKeepAlive, osPrefix, osRAM, m, osUsername, postCreationArg, preDestroyArg, flavorArg, osDiskArg, mountsArg, configFilesArg, cloudCIDR, cloudResourceNameUniquer, cloudSpawns, maxManagerCores, maxManagerRAM, cloudManagerTimeoutSeconds, cloudServersAutoConfirmDead, useCertDomainStr, debugStr, wrEnvFileName)
 
 		var e string
 		_, e, err = server.RunCmd(ctx, mCmd, false)

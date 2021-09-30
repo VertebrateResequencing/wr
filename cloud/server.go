@@ -110,6 +110,7 @@ func (f *Flavor) HasSpaceFor(cores float64, ramMB, diskGB int) int {
 // methods that let you keep track of how you use that server.
 type Server struct {
 	Script            []byte // the content of a start-up script run on the server
+	DestroyScript     []byte // the content of a script to run on the server before it is destoyted
 	sshClients        []*ssh.Client
 	sshClientSessions []int
 	AdminPass         string
@@ -227,42 +228,9 @@ SENTINEL:
 
 	// run the postCreationScript
 	if len(postCreationScript) > 0 {
-		pcsPath := "/tmp/.postCreationScript"
-		err = s.CreateFile(ctx, string(postCreationScript), pcsPath)
+		err = s.runScript(ctx, postCreationScript)
 		if err != nil {
-			return fmt.Errorf("cloud server start up script failed to upload: %s", err)
-		}
-
-		_, _, err = s.RunCmd(ctx, "chmod u+x "+pcsPath, false)
-		if err != nil {
-			return fmt.Errorf("cloud server start up script could not be made executable: %s", err)
-		}
-
-		// protect running the script with a timeout
-		limit := time.After(pcsTimeOut)
-		exiterr := make(chan error, 1)
-		var stderr string
-		go func() {
-			var runerr error
-			_, stderr, runerr = s.RunCmd(ctx, pcsPath, false)
-			exiterr <- runerr
-		}()
-		select {
-		case err = <-exiterr:
-			if err != nil {
-				err = fmt.Errorf("cloud server start up script failed: %s", err.Error())
-				if len(stderr) > 0 {
-					err = fmt.Errorf("%s\nSTDERR:\n%s", err.Error(), stderr)
-				}
-				return err
-			}
-		case <-limit:
-			return fmt.Errorf("cloud server start up script failed to complete within %s", pcsTimeOut)
-		}
-
-		_, _, rmErr := s.RunCmd(ctx, "rm "+pcsPath, false)
-		if rmErr != nil {
-			clog.Warn(ctx, "failed to remove post creation script", "path", pcsPath, "err", rmErr)
+			return err
 		}
 
 		s.Script = postCreationScript
@@ -280,6 +248,68 @@ SENTINEL:
 	}
 
 	return nil
+}
+
+// runScript runs the given script (eg. the byte content of a bash script) on
+// the server after transferring it to /tmp on the server with the given
+// basename.
+func (s *Server) runScript(ctx context.Context, script []byte) error {
+	if len(script) == 0 {
+		return nil
+	}
+
+	path := filepath.Join("/tmp", ".server_script")
+
+	err := s.CreateFile(ctx, string(script), path)
+	if err != nil {
+		return fmt.Errorf("cloud server script failed to upload: %w", err)
+	}
+
+	_, _, err = s.RunCmd(ctx, "chmod u+x "+path, false)
+	if err != nil {
+		return fmt.Errorf("cloud server script could not be made executable: %w", err)
+	}
+
+	// protect running the script with a timeout
+	limit := time.After(pcsTimeOut)
+	exiterr := make(chan error, 1)
+
+	var stderr string
+
+	go func() {
+		var runerr error
+		_, stderr, runerr = s.RunCmd(ctx, path, false)
+		exiterr <- runerr
+	}()
+
+	select {
+	case err = <-exiterr:
+		if err != nil {
+			err = fmt.Errorf("cloud server script failed: %w", err)
+			if len(stderr) > 0 {
+				err = fmt.Errorf("%w\nSTDERR:\n%s", err, stderr)
+			}
+
+			return err
+		}
+	case <-limit:
+		return fmt.Errorf("cloud server script failed to complete within %s", pcsTimeOut)
+	}
+
+	_, _, rmErr := s.RunCmd(ctx, "rm "+path, false)
+	if rmErr != nil {
+		clog.Warn(ctx, "failed to remove script", "path", path, "err", rmErr)
+	}
+
+	return nil
+}
+
+// SetDestroyScript will result in future Destroy() calls first running the
+// given script over ssh, if possible.
+func (s *Server) SetDestroyScript(preDestroyScript []byte) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.DestroyScript = preDestroyScript
 }
 
 // Matches tells you if in principle a Server has the given os, script, config
@@ -975,13 +1005,14 @@ func (s *Server) CreateFile(ctx context.Context, content string, dest string) er
 	}
 
 	// create dest
-	destFile, err := client.Create(dest)
+	destFile, err := client.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
 		return err
 	}
 
 	// write the content
 	_, err = io.WriteString(destFile, content)
+
 	return err
 }
 
@@ -1233,7 +1264,8 @@ func (s *Server) PermanentProblem() string {
 	return s.permanentProblem
 }
 
-// Destroy immediately destroys the server.
+// Destroy destroys the server, first trying to run any script that was set with
+// SetDestroyScript().
 func (s *Server) Destroy(ctx context.Context) error {
 	ctx = s.getContextWithServerID(ctx)
 	s.mutex.Lock()
@@ -1256,13 +1288,26 @@ func (s *Server) Destroy(ctx context.Context) error {
 	s.destroyed = true
 
 	if s.sshStarted {
+		destroyScript := s.DestroyScript
 		s.mutex.Unlock()
-		// sync the filesystem
+
+		// sync the filesystem and run any user script
 		t := time.Now()
 		session, clientIndex, err := s.SSHSession(context.Background())
 		if err != nil {
 			clog.Warn(ctx, "failed to ssh to cleanly shutdown", "took", time.Since(t), "err", err)
 		} else {
+			if len(destroyScript) > 0 {
+				t = time.Now()
+				err = s.runScript(ctx, destroyScript)
+				rt := time.Since(t)
+				if err != nil {
+					clog.Warn(ctx, "user destroy script failed", "took", rt, "err", err)
+				} else if rt > 3*time.Minute {
+					clog.Warn(ctx, "user destroy script took a long time", "took", rt)
+				}
+			}
+
 			t = time.Now()
 			stdo, stde, err := s.RunCmd(context.Background(), cleanShutDownCmd, false)
 			rt := time.Since(t)
@@ -1271,6 +1316,7 @@ func (s *Server) Destroy(ctx context.Context) error {
 			} else if rt > 10*time.Second {
 				clog.Warn(ctx, "clean shutdown took a long time", "took", rt, "stdout", stdo)
 			}
+
 			s.CloseSSHSession(ctx, session, clientIndex)
 		}
 		s.mutex.Lock()

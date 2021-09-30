@@ -147,6 +147,10 @@ type ConfigOpenStack struct {
 	// uploaded to the server.
 	PostCreationForcedCommand string
 
+	// PreDestroyScript is the []byte content of a script you want executed
+	// before it is destroyed.
+	PreDestroyScript []byte
+
 	// ConfigFiles is a comma separated list of paths to config files that
 	// should be copied over to all spawned servers. Absolute paths are copied
 	// over to the same absolute path on the new server. To handle a config file
@@ -917,6 +921,10 @@ func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavo
 	clog.Debug(ctx, "spawned server", "took", time.Since(tSpawn))
 
 	if err == nil && server != nil {
+		if s.config.PreDestroyScript != nil {
+			server.SetDestroyScript(s.config.PreDestroyScript)
+		}
+
 		// wait until boot is finished, ssh is ready and osScript has
 		// completed
 		clog.Debug(ctx, "waiting for server to become ready")

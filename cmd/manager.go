@@ -150,28 +150,9 @@ fully.`,
 			die("wr manager on port %s is already running (pid %d)", config.ManagerPort, jq.ServerInfo.PID)
 		}
 
-		var postCreation []byte
 		var extraArgs []string
-		if postCreationScript != "" {
-			var err error
-			postCreation, err = os.ReadFile(postCreationScript)
-			if err != nil {
-				die("--cloud_script %s could not be read: %s", postCreationScript, err)
-			}
-
-			// daemon runs from /, so we need to convert relative to absolute
-			// path *** and then pretty hackily, re-specify the option by
-			// repeating it on the end of os.Args, where the daemonization code
-			// will pick it up
-			pcsAbs, err := filepath.Abs(postCreationScript)
-			if err != nil {
-				die("--cloud_script %s could not be converted to an absolute path: %s", postCreationScript, err)
-			}
-			if pcsAbs != postCreationScript {
-				extraArgs = append(extraArgs, "--cloud_script")
-				extraArgs = append(extraArgs, pcsAbs)
-			}
-		}
+		postCreation := handleScript(postCreationScript, "cloud_script", &extraArgs)
+		preDestroy := handleScript(preDestroyScript, "cloud_destroy_script", &extraArgs)
 
 		if mountJSON != "" {
 			mountParseJSON(mountJSON) // just to check the sytax and fail early
@@ -203,7 +184,7 @@ fully.`,
 		// now daemonize unless in foreground mode
 		if foreground {
 			syscall.Umask(config.ManagerUmask)
-			startJQ(postCreation)
+			startJQ(postCreation, preDestroy)
 		} else {
 			config.ToEnv()
 			child, context := daemonize(config.ManagerPidFile, config.ManagerUmask, extraArgs...)
@@ -241,10 +222,36 @@ fully.`,
 						warn("daemon release failed: %s", err)
 					}
 				}()
-				startJQ(postCreation)
+				startJQ(postCreation, preDestroy)
 			}
 		}
 	},
+}
+
+func handleScript(path, arg string, extraArgs *[]string) []byte {
+	var script []byte
+	if path != "" {
+		var err error
+		script, err = os.ReadFile(path)
+		if err != nil {
+			die("--%s %s could not be read: %s", arg, path, err)
+		}
+
+		// daemon runs from /, so we need to convert relative to absolute
+		// path *** and then pretty hackily, re-specify the option by
+		// repeating it on the end of os.Args, where the daemonization code
+		// will pick it up
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			die("--%s %s could not be converted to an absolute path: %s", arg, path, err)
+		}
+		if abs != path {
+			*extraArgs = append(*extraArgs, "--"+arg)
+			*extraArgs = append(*extraArgs, abs)
+		}
+	}
+
+	return script
 }
 
 // stop sub-command stops the daemon by sending it a term signal
@@ -567,6 +574,7 @@ func init() {
 	managerStartCmd.Flags().StringVarP(&flavorRegex, "cloud_flavor", "l", defaultConfig.CloudFlavor, "for cloud schedulers, a regular expression to limit server flavors that can be automatically picked")
 	managerStartCmd.Flags().StringVar(&flavorSets, "cloud_flavor_sets", defaultConfig.CloudFlavorSets, "for cloud schedulers, sets of flavors assigned to different hardware, in the form f1,f2;f3,f4")
 	managerStartCmd.Flags().StringVarP(&postCreationScript, "cloud_script", "p", defaultConfig.CloudScript, "for cloud schedulers, path to a start-up script that will be run on each server created")
+	managerStartCmd.Flags().StringVarP(&preDestroyScript, "cloud_destroy_script", "y", defaultConfig.CloudDestroyScript, "for cloud schedulers, path to a script that will be run on each server before it is destroyed")
 	managerStartCmd.Flags().StringVarP(&kubeNamespace, "namespace", "", "", "for the kubernetes scheduler, the namespace to use")
 	managerStartCmd.Flags().StringVarP(&configMapName, "config_map", "", "", "for the kubernetes scheduler, provide an existing config map to initialise all pods with. To be used instead of --cloud_script")
 	managerStartCmd.Flags().IntVarP(&serverKeepAlive, "cloud_keepalive", "k", defaultConfig.CloudKeepAlive, "for cloud schedulers, how long in seconds to keep idle spawned servers alive for; 0 means forever")
@@ -607,7 +615,7 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	}
 }
 
-func startJQ(postCreation []byte) {
+func startJQ(postCreation, preDestroy []byte) {
 	ctx := context.Background()
 
 	if runtime.NumCPU() == 1 {
@@ -688,6 +696,7 @@ func startJQ(postCreation []byte) {
 			FlavorSets:                flavorSets,
 			PostCreationScript:        postCreation,
 			PostCreationForcedCommand: postCreationForcedCommand,
+			PreDestroyScript:          preDestroy,
 			ConfigFiles:               cloudConfigFiles,
 			ServerKeepTime:            time.Duration(serverKeepAlive) * time.Second,
 			StateUpdateFrequency:      1 * time.Minute,
