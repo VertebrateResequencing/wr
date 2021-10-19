@@ -236,6 +236,9 @@ new internal ids is printed.`,
 		} else if cmdCloudSharedDiskUnset {
 			other["cloud_shared"] = "false"
 		}
+		if cmdQueue != "" {
+			other["scheduler_queue"] = cmdQueue
+		}
 		if len(other) > 0 || otherSet {
 			req.Other = other
 			req.OtherSet = true
@@ -397,6 +400,7 @@ func init() {
 	modCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	modCmd.Flags().BoolVar(&cmdCloudSharedDiskUnset, "unset_cloud_shared", false, "unset --cloud_shared")
 	modCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
+	modCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
 	// modCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	// *** user can't turn the bool options off, only on...
