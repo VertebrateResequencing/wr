@@ -31,6 +31,7 @@ import (
 	"code.cloudfoundry.org/bytefmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	"github.com/jpillora/backoff"
 	"github.com/spf13/cobra"
 )
 
@@ -38,6 +39,12 @@ import (
 // parse very long lines - longer than the max length of a command supported by
 // shells such as bash.
 const maxScanTokenSize = 4096 * 1024
+
+// sync* are the backoff values we use to poll for our synchrounous job's
+// completion.
+const syncMinBackoff = 500 * time.Millisecond
+const syncMaxBackoff = 1 * time.Minute
+const syncBackoffFactor = 1.1
 
 // options for this cmd
 var reqGroup string
@@ -75,12 +82,27 @@ var cmdMonitorDocker string
 var cmdNoRetry string
 var rtimeoutint int
 var simpleOutput bool
+var syncMode bool
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add commands to the queue",
 	Long: `Manually add commands you want run to the queue.
+
+In normal usage, after you add commands to the queue, this will tell you how
+many were added and exit immediately (probably before the commands start to be
+executed). With --simple, it will return the ids of the jobs you added and exit.
+In both cases, the commands will be executed by the manager at some point in the
+future.
+
+You can also supply just a single command and the --sync option (for
+"synchronous add"), which will result in this command not exiting until the
+manager has finished executing the command. This command will then exit with
+your command's exit code and output the top and tail of its STDOUT and STDERR if
+it had failed. You might use synchronous mode within a simple script that runs
+other commands but needs one of them executed by wr in your cluster environment,
+and if your script can't easily cope with wr's normally asynchonous behaviour.
 
 You can supply your commands by putting them in a text file (1 per line), or
 by piping them in. In addition to the command itself, you can specify command-
@@ -350,6 +372,10 @@ new job will have this job's mount and cloud_* options.`,
 
 		jobs, isLocal, defaultedRepG := parseCmdFile(jq, combraCmd.Flags().Changed("disk"))
 
+		if syncMode && len(jobs) != 1 {
+			die("You must add exactly 1 command when using synchronous mode.")
+		}
+
 		var envVars []string
 		if isLocal {
 			envVars = os.Environ()
@@ -357,7 +383,7 @@ new job will have this job's mount and cloud_* options.`,
 
 		// add the jobs to the queue *** should add at most 1,000,000 jobs at a
 		// time to avoid time out issues...
-		if simpleOutput {
+		if simpleOutput || syncMode {
 			ids, err := jq.AddAndReturnIDs(jobs, envVars, !cmdReRun)
 			if err != nil {
 				die("%s", err)
@@ -365,8 +391,13 @@ new job will have this job's mount and cloud_* options.`,
 			if len(ids) == 0 {
 				os.Exit(1)
 			}
-			for _, id := range ids {
-				fmt.Printf("%s\n", id)
+
+			if simpleOutput {
+				for _, id := range ids {
+					fmt.Printf("%s\n", id)
+				}
+			} else {
+				synchronousAdd(jq, ids[0])
 			}
 		} else {
 			inserts, dups, err := jq.Add(jobs, envVars, !cmdReRun)
@@ -427,6 +458,7 @@ func init() {
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
 	addCmd.Flags().BoolVarP(&simpleOutput, "simple", "s", false, "simplify output to only queued job ids")
+	addCmd.Flags().BoolVar(&syncMode, "sync", false, "add a single job and wait for it to finish being executed by the manager")
 
 	err := addCmd.Flags().MarkHidden("reserve_timeout")
 	if err != nil {
@@ -723,4 +755,57 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
 	}
 	return strings.Join(remoteConfigFiles, ",")
+}
+
+// synchronousAdd waits for the job with the given interal id to complete, then
+// we output its stdout&err and exit with its exit code.
+func synchronousAdd(jq *jobqueue.Client, id string) {
+	job := waitForJobCompletion(jq, id)
+
+	stdout, err := job.StdOut()
+	if err == nil && stdout != "" {
+		fmt.Println(stdout)
+	}
+
+	stderr, err := job.StdErr()
+	if err == nil && stderr != "" {
+		fmt.Fprintln(os.Stderr, stderr)
+	}
+
+	os.Exit(job.Exitcode)
+}
+
+// waitForJobCompletion blocks until the manager reports that the job with the
+// given internal id has either completed or become buried.
+func waitForJobCompletion(jq *jobqueue.Client, id string) *jobqueue.Job {
+	backoff := &backoff.Backoff{
+		Min:    syncMinBackoff,
+		Max:    syncMaxBackoff,
+		Factor: syncBackoffFactor,
+		Jitter: false,
+	}
+
+	var job *jobqueue.Job
+
+	for {
+		d := backoff.Duration()
+		time.Sleep(d)
+
+		job = getJob(jq, id)
+		if job.State == jobqueue.JobStateComplete || job.State == jobqueue.JobStateBuried {
+			break
+		}
+	}
+
+	return job
+}
+
+// getJob gets a job given its internal id.
+func getJob(jq *jobqueue.Client, id string) *jobqueue.Job {
+	job, err := jq.GetByEssence(&jobqueue.JobEssence{JobKey: id}, true, false)
+	if err != nil {
+		die("failed to get job details: %s", err)
+	}
+
+	return job
 }
