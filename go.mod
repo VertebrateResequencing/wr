@@ -52,7 +52,7 @@ require (
 	github.com/spf13/cobra v1.2.1
 	github.com/tklauser/go-sysconf v0.3.9 // indirect
 	github.com/ugorji/go/codec v1.2.6
-	github.com/wtsi-ssg/wr v0.4.2
+	github.com/wtsi-ssg/wr v0.4.3
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
 	golang.org/x/oauth2 v0.0.0-20210819190943-2bc19b11175f // indirect

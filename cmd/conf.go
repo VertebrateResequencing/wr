@@ -624,8 +624,8 @@ when things are set to 'development'.
 The default deployment is production (unless you're in the git repository for
 wr, in which case it is development).
 
-If a setting is found in none of the files read, then an environment variable is
-checked: WR_<setting name in caps>. Eg. to define the managerscheduler
+You can set or override any given config setting using an environment variable
+named like: WR_<setting name in caps>. Eg. to define the managerscheduler
 option you might do:
 export WR_MANAGERSCHEDULER="lsf"
 
