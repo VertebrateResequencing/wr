@@ -4,7 +4,6 @@ wr - workflow runner
 [![Gitter](https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667)](https://gitter.im/wtsi-wr??utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=body_badge)
 [![GoDoc](https://godoc.org/github.com/VertebrateResequencing/wr?status.svg)](https://godoc.org/github.com/VertebrateResequencing/wr)
 [![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
-develop branch:
 [![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=master)](https://travis-ci.org/VertebrateResequencing/wr)
 
 wr is a workflow runner. You use it to run the commands in your workflow easily,
