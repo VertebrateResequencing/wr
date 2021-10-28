@@ -4,7 +4,6 @@ wr - workflow runner
 [![Gitter](https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667)](https://gitter.im/wtsi-wr??utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=body_badge)
 [![GoDoc](https://godoc.org/github.com/VertebrateResequencing/wr?status.svg)](https://godoc.org/github.com/VertebrateResequencing/wr)
 [![Go Report Card](https://goreportcard.com/badge/github.com/VertebrateResequencing/wr)](https://goreportcard.com/report/github.com/VertebrateResequencing/wr)
-develop branch:
 [![Build Status](https://travis-ci.org/VertebrateResequencing/wr.svg?branch=master)](https://travis-ci.org/VertebrateResequencing/wr)
 
 wr is a workflow runner. You use it to run the commands in your workflow easily,
@@ -32,30 +31,14 @@ Download
 --------
 [![download](https://img.shields.io/badge/download-wr-green.svg)](https://github.com/VertebrateResequencing/wr/releases)
 
-Alternatively, build it yourself (at least v1.17 of go is required):
-
-1. Install go on your machine according to:
-[golang.org/doc/install](https://golang.org/doc/install)
-An example way of setting up a personal Go installation in your home directory
-would be:
-
-        export GOV=1.17.1
-        wget https://dl.google.com/go/go$GOV.linux-amd64.tar.gz
-        tar -xvzf go$GOV.linux-amd64.tar.gz && rm go$GOV.linux-amd64.tar.gz
-        export PATH=$PATH:$HOME/go/bin
-
-2. Download, compile, and install wr (not inside $GOPATH, if you set that):
+Alternatively, build it yourself (see go.mod for the minimum version of go
+required):
 
         git clone https://github.com/VertebrateResequencing/wr.git
         cd wr
         make
 
-3. The `wr` executable should now be in `$HOME/go/bin`
-
-If you don't have `make` installed and don't mind if `wr version` will not work,
-you can instead replace `make` above with:
-
-    go install -tags netgo
+The `wr` executable should now be in `$HOME/go/bin`.
 
 Documentation
 -------------
