@@ -5,6 +5,24 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.29.0] - 2021-10-29
+### Added
+- New --sync mode for `wr add`, to do syncronous adds of single commands: wait
+  for the command you add to finish running before `wr add` exits with the exit
+  code of the command you added.
+- You can now add bash auto-completion for wr's sub-commands, using
+  `wr completion bash > ~/.wr_autocomplete.sh; source ~/.wr_autocomplete.sh`.
+- The status website now displays the internal id of commands when you click on
+  them, which you can then use with the wr command line tools, eg.
+  `wr mod -y -i <id>`.
+- You can now `wr mod` the `--queue` of a job.
+- New documentation website at https://workflow-runner.readthedocs.io/. This
+  replaces most of the README.md and the wiki.
+
+### Fixed
+- Updated some dependencies to address a security vulnerability.
+
+
 ## [0.28.0] - 2021-09-30
 ### Added
 - New `--destroy_script` option added to `wr cloud deploy` (and corresponding
