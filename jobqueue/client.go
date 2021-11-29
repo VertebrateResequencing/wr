@@ -501,6 +501,9 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 // If any remote file system mounts have been configured for the Job, these are
 // mounted prior to running the Cmd, and unmounted afterwards.
 //
+// If WithDocker or WithSingularity has been set, the Cmd is run within the
+// corresponding container image, with any additional ContainerMounts mounted.
+//
 // Internally, Execute() calls Mount() and Started() and keeps track of peak RAM
 // and disk used. It regularly calls Touch() on the Job so that the server knows
 // we are still alive and handling the Job successfully. It also intercepts
@@ -531,9 +534,16 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return Error{"Execute", job.Key(), ErrMustReserve}
 	}
 
+	// we have a convienience feature that can run Cmd in a container, so get
+	// possibly modified Cmd
+	jc, cmdLineCleanup, err := job.CmdLine(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to set up cmd file: %w", err)
+	}
+	defer cmdLineCleanup()
+
 	// we support arbitrary shell commands that may include semi-colons,
 	// quoted stuff and pipes, so it's best if we just pass it to bash
-	jc := job.Cmd
 	if strings.Contains(jc, " | ") {
 		jc = "set -o pipefail; " + jc
 	}

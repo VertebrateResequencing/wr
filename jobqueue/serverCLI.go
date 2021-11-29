@@ -854,6 +854,9 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 		Behaviours:            sjob.Behaviours,
 		MountConfigs:          sjob.MountConfigs,
 		MonitorDocker:         sjob.MonitorDocker,
+		WithDocker:            sjob.WithDocker,
+		WithSingularity:       sjob.WithSingularity,
+		ContainerMounts:       sjob.ContainerMounts,
 		BsubMode:              sjob.BsubMode,
 		BsubID:                sjob.BsubID,
 	}

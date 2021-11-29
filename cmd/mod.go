@@ -280,6 +280,15 @@ new internal ids is printed.`,
 		if cobraCmd.Flags().Changed("monitor_docker") {
 			jm.SetMonitorDocker(cmdMonitorDocker)
 		}
+		if cobraCmd.Flags().Changed("with_docker") {
+			jm.SetWithDocker(cmdWithDocker)
+		}
+		if cobraCmd.Flags().Changed("with_singularity") {
+			jm.SetWithSingularity(cmdWithSingularity)
+		}
+		if cobraCmd.Flags().Changed("container_mounts") {
+			jm.SetContainerMounts(cmdContainerMounts)
+		}
 
 		var behaviours jobqueue.Behaviours
 		var behavioursSet bool
@@ -386,6 +395,9 @@ func init() {
 	modCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
 	modCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
 	modCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
+	modCmd.Flags().StringVar(&cmdWithDocker, "with_docker", "", "run the cmd inside a docker container running this image")
+	modCmd.Flags().StringVar(&cmdWithSingularity, "with_singularity", "", "run the cmd inside a singularity container running this image")
+	modCmd.Flags().StringVar(&cmdContainerMounts, "container_mounts", "", "mount additional locations inside your container")
 	modCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	modCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	modCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")

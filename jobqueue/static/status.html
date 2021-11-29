@@ -212,9 +212,20 @@
                                     <div style="overflow-x: auto">
                                         <small><i><span data-bind="text: CwdBase"></span><span data-bind="text: Cwd" style="color: grey"></span></i></small>
                                     </div>
+                                    <!-- ko if: WithDocker != '' -->
+                                        <small><i>docker image: <span data-bind="text: WithDocker"></span></i></small>
+                                    <!-- /ko -->
+                                    <!-- ko if: WithSingularity != '' -->
+                                        <small><i>singularity image: <span data-bind="text: WithSingularity"></span></i></small>
+                                    <!-- /ko -->
                                     <!-- ko if: Mounts -->
                                         <div style="overflow-x: auto">
                                             <small><i>mounts: <span data-bind="text: Mounts"></span></i></small>
+                                        </div>
+                                    <!-- /ko -->
+                                    <!-- ko if: ContainerMounts -->
+                                        <div style="overflow-x: auto">
+                                            <small><i>container mounts: <span data-bind="text: ContainerMounts"></span></i></small>
                                         </div>
                                     <!-- /ko -->
                                     <div style="overflow-x: auto">

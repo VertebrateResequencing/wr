@@ -79,6 +79,9 @@ var cmdFlavor string
 var cmdQueue string
 var cmdMisc string
 var cmdMonitorDocker string
+var cmdWithDocker string
+var cmdWithSingularity string
+var cmdContainerMounts string
 var cmdNoRetry string
 var rtimeoutint int
 var simpleOutput bool
@@ -112,8 +115,9 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk queue misc priority retries rep_grp dep_grps deps
-cmd_deps monitor_docker cloud_os cloud_username cloud_ram cloud_script
-cloud_config_files cloud_flavor cloud_shared env bsub_mode
+cmd_deps monitor_docker with_docker with_singularity container_mounts cloud_os
+cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
+cloud_shared env bsub_mode
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -314,6 +318,38 @@ NB: does not handle monitoring of multiple docker containers run by a single
 command. A side effect of monitoring a container is that if you use wr to kill
 the job for this command, wr will also kill the container.
 
+"with_docker" takes an image name/location and is a convenience feature that
+will run your command by piping it into 'docker run -i [image] /bin/sh'. Docker
+must therefore be installed on worker nodes for this to work. The image will be
+automatically pulled if it is missing. The container is created with cwd mounted
+and set to the workdir. Any mounts specified by "container_mounts" will also be
+mounted inside the container. Any environment variables you explicitly override
+with "env" will be set inside the container, but not other environment variables
+you have set at the time you add the command. Finally, "monitor_docker" will be
+overridden and set to monitor the container wr creates. If you would need to run
+your docker container with additional options or in a different way, don't use
+"with_docker", and instead have command be your own 'docker run [...]' command,
+and set "monitor_docker" as appropriate.
+
+"with_singularity" takes an image name/location and is a convenience feature
+that will run your command by piping it into 'singularity shell [image]'.
+Singularity must therefore be installed and in the $PATH of worker nodes for
+this to work. The image will be automatically pulled if it is missing. The
+container is created with cwd mounted and set to current directory inside the
+container. Any mounts specified by "container_mounts" will also be mounted
+inside the container. All current and overridden environment variables will be
+set inside the container. If you would need to run your singularity container
+with additional options or in a different way, don't use "with_singularity", and
+instead have command be your own 'singularity [...]' command.
+It's not valid to set both with_docker and with_singularity; if you do, only
+with_docker will be obeyed.
+
+"container_mounts" is a comma separated list of
+/outside/container:/inside/container mount definitions, for use with either
+"with_docker" or "with_singularity". The :/inside path is optional, defaulting
+to the same as the outside path. It will result in the outside paths being
+readable and writable inside the container at the inside paths.
+
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
@@ -358,6 +394,10 @@ new job will have this job's mount and cloud_* options.`,
 		// check the command line options
 		if cmdFile == "" {
 			die("--file is required")
+		}
+
+		if cmdWithDocker != "" && cmdWithSingularity != "" {
+			die("--with_docker and --with_singularity are mutually exclusive")
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
@@ -437,6 +477,9 @@ func init() {
 	addCmd.Flags().StringVar(&cmdCmdDeps, "cmd_deps", "", "dependencies of your commands, in the form \"command1,cwd1,command2,cwd2...\"")
 	addCmd.Flags().StringVarP(&cmdGroupDeps, "deps", "d", "", "dependencies of your commands, in the form \"dep_grp1,dep_grp2...\"")
 	addCmd.Flags().StringVar(&cmdMonitorDocker, "monitor_docker", "", "monitor resource usage of docker container with given --name or --cidfile path")
+	addCmd.Flags().StringVar(&cmdWithDocker, "with_docker", "", "run the cmd inside a docker container running this image")
+	addCmd.Flags().StringVar(&cmdWithSingularity, "with_singularity", "", "run the cmd inside a singularity container running this image")
+	addCmd.Flags().StringVar(&cmdContainerMounts, "container_mounts", "", "mount additional locations inside your container")
 	addCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "", "behaviours to carry out when cmds succeed, in JSON format")
 	addCmd.Flags().StringVar(&cmdOnExit, "on_exit", `[{"cleanup":true}]`, "behaviours to carry out when cmds finish running, in JSON format")
@@ -526,6 +569,9 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		Retries:          cmdRet,
 		Env:              cmdEnv,
 		MonitorDocker:    cmdMonitorDocker,
+		WithDocker:       cmdWithDocker,
+		WithSingularity:  cmdWithSingularity,
+		ContainerMounts:  cmdContainerMounts,
 		CloudOS:          cmdOsPrefix,
 		CloudUser:        cmdOsUsername,
 		CloudScript:      cmdPostCreationScript,
