@@ -298,13 +298,22 @@ name to just the first letter, eg. -o c):
 				if len(job.LimitGroups) > 0 {
 					groups += fmt.Sprintf("Limit groups: %s; ", strings.Join(job.LimitGroups, ", "))
 				}
-				var dockerMonitored string
+				var containerInfo string
+				if job.WithDocker != "" {
+					containerInfo = fmt.Sprintf("Cmd running inside docker container running image: %s\n", job.WithDocker)
+				}
+				if job.WithSingularity != "" {
+					containerInfo = fmt.Sprintf("Cmd running inside singularity container running image: %s\n", job.WithSingularity)
+				}
+				if job.ContainerMounts != "" {
+					containerInfo += fmt.Sprintf("Container has these mounts: %s\n", job.ContainerMounts)
+				}
 				if job.MonitorDocker != "" {
 					dockerID := job.MonitorDocker
 					if dockerID == "?" {
 						dockerID += " (first container started after cmd)"
 					}
-					dockerMonitored = fmt.Sprintf("Docker container monitoring turned on for: %s\n", dockerID)
+					containerInfo += fmt.Sprintf("Docker container monitoring turned on for: %s\n", dockerID)
 				}
 				var behaviours string
 				if len(job.Behaviours) > 0 {
@@ -318,7 +327,7 @@ name to just the first letter, eg. -o c):
 					}
 					other = fmt.Sprintf("Resource requirements: %s\n", strings.Join(others, ", "))
 				}
-				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, dockerMonitored, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, groups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
+				fmt.Printf("\n# %s\nCwd: %s\n%s%s%s%s%sId: %s (%s); Requirements group: %s; %sPriority: %d; Attempts: %d\nExpected requirements: { memory: %dMB; time: %s; cpus: %s disk: %dGB }\n", job.Cmd, cwd, mounts, homeChanged, containerInfo, behaviours, other, job.RepGroup, job.Key(), job.ReqGroup, groups, job.Priority, job.Attempts, job.Requirements.RAM, job.Requirements.Time, strconv.FormatFloat(job.Requirements.Cores, 'f', -1, 64), job.Requirements.Disk)
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:

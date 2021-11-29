@@ -21,6 +21,7 @@ package jobqueue
 // This file contains the job related code.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -39,6 +40,7 @@ import (
 	"github.com/gofrs/uuid"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/ugorji/go/codec"
+	"github.com/wtsi-ssg/wr/container"
 )
 
 // JobState is how we describe the possible job states.
@@ -217,6 +219,31 @@ type Job struct {
 	// monitoring of multiple docker containers run by a single Cmd.
 	MonitorDocker string
 
+	// WithDocker will result in CmdLine() returning a `docker run` cmd that
+	// uses the image specified here to run Cmd by piping Cmd into the
+	// container's /bin/sh. Cwd will be mounted inside the container and will
+	// be the working directory in the container. Anything specified by
+	// ContainerMounts will also be mounted in the container. Any EnvOverride
+	// environment variable name values will also be set for import in to the
+	// container. Setting this sets (and overrides) MonitorDocker to this Job's
+	// Key(), which will also be the container's --name.
+	WithDocker string
+
+	// WithSingularity will result in CmdLine() returning a `singularity shell`
+	// command that uses the image specified here to run Cmd by piping it in to
+	// the container. Cwd will be mounted inside the container and will be the
+	// working directory in the container. Anything specified by ContainerMounts
+	// will also be mounted in the container. All the job's environment
+	// variables will be available inside the container.
+	WithSingularity string
+
+	// ContainerMounts is a comma separated list of strings each in the format:
+	// /outside/container/path[:/inside/container/path] (where inside defaults
+	// to outside if not provided)). If WithDocker or WithSingularity is also
+	// specfied, the outside paths will be specified as to be bound to the
+	// inside paths in the cmd returned by CmdLine().
+	ContainerMounts string
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -308,6 +335,80 @@ type Job struct {
 	incrementedLimitGroups []string
 
 	sync.RWMutex
+}
+
+// CmdLine normally returns Cmd and a no-op function. However, if WithDocker or
+// WithSingularity has been set, then:
+//
+// * Cmd is stored in a tmp file.
+// * A new `docker run` or `singularity shell` command is returned that:
+//   * Pulls the image specified in WithDocker|Singularity if it is missing.
+//   * Creates a container (with docker, it's name will be our Key()).
+//     * That will mount Cwd inside the container and use it as the workdir.
+//     * That will also mount any ContainerMounts.
+//     * That for docker will tell it to use our explicit EnvOverrides
+//       (singularity will use all env vars).
+//     * That will receive a pipe of the Cmd file contents to its shell.
+//
+// In the case of WithDocker, MonitorDocker will also be set to our Key().
+//
+// Once you have executed the returned command you should call the returned
+// function which will delete the tmp file.
+func (j *Job) CmdLine(ctx context.Context) (string, func(), error) {
+	noop := func() {}
+
+	if j.WithDocker != "" || j.WithSingularity != "" {
+		path, cleanup, err := container.PrepareCmdFile(ctx, j.Cmd)
+		if err != nil {
+			return j.Cmd, noop, err
+		}
+
+		var cmd string
+
+		if j.WithDocker != "" {
+			envs, err := j.containerEnv()
+			if err != nil {
+				return j.Cmd, cleanup, err
+			}
+
+			cmd = container.DockerRunCmd(j.WithDocker, path, j.Key(), j.containerMounts(), envs)
+
+			j.MonitorDocker = j.Key()
+		} else {
+			cmd = container.SingularityRunCmd(j.WithSingularity, path, j.containerMounts())
+		}
+
+		return cmd, cleanup, nil
+	}
+
+	return j.Cmd, noop, nil
+}
+
+// containerMounts converts ContainerMounts to a slice of the mount values.
+func (j *Job) containerMounts() []string {
+	if j.ContainerMounts == "" {
+		return nil
+	}
+
+	return strings.Split(j.ContainerMounts, ",")
+}
+
+// containerEnv converts EnvOverride to a slice of the envionrment variable
+// names that were set.
+func (j *Job) containerEnv() ([]string, error) {
+	overrideEs, err := j.envCurrentOverrides()
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, len(overrideEs))
+
+	for i, envvar := range overrideEs {
+		parts := strings.Split(envvar, ":")
+		names[i] = parts[0]
+	}
+
+	return names, nil
 }
 
 // WallTime returns the time the job took to run if it ran to completion, or the
@@ -738,10 +839,25 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 
 // Key calculates a unique key to describe the job.
 func (j *Job) Key() string {
+	concat := fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())
+
 	if j.CwdMatters {
-		return byteKey([]byte(fmt.Sprintf("%s.%s.%s", j.Cwd, j.Cmd, j.MountConfigs.Key())))
+		concat = fmt.Sprintf("%s.%s", j.Cwd, concat)
 	}
-	return byteKey([]byte(fmt.Sprintf("%s.%s", j.Cmd, j.MountConfigs.Key())))
+
+	var image string
+
+	if j.WithDocker != "" {
+		image = "docker:" + j.WithDocker
+	} else if j.WithSingularity != "" {
+		image = "singularity:" + j.WithSingularity
+	}
+
+	if image != "" {
+		concat = fmt.Sprintf("%s.%s.%s", concat, image, j.ContainerMounts)
+	}
+
+	return byteKey([]byte(concat))
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,
@@ -806,40 +922,43 @@ func (j *Job) ToStatus() (JStatus, error) {
 	}
 
 	js := JStatus{
-		Key:           j.Key(),
-		RepGroup:      j.RepGroup,
-		LimitGroups:   j.LimitGroups,
-		DepGroups:     j.DepGroups,
-		Dependencies:  j.Dependencies.Stringify(),
-		Cmd:           j.Cmd,
-		State:         state,
-		CwdBase:       j.Cwd,
-		Cwd:           cwdLeaf,
-		HomeChanged:   j.ChangeHome,
-		Behaviours:    j.Behaviours.String(),
-		Mounts:        j.MountConfigs.String(),
-		MonitorDocker: j.MonitorDocker,
-		ExpectedRAM:   j.Requirements.RAM,
-		ExpectedTime:  j.Requirements.Time.Seconds(),
-		RequestedDisk: j.Requirements.Disk,
-		OtherRequests: ot,
-		Cores:         j.Requirements.Cores,
-		PeakRAM:       j.PeakRAM,
-		PeakDisk:      j.PeakDisk,
-		Exited:        j.Exited,
-		Exitcode:      j.Exitcode,
-		FailReason:    j.FailReason,
-		Pid:           j.Pid,
-		Host:          j.Host,
-		HostID:        j.HostID,
-		HostIP:        j.HostIP,
-		Walltime:      j.WallTime().Seconds(),
-		CPUtime:       j.CPUtime.Seconds(),
-		Attempts:      j.Attempts,
-		Similar:       j.Similar,
-		StdErr:        stderr,
-		StdOut:        stdout,
-		Env:           env,
+		Key:             j.Key(),
+		RepGroup:        j.RepGroup,
+		LimitGroups:     j.LimitGroups,
+		DepGroups:       j.DepGroups,
+		Dependencies:    j.Dependencies.Stringify(),
+		Cmd:             j.Cmd,
+		State:           state,
+		CwdBase:         j.Cwd,
+		Cwd:             cwdLeaf,
+		HomeChanged:     j.ChangeHome,
+		Behaviours:      j.Behaviours.String(),
+		Mounts:          j.MountConfigs.String(),
+		MonitorDocker:   j.MonitorDocker,
+		WithDocker:      j.WithDocker,
+		WithSingularity: j.WithSingularity,
+		ContainerMounts: j.ContainerMounts,
+		ExpectedRAM:     j.Requirements.RAM,
+		ExpectedTime:    j.Requirements.Time.Seconds(),
+		RequestedDisk:   j.Requirements.Disk,
+		OtherRequests:   ot,
+		Cores:           j.Requirements.Cores,
+		PeakRAM:         j.PeakRAM,
+		PeakDisk:        j.PeakDisk,
+		Exited:          j.Exited,
+		Exitcode:        j.Exitcode,
+		FailReason:      j.FailReason,
+		Pid:             j.Pid,
+		Host:            j.Host,
+		HostID:          j.HostID,
+		HostIP:          j.HostIP,
+		Walltime:        j.WallTime().Seconds(),
+		CPUtime:         j.CPUtime.Seconds(),
+		Attempts:        j.Attempts,
+		Similar:         j.Similar,
+		StdErr:          stderr,
+		StdOut:          stdout,
+		Env:             env,
 	}
 
 	if !j.StartTime.IsZero() {
@@ -916,6 +1035,9 @@ type JobModifier struct {
 	ReqGroup                 string
 	BsubMode                 string
 	MonitorDocker            string
+	WithDocker               string
+	WithSingularity          string
+	ContainerMounts          string
 	Requirements             *scheduler.Requirements
 	CwdMatters               bool
 	CwdMattersSet            bool
@@ -938,6 +1060,9 @@ type JobModifier struct {
 	MountConfigsSet          bool
 	BsubModeSet              bool
 	MonitorDockerSet         bool
+	WithDockerSet            bool
+	WithSingularitySet       bool
+	ContainerMountsSet       bool
 }
 
 // NewJobModifer is a convenience for making a new JobModifer, that you can call
@@ -1070,6 +1195,24 @@ func (j *JobModifier) SetMonitorDocker(new string) {
 	j.MonitorDockerSet = true
 }
 
+// SetWithDocker notes that you want to modify the WithDocker of Jobs.
+func (j *JobModifier) SetWithDocker(new string) {
+	j.WithDocker = new
+	j.WithDockerSet = true
+}
+
+// SetWithSingularity notes that you want to modify the WithSingularity of Jobs.
+func (j *JobModifier) SetWithSingularity(new string) {
+	j.WithSingularity = new
+	j.WithSingularitySet = true
+}
+
+// SetContainerMounts notes that you want to modify the ContainerMounts of Jobs.
+func (j *JobModifier) SetContainerMounts(new string) {
+	j.ContainerMounts = new
+	j.ContainerMountsSet = true
+}
+
 // Modify takes existing jobs and modifies them all by setting the new values
 // that you have previously set using the Set*() methods. Other values are left
 // alone. Note that this could result in a Job's Key() changing.
@@ -1089,7 +1232,15 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 
 		// first work out if the key would change and make sure it doesn't
 		// change in to an existing key
-		new := &Job{Cmd: job.Cmd, Cwd: job.Cwd, CwdMatters: job.CwdMatters, MountConfigs: job.MountConfigs}
+		new := &Job{
+			Cmd:             job.Cmd,
+			Cwd:             job.Cwd,
+			CwdMatters:      job.CwdMatters,
+			MountConfigs:    job.MountConfigs,
+			WithDocker:      job.WithDocker,
+			WithSingularity: job.WithSingularity,
+			ContainerMounts: job.ContainerMounts,
+		}
 		if j.Cmd != "" {
 			new.Cmd = j.Cmd
 		}
@@ -1101,6 +1252,15 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		}
 		if j.MountConfigsSet {
 			new.MountConfigs = j.MountConfigs
+		}
+		if j.WithDockerSet {
+			new.WithDocker = j.WithDocker
+		}
+		if j.WithSingularitySet {
+			new.WithSingularity = j.WithSingularity
+		}
+		if j.ContainerMountsSet {
+			new.ContainerMounts = j.ContainerMounts
 		}
 		newKey := new.Key()
 		if _, done := keys[newKey]; done {
@@ -1206,6 +1366,15 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 		}
 		if j.MonitorDockerSet {
 			job.MonitorDocker = j.MonitorDocker
+		}
+		if j.WithDockerSet {
+			job.WithDocker = j.WithDocker
+		}
+		if j.WithSingularitySet {
+			job.WithSingularity = j.WithSingularity
+		}
+		if j.ContainerMountsSet {
+			job.ContainerMounts = j.ContainerMounts
 		}
 		keys[job.Key()] = before
 		job.Unlock()

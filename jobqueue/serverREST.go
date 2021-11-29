@@ -74,6 +74,9 @@ type JobViaJSON struct {
 	Time             string   `json:"time"`
 	RepGrp           string   `json:"rep_grp"`
 	MonitorDocker    string   `json:"monitor_docker"`
+	WithDocker       string   `json:"with_docker"`
+	WithSingularity  string   `json:"with_singularity"`
+	ContainerMounts  string   `json:"container_mounts"`
 	CloudOS          string   `json:"cloud_os"`
 	CloudUser        string   `json:"cloud_username"`
 	CloudScript      string   `json:"cloud_script"`
@@ -112,11 +115,14 @@ type JobDefaults struct {
 	Cwd    string
 	ReqGrp string
 	// Env is a comma separated list of key=val pairs.
-	Env           string
-	MonitorDocker string
-	CloudOS       string
-	CloudUser     string
-	CloudFlavor   string
+	Env             string
+	MonitorDocker   string
+	WithDocker      string
+	WithSingularity string
+	ContainerMounts string
+	CloudOS         string
+	CloudUser       string
+	CloudFlavor     string
 	// CloudScript is the local path to a script.
 	CloudScript string
 	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
@@ -208,7 +214,7 @@ func (jd *JobDefaults) DefaultCloudOSRam() string {
 // properties of this JobViaJSON. The Job will not be in the queue until passed
 // to a method that adds jobs to the queue.
 func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
-	var cmd, cwd, rg, repg, monitorDocker string
+	var cmd, cwd, rg, repg, monitorDocker, withDocker, withSingularity, containerMounts string
 	var mb, disk, override, priority, retries int
 	var diskSet bool
 	var cpus float64
@@ -400,6 +406,21 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 	} else {
 		monitorDocker = jvj.MonitorDocker
 	}
+	if jvj.WithDocker == "" {
+		withDocker = jd.WithDocker
+	} else {
+		withDocker = jvj.WithDocker
+	}
+	if jvj.WithSingularity == "" {
+		withSingularity = jd.WithSingularity
+	} else {
+		withSingularity = jvj.WithSingularity
+	}
+	if jvj.ContainerMounts == "" {
+		containerMounts = jd.ContainerMounts
+	} else {
+		containerMounts = jvj.ContainerMounts
+	}
 
 	// scheduler-specific options
 	other := make(map[string]string)
@@ -490,6 +511,9 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		Behaviours:            behaviours,
 		MountConfigs:          mounts,
 		MonitorDocker:         monitorDocker,
+		WithDocker:            withDocker,
+		WithSingularity:       withSingularity,
+		ContainerMounts:       containerMounts,
 		BsubMode:              bsubMode,
 	}, nil
 }
@@ -678,25 +702,28 @@ func restJobsAdd(ctx context.Context, r *http.Request, s *Server) ([]*Job, int, 
 	// handle possible ?query parameters
 	_, diskSet := r.Form["disk"]
 	jd := &JobDefaults{
-		Cwd:           r.Form.Get("cwd"),
-		RepGrp:        r.Form.Get("rep_grp"),
-		LimitGroups:   urlStringToSlice(r.Form.Get("limit_grps")),
-		ReqGrp:        r.Form.Get("req_grp"),
-		CPUs:          urlStringToFloat(r.Form.Get("cpus")),
-		Disk:          urlStringToInt(r.Form.Get("disk")),
-		DiskSet:       diskSet,
-		Override:      urlStringToInt(r.Form.Get("override")),
-		Priority:      urlStringToInt(r.Form.Get("priority")),
-		Retries:       urlStringToInt(r.Form.Get("retries")),
-		DepGroups:     urlStringToSlice(r.Form.Get("dep_grps")),
-		Env:           r.Form.Get("env"),
-		MonitorDocker: r.Form.Get("monitor_docker"),
-		CloudOS:       r.Form.Get("cloud_os"),
-		CloudUser:     r.Form.Get("cloud_username"),
-		CloudScript:   r.Form.Get("cloud_script"),
-		CloudFlavor:   r.Form.Get("cloud_flavor"),
-		CloudOSRam:    urlStringToInt(r.Form.Get("cloud_ram")),
-		BsubMode:      r.Form.Get("bsub_mode"),
+		Cwd:             r.Form.Get("cwd"),
+		RepGrp:          r.Form.Get("rep_grp"),
+		LimitGroups:     urlStringToSlice(r.Form.Get("limit_grps")),
+		ReqGrp:          r.Form.Get("req_grp"),
+		CPUs:            urlStringToFloat(r.Form.Get("cpus")),
+		Disk:            urlStringToInt(r.Form.Get("disk")),
+		DiskSet:         diskSet,
+		Override:        urlStringToInt(r.Form.Get("override")),
+		Priority:        urlStringToInt(r.Form.Get("priority")),
+		Retries:         urlStringToInt(r.Form.Get("retries")),
+		DepGroups:       urlStringToSlice(r.Form.Get("dep_grps")),
+		Env:             r.Form.Get("env"),
+		MonitorDocker:   r.Form.Get("monitor_docker"),
+		WithDocker:      r.Form.Get("with_docker"),
+		WithSingularity: r.Form.Get("with_singularity"),
+		ContainerMounts: r.Form.Get("container_mounts"),
+		CloudOS:         r.Form.Get("cloud_os"),
+		CloudUser:       r.Form.Get("cloud_username"),
+		CloudScript:     r.Form.Get("cloud_script"),
+		CloudFlavor:     r.Form.Get("cloud_flavor"),
+		CloudOSRam:      urlStringToInt(r.Form.Get("cloud_ram")),
+		BsubMode:        r.Form.Get("bsub_mode"),
 	}
 	if jd.RepGrp == "" {
 		jd.RepGrp = "manually_added"
