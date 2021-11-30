@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.30.0] - 2021-11-30
+### Added
+- Built-in container support for docker and singularity. See
+  https://workflow-runner.readthedocs.io/en/latest/basics/add.html#containers
+  for details.
+
+
 ## [0.29.0] - 2021-10-29
 ### Added
 - New --sync mode for `wr add`, to do syncronous adds of single commands: wait
