@@ -1264,6 +1264,10 @@ func (s *Server) createQueue(ctx context.Context) {
 		for _, inter := range allitemdata {
 			job := inter.(*Job)
 
+			job.RLock()
+			jobOverride := job.Override
+			job.RUnlock()
+
 			// depending on job.Override, get memory, disk and time
 			// recommendations, which are rounded to get fewer larger
 			// groups
@@ -1307,7 +1311,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 				if recommendedReq.RAM > 0 {
 					if job.RequirementsOrig.RAM > 0 {
-						switch job.Override {
+						switch jobOverride {
 						case 0:
 							job.Requirements.RAM = recommendedReq.RAM
 						case 1:
@@ -1322,7 +1326,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 				if recommendedReq.Disk > 0 {
 					if job.RequirementsOrig.Disk > 0 || job.RequirementsOrig.DiskSet {
-						switch job.Override {
+						switch jobOverride {
 						case 0:
 							job.Requirements.Disk = recommendedReq.Disk
 						case 1:
@@ -1337,7 +1341,7 @@ func (s *Server) createQueue(ctx context.Context) {
 
 				if recommendedReq.Time.Seconds() > 0 {
 					if job.RequirementsOrig.Time > 0 {
-						switch job.Override {
+						switch jobOverride {
 						case 0:
 							job.Requirements.Time = recommendedReq.Time
 						case 1:
@@ -1350,38 +1354,40 @@ func (s *Server) createQueue(ctx context.Context) {
 					}
 				}
 
-				switch job.FailReason {
-				case FailReasonRAM:
-					// increase by 1GB or [100% if under 8GB, 30% if over],
-					// whichever is greater, and round up to nearest 100 ***
-					// increase to greater than max seen for jobs in our
-					// ReqGroup?
-					updatedMB := float64(job.PeakRAM)
-					if updatedMB <= RAMIncreaseMultBreakpoint {
-						updatedMB *= RAMIncreaseMultLow
-					} else {
+				if jobOverride != 2 {
+					switch job.FailReason {
+					case FailReasonRAM:
+						// increase by 1GB or [100% if under 8GB, 30% if over],
+						// whichever is greater, and round up to nearest 100 ***
+						// increase to greater than max seen for jobs in our
+						// ReqGroup?
+						updatedMB := float64(job.PeakRAM)
+						if updatedMB <= RAMIncreaseMultBreakpoint {
+							updatedMB *= RAMIncreaseMultLow
+						} else {
+							updatedMB *= RAMIncreaseMultHigh
+						}
+						if updatedMB < float64(job.PeakRAM)+RAMIncreaseMin {
+							updatedMB = float64(job.PeakRAM) + RAMIncreaseMin
+						}
+						newRAM := int(math.Ceil(updatedMB/100) * 100)
+						if newRAM > job.Requirements.RAM {
+							job.Requirements.RAM = newRAM
+						}
+					case FailReasonDisk:
+						// flat increase of 30%
+						updatedMB := float64(job.PeakDisk) / float64(1024)
 						updatedMB *= RAMIncreaseMultHigh
-					}
-					if updatedMB < float64(job.PeakRAM)+RAMIncreaseMin {
-						updatedMB = float64(job.PeakRAM) + RAMIncreaseMin
-					}
-					newRAM := int(math.Ceil(updatedMB/100) * 100)
-					if newRAM > job.Requirements.RAM {
-						job.Requirements.RAM = newRAM
-					}
-				case FailReasonDisk:
-					// flat increase of 30%
-					updatedMB := float64(job.PeakDisk) / float64(1024)
-					updatedMB *= RAMIncreaseMultHigh
-					newDisk := int(math.Ceil(updatedMB/100) * 100)
-					if newDisk > job.Requirements.Disk {
-						job.Requirements.Disk = newDisk
-					}
-				case FailReasonTime:
-					// flat increase of 1 hour
-					newTime := job.EndTime.Sub(job.StartTime) + (1 * time.Hour)
-					if newTime > job.Requirements.Time {
-						job.Requirements.Time = newTime
+						newDisk := int(math.Ceil(updatedMB/100) * 100)
+						if newDisk > job.Requirements.Disk {
+							job.Requirements.Disk = newDisk
+						}
+					case FailReasonTime:
+						// flat increase of 1 hour
+						newTime := job.EndTime.Sub(job.StartTime) + (1 * time.Hour)
+						if newTime > job.Requirements.Time {
+							job.Requirements.Time = newTime
+						}
 					}
 				}
 
