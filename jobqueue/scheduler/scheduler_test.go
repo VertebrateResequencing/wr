@@ -479,10 +479,10 @@ func TestLSF(t *testing.T) {
 		log.Fatal(err)
 	}
 
+	username := internal.CachedUsername
 	if host == "farm5-head1" {
 		// author needs to disable access to his own queues to test normal
 		// behaviour
-		username := internal.CachedUsername
 		internal.CachedUsername = "invalid"
 		defer func() {
 			internal.CachedUsername = username
@@ -535,6 +535,25 @@ func TestLSF(t *testing.T) {
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
 				So(s.MaxQueueTime(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 43200)
+			})
+
+			Convey("determineQueue() picks the best queue for systems", func() {
+				internal.CachedUsername = username
+				defer func() {
+					internal.CachedUsername = "invalid"
+				}()
+
+				ssys, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
+				So(err, ShouldBeNil)
+				So(ssys, ShouldNotBeNil)
+
+				queue, err := ssys.impl.(*lsf).determineQueue(possibleReq, 0)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "system")
+
+				queue, err = ssys.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "basement")
 			})
 		}
 
