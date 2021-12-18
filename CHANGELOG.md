@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.31.0] - 2021-12-18
+### Changed
+- If you set override 2 on a resource requirement and your job fails because it
+  ran out of that resource, the manager no longer increases that resource
+  automatically, obeying your override.
+
+### Fixed
+- The most appropriate LSF queues are automatically picked more reliably,
+  taking in to account the correct number of hosts in each queue.
+
+
 ## [0.30.0] - 2021-11-30
 ### Added
 - Built-in container support for docker and singularity. See
