@@ -317,9 +317,9 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 	// prefer the queue that is more limited, since we suppose they might be
 	// less busy or will at least become free sooner
 	criteriaHandling := map[string][]int{
-		"hosts":      {10, 1}, // weight, sort order
-		"max_user":   {6, 1},
-		"max":        {5, 1},
+		"hosts":      {20, 1}, // weight, sort order
+		"max_user":   {16, 1},
+		"max":        {15, 1},
 		"prio":       {4, 1},
 		"chunk_size": {10000, 0},
 		"runlimit":   {2, 0},
@@ -416,7 +416,7 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 // parseBmgroups parses the output of `bmgroup`, storing group name as a key in
 // the supplied map, with a map of hosts in that group as the value.
 func (s *lsf) parseBmgroups(groups map[string]map[string]bool) error {
-	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup") // #nosec
+	bmgcmd := exec.Command(s.config.Shell, "-c", "bmgroup -w") // #nosec
 	bmgout, err := bmgcmd.StdoutPipe()
 	if err != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to create pipe for [bmgroup]: %s", err)}
