@@ -5,6 +5,11 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.31.1] - 2022-01-31
+### Fixed
+- Updated some dependencies to address a potential security vulnerability.
+
+
 ## [0.31.0] - 2021-12-18
 ### Changed
 - If you set override 2 on a resource requirement and your job fails because it
