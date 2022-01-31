@@ -577,7 +577,7 @@ clouddisk: 1
 cloudconfigfiles: "~/.s3cfg,~/.aws/credentials,~/.aws/config"
 
 # deploysuccessscript: What script should run locally after cloud deploy?
-# If unset, nothing is run. It is overridden by the --on_sucess option to
+# If unset, nothing is run. It is overridden by the --on_success option to
 # 'wr cloud deploy'.
 # Note, this is the absolute path to an executable.
 #
