@@ -21,6 +21,7 @@ package jobqueue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -150,9 +151,18 @@ func TestJob(t *testing.T) {
 				defer cleanup()
 
 				dockerExtra := " --mount type=bind,source=/foo/bar,target=/bar" +
-					" --mount type=bind,source=/foo/baz,target=/baz" +
-					" -e FOO=bar -e OOF=rab"
-				So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+dockerExtra+dockerSuffix, job.Key(), image))
+					" --mount type=bind,source=/foo/baz,target=/baz"
+				dockerEnv1 := " -e FOO=bar -e OOF=rab"
+				dockerEnv2 := " -e OOF=rab -e FOO=bar"
+
+				exp1 := fmt.Sprintf(dockerPrefix+dockerExtra+dockerEnv1+dockerSuffix, job.Key(), image)
+				exp2 := fmt.Sprintf(dockerPrefix+dockerExtra+dockerEnv2+dockerSuffix, job.Key(), image)
+
+				if strings.HasSuffix(cmd, exp1) {
+					So(cmd, ShouldEndWith, exp1)
+				} else {
+					So(cmd, ShouldEndWith, exp2)
+				}
 			})
 		})
 

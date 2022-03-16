@@ -115,7 +115,7 @@ name to just the first letter, eg. -o c):
 			}
 		}()
 
-		if outputFormat != "details" && outputFormat != "d" {
+		if !strings.HasPrefix(outputFormat, "d") && !strings.HasPrefix(outputFormat, "j") {
 			statusLimit = 0
 			showStd = false
 			showEnv = false
