@@ -87,7 +87,7 @@ const localhost = "localhost"
 var (
 	ClientTouchInterval                  = 15 * time.Second
 	ClientReleaseDelayMin                = 30 * time.Second
-	ClientReleaseDelayMax                = 3600 * time.Second
+	ClientReleaseDelayMax                = 1800 * time.Second
 	ClientReleaseDelayStepFactor float64 = 2
 	ClientPercentMemoryKill              = 90
 	ClientRetryWait                      = 15 * time.Second

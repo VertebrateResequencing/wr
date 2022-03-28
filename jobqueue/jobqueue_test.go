@@ -222,13 +222,21 @@ func TestJobqueueUtils(t *testing.T) {
 		So(d, ShouldBeGreaterThanOrEqualTo, 120*time.Second)
 		So(d, ShouldBeLessThan, 150*time.Second)
 
-		d = calculateItemDelay(7)
-		So(d, ShouldBeGreaterThanOrEqualTo, 3600*time.Second)
-		So(d, ShouldBeLessThan, 3630*time.Second)
+		d = calculateItemDelay(6)
+		So(d, ShouldBeGreaterThanOrEqualTo, 1800*time.Second)
+		So(d, ShouldBeLessThan, 1830*time.Second)
 
-		d = calculateItemDelay(8)
-		So(d, ShouldBeGreaterThanOrEqualTo, 3600*time.Second)
-		So(d, ShouldBeLessThan, 3630*time.Second)
+		d = calculateItemDelay(7)
+		So(d, ShouldBeGreaterThanOrEqualTo, 1800*time.Second)
+		So(d, ShouldBeLessThan, 1830*time.Second)
+
+		d = calculateItemDelay(999999999)
+		So(d, ShouldBeGreaterThanOrEqualTo, 1800*time.Second)
+		So(d, ShouldBeLessThan, 1830*time.Second)
+
+		d = calculateItemDelay(-999999999)
+		So(d, ShouldBeGreaterThanOrEqualTo, 30*time.Second)
+		So(d, ShouldBeLessThan, 60*time.Second)
 	})
 }
 

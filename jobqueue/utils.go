@@ -645,5 +645,9 @@ func calculateItemDelay(numPreviousDelays int) time.Duration {
 	d := b.ForAttempt(float64(numPreviousDelays))
 	d -= time.Duration(rand.Float64()*float64(ClientReleaseDelayMin) - float64(ClientReleaseDelayMin)) // #nosec
 
+	if d < 0 {
+		d = ClientReleaseDelayMax
+	}
+
 	return d
 }
