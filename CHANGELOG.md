@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.31.2] - 2022-03-28
+### Fixed
+- `wr status -o json --std` now includes stdout/err in the JSON output.
+- Possible fix for rare cases of negative delay times.
+- Updated some dependencies to address a potential security vulnerability.
+
+
 ## [0.31.1] - 2022-01-31
 ### Fixed
 - Updated some dependencies to address a potential security vulnerability.
