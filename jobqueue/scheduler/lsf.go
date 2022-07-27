@@ -629,7 +629,7 @@ func (s *lsf) determineQueue(req *Requirements, globalMax int) (string, error) {
 		return queue, nil
 	}
 
-	seconds := req.Time.Seconds() + float64(minimumQueueTime)
+	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
 	mb := req.RAM
 	sortedQueue := 0
 	if globalMax > 0 {
