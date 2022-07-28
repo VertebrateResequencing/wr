@@ -2526,17 +2526,115 @@ func (s *Server) getBadServers() []*BadServer {
 	s.bsmutex.RLock()
 	bs := make([]*BadServer, 0, len(s.badServers))
 	for _, server := range s.badServers {
-		bs = append(bs, &BadServer{
-			ID:      server.ID,
-			Name:    server.Name,
-			IP:      server.IP,
-			Date:    time.Now().Unix(),
-			IsBad:   server.IsBad(),
-			Problem: server.PermanentProblem(),
-		})
+		bs = append(bs, cloudServerToBadServer(server))
 	}
 	s.bsmutex.RUnlock()
 	return bs
+}
+
+// cloudServerToBadServer converts a cloud.Server to a BadServer.
+func cloudServerToBadServer(server *cloud.Server) *BadServer {
+	return &BadServer{
+		ID:      server.ID,
+		Name:    server.Name,
+		IP:      server.IP,
+		Date:    time.Now().Unix(),
+		IsBad:   server.IsBad(),
+		Problem: server.PermanentProblem(),
+	}
+}
+
+// killBadCloudServers confirms currently bad servers are dead. Supply it
+// badservers from getBadServers(), and get back the ones actually killed, plus
+// affected jobs. Optionally supply a non-blank server id to only work on that
+// one, if it is amongst the bad servers.
+func (s *Server) killBadCloudServers(ctx context.Context, servers []*BadServer, onlyid string) ([]*BadServer, []*Job) {
+	// first destroy or confirm dead currently bad servers
+	var confirmed []*BadServer //nolint:prealloc
+
+	serverIDs := make(map[string]bool)
+
+	s.bsmutex.Lock()
+
+	for _, badServer := range servers {
+		if !badServer.IsBad {
+			continue
+		}
+
+		if onlyid != "" && onlyid != badServer.ID {
+			continue
+		}
+
+		server := s.badServers[badServer.ID]
+		delete(s.badServers, badServer.ID)
+
+		if server != nil && server.IsBad() {
+			s.destroyBadCloudServer(ctx, server)
+		}
+
+		confirmed = append(confirmed, badServer)
+
+		serverIDs[badServer.ID] = true
+	}
+	s.bsmutex.Unlock()
+
+	clog.Debug(ctx, "confirmed bad servers as dead", "number", len(confirmed))
+
+	// now kill running or lost jobs on those servers. Note that
+	// the delay between destroying the servers and managing to eg.
+	// bury the affected jobs with the killJob() call below can
+	// result in scheduler churn, where it tries to bring up new
+	// servers for jobs we're seconds away from burying. *** I don't
+	// think there's much to be done about that though; we must be
+	// sure the servers are really dead before confirming jobs are
+	// dead.
+	jobs := s.killJobsOnServers(ctx, serverIDs)
+
+	return confirmed, jobs
+}
+
+// destroyBadCloudServer destroys the given server and removes info about this
+// from the web interface. Only call while holding the bsmutex lock.
+func (s *Server) destroyBadCloudServer(ctx context.Context, server *cloud.Server) {
+	if err := server.Destroy(ctx); err != nil {
+		clog.Warn(ctx, "server was bad but could not be destroyed", "server", server.ID, "err", err)
+
+		return
+	}
+
+	bs := cloudServerToBadServer(server)
+	bs.IsBad = false
+
+	// make the message in the web interface about this server go away
+	s.badServerCaster.Send(bs)
+}
+
+// killCloudServer is like killBadCloudServers(), but works only on the server
+// with the given host name (returning it as a BadServer if found), and doesn't
+// care if we currently consider it bad.
+func (s *Server) killCloudServer(ctx context.Context, hostName string) (*BadServer, []*Job) {
+	host := s.scheduler.GetHost(hostName)
+	if host == nil {
+		clog.Warn(ctx, "request to kill a non-existent host", "host", hostName)
+
+		return nil, nil
+	}
+
+	server, ok := host.(*cloud.Server)
+	if !ok {
+		clog.Error(ctx, "killCloudServer host was not a cloud.Server", "host", host)
+
+		return nil, nil
+	}
+
+	server.GoneBad("manually killed")
+
+	s.bsmutex.Lock()
+	delete(s.badServers, server.ID)
+	s.destroyBadCloudServer(ctx, server)
+	s.bsmutex.Unlock()
+
+	return cloudServerToBadServer(server), s.killJobsOnServers(ctx, map[string]bool{server.ID: true})
 }
 
 // getSetLimitGroup does the server side of Client.GetOrSetLimitGroup(), taking

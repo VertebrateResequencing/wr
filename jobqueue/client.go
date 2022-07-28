@@ -128,6 +128,7 @@ type clientRequest struct {
 	IgnoreComplete          bool
 	Search                  bool
 	ConfirmDeadCloudServers bool
+	DestroyCloudHost        string
 	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
 }
 
@@ -1869,6 +1870,22 @@ func (c *Client) ConfirmCloudServersDead(id string) ([]*BadServer, []*Job, error
 	if err != nil {
 		return nil, nil, err
 	}
+	return resp.BadServers, resp.Jobs, err
+}
+
+// DestroyCloudHost will destroy the cloud server with the given host name. If
+// the server was found and destroyed, it will be returned as a slice of
+// BadServer (length 1, the slice for consistency with
+// ConfirmCloudServersDead()).
+//
+// Additionally, any jobs that were running or lost on that server will be
+// killed or confirmed dead, as per ConfirmCloudServersDead().
+func (c *Client) DestroyCloudHost(hostName string) ([]*BadServer, []*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "dch", DestroyCloudHost: hostName})
+	if err != nil {
+		return nil, nil, err
+	}
+
 	return resp.BadServers, resp.Jobs, err
 }
 
