@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.32.0] - 2022-07-28
+### Added
+- `wr cloud servers` has new `--destroy` option to kill servers that wr does not
+  think are bad.
+
+### Fixed
+- Jobs with expected time exactly matching an LSF queue runtime limit will no
+  longer be scheduled to that queue, where they could never run before.
+- Updated some dependencies to address a potential security vulnerability.
+
+
 ## [0.31.2] - 2022-03-28
 ### Fixed
 - `wr status -o json --std` now includes stdout/err in the JSON output.
