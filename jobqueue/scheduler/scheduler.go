@@ -381,6 +381,18 @@ func (s *Scheduler) HostToID(host string) string {
 	return s.impl.hostToID(host)
 }
 
+// GetHost will return a Host with the given host name. For cloud-based
+// schedulers, you can cast the return value as a *cloud.Server. Returns nil on
+// error (if a host with the given name doesn't exist).
+func (s *Scheduler) GetHost(hostName string) Host {
+	host, worked := s.impl.getHost(hostName)
+	if !worked {
+		return nil
+	}
+
+	return host
+}
+
 // ProcessNotRunngingOnHost will ssh to the given host and check if the given
 // process id is still running. Returns true if it isn't. Returns false if it is
 // running, or if the ssh wasn't possible. This is to find out if a process is

@@ -661,57 +661,21 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			}
 		case "getbcs":
 			servers := s.getBadServers()
+
 			if cr.ConfirmDeadCloudServers {
-				// first destroy or confirm dead currently bad servers
-				var confirmed []*BadServer
-				serverIDs := make(map[string]bool)
-				s.bsmutex.Lock()
-				for _, badServer := range servers {
-					if !badServer.IsBad {
-						continue
-					}
-					if cr.CloudServerID != "" && cr.CloudServerID != badServer.ID {
-						continue
-					}
-					server := s.badServers[badServer.ID]
-					delete(s.badServers, badServer.ID)
-					if server != nil && server.IsBad() {
-						errd := server.Destroy(ctx)
-						if errd != nil {
-							clog.Warn(ctx, "server was bad but could not be destroyed", "server", badServer.ID, "err", errd)
-							continue
-						} else {
-							// make the message in the web interface about this
-							// server go away
-							s.badServerCaster.Send(&BadServer{
-								ID:      badServer.ID,
-								Name:    badServer.Name,
-								IP:      badServer.IP,
-								Date:    time.Now().Unix(),
-								IsBad:   false,
-								Problem: server.PermanentProblem(),
-							})
-						}
-					}
-					confirmed = append(confirmed, badServer)
-					serverIDs[badServer.ID] = true
-				}
-				s.bsmutex.Unlock()
-
-				clog.Debug(ctx, "confirmed bad servers as dead", "number", len(confirmed))
-
-				// now kill running or lost jobs on those servers. Note that
-				// the delay between destroying the servers and managing to eg.
-				// bury the affected jobs with the killJob() call below can
-				// result in scheduler churn, where it tries to bring up new
-				// servers for jobs we're seconds away from burying. *** I don't
-				// think there's much to be done about that though; we must be
-				// sure the servers are really dead before confirming jobs are
-				// dead.
-				jobs := s.killJobsOnServers(ctx, serverIDs)
+				confirmed, jobs := s.killBadCloudServers(ctx, servers, cr.CloudServerID)
 				sr = &serverResponse{BadServers: confirmed, Jobs: jobs}
 			} else {
 				sr = &serverResponse{BadServers: servers}
+			}
+		case "dch":
+			if cr.DestroyCloudHost != "" {
+				server, jobs := s.killCloudServer(ctx, cr.DestroyCloudHost)
+				if server != nil {
+					sr = &serverResponse{BadServers: []*BadServer{server}, Jobs: jobs}
+				}
+			} else {
+				srerr = ErrBadRequest
 			}
 		case "getsetlg":
 			if cr.LimitGroup == "" {

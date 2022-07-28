@@ -83,6 +83,7 @@ var cloudServersAll bool
 var cloudServerID string
 var cloudServersConfirmDead bool
 var cloudServersAutoConfirmDead int
+var cloudServersDestroy string
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -673,10 +674,23 @@ likely would have reached "lost contact" status) will be killed or confirmed
 dead, so that they will either become buried or retry according to their
 configured number of retries. If jobs hadn't yet reached  "lost contact" status,
 they will have a status of running until the time they would normally become
-lost, at which point they will automatically be confirmed dead.`,
+lost, at which point they will automatically be confirmed dead.
+
+For situations where wr does not think a server is dead, but you know it has
+issues and you wish it be destroyed, --destroy (NB: this takes a host name, not
+the id of -i) will result in --confirmdead behaviour as if the host was in the
+list of dead servers.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if cloudServersConfirmDead && (!cloudServersAll && cloudServerID == "") {
 			die("in --confirmdead mode, either --all or --identifier must be specified")
+		}
+
+		if cloudServersDestroy != "" && cloudServerID != "" {
+			die("in --destroy mode, you can't specify an --identifier")
+		}
+
+		if cloudServersDestroy != "" && cloudServersAll {
+			die("in --destroy mode, you can't use --all")
 		}
 
 		jq := connect(time.Duration(timeoutint)*time.Second, false)
@@ -690,8 +704,13 @@ lost, at which point they will automatically be confirmed dead.`,
 		var badServers []*jobqueue.BadServer
 		var killedJobs []*jobqueue.Job
 		var err error
-		if cloudServersConfirmDead {
-			badServers, killedJobs, err = jq.ConfirmCloudServersDead(cloudServerID)
+		if cloudServersConfirmDead || cloudServersDestroy != "" {
+			if cloudServersDestroy != "" {
+				badServers, killedJobs, err = jq.DestroyCloudHost(cloudServersDestroy)
+			} else {
+				badServers, killedJobs, err = jq.ConfirmCloudServersDead(cloudServerID)
+			}
+
 			if err != nil {
 				die("%s", err)
 			}
@@ -725,7 +744,7 @@ lost, at which point they will automatically be confirmed dead.`,
 			fmt.Printf(" ID: %s; IP: %s; Name: %s%s\n", server.ID, server.IP, server.Name, problem)
 		}
 
-		if cloudServersConfirmDead {
+		if cloudServersConfirmDead || cloudServersDestroy != "" {
 			if len(killedJobs) > 0 {
 				info("confirmed that %d running or lost commands on the dead server(s) were lost:", len(killedJobs))
 				for _, job := range killedJobs {
@@ -796,6 +815,7 @@ func init() {
 	cloudServersCmd.Flags().BoolVarP(&cloudServersAll, "all", "a", false, "confirm all maybe dead servers as dead")
 	cloudServersCmd.Flags().StringVarP(&cloudServerID, "identifier", "i", "", "identifier of a server to confirm as dead")
 	cloudServersCmd.Flags().BoolVarP(&cloudServersConfirmDead, "confirmdead", "d", false, "confirm that 1 (-i) or all (-a) servers are dead [default: just list possibly dead servers]")
+	cloudServersCmd.Flags().StringVar(&cloudServersDestroy, "destroy", "", "destroy the server with this host name")
 	cloudServersCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 }
 
