@@ -41,6 +41,10 @@ import (
 	"github.com/wtsi-ssg/wr/clog"
 )
 
+// scanBufferSize is used when scanning bjobs -w output. The default buffer size
+// is 65536, but bjob names can be much bigger, so we allow for a larger buffer.
+const scanBufferSize = 1000 * bufio.MaxScanTokenSize
+
 // lsf is our implementer of scheduleri
 type lsf struct {
 	config             *ConfigLSF
@@ -744,6 +748,7 @@ func (s *lsf) parseBjobs(jobPrefix string, callback bjobsCB) error {
 		return Error{"lsf", "parseBjobs", fmt.Sprintf("failed to start [bjobs -w]: %s", err)}
 	}
 	bjScanner := bufio.NewScanner(bjout)
+	bjScanner.Buffer([]byte{}, scanBufferSize)
 
 	for bjScanner.Scan() {
 		line := bjScanner.Text()
