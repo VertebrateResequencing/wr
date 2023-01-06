@@ -5,6 +5,11 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.32.1] - 2023-01-06
+### Fixed
+- The LSF scheduler can now cope with very long jobs names being present in LSF.
+
+
 ## [0.32.0] - 2022-07-28
 ### Added
 - `wr cloud servers` has new `--destroy` option to kill servers that wr does not
