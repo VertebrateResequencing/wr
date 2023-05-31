@@ -1071,7 +1071,7 @@ func (p *openstackp) getServerIP(serverID string) (string, error) {
 func (p *openstackp) checkServer(serverID string) (bool, error) {
 	server, err := servers.Get(p.computeClient, serverID).Extract()
 	if err != nil {
-		if err.Error() == "Resource not found" {
+		if errorIsNotFound(err) {
 			return false, nil
 		}
 		return false, err
@@ -1080,11 +1080,15 @@ func (p *openstackp) checkServer(serverID string) (bool, error) {
 	return server.Status == "ACTIVE", nil
 }
 
+func errorIsNotFound(err error) bool {
+	return strings.Contains(err.Error(), "Resource not found")
+}
+
 // checkServer achieves the aims of ServerIsKnown().
 func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
 	server, err := servers.Get(p.computeClient, serverID).Extract()
 	if err != nil {
-		if err.Error() == "Resource not found" {
+		if errorIsNotFound(err) {
 			return false, nil
 		}
 
@@ -1098,7 +1102,7 @@ func (p *openstackp) serverIsKnown(serverID string) (bool, error) {
 func (p *openstackp) destroyServer(ctx context.Context, serverID string) error {
 	err := servers.Delete(p.computeClient, serverID).ExtractErr()
 	if err != nil {
-		if err.Error() == "Resource not found" {
+		if errorIsNotFound(err) {
 			return nil
 		}
 		return err
@@ -1144,7 +1148,8 @@ WAIT:
 	if err == nil {
 		err = fmt.Errorf("server not deleted, still has status '%s'", server.Status)
 	}
-	if err.Error() == "Resource not found" {
+
+	if errorIsNotFound(err) {
 		err = nil
 	}
 
@@ -1294,7 +1299,7 @@ func (p *openstackp) tearDown(ctx context.Context, resources *Resources) error {
 // combineError Append()s the given err on merr, but ignores err if it is
 // "Resource not found".
 func (p *openstackp) combineError(merr *multierror.Error, err error) *multierror.Error {
-	if err != nil && !strings.Contains(err.Error(), "Resource not found") {
+	if err != nil && !errorIsNotFound(err) {
 		merr = multierror.Append(merr, err)
 	}
 

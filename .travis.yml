@@ -10,7 +10,7 @@ env:
   global:
     - GO111MODULE=on
 go:
-  - "1.17.8"
+  - "1.20.4"
 go_import_path: github.com/VertebrateResequencing/wr
 install:
   - "go mod verify"
