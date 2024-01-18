@@ -55,8 +55,8 @@ clean:
 	@rm -f /tmp/wr
 
 dist: export CGO_ENABLED = 0
-# go get -u github.com/gobuild/gopack
-# go get -u github.com/aktau/github-release
+# go install github.com/sb10/gopack@latest
+# go install github.com/aktau/github-release@latest
 dist:
 	gopack pack --os linux --arch amd64 -o linux-dist.zip
 	gopack pack --os darwin --arch amd64 -o darwin-dist.zip
