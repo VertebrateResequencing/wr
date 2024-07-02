@@ -1916,7 +1916,8 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 }
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
-//  You must hold the job.Lock() before calling this.
+//
+//	You must hold the job.Lock() before calling this.
 func (s *Server) confirmJobDead(jobPID int, jobHost string) bool {
 	if jobPID == 0 {
 		return false
@@ -2401,6 +2402,37 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state Jo
 	}
 
 	return limited
+}
+
+// getJobsRecent gets all jobs that finished in the last period of time.
+func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
+	limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+	earliest := time.Now().Add(-period)
+
+	allItems := s.q.AllItems()
+
+	for _, item := range allItems {
+		job := s.itemToJob(ctx, item, false, false)
+		if job.EndTime.After(earliest) {
+			jobs = append(jobs, job)
+		}
+	}
+
+	dbJobs, err := s.db.retrieveCompleteJobsByEndTime(earliest)
+	if err != nil {
+		srerr = ErrDBError
+		qerr = err.Error()
+
+		return
+	}
+
+	jobs = append(jobs, dbJobs...)
+
+	if limit > 0 || state != "" || getStd || getEnv {
+		jobs = s.limitJobs(ctx, jobs, limit, state, getStd, getEnv)
+	}
+
+	return
 }
 
 // schedulerGroupDetails is used for debugging purposes to see how many jobs are

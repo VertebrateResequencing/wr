@@ -1008,6 +1008,10 @@ func TestJobqueueBasics(t *testing.T) {
 				jobs, err = jq.GetByRepGroup("foo", false, 0, "", false, false)
 				So(err, ShouldBeNil)
 				So(len(jobs), ShouldEqual, 0)
+
+				jobs, err = jq.GetRecent(1*time.Hour, 0, "", false, false)
+				So(err, ShouldBeNil)
+				So(len(jobs), ShouldEqual, 0)
 			})
 
 			Convey("You can store their (fake) runtime stats and get recommendations", func() {
@@ -1419,6 +1423,10 @@ func TestJobqueueMedium(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, "sleep 0.1 && true")
 				So(job2.State, ShouldEqual, JobStateReserved)
 
+				recentJobs, errg := jq2.GetRecent(1*time.Hour, 0, "", false, false)
+				So(errg, ShouldBeNil)
+				So(len(recentJobs), ShouldEqual, 0)
+
 				err = jq.Execute(ctx, job, config.RunnerExecShell)
 				So(err, ShouldBeNil)
 				So(job.State, ShouldEqual, JobStateComplete)
@@ -1458,6 +1466,10 @@ func TestJobqueueMedium(t *testing.T) {
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)
 				So(job2.ActualCwd, ShouldEqual, actualCwd)
+
+				recentJobs, errg = jq2.GetRecent(1*time.Hour, 0, "", false, false)
+				So(errg, ShouldBeNil)
+				So(len(recentJobs), ShouldEqual, 1)
 
 				// job that fails, no std out
 				job, err = jq.Reserve(50 * time.Millisecond)
@@ -1513,6 +1525,17 @@ func TestJobqueueMedium(t *testing.T) {
 						So(jobs[0].Cmd, ShouldEqual, "sleep 0.1 && false")
 						//*** should probably have a better test, where there are incomplete jobs in each of the sub queues
 					})
+				})
+
+				Convey("Recent jobs can be retrieved with GetRecent", func() {
+					recentJobs, errg = jq2.GetRecent(1*time.Hour, 0, "", false, false)
+					So(errg, ShouldBeNil)
+					So(len(recentJobs), ShouldEqual, 2)
+
+					<-time.After(2 * time.Second)
+					recentJobs, errg = jq2.GetRecent(1*time.Second, 0, "", false, false)
+					So(errg, ShouldBeNil)
+					So(len(recentJobs), ShouldEqual, 0)
 				})
 
 				Convey("A temp failed job is reservable after a delay", func() {

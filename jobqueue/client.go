@@ -119,6 +119,7 @@ type clientRequest struct {
 	Job                     *Job
 	JobEndState             *JobEndState
 	Modifier                *JobModifier
+	Period                  time.Duration
 	Limit                   int
 	Timeout                 time.Duration
 	ClientID                uuid.UUID
@@ -1787,6 +1788,18 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 	if err != nil {
 		return nil, err
 	}
+	return resp.Jobs, err
+}
+
+// GetRecent gets all Jobs that finished running in the last period of time. The
+// other args are as in GetByRepGroup().
+func (c *Client) GetRecent(period time.Duration, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.request(&clientRequest{Method: "getre", Period: period,
+		Limit: limit, State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
 	return resp.Jobs, err
 }
 

@@ -54,11 +54,13 @@ const (
 	dbFilePermission              = 0600
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
+	endtimeTimeFormat             = time.RFC3339
 )
 
 var (
 	bucketJobsLive     = []byte("jobslive")
 	bucketJobsComplete = []byte("jobscomplete")
+	bucketED           = []byte("enddateToKey") //nolint:gochecknoglobals
 	bucketRTK          = []byte("repgroupToKey")
 	bucketRGs          = []byte("repgroups")
 	bucketLGs          = []byte("limitgroups")
@@ -271,55 +273,59 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 	err = boltdb.Update(func(tx *bolt.Tx) error {
 		_, errf := tx.CreateBucketIfNotExists(bucketJobsLive)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsLive, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobsLive, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobsComplete)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobsComplete, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobsComplete, errf)
+		}
+		_, errf = tx.CreateBucketIfNotExists(bucketED)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketED, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRTK)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRTK, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketRTK, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRGs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRGs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketRGs, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketLGs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketLGs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketLGs, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketDTK)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketDTK, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketDTK, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketRDTK)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketRDTK, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketRDTK, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketEnvs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketEnvs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketEnvs, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketStdO)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdO, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketStdO, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketStdE)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketStdE, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketStdE, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobRAM)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobRAM, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobRAM, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobDisk)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobDisk, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobDisk, errf)
 		}
 		_, errf = tx.CreateBucketIfNotExists(bucketJobSecs)
 		if errf != nil {
-			return fmt.Errorf("create bucket %s: %s", bucketJobSecs, errf)
+			return fmt.Errorf("create bucket %s: %w", bucketJobSecs, errf)
 		}
 		return nil
 	})
@@ -658,7 +664,8 @@ func (db *db) checkIfAdded(key string) (bool, error) {
 // (with different properties) to the complete bucket.
 //
 // Also does what updateJobAfterExit does, except for the storage of any new
-// stdout/err.
+// stdout/err, and it also records the job's end time in a lookup for future
+// retrieval by age.
 //
 // The key you supply must be the key of the job you supply, or bad things will
 // happen - no checking is done! A backgroundBackup() is triggered afterwards.
@@ -695,6 +702,17 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		errf = b.Put(key, encoded)
 		if errf != nil {
 			return errf
+		}
+
+		jet := job.EndTime
+		if !jet.IsZero() {
+			errp := tx.Bucket(bucketED).Put(
+				db.generateLookupKey(jet.Format(endtimeTimeFormat), key),
+				nil,
+			)
+			if errp != nil {
+				return errp
+			}
 		}
 
 		b = tx.Bucket(bucketJobRAM)
@@ -836,6 +854,40 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 		}
 		return nil
 	})
+	return jobs, err
+}
+
+// retrieveCompleteJobsByCompletionDate gets previously archived jobs that have
+// an EndTime greater than the given time.
+func (db *db) retrieveCompleteJobsByEndTime(endTime time.Time) ([]*Job, error) {
+	var jobs []*Job
+
+	min := []byte(endTime.Format(endtimeTimeFormat) + dbDelimiter)
+	max := []byte(time.Now().Format(endtimeTimeFormat) + dbDelimiter)
+	prefixLen := len(min)
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		newJobBucket := tx.Bucket(bucketJobsLive)
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		lookupBucket := tx.Bucket(bucketED).Cursor()
+
+		for k, _ := lookupBucket.Seek(min); k != nil && bytes.Compare(k[:prefixLen], max) <= 0; k, _ = lookupBucket.Next() {
+			key := k[prefixLen:]
+			encoded := completeJobBucket.Get(key)
+			if len(encoded) > 0 && newJobBucket.Get(key) == nil {
+				dec := codec.NewDecoderBytes(encoded, db.ch)
+				job := &Job{}
+				err := dec.Decode(job)
+				if err != nil {
+					return err
+				}
+				jobs = append(jobs, job)
+			}
+		}
+
+		return nil
+	})
+
 	return jobs, err
 }
 
@@ -1142,7 +1194,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 	sort.Sort(rdgLookups)
 	sort.Sort(encodedJobs)
 
-	lookupBuckets := [][]byte{bucketRTK, bucketDTK, bucketRDTK}
+	lookupBuckets := [][]byte{bucketED, bucketRTK, bucketDTK, bucketRDTK}
 
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		// delete old jobs and their lookups
@@ -1156,7 +1208,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 			suffix := []byte(dbDelimiter + oldKey)
 			for _, bucket := range lookupBuckets {
 				b := tx.Bucket(bucket)
-				// *** currently having to go through the the whole lookup
+				// *** currently having to go through the whole lookup
 				// buckets; if this is a noticeable performance issue, will have
 				// to implement a reverse lookup...
 				errf := b.ForEach(func(k, v []byte) error {

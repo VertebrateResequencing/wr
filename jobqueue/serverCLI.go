@@ -659,6 +659,18 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 			if len(jobs) > 0 {
 				sr = &serverResponse{Jobs: jobs}
 			}
+		case "getre":
+			// get all recently finished jobs in the jobqueue
+			if cr.Period == 0 {
+				srerr = ErrBadRequest
+			} else {
+				var jobs []*Job
+
+				jobs, srerr, qerr = s.getJobsRecent(ctx, cr.Period, cr.Limit, cr.State, cr.GetStd, cr.GetEnv)
+				if len(jobs) > 0 {
+					sr = &serverResponse{Jobs: jobs}
+				}
+			}
 		case "getbcs":
 			servers := s.getBadServers()
 

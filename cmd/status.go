@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,8 @@ import (
 
 const shortTimeFormat = "06/1/2-15:04:05"
 const allRepGrps = "all above"
+const hoursInDay = 24
+const hoursInWeek = hoursInDay * 7
 
 // options for this cmd
 var cmdFileStatus string
@@ -43,6 +46,7 @@ var cmdIDIsInternal bool
 var cmdLine string
 var showBuried bool
 var showRunning bool
+var showRecent string
 var showStd bool
 var showEnv bool
 var outputFormat string
@@ -56,9 +60,13 @@ var statusCmd = &cobra.Command{
 	Long: `You can find the status of commands you've previously added using
 "wr add" by running this command.
 
-Specify one of the flags -f, -l  or -i to choose which commands you want the
-status of. If none are supplied, you will get the status of all your currently
-incomplete commands.
+Specify one of the flags -f, -l, --recent  or -i to choose which commands you
+want the status of. If none are supplied, you will get the status of all your
+currently incomplete commands.
+
+--recent will give you the status of all jobs that stopped running in the last
+given period of time. Eg. --recent 1w will tell you about jobs that finished in
+the last week.
 
 -i is the report group (-i) you supplied to "wr add" when you added the job(s)
 you want the status of now. Combining with -z lets you get the status of jobs
@@ -96,8 +104,9 @@ name to just the first letter, eg. -o c):
 	Run: func(cmd *cobra.Command, args []string) {
 		set := countGetJobArgs()
 		if set > 1 {
-			die("-f, -i and -l are mutually exclusive; only specify one of them")
+			die("-f, -i, -l and --recent are mutually exclusive; only specify one of them")
 		}
+
 		var cmdState jobqueue.JobState
 		if showBuried {
 			cmdState = jobqueue.JobStateBuried
@@ -459,6 +468,8 @@ func init() {
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
 	statusCmd.Flags().StringVar(&fromHost, "host", "", "filter output to only show the status of commands that ran on the given host (ID, name or IP)")
 	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
+	statusCmd.Flags().StringVar(&showRecent, "recent", "",
+		"get the status of all jobs that ended in the last given period of time, eg. 1d for 1 day, or 2w for 2 weeks")
 	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "in -o d mode, except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details", "['counts','summary','details','json'] output format")
@@ -469,18 +480,27 @@ func init() {
 
 func countGetJobArgs() int {
 	set := 0
+
 	if cmdFileStatus != "" {
 		set++
 	}
+
 	if cmdIDStatus != "" {
 		set++
 	}
+
 	if cmdLine != "" {
 		set++
 	}
+
 	if cmdAll {
 		set++
 	}
+
+	if showRecent != "" {
+		set++
+	}
+
 	return set
 }
 
@@ -528,6 +548,16 @@ func getJobs(jq *jobqueue.Client, cmdState jobqueue.JobState, all bool, statusLi
 		if job != nil {
 			jobs = append(jobs, job)
 		}
+	case showRecent != "":
+		// get recent jobs
+		var age time.Duration
+
+		age, err = parseDuration(showRecent)
+		if err != nil {
+			die("invalid recent duration: %s", err)
+		}
+
+		jobs, err = jq.GetRecent(age, statusLimit, cmdState, showStd, showEnv)
 	}
 
 	if err != nil {
@@ -543,4 +573,26 @@ func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 		jes = append(jes, job.ToEssense())
 	}
 	return jes
+}
+
+func parseDuration(s string) (time.Duration, error) {
+	durationRegex := regexp.MustCompile("[0-9]+[dw]")
+
+	s = durationRegex.ReplaceAllStringFunc(s, func(d string) string {
+		num, err := strconv.ParseInt(d[:len(d)-1], 10, 64)
+		if err != nil {
+			return d
+		}
+
+		switch d[len(d)-1] {
+		case 'd':
+			num *= hoursInDay
+		case 'w':
+			num *= hoursInWeek
+		}
+
+		return strconv.FormatInt(num, 10) + "h"
+	})
+
+	return time.ParseDuration(s)
 }
