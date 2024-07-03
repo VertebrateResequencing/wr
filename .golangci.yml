@@ -2,144 +2,197 @@ run:
   deadline: 4m
   build-tags:
     - netgo
-  skip-files:
-    - jobqueue/static.go
   modules-download-mode: readonly
 
-output:
-  # colored-line-number|line-number|json|tab|checkstyle|code-climate, default is "colored-line-number"
-  format: colored-line-number
-
 linters-settings:
+  dupl:
+    threshold: 100
   errcheck:
-    check-type-assertions: false
+    check-type-assertions: true
     check-blank: true
+  exhaustive:
+    default-signifies-exhaustive: true
+  funlen:
+    lines: 30
+    statements: 20
+  gocognit:
+    min-complexity: 9
+  gocyclo:
+    min-complexity: 7
+  gomnd:
+    ignored-functions:
+      - 'strconv.Parse*'
   govet:
-    check-shadowing: true
-  unused:
-    # treat code as a program (not a library) and report unused exported identifiers; default is false.
-    # XXX: if you enable this setting, unused will report a lot of false-positives in text editors:
-    # if it's called for subdir of a project it can't find funcs usages. All text editor integrations
-    # with golangci-lint call it on a directory with the changed file.
-    check-exported: false
-  unparam:
-    # Inspect exported functions, default is false. Set to true if no external program/library imports your code.
-    # XXX: if you enable this setting, unparam will report a lot of false-positives in text editors:
-    # if it's called for subdir of a project it can't find external interfaces. All text editor integrations
-    # with golangci-lint call it on a directory with the changed file.
-    check-exported: false
+    shadow: true
+    enable-all: true
+    disable-all: false
+    disable:
+      - fieldalignment
+  lll:
+    line-length: 120
+  misspell:
+    locale: UK
   nakedret:
-    max-func-lines: 30
+    max-func-lines: 20
+  nestif:
+    min-complexity: 2
   prealloc:
     simple: true
     range-loops: true
     for-loops: true
-  gocyclo:
-    # minimal code complexity to report, 30 by default (but we recommend 10-20)
-    min-complexity: 10
-  dupl:
-    # tokens count to trigger issue, 150 by default
-    threshold: 100
+  unparam:
+    check-exported: true
+  unused:
+    check-exported: false
+  whitespace:
+    multi-if: true
+    multi-func: false
+  wsl:
+    allow-cuddle-declarations: false
+    force-err-cuddling: true
+
+issues:
+  exclude-files:
+    - jobqueue/static.go
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - funlen
+        - maintidx
+        - contextcheck
+        - gocognit
+        - gocyclo
+        - cyclop
+        - revive
+    - path: cmd
+      linters:
+        - gochecknoinits
+        - gochecknoglobals
+        - dupl
+        - forbidigo
+    - path: version\.go
+      linters:
+        - forbidigo
+    - path: groupuser\.go
+      linters:
+        - dupl
+    - path: usergroup\.go
+      linters:
+        - dupl
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new-from-rev: master
 
 linters:
   disable-all: true
   enable:
-    - deadcode
+    # defaults
     - errcheck
     - gosimple
     - govet
     - ineffassign
     - staticcheck
-    - structcheck
-    - typecheck
     - unused
-    - varcheck
+    # extras
+    - containedctx
+    - contextcheck
+    #- copyloopvar
     - cyclop
     - dogsled
     - dupl
+    - dupword
     - durationcheck
+    - err113
+    - errchkjson
+    - errname
     - errorlint
+    - exhaustive
     - exportloopref
+    - fatcontext
     - forbidigo
     - forcetypeassert
     - funlen
     - gci
+    - gocheckcompilerdirectives
     - gochecknoglobals
     - gochecknoinits
+    - gochecksumtype
     - gocognit
     - goconst
     - gocritic
     - gocyclo
     - godot
     - godox
-    - goerr113
     - goimports
-    - golint
-    - gomnd
     - gosec
-    - ifshort
+    - gosmopolitan
+    - grouper
     - importas
+    - inamedparam
+    - interfacebloat
+    #- intrange
+    - ireturn
     - lll
+    - maintidx
     - makezero
+    - mirror
     - misspell
+    - mnd
     - nakedret
     - nestif
     - nilerr
+    - nilnil
     - nlreturn
     - noctx
     - nolintlint
+    - nosprintfhostport
+    - perfsprint
     - prealloc
     - predeclared
-    - rowserrcheck
+    - reassign
+    - revive
+    - sloglint
     - stylecheck
+    - tagalign
+    - tenv
     - thelper
+    - tparallel
     - unconvert
     - unparam
+    - usestdlibvars
     - wastedassign
     - whitespace
     - wsl
-  # disable:
+
+  #disable:
+  #   - asasalint
   #   - asciicheck
+  #   - bidichk
   #   - bodyclose
+  #   - canonicalheader
+  #   - decorder
   #   - depguard
-  #   - exhaustive
-  #   - exhaustivestruct
+  #   - exhaustruct
+  #   - ginkgolinter
   #   - gofmt
   #   - gofumpt
   #   - goheader
   #   - gomoddirectives
   #   - gomodguard
   #   - goprintffuncname
-  #   - interfacer
-  #   - maligned
+  #   - loggercheck
+  #   - musttag
+  #   - nonamedreturns
   #   - paralleltest
   #   - promlinter
-  #   - revive
+  #   - protogetter
+  #   - rowserrcheck
+  #   - spancheck
   #   - sqlclosecheck
   #   - tagliatelle
+  #   - testableexamples
+  #   - testifylint
   #   - testpackage
-  #   - tparallel
+  #   - varnamelen
   #   - wrapcheck
-
-issues:
-  exclude-rules:
-    # Exclude some linters from running on tests files.
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - dupl
-        - gosec
-        - gochecknoglobals
-        - gochecknoinits
-        - funlen
-    - path: cmd/
-      linters:
-        - gocyclo
-        - dupl
-        - gochecknoglobals
-        - gochecknoinits
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  new-from-rev: master
-
+  #   - zerologlint
