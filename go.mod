@@ -11,7 +11,7 @@ require (
 	github.com/carbocation/runningvariance v0.0.0-20221016154922-fd8c026dff91
 	github.com/creasty/defaults v1.7.0
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
-	github.com/docker/docker v27.0.3+incompatible
+	github.com/docker/docker v27.1.1+incompatible
 	github.com/fanatic/go-infoblox v0.0.0-20190709161059-e25f3820238c
 	github.com/fatih/color v1.17.0
 	github.com/gofrs/uuid v4.4.0+incompatible
