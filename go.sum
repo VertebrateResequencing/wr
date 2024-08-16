@@ -259,6 +259,8 @@ github.com/sb10/waitgroup v0.0.0-20200305124406-7ed665007efa h1:Jkd+i41ngWutxOxT
 github.com/sb10/waitgroup v0.0.0-20200305124406-7ed665007efa/go.mod h1:ujmbAd5fjxk/WkSN0yjYyJAydnSPmEg2wT34ouds9Co=
 github.com/sevlyar/go-daemon v0.1.1-0.20160925164401-01bb5caedcc4 h1:H+i94rakdHPRJP3BbJNOarQOn3fl9VQyRDirwQlSBN4=
 github.com/sevlyar/go-daemon v0.1.1-0.20160925164401-01bb5caedcc4/go.mod h1:6dJpPatBT9eUwM5VCw9Bt6CdX9Tk6UWvhW3MebLDRKE=
+github.com/sevlyar/go-daemon v0.1.6 h1:EUh1MDjEM4BI109Jign0EaknA2izkOyi0LV3ro3QQGs=
+github.com/sevlyar/go-daemon v0.1.6/go.mod h1:6dJpPatBT9eUwM5VCw9Bt6CdX9Tk6UWvhW3MebLDRKE=
 github.com/shirou/gopsutil v3.21.11+incompatible h1:+1+c1VGhc88SSonWP6foOcLhvnKlUeu/erjjvaPEYiI=
 github.com/shirou/gopsutil v3.21.11+incompatible/go.mod h1:5b4v6he4MtMOwMlS0TUMTu2PcXUg8+E1lC7eC3UO/RA=
 github.com/sirupsen/logrus v1.8.1/go.mod h1:yWOB1SBYBC5VeMP7gHvWumXLIWorT60ONWic61uBYv0=
