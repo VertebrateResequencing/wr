@@ -5,6 +5,11 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.32.4] - 2024-08-16
+### Fixed
+- Now buildable on ARM64.
+
+
 ## [0.32.3] - 2024-07-03
 ### Fixed
 - Updated some dependencies to address potential security vulnerabilities.
