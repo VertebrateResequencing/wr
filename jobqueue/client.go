@@ -1200,67 +1200,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	var mayBeTemp string
 	if job.UntilBuried > 1 {
 		mayBeTemp = ", which may be a temporary issue, so it will be tried again"
-
-	}
-	if err != nil {
-		// there was a problem running the command
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitcode = exitError.Sys().(syscall.WaitStatus).ExitStatus()
-			switch exitcode {
-			case 126:
-				dobury = true
-				failreason = FailReasonCPerm
-				myerr = fmt.Errorf("command [%s] exited with code %d (permission problem, or command is not executable), which seems permanent, so it has been buried", job.Cmd, exitcode)
-			case 127:
-				dobury = true
-				failreason = FailReasonCFound
-				myerr = fmt.Errorf("command [%s] exited with code %d (command not found), which seems permanent, so it has been buried", job.Cmd, exitcode)
-			case 128:
-				dobury = true
-				failreason = FailReasonCExit
-				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried", job.Cmd, exitcode)
-			default:
-				dorelease = true
-				switch {
-				case ranoutMem:
-					failreason = FailReasonRAM
-					myerr = Error{"Execute", job.Key(), FailReasonRAM}
-				case ranoutDisk:
-					failreason = FailReasonDisk
-					myerr = Error{"Execute", job.Key(), FailReasonDisk}
-				case signalled:
-					if ranoutTime {
-						failreason = FailReasonTime
-						myerr = Error{"Execute", job.Key(), FailReasonTime}
-					} else {
-						failreason = FailReasonSignal
-						myerr = Error{"Execute", job.Key(), FailReasonSignal}
-					}
-				case killCalled:
-					dobury = true
-					failreason = FailReasonKilled
-					myerr = Error{"Execute", job.Key(), FailReasonKilled}
-				case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
-					dobury = true
-					failreason = FailReasonExit
-					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, ", after the noretries time, so will not be be tried again")
-				default:
-					failreason = FailReasonExit
-					myerr = fmt.Errorf("command [%s] exited with code %d%s", job.Cmd, exitcode, mayBeTemp)
-				}
-			}
-		} else {
-			// some obscure internal error unrelated to the exit code
-			exitcode = 255
-			dorelease = true
-			failreason = FailReasonAbnormal
-			myerr = fmt.Errorf("command [%s] failed to complete normally (%w)%s", job.Cmd, err, mayBeTemp)
-		}
-	} else {
-		// the command worked fine
-		exitcode = cmd.ProcessState.Sys().(syscall.WaitStatus).ExitStatus()
-		doarchive = true
-		myerr = nil
 	}
 
 	finalStdErr := bytes.TrimSpace(stderr.Bytes())
@@ -1341,6 +1280,75 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	if errsow != nil {
 		finalStdOut = append(finalStdOut, "\n\nSTDOUT handling problems:\n"...)
 		finalStdOut = append(finalStdOut, errsow.Error()...)
+	}
+
+	if err != nil {
+		cmdOut := ""
+		if len(finalStdOut) > 0 {
+			cmdOut = fmt.Sprintf(" [stdout: %s]", string(finalStdOut))
+		}
+
+		if len(finalStdErr) > 0 {
+			cmdOut = fmt.Sprintf(" [sterr: %s]", string(finalStdErr))
+		}
+
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitcode = exitError.Sys().(syscall.WaitStatus).ExitStatus()
+			switch exitcode {
+			case 126:
+				dobury = true
+				failreason = FailReasonCPerm
+				myerr = fmt.Errorf("command [%s] exited with code %d (permission problem, or command is not executable), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
+			case 127:
+				dobury = true
+				failreason = FailReasonCFound
+				myerr = fmt.Errorf("command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
+			case 128:
+				dobury = true
+				failreason = FailReasonCExit
+				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
+			default:
+				dorelease = true
+				switch {
+				case ranoutMem:
+					failreason = FailReasonRAM
+					myerr = Error{"Execute", job.Key(), FailReasonRAM}
+				case ranoutDisk:
+					failreason = FailReasonDisk
+					myerr = Error{"Execute", job.Key(), FailReasonDisk}
+				case signalled:
+					if ranoutTime {
+						failreason = FailReasonTime
+						myerr = Error{"Execute", job.Key(), FailReasonTime}
+					} else {
+						failreason = FailReasonSignal
+						myerr = Error{"Execute", job.Key(), FailReasonSignal}
+					}
+				case killCalled:
+					dobury = true
+					failreason = FailReasonKilled
+					myerr = Error{"Execute", job.Key(), FailReasonKilled}
+				case job.UntilBuried > 1 && job.NoRetriesOverWalltime > 0 && job.WallTime() > job.NoRetriesOverWalltime:
+					dobury = true
+					failreason = FailReasonExit
+					myerr = fmt.Errorf("command [%s] exited with code %d%s%s", job.Cmd, exitcode, ", after the noretries time, so will not be be tried again", cmdOut)
+				default:
+					failreason = FailReasonExit
+					myerr = fmt.Errorf("command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
+				}
+			}
+		} else {
+			// some obscure internal error unrelated to the exit code
+			exitcode = 255
+			dorelease = true
+			failreason = FailReasonAbnormal
+			myerr = fmt.Errorf("command [%s] failed to complete normally (%w)%s%s", job.Cmd, err, mayBeTemp, cmdOut)
+		}
+	} else {
+		// the command worked fine
+		exitcode = cmd.ProcessState.Sys().(syscall.WaitStatus).ExitStatus()
+		doarchive = true
+		myerr = nil
 	}
 
 	// now we've done everything time-consuming so can stop touching the job
