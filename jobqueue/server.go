@@ -1916,7 +1916,8 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 }
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
-//  You must hold the job.Lock() before calling this.
+//
+// You must hold the job.Lock() before calling this.
 func (s *Server) confirmJobDead(jobPID int, jobHost string) bool {
 	if jobPID == 0 {
 		return false
@@ -1925,7 +1926,7 @@ func (s *Server) confirmJobDead(jobPID int, jobHost string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), ServerLostJobCheckTimeout)
 	defer cancel()
 
-	return s.scheduler.ProcessNotRunngingOnHost(ctx, jobPID, jobHost)
+	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates
