@@ -99,7 +99,21 @@ complete.`,
 			}
 		}
 
-		info("wr runner started for scheduler group '%s'", schedgrp)
+		extraStartInfo := ""
+
+		lsfJobID := os.Getenv("LSB_JOBID")
+		if lsfJobID != "" {
+			lsfJobIndex := os.Getenv("LSB_JOBINDEX")
+
+			indexStr := ""
+			if lsfJobIndex != "" {
+				indexStr = fmt.Sprintf("[%s]", lsfJobIndex)
+			}
+
+			extraStartInfo = fmt.Sprintf("; LSF job id %s%s", lsfJobID, indexStr)
+		}
+
+		info("wr runner started for scheduler group '%s'; pid: %d%s", schedgrp, os.Getpid(), extraStartInfo)
 
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()

@@ -904,6 +904,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return fmt.Errorf("could not start command [%s]: %w%s", jc, err, extra)
 	}
 
+	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
+
 	// update the server that we've started the job
 	err = c.Started(job, cmd.Process.Pid)
 	if err != nil {
@@ -970,8 +972,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			if errc != nil {
 				if errk == nil {
+					clog.Info(ctx, "killed cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid)
 					errk = errc
 				} else {
+					clog.Warn(ctx, "failed to kill cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid, "err", errk)
 					errk = fmt.Errorf("%v, and getting child processes failed: %w", errk, errc)
 				}
 			}
@@ -991,8 +995,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				// result in their death
 				errc = child.Kill()
 				if errk == nil {
+					clog.Info(ctx, "killed child of cmd", "cmd", job.Cmd, "pid", child.Pid)
 					errk = errc
 				} else {
+					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.Cmd, "pid", child.Pid)
 					errk = fmt.Errorf("%v, and killing its child process failed: %w", errk, errc)
 				}
 			}
@@ -1026,7 +1032,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	CHECKING:
 		for {
 			select {
-			case <-sigs:
+			case signal := <-sigs:
+				clog.Warn(ctx, "aborting due to signal", "sig", signal.String())
 				killErr = killCmd()
 				stateMutex.Lock()
 				if time.Now().After(endT) {
@@ -1042,6 +1049,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				// always see if we've run out of disk space on the machine, in
 				// which case abort
 				if volume.NoSpaceLeft(volumeCtx) {
+					clog.Warn(ctx, "aborting due to lack of disk space")
 					killErr = killCmd()
 					stateMutex.Lock()
 					ranoutDisk = true
