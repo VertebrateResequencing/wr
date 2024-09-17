@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"log/syslog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -35,6 +36,8 @@ import (
 	"github.com/wtsi-ssg/wr/clog"
 )
 
+const logDirPerm = 0770
+
 // options for this cmd
 var schedgrp string
 var timeoutintRunner int
@@ -43,6 +46,7 @@ var rserver string
 var rdomain string
 var maxtime int
 var logToSyslog bool
+var logToDir string
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{
@@ -72,9 +76,44 @@ complete.`,
 			} else {
 				clog.ToHandlerAtLevel(handler, "info")
 			}
+		} else if logToDir != "" {
+			logDir := filepath.Join(logToDir, time.Now().Format("06.01.02"))
+
+			err := os.MkdirAll(logDir, logDirPerm)
+			if err != nil {
+				warn("failed to create log file dir, logging disabled: %s", err)
+			} else {
+				host, err := os.Hostname()
+				if err != nil {
+					host = "unknown"
+				}
+
+				logPath := filepath.Join(logDir, fmt.Sprintf("%s.%s.%d",
+					time.Now().Format("15-04-05"), host, os.Getpid()))
+				handler, err := clog.CreateFileHandlerAtLevel(logPath, "info")
+				if err != nil {
+					warn("failed to set up file logging: %s", err)
+				} else {
+					clog.ToHandlerAtLevel(handler, "info")
+				}
+			}
 		}
 
-		info("wr runner started for scheduler group '%s'", schedgrp)
+		extraStartInfo := ""
+
+		lsfJobID := os.Getenv("LSB_JOBID")
+		if lsfJobID != "" {
+			lsfJobIndex := os.Getenv("LSB_JOBINDEX")
+
+			indexStr := ""
+			if lsfJobIndex != "" {
+				indexStr = fmt.Sprintf("[%s]", lsfJobIndex)
+			}
+
+			extraStartInfo = fmt.Sprintf("; LSF job id %s%s", lsfJobID, indexStr)
+		}
+
+		info("wr runner started for scheduler group '%s'; pid: %d%s", schedgrp, os.Getpid(), extraStartInfo)
 
 		// the server receive timeout must be greater than the time we'll wait
 		// to Reserve()
@@ -156,6 +195,8 @@ complete.`,
 			if job == nil {
 				break
 			}
+
+			clog.Info(context.Background(), "reserved a job", "key", job.Key(), "attempts", job.Attempts, "cmd", job.Cmd)
 
 			if job.Requirements.Time != jobTime {
 				// confirm we have enough time left to run this
@@ -240,5 +281,6 @@ func init() {
 	runnerCmd.Flags().StringVar(&rserver, "server", internal.DefaultServer(ctx), "ip:port of wr manager")
 	runnerCmd.Flags().StringVar(&rdomain, "domain", internal.DefaultConfig(ctx).ManagerCertDomain,
 		"domain the manager's cert is valid for")
-	runnerCmd.Flags().BoolVar(&logToSyslog, "debug", false, "enable logging to syslog")
+	runnerCmd.Flags().BoolVar(&logToSyslog, "syslog", false, "enable logging to syslog")
+	runnerCmd.Flags().StringVar(&logToDir, "logdir", "", "enable logging to files within the given dir")
 }

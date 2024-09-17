@@ -58,7 +58,8 @@ var maxLocalRAM int
 var cloudNoSecurityGroups bool
 var cloudUseConfigDrive bool
 var useCertDomain bool
-var runnerDebug bool
+var runnerSyslog bool
+var runnerFilelog string
 
 const kubernetes = "kubernetes"
 const deadlockTimeout = 5 * time.Minute
@@ -588,7 +589,9 @@ func init() {
 	managerStartCmd.Flags().BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP, "on success, use infoblox to set your domain's IP")
 	managerStartCmd.Flags().BoolVar(&useCertDomain, "use_cert_domain", false, "if cert domain is configured, provide it to spawned clients instead of our IP address")
 	managerStartCmd.Flags().BoolVar(&managerDebug, "debug", false, "include extra debugging information in the logs")
-	managerStartCmd.Flags().BoolVar(&runnerDebug, "runner_debug", false, "have runners log to syslog on their machines")
+	managerStartCmd.Flags().BoolVar(&runnerSyslog, "runner_syslog", false, "have runners log to syslog on their machines")
+	managerStartCmd.Flags().StringVar(&runnerFilelog, "runner_filelog", "",
+		"have runners log to unique files in the given folder")
 
 	managerBackupCmd.Flags().StringVarP(&backupPath, "path", "p", "", "backup file path")
 }
@@ -755,8 +758,11 @@ func startJQ(postCreation, preDestroy []byte) {
 	}
 
 	runnerCmd := exe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d"
-	if runnerDebug {
-		runnerCmd += " --debug"
+
+	if runnerSyslog {
+		runnerCmd += " --syslog"
+	} else if runnerFilelog != "" {
+		runnerCmd += " --logdir " + runnerFilelog
 	}
 
 	var wgDebug strings.Builder

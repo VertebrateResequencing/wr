@@ -1518,7 +1518,7 @@ func testProcessNotRunning(ctx context.Context, s *Scheduler, r *Requirements) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		So(s.ProcessNotRunngingOnHost(ctx, pid, host), ShouldBeFalse)
+		So(s.ProcessNotRunningOnHost(ctx, pid, host), ShouldBeFalse)
 
 		Convey("But true if we kill it", func() {
 			server, exists := s.impl.getHost(host)
@@ -1532,7 +1532,7 @@ func testProcessNotRunning(ctx context.Context, s *Scheduler, r *Requirements) {
 			ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel2()
 
-			So(s.ProcessNotRunngingOnHost(ctx2, pid, host), ShouldBeTrue)
+			So(s.ProcessNotRunningOnHost(ctx2, pid, host), ShouldBeTrue)
 		})
 	})
 }

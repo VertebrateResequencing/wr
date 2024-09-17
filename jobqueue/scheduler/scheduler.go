@@ -31,11 +31,11 @@ files; they are all imported (they all belong to the scheduler package), and the
 correct one used at run time. To "register" a new scheduleri implementation you
 must add a case for it to New() and rebuild.
 
-    import "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-    s, err := scheduler.New("local", &scheduler.ConfigLocal{"bash"})
-    req := &scheduler.Requirements{RAM: 300, Time: 2 * time.Hour, Cores: 1}
-    err = s.Schedule("myWRRunnerClient -args", req, 24)
-    // wait, and when s.Busy() returns false, your command has been run 24 times
+	import "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	s, err := scheduler.New("local", &scheduler.ConfigLocal{"bash"})
+	req := &scheduler.Requirements{RAM: 300, Time: 2 * time.Hour, Cores: 1}
+	err = s.Schedule("myWRRunnerClient -args", req, 24)
+	// wait, and when s.Busy() returns false, your command has been run 24 times
 */
 package scheduler
 
@@ -393,12 +393,12 @@ func (s *Scheduler) GetHost(hostName string) Host {
 	return host
 }
 
-// ProcessNotRunngingOnHost will ssh to the given host and check if the given
+// ProcessNotRunningOnHost will ssh to the given host and check if the given
 // process id is still running. Returns true if it isn't. Returns false if it is
 // running, or if the ssh wasn't possible. This is to find out if a process is
 // really dead, or if there might just be a temporary networking problem where
 // ssh might fail. The ssh attempt can be cancelled using the supplied context.
-func (s *Scheduler) ProcessNotRunngingOnHost(ctx context.Context, pid int, hostName string) bool {
+func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
 		return false
