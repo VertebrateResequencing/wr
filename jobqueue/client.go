@@ -1014,7 +1014,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				}(child)
 			}
 
-			// wg.Wait()
+			wg.Wait()
 
 			return errk
 		}
