@@ -987,6 +987,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				}
 			}
 
+			var wg sync.WaitGroup
+
+			wg.Add(len(children))
+
 			for _, child := range children {
 				// try and kill any children in case the above didn't already
 				// result in their death
@@ -1000,8 +1004,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				go func(child *process.Process) {
 					time.Sleep(1 * time.Second)
 					child.Kill() //nolint:errcheck
+					wg.Done()
 				}(child)
 			}
+
+			// wg.Wait()
 
 			return errk
 		}
@@ -1206,7 +1213,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	var mayBeTemp string
 	if job.UntilBuried > 1 {
 		mayBeTemp = ", which may be a temporary issue, so it will be tried again"
-
 	}
 	if err != nil {
 		// there was a problem running the command
