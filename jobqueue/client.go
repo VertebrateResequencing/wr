@@ -42,6 +42,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/docker/docker/client"
 	"github.com/gofrs/uuid"
+	"github.com/shirou/gopsutil/process"
 	"github.com/ugorji/go/codec"
 	"github.com/wtsi-ssg/wr/clog"
 	"github.com/wtsi-ssg/wr/container"
@@ -990,10 +991,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				}
 			}
 
+			var wg sync.WaitGroup
+
+			wg.Add(len(children))
+
 			for _, child := range children {
 				// try and kill any children in case the above didn't already
 				// result in their death
-				errc = child.Kill()
+				errc = child.Terminate()
 				if errk == nil {
 					clog.Info(ctx, "killed child of cmd", "cmd", job.Cmd, "pid", child.Pid)
 					errk = errc
@@ -1001,7 +1006,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.Cmd, "pid", child.Pid)
 					errk = fmt.Errorf("%v, and killing its child process failed: %w", errk, errc)
 				}
+
+				go func(child *process.Process) {
+					time.Sleep(1 * time.Second)
+					child.Kill() //nolint:errcheck
+					wg.Done()
+				}(child)
 			}
+
+			wg.Wait()
 
 			return errk
 		}
