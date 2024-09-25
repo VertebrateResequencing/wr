@@ -308,6 +308,8 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 		}
 	}
 
+	//PrintJSON(s.queues)
+
 	if serr := bqScanner.Err(); serr != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to read everything from [bqueues -l]: %s", serr)}
 	}
@@ -646,6 +648,10 @@ func (s *lsf) determineQueue(req *Requirements, globalMax int) (string, error) {
 	}
 
 	for _, queue := range s.sortedqs[sortedQueue] {
+		if req.Other["scheduler_queues_avoid"] != "" && strings.Contains(queue, req.Other["scheduler_queues_avoid"]) {
+			continue
+		}
+
 		memLimit := s.queues[queue]["memlimit"]
 		if memLimit > 0 && memLimit < mb {
 			continue

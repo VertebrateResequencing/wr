@@ -480,7 +480,7 @@ func TestLSF(t *testing.T) {
 	}
 
 	username := internal.CachedUsername
-	if host == "farm5-head1" {
+	if host == "farm22-hgi01" {
 		// author needs to disable access to his own queues to test normal
 		// behaviour
 		internal.CachedUsername = "invalid"
@@ -489,19 +489,35 @@ func TestLSF(t *testing.T) {
 		}()
 	}
 
-	Convey("You can get a new lsf scheduler", t, func() {
+	FocusConvey("You can get a new lsf scheduler", t, func() {
 		s, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		Convey("ReserveTimeout() returns 25 seconds", func() {
+		FocusConvey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
 		})
 
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
-		if host == "farm5-head1" {
+		if host == "farm22-hgi01" {
+			FocusConvey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
+				queue, err := s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "long-chkpt") // is either "long" or "long-chkpt" depending on ? .
+
+				otherReqs["scheduler_queues_avoid"] = "-chkpt"
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "long")
+
+				otherReqs["scheduler_queue"] = "long"
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "long")
+			})
+
 			Convey("determineQueue() picks the best queue depending on given resource requirements", func() {
 				queue, err := s.impl.(*lsf).determineQueue(possibleReq, 0)
 				So(err, ShouldBeNil)
@@ -777,7 +793,7 @@ func TestOpenstack(t *testing.T) {
 
 		// author specific tests, based on hostname, where we know what the
 		// expected server types are
-		if host == "farm5-head1" {
+		if host == "farm22-hgi01" {
 			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
 				flavor, err := oss.determineFlavor(ctx, possibleReq, "a")
 				So(err, ShouldBeNil)

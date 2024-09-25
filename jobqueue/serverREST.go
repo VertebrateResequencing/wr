@@ -71,21 +71,22 @@ type JobViaJSON struct {
 	// Memory is a number and unit suffix, eg. 1G for 1 Gigabyte.
 	Memory string `json:"memory"`
 	// Time is a duration with a unit suffix, eg. 1h for 1 hour.
-	Time             string   `json:"time"`
-	RepGrp           string   `json:"rep_grp"`
-	MonitorDocker    string   `json:"monitor_docker"`
-	WithDocker       string   `json:"with_docker"`
-	WithSingularity  string   `json:"with_singularity"`
-	ContainerMounts  string   `json:"container_mounts"`
-	CloudOS          string   `json:"cloud_os"`
-	CloudUser        string   `json:"cloud_username"`
-	CloudScript      string   `json:"cloud_script"`
-	CloudConfigFiles string   `json:"cloud_config_files"`
-	CloudFlavor      string   `json:"cloud_flavor"`
-	SchedulerQueue   string   `json:"queue"`
-	SchedulerMisc    string   `json:"misc"`
-	BsubMode         string   `json:"bsub_mode"`
-	CPUs             *float64 `json:"cpus"`
+	Time                 string   `json:"time"`
+	RepGrp               string   `json:"rep_grp"`
+	MonitorDocker        string   `json:"monitor_docker"`
+	WithDocker           string   `json:"with_docker"`
+	WithSingularity      string   `json:"with_singularity"`
+	ContainerMounts      string   `json:"container_mounts"`
+	CloudOS              string   `json:"cloud_os"`
+	CloudUser            string   `json:"cloud_username"`
+	CloudScript          string   `json:"cloud_script"`
+	CloudConfigFiles     string   `json:"cloud_config_files"`
+	CloudFlavor          string   `json:"cloud_flavor"`
+	SchedulerQueue       string   `json:"queue"`
+	SchedulerQueuesAvoid string   `json:"queues_avoid"`
+	SchedulerMisc        string   `json:"misc"`
+	BsubMode             string   `json:"bsub_mode"`
+	CPUs                 *float64 `json:"cpus"`
 	// Disk is the number of Gigabytes the cmd will use.
 	Disk                  *int   `json:"disk"`
 	Override              *int   `json:"override"`
@@ -126,11 +127,12 @@ type JobDefaults struct {
 	// CloudScript is the local path to a script.
 	CloudScript string
 	// CloudConfigFiles is the config files to copy in cloud.Server.CopyOver() format
-	CloudConfigFiles string
-	SchedulerQueue   string
-	SchedulerMisc    string
-	BsubMode         string
-	osRAM            string
+	CloudConfigFiles     string
+	SchedulerQueue       string
+	SchedulerQueuesAvoid string
+	SchedulerMisc        string
+	BsubMode             string
+	osRAM                string
 	// CPUs is the number of CPU cores each cmd will use.
 	CPUs   float64 // Memory is the number of Megabytes each cmd will use. Defaults to 1000.
 	Memory int
@@ -477,6 +479,12 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 		other["scheduler_queue"] = jvj.SchedulerQueue
 	} else if jd.SchedulerQueue != "" {
 		other["scheduler_queue"] = jd.SchedulerQueue
+	}
+
+	if jvj.SchedulerQueuesAvoid != "" {
+		other["scheduler_queues_avoid"] = jvj.SchedulerQueuesAvoid
+	} else if jd.SchedulerQueuesAvoid != "" {
+		other["scheduler_queues_avoid"] = jd.SchedulerQueuesAvoid
 	}
 
 	if jvj.SchedulerMisc != "" {
