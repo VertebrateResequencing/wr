@@ -308,8 +308,6 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 		}
 	}
 
-	//PrintJSON(s.queues)
-
 	if serr := bqScanner.Err(); serr != nil {
 		return Error{"lsf", "initialize", fmt.Sprintf("failed to read everything from [bqueues -l]: %s", serr)}
 	}
