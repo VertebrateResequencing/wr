@@ -489,12 +489,12 @@ func TestLSF(t *testing.T) {
 		}()
 	}
 
-	FocusConvey("You can get a new lsf scheduler", t, func() {
+	Convey("You can get a new lsf scheduler", t, func() {
 		s, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		FocusConvey("ReserveTimeout() returns 25 seconds", func() {
+		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
 		})
 
@@ -502,10 +502,10 @@ func TestLSF(t *testing.T) {
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
 		if host == "farm22-hgi01" {
-			FocusConvey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
+			Convey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
 				queue, err := s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "long-chkpt") // is either "long" or "long-chkpt" depending on ? .
+				So(queue, ShouldEqual, "long-chkpt")
 
 				otherReqs["scheduler_queues_avoid"] = "-chkpt"
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
@@ -529,7 +529,7 @@ func TestLSF(t *testing.T) {
 
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true}, 10)
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "normal") // used to be yesterday, but something changed? Or is this a bug?
+				So(queue, ShouldEqual, "yesterday")
 
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
 				So(err, ShouldBeNil)
