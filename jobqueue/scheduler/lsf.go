@@ -361,10 +361,8 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 					rank++
 				}
 			}
-			punishment := rank * weight
-			if punishment > 0 {
-				ranking[queue] += punishment
-			}
+
+			ranking[queue] = rank * weight
 
 			prevVal = val
 		}
@@ -597,8 +595,6 @@ func (s *lsf) busy(ctx context.Context) bool {
 // determineQueue picks a queue, preferring ones that are more likely to run our
 // job the soonest (amongst those that are capable of running it). If req.Other
 // contains a scheduler_queue value, returns that instead.
-// *** globalMax option and associated code may be removed if we never have a
-// way for user to pass this in.
 func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	if queue, ok := req.Other["scheduler_queue"]; ok {
 		return queue, nil
