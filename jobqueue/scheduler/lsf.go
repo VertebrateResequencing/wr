@@ -362,13 +362,16 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 				}
 			}
 
-			ranking[queue] = rank * weight
+			if rank*weight > 0 {
+				ranking[queue] += rank * weight
+			}
 
 			prevVal = val
 		}
 	}
 
 	s.sortedqs = internal.SortMapKeysByIntValue(ranking, false)
+	fmt.Println(s.sortedqs)
 
 	// now s.sortedqs has [0] containing our default preferred order or queues,
 	// and other numbers which can be tested against any global maximum number
