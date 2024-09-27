@@ -416,7 +416,8 @@ func init() {
 	modCmd.Flags().BoolVar(&cmdCloudSharedDiskUnset, "unset_cloud_shared", false, "unset --cloud_shared")
 	modCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	modCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
-	modCmd.Flags().StringVar(&cmdQueuesAvoid, "queues_avoid", "", "substring found in queues that should not be submitted to, for schedulers with queues")
+	modCmd.Flags().StringVar(&cmdQueuesAvoid, "queues_avoid", "",
+		"substring found in queues that should not be submitted to, for schedulers with queues")
 	// modCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 
 	// *** user can't turn the bool options off, only on...

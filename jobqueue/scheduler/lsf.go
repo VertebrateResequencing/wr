@@ -31,7 +31,6 @@ import (
 	"os/exec"
 	"os/user"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,7 +52,7 @@ type lsf struct {
 	bsubRegex          *regexp.Regexp
 	memLimitMultiplier float32
 	queues             map[string]map[string]int
-	sortedqs           map[int][]string
+	sortedqs           []string
 	sortedqKeys        []int
 	bsubExe            string
 	bjobsExe           string
@@ -321,13 +320,13 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 	// prefer the queue that is more limited, since we suppose they might be
 	// less busy or will at least become free sooner
 	criteriaHandling := map[string][]int{
-		"hosts":      {20, 1}, // weight, sort order
-		"max_user":   {16, 1},
-		"max":        {15, 1},
-		"prio":       {4, 1},
+		"hosts":      {18, 1}, // weight, sort order
+		"max_user":   {10, 1},
+		"max":        {5, 1},
+		"prio":       {5, 0},
 		"chunk_size": {10000, 0},
-		"runlimit":   {2, 0},
-		"memlimit":   {2, 0},
+		"runlimit":   {5, 1},
+		"memlimit":   {1, 0},
 	}
 
 	// fill in some default values for the criteria on all the queues
@@ -347,7 +346,6 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 
 	// sort the queues, those most likely to run jobs sooner coming first
 	ranking := make(map[string]int)
-	punishedForMax := make(map[string][2]int)
 	for _, criterion := range []string{"max_user", "max", "hosts", "prio", "chunk_size", "runlimit", "memlimit"} { // instead of range over criteriaHandling, because max_user must come first
 		// sort queues by this criterion
 		sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, criteriaHandling[criterion][1] == 1)
@@ -365,17 +363,6 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 			}
 			punishment := rank * weight
 			if punishment > 0 {
-				if criterion == "max_user" {
-					punishedForMax[queue] = [2]int{val, punishment}
-				} else if criterion == "max" {
-					if _, punished := punishedForMax[queue]; punished {
-						// don't double-punish for queues that have both
-						// max_user and max
-						punishment = 0
-					} else {
-						punishedForMax[queue] = [2]int{val, punishment}
-					}
-				}
 				ranking[queue] += punishment
 			}
 
@@ -383,23 +370,7 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 		}
 	}
 
-	s.sortedqs = make(map[int][]string)
-	s.sortedqs[0] = internal.SortMapKeysByIntValue(ranking, false)
-
-	for queue, vp := range punishedForMax {
-		thisRanking := make(map[string]int)
-		for rq, rp := range ranking {
-			if rq == queue {
-				rp -= vp[1]
-			}
-			thisRanking[rq] = rp
-		}
-		s.sortedqs[vp[0]] = internal.SortMapKeysByIntValue(thisRanking, false)
-	}
-	for key := range s.sortedqs {
-		s.sortedqKeys = append(s.sortedqKeys, key)
-	}
-	sort.Ints(s.sortedqKeys)
+	s.sortedqs = internal.SortMapKeysByIntValue(ranking, false)
 
 	// now s.sortedqs has [0] containing our default preferred order or queues,
 	// and other numbers which can be tested against any global maximum number
@@ -470,7 +441,7 @@ func (s *lsf) reserveTimeout(ctx context.Context, req *Requirements) int {
 
 // maxQueueTime achieves the aims of MaxQueueTime().
 func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
-	queue, err := s.determineQueue(req, 0)
+	queue, err := s.determineQueue(req)
 	if err == nil {
 		return time.Duration(s.queues[queue]["runlimit"]) * time.Second
 	}
@@ -483,7 +454,7 @@ func (s *lsf) maxQueueTime(req *Requirements) time.Duration {
 func (s *lsf) schedule(ctx context.Context, cmd string, req *Requirements, priority uint8, count int) error {
 	// use the given queue or find the best queue for these resource
 	// requirements
-	queue, err := s.determineQueue(req, 0)
+	queue, err := s.determineQueue(req)
 	if err != nil {
 		return err // impossible to run cmd with these reqs
 	}
@@ -628,24 +599,15 @@ func (s *lsf) busy(ctx context.Context) bool {
 // contains a scheduler_queue value, returns that instead.
 // *** globalMax option and associated code may be removed if we never have a
 // way for user to pass this in.
-func (s *lsf) determineQueue(req *Requirements, globalMax int) (string, error) {
+func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	if queue, ok := req.Other["scheduler_queue"]; ok {
 		return queue, nil
 	}
 
 	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
 	mb := req.RAM
-	sortedQueue := 0
-	if globalMax > 0 {
-		for _, queueKey := range s.sortedqKeys {
-			if globalMax <= queueKey {
-				sortedQueue = queueKey
-				break
-			}
-		}
-	}
 
-	for _, queue := range s.sortedqs[sortedQueue] {
+	for _, queue := range s.sortedqs {
 		if req.Other["scheduler_queues_avoid"] != "" && strings.Contains(queue, req.Other["scheduler_queues_avoid"]) {
 			continue
 		}
