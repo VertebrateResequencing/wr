@@ -471,7 +471,7 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
-	FocusConvey("You can get a new lsf scheduler", t, func() {
+	Convey("You can get a new lsf scheduler", t, func() {
 		otherReqs := make(map[string]string)
 
 		var specifiedOther = make(map[string]string)
@@ -508,7 +508,7 @@ func TestLSF(t *testing.T) {
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
 		if host == devHost {
-			FocusConvey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
+			Convey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
 				queue, err := s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long-chkpt")
