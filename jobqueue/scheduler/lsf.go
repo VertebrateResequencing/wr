@@ -260,6 +260,11 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 					users[val] = true
 				}
 
+				s.queues[queue]["num_users"] = len(users)
+				if users["all"] {
+					s.queues[queue]["num_users"] = 10000
+				}
+
 				me, err := internal.Username()
 				if err != nil {
 					return Error{"lsf", "initialize", fmt.Sprintf("could not get current user: %s", err)}
@@ -327,10 +332,12 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 		"chunk_size": {10000, 0},
 		"runlimit":   {5, 1},
 		"memlimit":   {1, 0},
+		"num_users":  {15, 0},
 	}
 
 	// fill in some default values for the criteria on all the queues
-	defaults := map[string]int{"runlimit": 31536000, "memlimit": 10000000, "max": 10000000, "max_user": 10000000, "users": 10000000, "hosts": 10000000, "chunk_size": 0}
+	defaults := map[string]int{"num_users": 10000, "runlimit": 31536000, "memlimit": 10000000, //nolint:mnd
+		"max": 10000000, "max_user": 10000000, "users": 10000000, "hosts": 10000000, "chunk_size": 0} //nolint:mnd
 	for criterion, highest := range highest {
 		if highest > 0 {
 			defaults[criterion] = highest + 1
@@ -346,7 +353,10 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 
 	// sort the queues, those most likely to run jobs sooner coming first
 	ranking := make(map[string]int)
-	for _, criterion := range []string{"max_user", "max", "hosts", "prio", "chunk_size", "runlimit", "memlimit"} { // instead of range over criteriaHandling, because max_user must come first
+
+	// instead of range over criteriaHandling, because max_user must come first
+	for _, criterion := range []string{"max_user", "max", "hosts",
+		"prio", "chunk_size", "num_users", "runlimit", "memlimit"} {
 		// sort queues by this criterion
 		sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, criteriaHandling[criterion][1] == 1)
 
@@ -362,9 +372,7 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 				}
 			}
 
-			if rank*weight > 0 {
-				ranking[queue] += rank * weight
-			}
+			ranking[queue] += rank * weight
 
 			prevVal = val
 		}
@@ -603,20 +611,17 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	}
 
 	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
-	mb := req.RAM
 
 	for _, queue := range s.sortedqs {
-		if req.Other["scheduler_queues_avoid"] != "" && strings.Contains(queue, req.Other["scheduler_queues_avoid"]) {
+		if queueShouldBeAvoided(queue, req) {
 			continue
 		}
 
-		memLimit := s.queues[queue]["memlimit"]
-		if memLimit > 0 && memLimit < mb {
+		if s.queueHasTooLittleMemory(queue, req) {
 			continue
 		}
 
-		timeLimit := s.queues[queue]["runlimit"]
-		if timeLimit > 0 && float64(timeLimit) < seconds {
+		if s.queueHasTooLittleTime(queue, seconds) {
 			continue
 		}
 
@@ -624,6 +629,18 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	}
 
 	return "", Error{"lsf", "determineQueue", ErrImpossible}
+}
+
+func queueShouldBeAvoided(queue string, req *Requirements) bool {
+	return req.Other["scheduler_queues_avoid"] != "" && strings.Contains(queue, req.Other["scheduler_queues_avoid"])
+}
+
+func (s *lsf) queueHasTooLittleMemory(queue string, req *Requirements) bool {
+	return s.queues[queue]["memlimit"] > 0 && s.queues[queue]["memlimit"] < req.RAM
+}
+
+func (s *lsf) queueHasTooLittleTime(queue string, seconds float64) bool {
+	return s.queues[queue]["runlimit"] > 0 && float64(s.queues[queue]["runlimit"]) < seconds
 }
 
 // checkCmd asks LSF how many of the supplied cmd are running, and if max >= 0

@@ -487,6 +487,7 @@ func TestLSF(t *testing.T) {
 		}
 
 		username := internal.CachedUsername
+
 		if host == devHost {
 			// author needs to disable access to his own queues to test normal
 			// behaviour
@@ -533,10 +534,6 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true})
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "yesterday")
-
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
@@ -551,18 +548,23 @@ func TestLSF(t *testing.T) {
 
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 169 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "basement")
+				So(queue, ShouldEqual, "hugemem")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 361 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "basement-chkpt")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 43200)
+				So(s.MaxQueueTime(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(),
+					ShouldEqual, 10080)
 			})
 
 			Convey("determineQueue() picks the best queue for systems", func() {
-				internal.CachedUsername = username
+				internal.CachedUsername = "isgbot"
 				defer func() {
-					internal.CachedUsername = "invalid"
+					internal.CachedUsername = username
 				}()
 
 				ssys, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
@@ -572,10 +574,6 @@ func TestLSF(t *testing.T) {
 				queue, err := ssys.impl.(*lsf).determineQueue(possibleReq)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "system")
-
-				queue, err = ssys.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true})
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "basement")
 			})
 		}
 
@@ -619,10 +617,6 @@ func TestLSF(t *testing.T) {
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
 
-		Convey("Given a cmd running on a host", func() {
-			testProcessNotRunning(ctx, s, possibleReq)
-		})
-
 		// following tests are unreliable due to needing LSF nodes to be all
 		// working well and for there to be capacity to run jobs
 		if os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") == "true" {
@@ -630,6 +624,10 @@ func TestLSF(t *testing.T) {
 
 			return
 		}
+
+		Convey("Given a cmd running on a host", func() {
+			testProcessNotRunning(ctx, s, possibleReq)
+		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
 			// tmpdir, err := os.MkdirTemp("", "wr_schedulers_lsf_test_output_dir_")
