@@ -81,6 +81,7 @@ func SortMapKeysByIntValue(imap map[string]int, reverse bool) []string {
 
 	sortedKeys := make([]string, 0, len(vals))
 	for _, val := range vals {
+		sort.Sort(sort.Reverse(sort.StringSlice(valToKeys[val])))
 		sortedKeys = append(sortedKeys, valToKeys[val]...)
 	}
 	return sortedKeys

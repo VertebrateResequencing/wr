@@ -43,9 +43,9 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-var maxCPU = runtime.NumCPU()
-var otherReqs = make(map[string]string)
+const devHost = "farm22-hgi01"
 
+var maxCPU = runtime.NumCPU()
 var testLogger = log15.New()
 
 func init() {
@@ -58,6 +58,8 @@ func TestLocal(t *testing.T) {
 
 	var overhead time.Duration
 	Convey("You can get a new local scheduler", t, func() {
+		otherReqs := make(map[string]string)
+
 		s, err := New(ctx, "local", &ConfigLocal{"bash", 1 * time.Second, 0, 0})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
@@ -411,6 +413,8 @@ func TestLocal(t *testing.T) {
 	})
 	if maxCPU > 1 {
 		Convey("You can get a new local scheduler that uses less than all CPUs", t, func() {
+			otherReqs := make(map[string]string)
+
 			s, err := New(ctx, "local", &ConfigLocal{"bash", 1 * time.Second, 1, 0})
 			So(err, ShouldBeNil)
 			So(s, ShouldNotBeNil)
@@ -467,29 +471,32 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
-	var specifiedOther = make(map[string]string)
-	specifiedOther["scheduler_queue"] = "yesterday"
-	specifiedOther["scheduler_misc"] = "-R avx"
-	possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs, true, true, true}
-	specifiedReq := &Requirements{100, 1 * time.Minute, 1, 20, specifiedOther, true, true, true}
-	impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
-
-	host, err := os.Hostname()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	username := internal.CachedUsername
-	if host == "farm5-head1" {
-		// author needs to disable access to his own queues to test normal
-		// behaviour
-		internal.CachedUsername = "invalid"
-		defer func() {
-			internal.CachedUsername = username
-		}()
-	}
-
 	Convey("You can get a new lsf scheduler", t, func() {
+		otherReqs := make(map[string]string)
+
+		var specifiedOther = make(map[string]string)
+		specifiedOther["scheduler_queue"] = "yesterday"
+		specifiedOther["scheduler_misc"] = "-R avx"
+		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs, true, true, true}
+		specifiedReq := &Requirements{100, 1 * time.Minute, 1, 20, specifiedOther, true, true, true}
+		impossibleReq := &Requirements{9999999999, 999999 * time.Hour, 99999, 20, otherReqs, true, true, true}
+
+		host, err := os.Hostname()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		username := internal.CachedUsername
+
+		if host == devHost {
+			// author needs to disable access to his own queues to test normal
+			// behaviour
+			internal.CachedUsername = "invalid"
+			defer func() {
+				internal.CachedUsername = username
+			}()
+		}
+
 		s, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
@@ -501,64 +508,77 @@ func TestLSF(t *testing.T) {
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
-		if host == "farm5-head1" {
-			Convey("determineQueue() picks the best queue depending on given resource requirements", func() {
-				queue, err := s.impl.(*lsf).determineQueue(possibleReq, 0)
+		if host == devHost {
+			Convey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
+				queue, err := s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "normal")
+				So(queue, ShouldEqual, "long-chkpt")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true}, 0)
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "normal")
-
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true}, 10)
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "normal") // used to be yesterday, but something changed? Or is this a bug?
-
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "normal")
-
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "teramem")
-
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				otherReqs["scheduler_queues_avoid"] = "-chkpt"
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
+				otherReqs["scheduler_queue"] = "long"
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "basement")
+				So(queue, ShouldEqual, "long")
+			})
+
+			Convey("determineQueue() picks the best queue depending on given resource requirements", func() {
+				queue, err := s.impl.(*lsf).determineQueue(possibleReq)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "normal")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "normal")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "normal")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "hugemem")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "long-chkpt")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 169 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "hugemem")
+
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 361 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "basement-chkpt")
 			})
 
 			Convey("MaxQueueTime() returns appropriate times depending on the requirements", func() {
 				So(s.MaxQueueTime(possibleReq).Minutes(), ShouldEqual, 720)
-				So(s.MaxQueueTime(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(), ShouldEqual, 43200)
+				So(s.MaxQueueTime(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}).Minutes(),
+					ShouldEqual, 10080)
 			})
 
 			Convey("determineQueue() picks the best queue for systems", func() {
-				internal.CachedUsername = username
+				internal.CachedUsername = "isgbot"
 				defer func() {
-					internal.CachedUsername = "invalid"
+					internal.CachedUsername = username
 				}()
 
 				ssys, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
 				So(err, ShouldBeNil)
 				So(ssys, ShouldNotBeNil)
 
-				queue, err := ssys.impl.(*lsf).determineQueue(possibleReq, 0)
+				queue, err := ssys.impl.(*lsf).determineQueue(possibleReq)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "system")
-
-				queue, err = ssys.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true}, 0)
-				So(err, ShouldBeNil)
-				So(queue, ShouldEqual, "basement")
 			})
 		}
 
 		Convey("determineQueue() returns user queue if specified", func() {
-			queue, err := s.impl.(*lsf).determineQueue(specifiedReq, 0)
+			queue, err := s.impl.(*lsf).determineQueue(specifiedReq)
 			So(err, ShouldBeNil)
 			So(queue, ShouldEqual, "yesterday")
 		})
@@ -597,10 +617,6 @@ func TestLSF(t *testing.T) {
 			So(serr.Err, ShouldEqual, ErrImpossible)
 		})
 
-		Convey("Given a cmd running on a host", func() {
-			testProcessNotRunning(ctx, s, possibleReq)
-		})
-
 		// following tests are unreliable due to needing LSF nodes to be all
 		// working well and for there to be capacity to run jobs
 		if os.Getenv("WR_DISABLE_UNRELIABLE_LSF_TESTS") == "true" {
@@ -608,6 +624,10 @@ func TestLSF(t *testing.T) {
 
 			return
 		}
+
+		Convey("Given a cmd running on a host", func() {
+			testProcessNotRunning(ctx, s, possibleReq)
+		})
 
 		Convey("Schedule() lets you schedule more jobs than localhost CPUs", func() {
 			// tmpdir, err := os.MkdirTemp("", "wr_schedulers_lsf_test_output_dir_")
@@ -756,6 +776,8 @@ func TestOpenstack(t *testing.T) {
 	}
 
 	Convey("You can get a new openstack scheduler", t, func() {
+		otherReqs := make(map[string]string)
+
 		tmpdir, errt := os.MkdirTemp("", "wr_schedulers_openstack_test_output_dir_")
 		if errt != nil {
 			log.Fatal(errt)
@@ -777,7 +799,7 @@ func TestOpenstack(t *testing.T) {
 
 		// author specific tests, based on hostname, where we know what the
 		// expected server types are
-		if host == "farm5-head1" {
+		if host == devHost {
 			Convey("determineFlavor() picks the best server flavor depending on given resource requirements", func() {
 				flavor, err := oss.determineFlavor(ctx, possibleReq, "a")
 				So(err, ShouldBeNil)
