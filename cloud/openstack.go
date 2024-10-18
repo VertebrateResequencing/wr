@@ -91,7 +91,7 @@ const destroyServerCheckFrequency = 250 * time.Millisecond
 // minimumServerSpawnTimeoutSecs is the minimum amount of time we wait for
 // servers to change from 'BUILD' state. It can be longer than this based on
 // learning.
-const minimumServerSpawnTimeoutSecs = 180
+const minimumServerSpawnTimeoutSecs = 1200
 
 // invalidFlavorIDMsg is used to report when a certain flavor ID does not exist
 const invalidFlavorIDMsg = "invalid flavor ID"
