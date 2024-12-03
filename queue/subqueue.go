@@ -25,7 +25,7 @@ import (
 	"container/heap"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 
 	logext "github.com/inconshreveable/log15/ext"
 )

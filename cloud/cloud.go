@@ -83,7 +83,7 @@ import (
 	"strings"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/gofrs/uuid"

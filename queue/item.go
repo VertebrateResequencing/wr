@@ -26,7 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 )
 
 // ItemState is how we describe the possible item states.

@@ -34,7 +34,7 @@ import (
 	"strings"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 	"github.com/sb10/waitgroup"
 	"github.com/wtsi-ssg/wr/clog"
 

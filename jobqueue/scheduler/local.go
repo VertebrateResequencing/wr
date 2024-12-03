@@ -34,7 +34,7 @@ import (
 	"syscall"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 	"github.com/wtsi-ssg/wr/clog"
 	mth "github.com/wtsi-ssg/wr/math"
 

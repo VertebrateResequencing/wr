@@ -20,7 +20,6 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -31,7 +30,6 @@ import (
 	"syscall"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -766,18 +764,6 @@ func startJQ(postCreation, preDestroy []byte) {
 	}
 
 	var wgDebug strings.Builder
-	deadlockBuf := new(bytes.Buffer)
-	sync.Opts.LogBuf = deadlockBuf
-	sync.Opts.DeadlockTimeout = deadlockTimeout
-	sync.Opts.OnPotentialDeadlock = func() {
-		wgMsg := wgDebug.String()
-		if wgMsg != "" {
-			clog.Warn(ctxf, "waitgroups waiting", "msgs", wgMsg)
-			wgDebug.Reset()
-		}
-
-		clog.Crit(ctxf, "deadlock", "err", deadlockBuf.String())
-	}
 	waitgroup.Opts.Logger = &wgDebug
 	waitgroup.Opts.Disable = false
 

@@ -24,7 +24,7 @@ package rp
 import (
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 
 	"github.com/gofrs/uuid"
 )

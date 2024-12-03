@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"

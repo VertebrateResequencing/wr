@@ -36,7 +36,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/inconshreveable/log15"
