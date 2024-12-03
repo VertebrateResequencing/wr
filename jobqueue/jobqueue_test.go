@@ -73,8 +73,6 @@ var (
 func init() {
 	clog.ToDefault()
 
-	sync.Opts.DeadlockTimeout = 5 * time.Minute // some openstack behaviour needs a pretty long timeout
-
 	flag.BoolVar(&runnermode, "runnermode", false, "enable to disable tests and act as a 'runner' client")
 	flag.BoolVar(&runnerfail, "runnerfail", false, "make the runner client fail")
 	flag.BoolVar(&runnerdebug, "runnerdebug", false, "make the runner create debug files")

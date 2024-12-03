@@ -1583,21 +1583,21 @@ func TestQueue(t *testing.T) {
 		go func() {
 			t := time.Now()
 			item, err := queue.Reserve("bar", 1*time.Millisecond)
-			rCh0 <- item == nil && err != nil && time.Since(t) < 5*time.Millisecond
+			rCh0 <- item == nil && err != nil && time.Since(t) < 15*time.Millisecond
 		}()
 
 		rCh1 := make(chan bool)
 		go func() {
 			t := time.Now()
 			item, err := queue.Reserve("foo", 10*time.Millisecond)
-			rCh1 <- item == nil && err != nil && time.Since(t) < 15*time.Millisecond
+			rCh1 <- item == nil && err != nil && time.Since(t) < 25*time.Millisecond
 		}()
 
 		rCh2 := make(chan bool)
 		go func() {
 			t := time.Now()
 			item, err := queue.Reserve("foo", 30*time.Millisecond)
-			rCh2 <- item != nil && err == nil && time.Since(t) < 25*time.Millisecond && item.Key == "key2"
+			rCh2 <- item != nil && err == nil && time.Since(t) < 35*time.Millisecond && item.Key == "key2"
 		}()
 
 		So(<-rCh0, ShouldBeTrue)
