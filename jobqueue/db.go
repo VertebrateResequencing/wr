@@ -37,8 +37,8 @@ import (
 	"strings"
 	"time"
 
-	"sync"
 	"github.com/wtsi-ssg/wr/clog"
+	"sync"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/internal"

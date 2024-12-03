@@ -33,12 +33,12 @@ updates with a view on all your workflows on one screen, its permanent
 searchable history of all the commands you have ever run, and its "live"
 dependencies enabling easy automation of on-going projects.
 
-Basics
+# Basics
 
 Start up the manager daemon, which gives you a url you can view the web
 interface on:
 
-    wr manager start -s local
+	wr manager start -s local
 
 In addition to the "local" scheduler, which will run your commands on all
 available cores of the local machine, you can also have it run your commands on
@@ -47,12 +47,12 @@ number of servers needed up and down automatically).
 
 Now, stick the commands you want to run in a text file and:
 
-    wr add -f myCommands.txt
+	wr add -f myCommands.txt
 
 Arbitrarily complex workflows can be formed by specifying command dependencies.
 Use the --help option of `wr add` for details.
 
-Package Overview
+# Package Overview
 
 wr's core is implemented in the queue package. This is the in-memory job queue
 that holds commands that still need to be run. Its multiple sub-queues enable

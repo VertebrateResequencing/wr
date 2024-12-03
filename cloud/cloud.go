@@ -37,40 +37,40 @@ to allow user fuse mounts.
 Please note that the methods in this package are NOT safe to be used by more
 than 1 process at a time.
 
-    import "github.com/VertebrateResequencing/wr/cloud"
+	    import "github.com/VertebrateResequencing/wr/cloud"
 
-    // deploy
-    provider, err := cloud.New("openstack", "wr-prod-username",
-		"/home/username/.wr-production/created_cloud_resources")
-    err = provider.Deploy(&cloud.DeployConfig{
-        RequiredPorts:  []int{22},
-        GatewayIP:      "192.168.64.1",
-        CIDR:           "192.168.64.0/18",
-        DNSNameServers: [...]string{"8.8.4.4", "8.8.8.8"},
-    })
+	    // deploy
+	    provider, err := cloud.New("openstack", "wr-prod-username",
+			"/home/username/.wr-production/created_cloud_resources")
+	    err = provider.Deploy(&cloud.DeployConfig{
+	        RequiredPorts:  []int{22},
+	        GatewayIP:      "192.168.64.1",
+	        CIDR:           "192.168.64.0/18",
+	        DNSNameServers: [...]string{"8.8.4.4", "8.8.8.8"},
+	    })
 
-    // spawn a server
-    flavor := provider.CheapestServerFlavor(1, 1024, "")
-    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, true)
-    ctx := context.Background()
-    server.WaitUntilReady(ctx, "~/.s3cfg")
+	    // spawn a server
+	    flavor := provider.CheapestServerFlavor(1, 1024, "")
+	    server, err = provider.Spawn("Ubuntu Xenial", "ubuntu", flavor.ID, 20, 2 * time.Minute, true)
+	    ctx := context.Background()
+	    server.WaitUntilReady(ctx, "~/.s3cfg")
 
-    // simplistic way of making the most of the server by running as many
-    // commands as possible:
-    for _, cmd := range myCmds {
-        if server.HasSpaceFor(1, 1024, 1) > 0 {
-            server.Allocate(1, 1024, 1)
-            go func() {
-                server.RunCmd(ctx, cmd, false)
-                server.Release(1, 1024, 1)
-            }()
-        } else {
-            break
-        }
-    }
+	    // simplistic way of making the most of the server by running as many
+	    // commands as possible:
+	    for _, cmd := range myCmds {
+	        if server.HasSpaceFor(1, 1024, 1) > 0 {
+	            server.Allocate(1, 1024, 1)
+	            go func() {
+	                server.RunCmd(ctx, cmd, false)
+	                server.Release(1, 1024, 1)
+	            }()
+	        } else {
+	            break
+	        }
+	    }
 
-    // destroy everything created
-    provider.TearDown()
+	    // destroy everything created
+	    provider.TearDown()
 */
 package cloud
 

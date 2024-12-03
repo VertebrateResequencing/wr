@@ -22,15 +22,15 @@ structure provided by the queue package over a network.
 
 It provides a job queue and running system which guarantees:
 
-  # Created jobs are never lost accidentally.
-  # The same job will not run more than once simultaneously:
-    - Duplicate jobs are not created
-    - Each job is handled by only a single client
-  # Jobs are handled in the desired order (user priority and fifo, after
-    dependencies have been satisfied).
-  # Jobs still get run despite crashing clients.
-  # Completed jobs are kept forever for historical and "live" dependency
-    purposes.
+	# Created jobs are never lost accidentally.
+	# The same job will not run more than once simultaneously:
+	  - Duplicate jobs are not created
+	  - Each job is handled by only a single client
+	# Jobs are handled in the desired order (user priority and fifo, after
+	  dependencies have been satisfied).
+	# Jobs still get run despite crashing clients.
+	# Completed jobs are kept forever for historical and "live" dependency
+	  purposes.
 
 You bring up the server, then use a client to add commands (jobs) to the queue.
 The server then interacts with the configured scheduler to start running the
@@ -44,58 +44,58 @@ viewing the real-time updated status web interface.
 
 Server
 
-    import "github.com/VertebrateResequencing/wr/jobqueue"
-    server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
-        Port:            "12345",
-        WebPort:         "12346",
-        SchedulerName:   "local",
-        SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
-        RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
-        DBFile:          "/home/username/.wr_production/boltdb",
-        DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
-		TokenFile:       "/home/username/.wr_production/client.token",
-		CAFile:          "/home/username/.wr_production/ca.pem",
-        CertFile:        "/home/username/.wr_production/cert.pem",
-        CertDomain:      "my.internal.domain.com",
-        KeyFile:         "/home/username/.wr_production/key.pem",
-        Deployment:      "production",
-        CIDR:            "",
-    })
-    err = server.Block()
+	    import "github.com/VertebrateResequencing/wr/jobqueue"
+	    server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
+	        Port:            "12345",
+	        WebPort:         "12346",
+	        SchedulerName:   "local",
+	        SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
+	        RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
+	        DBFile:          "/home/username/.wr_production/boltdb",
+	        DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
+			TokenFile:       "/home/username/.wr_production/client.token",
+			CAFile:          "/home/username/.wr_production/ca.pem",
+	        CertFile:        "/home/username/.wr_production/cert.pem",
+	        CertDomain:      "my.internal.domain.com",
+	        KeyFile:         "/home/username/.wr_production/key.pem",
+	        Deployment:      "production",
+	        CIDR:            "",
+	    })
+	    err = server.Block()
 
-Client
+# Client
 
 An example client, one for adding commands to the job queue:
 
-    import {
-        "github.com/VertebrateResequencing/wr/jobqueue"
-        jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-    }
+	import {
+	    "github.com/VertebrateResequencing/wr/jobqueue"
+	    jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	}
 
-    var jobs []*jobqueue.Job
-    other := make(map[string]string)
-    var deps []*jobqueue.Dependency
-    deps = append(deps, jobqueue.NewDepGroupDependency("step1"))
-    jobs = append(jobs, &jobqueue.Job{
-        RepGroup:     "friendly name",
-        Cmd:          "myexe -args",
-        Cwd:          "/tmp",
-        ReqGroup:     "myexeInArgsMode",
-        Requirements: &jqs.Requirements{RAM: 1024, Time: 10 * time.Minute, Cores: 1, Disk: 1, Other: other},
-        Override:     uint8(0),
-        Priority:     uint8(0),
-        Retries:      uint8(3),
-        DepGroups:    []string{"step2"},
-        Dependencies: deps,
-    })
+	var jobs []*jobqueue.Job
+	other := make(map[string]string)
+	var deps []*jobqueue.Dependency
+	deps = append(deps, jobqueue.NewDepGroupDependency("step1"))
+	jobs = append(jobs, &jobqueue.Job{
+	    RepGroup:     "friendly name",
+	    Cmd:          "myexe -args",
+	    Cwd:          "/tmp",
+	    ReqGroup:     "myexeInArgsMode",
+	    Requirements: &jqs.Requirements{RAM: 1024, Time: 10 * time.Minute, Cores: 1, Disk: 1, Other: other},
+	    Override:     uint8(0),
+	    Priority:     uint8(0),
+	    Retries:      uint8(3),
+	    DepGroups:    []string{"step2"},
+	    Dependencies: deps,
+	})
 
-    jq, err := jobqueue.Connect(
-        "localhost:12345",
-        "/home/username/.wr_production/ca.pem",
-        "my.internal.domain.com",
-        token,
-        30 * time.Second
-    )
-    inserts, dups, err := jq.Add(jobs, os.Environ())
+	jq, err := jobqueue.Connect(
+	    "localhost:12345",
+	    "/home/username/.wr_production/ca.pem",
+	    "my.internal.domain.com",
+	    token,
+	    30 * time.Second
+	)
+	inserts, dups, err := jq.Add(jobs, os.Environ())
 */
 package jobqueue

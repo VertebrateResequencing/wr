@@ -36,8 +36,8 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
-	"sync"
 	"github.com/wtsi-ssg/wr/clog"
+	"sync"
 
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"

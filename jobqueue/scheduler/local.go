@@ -34,9 +34,9 @@ import (
 	"syscall"
 	"time"
 
-	"sync"
 	"github.com/wtsi-ssg/wr/clog"
 	mth "github.com/wtsi-ssg/wr/math"
+	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"

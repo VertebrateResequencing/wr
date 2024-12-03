@@ -49,38 +49,38 @@ some action). When you know you have a transient problem preventing you from
 handling the item right now, you can manually Release() the item back to the
 delay queue.
 
-    import "github.com/VertebrateResequencing/wr/queue"
-    q = queue.New("myQueue")
-    q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
-        for _, item := range allitemdata {
-            // cast item to the original type, then arrange to do something now
-            // you know that the item is ready to be processed
-        }
-    })
+	    import "github.com/VertebrateResequencing/wr/queue"
+	    q = queue.New("myQueue")
+	    q.SetReadyAddedCallback(func(queuename string, allitemdata []interface{}) {
+	        for _, item := range allitemdata {
+	            // cast item to the original type, then arrange to do something now
+	            // you know that the item is ready to be processed
+	        }
+	    })
 
-    // add an item to the queue
-    ttr := 30 * time.Second
-    item, err := q.Add("uuid1", "", "item data1", 0, 0 * time.Second, ttr)
-    item, err := q.Add("uuid2", "group", "item data2", 0, 0 * time.Second, ttr)
+	    // add an item to the queue
+	    ttr := 30 * time.Second
+	    item, err := q.Add("uuid1", "", "item data1", 0, 0 * time.Second, ttr)
+	    item, err := q.Add("uuid2", "group", "item data2", 0, 0 * time.Second, ttr)
 
-    // get it back out
-    item, err = queue.Get("uuid1")
+	    // get it back out
+	    item, err = queue.Get("uuid1")
 
-    // reserve the next item with no group
-    item, err = queue.Reserve("", 0)
+	    // reserve the next item with no group
+	    item, err = queue.Reserve("", 0)
 
-    // or reserve the next item in a particular group
-	item, err = queue.Reserve("group", 0)
+	    // or reserve the next item in a particular group
+		item, err = queue.Reserve("group", 0)
 
-	// or reserve even if there are no items in the queue right now, waiting
-	// until something gets added or otherwise becomes ready
-	item, err = queue.Reserve("group", 1 * time.Second)
+		// or reserve even if there are no items in the queue right now, waiting
+		// until something gets added or otherwise becomes ready
+		item, err = queue.Reserve("group", 1 * time.Second)
 
-    // queue.Touch() every < ttr seconds if you might take longer than ttr to
-    // process the item
+	    // queue.Touch() every < ttr seconds if you might take longer than ttr to
+	    // process the item
 
-    // say you successfully handled the item
-    item.Remove()
+	    // say you successfully handled the item
+	    item.Remove()
 */
 package queue
 
@@ -89,8 +89,8 @@ import (
 	"errors"
 	"time"
 
-	"sync"
 	"github.com/wtsi-ssg/wr/clog"
+	"sync"
 )
 
 // SubQueue is how we name the sub-queues of a Queue.

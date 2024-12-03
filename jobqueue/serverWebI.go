@@ -26,8 +26,8 @@ import (
 	"net/http"
 	"strings"
 
-	"sync"
 	"github.com/wtsi-ssg/wr/clog"
+	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"

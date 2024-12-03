@@ -34,9 +34,9 @@ import (
 	"strings"
 	"time"
 
-	"sync"
 	"github.com/sb10/waitgroup"
 	"github.com/wtsi-ssg/wr/clog"
+	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"

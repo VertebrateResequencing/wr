@@ -506,12 +506,12 @@ func (s *k8s) runCmd(ctx context.Context, cmd string, req *Requirements, reserve
 	return err
 }
 
-//  * Run on the manager, inside the cluster * This is ugly, I'm sorry.
-//  Rewrite any relative path to replace '~/' with TempMountPath returning
-//  []client.FilePair to be copied to the runner. currently only relative paths
-//  are allowed, any path not starting '~/' is dropped as everything ultimately
-//  needs to go into TempMountPath as that's the volume that gets preserved
-//  across containers.
+// * Run on the manager, inside the cluster * This is ugly, I'm sorry.
+// Rewrite any relative path to replace '~/' with TempMountPath returning
+// []client.FilePair to be copied to the runner. currently only relative paths
+// are allowed, any path not starting '~/' is dropped as everything ultimately
+// needs to go into TempMountPath as that's the volume that gets preserved
+// across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory os.user.Current() was failing in a pod.
 	// https://github.com/mitchellh/go-homedir ?

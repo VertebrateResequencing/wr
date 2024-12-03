@@ -28,27 +28,27 @@ you're done with it you Release() the request so that some other request can
 
 The Protector offers these guarantees:
 
-  # The maximum number of requests that are granted and in play at any one time
-    is the lesser of the Protector's maxSimultaneous value or the return value
-    of the Protector's AvailabilityCallback (if set).
-  # Requests (and the calling of the AvailabilityCallback, if set) are granted
-    with at least a delay of the Protector's delayBetween value between each
-    grant (or call).
-  # If clients fail to release granted requests, they will be automatically
-    released.
+	# The maximum number of requests that are granted and in play at any one time
+	  is the lesser of the Protector's maxSimultaneous value or the return value
+	  of the Protector's AvailabilityCallback (if set).
+	# Requests (and the calling of the AvailabilityCallback, if set) are granted
+	  with at least a delay of the Protector's delayBetween value between each
+	  grant (or call).
+	# If clients fail to release granted requests, they will be automatically
+	  released.
 
-    import "github.com/VertebrateResequencing/wr/rp"
+	  import "github.com/VertebrateResequencing/wr/rp"
 
-    p := rp.New("irods", 2 * time.Second, 20, 5 * time.Minute)
+	  p := rp.New("irods", 2 * time.Second, 20, 5 * time.Minute)
 
-    // now every time you want use the protected resource, make a request:
-    receipt, err := p.Request(1)
-    p.WaitUntilGranted(receipt)
+	  // now every time you want use the protected resource, make a request:
+	  receipt, err := p.Request(1)
+	  p.WaitUntilGranted(receipt)
 
-    // now use the irods resource; if using it will take longer than 5mins,
-    // arrange to call p.Touch(receipt) every, say, 2.5mins until you're done
+	  // now use the irods resource; if using it will take longer than 5mins,
+	  // arrange to call p.Touch(receipt) every, say, 2.5mins until you're done
 
-    // once you've finished using the resource:
-    p.Release(receipt)
+	  // once you've finished using the resource:
+	  p.Release(receipt)
 */
 package rp
