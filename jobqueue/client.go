@@ -1242,7 +1242,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	// run behaviours
-	berr := job.TriggerBehaviours(myerr == nil)
+	berr := job.TriggerBehaviours(err == nil && myerr == nil)
 	if berr != nil {
 		if myerr != nil {
 			myerr = fmt.Errorf("%v; behaviour(s) also had problem(s): %w", myerr, berr)
