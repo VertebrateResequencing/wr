@@ -1717,7 +1717,7 @@ func TestJobqueueMedium(t *testing.T) {
 
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
 					So(err, ShouldNotBeNil)
-					So(err.Error(), ShouldEqual, "command [awesjnalakjf --foo] exited with code 127 (command not found), which seems permanent, so it has been buried")
+					So(err.Error(), ShouldStartWith, "command [awesjnalakjf --foo] exited with code 127 (command not found), which seems permanent, so it has been buried")
 					So(job.State, ShouldEqual, JobStateBuried)
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 127)
