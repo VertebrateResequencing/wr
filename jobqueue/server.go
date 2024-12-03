@@ -37,12 +37,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/wtsi-ssg/wr/clog"
-	"sync"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -914,7 +914,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// store token on disk
 	if config.TokenFile != "" {
-		err = os.WriteFile(config.TokenFile, token, 0600)
+		err = os.WriteFile(config.TokenFile, token, 0o600)
 		if err != nil {
 			return s, msg, token, err
 		}
@@ -1153,7 +1153,7 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 			clog.Error(ctx, "uploadFile create directory error", "err", err)
 			return "", err
 		}
-		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0600)
+		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0o600)
 		if err != nil {
 			clog.Error(ctx, "uploadFile create file error", "err", err)
 			return "", err

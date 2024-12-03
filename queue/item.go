@@ -23,10 +23,9 @@ package queue
 // This file implements the items that are added to queues.
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
-
-	"sync"
 )
 
 // ItemState is how we describe the possible item states.

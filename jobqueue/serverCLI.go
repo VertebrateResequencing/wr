@@ -225,7 +225,6 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 				if !skip {
 					item, err = s.reserveWithLimits(ctx, cr.SchedulerGroup, cr.Timeout)
-
 					if err != nil {
 						if qerr, ok := err.(queue.Error); ok {
 							switch qerr.Err {

@@ -170,7 +170,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("not when file is not writable", func() {
 			f, err := os.OpenFile(filepath.Join(os.TempDir(), "testNoWrite"),
-				os.O_APPEND|os.O_CREATE|os.O_RDONLY, 0444)
+				os.O_APPEND|os.O_CREATE|os.O_RDONLY, 0o444)
 			So(err, ShouldBeNil)
 
 			buff := setBufferLevel()
@@ -673,7 +673,7 @@ func TestConfig(t *testing.T) {
 			dir, err := os.MkdirTemp("", "wr_conf_test")
 			So(err, ShouldBeNil)
 			path := dir + "/jobqueue/server.go"
-			err = os.MkdirAll(path, 0777)
+			err = os.MkdirAll(path, 0o777)
 			So(err, ShouldBeNil)
 			defer func() {
 				defer os.RemoveAll(dir)

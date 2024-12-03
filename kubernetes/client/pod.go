@@ -123,7 +123,7 @@ func addFile(tw *tar.Writer, fpath string, dest string) error {
 // Writes tarball to an io.writer Takes a slice of FilePair(s), format source,
 // destination.
 func makeTar(files []FilePair, writer io.Writer) error {
-	//Set up tar writer
+	// Set up tar writer
 	tarWriter := tar.NewWriter(writer)
 	var err error
 	defer func() {

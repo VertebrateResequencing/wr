@@ -25,9 +25,9 @@ import (
 	"embed"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/wtsi-ssg/wr/clog"
-	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -169,7 +169,7 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 
 // webSocket upgrades a http connection to a websocket
 func webSocket(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
-	var upgrader = websocket.Upgrader{
+	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}

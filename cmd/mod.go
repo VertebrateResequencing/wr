@@ -33,9 +33,11 @@ import (
 )
 
 // options for this cmd
-var cmdCwdMattersUnset bool
-var cmdChangeHomeUnset bool
-var cmdCloudSharedDiskUnset bool
+var (
+	cmdCwdMattersUnset      bool
+	cmdChangeHomeUnset      bool
+	cmdCloudSharedDiskUnset bool
+)
 
 const nothingBehaviour = `[{"Nothing":true}]`
 

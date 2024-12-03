@@ -81,7 +81,6 @@ func (c *Controller) createQueueAndInformer() {
 				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).List(metav1.ListOptions{
 					LabelSelector: "app=wr-manager",
 				})
-
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).Watch(metav1.ListOptions{
@@ -92,7 +91,7 @@ func (c *Controller) createQueueAndInformer() {
 			},
 		},
 		&apiv1.Pod{},
-		0, //Skip resync
+		0, // Skip resync
 		cache.Indexers{},
 	)
 }
@@ -110,7 +109,6 @@ func (c *Controller) addEventHandlers() {
 			if err == nil {
 				c.queue.Add(key)
 			}
-
 		},
 		DeleteFunc: func(obj interface{}) {
 			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
@@ -242,7 +240,7 @@ func (c *Controller) processPod(ctx context.Context, obj *apiv1.Pod) {
 			// Write the pod name, name to the resources file. This allows us to
 			// retrieve it to obtain the client.token
 			resources := &cloud.Resources{}
-			file, err := os.OpenFile(c.Opts.ResourcePath, os.O_RDONLY, 0600)
+			file, err := os.OpenFile(c.Opts.ResourcePath, os.O_RDONLY, 0o600)
 			if err != nil {
 				c.Error("could not open resource file", "path", c.Opts.ResourcePath, "error", err)
 				return
@@ -258,7 +256,7 @@ func (c *Controller) processPod(ctx context.Context, obj *apiv1.Pod) {
 			if err != nil {
 				c.Error("failed to close resource file", "error", err)
 			}
-			file2, err := os.OpenFile(c.Opts.ResourcePath, os.O_WRONLY, 0600)
+			file2, err := os.OpenFile(c.Opts.ResourcePath, os.O_WRONLY, 0o600)
 			if err != nil {
 				c.Error("failed to open file2", "error", err)
 			}

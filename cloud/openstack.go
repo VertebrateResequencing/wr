@@ -32,11 +32,11 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sb10/waitgroup"
 	"github.com/wtsi-ssg/wr/clog"
-	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VividCortex/ewma"
@@ -107,8 +107,10 @@ var openstackValidResourceNameRegexp = regexp.MustCompile(`^[\w -]+$`)
 // OS_PROJECT_ID, OS_PROJECT_NAME (with *PROJECT* overriding *TENANT*, and only
 // one of the *DOMAIN* variables being allowed to be set). We also use
 // OS_POOL_NAME to determine the name of the network to get floating IPs from.
-var openstackReqEnvs = [...]string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME"}
-var openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
+var (
+	openstackReqEnvs   = [...]string{"OS_AUTH_URL", "OS_USERNAME", "OS_PASSWORD", "OS_REGION_NAME"}
+	openstackMaybeEnvs = [...]string{"OS_USERID", "OS_TENANT_ID", "OS_TENANT_NAME", "OS_DOMAIN_ID", "OS_PROJECT_DOMAIN_ID", "OS_DOMAIN_NAME", "OS_USER_DOMAIN_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME", "OS_POOL_NAME"}
+)
 
 // openstackp is our implementer of provideri
 type openstackp struct {
@@ -565,7 +567,7 @@ func (p *openstackp) deploy(ctx context.Context, resources *Resources, requiredP
 		// *** check it's valid? could we end up with more than 1 subnet?
 	} else {
 		// add a big enough subnet
-		var gip = new(string)
+		gip := new(string)
 		*gip = gatewayIP
 		var subnet *subnets.Subnet
 		subnet, err = subnets.Create(p.networkClient, subnets.CreateOpts{
@@ -686,7 +688,6 @@ func (p *openstackp) inCloud(ctx context.Context) bool {
 
 			return true, nil
 		})
-
 		if err != nil {
 			clog.Warn(ctx, "paging through servers failed", "err", err)
 		}

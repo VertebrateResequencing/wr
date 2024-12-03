@@ -23,10 +23,9 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"sync"
 	"testing"
 	"time"
-
-	"sync"
 
 	. "github.com/smartystreets/goconvey/convey"
 )

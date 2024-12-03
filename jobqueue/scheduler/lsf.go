@@ -355,8 +355,10 @@ func (s *lsf) initialize(ctx context.Context, config interface{}) error {
 	ranking := make(map[string]int)
 
 	// instead of range over criteriaHandling, because max_user must come first
-	for _, criterion := range []string{"max_user", "max", "hosts",
-		"prio", "chunk_size", "num_users", "runlimit", "memlimit"} {
+	for _, criterion := range []string{
+		"max_user", "max", "hosts",
+		"prio", "chunk_size", "num_users", "runlimit", "memlimit",
+	} {
 		// sort queues by this criterion
 		sorted := internal.SortMapKeysByMapIntValue(s.queues, criterion, criteriaHandling[criterion][1] == 1)
 

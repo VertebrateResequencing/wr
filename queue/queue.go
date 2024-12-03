@@ -87,10 +87,10 @@ package queue
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/wtsi-ssg/wr/clog"
-	"sync"
 )
 
 // SubQueue is how we name the sub-queues of a Queue.

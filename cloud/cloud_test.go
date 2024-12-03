@@ -325,7 +325,7 @@ func TestOpenStack(t *testing.T) {
 						So(stdout, ShouldEqual, "my content")
 
 						localFile := filepath.Join(crdir, "source")
-						err = os.WriteFile(localFile, []byte("uploadable content"), 0644)
+						err = os.WriteFile(localFile, []byte("uploadable content"), 0o644)
 						So(err, ShouldBeNil)
 
 						err = server.UploadFile(context.Background(), localFile, "/tmp/foo/bar/a/c/file")

@@ -32,12 +32,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/wtsi-ssg/wr/clog"
-	"sync"
 
 	"github.com/inconshreveable/log15"
 	. "github.com/smartystreets/goconvey/convey"
@@ -45,8 +45,10 @@ import (
 
 const devHost = "farm22-hgi01"
 
-var maxCPU = runtime.NumCPU()
-var testLogger = log15.New()
+var (
+	maxCPU     = runtime.NumCPU()
+	testLogger = log15.New()
+)
 
 func init() {
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
@@ -79,7 +81,7 @@ func TestLocal(t *testing.T) {
 
 			Convey("It can log error with scheduler type context for wrong timeout reqs", func() {
 				buff := clog.ToBufferAtLevel("error")
-				var otherRTReqs = make(map[string]string)
+				otherRTReqs := make(map[string]string)
 				otherRTReqs["rtimeout"] = "foo"
 				_ = s.ReserveTimeout(ctx, &Requirements{Other: otherRTReqs})
 				So(buff.String(), ShouldContainSubstring, "schedulertype=local")
@@ -474,7 +476,7 @@ func TestLSF(t *testing.T) {
 	Convey("You can get a new lsf scheduler", t, func() {
 		otherReqs := make(map[string]string)
 
-		var specifiedOther = make(map[string]string)
+		specifiedOther := make(map[string]string)
 		specifiedOther["scheduler_queue"] = "yesterday"
 		specifiedOther["scheduler_misc"] = "-R avx"
 		possibleReq := &Requirements{100, 1 * time.Minute, 1, 20, otherReqs, true, true, true}
@@ -809,8 +811,10 @@ func TestOpenstack(t *testing.T) {
 				So(flavor.Disk, ShouldEqual, 26)
 				So(flavor.Cores, ShouldEqual, 1)
 
-				flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 1, 30, otherReqs,
-					true, true, true}, "l")
+				flavor, err = oss.determineFlavor(ctx, &Requirements{
+					100, 1 * time.Minute, 1, 30, otherReqs,
+					true, true, true,
+				}, "l")
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2100")
 
@@ -818,24 +822,30 @@ func TestOpenstack(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2100")
 
-				flavor, err = oss.determineFlavor(ctx, &Requirements{100, 1 * time.Minute, 2, 1, otherReqs,
-					true, true, true}, "n")
+				flavor, err = oss.determineFlavor(ctx, &Requirements{
+					100, 1 * time.Minute, 2, 1, otherReqs,
+					true, true, true,
+				}, "n")
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2101")
 				So(flavor.RAM, ShouldEqual, 23800)
 				So(flavor.Disk, ShouldEqual, 53)
 				So(flavor.Cores, ShouldEqual, 2)
 
-				flavor, err = oss.determineFlavor(ctx, &Requirements{30000, 1 * time.Minute, 1, 1, otherReqs,
-					true, true, true}, "o")
+				flavor, err = oss.determineFlavor(ctx, &Requirements{
+					30000, 1 * time.Minute, 1, 1, otherReqs,
+					true, true, true,
+				}, "o")
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2102")
 				So(flavor.RAM, ShouldEqual, 47600)
 				So(flavor.Disk, ShouldEqual, 106)
 				So(flavor.Cores, ShouldEqual, 4)
 
-				flavor, err = oss.determineFlavor(ctx, &Requirements{64000, 1 * time.Minute, 1, 1, otherReqs,
-					true, true, true}, "p")
+				flavor, err = oss.determineFlavor(ctx, &Requirements{
+					64000, 1 * time.Minute, 1, 1, otherReqs,
+					true, true, true,
+				}, "p")
 				So(err, ShouldBeNil)
 				So(flavor.ID, ShouldEqual, "2103")
 				So(flavor.RAM, ShouldEqual, 95200)
@@ -1160,8 +1170,10 @@ func TestOpenstack(t *testing.T) {
 
 				numCores := 5
 				oReqsm := make(map[string]string)
-				multiCoreFlavor, err := oss.determineFlavor(ctx, &Requirements{1024, 1 * time.Minute, float64(numCores), 0, oReqsm,
-					true, true, true}, "u")
+				multiCoreFlavor, err := oss.determineFlavor(ctx, &Requirements{
+					1024, 1 * time.Minute, float64(numCores), 0, oReqsm,
+					true, true, true,
+				}, "u")
 				if err == nil && multiCoreFlavor.Cores >= numCores {
 					oReqs := make(map[string]string)
 					oReqs["cloud_os_ram"] = strconv.Itoa(multiCoreFlavor.RAM)

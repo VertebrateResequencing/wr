@@ -23,9 +23,8 @@ package limiter
 
 import (
 	"context"
-	"time"
-
 	"sync"
+	"time"
 )
 
 // SetLimitCallback is provided to New(). Your function should take the name of

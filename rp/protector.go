@@ -22,9 +22,8 @@ package rp
 // the Protector.
 
 import (
-	"time"
-
 	"sync"
+	"time"
 
 	"github.com/gofrs/uuid"
 )

@@ -23,9 +23,8 @@ package queue
 
 import (
 	"container/heap"
-	"time"
-
 	"sync"
+	"time"
 
 	logext "github.com/inconshreveable/log15/ext"
 )

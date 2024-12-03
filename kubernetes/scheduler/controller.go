@@ -217,7 +217,6 @@ func NewController(
 				return
 			}
 			controller.workqueue.Add(key)
-
 		},
 		DeleteFunc: func(obj interface{}) {
 			node, ok := obj.(*corev1.Node)
@@ -587,7 +586,8 @@ REQS:
 			c.Error("reqCheck failed. No node has capacity for request", "req", req)
 			req.CbChan <- Response{
 				Error:     fmt.Errorf("no node has the capacity to schedule the current job"),
-				Ephemeral: StorageEphemeralEnabled}
+				Ephemeral: StorageEphemeralEnabled,
+			}
 			c.sendErrChan(fmt.Sprintf("no node has the capacity to schedule the current job"))
 		case <-stopCh:
 			return

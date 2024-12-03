@@ -45,13 +45,15 @@ import (
 // then pulls the namespace from the resource file and runs the tests against
 // the cluster there.
 
-var tc client.Kubernetesp
-var clientset kubernetes.Interface
-var autherr error
-var config *internal.Config
-var token []byte
-var jq *jobqueue.Client
-var skip bool
+var (
+	tc        client.Kubernetesp
+	clientset kubernetes.Interface
+	autherr   error
+	config    *internal.Config
+	token     []byte
+	jq        *jobqueue.Client
+	skip      bool
+)
 
 func init() {
 	ctx := context.Background()
@@ -158,6 +160,7 @@ func TestEchoes(t *testing.T) {
 		}
 	}
 }
+
 func TestFileCreation(t *testing.T) {
 	if skip {
 		t.Skip("skipping test; failed to access cluster")

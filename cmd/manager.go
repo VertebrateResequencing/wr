@@ -44,23 +44,27 @@ import (
 )
 
 // options for this cmd
-var foreground bool
-var scheduler string
-var localUsername string
-var backupPath string
-var managerTimeoutSeconds int
-var managerDebug bool
-var maxServers int
-var maxLocalCores int
-var maxLocalRAM int
-var cloudNoSecurityGroups bool
-var cloudUseConfigDrive bool
-var useCertDomain bool
-var runnerSyslog bool
-var runnerFilelog string
+var (
+	foreground            bool
+	scheduler             string
+	localUsername         string
+	backupPath            string
+	managerTimeoutSeconds int
+	managerDebug          bool
+	maxServers            int
+	maxLocalCores         int
+	maxLocalRAM           int
+	cloudNoSecurityGroups bool
+	cloudUseConfigDrive   bool
+	useCertDomain         bool
+	runnerSyslog          bool
+	runnerFilelog         string
+)
 
-const kubernetes = "kubernetes"
-const deadlockTimeout = 5 * time.Minute
+const (
+	kubernetes      = "kubernetes"
+	deadlockTimeout = 5 * time.Minute
+)
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{

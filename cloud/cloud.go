@@ -81,9 +81,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"time"
-
 	"sync"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/gofrs/uuid"
@@ -151,8 +150,10 @@ var defaultDNSNameServers = [...]string{"8.8.4.4", "8.8.8.8"}
 
 // defaultCIDR is a useful range allowing 16384 servers to be spawned, with a
 // defaultGateWayIP at the start of that range.
-const defaultGateWayIP = "192.168.64.1"
-const defaultCIDR = "192.168.64.0/18"
+const (
+	defaultGateWayIP = "192.168.64.1"
+	defaultCIDR      = "192.168.64.0/18"
+)
 
 // touchStampFormat is the time format we use for `touch -d`.
 const touchStampFormat = "2006-01-02T15:04:05-0700"
@@ -587,7 +588,8 @@ func (p *Provider) pickCheapestFlavorFromSubset(ctx context.Context, cores, ramM
 // In the special case that sets is an empty slice, returns the result of
 // CheapestServerFlavor() in a 1 element slice.
 func (p *Provider) CheapestServerFlavors(ctx context.Context, cores, ramMB int,
-	regex string, sets [][]string) ([]*Flavor, error) {
+	regex string, sets [][]string,
+) ([]*Flavor, error) {
 	if len(sets) == 0 {
 		f, err := p.CheapestServerFlavor(ctx, cores, ramMB, regex)
 		return []*Flavor{f}, err
@@ -676,7 +678,8 @@ type SpawnUsingQuotaCallback func()
 // boot up; call server.WaitUntilReady() before trying to use the server for
 // anything.
 func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID string,
-	diskGB int, ttd time.Duration, externalIP bool, usingQuotaCB ...SpawnUsingQuotaCallback) (*Server, error) {
+	diskGB int, ttd time.Duration, externalIP bool, usingQuotaCB ...SpawnUsingQuotaCallback,
+) (*Server, error) {
 	f, found := p.impl.flavors(p.cloudContext(ctx))[flavorID]
 	if !found {
 		return nil, Error{"cloud", "Spawn", ErrBadFlavor}
@@ -693,7 +696,6 @@ func (p *Provider) Spawn(ctx context.Context, os string, osUser string, flavorID
 
 	serverID, serverIP, serverName, adminPass, err := p.impl.spawn(p.cloudContext(ctx), p.resources, os,
 		flavorID, diskGB, externalIP, usingQuota)
-
 	if err != nil {
 		return nil, err
 	}
@@ -900,7 +902,7 @@ func (p *Provider) TearDown(ctx context.Context) error {
 func (p *Provider) saveResources(ctx context.Context) error {
 	p.Lock()
 	defer p.Unlock()
-	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	file, err := os.OpenFile(p.savePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

@@ -45,13 +45,13 @@ const (
 	certFileFlags int = os.O_RDWR | os.O_CREATE | os.O_TRUNC
 
 	// certMode is the file mode for certificate file.
-	certMode os.FileMode = 0666
+	certMode os.FileMode = 0o666
 
 	// serverKeyFlags are flags for server key file.
 	serverKeyFlags int = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 
 	// serverKeyMode is the file mode for server key file.
-	serverKeyMode os.FileMode = 0600
+	serverKeyMode os.FileMode = 0o600
 
 	// bits for rsa keys.
 	DefaultBitsForRootRSAKey   int = 2048
@@ -108,7 +108,8 @@ func (n *NumberError) Error() string {
 //
 // randReader := crand.Reader to be declared in calling function.
 func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string,
-	bitsForRootRSAKey int, bitsForServerRSAKey int, randReader io.Reader, fileFlags int) error {
+	bitsForRootRSAKey int, bitsForServerRSAKey int, randReader io.Reader, fileFlags int,
+) error {
 	err := checkIfCertsExist([]string{caFile, serverPemFile, serverKeyFile})
 	if err != nil {
 		return err
@@ -130,7 +131,8 @@ func GenerateCerts(caFile, serverPemFile, serverKeyFile, domain string,
 	}
 
 	pemBlock := &pem.Block{
-		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)}
+		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey),
+	}
 	err = encodeAndSavePEM(pemBlock, serverKeyFile, serverKeyFlags, serverKeyMode)
 
 	return err
@@ -150,7 +152,8 @@ func checkIfCertsExist(certFiles []string) error {
 
 // generateCertificates generates root and server certificates.
 func generateCertificates(caFile, domain string, rootKey *rsa.PrivateKey, serverKey *rsa.PrivateKey,
-	serverPemFile string, randReader io.Reader, fileFlags int) error {
+	serverPemFile string, randReader io.Reader, fileFlags int,
+) error {
 	rootServerTemplates := make([]*x509.Certificate, 2)
 	for i := 0; i < len(rootServerTemplates); i++ {
 		certTmplt, err := certTemplate(domain, randReader)
@@ -203,7 +206,8 @@ func certTemplate(domain string, randReader io.Reader) (*x509.Certificate, error
 
 // generateRootCert generates and returns root certificate.
 func generateRootCert(caFile string, template *x509.Certificate, rootKey *rsa.PrivateKey,
-	randReader io.Reader, fileFlags int) (*x509.Certificate, error) {
+	randReader io.Reader, fileFlags int,
+) (*x509.Certificate, error) {
 	rootCertByte, err := createCertFromTemplate(template, template, &rootKey.PublicKey, rootKey, randReader)
 	if err != nil {
 		return nil, err
@@ -220,7 +224,8 @@ func generateRootCert(caFile string, template *x509.Certificate, rootKey *rsa.Pr
 // createCertFromTemplate creates a certificate given a template, siginign it
 // against its parent. Returned in DER encoding.
 func createCertFromTemplate(template, parentCert *x509.Certificate, pubKey interface{},
-	parentPvtKey interface{}, randReader io.Reader) ([]byte, error) {
+	parentPvtKey interface{}, randReader io.Reader,
+) ([]byte, error) {
 	certDER, err := x509.CreateCertificate(randReader, template, parentCert, pubKey, parentPvtKey)
 	if err != nil {
 		return nil, &CertError{Type: ErrCertCreate, Err: err}
@@ -267,7 +272,8 @@ func encodeAndSavePEM(block *pem.Block, certPath string, flags int, mode os.File
 // generateServerCert generates and returns server certificate signed by root
 // CA.
 func generateServerCert(serverPemFile string, rootCert *x509.Certificate, template *x509.Certificate,
-	rootKey *rsa.PrivateKey, serverKey *rsa.PrivateKey, randReader io.Reader, fileFlags int) error {
+	rootKey *rsa.PrivateKey, serverKey *rsa.PrivateKey, randReader io.Reader, fileFlags int,
+) error {
 	servCertBtye, err := createCertFromTemplate(template, rootCert, &serverKey.PublicKey, rootKey, randReader)
 	if err != nil {
 		return err

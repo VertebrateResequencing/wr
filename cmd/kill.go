@@ -26,8 +26,10 @@ import (
 )
 
 // options for this cmd
-var confirmDead bool
-var cmdAge string
+var (
+	confirmDead bool
+	cmdAge      string
+)
 
 // killCmd represents the kill command
 var killCmd = &cobra.Command{

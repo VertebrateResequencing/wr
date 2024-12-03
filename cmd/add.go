@@ -42,51 +42,55 @@ const maxScanTokenSize = 4096 * 1024
 
 // sync* are the backoff values we use to poll for our synchrounous job's
 // completion.
-const syncMinBackoff = 500 * time.Millisecond
-const syncMaxBackoff = 1 * time.Minute
-const syncBackoffFactor = 1.1
+const (
+	syncMinBackoff    = 500 * time.Millisecond
+	syncMaxBackoff    = 1 * time.Minute
+	syncBackoffFactor = 1.1
+)
 
 // options for this cmd
-var reqGroup string
-var cmdTime string
-var cmdMem string
-var cmdCPUs float64
-var cmdDisk int
-var cmdOvr int
-var cmdPri int
-var cmdRet int
-var cmdFile string
-var cmdCwdMatters bool
-var cmdChangeHome bool
-var cmdRepGroup string
-var cmdLimitGroups string
-var cmdDepGroups string
-var cmdCmdDeps string
-var cmdGroupDeps string
-var cmdOnFailure string
-var cmdOnSuccess string
-var cmdOnExit string
-var cmdEnv string
-var cmdReRun bool
-var cmdOsPrefix string
-var cmdOsUsername string
-var cmdOsRAM int
-var cmdBsubMode bool
-var cmdPostCreationScript string
-var cmdCloudConfigs string
-var cmdCloudSharedDisk bool
-var cmdFlavor string
-var cmdQueue string
-var cmdQueuesAvoid string
-var cmdMisc string
-var cmdMonitorDocker string
-var cmdWithDocker string
-var cmdWithSingularity string
-var cmdContainerMounts string
-var cmdNoRetry string
-var rtimeoutint int
-var simpleOutput bool
-var syncMode bool
+var (
+	reqGroup              string
+	cmdTime               string
+	cmdMem                string
+	cmdCPUs               float64
+	cmdDisk               int
+	cmdOvr                int
+	cmdPri                int
+	cmdRet                int
+	cmdFile               string
+	cmdCwdMatters         bool
+	cmdChangeHome         bool
+	cmdRepGroup           string
+	cmdLimitGroups        string
+	cmdDepGroups          string
+	cmdCmdDeps            string
+	cmdGroupDeps          string
+	cmdOnFailure          string
+	cmdOnSuccess          string
+	cmdOnExit             string
+	cmdEnv                string
+	cmdReRun              bool
+	cmdOsPrefix           string
+	cmdOsUsername         string
+	cmdOsRAM              int
+	cmdBsubMode           bool
+	cmdPostCreationScript string
+	cmdCloudConfigs       string
+	cmdCloudSharedDisk    bool
+	cmdFlavor             string
+	cmdQueue              string
+	cmdQueuesAvoid        string
+	cmdMisc               string
+	cmdMonitorDocker      string
+	cmdWithDocker         string
+	cmdWithSingularity    string
+	cmdContainerMounts    string
+	cmdNoRetry            string
+	rtimeoutint           int
+	simpleOutput          bool
+	syncMode              bool
+)
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{

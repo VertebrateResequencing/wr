@@ -54,36 +54,38 @@ const wrConfigFileName = ".wr_config.yml"
 const wrEnvFileName = ".wr_envvars"
 
 // options for this cmd
-var providerName string
-var cloudMaxServers int
-var serverKeepAlive int
-var osPrefix string
-var osUsername string
-var osRAM int
-var osDisk int
-var flavorRegex string
-var managerFlavor string
-var flavorSets string
-var postCreationScript string
-var preDestroyScript string
-var postDeploymentScript string
-var cloudSpawns int
-var cloudGatewayIP string
-var cloudCIDR string
-var cloudDNS string
-var cloudConfigFiles string
-var forceTearDown bool
-var setDomainIP bool
-var cloudDebug bool
-var cloudManagerTimeoutSeconds int
-var cloudResourceNameUniquer string
-var maxManagerCores int
-var maxManagerRAM int
-var cloudServersAll bool
-var cloudServerID string
-var cloudServersConfirmDead bool
-var cloudServersAutoConfirmDead int
-var cloudServersDestroy string
+var (
+	providerName                string
+	cloudMaxServers             int
+	serverKeepAlive             int
+	osPrefix                    string
+	osUsername                  string
+	osRAM                       int
+	osDisk                      int
+	flavorRegex                 string
+	managerFlavor               string
+	flavorSets                  string
+	postCreationScript          string
+	preDestroyScript            string
+	postDeploymentScript        string
+	cloudSpawns                 int
+	cloudGatewayIP              string
+	cloudCIDR                   string
+	cloudDNS                    string
+	cloudConfigFiles            string
+	forceTearDown               bool
+	setDomainIP                 bool
+	cloudDebug                  bool
+	cloudManagerTimeoutSeconds  int
+	cloudResourceNameUniquer    string
+	maxManagerCores             int
+	maxManagerRAM               int
+	cloudServersAll             bool
+	cloudServerID               string
+	cloudServersConfirmDead     bool
+	cloudServersAutoConfirmDead int
+	cloudServersDestroy         string
+)
 
 // cloudCmd represents the cloud command
 var cloudCmd = &cobra.Command{
@@ -878,7 +880,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 	localKeyFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
 
-	if err = os.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0600); err != nil {
+	if err = os.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0o600); err != nil {
 		teardown(ctx, provider)
 		die("failed to create key file %s: %s", localKeyFile, err)
 	}
@@ -1112,7 +1114,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath string) error {
 	// first check if pidPath already has a pid and if that pid is alive
 	if _, running := checkProcess(pidPath); running {
-		//info("assuming the process with id %d is already forwarding port %d to %s:%d", pid, port, serverIP, port)
+		// info("assuming the process with id %d is already forwarding port %d to %s:%d", pid, port, serverIP, port)
 		return nil
 	}
 
@@ -1124,7 +1126,7 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 	}
 
 	// store ssh's pid to file
-	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
+	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
 
 	// don't cmd.Wait(); ssh will continue running in the background after we
 	// exit

@@ -32,22 +32,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const shortTimeFormat = "06/1/2-15:04:05"
-const allRepGrps = "all above"
+const (
+	shortTimeFormat = "06/1/2-15:04:05"
+	allRepGrps      = "all above"
+)
 
 // options for this cmd
-var cmdFileStatus string
-var cmdIDStatus string
-var cmdIDIsSubStr bool
-var cmdIDIsInternal bool
-var cmdLine string
-var showBuried bool
-var showRunning bool
-var showStd bool
-var showEnv bool
-var outputFormat string
-var statusLimit int
-var fromHost string
+var (
+	cmdFileStatus   string
+	cmdIDStatus     string
+	cmdIDIsSubStr   bool
+	cmdIDIsInternal bool
+	cmdLine         string
+	showBuried      bool
+	showRunning     bool
+	showStd         bool
+	showEnv         bool
+	outputFormat    string
+	statusLimit     int
+	fromHost        string
+)
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{

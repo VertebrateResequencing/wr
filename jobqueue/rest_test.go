@@ -614,7 +614,7 @@ func TestREST(t *testing.T) {
 			uploadedScript := filepath.Join(dir, "cloud.script.uploaded")
 
 			scriptContent := []byte("echo 1\n")
-			err := os.WriteFile(cloudScript, scriptContent, 0600)
+			err := os.WriteFile(cloudScript, scriptContent, 0o600)
 			So(err, ShouldBeNil)
 
 			_, err = os.Stat(uploadedScript)

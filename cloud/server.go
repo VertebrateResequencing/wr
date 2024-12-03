@@ -32,20 +32,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wtsi-ssg/wr/clog"
 	mth "github.com/wtsi-ssg/wr/math"
-	"sync"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
-const sharePath = "/shared" // mount point for the *SharedDisk methods
-const sshShortTimeOut = 15 * time.Second
-const localhostName = "localhost"
+const (
+	sharePath       = "/shared" // mount point for the *SharedDisk methods
+	sshShortTimeOut = 15 * time.Second
+	localhostName   = "localhost"
+)
 
 // maxSSHSessions is the maximum number of sessions we will try and multiplex on
 // each ssh client we make for a server. It doesn't matter if this is lower than
@@ -1051,7 +1053,7 @@ func (s *Server) DownloadFile(ctx context.Context, source string, dest string) e
 		return err
 	}
 
-	return os.Chmod(dest, 0600)
+	return os.Chmod(dest, 0o600)
 }
 
 // MkDir creates a directory (and it's parents as necessary) on the server.

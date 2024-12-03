@@ -36,7 +36,7 @@ import (
 
 const (
 	blockFileWrite int         = os.O_RDONLY | os.O_CREATE | os.O_TRUNC
-	fileMode       os.FileMode = 0600
+	fileMode       os.FileMode = 0o600
 )
 
 func TestCert(t *testing.T) {
@@ -178,7 +178,8 @@ func TestCert(t *testing.T) {
 
 			Convey("and it can store the server's private key", func() {
 				pemBlock := &pem.Block{
-					Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)}
+					Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey),
+				}
 				err = encodeAndSavePEM(pemBlock, keyFile, serverKeyFlags, serverKeyMode)
 				So(err, ShouldBeNil)
 			})

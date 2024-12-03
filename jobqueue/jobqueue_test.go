@@ -34,12 +34,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/wtsi-ssg/wr/clog"
-	"sync"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -48,23 +48,27 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const maxSpawnTime = 240 * time.Second
-const serverRC = `echo %s %s %s %s %d %d`
+const (
+	maxSpawnTime = 240 * time.Second
+	serverRC     = `echo %s %s %s %s %d %d`
+)
 
-var runnermode bool
-var runnerfail bool
-var runnerdebug bool
-var schedgrp string
-var runnermodetmpdir string
-var rdeployment string
-var rserver string
-var rdomain string
-var rtimeout int
-var maxmins int
-var envVars = os.Environ()
-var servermode bool
-var serverKeepDB bool
-var serverEnableRunners bool
+var (
+	runnermode          bool
+	runnerfail          bool
+	runnerdebug         bool
+	schedgrp            string
+	runnermodetmpdir    string
+	rdeployment         string
+	rserver             string
+	rdomain             string
+	rtimeout            int
+	maxmins             int
+	envVars             = os.Environ()
+	servermode          bool
+	serverKeepDB        bool
+	serverEnableRunners bool
+)
 
 func init() {
 	clog.ToDefault()
@@ -136,7 +140,7 @@ func TestJobqueueUtils(t *testing.T) {
 
 		// if tokenPath is a file that contains a token, generateToken doesn't
 		// generate a new token, but returns that one
-		err = os.WriteFile(tokenPath, token2, 0600)
+		err = os.WriteFile(tokenPath, token2, 0o600)
 		So(err, ShouldBeNil)
 
 		token3, err := generateToken(tokenPath)
@@ -287,7 +291,7 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 // enableRunners. This also creates config.ManagerDir dir on disk if necessary,
 // and does not delete it afterwards.
 func startServer(serverExe string, keepDB, enableRunners bool, config internal.Config, addr string) (*Client, []byte, *exec.Cmd, error) {
-	err := os.MkdirAll(config.ManagerDir, 0700)
+	err := os.MkdirAll(config.ManagerDir, 0o700)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -5847,7 +5851,7 @@ sudo usermod -aG docker ` + osUser
 
 			rg := "ccfmod"
 			ccfmodPath := "/tmp/ccfmod"
-			_, erro := os.OpenFile(ccfmodPath, os.O_RDONLY|os.O_CREATE, 0666)
+			_, erro := os.OpenFile(ccfmodPath, os.O_RDONLY|os.O_CREATE, 0o666)
 			So(erro, ShouldBeNil)
 			defer func() {
 				errr := os.Remove(ccfmodPath)
@@ -6333,7 +6337,7 @@ sudo usermod -aG docker ` + osUser
 			// create a config file locally
 			localConfigPath := filepath.Join(runnertmpdir, "test.config")
 			configContent := []byte("myconfig\n")
-			err := os.WriteFile(localConfigPath, configContent, 0600)
+			err := os.WriteFile(localConfigPath, configContent, 0o600)
 			So(err, ShouldBeNil)
 
 			// pretend the server is remote to us, and upload our config
@@ -7317,7 +7321,6 @@ func runner(ctx context.Context) {
 	//  this limit)
 
 	jq, err := Connect(rserver, config.ManagerCAFile, rdomain, token, timeout)
-
 	if err != nil {
 		log.Fatalf("connect err: %s\n", err)
 	}
