@@ -495,7 +495,7 @@ func init() {
 	addCmd.Flags().BoolVar(&cmdCloudSharedDisk, "cloud_shared", false, "mount /shared")
 	addCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
 	addCmd.Flags().StringVar(&cmdQueuesAvoid, "queues_avoid", "",
-		"substring found in queues that should not be submitted to, for schedulers with queues")
+		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
 	addCmd.Flags().StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
