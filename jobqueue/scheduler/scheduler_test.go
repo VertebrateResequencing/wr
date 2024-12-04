@@ -521,6 +521,11 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
+				otherReqs["scheduler_queues_avoid"] = "-chkpt,parallel"
+				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 100 * time.Hour, 1, 20, otherReqs, true, true, true})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, "week")
+
 				otherReqs["scheduler_queue"] = "long"
 				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)

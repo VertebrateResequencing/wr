@@ -614,8 +614,13 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 
 	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
 
+	var queuesToAvoid []string
+	if req.Other["scheduler_queues_avoid"] != "" {
+		queuesToAvoid = strings.Split(req.Other["scheduler_queues_avoid"], ",")
+	}
+
 	for _, queue := range s.sortedqs {
-		if queueShouldBeAvoided(queue, req) {
+		if queueShouldBeAvoided(queue, queuesToAvoid) {
 			continue
 		}
 
@@ -633,8 +638,14 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	return "", Error{"lsf", "determineQueue", ErrImpossible}
 }
 
-func queueShouldBeAvoided(queue string, req *Requirements) bool {
-	return req.Other["scheduler_queues_avoid"] != "" && strings.Contains(queue, req.Other["scheduler_queues_avoid"])
+func queueShouldBeAvoided(queue string, queuesToAvoid []string) bool {
+	for _, queueToAvoid := range queuesToAvoid {
+		if strings.Contains(queue, queueToAvoid) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *lsf) queueHasTooLittleMemory(queue string, req *Requirements) bool {
