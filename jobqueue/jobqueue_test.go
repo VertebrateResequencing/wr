@@ -4483,7 +4483,9 @@ func TestJobqueueRunners(t *testing.T) {
 
 								// re-enable our ability to check the job is
 								// really dead
+								jobs[0].Lock()
 								ServerLostJobCheckTimeout = 5 * time.Second
+								jobs[0].Unlock()
 							} else {
 								continue
 							}
@@ -5399,7 +5401,9 @@ func TestJobqueueRunners(t *testing.T) {
 							} else if twoHundredCount == 0 {
 								server.psgmutex.RLock()
 								if group, existed := server.previouslyScheduledGroups["200:30:1:0"]; existed {
+									group.RLock()
 									twoHundredCount = group.count
+									group.RUnlock()
 								}
 								server.psgmutex.RUnlock()
 							}
