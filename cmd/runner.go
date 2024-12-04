@@ -36,17 +36,19 @@ import (
 	"github.com/wtsi-ssg/wr/clog"
 )
 
-const logDirPerm = 0770
+const logDirPerm = 0o770
 
 // options for this cmd
-var schedgrp string
-var timeoutintRunner int
-var reserveint int
-var rserver string
-var rdomain string
-var maxtime int
-var logToSyslog bool
-var logToDir string
+var (
+	schedgrp         string
+	timeoutintRunner int
+	reserveint       int
+	rserver          string
+	rdomain          string
+	maxtime          int
+	logToSyslog      bool
+	logToDir         string
+)
 
 // runnerCmd represents the runner command
 var runnerCmd = &cobra.Command{

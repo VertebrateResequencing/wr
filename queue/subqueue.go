@@ -23,9 +23,8 @@ package queue
 
 import (
 	"container/heap"
+	"sync"
 	"time"
-
-	sync "github.com/sasha-s/go-deadlock"
 
 	logext "github.com/inconshreveable/log15/ext"
 )
@@ -100,10 +99,17 @@ func (q *subQueue) notifyPush(reserveGroup string, ch chan bool, timeout time.Du
 // must hold the mutext lock before calling this.
 func (q *subQueue) triggerNotify(reserveGroup string) {
 	if chans, ok := q.pushNotificationChannels[reserveGroup]; ok {
-		for _, ch := range chans {
+		for id, ch := range chans {
 			ch <- true
+
+			delete(chans, id)
+
+			break
 		}
-		delete(q.pushNotificationChannels, reserveGroup)
+
+		if len(chans) == 0 {
+			delete(q.pushNotificationChannels, reserveGroup)
+		}
 	}
 }
 

@@ -52,9 +52,11 @@ var jobStateToLSFState = map[jobqueue.JobState]string{
 }
 
 // options for this cmd
-var lsfNoHeader bool
-var lsfFormat string
-var lsfQueue string
+var (
+	lsfNoHeader bool
+	lsfFormat   string
+	lsfQueue    string
+)
 
 // lsfCmd represents the lsf command.
 var lsfCmd = &cobra.Command{

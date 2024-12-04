@@ -20,11 +20,10 @@ package limiter
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	sync "github.com/sasha-s/go-deadlock"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -81,6 +80,7 @@ func BenchmarkLimiterIncDec(b *testing.B) {
 		l.Decrement(first)
 	}
 }
+
 func BenchmarkLimiterCapacity(b *testing.B) {
 	ctx := context.Background()
 	limits := make(map[string]int)

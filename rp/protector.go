@@ -22,9 +22,8 @@ package rp
 // the Protector.
 
 import (
+	"sync"
 	"time"
-
-	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/gofrs/uuid"
 )

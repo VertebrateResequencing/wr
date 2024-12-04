@@ -23,10 +23,9 @@ package queue
 // This file implements the items that are added to queues.
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
-
-	sync "github.com/sasha-s/go-deadlock"
 )
 
 // ItemState is how we describe the possible item states.

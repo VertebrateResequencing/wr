@@ -42,14 +42,18 @@ import (
 const maxCloudResourceUsernameLength = 18
 
 // these variables are accessible by all subcommands.
-var deployment string
-var config *internal.Config
+var (
+	deployment string
+	config     *internal.Config
+)
 
 // these are shared by some of the subcommands.
-var addr string
-var caFile string
-var timeoutint int
-var cmdCwd string
+var (
+	addr       string
+	caFile     string
+	timeoutint int
+	cmdCwd     string
+)
 
 // RootCmd represents the base command when called without any subcommands.
 var RootCmd = &cobra.Command{
@@ -203,7 +207,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	dContext := &daemon.Context{
 		PidFileName: pidFile,
-		PidFilePerm: 0644,
+		PidFilePerm: 0o644,
 		WorkDir:     "/",
 		Args:        args,
 		Umask:       umask,

@@ -186,7 +186,6 @@ func (p *Kubernetesp) Authenticate(ctx context.Context, config AuthConfig) (kube
 		clusterConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
 			clog.Error(ctx, "failed to build cluster configuration", "path", kubevar, "err", err)
-
 		}
 
 		// Create authenticated clientset
@@ -358,7 +357,7 @@ func (p *Kubernetesp) Deploy(ctx context.Context, tempMountPath string, command 
 									LocalObjectReference: apiv1.LocalObjectReference{
 										Name: configMapName,
 									},
-									DefaultMode: int32Ptr(0777),
+									DefaultMode: int32Ptr(0o777),
 								},
 							},
 						},
@@ -516,7 +515,7 @@ func (p *Kubernetesp) Spawn(ctx context.Context, baseContainerImage string, temp
 							LocalObjectReference: apiv1.LocalObjectReference{
 								Name: configMapName,
 							},
-							DefaultMode: int32Ptr(0777),
+							DefaultMode: int32Ptr(0o777),
 						},
 					},
 				},
@@ -626,8 +625,8 @@ func (p *Kubernetesp) DestroyPod(ctx context.Context, podName string) error {
 // 1.10. It's a good idea once enough users are using 1.10+ as it simplifies the
 // copy step considerably, and removes much complexity.
 func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error) {
-	//Check if we have already created a config map with a script with the same
-	//hash.
+	// Check if we have already created a config map with a script with the same
+	// hash.
 
 	// Calculate hash of opts.Data, json stringify it first.
 	jsonData, err := json.Marshal(opts.Data)
@@ -737,5 +736,4 @@ func (p *Kubernetesp) CheckWRDeploymentHealthy(namespace string) (bool, error) {
 		}
 	}
 	return true, nil
-
 }

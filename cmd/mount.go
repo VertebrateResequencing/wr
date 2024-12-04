@@ -34,9 +34,11 @@ import (
 )
 
 // options for this cmd
-var mountSimple string
-var mountJSON string
-var mountVerbose bool
+var (
+	mountSimple  string
+	mountJSON    string
+	mountVerbose bool
+)
 
 // mountCmd represents the mount command
 var mountCmd = &cobra.Command{

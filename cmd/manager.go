@@ -20,7 +20,6 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -31,7 +30,6 @@ import (
 	"syscall"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -46,23 +44,27 @@ import (
 )
 
 // options for this cmd
-var foreground bool
-var scheduler string
-var localUsername string
-var backupPath string
-var managerTimeoutSeconds int
-var managerDebug bool
-var maxServers int
-var maxLocalCores int
-var maxLocalRAM int
-var cloudNoSecurityGroups bool
-var cloudUseConfigDrive bool
-var useCertDomain bool
-var runnerSyslog bool
-var runnerFilelog string
+var (
+	foreground            bool
+	scheduler             string
+	localUsername         string
+	backupPath            string
+	managerTimeoutSeconds int
+	managerDebug          bool
+	maxServers            int
+	maxLocalCores         int
+	maxLocalRAM           int
+	cloudNoSecurityGroups bool
+	cloudUseConfigDrive   bool
+	useCertDomain         bool
+	runnerSyslog          bool
+	runnerFilelog         string
+)
 
-const kubernetes = "kubernetes"
-const deadlockTimeout = 5 * time.Minute
+const (
+	kubernetes      = "kubernetes"
+	deadlockTimeout = 5 * time.Minute
+)
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -766,18 +768,6 @@ func startJQ(postCreation, preDestroy []byte) {
 	}
 
 	var wgDebug strings.Builder
-	deadlockBuf := new(bytes.Buffer)
-	sync.Opts.LogBuf = deadlockBuf
-	sync.Opts.DeadlockTimeout = deadlockTimeout
-	sync.Opts.OnPotentialDeadlock = func() {
-		wgMsg := wgDebug.String()
-		if wgMsg != "" {
-			clog.Warn(ctxf, "waitgroups waiting", "msgs", wgMsg)
-			wgDebug.Reset()
-		}
-
-		clog.Crit(ctxf, "deadlock", "err", deadlockBuf.String())
-	}
 	waitgroup.Opts.Logger = &wgDebug
 	waitgroup.Opts.Disable = false
 

@@ -55,16 +55,20 @@ const mkHashedLevels = 4
 // tokenLength is the fixed size of our authentication token
 const tokenLength = 43
 
-const reqSchedSpecialRAM = 924
-const reqSchedExtraRAM = 100
-const reqSchedTimeRound = 30 * time.Minute
+const (
+	reqSchedSpecialRAM = 924
+	reqSchedExtraRAM   = 100
+	reqSchedTimeRound  = 30 * time.Minute
+)
 
 var pss = []byte("Pss:")
 
 // cr, lf and ellipses get used by stdFilter()
-var cr = []byte("\r")
-var lf = []byte("\n")
-var ellipses = []byte("[...]\n")
+var (
+	cr       = []byte("\r")
+	lf       = []byte("\n")
+	ellipses = []byte("[...]\n")
+)
 
 // generateToken creates a cryptographically secure pseudorandom URL-safe base64
 // encoded string 43 bytes long. Used by the server to create a token passed to
@@ -328,6 +332,7 @@ func (w *prefixSuffixSaver) Write(p []byte) (int, error) {
 	}
 	return lenp, nil
 }
+
 func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) []byte {
 	if remain := w.N - len(*dst); remain > 0 {
 		add := minInt(len(p), remain)
@@ -336,6 +341,7 @@ func (w *prefixSuffixSaver) fill(dst *[]byte, p []byte) []byte {
 	}
 	return p
 }
+
 func (w *prefixSuffixSaver) Bytes() []byte {
 	if w.suffix == nil {
 		return w.prefix
@@ -353,6 +359,7 @@ func (w *prefixSuffixSaver) Bytes() []byte {
 	buf.Write(w.suffix[:w.suffixOff])
 	return buf.Bytes()
 }
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -475,7 +482,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 		// remove these dirs
 		tries = 0
 		var f *os.File
-		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0600)
+		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0o600)
 		if err != nil {
 			tries++
 			if tries <= 3 {

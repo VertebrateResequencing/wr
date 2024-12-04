@@ -27,11 +27,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	sync "github.com/sasha-s/go-deadlock"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -342,13 +341,13 @@ type Job struct {
 //
 // * Cmd is stored in a tmp file.
 // * A new `docker run` or `singularity shell` command is returned that:
-//   * Pulls the image specified in WithDocker|Singularity if it is missing.
-//   * Creates a container (with docker, it's name will be our Key()).
-//     * That will mount Cwd inside the container and use it as the workdir.
-//     * That will also mount any ContainerMounts.
-//     * That for docker will tell it to use our explicit EnvOverrides
-//       (singularity will use all env vars).
-//     * That will receive a pipe of the Cmd file contents to its shell.
+//   - Pulls the image specified in WithDocker|Singularity if it is missing.
+//   - Creates a container (with docker, it's name will be our Key()).
+//   - That will mount Cwd inside the container and use it as the workdir.
+//   - That will also mount any ContainerMounts.
+//   - That for docker will tell it to use our explicit EnvOverrides
+//     (singularity will use all env vars).
+//   - That will receive a pipe of the Cmd file contents to its shell.
 //
 // In the case of WithDocker, MonitorDocker will also be set to our Key().
 //

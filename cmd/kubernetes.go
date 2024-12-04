@@ -65,14 +65,16 @@ const linuxBinaryName = "/wr"
 const kubeLogFileName = "k8sDeployLog"
 
 // options for this cmd
-var podPostCreationScript string
-var containerImage string
-var podConfigFiles string
-var kubeDebug bool
-var kubeNamespace string
-var maxPods int
-var configMapName string
-var kubeConfig string
+var (
+	podPostCreationScript string
+	containerImage        string
+	podConfigFiles        string
+	kubeDebug             bool
+	kubeNamespace         string
+	maxPods               int
+	configMapName         string
+	kubeConfig            string
+)
 
 // kubeCmd represents the cloud command
 var kubeCmd = &cobra.Command{
@@ -268,7 +270,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 		// If a resource file exists or a namespace is passed as a flag check to
 		// see if there is an existing manager deployment to reconnect to
 
-		var kubeDeploy bool //defaults false
+		var kubeDeploy bool // defaults false
 
 		// A namespace is passed, it takes priority.
 		if len(kubeNamespace) != 0 {
@@ -347,7 +349,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 
 		// Daemonise
 		fwPidPath := filepath.Join(config.ManagerDir, "kubernetes_resources.fw.pid")
-		umask := 007
+		umask := 0o07
 		child, context := daemonize(fwPidPath, umask, extraArgs...)
 		if child != nil {
 			// PostParent() (Runs in the parent process after spawning child)
@@ -377,7 +379,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			token := stdOut
 
 			// Write token to file
-			err = os.WriteFile(config.ManagerTokenFile, []byte(token), 0644)
+			err = os.WriteFile(config.ManagerTokenFile, []byte(token), 0o644)
 			if err != nil {
 				warn("Failed to write token to file: %s", err)
 			}
@@ -417,7 +419,8 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 					ResourceName: "Kubernetes",
 					Details:      make(map[string]string),
 					PrivateKey:   "",
-					Servers:      make(map[string]*cloud.Server)}
+					Servers:      make(map[string]*cloud.Server),
+				}
 
 				// Populate the rest of Kubernetesp. If there is a predefined
 				// namespace set, use it.
@@ -453,7 +456,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				resources.Details["managerConfigMapName"] = managerConfigMapName
 
 				// Save resources.
-				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 				if erro != nil {
 					warn("failed to open resource file %s for writing: %s", resourcePath, erro)
 				}
@@ -667,11 +670,11 @@ accessible.`,
 		}
 
 		// write logs to file
-		err = os.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0644)
+		err = os.WriteFile(config.ManagerDir+"/kubeSchedulerLog", []byte(kubeSchedulerLog), 0o644)
 		if err != nil {
 			warn("failed to write kubeSchedulerLog to file: %s", err)
 		}
-		err = os.WriteFile(config.ManagerDir+"/kubeSchedulerControllerLog", []byte(kubeSchedulerControllerLog), 0644)
+		err = os.WriteFile(config.ManagerDir+"/kubeSchedulerControllerLog", []byte(kubeSchedulerControllerLog), 0o644)
 		if err != nil {
 			warn("failed to write kubeSchedulerControllerLog to file: %s", err)
 		}
@@ -681,7 +684,7 @@ accessible.`,
 		if errl != nil {
 			warn("error retrieving log file: %s", errl)
 		}
-		errf := os.WriteFile(config.ManagerDir+"/log", []byte(log), 0644)
+		errf := os.WriteFile(config.ManagerDir+"/log", []byte(log), 0o644)
 		if errf != nil {
 			warn("failed to write log to file: %s", errf)
 		}

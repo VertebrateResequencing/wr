@@ -35,33 +35,33 @@ If you need to change the limit of a group, your callback should start returning
 the new limit, and you should call SetLimit() to change the memorised limit, if
 any.
 
-    import "github.com/VertebrateResequencing/wr/limiter"
+	import "github.com/VertebrateResequencing/wr/limiter"
 
-    cb := func(name string) int {
-        if name == "l1" {
-            return 3
-        } else if name == "l2" {
-            return 2
-        }
-        return 0
-    }
+	cb := func(name string) int {
+	    if name == "l1" {
+	        return 3
+	    } else if name == "l2" {
+	        return 2
+	    }
+	    return 0
+	}
 
-    l := limiter.New(cb)
+	l := limiter.New(cb)
 
-    if l.Increment([]string{"l1", "l2"}) { // true
-        // do something that can only be done if neither l1 nor l2 have reached
-        // their limit, then afterwards:
-        l.Decrement([]string{"l1", "l2"})
-    }
+	if l.Increment([]string{"l1", "l2"}) { // true
+	    // do something that can only be done if neither l1 nor l2 have reached
+	    // their limit, then afterwards:
+	    l.Decrement([]string{"l1", "l2"})
+	}
 
-    l.Increment([]string{"l2"}) // true
-    l.Increment([]string{"l2"}) // true
-    l.Increment([]string{"l2"}) // false
-    l.Increment([]string{"l1", "l2"}) // false
-    l.Decrement([]string{"l1", "l2"}) // l1 ignored since never incremented
-    l.Increment([]string{"l1", "l2"}) // true
+	l.Increment([]string{"l2"}) // true
+	l.Increment([]string{"l2"}) // true
+	l.Increment([]string{"l2"}) // false
+	l.Increment([]string{"l1", "l2"}) // false
+	l.Decrement([]string{"l1", "l2"}) // l1 ignored since never incremented
+	l.Increment([]string{"l1", "l2"}) // true
 
-    l.Increment([]string{"l3"}) // true since callback returns 0
-    l.Decrement([]string{"l3"}) // ignored
+	l.Increment([]string{"l3"}) // true since callback returns 0
+	l.Decrement([]string{"l3"}) // ignored
 */
 package limiter

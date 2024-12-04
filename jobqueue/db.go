@@ -35,9 +35,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/VertebrateResequencing/muxfys/v4"
@@ -51,7 +51,7 @@ import (
 const (
 	dbDelimiter                   = "_::_"
 	jobStatWindowPercent          = float32(5)
-	dbFilePermission              = 0600
+	dbFilePermission              = 0o600
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 )
@@ -89,9 +89,11 @@ type sobsd [][2][]byte
 func (s sobsd) Len() int {
 	return len(s)
 }
+
 func (s sobsd) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
+
 func (s sobsd) Less(i, j int) bool {
 	cmp := bytes.Compare(s[i][0], s[j][0])
 	return cmp == -1
@@ -427,7 +429,6 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) int {
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	encodedJobs, rgLookups, dgLookups, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
-
 	if err != nil {
 		return jobsToQueue, jobsToUpdate, alreadyAdded, err
 	}
@@ -737,7 +738,6 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 		}
 		return nil
 	})
-
 	if err != nil {
 		return err
 	}

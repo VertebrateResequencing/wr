@@ -41,12 +41,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var dc kubedeployment.Controller
-var autherr error
-var nsErr error
-var testingNamespace string
-var skip bool
-var dir string
+var (
+	dc               kubedeployment.Controller
+	autherr          error
+	nsErr            error
+	testingNamespace string
+	skip             bool
+	dir              string
+)
 
 // Just test that the call to Deploy() works, and that when configured as
 // expected, the deployment controller will copy the tarball, and that the
@@ -178,9 +180,10 @@ func TestDeploy(t *testing.T) {
 			ResourceName: "Kubernetes",
 			Details:      make(map[string]string),
 			PrivateKey:   "",
-			Servers:      make(map[string]*cloud.Server)}
+			Servers:      make(map[string]*cloud.Server),
+		}
 
-		file, err := os.OpenFile(resourcepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		file, err := os.OpenFile(resourcepath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			t.Error(fmt.Errorf("failed to open resource file %s for writing: %s", resourcepath, err))
 		}

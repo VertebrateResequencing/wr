@@ -36,12 +36,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-var tc client.Kubernetesp
-var clientset kubernetes.Interface
-var autherr error
-var nsErr error
-var testingNamespace string
-var skip bool
+var (
+	tc               client.Kubernetesp
+	clientset        kubernetes.Interface
+	autherr          error
+	nsErr            error
+	testingNamespace string
+	skip             bool
+)
 
 func init() {
 	ctx := context.Background()
@@ -218,7 +220,6 @@ func TestSpawn(t *testing.T) {
 			}
 			return false, nil
 		})
-
 		if err != nil {
 			t.Error(fmt.Errorf("Spawn failed: %s", err))
 		}
@@ -265,7 +266,7 @@ func TestCreateInitScriptConfigMapFromFile(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	for _, c := range cases {
-		err := os.WriteFile(dir+c.filePath, []byte(c.fileData), 0644)
+		err := os.WriteFile(dir+c.filePath, []byte(c.fileData), 0o644)
 		if err != nil {
 			t.Error(fmt.Errorf("Failed to write file to %s: %s", dir+c.filePath, err))
 		}

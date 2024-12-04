@@ -56,8 +56,10 @@ const (
 	randIdxMax  = 63 / randIdxBits   // # of letter indices fitting in 63 bits
 )
 
-var CachedUsername string
-var userid int
+var (
+	CachedUsername string
+	userid         int
+)
 
 // SortMapKeysByIntValue sorts the keys of a map[string]int by its values,
 // reversed if you supply true as the second arg.
@@ -261,7 +263,7 @@ func Which(exeName string) string {
 
 			// check it's executable
 			stat, err := os.Stat(path)
-			if err == nil && (runtime.GOOS == "windows" || stat.Mode()&0111 != 0) {
+			if err == nil && (runtime.GOOS == "windows" || stat.Mode()&0o111 != 0) {
 				return path
 			}
 		}

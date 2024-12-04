@@ -31,10 +31,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
 	mth "github.com/wtsi-ssg/wr/math"
 
@@ -658,7 +658,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 			s.running[key]++
 			s.checkNeeded(ctx, cmd, key, count, s.running[key])
 
-			go func() {
+			go func(ctx context.Context) {
 				defer internal.LogPanic(ctx, "processQueue runCmd loop", true)
 
 				clog.Debug(ctx, "will run cmd", "cmd", cmd, "call", call)
@@ -698,7 +698,7 @@ func (s *local) processQueue(ctx context.Context, reason string) error {
 				if err != nil {
 					clog.Error(ctx, "processQueue recall failed", "err", err)
 				}
-			}()
+			}(ctx)
 		}
 		s.runMutex.Unlock()
 		j.RUnlock()

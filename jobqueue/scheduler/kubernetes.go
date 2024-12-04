@@ -23,6 +23,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
@@ -35,10 +38,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
-
-	"strings"
-	"sync"
-	"time"
 )
 
 // k8s is the implementer of scheduleri. It is a wrapper to implement scheduleri
@@ -63,9 +62,11 @@ type k8s struct {
 	log15.Logger
 }
 
-var defaultScriptName = client.DefaultScriptName
-var configMapName string
-var scriptName string
+var (
+	defaultScriptName = client.DefaultScriptName
+	configMapName     string
+	scriptName        string
+)
 
 const kubeSchedulerLog = "kubeSchedulerLog"
 
@@ -249,7 +250,7 @@ func (s *k8s) initialize(ctx context.Context, config interface{}) error {
 	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*15, s.config.Namespace, func(listopts *metav1.ListOptions) {
 		listopts.IncludeUninitialized = true
-		//listopts.Watch = true
+		// listopts.Watch = true
 	})
 
 	// Rewrite config files.
@@ -449,7 +450,7 @@ func (s *k8s) runCmd(ctx context.Context, cmd string, req *Requirements, reserve
 	}
 	s.esmutex.RUnlock()
 
-	//DEBUG: binaryArgs = []string{"tail", "-f", "/dev/null"}
+	// DEBUG: binaryArgs = []string{"tail", "-f", "/dev/null"}
 
 	s.Debug("Spawning pod with requirements", "requirements", resources)
 	pod, err := s.libclient.Spawn(ctx, containerImage,
@@ -459,7 +460,6 @@ func (s *k8s) runCmd(ctx context.Context, cmd string, req *Requirements, reserve
 		configMapName,
 		configMountPath,
 		resources)
-
 	if err != nil {
 		s.Error("error spawning runner pod", "err", err)
 		s.msgCB(fmt.Sprintf("unable to spawn a runner with requirements %s: %s", req.Stringify(), err))
@@ -506,12 +506,12 @@ func (s *k8s) runCmd(ctx context.Context, cmd string, req *Requirements, reserve
 	return err
 }
 
-//  * Run on the manager, inside the cluster * This is ugly, I'm sorry.
-//  Rewrite any relative path to replace '~/' with TempMountPath returning
-//  []client.FilePair to be copied to the runner. currently only relative paths
-//  are allowed, any path not starting '~/' is dropped as everything ultimately
-//  needs to go into TempMountPath as that's the volume that gets preserved
-//  across containers.
+// * Run on the manager, inside the cluster * This is ugly, I'm sorry.
+// Rewrite any relative path to replace '~/' with TempMountPath returning
+// []client.FilePair to be copied to the runner. currently only relative paths
+// are allowed, any path not starting '~/' is dropped as everything ultimately
+// needs to go into TempMountPath as that's the volume that gets preserved
+// across containers.
 func (s *k8s) rewriteConfigFiles(configFiles string) []client.FilePair {
 	// Get current user's home directory os.user.Current() was failing in a pod.
 	// https://github.com/mitchellh/go-homedir ?

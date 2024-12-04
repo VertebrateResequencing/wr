@@ -40,21 +40,25 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-var lc *client.Kubernetesp
-var autherr error
-var nsErr error
-var testingNamespace string
-var callBackChan chan string
-var badCallBackChan chan *cloud.Server
-var reqChan chan *kubescheduler.Request
-var podAliveChan chan *kubescheduler.PodAlive
-var clientset kubernetes.Interface
-var restConfig *rest.Config
-var serverSupportsEphemeralStorage bool
-var skip bool
+var (
+	lc                             *client.Kubernetesp
+	autherr                        error
+	nsErr                          error
+	testingNamespace               string
+	callBackChan                   chan string
+	badCallBackChan                chan *cloud.Server
+	reqChan                        chan *kubescheduler.Request
+	podAliveChan                   chan *kubescheduler.PodAlive
+	clientset                      kubernetes.Interface
+	restConfig                     *rest.Config
+	serverSupportsEphemeralStorage bool
+	skip                           bool
+)
 
-const minMajorForEphemeralStorage = 1
-const minMinorForEphemeralStorage = 10
+const (
+	minMajorForEphemeralStorage = 1
+	minMinorForEphemeralStorage = 10
+)
 
 func init() {
 	ctx := context.Background()
@@ -309,7 +313,6 @@ func TestRunCmd(t *testing.T) {
 			configmap.ObjectMeta.Name,
 			configMountPath,
 			c.resourceReq)
-
 		if err != nil {
 			t.Errorf("Spawn failed: %s", err)
 		}
@@ -371,7 +374,6 @@ func TestRunCmd(t *testing.T) {
 			configmap.ObjectMeta.Name,
 			configMountPath,
 			c.resourceReq)
-
 		if err != nil {
 			t.Errorf("Spawn failed: %s", err)
 		}

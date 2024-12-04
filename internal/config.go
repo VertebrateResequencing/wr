@@ -416,7 +416,8 @@ func (c *Config) clone() *Config {
 // setSourceOnChangeProp sets the source of a property, when its value is
 // changed.
 func setSourceOnChangeProp(typeOfC reflect.Type, adrField reflect.Value,
-	newVal reflect.Value, idx int) {
+	newVal reflect.Value, idx int,
+) {
 	switch typeOfC.Field(idx).Type.Kind() {
 	case reflect.String:
 		adrField.SetString(newVal.Field(idx).String())
@@ -591,7 +592,7 @@ func writePortsToConfigFiles(ctx context.Context, pn int) {
 // type.
 func writePortsToConfigFile(ctx context.Context, pn int, home, deployment string) {
 	f, err := os.OpenFile(filepath.Join(home, ".wr_config."+deployment+".yml"),
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		clog.Fatal(ctx, "could not open config file", "err", err)
 

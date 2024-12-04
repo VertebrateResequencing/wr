@@ -29,9 +29,9 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	sync "github.com/sasha-s/go-deadlock"
 	"github.com/wtsi-ssg/wr/clog"
 
 	"github.com/VertebrateResequencing/wr/cloud"
@@ -51,8 +51,10 @@ const (
 )
 
 // debugCounter and debugEffect are used by tests to prove some bugs
-var debugCounter int
-var debugEffect string
+var (
+	debugCounter int
+	debugEffect  string
+)
 
 // opst is our implementer of scheduleri. It takes much of its implementation
 // from the local scheduler.
@@ -538,7 +540,8 @@ func (s *opst) getFlavor(ctx context.Context, name string) (*cloud.Flavor, error
 // the configured OSPrefix, script defaults to PostCreationScript, config files
 // defaults to ConfigFiles and flavor will be nil.
 func (s *opst) serverReqs(ctx context.Context, req *Requirements) (osPrefix string, osScript []byte,
-	osConfigFiles string, flavor *cloud.Flavor, sharedDisk bool, err error) {
+	osConfigFiles string, flavor *cloud.Flavor, sharedDisk bool, err error,
+) {
 	if val, defined := req.Other["cloud_os"]; defined {
 		osPrefix = val
 	} else {
@@ -853,7 +856,8 @@ func (s *opst) reqForSpawn(req *Requirements) *Requirements {
 // spawn creates a new instance in OpenStack. Errors are not returned but are
 // logged, and problematic servers are terminated.
 func (s *opst) spawn(ctx context.Context, req *Requirements, flavor *cloud.Flavor, requestedOS string, requestedScript []byte,
-	requestedConfigFiles string, needsSharedDisk bool, cmd string) {
+	requestedConfigFiles string, needsSharedDisk bool, cmd string,
+) {
 	ctx = clog.ContextWithServerFlavor(ctx, flavor.Name)
 	volumeAffected := req.Disk > flavor.Disk
 
@@ -1188,7 +1192,6 @@ func (s *opst) runCmd(ctx context.Context, cmd string, req *Requirements, reserv
 		}
 		clog.Debug(ctx, "running command remotely", "cmd", cmd)
 		_, _, err = server.RunCmd(ctx, cmd, false)
-
 		// if we got an error running the command, we won't use this server
 		// again
 		if err != nil {

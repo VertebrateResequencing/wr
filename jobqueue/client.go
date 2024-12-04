@@ -82,6 +82,10 @@ const lsfEmulationDir = ".wr_lsf_emulation"
 // localhost is the name of host we're running on
 const localhost = "localhost"
 
+// terminateGrace is how long we wait after terminating a child process before
+// we follow up with a kill signal
+const terminateGrace = 500 * time.Millisecond
+
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
@@ -608,7 +612,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	touchTicker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 
 	var wkbsMutex sync.RWMutex
-	whenKilledByServer := func() {}
+	killDoneCh := make(chan bool, 1)
+	whenKilledByServer := func() {
+		killDoneCh <- true
+	}
 	stopTouching := make(chan bool, 2)
 	stopChecking := make(chan bool, 2)
 	go func() {
@@ -1008,7 +1015,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				}
 
 				go func(child *process.Process) {
-					time.Sleep(1 * time.Second)
+					time.Sleep(terminateGrace)
 					child.Kill() //nolint:errcheck
 					wg.Done()
 				}(child)
@@ -1032,10 +1039,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 		wkbsMutex.Lock()
 		whenKilledByServer = func() {
-			killErr = killCmd()
 			stateMutex.Lock()
 			killCalled = true
 			stateMutex.Unlock()
+			killErr = killCmd()
+			killDoneCh <- true
 		}
 		wkbsMutex.Unlock()
 
@@ -1178,6 +1186,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	defer stateMutex.Unlock()
 	endTime := time.Now()
 
+	if killCalled {
+		<-killDoneCh
+	}
+
 	// though we have tried to track peak memory while the cmd ran (mainly to
 	// know if we use too much memory and kill during a run), our method might
 	// miss a peak that cmd.ProcessState can tell us about, so use that if
@@ -1242,7 +1254,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	// run behaviours
-	berr := job.TriggerBehaviours(myerr == nil)
+	berr := job.TriggerBehaviours(err == nil && myerr == nil)
 	if berr != nil {
 		if myerr != nil {
 			myerr = fmt.Errorf("%v; behaviour(s) also had problem(s): %w", myerr, berr)
