@@ -5,6 +5,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.33.0] - 2024-12-04
+### Added
+- New --queues_avoid option for `wr add` to not submit to certain scheduler
+  queues.
+- New --runner_filelog option for `wr manager start` to have runner clients log
+  to unique files in the given folder.
+- Extra logging during runner client job execution, including LSF job ids when
+  using the LSF scheduler.
+
+### Changed
+- Needs to be compiled with Go 1.23 or greater due to subtle behaviour changes.
+
+### Fixed
+- Allow termination signal to propogate to child processes to ensure sudo
+  commands get killed properly.
+- False deadlock warnings filling up log file.
+- Updated some dependencies to address potential security vulnerabilities.
+
+
 ## [0.32.4] - 2024-08-16
 ### Fixed
 - Now buildable on ARM64.
@@ -29,7 +48,6 @@ project adheres to [Semantic Versioning](http://semver.org/).
 ### Added
 - `wr cloud servers` has new `--destroy` option to kill servers that wr does not
   think are bad.
-
 
 ### Fixed
 - Jobs with expected time exactly matching an LSF queue runtime limit will no
