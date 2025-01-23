@@ -292,6 +292,21 @@ for that group. 0 prevents jobs in that group running at all. -1 makes jobs in
 that group unlimited. If no limit number is suffixed, groups will be unlimited
 until a limit is set with the "wr limit" command.
 
+Alternatively, you can specify a limit group in one of the following formats to
+only allow your job to run at specific times:
+	hh:mm:ss < time
+	time < hh:mm:ss
+	hh:mm:ss < time < hh:mm:ss
+
+	YYYY:MM:DD hh:mm:ss < datetime
+	datetime < YYYY:MM:DD hh:mm:ss
+	YYYY:MM:DD hh:mm:ss < datetime < YYYY:MM:DD hh:mm:ss
+
+…replacing the 'hh:mm:ss' and 'YYYY:MM:DD hh:mm:ss' placeholders as appropriate.
+
+With the above formats, the job will only be able to start if it satisfies the
+format given. Jobs can run past valid times.
+
 "dep_grps" is an array of arbitrary names you can associate with a command, so
 that you can then refer to this job (and others with the same dep_grp) in
 another job's deps.

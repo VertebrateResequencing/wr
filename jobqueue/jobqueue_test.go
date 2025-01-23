@@ -3170,14 +3170,11 @@ func TestJobqueueLimitGroups(t *testing.T) {
 				So(l, ShouldEqual, 4)
 			})
 
-			Convey("You can't add Jobs with bad LimitGroup names", func() {
+			Convey("You can even add Jobs with bad LimitGroup names", func() {
 				var jobs []*Job
 				jobs = append(jobs, &Job{Cmd: "echo bad", Cwd: "/tmp", ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "ab", LimitGroups: []string{"b:2", "a:d3"}})
 				_, _, err := jq.Add(jobs, envVars, true)
-				So(err, ShouldNotBeNil)
-				serr, ok := err.(Error)
-				So(ok, ShouldBeTrue)
-				So(serr.Err, ShouldEqual, ErrBadLimitGroup)
+				So(err, ShouldBeNil)
 			})
 
 			Convey("Failing to start a job after reserving it does not use up the limit", func() {
