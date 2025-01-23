@@ -84,7 +84,9 @@ func (l *Limiter) GetLimits() map[string]int {
 	limits := make(map[string]int, len(l.groups))
 
 	for name, group := range l.groups {
-		limits[name] = int(group.limit)
+		if group.IsCount() {
+			limits[name] = int(group.limit)
+		}
 	}
 
 	return limits

@@ -309,7 +309,7 @@ func TestLimiter(t *testing.T) {
 		})
 	})
 
-	Convey("You can make a non-count Limiters", t, func() {
+	Convey("You can make non-count Limiters", t, func() {
 		l := New(func(ctx context.Context, name string) *GroupData {
 			if _, gd := NameToGroupData(name); gd.IsValid() && !gd.IsCount() {
 				return gd
