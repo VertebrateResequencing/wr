@@ -1,6 +1,6 @@
 module github.com/VertebrateResequencing/wr
 
-go 1.23
+go 1.23.5
 
 require (
 	code.cloudfoundry.org/bytefmt v0.26.0
@@ -33,7 +33,7 @@ require (
 	github.com/smartystreets/goconvey v1.6.4
 	github.com/spf13/cobra v1.8.1
 	github.com/ugorji/go/codec v1.2.12
-	github.com/wtsi-ssg/wr v0.5.10
+	github.com/wtsi-ssg/wr v0.5.12
 	go.etcd.io/bbolt v1.3.11
 	golang.org/x/crypto v0.32.0
 	k8s.io/api v0.32.1
