@@ -42,6 +42,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys/v4"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/limiter"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
@@ -358,11 +359,19 @@ func initDB(ctx context.Context, dbFile string, dbBkFile string, deployment stri
 // the group is given with a value less than 0, it is not stored in the
 // database; any existing entry is removed and the name is returned in the
 // removed slice.
-func (db *db) storeLimitGroups(limitGroups map[string]int) (changed []string, removed []string, err error) {
+func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (changed []string, removed []string, err error) {
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLGs)
 
-		for group, limit := range limitGroups {
+		for group, limitG := range limitGroups {
+			if !limitG.IsCount() {
+				removed = append(removed, group)
+
+				continue
+			}
+
+			limit := limitG.Limit()
+
 			key := []byte(group)
 
 			v := b.Get(key)
@@ -398,13 +407,19 @@ func (db *db) storeLimitGroups(limitGroups map[string]int) (changed []string, re
 }
 
 // retrieveLimitGroup gets a value for a particular group from the db that was
-// stored with storeLimitGroups(). If the group wasn't stored, returns -1.
-func (db *db) retrieveLimitGroup(ctx context.Context, group string) int {
+// stored with storeLimitGroups(). If the group wasn't stored, returns an
+// invalid limiter.GroupData (mode = 0).
+func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.GroupData {
+	if _, gd := limiter.NameToGroupData(group); gd.IsValid() && !gd.IsCount() {
+		return gd
+	}
+
 	v := db.retrieve(ctx, bucketLGs, group)
 	if v == nil {
-		return -1
+		return limiter.NewCountGroupData(-1)
 	}
-	return int(binary.BigEndian.Uint64(v))
+
+	return limiter.NewCountGroupData(int64(binary.BigEndian.Uint64(v))) //nolint:gosec
 }
 
 // storeNewJobs stores jobs in the live bucket, where they will only be used for

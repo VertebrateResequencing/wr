@@ -35,7 +35,6 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,7 +82,6 @@ const (
 	ErrPermissionDenied = "bad token: permission denied"
 	ErrBeingDrained     = "server is being drained"
 	ErrStopReserving    = "recovered on a new server; you should stop reserving"
-	ErrBadLimitGroup    = "colons in limit group names must be followed by integers"
 	ServerModeNormal    = "started"
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
@@ -1724,7 +1722,7 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 	s.racmutex.RUnlock()
 
 	// create itemdefs for the jobs
-	limitGroups := make(map[string]int)
+	limitGroups := make(map[string]*limiter.GroupData)
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
@@ -1737,10 +1735,7 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 		}
 
 		if len(job.LimitGroups) > 0 {
-			err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
-			if err != nil {
-				return added, dups, alreadyComplete, ErrBadLimitGroup, err
-			}
+			s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 		}
 
 		job.Unlock()
@@ -1802,14 +1797,12 @@ func (s *Server) createJobs(ctx context.Context, inputJobs []*Job, envkey string
 // dedup and sort the groups, and fill in your supplied limitGroups map with the
 // latest limit on groups, if any were specified. You should hold the lock on
 // the Job before calling this.
-func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[string]int) error {
+func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[string]*limiter.GroupData) {
 	// remove limit suffixes and remember the last limit per group specified
 	for i, group := range job.LimitGroups {
-		name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
-		if err != nil {
-			return err
-		}
-		if suffixed {
+		name, limit := s.splitSuffixedLimitGroup(group)
+
+		if limit != nil {
 			job.LimitGroups[i] = name
 			limitGroups[name] = limit
 		}
@@ -1820,19 +1813,17 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 	if len(job.LimitGroups) > 1 {
 		job.LimitGroups = internal.DedupSortStrings(job.LimitGroups)
 	}
-
-	return nil
 }
 
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the
 // in-memory representation of the groups.
-func (s *Server) storeLimitGroups(limitGroups map[string]int) error {
+func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) error {
 	changed, removed, err := s.db.storeLimitGroups(limitGroups)
 	if err != nil {
 		return err
 	}
 	for _, group := range changed {
-		s.limiter.SetLimit(group, uint(limitGroups[group]))
+		s.limiter.SetLimit(group, *limitGroups[group])
 	}
 	for _, group := range removed {
 		s.limiter.RemoveLimit(group)
@@ -2640,24 +2631,25 @@ func (s *Server) killCloudServer(ctx context.Context, hostName string) (*BadServ
 
 // getSetLimitGroup does the server side of Client.GetOrSetLimitGroup(), taking
 // the same argument. The string return value is one of our Err* constants.
-func (s *Server) getSetLimitGroup(ctx context.Context, group string) (int, string, error) {
-	name, limit, suffixed, err := s.splitSuffixedLimitGroup(group)
-	if err != nil {
-		return 0, ErrBadLimitGroup, err
-	}
-	if suffixed {
-		_, removed, err := s.db.storeLimitGroups(map[string]int{name: limit})
+func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.GroupData, string, error) {
+	name, limit := s.splitSuffixedLimitGroup(group)
+
+	if limit != nil {
+		_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
 		if err != nil {
-			return -1, ErrDBError, err
+			return limiter.NewCountGroupData(-1), ErrDBError, err
 		}
-		if limit >= 0 {
-			s.limiter.SetLimit(name, uint(limit))
+
+		if limit.IsValid() {
+			s.limiter.SetLimit(name, *limit)
 		}
+
 		for _, g := range removed {
 			s.limiter.RemoveLimit(g)
 		}
 
 		s.q.TriggerReadyAddedCallback(ctx)
+
 		return limit, "", nil
 	}
 
@@ -2667,16 +2659,8 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (int, strin
 // splitSuffixedLimitGroup parses a limit group that might be suffixed with a
 // colon and the limit of that group. Returns the group name, and if the final
 // bool is true, the int will be the desired limit for that group.
-func (s *Server) splitSuffixedLimitGroup(group string) (string, int, bool, error) {
-	parts := strings.Split(group, ":")
-	if len(parts) == 2 {
-		limit, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return "", -1, false, err
-		}
-		return parts[0], limit, true, nil
-	}
-	return group, -1, false, nil
+func (s *Server) splitSuffixedLimitGroup(group string) (string, *limiter.GroupData) {
+	return limiter.NameToGroupData(group)
 }
 
 // storeWebSocketConnection stores a connection and returns a unique identifier

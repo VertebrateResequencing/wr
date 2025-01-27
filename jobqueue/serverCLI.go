@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
 	"github.com/wtsi-ssg/wr/clog"
@@ -531,12 +532,9 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 						// additional handling of changed limit groups
 						if cr.Modifier.LimitGroupsSet {
-							limitGroups := make(map[string]int)
+							limitGroups := make(map[string]*limiter.GroupData)
 							for _, job := range toModify {
-								err := s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
-								if err != nil {
-									clog.Error(ctx, "failed to modify limit group", "err", err)
-								}
+								s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
 							}
 							err := s.storeLimitGroups(limitGroups)
 							if err != nil {
@@ -685,7 +683,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 					srerr = serr
 					qerr = err.Error()
 				} else {
-					sr = &serverResponse{Limit: limit}
+					sr = &serverResponse{Limit: int(limit.Limit())}
 				}
 			}
 		case "getlgs":

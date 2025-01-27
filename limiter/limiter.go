@@ -33,7 +33,7 @@ import (
 // a group from some on-disk database, so you don't have to have all group
 // limits in memory. (Limiter itself will clear out unused groups from its own
 // memory.)
-type SetLimitCallback func(context.Context, string) int
+type SetLimitCallback func(context.Context, string) *GroupData
 
 // Limiter struct is used to limit usage of groups.
 type Limiter struct {
@@ -51,28 +51,29 @@ func New(cb SetLimitCallback) *Limiter {
 }
 
 // SetLimit creates or updates a group with the given limit.
-func (l *Limiter) SetLimit(name string, limit uint) {
+func (l *Limiter) SetLimit(name string, data GroupData) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if g, set := l.groups[name]; set {
-		g.setLimit(limit)
+		g.setLimit(data.limit)
 	} else {
-		l.groups[name] = newGroup(name, limit)
+		l.groups[name] = newGroup(name, data)
 	}
 }
 
 // GetLimit tells you the limit currently set for the given group. If the group
 // doesn't exist, returns -1.
-func (l *Limiter) GetLimit(ctx context.Context, name string) int {
+func (l *Limiter) GetLimit(ctx context.Context, name string) *GroupData {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	group := l.vivifyGroup(ctx, name)
 	if group == nil {
-		return -1
+		return NewCountGroupData(-1)
 	}
-	return int(group.limit)
+
+	return &group.GroupData
 }
 
 // GetLimits tells you the current limit of all currently set groups.
@@ -83,7 +84,9 @@ func (l *Limiter) GetLimits() map[string]int {
 	limits := make(map[string]int, len(l.groups))
 
 	for name, group := range l.groups {
-		limits[name] = int(group.limit)
+		if group.IsCount() {
+			limits[name] = int(group.limit)
+		}
 	}
 
 	return limits
@@ -181,8 +184,8 @@ func (l *Limiter) incrementGroups(ctx context.Context, groups []string) {
 func (l *Limiter) vivifyGroup(ctx context.Context, name string) *group {
 	group, exists := l.groups[name]
 	if !exists {
-		if limit := l.cb(ctx, name); limit >= 0 {
-			group = newGroup(name, uint(limit))
+		if limit := l.cb(ctx, name); limit.IsValid() {
+			group = newGroup(name, *limit)
 			l.groups[name] = group
 		}
 	}

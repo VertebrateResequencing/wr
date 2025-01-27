@@ -30,14 +30,15 @@ import (
 
 func BenchmarkLimiterIncDec(b *testing.B) {
 	ctx := context.Background()
-	limits := make(map[string]int)
+	limits := make(map[string]int64)
 	limits["l1"] = 5
 	limits["l2"] = 6
-	cb := func(ctx context.Context, name string) int {
+	cb := func(ctx context.Context, name string) *GroupData {
 		if limit, exists := limits[name]; exists {
-			return limit
+			return NewCountGroupData(limit)
 		}
-		return -1
+
+		return NewCountGroupData(-1)
 	}
 	both := []string{"l1", "l2"}
 	first := []string{"l1"}
@@ -83,14 +84,15 @@ func BenchmarkLimiterIncDec(b *testing.B) {
 
 func BenchmarkLimiterCapacity(b *testing.B) {
 	ctx := context.Background()
-	limits := make(map[string]int)
+	limits := make(map[string]int64)
 	limits["l1"] = 5
 	limits["l2"] = 6
-	cb := func(ctx context.Context, name string) int {
+	cb := func(ctx context.Context, name string) *GroupData {
 		if limit, exists := limits[name]; exists {
-			return limit
+			return NewCountGroupData(limit)
 		}
-		return -1
+
+		return NewCountGroupData(-1)
 	}
 	both := []string{"l1", "l2"}
 	b.ResetTimer()
@@ -117,16 +119,17 @@ func BenchmarkLimiterCapacity(b *testing.B) {
 func TestLimiter(t *testing.T) {
 	ctx := context.Background()
 	Convey("You can make a new Limiter with a limit defining callback", t, func() {
-		limits := make(map[string]int)
+		limits := make(map[string]int64)
 		limits["l1"] = 3
 		limits["l2"] = 2
 		limits["l4"] = 100
 		limits["l5"] = 200
-		cb := func(ctx context.Context, name string) int {
+		cb := func(ctx context.Context, name string) *GroupData {
 			if limit, exists := limits[name]; exists {
-				return limit
+				return NewCountGroupData(limit)
 			}
-			return -1
+
+			return NewCountGroupData(-1)
 		}
 
 		l := New(cb)
@@ -159,7 +162,7 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment(ctx, two), ShouldBeTrue)
 			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 0)
 			So(l.Increment(ctx, two), ShouldBeFalse)
-			l.SetLimit("l2", 3)
+			l.SetLimit("l2", *NewCountGroupData(3))
 			So(l.GetLowestLimit(ctx, groups), ShouldEqual, 3)
 			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 1)
 			So(l.Increment(ctx, two), ShouldBeTrue)
@@ -193,24 +196,24 @@ func TestLimiter(t *testing.T) {
 		})
 
 		Convey("You can set multiple limits and then get them all", func() {
-			l.SetLimit("l1", 1)
-			l.SetLimit("l2", 2)
+			l.SetLimit("l1", *NewCountGroupData(1))
+			l.SetLimit("l2", *NewCountGroupData(2))
 			lgs := l.GetLimits()
 			So(lgs, ShouldResemble, map[string]int{"l1": 1, "l2": 2})
 		})
 
 		Convey("You can have limits of 0 and also RemoveLimit()s", func() {
-			l.SetLimit("l2", 0)
+			l.SetLimit("l2", *NewCountGroupData(0))
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeFalse)
 
 			limits["l2"] = 0
 			l.RemoveLimit("l2")
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeFalse)
-			So(l.GetLimit(ctx, "l2"), ShouldEqual, 0)
+			So(l.GetLimit(ctx, "l2"), ShouldResemble, NewCountGroupData(0))
 
 			limits["l2"] = -1
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeFalse)
-			So(l.GetLimit(ctx, "l2"), ShouldEqual, 0)
+			So(l.GetLimit(ctx, "l2"), ShouldResemble, NewCountGroupData(0))
 
 			l.RemoveLimit("l2")
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeTrue)
@@ -222,7 +225,7 @@ func TestLimiter(t *testing.T) {
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeTrue)
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeTrue)
 			So(l.Increment(ctx, []string{"l2"}), ShouldBeTrue)
-			So(l.GetLimit(ctx, "l2"), ShouldEqual, -1)
+			So(l.GetLimit(ctx, "l2"), ShouldResemble, NewCountGroupData(-1))
 		})
 
 		Convey("Concurrent SetLimit(), Increment() and Decrement() work", func() {
@@ -244,7 +247,7 @@ func TestLimiter(t *testing.T) {
 					} else {
 						atomic.AddUint64(&fails, 1)
 						if atomic.LoadUint64(&fails) == 50 {
-							l.SetLimit("l4", 125)
+							l.SetLimit("l4", *NewCountGroupData(125))
 						}
 					}
 				}(i)
@@ -305,4 +308,38 @@ func TestLimiter(t *testing.T) {
 			So(atomic.LoadUint64(&fails), ShouldEqual, 1)
 		})
 	})
+
+	Convey("You can make non-count Limiters", t, func() {
+		l := New(func(ctx context.Context, name string) *GroupData {
+			if _, gd := NameToGroupData(name); gd.IsValid() && !gd.IsCount() {
+				return gd
+			}
+
+			return NewCountGroupData(-1)
+		})
+		So(l, ShouldNotBeNil)
+
+		So(l.Increment(ctx, []string{"time<" + timeAdd(time.Hour)}), ShouldBeTrue)
+		So(l.Increment(ctx, []string{"time<" + timeAdd(-time.Hour)}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{timeAdd(-time.Hour) + "<time"}), ShouldBeTrue)
+		So(l.Increment(ctx, []string{timeAdd(time.Hour) + "<time"}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{timeAdd(time.Hour) + "<time<" + timeAdd(2*time.Hour)}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{timeAdd(-2*time.Hour) + "<time<" + timeAdd(-time.Hour)}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{timeAdd(-time.Hour) + "<time<" + timeAdd(time.Hour)}), ShouldBeTrue)
+		So(l.Increment(ctx, []string{"datetime<" + dateAdd(time.Hour)}), ShouldBeTrue)
+		So(l.Increment(ctx, []string{"datetime<" + dateAdd(-time.Hour)}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{dateAdd(-time.Hour) + "<datetime"}), ShouldBeTrue)
+		So(l.Increment(ctx, []string{dateAdd(time.Hour) + "<datetime"}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{dateAdd(time.Hour) + "<datetime<" + dateAdd(2*time.Hour)}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{dateAdd(-2*time.Hour) + "<datetime<" + dateAdd(-time.Hour)}), ShouldBeFalse)
+		So(l.Increment(ctx, []string{dateAdd(-time.Hour) + "<datetime<" + dateAdd(time.Hour)}), ShouldBeTrue)
+	})
+}
+
+func timeAdd(add time.Duration) string {
+	return time.Now().Add(add).Format(time.TimeOnly)
+}
+
+func dateAdd(add time.Duration) string {
+	return time.Now().Add(add).Format(time.DateTime)
 }
