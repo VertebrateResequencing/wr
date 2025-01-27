@@ -365,6 +365,8 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 
 		for group, limitG := range limitGroups {
 			if !limitG.IsCount() {
+				removed = append(removed, group)
+
 				continue
 			}
 
