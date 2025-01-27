@@ -262,6 +262,10 @@ func (g *group) canIncrement() bool {
 	case groupModeBetweenTimes:
 		t := secondsInDay()
 
+		if g.current > g.limit {
+			return g.limit < t && t < g.current
+		}
+
 		return g.current < t && t < g.limit
 	case groupModeBeforeDateTime:
 		return time.Now().Unix() < g.limit
