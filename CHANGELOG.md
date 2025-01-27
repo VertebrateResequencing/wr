@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.34.0] - 2025-01-27
+### Changed
+- Limit group "names" can now represent date/times that jobs will be scheduled
+  to run before/after/between.
+
+
 ## [0.33.0] - 2024-12-04
 ### Added
 - New --queues_avoid option for `wr add` to not submit to certain scheduler
