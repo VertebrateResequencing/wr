@@ -292,17 +292,27 @@ for that group. 0 prevents jobs in that group running at all. -1 makes jobs in
 that group unlimited. If no limit number is suffixed, groups will be unlimited
 until a limit is set with the "wr limit" command.
 
-Alternatively, you can specify a limit group in one of the following formats to
+In addition, you can specify a limit group in one of the following formats to
 only allow your job to run at specific times:
 	hh:mm:ss < time
 	time < hh:mm:ss
 	hh:mm:ss < time < hh:mm:ss
 
-	YYYY:MM:DD hh:mm:ss < datetime
-	datetime < YYYY:MM:DD hh:mm:ss
-	YYYY:MM:DD hh:mm:ss < datetime < YYYY:MM:DD hh:mm:ss
+	YYYY-MM-DD hh:mm:ss < datetime
+	datetime < YYYY-MM-DD hh:mm:ss
+	YYYY-MM-DD hh:mm:ss < datetime < YYYY-MM-DD hh:mm:ss
 
-…replacing the 'hh:mm:ss' and 'YYYY:MM:DD hh:mm:ss' placeholders as appropriate.
+…replacing the 'hh:mm:ss' and 'YYYY-MM-DD hh:mm:ss' placeholders as appropriate.
+
+For example, to run a job on any day between 17:00 and 20:00, you could supply
+the following limit group:
+
+17:00:00 < time < 20:00:00
+
+Or, to start your job after 12:00 on 1st of July, 2020, you could supply the
+following limit group:
+
+2020-07-01 12:00:00 < datetime
 
 With the above formats, the job will only be able to start if it satisfies the
 format given. Jobs can run past valid times.
