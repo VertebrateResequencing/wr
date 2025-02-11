@@ -236,3 +236,52 @@ func cdNonExistantDir(t *testing.T) func() {
 
 	return d
 }
+
+func TestFakeScheduler(t *testing.T) {
+	Convey("Given scheduler settings configured to store add commands", t, func() {
+		settings := SchedulerSettings{
+			Deployment:         "development",
+			Timeout:            10 * time.Second,
+			Logger:             log15.New(),
+			PretendSubmissions: true,
+		}
+
+		Convey("You can make a Scheduler that records submitted jobs without a real server", func() {
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+			So(s, ShouldNotBeNil)
+
+			job1 := s.NewJob("cmd1", "rep1suffix", "req1", "depg1", "dep1", nil)
+			job2 := s.NewJob("cmd2", "rep2suffix", "req2", "depg2", "dep2", nil)
+
+			err = s.SubmitJobs([]*jobqueue.Job{job1, job2})
+			So(err, ShouldBeNil)
+
+			submittedJobs := s.SubmittedJobs()
+			So(submittedJobs, ShouldResemble, []*jobqueue.Job{job1, job2})
+
+			Convey("You can FindJobsByRepGroupSubstr", func() {
+				jobs, err := s.FindJobsByRepGroupSuffix("none")
+				So(err, ShouldBeNil)
+				So(jobs, ShouldBeNil)
+
+				jobs, err = s.FindJobsByRepGroupSuffix("p1suffix")
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job1})
+
+				jobs, err = s.FindJobsByRepGroupSuffix("suffix")
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
+			})
+
+			Convey("You can remove jobs", func() {
+				err := s.RemoveJobs(job1)
+				So(err, ShouldBeNil)
+
+				jobs, err := s.FindJobsByRepGroupSuffix("suffix")
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job2})
+			})
+		})
+	})
+}

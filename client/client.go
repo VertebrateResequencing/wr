@@ -61,6 +61,68 @@ type SchedulerSettings struct {
 	QueuesAvoid string
 	Timeout     time.Duration
 	Logger      log15.Logger
+	// PretendSubmissions causes SubmitJobs to only record the jobs for
+	// retrieval by SubmittedJobs(); no wr manager server is needed or used.
+	PretendSubmissions bool
+}
+
+type jobqueueClient interface {
+	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
+	GetByRepGroup(repgroup string, subStr bool, limit int,
+		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
+	Delete(jes []*jobqueue.JobEssence) (int, error)
+	Disconnect() error
+}
+
+type pretendJobqueue struct {
+	jobBuffer []*jobqueue.Job
+}
+
+func (p *pretendJobqueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
+	p.jobBuffer = append(p.jobBuffer, jobs...)
+
+	return len(jobs), 0, nil
+}
+
+func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
+	sj := p.jobBuffer
+
+	return sj
+}
+
+// GetByRepGroup behaves like jobqueue.GetByRepGroup, but only repgroup is
+// considered (as a substring).
+func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
+	_ jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+	var jobs []*jobqueue.Job
+
+	for _, job := range p.jobBuffer {
+		if strings.Contains(job.RepGroup, repgroup) {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs, nil
+}
+
+func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {
+	origLen := len(p.jobBuffer)
+
+	p.jobBuffer = slices.DeleteFunc(p.jobBuffer, func(job *jobqueue.Job) bool {
+		for _, jes := range jeses {
+			if job.Key() == jes.JobKey {
+				return true
+			}
+		}
+
+		return false
+	})
+
+	return origLen - len(p.jobBuffer), nil
+}
+
+func (p *pretendJobqueue) Disconnect() error {
+	return nil
 }
 
 // Scheduler can be used to schedule commands to be executed by adding them to
@@ -68,7 +130,7 @@ type SchedulerSettings struct {
 type Scheduler struct {
 	cwd         string
 	exe         string
-	jq          *jobqueue.Client
+	jq          jobqueueClient
 	sudo        bool
 	queue       string
 	queuesAvoid string
@@ -85,9 +147,12 @@ func New(settings SchedulerSettings) (*Scheduler, error) {
 		return nil, err
 	}
 
-	jq, err := jobqueue.ConnectUsingConfig(clog.ContextWithLogHandler(context.Background(),
-		settings.Logger.GetHandler()), settings.Deployment, settings.Timeout)
-	if err != nil {
+	var jq jobqueueClient
+
+	if settings.PretendSubmissions {
+		jq = new(pretendJobqueue)
+	} else if jq, err = jobqueue.ConnectUsingConfig(clog.ContextWithLogHandler(context.Background(),
+		settings.Logger.GetHandler()), settings.Deployment, settings.Timeout); err != nil {
 		return nil, err
 	}
 
@@ -245,6 +310,10 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // again.
 //
 // If any duplicate jobs were added, an error will be returned.
+//
+// If this scheduler was created with PretendSubmissions set  to true, none of
+// the above happens; the jobs are merely recorded for later retrieval with
+// SubmittedJobs().
 func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
 	inserts, _, err := s.jq.Add(jobs, os.Environ(), false)
 	if err != nil {
@@ -258,6 +327,17 @@ func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
 	return nil
 }
 
+// SubmittedJobs returns jobs sent to SubmitJobs() if this Scheduler was created
+// with PretendSubmissions set to true.
+func (s *Scheduler) SubmittedJobs() []*jobqueue.Job {
+	pjq, ok := s.jq.(*pretendJobqueue)
+	if !ok {
+		return nil
+	}
+
+	return pjq.SubmittedJobs()
+}
+
 // FindJobsByRepGroupSuffix finds all of the jobs in wr whose rep group has the
 // supplied suffix.
 func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, error) {
@@ -267,7 +347,7 @@ func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, er
 	}
 
 	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
-		return strings.HasSuffix(job.RepGroup, suffix)
+		return !strings.HasSuffix(job.RepGroup, suffix)
 	}), nil
 }
 
@@ -278,7 +358,7 @@ func (s *Scheduler) RemoveJobs(jobs ...*jobqueue.Job) error {
 	es := make([]*jobqueue.JobEssence, len(jobs))
 
 	for n, job := range jobs {
-		es[n].JobKey = job.Key()
+		es[n] = &jobqueue.JobEssence{JobKey: job.Key()}
 	}
 
 	_, err := s.jq.Delete(es)
