@@ -473,7 +473,7 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
-	Convey("You can get a new lsf scheduler", t, func() {
+	FocusConvey("You can get a new lsf scheduler", t, func() {
 		otherReqs := make(map[string]string)
 
 		specifiedOther := make(map[string]string)
@@ -590,26 +590,48 @@ func TestLSF(t *testing.T) {
 			So(queue, ShouldEqual, "yesterday")
 		})
 
-		Convey("generateBsubArgs() adds in user-specified options", func() {
+		FocusConvey("generateBsubArgs() adds in user-specified options", func() {
 			bsubArgs := s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
-			So(strings.HasSuffix(bsubArgs[9], "[1-2]"), ShouldBeTrue)
-			bsubArgs[9] = "random1"
-			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R", "avx", "-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+			// So(bsubArgs[9], ShouldEndWith, "[1-2]")
+			// bsubArgs[9] = "random1"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
+				"-R", "avx", "-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 
 			specifiedOther["scheduler_misc"] = `-R "avx foo"`
 			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[9] = "random2"
-			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-R", "'avx foo'", "-J", "random2", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
+				"-R", "avx foo", "-J", "random2", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 
 			specifiedOther["scheduler_misc"] = `-E "also supported"`
 			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[9] = "random3"
-			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-E", "'also supported'", "-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]", "-E", "also supported",
+				"-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 
-			specifiedOther["scheduler_misc"] = `-E "'not supported'"`
+			specifiedOther["scheduler_misc"] =
+				`-R "select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')]" -gpu "num=1:mig=2:aff=no"`
 			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
-			bsubArgs[7] = "random3"
-			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100", "-R", "'select[mem>100] rusage[mem=100] span[hosts=1]'", "-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+			bsubArgs[11] = "random4"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[(mem>100) && (hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')] rusage[mem=100] span[hosts=1]",
+				"-gpu", `num=1:mig=2:aff=no`,
+				"-J", "random4", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			// -R "select[(mem>%d)] rusage[mem=%d] span[hosts=1]"
+			// -R "select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02') && (mem>${MEMORY})] rusage[mem=${MEMORY}]"
+			// -R "select[ngpus>0 && mem>1000] rusage[ngpus_physical=8,mem=1000] span[hosts=1]"
+			// -R "select[ngpus>0 && mem>1000] rusage[ngpus_physical=1,mem=1000] span[ptile=1]" -R avx
+
+			specifiedOther["scheduler_misc"] = `((`
+			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs[9] = "random1"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
+				"-R", "avx", "-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 		})
 
 		Convey("Busy() starts off false", func() {

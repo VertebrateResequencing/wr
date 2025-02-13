@@ -24,7 +24,6 @@ package scheduler
 import (
 	"bufio"
 	"context"
-	"encoding/csv"
 	"fmt"
 	"math"
 	"os"
@@ -37,6 +36,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/mattn/go-shellwords"
 	"github.com/wtsi-ssg/wr/clog"
 )
 
@@ -548,27 +548,20 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	var bsubArgs []string
 	megabytes := req.RAM
 	m := float32(megabytes) * s.memLimitMultiplier
-	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
+	rSelect := ""
+	rOther := ""
 
 	if val, ok := req.Other["scheduler_misc"]; ok {
-		if strings.Contains(val, `'`) {
-			clog.Warn(ctx, "scheduler misc option ignored due to containing single quotes", "misc", val)
-		} else {
-			r := csv.NewReader(strings.NewReader(val))
-			r.Comma = ' '
-			fields, err := r.Read()
-			if err != nil {
-				clog.Warn(ctx, "scheduler misc option ignored", "misc", val, "err", err)
-			} else {
-				for _, field := range fields {
-					if strings.Contains(field, ` `) {
-						field = `'` + field + `'`
-					}
-					bsubArgs = append(bsubArgs, field)
-				}
-			}
+		var args []string
+
+		args, rSelect, rOther = parseUserArgs(ctx, val)
+		if len(args) > 0 {
+			bsubArgs = append(bsubArgs, args...)
 		}
 	}
+
+	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m),
+		"-R", fmt.Sprintf("select[(mem>%d)%s] rusage[mem=%d] span[hosts=1]%s", megabytes, rSelect, megabytes, rOther))
 
 	if req.Cores > 1 {
 		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
@@ -584,6 +577,63 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
 	return bsubArgs
+}
+
+func parseUserArgs(ctx context.Context, userArgs string) ([]string, string, string) {
+	var args []string
+
+	words, err := shellwords.Parse(userArgs)
+	if err != nil {
+		clog.Warn(ctx, "scheduler misc option ignored since could not be parsed", "err", err)
+
+		return args, "", ""
+	}
+
+	isR := false
+	rSelect := ""
+	rOther := ""
+
+	for _, arg := range words {
+		if arg == "-R" {
+			isR = true
+
+			continue
+		}
+
+		if isR {
+			rS, rO := parseR(arg)
+			if rS != "" {
+				rSelect += " && " + rS
+			}
+			if rO != "" {
+				rOther += " " + rO
+			}
+
+			isR = false
+		} else {
+			args = append(args, arg)
+		}
+	}
+
+	fmt.Printf("\nargs: %+v; select: %s; other: %s\n", args, rSelect, rOther)
+
+	return args, rSelect, rOther
+}
+
+var rSelectRegex = regexp.MustCompile(`\s*select\[([^\]]*)\]\s*`)
+
+func parseR(arg string) (string, string) {
+	rSelect := ""
+	rOther := ""
+
+	selectMatch := rSelectRegex.FindStringSubmatch(arg)
+	if len(selectMatch) > 0 {
+		rSelect = selectMatch[1]
+
+		rOther = rSelectRegex.ReplaceAllString(arg, "")
+	}
+
+	return rSelect, rOther
 }
 
 // recover achieves the aims of Recover(). We don't have to do anything, since
