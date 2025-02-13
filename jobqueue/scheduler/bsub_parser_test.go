@@ -134,7 +134,7 @@ func TestBsubTokeniser(t *testing.T) {
 			pos := 0
 
 			for {
-				tk, _ := p.GetToken()
+				tk, _ := p.GetToken() //nolint:errcheck
 
 				So(tk, ShouldResemble, test.Output[pos])
 
@@ -228,8 +228,10 @@ func TestBsubParser(t *testing.T) {
 				Output: "rusage[mem=10/host:duration=10:decay=0]",
 			},
 			{
-				Input:  "1*{span[gtile=!] rusage[ngpus_physical=2:gmem=1G]} + 4*{span[ptile=1] rusage[ngpus_physical=1:gmem=10G]}",
-				Output: "1 * {span[gtile=!] rusage[ngpus_physical=2:gmem=1G]} + 4 * {span[ptile=1] rusage[ngpus_physical=1:gmem=10G]}",
+				Input: "1*{span[gtile=!] rusage[ngpus_physical=2:gmem=1G]} + " +
+					"4*{span[ptile=1] rusage[ngpus_physical=1:gmem=10G]}",
+				Output: "1 * {span[gtile=!] rusage[ngpus_physical=2:gmem=1G]} + " +
+					"4 * {span[ptile=1] rusage[ngpus_physical=1:gmem=10G]}",
 			},
 		} {
 			tk := parser.NewStringTokeniser(test.Input)
@@ -243,8 +245,7 @@ func TestBsubParser(t *testing.T) {
 
 			var sb strings.Builder
 
-			err = top.print(&sb)
-			So(err, ShouldBeNil)
+			top.toString(&sb)
 			So(sb.String(), ShouldEqual, test.Output)
 		}
 	})

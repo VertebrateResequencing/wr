@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"vimagination.zapto.org/parser"
 )
@@ -33,7 +34,8 @@ const (
 )
 
 var (
-	ErrBad                   = errors.New("bad")
+	ErrInvalidOperator       = errors.New("invalid operator")
+	ErrInvalidGroupClosing   = errors.New("invalid group closing")
 	ErrInvalidPrimary        = errors.New("invalid primary")
 	ErrMissingClosingParen   = errors.New("missing closing paren")
 	ErrMissingClosingBracket = errors.New("missing closing bracket")
@@ -74,45 +76,41 @@ func (s *state) main(t *parser.Tokeniser) (parser.Token, parser.TokenFunc) {
 	}
 
 	if t.Accept(digit) {
-		t.AcceptRun(digit)
-
-		if t.Accept(".") {
-			t.AcceptRun(digit)
-		}
-
-		t.AcceptRun(letter)
-
-		return t.Return(TokenNumber, s.main)
+		return s.number(t)
 	}
 
+	return s.stringOrOperator(t)
+}
+
+func (s *state) number(t *parser.Tokeniser) (parser.Token, parser.TokenFunc) {
+	t.AcceptRun(digit)
+
+	if t.Accept(".") {
+		t.AcceptRun(digit)
+	}
+
+	t.AcceptRun(letter)
+
+	return t.Return(TokenNumber, s.main)
+}
+
+func (s *state) stringOrOperator(t *parser.Tokeniser) (parser.Token, parser.TokenFunc) {
 	c := t.Next()
 
 	if c == '"' || c == '\'' {
-		for {
-			switch t.ExceptRun("\\" + string(c)) {
-			case '\\':
-				t.Next()
-				t.Next()
-			case c:
-				t.Next()
-
-				return t.Return(TokenString, s.main)
-			default:
-				return t.ReturnError(io.ErrUnexpectedEOF)
-			}
-		}
+		return s.string(t, c)
 	}
 
+	return s.operator(t, c)
+}
+
+func (s *state) operator(t *parser.Tokeniser, c rune) (parser.Token, parser.TokenFunc) { //nolint:gocyclo,cyclop
 	switch c {
-	case '[':
-		s.depth = append(s.depth, ']')
-	case '(':
-		s.depth = append(s.depth, ')')
-	case '{':
-		s.depth = append(s.depth, '}')
+	case '[', '(', '{':
+		s.depth = append(s.depth, inverseGrouping(c))
 	case ']', ')', '}':
 		if l := len(s.depth); l == 0 || s.depth[l-1] != c {
-			return t.ReturnError(ErrBad)
+			return t.ReturnError(ErrInvalidGroupClosing)
 		}
 
 		s.depth = s.depth[:len(s.depth)-1]
@@ -125,13 +123,42 @@ func (s *state) main(t *parser.Tokeniser) (parser.Token, parser.TokenFunc) {
 		t.Accept("=")
 	case '&', '|':
 		if !t.Accept(string(c)) {
-			return t.ReturnError(ErrBad)
+			return t.ReturnError(ErrInvalidOperator)
 		}
 	default:
-		return t.ReturnError(ErrBad)
+		return t.ReturnError(ErrInvalidOperator)
 	}
 
 	return t.Return(TokenOperator, s.main)
+}
+
+func inverseGrouping(c rune) rune {
+	switch c {
+	case '[':
+		return ']'
+	case '(':
+		return ')'
+	case '{':
+		return '}'
+	}
+
+	return -1
+}
+
+func (s *state) string(t *parser.Tokeniser, c rune) (parser.Token, parser.TokenFunc) {
+	for {
+		switch t.ExceptRun("\\" + string(c)) {
+		case '\\':
+			t.Next()
+			t.Next()
+		case c:
+			t.Next()
+
+			return t.Return(TokenString, s.main)
+		default:
+			return t.ReturnError(io.ErrUnexpectedEOF)
+		}
+	}
 }
 
 type Primary struct {
@@ -154,111 +181,89 @@ func (py *Primary) parse(p *parser.Parser) error {
 
 		py.Literal = &p.Get()[0]
 	case TokenOperator:
-		var (
-			close string
-			arr   *[]Clause
-		)
-
-		switch tk.Data {
-		case "(":
-			close = ")"
-			arr = &py.Parens
-		case "{":
-			close = "}"
-			arr = &py.Braces
-		default:
-			return fmt.Errorf("Primary: %w", ErrInvalidPrimary)
-		}
-
-		p.Next()
-		p.AcceptRun(TokenWhitespace)
-
-		for {
-			var c Clause
-
-			if err := c.parse(p); err != nil {
-				return fmt.Errorf("Primary: %w", err)
-			}
-
-			*arr = append(*arr, c)
-
-			p.AcceptRun(TokenWhitespace)
-
-			if p.AcceptToken(parser.Token{Type: TokenOperator, Data: close}) {
-				break
-			}
-		}
+		return py.parseGrouping(p, tk)
+	default:
+		return ErrInvalidPrimary
 	}
 
 	return nil
 }
 
-func (p *Primary) print(w io.Writer) error {
-	if p.Name != nil {
-		_, err := io.WriteString(w, p.Name.Data)
+func (py *Primary) parseGrouping(p *parser.Parser, tk parser.Token) error {
+	var (
+		closeChar string
+		arr       *[]Clause
+	)
 
-		return err
+	switch tk.Data {
+	case "(":
+		closeChar = ")"
+		arr = &py.Parens
+	case "{":
+		closeChar = "}"
+		arr = &py.Braces
+	default:
+		return fmt.Errorf("Primary: %w", ErrInvalidPrimary)
 	}
 
-	if p.Literal != nil {
-		_, err := io.WriteString(w, p.Literal.Data)
+	p.Next()
+	p.AcceptRun(TokenWhitespace)
 
-		return err
+	return parseClauses(p, closeChar, arr)
+}
+
+func parseClauses(p *parser.Parser, closeChar string, arr *[]Clause) error {
+	for {
+		var c Clause
+
+		if err := c.parse(p); err != nil {
+			return fmt.Errorf("Primary: %w", err)
+		}
+
+		*arr = append(*arr, c)
+
+		p.AcceptRun(TokenWhitespace)
+
+		if p.AcceptToken(parser.Token{Type: TokenOperator, Data: closeChar}) {
+			return nil
+		}
+	}
+}
+
+func (py *Primary) toString(sb *strings.Builder) {
+	switch {
+	case py.Name != nil:
+		sb.WriteString(py.Name.Data)
+	case py.Literal != nil:
+		sb.WriteString(py.Literal.Data)
+	default:
+		py.toStringClause(sb)
+	}
+}
+
+func (py *Primary) toStringClause(sb *strings.Builder) {
+	var (
+		chars   string
+		clauses []Clause
+	)
+
+	if len(py.Parens) > 0 {
+		chars = "()"
+		clauses = py.Parens
+	} else if len(py.Braces) > 0 {
+		chars = "{}"
+		clauses = py.Braces
 	}
 
-	if len(p.Parens) > 0 {
-		if _, err := io.WriteString(w, "("); err != nil {
-			return err
-		}
+	sb.WriteString(chars[:1])
+	clauses[0].toString(sb)
 
-		if err := p.Parens[0].print(w); err != nil {
-			return err
-		}
-
-		for _, c := range p.Parens[1:] {
-			if _, err := io.WriteString(w, " "); err != nil {
-				return err
-			}
-
-			if err := c.print(w); err != nil {
-				return err
-			}
-		}
-
-		if _, err := io.WriteString(w, ")"); err != nil {
-			return err
-		}
-
-		return nil
+	for _, c := range clauses[1:] {
+		sb.WriteString(" ")
+		c.toString(sb)
 	}
 
-	if len(p.Braces) > 0 {
-		if _, err := io.WriteString(w, "{"); err != nil {
-			return err
-		}
-
-		if err := p.Braces[0].print(w); err != nil {
-			return err
-		}
-
-		for _, c := range p.Braces[1:] {
-			if _, err := io.WriteString(w, " "); err != nil {
-				return err
-			}
-
-			if err := c.print(w); err != nil {
-				return err
-			}
-		}
-
-		if _, err := io.WriteString(w, "}"); err != nil {
-			return err
-		}
-
-		return nil
-	}
-
-	return ErrBad
+	sb.WriteString(chars[1:])
 }
 
 type Call struct {
@@ -273,7 +278,7 @@ func (c *Call) parse(p *parser.Parser) error {
 
 	p.AcceptRun(TokenWhitespace)
 
-	if p.AcceptToken(parser.Token{Type: TokenOperator, Data: "("}) {
+	if p.AcceptToken(parser.Token{Type: TokenOperator, Data: "("}) { //nolint:nestif
 		c.Call = new(Logic)
 
 		if err := c.Call.parse(p); err != nil {
@@ -290,26 +295,14 @@ func (c *Call) parse(p *parser.Parser) error {
 	return nil
 }
 
-func (c *Call) print(w io.Writer) error {
-	if err := c.Primary.print(w); err != nil {
-		return err
-	}
+func (c *Call) toString(sb *strings.Builder) {
+	c.Primary.toString(sb)
 
 	if c.Call != nil {
-		if _, err := io.WriteString(w, "("); err != nil {
-			return err
-		}
-
-		if err := c.Call.print(w); err != nil {
-			return err
-		}
-
-		if _, err := io.WriteString(w, ")"); err != nil {
-			return err
-		}
+		sb.WriteString("(")
+		c.Call.toString(sb)
+		sb.WriteString(")")
 	}
-
-	return nil
 }
 
 type BinaryOperator uint8
@@ -328,37 +321,34 @@ const (
 	BinaryMultiply
 )
 
-func (b BinaryOperator) print(w io.Writer) error {
-	var print string
+func (b BinaryOperator) toString(sb *strings.Builder) { //nolint:funlen,gocyclo,cyclop
+	var toWrite string
 
 	switch b {
 	case BinaryEquals:
-		print = "="
+		toWrite = "="
 	case BinaryNotEquals:
-		print = "!="
+		toWrite = "!="
 	case BinaryDoubleEquals:
-		print = "=="
+		toWrite = "=="
 	case BinaryLessThan:
-		print = " < "
+		toWrite = " < "
 	case BinaryLessThanOrEqual:
-		print = " <= "
+		toWrite = " <= "
 	case BinaryGreaterThan:
-		print = " > "
+		toWrite = " > "
 	case BinaryGreaterThanOrEqual:
-		print = " >= "
+		toWrite = " >= "
 	case BinaryAdd:
-		print = " + "
+		toWrite = " + "
 	case BinarySubract:
-		print = " + "
+		toWrite = " + "
 	case BinaryMultiply:
-		print = " * "
+		toWrite = " * "
 	default:
-		return nil
 	}
 
-	_, err := io.WriteString(w, print)
-
-	return err
+	sb.WriteString(toWrite)
 }
 
 type Binary struct {
@@ -367,36 +357,15 @@ type Binary struct {
 	Binary   *Binary
 }
 
-func (b *Binary) parse(p *parser.Parser) error {
+func (b *Binary) parse(p *parser.Parser) error { //nolint:dupl
 	if err := b.Call.parse(p); err != nil {
 		return fmt.Errorf("Binary: %w", err)
 	}
 
 	p.AcceptRun(TokenWhitespace)
 
-	if tk := p.Peek(); tk.Type == TokenOperator {
-		switch tk.Data {
-		case "=":
-			b.Operator = BinaryEquals
-		case "!=":
-			b.Operator = BinaryNotEquals
-		case "==":
-			b.Operator = BinaryDoubleEquals
-		case "<":
-			b.Operator = BinaryLessThan
-		case "<=":
-			b.Operator = BinaryLessThanOrEqual
-		case ">":
-			b.Operator = BinaryGreaterThan
-		case ">=":
-			b.Operator = BinaryGreaterThanOrEqual
-		case "+":
-			b.Operator = BinaryAdd
-		case "-":
-			b.Operator = BinarySubract
-		case "*":
-			b.Operator = BinaryMultiply
-		default:
+	if tk := p.Peek(); tk.Type == TokenOperator { //nolint:nestif
+		if b.Operator = parseBinaryOperator(tk); b.Operator == BinaryNone {
 			return nil
 		}
 
@@ -413,22 +382,40 @@ func (b *Binary) parse(p *parser.Parser) error {
 	return nil
 }
 
-func (b *Binary) print(w io.Writer) error {
-	if err := b.Call.print(w); err != nil {
-		return err
+func parseBinaryOperator(tk parser.Token) BinaryOperator { //nolint:funlen,gocyclo,cyclop
+	switch tk.Data {
+	case "=":
+		return BinaryEquals
+	case "!=":
+		return BinaryNotEquals
+	case "==":
+		return BinaryDoubleEquals
+	case "<":
+		return BinaryLessThan
+	case "<=":
+		return BinaryLessThanOrEqual
+	case ">":
+		return BinaryGreaterThan
+	case ">=":
+		return BinaryGreaterThanOrEqual
+	case "+":
+		return BinaryAdd
+	case "-":
+		return BinarySubract
+	case "*":
+		return BinaryMultiply
+	default:
+		return BinaryNone
 	}
+}
+
+func (b *Binary) toString(sb *strings.Builder) {
+	b.Call.toString(sb)
 
 	if b.Operator != BinaryNone && b.Binary != nil {
-		if err := b.Operator.print(w); err != nil {
-			return err
-		}
-
-		if err := b.Binary.print(w); err != nil {
-			return err
-		}
+		b.Operator.toString(sb)
+		b.Binary.toString(sb)
 	}
-
-	return nil
 }
 
 type LogicOperator uint8
@@ -442,27 +429,24 @@ const (
 	LogicSlash
 )
 
-func (l LogicOperator) print(w io.Writer) error {
-	var print string
+func (l LogicOperator) toString(sb *strings.Builder) {
+	var toWrite string
 
 	switch l {
 	case LogicAnd:
-		print = " && "
+		toWrite = " && "
 	case LogicOr:
-		print = " || "
+		toWrite = " || "
 	case LogicColon:
-		print = ":"
+		toWrite = ":"
 	case LogicComma:
-		print = ", "
+		toWrite = ", "
 	case LogicSlash:
-		print = "/"
+		toWrite = "/"
 	default:
-		return nil
 	}
 
-	_, err := io.WriteString(w, print)
-
-	return err
+	sb.WriteString(toWrite)
 }
 
 type Logic struct {
@@ -471,26 +455,15 @@ type Logic struct {
 	Ext      *Logic
 }
 
-func (l *Logic) parse(p *parser.Parser) error {
+func (l *Logic) parse(p *parser.Parser) error { //nolint:dupl
 	if err := l.Binary.parse(p); err != nil {
 		return fmt.Errorf("Logic: %w", err)
 	}
 
 	p.AcceptRun(TokenWhitespace)
 
-	if tk := p.Peek(); tk.Type == TokenOperator {
-		switch tk.Data {
-		case "&&":
-			l.Operator = LogicAnd
-		case "||":
-			l.Operator = LogicOr
-		case ":":
-			l.Operator = LogicColon
-		case ",":
-			l.Operator = LogicComma
-		case "/":
-			l.Operator = LogicSlash
-		default:
+	if tk := p.Peek(); tk.Type == TokenOperator { //nolint:nestif
+		if l.Operator = parseLogicOperator(tk); l.Operator == LogicNone {
 			return nil
 		}
 
@@ -507,22 +480,30 @@ func (l *Logic) parse(p *parser.Parser) error {
 	return nil
 }
 
-func (l *Logic) print(w io.Writer) error {
-	if err := l.Binary.print(w); err != nil {
-		return err
+func parseLogicOperator(tk parser.Token) LogicOperator {
+	switch tk.Data {
+	case "&&":
+		return LogicAnd
+	case "||":
+		return LogicOr
+	case ":":
+		return LogicColon
+	case ",":
+		return LogicComma
+	case "/":
+		return LogicSlash
+	default:
+		return LogicNone
 	}
+}
+
+func (l *Logic) toString(sb *strings.Builder) {
+	l.Binary.toString(sb)
 
 	if l.Operator != LogicNone && l.Ext != nil {
-		if err := l.Operator.print(w); err != nil {
-			return err
-		}
-
-		if err := l.Ext.print(w); err != nil {
-			return err
-		}
+		l.Operator.toString(sb)
+		l.Ext.toString(sb)
 	}
-
-	return nil
 }
 
 type Clause struct {
@@ -538,44 +519,38 @@ func (c *Clause) parse(p *parser.Parser) error {
 	p.AcceptRun(TokenWhitespace)
 
 	if p.AcceptToken(parser.Token{Type: TokenOperator, Data: "["}) {
-		p.AcceptRun(TokenWhitespace)
-
-		c.Condition = new(Logic)
-
-		if err := c.Condition.parse(p); err != nil {
-			return fmt.Errorf("Clause: %w", err)
-		}
-
-		p.AcceptRun(TokenWhitespace)
-
-		if !p.AcceptToken(parser.Token{Type: TokenOperator, Data: "]"}) {
-			return fmt.Errorf("Clause: %w", ErrMissingClosingBracket)
-		}
+		return c.parseCondition(p)
 	}
 
 	return nil
 }
 
-func (c *Clause) print(w io.Writer) error {
-	if err := c.Logic.print(w); err != nil {
-		return err
+func (c *Clause) parseCondition(p *parser.Parser) error {
+	p.AcceptRun(TokenWhitespace)
+
+	c.Condition = new(Logic)
+
+	if err := c.Condition.parse(p); err != nil {
+		return fmt.Errorf("Clause: %w", err)
 	}
 
-	if c.Condition != nil {
-		if _, err := io.WriteString(w, "["); err != nil {
-			return err
-		}
+	p.AcceptRun(TokenWhitespace)
 
-		if err := c.Condition.print(w); err != nil {
-			return err
-		}
-
-		if _, err := io.WriteString(w, "]"); err != nil {
-			return err
-		}
+	if !p.AcceptToken(parser.Token{Type: TokenOperator, Data: "]"}) {
+		return fmt.Errorf("Clause: %w", ErrMissingClosingBracket)
 	}
 
 	return nil
+}
+
+func (c *Clause) toString(sb *strings.Builder) {
+	c.Logic.toString(sb)
+
+	if c.Condition != nil {
+		sb.WriteString("[")
+		c.Condition.toString(sb)
+		sb.WriteString("]")
+	}
 }
 
 type Top struct {
@@ -600,24 +575,15 @@ func (t *Top) parse(p *parser.Parser) error {
 	return nil
 }
 
-func (t *Top) print(w io.Writer) error {
+func (t *Top) toString(sb *strings.Builder) {
 	if len(t.Clauses) == 0 {
-		return nil
+		return
 	}
 
-	if err := t.Clauses[0].print(w); err != nil {
-		return err
-	}
+	t.Clauses[0].toString(sb)
 
 	for _, c := range t.Clauses[1:] {
-		if _, err := io.WriteString(w, " "); err != nil {
-			return err
-		}
-
-		if err := c.print(w); err != nil {
-			return err
-		}
+		sb.WriteString(" ")
+		c.toString(sb)
 	}
-
-	return nil
 }
