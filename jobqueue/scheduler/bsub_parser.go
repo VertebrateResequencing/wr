@@ -118,7 +118,7 @@ func (s *state) main(t *parser.Tokeniser) (parser.Token, parser.TokenFunc) {
 		s.depth = s.depth[:len(s.depth)-1]
 	case '!':
 		if !t.Accept("=") {
-			return t.ReturnError(ErrBad)
+			return t.Return(TokenWord, s.main)
 		}
 	case ':', ',', '/', '+', '-', '*':
 	case '=', '>', '<':
@@ -349,9 +349,9 @@ func (b BinaryOperator) print(w io.Writer) error {
 	case BinaryAdd:
 		print = " + "
 	case BinarySubract:
-		print = " - "
-	case BinaryMultiply:
 		print = " + "
+	case BinaryMultiply:
+		print = " * "
 	default:
 		return nil
 	}
@@ -364,7 +364,7 @@ func (b BinaryOperator) print(w io.Writer) error {
 type Binary struct {
 	Call     Call
 	Operator BinaryOperator
-	Binary   *Call
+	Binary   *Binary
 }
 
 func (b *Binary) parse(p *parser.Parser) error {
@@ -403,7 +403,7 @@ func (b *Binary) parse(p *parser.Parser) error {
 		p.Next()
 		p.AcceptRun(TokenWhitespace)
 
-		b.Binary = new(Call)
+		b.Binary = new(Binary)
 
 		if err := b.Binary.parse(p); err != nil {
 			return fmt.Errorf("Binary: %w", err)
