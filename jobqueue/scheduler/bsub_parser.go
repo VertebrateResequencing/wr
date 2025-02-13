@@ -228,6 +228,8 @@ func (p *Primary) print(w io.Writer) error {
 		if _, err := io.WriteString(w, ")"); err != nil {
 			return err
 		}
+
+		return nil
 	}
 
 	if len(p.Braces) > 0 {
@@ -252,6 +254,8 @@ func (p *Primary) print(w io.Writer) error {
 		if _, err := io.WriteString(w, "}"); err != nil {
 			return err
 		}
+
+		return nil
 	}
 
 	return ErrBad
