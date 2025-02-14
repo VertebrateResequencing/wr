@@ -29,7 +29,7 @@ import (
 
 const (
 	whitespace = " \t\n\r"
-	letter     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-"
+	letter     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
 	digit      = "0123456789"
 )
 
@@ -118,7 +118,7 @@ func (s *state) operator(t *parser.Tokeniser, c rune) (parser.Token, parser.Toke
 		if !t.Accept("=") {
 			return t.Return(TokenWord, s.main)
 		}
-	case ':', ',', '/', '+', '-', '*', '@':
+	case ':', ',', '/', '+', '*', '@':
 	case '=', '>', '<':
 		t.Accept("=")
 	case '&', '|':
@@ -317,7 +317,6 @@ const (
 	BinaryGreaterThan
 	BinaryGreaterThanOrEqual
 	BinaryAdd
-	BinarySubract
 	BinaryMultiply
 	BinaryDelay
 )
@@ -341,8 +340,6 @@ func (b BinaryOperator) toString(sb *strings.Builder) { //nolint:funlen,gocyclo,
 	case BinaryGreaterThanOrEqual:
 		toWrite = " >= "
 	case BinaryAdd:
-		toWrite = " + "
-	case BinarySubract:
 		toWrite = " + "
 	case BinaryMultiply:
 		toWrite = " * "
@@ -403,8 +400,6 @@ func parseBinaryOperator(tk parser.Token) BinaryOperator { //nolint:funlen,gocyc
 		return BinaryGreaterThanOrEqual
 	case "+":
 		return BinaryAdd
-	case "-":
-		return BinarySubract
 	case "*":
 		return BinaryMultiply
 	case "@":
