@@ -9,7 +9,7 @@ import (
 )
 
 func TestBsubTokeniser(t *testing.T) {
-	Convey("", t, func() {
+	Convey("Given a bsub resource string, you can tokenise it", t, func() {
 		for _, test := range [...]struct {
 			Input  string
 			Output []parser.Token
@@ -149,7 +149,7 @@ func TestBsubTokeniser(t *testing.T) {
 }
 
 func TestBsubParser(t *testing.T) {
-	Convey("", t, func() {
+	Convey("Given a bsub resource string, you can parse and print it", t, func() {
 		for _, test := range [...]struct {
 			Input  string
 			Output string
@@ -252,7 +252,7 @@ func TestBsubParser(t *testing.T) {
 }
 
 func TestReplaceMemoryAndHosts(t *testing.T) {
-	Convey("", t, func() {
+	Convey("Given a bsub resource value, you can replace the memory and hosts values", t, func() {
 		for _, test := range [...]struct {
 			Input, Mem, Hosts, Output string
 		}{
