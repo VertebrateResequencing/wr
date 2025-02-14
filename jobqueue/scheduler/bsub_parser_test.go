@@ -240,14 +240,57 @@ func TestBsubParser(t *testing.T) {
 					"{select[type==any] order[ls] same[ostype] rusage[mem=5]}@4",
 			},
 		} {
-			tk := parser.NewStringTokeniser(test.Input)
-			tk.TokeniserState(new(state).main)
-			p := parser.New(tk)
-
-			var top top
-
-			err := top.parse(&p)
+			top, err := parseBsubR(test.Input)
 			So(err, ShouldBeNil)
+
+			var sb strings.Builder
+
+			top.toString(&sb)
+			So(sb.String(), ShouldEqual, test.Output)
+		}
+	})
+}
+
+func TestReplaceMemoryAndHosts(t *testing.T) {
+	Convey("", t, func() {
+		for _, test := range [...]struct {
+			Input, Mem, Hosts, Output string
+		}{
+			{
+				Input:  "select[hname!='host06-x12']",
+				Output: "select[hname!='host06-x12']",
+			},
+			{
+				Input:  "select[mem=1]",
+				Mem:    "100",
+				Output: "select[mem > 100]",
+			},
+			{
+				Input:  "mem=1",
+				Mem:    "100",
+				Output: "mem > 100",
+			},
+			{
+				Input:  "rusage[mem=1]",
+				Mem:    "100",
+				Output: "rusage[mem=100]",
+			},
+			{
+				Input:  "span[hosts=1]",
+				Hosts:  "5",
+				Output: "span[hosts=5]",
+			},
+			{
+				Input:  "select[mem=1] span[hosts=1] rusage[mem=1]",
+				Mem:    "100",
+				Hosts:  "5",
+				Output: "select[mem > 100] span[hosts=5] rusage[mem=100]",
+			},
+		} {
+			top, err := parseBsubR(test.Input)
+			So(err, ShouldBeNil)
+
+			top.replaceMemoryAndHosts(test.Mem, test.Hosts)
 
 			var sb strings.Builder
 

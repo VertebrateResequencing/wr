@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"strings"
 
 	"vimagination.zapto.org/parser"
@@ -47,7 +48,6 @@ var (
 	errInvalidPrimary        = errors.New("invalid primary")
 	errMissingClosingParen   = errors.New("missing closing paren")
 	errMissingClosingBracket = errors.New("missing closing bracket")
-	errMissingClosingBrace   = errors.New("missing closing brace")
 )
 
 type state struct {
@@ -164,8 +164,8 @@ func (s *state) string(t *parser.Tokeniser, c rune) (parser.Token, parser.TokenF
 type primary struct {
 	Name    *parser.Token
 	Literal *parser.Token
-	Parens  []clause
-	Braces  []clause
+	Parens  clauses
+	Braces  clauses
 }
 
 func (py *primary) parse(p *parser.Parser) error {
@@ -192,7 +192,7 @@ func (py *primary) parse(p *parser.Parser) error {
 func (py *primary) parseGrouping(p *parser.Parser, tk parser.Token) error {
 	var (
 		closeChar string
-		arr       *[]clause
+		arr       *clauses
 	)
 
 	switch tk.Data {
@@ -212,7 +212,7 @@ func (py *primary) parseGrouping(p *parser.Parser, tk parser.Token) error {
 	return parseClauses(p, closeChar, arr)
 }
 
-func parseClauses(p *parser.Parser, closeChar string, arr *[]clause) error {
+func parseClauses(p *parser.Parser, closeChar string, arr *clauses) error {
 	for {
 		var c clause
 
@@ -302,6 +302,18 @@ func (c *call) toString(sb *strings.Builder) {
 		sb.WriteString("(")
 		c.Call.toString(sb)
 		sb.WriteString(")")
+	}
+}
+
+func (c *call) replace(key string, op binaryOperator, value string) {
+	if c.Primary.Parens != nil {
+		c.Primary.Parens.replace(key, op, value)
+	} else if c.Primary.Braces != nil {
+		c.Primary.Braces.replace(key, op, value)
+	}
+
+	if c.Call != nil {
+		c.Call.replace(key, op, value)
 	}
 }
 
@@ -418,6 +430,27 @@ func (b *binary) toString(sb *strings.Builder) {
 	}
 }
 
+func (b *binary) replace(key string, op binaryOperator, value string) {
+	if b.Binary == nil {
+		b.Call.replace(key, op, value)
+
+		return
+	}
+
+	if b.Call.Call != nil || b.Call.Primary.Name == nil || b.Call.Primary.Name.Data != key {
+		return
+	}
+
+	b.Operator = op
+	b.Binary = &binary{
+		Call: call{
+			Primary: primary{
+				Name: &parser.Token{Type: tokenWord, Data: value},
+			},
+		},
+	}
+}
+
 type logicOperator uint8
 
 const (
@@ -506,6 +539,14 @@ func (l *logic) toString(sb *strings.Builder) {
 	}
 }
 
+func (l *logic) replace(key string, op binaryOperator, value string) {
+	l.Binary.replace(key, op, value)
+
+	if l.Ext != nil {
+		l.Ext.replace(key, op, value)
+	}
+}
+
 type clause struct {
 	Logic     logic
 	Condition *logic
@@ -553,8 +594,63 @@ func (c *clause) toString(sb *strings.Builder) {
 	}
 }
 
+func (c *clause) replace(key string, op binaryOperator, value string) {
+	c.Logic.replace(key, op, value)
+
+	if c.Condition != nil {
+		c.Condition.replace(key, op, value)
+	}
+}
+
+type clauses []clause
+
+func (c clauses) replace(key string, op binaryOperator, value string) {
+	for n := range c {
+		c[n].replace(key, op, value)
+	}
+}
+
 type top struct {
-	Clauses []clause
+	Clauses clauses
+}
+
+func (t *top) clauses() iter.Seq2[string, *logic] { //nolint:gocognit,gocyclo
+	return func(yield func(string, *logic) bool) {
+		for n := range t.Clauses {
+			if n == 0 && t.Clauses[n].Condition == nil {
+				if !yield("select", &t.Clauses[n].Logic) {
+					return
+				}
+			}
+
+			if t.Clauses[n].Condition == nil {
+				continue
+			}
+
+			p := t.Clauses[n].Logic.Binary.Call.Primary
+
+			if p.Name == nil {
+				continue
+			}
+
+			if !yield(p.Name.Data, t.Clauses[n].Condition) {
+				return
+			}
+		}
+	}
+}
+
+func (t *top) replaceMemoryAndHosts(memory, hosts string) {
+	for section, logic := range t.clauses() {
+		switch section {
+		case "select":
+			logic.replace("mem", binaryGreaterThan, memory)
+		case "rusage":
+			logic.replace("mem", binaryEquals, memory)
+		case "span":
+			logic.replace("hosts", binaryEquals, hosts)
+		}
+	}
 }
 
 func (t *top) parse(p *parser.Parser) error {
@@ -586,4 +682,14 @@ func (t *top) toString(sb *strings.Builder) {
 		sb.WriteString(" ")
 		c.toString(sb)
 	}
+}
+
+func parseBsubR(r string) (*top, error) {
+	tk := parser.NewStringTokeniser(r)
+	tk.TokeniserState(new(state).main)
+	p := parser.New(tk)
+
+	var t top
+
+	return &t, t.parse(&p)
 }
