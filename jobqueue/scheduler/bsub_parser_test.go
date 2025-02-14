@@ -233,6 +233,12 @@ func TestBsubParser(t *testing.T) {
 				Output: "1 * {span[gtile=!] rusage[ngpus_physical=2:gmem=1G]} + " +
 					"4 * {span[ptile=1] rusage[ngpus_physical=1:gmem=10G]}",
 			},
+			{
+				Input: "{ select[type==any] order[ut] same[model] rusage[mem=1] } || " +
+					"{ select[type==any] order[ls] same[ostype] rusage[mem=5] }@4",
+				Output: "{select[type==any] order[ut] same[model] rusage[mem=1]} || " +
+					"{select[type==any] order[ls] same[ostype] rusage[mem=5]}@4",
+			},
 		} {
 			tk := parser.NewStringTokeniser(test.Input)
 			tk.TokeniserState(new(state).main)

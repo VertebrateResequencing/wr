@@ -118,7 +118,7 @@ func (s *state) operator(t *parser.Tokeniser, c rune) (parser.Token, parser.Toke
 		if !t.Accept("=") {
 			return t.Return(TokenWord, s.main)
 		}
-	case ':', ',', '/', '+', '-', '*':
+	case ':', ',', '/', '+', '-', '*', '@':
 	case '=', '>', '<':
 		t.Accept("=")
 	case '&', '|':
@@ -319,6 +319,7 @@ const (
 	BinaryAdd
 	BinarySubract
 	BinaryMultiply
+	BinaryDelay
 )
 
 func (b BinaryOperator) toString(sb *strings.Builder) { //nolint:funlen,gocyclo,cyclop
@@ -345,6 +346,8 @@ func (b BinaryOperator) toString(sb *strings.Builder) { //nolint:funlen,gocyclo,
 		toWrite = " + "
 	case BinaryMultiply:
 		toWrite = " * "
+	case BinaryDelay:
+		toWrite = "@"
 	default:
 	}
 
@@ -404,6 +407,8 @@ func parseBinaryOperator(tk parser.Token) BinaryOperator { //nolint:funlen,gocyc
 		return BinarySubract
 	case "*":
 		return BinaryMultiply
+	case "@":
+		return BinaryDelay
 	default:
 		return BinaryNone
 	}
