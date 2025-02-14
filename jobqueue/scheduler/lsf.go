@@ -548,20 +548,13 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	var bsubArgs []string
 	megabytes := req.RAM
 	m := float32(megabytes) * s.memLimitMultiplier
-	rSelect := ""
-	rOther := ""
-
-	if val, ok := req.Other["scheduler_misc"]; ok {
-		var args []string
-
-		args, rSelect, rOther = parseUserArgs(ctx, val)
-		if len(args) > 0 {
-			bsubArgs = append(bsubArgs, args...)
-		}
-	}
 
 	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m),
-		"-R", fmt.Sprintf("select[(mem>%d)%s] rusage[mem=%d] span[hosts=1]%s", megabytes, rSelect, megabytes, rOther))
+		"-R", fmt.Sprintf("select[mem>%[1]d] rusage[mem=%[1]d] span[hosts=1]", megabytes))
+
+	if val, ok := req.Other["scheduler_misc"]; ok {
+		bsubArgs = append(bsubArgs, parseUserArgs(ctx, val, strconv.FormatInt(int64(megabytes), 10))...)
+	}
 
 	if req.Cores > 1 {
 		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
@@ -571,69 +564,45 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	// corresponds to the cmd. It must also be unique otherwise LSF would not
 	// start running jobs with duplicate names until previous ones complete
 	name := jobName(cmd, s.config.Deployment, true)
+
 	if needed > 1 {
 		name += fmt.Sprintf("[1-%d]", needed)
 	}
+
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
 	return bsubArgs
 }
 
-func parseUserArgs(ctx context.Context, userArgs string) ([]string, string, string) {
-	var args []string
-
+func parseUserArgs(ctx context.Context, userArgs, megabytes string) []string {
 	words, err := shellwords.Parse(userArgs)
 	if err != nil {
 		clog.Warn(ctx, "scheduler misc option ignored since could not be parsed", "err", err)
 
-		return args, "", ""
+		return nil
 	}
 
-	isR := false
-	rSelect := ""
-	rOther := ""
-
-	for _, arg := range words {
-		if arg == "-R" {
-			isR = true
-
+	for n := 0; n < len(words)-1; n++ {
+		if words[n] != "-R" {
 			continue
 		}
 
-		if isR {
-			rS, rO := parseR(arg)
-			if rS != "" {
-				rSelect += " && " + rS
-			}
-			if rO != "" {
-				rOther += " " + rO
-			}
+		top, err := parseBsubR(words[n+1])
+		if err != nil {
+			clog.Warn(ctx, "scheduler misc option ignored since could not be parsed", "err", err)
 
-			isR = false
-		} else {
-			args = append(args, arg)
+			return nil
 		}
+
+		var sb strings.Builder
+
+		top.replaceMemoryAndHosts(megabytes, "1")
+		top.toString(&sb)
+
+		words[n+1] = sb.String()
 	}
 
-	fmt.Printf("\nargs: %+v; select: %s; other: %s\n", args, rSelect, rOther)
-
-	return args, rSelect, rOther
-}
-
-var rSelectRegex = regexp.MustCompile(`\s*select\[([^\]]*)\]\s*`)
-
-func parseR(arg string) (string, string) {
-	rSelect := ""
-	rOther := ""
-
-	selectMatch := rSelectRegex.FindStringSubmatch(arg)
-	if len(selectMatch) > 0 {
-		rSelect = selectMatch[1]
-
-		rOther = rSelectRegex.ReplaceAllString(arg, "")
-	}
-
-	return rSelect, rOther
+	return words
 }
 
 // recover achieves the aims of Recover(). We don't have to do anything, since
