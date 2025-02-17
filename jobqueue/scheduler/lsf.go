@@ -553,7 +553,12 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 		"-R", fmt.Sprintf("select[mem>%[1]d] rusage[mem=%[1]d] span[hosts=1]", megabytes))
 
 	if val, ok := req.Other["scheduler_misc"]; ok {
-		bsubArgs = append(bsubArgs, parseUserArgs(ctx, val, strconv.FormatInt(int64(megabytes), 10))...)
+		parts, err := parseUserArgs(val, strconv.FormatInt(int64(megabytes), 10))
+		if err != nil {
+			clog.Warn(ctx, err.Error())
+		}
+
+		bsubArgs = append(bsubArgs, parts...)
 	}
 
 	if req.Cores > 1 {
@@ -574,12 +579,10 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	return bsubArgs
 }
 
-func parseUserArgs(ctx context.Context, userArgs, megabytes string) []string {
+func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 	words, err := shellwords.Parse(userArgs)
 	if err != nil {
-		clog.Warn(ctx, "scheduler misc option ignored since could not be parsed", "err", err)
-
-		return nil
+		return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
 	}
 
 	for n := 0; n < len(words)-1; n++ {
@@ -589,9 +592,7 @@ func parseUserArgs(ctx context.Context, userArgs, megabytes string) []string {
 
 		top, err := parseBsubR(words[n+1])
 		if err != nil {
-			clog.Warn(ctx, "scheduler misc option ignored since could not be parsed", "err", err)
-
-			return nil
+			return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
 		}
 
 		top.replaceMemoryAndHosts(megabytes, "1")
@@ -599,7 +600,7 @@ func parseUserArgs(ctx context.Context, userArgs, megabytes string) []string {
 		words[n+1] = top.String()
 	}
 
-	return words
+	return words, nil
 }
 
 // recover achieves the aims of Recover(). We don't have to do anything, since

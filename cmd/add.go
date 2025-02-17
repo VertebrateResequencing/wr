@@ -31,6 +31,7 @@ import (
 	"code.cloudfoundry.org/bytefmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	jscheduler "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/jpillora/backoff"
 	"github.com/spf13/cobra"
 )
@@ -777,6 +778,11 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 
 		if jvj.CPUs != nil && *jvj.CPUs < 0 {
 			die("line %d has a negative cpus count", lineNum)
+		}
+
+		if jvj.SchedulerMisc != "" && jq.ServerInfo.Scheduler == "lsf" &&
+			!jscheduler.IsValidLSFOptions(jvj.SchedulerMisc) {
+			die("invalid lsf resource string")
 		}
 
 		if jvj.Cwd == "" && jd.Cwd == "" {
