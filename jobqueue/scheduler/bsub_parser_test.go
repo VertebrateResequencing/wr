@@ -292,10 +292,7 @@ func TestReplaceMemoryAndHosts(t *testing.T) {
 
 			top.replaceMemoryAndHosts(test.Mem, test.Hosts)
 
-			var sb strings.Builder
-
-			top.toString(&sb)
-			So(sb.String(), ShouldEqual, test.Output)
+			So(top.String(), ShouldEqual, test.Output)
 		}
 	})
 }

@@ -594,12 +594,9 @@ func parseUserArgs(ctx context.Context, userArgs, megabytes string) []string {
 			return nil
 		}
 
-		var sb strings.Builder
-
 		top.replaceMemoryAndHosts(megabytes, "1")
-		top.toString(&sb)
 
-		words[n+1] = sb.String()
+		words[n+1] = top.String()
 	}
 
 	return words

@@ -684,6 +684,14 @@ func (t *top) toString(sb *strings.Builder) {
 	}
 }
 
+func (t *top) String() string {
+	var sb strings.Builder
+
+	t.toString(&sb)
+
+	return sb.String()
+}
+
 func parseBsubR(r string) (*top, error) {
 	tk := parser.NewStringTokeniser(r)
 	tk.TokeniserState(new(state).main)

@@ -636,7 +636,7 @@ func TestLSF(t *testing.T) {
 			bsubArgs[7] = "random6"
 			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
 				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
-				"-J", "random1", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+				"-J", "random6", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
 		})
 
 		Convey("Busy() starts off false", func() {
