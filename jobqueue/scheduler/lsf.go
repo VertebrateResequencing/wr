@@ -24,6 +24,7 @@ package scheduler
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -545,19 +546,28 @@ func (s *lsf) scheduled(ctx context.Context, cmd string) (int, error) {
 // generateBsubArgs generates the appropriate bsub args for the given req and
 // cmd and queue
 func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requirements, cmd string, needed int) []string {
+	args, err := generateBsubArgs(queue, req, cmd, s.config.Deployment, needed, s.memLimitMultiplier)
+	if err != nil {
+		clog.Warn(ctx, err.Error())
+	}
+
+	return args
+}
+
+func generateBsubArgs(queue string, req *Requirements, cmd, deployment string, needed int, memLimitMultiplier float32) ([]string, error) {
 	var bsubArgs []string
 	megabytes := req.RAM
-	m := float32(megabytes) * s.memLimitMultiplier
+	m := float32(megabytes) * memLimitMultiplier
 
 	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m),
 		"-R", fmt.Sprintf("select[mem>%[1]d] rusage[mem=%[1]d] span[hosts=1]", megabytes))
 
-	if val, ok := req.Other["scheduler_misc"]; ok {
-		parts, err := parseUserArgs(val, strconv.FormatInt(int64(megabytes), 10))
-		if err != nil {
-			clog.Warn(ctx, err.Error())
-		}
+	var err error
 
+	if val, ok := req.Other["scheduler_misc"]; ok {
+		var parts []string
+
+		parts, err = parseUserArgs(val, strconv.FormatInt(int64(megabytes), 10))
 		bsubArgs = append(bsubArgs, parts...)
 	}
 
@@ -568,7 +578,7 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	// for checkCmd() to work efficiently we must always set a job name that
 	// corresponds to the cmd. It must also be unique otherwise LSF would not
 	// start running jobs with duplicate names until previous ones complete
-	name := jobName(cmd, s.config.Deployment, true)
+	name := jobName(cmd, deployment, true)
 
 	if needed > 1 {
 		name += fmt.Sprintf("[1-%d]", needed)
@@ -576,7 +586,7 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
-	return bsubArgs
+	return bsubArgs, err
 }
 
 func parseUserArgs(userArgs, megabytes string) ([]string, error) {
@@ -585,7 +595,11 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 		return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
 	}
 
-	for n := 0; n < len(words)-1; n++ {
+	for n := 0; n < len(words); n += 2 {
+		if !strings.HasPrefix(words[n], "-") {
+			return nil, errors.New("invalid lsf bsub options")
+		}
+
 		if words[n] != "-R" {
 			continue
 		}
@@ -601,6 +615,36 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 	}
 
 	return words, nil
+}
+
+type BsubValidator map[string]bool
+
+func (s BsubValidator) Validate(opts string) (valid bool) {
+	var ok bool
+
+	if valid, ok = s[opts]; ok {
+		return valid
+	}
+
+	defer func() {
+		s[opts] = valid
+	}()
+
+	args, err := generateBsubArgs("anything", &Requirements{
+		RAM:   1,
+		Other: map[string]string{"scheduler_misc": opts},
+	}, "echo", "production", 1, 1)
+	if err != nil {
+		return false
+	}
+
+	cmd := exec.Command("bsub", args...)
+
+	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
+	err = cmd.Run()
+	valid = err == nil
+
+	return valid
 }
 
 // recover achieves the aims of Recover(). We don't have to do anything, since

@@ -745,6 +745,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 	scanner.Buffer(buf, maxScanTokenSize)
 	defaultedRepG := false
 	lineNum := 0
+	validator := make(jscheduler.BsubValidator)
+
 	for scanner.Scan() {
 		lineNum++
 		cols := strings.Split(scanner.Text(), "\t")
@@ -780,8 +782,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 			die("line %d has a negative cpus count", lineNum)
 		}
 
-		if jvj.SchedulerMisc != "" && jq.ServerInfo.Scheduler == "lsf" &&
-			!jscheduler.IsValidLSFOptions(jvj.SchedulerMisc) {
+		if jvj.SchedulerMisc != "" && jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(jvj.SchedulerMisc) {
 			die("invalid lsf resource string")
 		}
 

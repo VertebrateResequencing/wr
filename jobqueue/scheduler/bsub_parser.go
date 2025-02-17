@@ -701,11 +701,3 @@ func parseBsubR(r string) (*top, error) {
 
 	return &t, t.parse(&p)
 }
-
-// IsValidLSFOptions returns true if we can successfully parse the given
-// string as options that have valid resource requirements.
-func IsValidLSFOptions(r string) bool {
-	_, err := parseUserArgs(r, "")
-
-	return err == nil
-}

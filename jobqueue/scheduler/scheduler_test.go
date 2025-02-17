@@ -47,7 +47,7 @@ const devHost = "farm22-hgi01"
 
 var (
 	maxCPU     = runtime.NumCPU()
-	testLogger = log15.New()
+	testLogger = log15.Root()
 )
 
 func init() {
@@ -475,7 +475,7 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
-	Convey("You can get a new lsf scheduler", t, func() {
+	FocusConvey("You can get a new lsf scheduler", t, func() {
 		otherReqs := make(map[string]string)
 
 		specifiedOther := make(map[string]string)
@@ -592,7 +592,7 @@ func TestLSF(t *testing.T) {
 			So(queue, ShouldEqual, "yesterday")
 		})
 
-		Convey("generateBsubArgs() adds in user-specified options", func() {
+		FocusConvey("generateBsubArgs() adds in user-specified options", func() {
 			bsubArgs := s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			So(bsubArgs[9], ShouldEndWith, "[1-2]")
 			bsubArgs[9] = "random1"
@@ -637,6 +637,37 @@ func TestLSF(t *testing.T) {
 			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
 				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
 				"-J", "random6", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			logMsg := ""
+			testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.FuncHandler(func(r *log15.Record) error {
+				logMsg += r.Msg
+
+				return nil
+			})))
+
+			specifiedOther["scheduler_misc"] = `-R "select[mem>100] rusage[mem=100] span[hosts=1"`
+			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			So(logMsg, ShouldContainSubstring, "missing closing bracket")
+			bsubArgs[7] = "random7"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
+				"-J", "random7", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			logMsg = ""
+			specifiedOther["scheduler_misc"] = `select[host="foo"]`
+			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			So(logMsg, ShouldContainSubstring, "invalid lsf bsub options")
+			bsubArgs[7] = "random7"
+			So(bsubArgs, ShouldResemble, []string{"-q", "yesterday", "-M", "100",
+				"-R", "select[mem>100] rusage[mem=100] span[hosts=1]",
+				"-J", "random7", "-o", "/dev/null", "-e", "/dev/null", "mycmd"})
+
+			validator := make(BsubValidator)
+			valid := validator.Validate(`-R "select[mem=1]"`)
+			So(valid, ShouldBeTrue)
+
+			valid = validator.Validate(`-R "select[mem=abc]"`)
+			So(valid, ShouldBeFalse)
 		})
 
 		Convey("Busy() starts off false", func() {
