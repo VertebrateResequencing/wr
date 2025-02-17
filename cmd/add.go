@@ -782,10 +782,6 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 			die("line %d has a negative cpus count", lineNum)
 		}
 
-		if jvj.SchedulerMisc != "" && jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(jvj.SchedulerMisc) {
-			die("invalid lsf resource string")
-		}
-
 		if jvj.Cwd == "" && jd.Cwd == "" {
 			if remoteWarning {
 				warn("command working directories defaulting to %s since the manager is running remotely", pwd)
@@ -804,6 +800,10 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
 			die("line %d had a problem: %s", lineNum, errf)
+		}
+
+		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" && jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm) {
+			die("invalid lsf resource string")
 		}
 
 		jobs = append(jobs, job)
