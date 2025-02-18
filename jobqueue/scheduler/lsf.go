@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/bsub"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/mattn/go-shellwords"
@@ -604,14 +605,14 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 			continue
 		}
 
-		top, err := parseBsubR(words[n+1])
+		reqs, err := bsub.ParseBsubR(words[n+1])
 		if err != nil {
 			return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
 		}
 
-		top.replaceMemoryAndHosts(megabytes, "1")
+		reqs.ReplaceMemoryAndHosts(megabytes, "1")
 
-		words[n+1] = top.String()
+		words[n+1] = reqs.String()
 	}
 
 	return words, nil
@@ -623,12 +624,15 @@ func (s BsubValidator) Validate(opts string) (valid bool) {
 	var ok bool
 
 	if valid, ok = s[opts]; ok {
+		fmt.Println(1)
 		return valid
 	}
 
 	defer func() {
 		s[opts] = valid
 	}()
+
+	fmt.Println(2)
 
 	args, err := generateBsubArgs("anything", &Requirements{
 		RAM:   1,
@@ -638,11 +642,16 @@ func (s BsubValidator) Validate(opts string) (valid bool) {
 		return false
 	}
 
+	fmt.Println(3)
+	fmt.Printf("\n%#v\n", args)
+
 	cmd := exec.Command("bsub", args...)
 
 	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
 	err = cmd.Run()
 	valid = err == nil
+
+	fmt.Println(4)
 
 	return valid
 }

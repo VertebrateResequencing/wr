@@ -1,4 +1,22 @@
-package scheduler
+// Copyright © 2025 Genome Research Limited
+// Author: Michael Woolnough <mw31@sanger.ac.uk>
+//
+//  This file is part of wr.
+//
+//  wr is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU Lesser General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  wr is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU Lesser General Public License for more details.
+//
+//  You should have received a copy of the GNU Lesser General Public License
+//  along with wr. If not, see <http://www.gnu.org/licenses/>.
+
+package bsub
 
 import (
 	"strings"
@@ -240,7 +258,7 @@ func TestBsubParser(t *testing.T) {
 					"{select[type==any] order[ls] same[ostype] rusage[mem=5]}@4",
 			},
 		} {
-			top, err := parseBsubR(test.Input)
+			top, err := ParseBsubR(test.Input)
 			So(err, ShouldBeNil)
 
 			var sb strings.Builder
@@ -287,10 +305,10 @@ func TestReplaceMemoryAndHosts(t *testing.T) {
 				Output: "select[mem > 100] span[hosts=5] rusage[mem=100]",
 			},
 		} {
-			top, err := parseBsubR(test.Input)
+			top, err := ParseBsubR(test.Input)
 			So(err, ShouldBeNil)
 
-			top.replaceMemoryAndHosts(test.Mem, test.Hosts)
+			top.ReplaceMemoryAndHosts(test.Mem, test.Hosts)
 
 			So(top.String(), ShouldEqual, test.Output)
 		}

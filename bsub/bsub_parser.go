@@ -16,7 +16,7 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
-package scheduler
+package bsub
 
 import (
 	"errors"
@@ -610,38 +610,42 @@ func (c clauses) replace(key string, op binaryOperator, value string) {
 	}
 }
 
-type top struct {
+// Requirements represents the AST of a parsed bsub requirements string.
+type Requirements struct {
 	Clauses clauses
 }
 
-func (t *top) clauses() iter.Seq2[string, *logic] { //nolint:gocognit,gocyclo
+func (r *Requirements) clauses() iter.Seq2[string, *logic] { //nolint:gocognit,gocyclo
 	return func(yield func(string, *logic) bool) {
-		for n := range t.Clauses {
-			if n == 0 && t.Clauses[n].Condition == nil {
-				if !yield("select", &t.Clauses[n].Logic) {
+		for n := range r.Clauses {
+			if n == 0 && r.Clauses[n].Condition == nil {
+				if !yield("select", &r.Clauses[n].Logic) {
 					return
 				}
 			}
 
-			if t.Clauses[n].Condition == nil {
+			if r.Clauses[n].Condition == nil {
 				continue
 			}
 
-			p := t.Clauses[n].Logic.Binary.Call.Primary
+			p := r.Clauses[n].Logic.Binary.Call.Primary
 
 			if p.Name == nil {
 				continue
 			}
 
-			if !yield(p.Name.Data, t.Clauses[n].Condition) {
+			if !yield(p.Name.Data, r.Clauses[n].Condition) {
 				return
 			}
 		}
 	}
 }
 
-func (t *top) replaceMemoryAndHosts(memory, hosts string) {
-	for section, logic := range t.clauses() {
+// ReplaceMemoryAndHosts replaces `select[mem]` and `rusage[mem]` values with
+// the given memory amount, and replaces `span[hosts]` values with the given
+// hosts value.
+func (r *Requirements) ReplaceMemoryAndHosts(memory, hosts string) {
+	for section, logic := range r.clauses() {
 		switch section {
 		case "select":
 			logic.replace("mem", binaryGreaterThan, memory)
@@ -653,7 +657,7 @@ func (t *top) replaceMemoryAndHosts(memory, hosts string) {
 	}
 }
 
-func (t *top) parse(p *parser.Parser) error {
+func (r *Requirements) parse(p *parser.Parser) error {
 	p.AcceptRun(tokenWhitespace)
 
 	for p.Peek().Type >= 0 {
@@ -663,7 +667,7 @@ func (t *top) parse(p *parser.Parser) error {
 			return fmt.Errorf("Top: %w", err)
 		}
 
-		t.Clauses = append(t.Clauses, c)
+		r.Clauses = append(r.Clauses, c)
 
 		p.AcceptRun(tokenWhitespace)
 	}
@@ -671,33 +675,36 @@ func (t *top) parse(p *parser.Parser) error {
 	return nil
 }
 
-func (t *top) toString(sb *strings.Builder) {
-	if len(t.Clauses) == 0 {
+func (r *Requirements) toString(sb *strings.Builder) {
+	if len(r.Clauses) == 0 {
 		return
 	}
 
-	t.Clauses[0].toString(sb)
+	r.Clauses[0].toString(sb)
 
-	for _, c := range t.Clauses[1:] {
+	for _, c := range r.Clauses[1:] {
 		sb.WriteString(" ")
 		c.toString(sb)
 	}
 }
 
-func (t *top) String() string {
+// String stringifies the parsed Requirements into a consistent format.
+func (r *Requirements) String() string {
 	var sb strings.Builder
 
-	t.toString(&sb)
+	r.toString(&sb)
 
 	return sb.String()
 }
 
-func parseBsubR(r string) (*top, error) {
+// ParseBsubR parses a passed bsub `-R` requirements string into AST to it can
+// be modified and reformatted.
+func ParseBsubR(r string) (*Requirements, error) {
 	tk := parser.NewStringTokeniser(r)
 	tk.TokeniserState(new(state).main)
 	p := parser.New(tk)
 
-	var t top
+	var t Requirements
 
 	return &t, t.parse(&p)
 }
