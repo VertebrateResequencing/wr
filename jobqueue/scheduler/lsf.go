@@ -618,8 +618,11 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 	return words, nil
 }
 
+// BsubValidator provides a cacheable bsub argument validator.
 type BsubValidator map[string]bool
 
+// Validate takes a string of bsub options and confirms that we can understand
+// them and the bsub will accept them.
 func (s BsubValidator) Validate(opts string) (valid bool) {
 	var ok bool
 
