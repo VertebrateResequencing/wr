@@ -17,7 +17,7 @@
 //  along with wr. If not, see <http://www.gnu.org/licenses/>.
 
 // Package bsub parsers bsub resource strings for easy manipulation.
-package bsub
+package bsubresource
 
 import (
 	"vimagination.zapto.org/parser"

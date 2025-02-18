@@ -35,7 +35,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/bsub"
+	"github.com/VertebrateResequencing/wr/bsubresource"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/mattn/go-shellwords"
@@ -605,7 +605,7 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 			continue
 		}
 
-		reqs, err := bsub.ParseBsubR(words[n+1])
+		reqs, err := bsubresource.ParseBsubR(words[n+1])
 		if err != nil {
 			return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
 		}
