@@ -26,7 +26,9 @@ require (
 	github.com/mattn/go-shellwords v1.0.12
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/patrickmn/go-cache v2.1.0+incompatible
+	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
 	github.com/pkg/sftp v1.13.7
+	github.com/rs/xid v1.6.0
 	github.com/sb10/l15h v0.0.0-20170510122137-64c488bf8e22
 	github.com/sb10/waitgroup v0.0.0-20200305124406-7ed665007efa
 	github.com/sevlyar/go-daemon v0.1.6
@@ -99,7 +101,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/ricochet2200/go-disk-usage/du v0.0.0-20210707232629-ac9918953285 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rs/xid v1.6.0 // indirect
 	github.com/smartystreets/assertions v1.2.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tklauser/go-sysconf v0.3.14 // indirect
