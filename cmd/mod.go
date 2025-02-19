@@ -219,7 +219,7 @@ new internal ids is printed.`,
 			if cmdPostCreationScript != "" {
 				scriptContent, errp := internal.PathToContent(cmdPostCreationScript)
 				if errp != nil {
-					die(errp.Error())
+					die("%s", errp.Error())
 				}
 				other["cloud_script"] = scriptContent
 			} else {

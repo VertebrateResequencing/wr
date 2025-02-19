@@ -539,9 +539,9 @@ and accessible.`,
 					if errf != nil {
 						msg := "there was an error trying to sync the remote database: " + errf.Error()
 						if forceTearDown {
-							warn(msg + noManagerForcedMsg)
+							warn("%s", msg+noManagerForcedMsg)
 						} else {
-							die(msg)
+							die("%s", msg)
 						}
 					}
 					syncMsg = " and local database updated"
@@ -549,31 +549,32 @@ and accessible.`,
 
 				ok := jq.ShutdownServer()
 				if ok {
-					info("the remote wr manager was shut down" + syncMsg)
+					info("%s", "the remote wr manager was shut down"+syncMsg)
 				} else {
 					msg := "there was an error trying to shut down the remote wr manager"
 					if forceTearDown {
-						warn(msg + noManagerForcedMsg)
+						warn("%s", msg+noManagerForcedMsg)
 						serverHadProblems = true
 					} else {
-						die(msg)
+						die("%s", msg)
 					}
 				}
 			} else {
 				msg := "the remote wr manager could not be connected to in order to shut it down"
 				if forceTearDown {
-					warn(msg + noManagerForcedMsg)
+					warn("%s", msg+noManagerForcedMsg)
 					serverHadProblems = true
 				} else {
-					die(msg + noManagerMsg)
+					die("%s", msg+noManagerMsg)
 				}
 			}
 		} else {
 			if forceTearDown {
-				warn("the deploy port forwarding is not running, so the remote manager could not be stopped" + noManagerForcedMsg)
+				warn("%s", "the deploy port forwarding is not running, so the remote manager could not be stopped"+
+					noManagerForcedMsg)
 				serverHadProblems = true
 			} else {
-				die("the deploy port forwarding is not running, so can't safely teardown" + noManagerMsg)
+				die("%s", "the deploy port forwarding is not running, so can't safely teardown"+noManagerMsg)
 			}
 		}
 
