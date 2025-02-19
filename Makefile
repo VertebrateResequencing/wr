@@ -26,7 +26,7 @@ compile_k8s_tmp: /tmp/wr
 
 test: export CGO_ENABLED = 0
 test:
-	@go test -p 1 -tags netgo -timeout 40m --count 1 ${PKG_LIST}
+	@go test -p 1 -tags netgo -timeout 40m --count 1 -failfast ${PKG_LIST}
 
 test-e2e: compile_k8s_tmp ## Run E2E tests. E2E tests may be destructive. Requires working Kubernetes cluster and a Kubeconfig file.
 	./kubernetes/run-e2e.sh
@@ -36,13 +36,13 @@ test-k8s-unit: compile_k8s_tmp ## Run the unit and integration tests for the kub
 
 race: export CGO_ENABLED = 1
 race:
-	go test -p 1 -tags netgo -race --count 1 ./
-	go test -p 1 -tags netgo -race --count 1 ./queue
-	go test -p 1 -tags netgo -race --count 1 -timeout 30m ./jobqueue
-	go test -p 1 -tags netgo -race --count 1 -timeout 40m ./jobqueue/scheduler
-	go test -p 1 -tags netgo -race --count 1 -timeout 40m ./cloud
-	go test -p 1 -tags netgo -race --count 1 ./rp
-	go test -p 1 -tags netgo -race --count 1 ./limiter
+	go test -p 1 -tags netgo -race --count 1 -failfast ./
+	go test -p 1 -tags netgo -race --count 1 -failfast ./queue
+	go test -p 1 -tags netgo -race --count 1 -failfast -timeout 30m ./jobqueue
+	go test -p 1 -tags netgo -race --count 1 -failfast -timeout 40m ./jobqueue/scheduler
+	go test -p 1 -tags netgo -race --count 1 -failfast -timeout 40m ./cloud
+	go test -p 1 -tags netgo -race --count 1 -failfast ./rp
+	go test -p 1 -tags netgo -race --count 1 -failfast ./limiter
 
 # curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
 lint:
