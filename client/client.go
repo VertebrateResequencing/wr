@@ -52,6 +52,11 @@ const errDupJobs = Error("some of the added jobs were duplicates")
 // jobs for retrieval by SubmittedJobs(); no wr manager server is needed or
 // used.
 //
+// This variable can either be set directly in test code or when building by
+// adding the following (for example):
+//
+// -ldflags='-X github.com/VertebrateResequencing/wr/client.PretendSubmissions=Y'
+//
 // If set to a number, SubmitJobs will print JSON encoded data to that file
 // descriptor.
 var PretendSubmissions string //nolint:gochecknoglobals
@@ -165,6 +170,10 @@ type Scheduler struct {
 // matters. If cwd is blank, the current working dir is used. If queue is not
 // blank, that queue will be used during NewJob(). If queuesAvoid is not blank,
 // queues including a substring from the list will be avoided during NewJob().
+//
+// When PretendSubmissions is set, a fake server will be used and no real
+// interactions will take place. Methods SubmitJobs, SubmittedJobs, and
+// RemoveJobs will all make no changes to any WR state.
 func New(settings SchedulerSettings) (*Scheduler, error) {
 	cwd, err := pickCWD(settings.Cwd)
 	if err != nil {
