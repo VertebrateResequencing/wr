@@ -259,9 +259,13 @@ scheduler output files or queue details, since these will be included in the
 scheduler command line for you. Make sure to include a space between flags and
 values, ie. --misc '-R "avx"', not --misc '-R"avx"'. Consider this complicated
 LSF bsub command:
-bsub -M ${MEMORY} -R"select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02') && (mem>${MEMORY})] rusage[mem=${MEMORY}]" -q gpu-normal -gpu "num=1:mig=2:aff=no" -o "%J.out" -e "%J.err" ./command.sh
+bsub -M ${MEMORY} -R"select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02') && 
+	(mem>${MEMORY})] rusage[mem=${MEMORY}]" -q gpu-normal
+	-gpu "num=1:mig=2:aff=no" -o "%J.out" -e "%J.err" ./command.sh
 When using wr add, this becomes:
-echo "./command.sh" | wr add -m ${MEMORY}M --queue gpu-normal --misc "-R \"select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')]\" -gpu num=1:mig=2:aff=no"
+echo "./command.sh" | wr add -m ${MEMORY}M --queue gpu-normal
+	--misc "-R \"select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')]\"
+	-gpu num=1:mig=2:aff=no"
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
@@ -802,8 +806,9 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 			die("line %d had a problem: %s", lineNum, errf)
 		}
 
-		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" && jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm) {
-			die("invalid lsf resource string")
+		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" &&
+			jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm) {
+			die("invalid lsf resource string") //nolint:whitespace
 		}
 
 		jobs = append(jobs, job)

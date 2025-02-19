@@ -67,7 +67,7 @@ func (py *primary) parseGrouping(p *parser.Parser, tk parser.Token) error {
 		closeChar = "}"
 		arr = &py.Braces
 	default:
-		return fmt.Errorf("Primary: %w", errInvalidPrimary)
+		return fmt.Errorf("primary: %w", errInvalidPrimary)
 	}
 
 	p.Next()
@@ -81,7 +81,7 @@ func parseClauses(p *parser.Parser, closeChar string, arr *clauses) error {
 		var c clause
 
 		if err := c.parse(p); err != nil {
-			return fmt.Errorf("Primary: %w", err)
+			return fmt.Errorf("primary: %w", err)
 		}
 
 		*arr = append(*arr, c)

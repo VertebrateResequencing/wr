@@ -32,7 +32,7 @@ type clause struct {
 
 func (c *clause) parse(p *parser.Parser) error {
 	if err := c.Logic.parse(p); err != nil {
-		return fmt.Errorf("Clause: %w", err)
+		return fmt.Errorf("clause: %w", err)
 	}
 
 	p.AcceptRun(tokenWhitespace)
@@ -50,13 +50,13 @@ func (c *clause) parseCondition(p *parser.Parser) error {
 	c.Condition = new(logic)
 
 	if err := c.Condition.parse(p); err != nil {
-		return fmt.Errorf("Clause: %w", err)
+		return fmt.Errorf("clause: %w", err)
 	}
 
 	p.AcceptRun(tokenWhitespace)
 
 	if !p.AcceptToken(parser.Token{Type: tokenOperator, Data: "]"}) {
-		return fmt.Errorf("Clause: %w", errMissingClosingBracket)
+		return fmt.Errorf("clause: %w", errMissingClosingBracket)
 	}
 
 	return nil

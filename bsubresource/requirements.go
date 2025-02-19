@@ -80,7 +80,7 @@ func (r *Requirements) parse(p *parser.Parser) error {
 		var c clause
 
 		if err := c.parse(p); err != nil {
-			return fmt.Errorf("Top: %w", err)
+			return fmt.Errorf("top: %w", err)
 		}
 
 		r.Clauses = append(r.Clauses, c)

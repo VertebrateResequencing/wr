@@ -81,7 +81,7 @@ $ wr status`,
 // the rootCmd.
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
-		die(err.Error())
+		die("%s", err.Error())
 	}
 }
 
@@ -91,11 +91,11 @@ func ExecuteLSF(cmd string) {
 	args := append([]string{"lsf", cmd}, os.Args[1:]...)
 	command, _, err := RootCmd.Find(args)
 	if err != nil {
-		die(err.Error())
+		die("%s", err.Error())
 	}
 	RootCmd.SetArgs(args)
 	if err := command.Execute(); err != nil {
-		die(err.Error())
+		die("%s", err.Error())
 	}
 }
 

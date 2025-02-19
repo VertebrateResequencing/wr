@@ -79,7 +79,7 @@ type binary struct {
 
 func (b *binary) parse(p *parser.Parser) error { //nolint:dupl
 	if err := b.Call.parse(p); err != nil {
-		return fmt.Errorf("Binary: %w", err)
+		return fmt.Errorf("binary: %w", err)
 	}
 
 	p.AcceptRun(tokenWhitespace)
@@ -95,7 +95,7 @@ func (b *binary) parse(p *parser.Parser) error { //nolint:dupl
 		b.Binary = new(binary)
 
 		if err := b.Binary.parse(p); err != nil {
-			return fmt.Errorf("Binary: %w", err)
+			return fmt.Errorf("binary: %w", err)
 		}
 	}
 

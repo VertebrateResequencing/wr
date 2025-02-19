@@ -47,7 +47,7 @@ const devHost = "farm22-hgi01"
 
 var (
 	maxCPU     = runtime.NumCPU()
-	testLogger = log15.Root()
+	testLogger = log15.Root() //nolint:gochecknoglobals
 )
 
 func init() {
@@ -509,57 +509,60 @@ func TestLSF(t *testing.T) {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
 		})
 
+		impl, ok := s.impl.(*lsf)
+		So(ok, ShouldBeTrue)
+
 		// author specific tests, based on hostname, where we know what the
 		// expected queue names are *** could also break out initialize() to
 		// mock some textual input instead of taking it from lsadmin...
 		if host == devHost {
 			Convey("determineQueue() picks the best queue depending on given queues to avoid or select", func() {
-				queue, err := s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err := impl.determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long-chkpt")
 
 				otherReqs["scheduler_queues_avoid"] = "-chkpt"
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 
 				otherReqs["scheduler_queues_avoid"] = "-chkpt,parallel"
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 100 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 100 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "week")
 
 				otherReqs["scheduler_queue"] = "long"
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 49 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long")
 			})
 
 			Convey("determineQueue() picks the best queue depending on given resource requirements", func() {
-				queue, err := s.impl.(*lsf).determineQueue(possibleReq)
+				queue, err := impl.determineQueue(possibleReq)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 5 * time.Minute, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{37000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "normal")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1000000, 1 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "hugemem")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 13 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "long-chkpt")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 169 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 169 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "hugemem")
 
-				queue, err = s.impl.(*lsf).determineQueue(&Requirements{1, 361 * time.Hour, 1, 20, otherReqs, true, true, true})
+				queue, err = impl.determineQueue(&Requirements{1, 361 * time.Hour, 1, 20, otherReqs, true, true, true})
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "basement-chkpt")
 			})
@@ -580,20 +583,23 @@ func TestLSF(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(ssys, ShouldNotBeNil)
 
-				queue, err := ssys.impl.(*lsf).determineQueue(possibleReq)
+				impl, ok = ssys.impl.(*lsf)
+				So(ok, ShouldBeTrue)
+
+				queue, err := impl.determineQueue(possibleReq)
 				So(err, ShouldBeNil)
 				So(queue, ShouldEqual, "system")
 			})
 		}
 
 		Convey("determineQueue() returns user queue if specified", func() {
-			queue, err := s.impl.(*lsf).determineQueue(specifiedReq)
+			queue, err := impl.determineQueue(specifiedReq)
 			So(err, ShouldBeNil)
 			So(queue, ShouldEqual, "yesterday")
 		})
 
 		Convey("generateBsubArgs() adds in user-specified options", func() {
-			bsubArgs := s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs := impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			So(bsubArgs[9], ShouldEndWith, "[1-2]")
 			bsubArgs[9] = "random1"
 			So(bsubArgs, ShouldResemble, []string{
@@ -603,7 +609,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			specifiedOther["scheduler_misc"] = `-R "avx foo"`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[9] = "random2"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",
@@ -612,7 +618,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			specifiedOther["scheduler_misc"] = `-E "also supported"`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[9] = "random3"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",
@@ -620,8 +626,9 @@ func TestLSF(t *testing.T) {
 				"-J", "random3", "-o", "/dev/null", "-e", "/dev/null", "mycmd",
 			})
 
-			specifiedOther["scheduler_misc"] = `-R "select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')]" -gpu "num=1:mig=2:aff=no"`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			specifiedOther["scheduler_misc"] = `-R "select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')]"` +
+				` -gpu "num=1:mig=2:aff=no"`
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[11] = "random4"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",
@@ -631,7 +638,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			specifiedOther["scheduler_misc"] = `-R "select[(mem>d)] rusage[mem=d] span[hosts=e]"`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[9] = "random5"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",
@@ -641,7 +648,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			specifiedOther["scheduler_misc"] = `((`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
 			bsubArgs[7] = "random6"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",
@@ -650,6 +657,7 @@ func TestLSF(t *testing.T) {
 			})
 
 			logMsg := ""
+
 			testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.FuncHandler(func(r *log15.Record) error {
 				logMsg += r.Msg
 
@@ -657,8 +665,10 @@ func TestLSF(t *testing.T) {
 			})))
 
 			specifiedOther["scheduler_misc"] = `-R "select[mem>100] rusage[mem=100] span[hosts=1"`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+
 			So(logMsg, ShouldContainSubstring, "missing closing bracket")
+
 			bsubArgs[7] = "random7"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",
@@ -668,8 +678,10 @@ func TestLSF(t *testing.T) {
 
 			logMsg = ""
 			specifiedOther["scheduler_misc"] = `select[host="foo"]`
-			bsubArgs = s.impl.(*lsf).generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+			bsubArgs = impl.generateBsubArgs(ctx, "yesterday", specifiedReq, "mycmd", 2)
+
 			So(logMsg, ShouldContainSubstring, "invalid lsf bsub options")
+
 			bsubArgs[7] = "random7"
 			So(bsubArgs, ShouldResemble, []string{
 				"-q", "yesterday", "-M", "100",

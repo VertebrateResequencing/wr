@@ -96,7 +96,7 @@ var lsfBsubCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		wd, errg := os.Getwd()
 		if errg != nil {
-			die(errg.Error())
+			die("%s", errg.Error())
 		}
 
 		job := &jobqueue.Job{
@@ -166,7 +166,7 @@ var lsfBsubCmd = &cobra.Command{
 		}
 
 		if scanner.Err() != nil {
-			die(scanner.Err().Error())
+			die("%s", scanner.Err().Error())
 		}
 
 		if job.Cmd == "" {
@@ -191,7 +191,7 @@ var lsfBsubCmd = &cobra.Command{
 		// add the job to the queue
 		inserts, _, err := jq.Add([]*jobqueue.Job{job}, os.Environ(), false)
 		if err != nil {
-			die(err.Error())
+			die("%s", err.Error())
 		}
 
 		if inserts != 1 {
@@ -201,7 +201,7 @@ var lsfBsubCmd = &cobra.Command{
 
 		j, err := jq.GetByEssence(&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd, MountConfigs: job.MountConfigs}, false, false)
 		if err != nil {
-			die(err.Error())
+			die("%s", err.Error())
 		}
 
 		fmt.Printf("Job <%d> is submitted to default queue <wr>.\n", j.BsubID)
@@ -237,7 +237,7 @@ other than providing compatibility with real bjobs command line args.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		user, err := internal.Username()
 		if err != nil {
-			die(err.Error())
+			die("%s", err.Error())
 		}
 
 		// connect to the server
@@ -310,7 +310,7 @@ other than providing compatibility with real bjobs command line args.`,
 		// get all incomplete jobs
 		jobs, err := jq.GetIncomplete(0, "", false, false)
 		if err != nil {
-			die(err.Error())
+			die("%s", err.Error())
 		}
 
 		// print out details about the ones that have BsubIDs
@@ -394,7 +394,7 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 		// get all incomplete jobs *** this is hardly efficient...
 		jobs, err := jq.GetIncomplete(0, "", false, false)
 		if err != nil {
-			die(err.Error())
+			die("%s", err.Error())
 		}
 
 		// remove the matching ones
