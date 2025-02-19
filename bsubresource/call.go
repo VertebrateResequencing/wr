@@ -32,7 +32,7 @@ type call struct {
 
 func (c *call) parse(p *parser.Parser) error {
 	if err := c.Primary.parse(p); err != nil {
-		return fmt.Errorf("Call: %w", err)
+		return fmt.Errorf("call: %w", err)
 	}
 
 	p.AcceptRun(tokenWhitespace)
@@ -41,13 +41,13 @@ func (c *call) parse(p *parser.Parser) error {
 		c.Call = new(logic)
 
 		if err := c.Call.parse(p); err != nil {
-			return fmt.Errorf("Call: %w", err)
+			return fmt.Errorf("call: %w", err)
 		}
 
 		p.AcceptRun(tokenWhitespace)
 
 		if !p.AcceptToken(parser.Token{Type: tokenOperator, Data: ")"}) {
-			return fmt.Errorf("Call: %w", errMissingClosingParen)
+			return fmt.Errorf("call: %w", errMissingClosingParen)
 		}
 	}
 

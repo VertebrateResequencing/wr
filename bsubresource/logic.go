@@ -64,7 +64,7 @@ type logic struct {
 
 func (l *logic) parse(p *parser.Parser) error { //nolint:dupl
 	if err := l.Binary.parse(p); err != nil {
-		return fmt.Errorf("Logic: %w", err)
+		return fmt.Errorf("logic: %w", err)
 	}
 
 	p.AcceptRun(tokenWhitespace)
@@ -80,7 +80,7 @@ func (l *logic) parse(p *parser.Parser) error { //nolint:dupl
 		l.Ext = new(logic)
 
 		if err := l.Ext.parse(p); err != nil {
-			return fmt.Errorf("Logic: %w", err)
+			return fmt.Errorf("logic: %w", err)
 		}
 	}
 
