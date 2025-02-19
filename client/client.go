@@ -27,8 +27,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +47,14 @@ type Error string
 func (e Error) Error() string { return string(e) }
 
 const errDupJobs = Error("some of the added jobs were duplicates")
+
+// PretendSubmissions as a non-empty string causes SubmitJobs to only record the
+// jobs for retrieval by SubmittedJobs(); no wr manager server is needed or
+// used.
+//
+// If set to a number, SubmitJobs will print JSON encoded data to that file
+// descriptor.
+var PretendSubmissions string //nolint:gochecknoglobals
 
 // some consts for the jobs returned by NewJob().
 const (
@@ -61,9 +72,6 @@ type SchedulerSettings struct {
 	QueuesAvoid string
 	Timeout     time.Duration
 	Logger      log15.Logger
-	// PretendSubmissions causes SubmitJobs to only record the jobs for
-	// retrieval by SubmittedJobs(); no wr manager server is needed or used.
-	PretendSubmissions bool
 }
 
 type jobqueueClient interface {
@@ -76,10 +84,26 @@ type jobqueueClient interface {
 
 type pretendJobqueue struct {
 	jobBuffer []*jobqueue.Job
+	output    io.Writer
+}
+
+func newPretendJobqueue() *pretendJobqueue {
+	var w io.Writer
+
+	fd, errr := strconv.ParseUint(PretendSubmissions, 10, 64)
+	if errr == nil {
+		w = os.NewFile(uintptr(fd), "")
+	}
+
+	return &pretendJobqueue{output: w}
 }
 
 func (p *pretendJobqueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
 	p.jobBuffer = append(p.jobBuffer, jobs...)
+
+	if p.output != nil {
+		json.NewEncoder(p.output).Encode(jobs) //nolint:errcheck,errchkjson
+	}
 
 	return len(jobs), 0, nil
 }
@@ -149,8 +173,8 @@ func New(settings SchedulerSettings) (*Scheduler, error) {
 
 	var jq jobqueueClient
 
-	if settings.PretendSubmissions {
-		jq = new(pretendJobqueue)
+	if PretendSubmissions != "" {
+		jq = newPretendJobqueue()
 	} else if jq, err = jobqueue.ConnectUsingConfig(clog.ContextWithLogHandler(context.Background(),
 		settings.Logger.GetHandler()), settings.Deployment, settings.Timeout); err != nil {
 		return nil, err
@@ -311,8 +335,8 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 //
 // If any duplicate jobs were added, an error will be returned.
 //
-// If this scheduler was created with PretendSubmissions set  to true, none of
-// the above happens; the jobs are merely recorded for later retrieval with
+// If this scheduler was created with PretendSubmissions set none of the above
+// happens; the jobs are merely recorded for later retrieval with
 // SubmittedJobs().
 func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
 	inserts, _, err := s.jq.Add(jobs, os.Environ(), false)
@@ -328,7 +352,7 @@ func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
 }
 
 // SubmittedJobs returns jobs sent to SubmitJobs() if this Scheduler was created
-// with PretendSubmissions set to true.
+// with PretendSubmissions unset.
 func (s *Scheduler) SubmittedJobs() []*jobqueue.Job {
 	pjq, ok := s.jq.(*pretendJobqueue)
 	if !ok {

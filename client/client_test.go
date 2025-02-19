@@ -27,7 +27,9 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -239,11 +241,12 @@ func cdNonExistantDir(t *testing.T) func() {
 
 func TestFakeScheduler(t *testing.T) {
 	Convey("Given scheduler settings configured to store add commands", t, func() {
+		PretendSubmissions = " "
+
 		settings := SchedulerSettings{
-			Deployment:         "development",
-			Timeout:            10 * time.Second,
-			Logger:             log15.New(),
-			PretendSubmissions: true,
+			Deployment: "development",
+			Timeout:    10 * time.Second,
+			Logger:     log15.New(),
 		}
 
 		Convey("You can make a Scheduler that records submitted jobs without a real server", func() {
@@ -260,7 +263,7 @@ func TestFakeScheduler(t *testing.T) {
 			submittedJobs := s.SubmittedJobs()
 			So(submittedJobs, ShouldResemble, []*jobqueue.Job{job1, job2})
 
-			Convey("You can FindJobsByRepGroupSubstr", func() {
+			Convey("You can FindJobsByRepGroupSuffix", func() {
 				jobs, err := s.FindJobsByRepGroupSuffix("none")
 				So(err, ShouldBeNil)
 				So(jobs, ShouldBeNil)
@@ -282,6 +285,36 @@ func TestFakeScheduler(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(jobs, ShouldResemble, []*jobqueue.Job{job2})
 			})
+		})
+
+		Convey("Setting pretendSubmissions to a file description writes new jobs to it", func() {
+			pr, pw, err := os.Pipe()
+			So(err, ShouldBeNil)
+
+			PretendSubmissions = strconv.FormatUint(uint64(pw.Fd()), 10)
+
+			var (
+				jobs []*jobqueue.Job
+				jch  = make(chan error)
+			)
+
+			go func() {
+				jch <- json.NewDecoder(pr).Decode(&jobs)
+			}()
+
+			s, err := New(settings)
+			So(err, ShouldBeNil)
+
+			job1 := s.NewJob("cmd1", "rep1suffix", "req1", "depg1", "dep1", nil)
+			job2 := s.NewJob("cmd2", "rep2suffix", "req2", "depg2", "dep2", nil)
+
+			err = s.SubmitJobs([]*jobqueue.Job{job1, job2})
+			So(err, ShouldBeNil)
+
+			pw.Close()
+
+			So(<-jch, ShouldBeNil)
+			So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
 		})
 	})
 }
