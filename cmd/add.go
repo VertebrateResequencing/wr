@@ -31,6 +31,7 @@ import (
 	"code.cloudfoundry.org/bytefmt"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
+	jscheduler "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/jpillora/backoff"
 	"github.com/spf13/cobra"
 )
@@ -247,11 +248,20 @@ scheduler that has queues (eg. LSF). If queue is not specified, wr will use
 heuristics to pick the most appropriate queue based on the time, memory and cpu
 requirements of the job.
 
+"queues_avoid" is comma-separated list of substrings found in queue names that
+should not be submitted to, when using a job scheduler that has queues (eg. LSF)
+and not picking an explicit --queue yourself.
+
 "misc" will be used as-is to form the command line used to submit jobs to
 external job schedulers (eg. LSF). For example, --misc '-R avx' might result
-in a command line containing: bsub -R avx. To avoid quoting issues, surround
-the --misc value in single quotes and if necessary use double quotes within the
-value; do NOT use single quotes within the value. Eg. --misc '-R "foo bar"'.
+in a command line containing: bsub -R avx. Do not specify memory requirements,
+scheduler output files or queue details, since these will be included in the
+scheduler command line for you. Make sure to include a space between flags and
+values, ie. --misc '-R "avx"', not --misc '-R"avx"'. Consider this complicated
+LSF bsub command:
+bsub -M ${MEMORY} -R"select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02') && (mem>${MEMORY})] rusage[mem=${MEMORY}]" -q gpu-normal -gpu "num=1:mig=2:aff=no" -o "%J.out" -e "%J.err" ./command.sh
+When using wr add, this becomes:
+echo "./command.sh" | wr add -m ${MEMORY}M --queue gpu-normal --misc "-R \"select[(hname!='qpg-gpu-01') && (hname!='qpg-gpu-02')]\" -gpu num=1:mig=2:aff=no"
 
 "priority" defines how urgent a particular command is; those with higher
 priorities will start running before those with lower priorities. The range of
@@ -735,6 +745,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 	scanner.Buffer(buf, maxScanTokenSize)
 	defaultedRepG := false
 	lineNum := 0
+	validator := make(jscheduler.BsubValidator)
+
 	for scanner.Scan() {
 		lineNum++
 		cols := strings.Split(scanner.Text(), "\t")
@@ -788,6 +800,10 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 		job, errf := jvj.Convert(jd)
 		if errf != nil {
 			die("line %d had a problem: %s", lineNum, errf)
+		}
+
+		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" && jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm) {
+			die("invalid lsf resource string")
 		}
 
 		jobs = append(jobs, job)

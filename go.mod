@@ -23,6 +23,7 @@ require (
 	github.com/jinzhu/configor v1.2.2
 	github.com/jpillora/backoff v1.0.0
 	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0
+	github.com/mattn/go-shellwords v1.0.12
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/sftp v1.13.7
@@ -40,6 +41,7 @@ require (
 	k8s.io/apimachinery v0.32.1
 	k8s.io/client-go v11.0.0+incompatible
 	nanomsg.org/go-mangos v1.4.0
+	vimagination.zapto.org/parser v1.0.4
 )
 
 require (

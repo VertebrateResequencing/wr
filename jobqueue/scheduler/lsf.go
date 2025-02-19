@@ -24,7 +24,7 @@ package scheduler
 import (
 	"bufio"
 	"context"
-	"encoding/csv"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -35,8 +35,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/bsubresource"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/mattn/go-shellwords"
 	"github.com/wtsi-ssg/wr/clog"
 )
 
@@ -545,29 +547,29 @@ func (s *lsf) scheduled(ctx context.Context, cmd string) (int, error) {
 // generateBsubArgs generates the appropriate bsub args for the given req and
 // cmd and queue
 func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requirements, cmd string, needed int) []string {
+	args, err := generateBsubArgs(queue, req, cmd, s.config.Deployment, needed, s.memLimitMultiplier)
+	if err != nil {
+		clog.Warn(ctx, err.Error())
+	}
+
+	return args
+}
+
+func generateBsubArgs(queue string, req *Requirements, cmd, deployment string, needed int, memLimitMultiplier float32) ([]string, error) {
 	var bsubArgs []string
 	megabytes := req.RAM
-	m := float32(megabytes) * s.memLimitMultiplier
-	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m), "-R", fmt.Sprintf("'select[mem>%d] rusage[mem=%d] span[hosts=1]'", megabytes, megabytes))
+	m := float32(megabytes) * memLimitMultiplier
+
+	bsubArgs = append(bsubArgs, "-q", queue, "-M", fmt.Sprintf("%0.0f", m),
+		"-R", fmt.Sprintf("select[mem>%[1]d] rusage[mem=%[1]d] span[hosts=1]", megabytes))
+
+	var err error
 
 	if val, ok := req.Other["scheduler_misc"]; ok {
-		if strings.Contains(val, `'`) {
-			clog.Warn(ctx, "scheduler misc option ignored due to containing single quotes", "misc", val)
-		} else {
-			r := csv.NewReader(strings.NewReader(val))
-			r.Comma = ' '
-			fields, err := r.Read()
-			if err != nil {
-				clog.Warn(ctx, "scheduler misc option ignored", "misc", val, "err", err)
-			} else {
-				for _, field := range fields {
-					if strings.Contains(field, ` `) {
-						field = `'` + field + `'`
-					}
-					bsubArgs = append(bsubArgs, field)
-				}
-			}
-		}
+		var parts []string
+
+		parts, err = parseUserArgs(val, strconv.FormatInt(int64(megabytes), 10))
+		bsubArgs = append(bsubArgs, parts...)
 	}
 
 	if req.Cores > 1 {
@@ -577,13 +579,76 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	// for checkCmd() to work efficiently we must always set a job name that
 	// corresponds to the cmd. It must also be unique otherwise LSF would not
 	// start running jobs with duplicate names until previous ones complete
-	name := jobName(cmd, s.config.Deployment, true)
+	name := jobName(cmd, deployment, true)
+
 	if needed > 1 {
 		name += fmt.Sprintf("[1-%d]", needed)
 	}
+
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
-	return bsubArgs
+	return bsubArgs, err
+}
+
+func parseUserArgs(userArgs, megabytes string) ([]string, error) {
+	words, err := shellwords.Parse(userArgs)
+	if err != nil {
+		return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
+	}
+
+	for n := 0; n < len(words); n += 2 {
+		if !strings.HasPrefix(words[n], "-") {
+			return nil, errors.New("invalid lsf bsub options")
+		}
+
+		if words[n] != "-R" {
+			continue
+		}
+
+		reqs, err := bsubresource.ParseBsubR(words[n+1])
+		if err != nil {
+			return nil, fmt.Errorf("scheduler misc option ignored since could not be parsed: %w", err)
+		}
+
+		reqs.ReplaceMemoryAndHosts(megabytes, "1")
+
+		words[n+1] = reqs.String()
+	}
+
+	return words, nil
+}
+
+// BsubValidator provides a cacheable bsub argument validator.
+type BsubValidator map[string]bool
+
+// Validate takes a string of bsub options and confirms that we can understand
+// them and the bsub will accept them.
+func (s BsubValidator) Validate(opts string) (valid bool) {
+	var ok bool
+
+	if valid, ok = s[opts]; ok {
+		return valid
+	}
+
+	defer func() {
+		s[opts] = valid
+	}()
+
+	args, err := generateBsubArgs("anything", &Requirements{
+		RAM:   1,
+		Other: map[string]string{"scheduler_misc": opts},
+	}, "echo", "production", 1, 1)
+	if err != nil {
+		return false
+	}
+
+	cmd := exec.Command("bsub", args...)
+
+	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
+	err = cmd.Run()
+	valid = err == nil
+
+	return valid
 }
 
 // recover achieves the aims of Recover(). We don't have to do anything, since
