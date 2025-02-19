@@ -24,7 +24,6 @@ package scheduler
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -45,6 +44,8 @@ import (
 // scanBufferSize is used when scanning bjobs -w output. The default buffer size
 // is 65536, but bjob names can be much bigger, so we allow for a larger buffer.
 const scanBufferSize = 1000 * bufio.MaxScanTokenSize
+
+const ErrInvalidBsubOpts = "invalid lsf bsub options"
 
 // lsf is our implementer of scheduleri
 type lsf struct {
@@ -555,7 +556,8 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 	return args
 }
 
-func generateBsubArgs(queue string, req *Requirements, cmd, deployment string, needed int, memLimitMultiplier float32) ([]string, error) {
+func generateBsubArgs(queue string, req *Requirements, cmd, deployment string,
+	needed int, memLimitMultiplier float32) ([]string, error) {
 	var bsubArgs []string
 	megabytes := req.RAM
 	m := float32(megabytes) * memLimitMultiplier
@@ -576,15 +578,7 @@ func generateBsubArgs(queue string, req *Requirements, cmd, deployment string, n
 		bsubArgs = append(bsubArgs, "-n", fmt.Sprintf("%d", int(math.Ceil(req.Cores))))
 	}
 
-	// for checkCmd() to work efficiently we must always set a job name that
-	// corresponds to the cmd. It must also be unique otherwise LSF would not
-	// start running jobs with duplicate names until previous ones complete
-	name := jobName(cmd, deployment, true)
-
-	if needed > 1 {
-		name += fmt.Sprintf("[1-%d]", needed)
-	}
-
+	name := generateBsubName(cmd, deployment, needed)
 	bsubArgs = append(bsubArgs, "-J", name, "-o", "/dev/null", "-e", "/dev/null", cmd)
 
 	return bsubArgs, err
@@ -598,7 +592,7 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 
 	for n := 0; n < len(words); n += 2 {
 		if !strings.HasPrefix(words[n], "-") {
-			return nil, errors.New("invalid lsf bsub options")
+			return nil, Error{"lsf", "parseUserArgs", ErrInvalidBsubOpts}
 		}
 
 		if words[n] != "-R" {
@@ -616,6 +610,19 @@ func parseUserArgs(userArgs, megabytes string) ([]string, error) {
 	}
 
 	return words, nil
+}
+
+// for checkCmd() to work efficiently we must always set a job name that
+// corresponds to the cmd. It must also be unique otherwise LSF would not
+// start running jobs with duplicate names until previous ones complete.
+func generateBsubName(cmd, deployment string, needed int) string {
+	name := jobName(cmd, deployment, true)
+
+	if needed > 1 {
+		name += fmt.Sprintf("[1-%d]", needed)
+	}
+
+	return name
 }
 
 // BsubValidator provides a cacheable bsub argument validator.
