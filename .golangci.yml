@@ -96,7 +96,7 @@ linters:
     # extras
     - containedctx
     - contextcheck
-    #- copyloopvar
+    - copyloopvar
     - cyclop
     - dogsled
     - dupl
@@ -107,7 +107,6 @@ linters:
     - errname
     - errorlint
     - exhaustive
-    - exportloopref
     - fatcontext
     - forbidigo
     - forcetypeassert
