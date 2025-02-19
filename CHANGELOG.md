@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.35.0] - 2025-02-19
+### Added
+- client package to make connecting to a manager and testing interaction with
+  wr easier for 3rd party code.
+
+### Changed
+- When the manager is using the LSF scheduler, the `wr add --misc` option now
+  supports and validates any valid bsub arguments, allowing for complex
+  specifications for things like gpu requirements. Errors in the specification
+  now prevent the add occuring, so users know what the problem is right away,
+  instead of having to look at the manger's logs to see the bsubs are failing.
+
+### Fixed
+- Updated some dependencies to address potential security vulnerabilities.
+
+
 ## [0.34.0] - 2025-01-27
 ### Changed
 - Limit group "names" can now represent date/times that jobs will be scheduled
