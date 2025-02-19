@@ -107,14 +107,14 @@ func TestBsubTokeniser(t *testing.T) {
 				`[)`,
 				[]parser.Token{
 					{Type: tokenOperator, Data: "["},
-					{Type: parser.TokenError, Data: "bad"},
+					{Type: parser.TokenError, Data: "invalid group closing"},
 				},
 			},
 			{
 				`(]`,
 				[]parser.Token{
 					{Type: tokenOperator, Data: "("},
-					{Type: parser.TokenError, Data: "bad"},
+					{Type: parser.TokenError, Data: "invalid group closing"},
 				},
 			},
 			{
