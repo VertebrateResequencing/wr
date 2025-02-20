@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.35.1] - 2025-02-20
+### Fixed
+- Fixed bsub --misc arg validation to include the queue when testing to see if
+  the args are valid.
+
+
 ## [0.35.0] - 2025-02-19
 ### Added
 - client package to make connecting to a manager and testing interaction with
