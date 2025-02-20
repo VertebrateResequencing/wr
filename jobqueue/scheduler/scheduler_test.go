@@ -690,10 +690,10 @@ func TestLSF(t *testing.T) {
 			})
 
 			validator := make(BsubValidator)
-			valid := validator.Validate(`-R "select[mem=1]"`)
+			valid := validator.Validate(`-R "select[mem=1]"`, "anything")
 			So(valid, ShouldBeTrue)
 
-			valid = validator.Validate(`-R "select[abc=abc]"`)
+			valid = validator.Validate(`-R "select[abc=abc]"`, "anything")
 			So(valid, ShouldBeFalse)
 		})
 
