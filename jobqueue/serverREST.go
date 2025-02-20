@@ -683,7 +683,7 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			// id might be a Job.RepGroup
 			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, id, search, limit, state, getStd, getEnv)
 			if qerr != "" {
-				return nil, http.StatusInternalServerError, fmt.Errorf(qerr)
+				return nil, http.StatusInternalServerError, fmt.Errorf("%s", qerr)
 			}
 			if len(theseJobs) > 0 {
 				jobs = append(jobs, theseJobs...)

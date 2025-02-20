@@ -630,7 +630,7 @@ type BsubValidator map[string]bool
 
 // Validate takes a string of bsub options and confirms that we can understand
 // them and the bsub will accept them.
-func (s BsubValidator) Validate(opts string) (valid bool) {
+func (s BsubValidator) Validate(opts, queue string) (valid bool) {
 	var ok bool
 
 	if valid, ok = s[opts]; ok {
@@ -641,7 +641,7 @@ func (s BsubValidator) Validate(opts string) (valid bool) {
 		s[opts] = valid
 	}()
 
-	args, err := generateBsubArgs("anything", &Requirements{
+	args, err := generateBsubArgs(queue, &Requirements{
 		RAM:   1,
 		Other: map[string]string{"scheduler_misc": opts},
 	}, "echo", "production", 1, 1)
@@ -650,7 +650,6 @@ func (s BsubValidator) Validate(opts string) (valid bool) {
 	}
 
 	cmd := exec.Command("bsub", args...)
-
 	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
 	err = cmd.Run()
 	valid = err == nil
