@@ -19,9 +19,11 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -84,6 +86,8 @@ const (
 	// localhost is the name of the host that we check ports on.
 	localhost = "localhost"
 
+	minFQDNLen = 2
+
 	// noPortFoundErr is the error returned when no available port was found.
 	noPortFoundErr = "The default ports couldn't be used for you; " +
 		"please manually set your manager_port and manager_web config options."
@@ -106,7 +110,7 @@ type Config struct {
 	ManagerCAFile        string `default:"ca.pem"`
 	ManagerCertFile      string `default:"cert.pem"`
 	ManagerKeyFile       string `default:"key.pem"`
-	ManagerCertDomain    string `default:"localhost"`
+	ManagerCertDomain    string `default:""`
 	ManagerSetDomainIP   bool   `default:"false"`
 	RunnerExecShell      string `default:"bash"`
 	PrivateKeyPath       string `default:"~/.ssh/id_rsa"`
@@ -438,8 +442,32 @@ func (c *Config) adjustConfigProperties(ctx context.Context, uid int, deployment
 	c.ManagerDir = fp.TildaToHome(c.ManagerDir)
 	c.ManagerDir += "_" + deployment
 
+	if c.ManagerCertDomain == "" {
+		c.ManagerCertDomain = fqdn()
+	}
+
 	c.convRelativeToAbsPaths()
 	c.setManagerPort(ctx, uid)
+}
+
+func fqdn() string {
+	cmd := exec.Command("hostname", "--fqdn")
+
+	var out bytes.Buffer
+
+	cmd.Stdout = &out
+
+	err := cmd.Run()
+	if err != nil {
+		return localhost
+	}
+
+	fqdn := out.String()
+	if len(fqdn) < minFQDNLen {
+		return localhost
+	}
+
+	return fqdn[:len(fqdn)-1]
 }
 
 // convRelativeToAbsPaths converts the possible relative paths of various

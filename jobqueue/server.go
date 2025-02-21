@@ -391,7 +391,7 @@ type ServerConfig struct {
 	KeyFile string
 
 	// Domain that a generated CertFile should be valid for. If not supplied,
-	// defaults to "localhost".
+	// defaults to the fqdn of the current host.
 	//
 	// When using your own CertFile, this should be set to a domain that the
 	// certifcate is valid for, as when the server spawns clients, those clients

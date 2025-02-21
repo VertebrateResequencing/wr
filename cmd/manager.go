@@ -478,7 +478,10 @@ of the manager.`,
 var managerStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Get status of the workflow manager",
-	Long:  `Find out if the workflow manager is currently running or not.`,
+	Long: `Find out if the workflow manager is currently running or not.
+
+If it's running, find out the status website URL, what scheduler the manager is
+using, and other details about the manager.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// see if pid file suggests it is supposed to be running
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
@@ -543,7 +546,15 @@ somewhere.)`,
 // distinguish between the server being in a normal 'started' state or the
 // 'drain' state.
 func reportLiveStatus(jq *jobqueue.Client) {
-	fmt.Println(jq.ServerInfo.Mode)
+	token, err := token()
+	if err != nil {
+		token = []byte("[missing token]")
+	}
+
+	s := jq.ServerInfo
+
+	fmt.Printf("%s\n\nStatus website: %s\nScheduler: %s\nVersion: %s\nHost: %s; PID: %d\n", //nolint:forbidigo
+		s.Mode, websiteURL(s, token), s.Scheduler, jobqueue.ServerVersion, sAddr(s), s.PID)
 }
 
 func init() {
@@ -604,7 +615,7 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 	// go back to just stderr so we don't log token to file (this doesn't affect
 	// server logging)
 	clog.ToDefaultAtLevel("info")
-	info("wr's web interface can be reached at https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
+	info("wr's web interface can be reached at %s", websiteURL(s, token))
 
 	if setDomainIP {
 		ip, err := internal.CurrentIP("")
@@ -618,6 +629,10 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 			info("set IP of %s to %s", s.Host, ip)
 		}
 	}
+}
+
+func websiteURL(s *jobqueue.ServerInfo, token []byte) string {
+	return fmt.Sprintf("https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
 }
 
 func startJQ(postCreation, preDestroy []byte) {
