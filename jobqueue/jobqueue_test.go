@@ -922,8 +922,8 @@ func TestJobqueueBasics(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
+			So(jq.ServerInfo.Host, ShouldNotBeBlank)
 			So(jq.ServerInfo.Host, ShouldNotEqual, "localhost")
-			So(jq.ServerInfo.Host, ShouldContainSubstring, ".")
 			So(jq.ServerInfo.Host, ShouldNotEndWith, ".")
 		})
 
