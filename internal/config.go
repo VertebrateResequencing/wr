@@ -21,6 +21,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -106,7 +107,7 @@ type Config struct {
 	ManagerCAFile        string `default:"ca.pem"`
 	ManagerCertFile      string `default:"cert.pem"`
 	ManagerKeyFile       string `default:"key.pem"`
-	ManagerCertDomain    string `default:"localhost"`
+	ManagerCertDomain    string `default:""`
 	ManagerSetDomainIP   bool   `default:"false"`
 	RunnerExecShell      string `default:"bash"`
 	PrivateKeyPath       string `default:"~/.ssh/id_rsa"`
@@ -438,8 +439,28 @@ func (c *Config) adjustConfigProperties(ctx context.Context, uid int, deployment
 	c.ManagerDir = fp.TildaToHome(c.ManagerDir)
 	c.ManagerDir += "_" + deployment
 
+	if c.ManagerCertDomain == "" {
+		c.ManagerCertDomain = FQDN()
+	}
+
 	c.convRelativeToAbsPaths()
 	c.setManagerPort(ctx, uid)
+}
+
+// FQDN returns the fully qualified domain name of the current host, or
+// "localhost" or just the hostname on error.
+func FQDN() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return localhost
+	}
+
+	fqdn, err := net.LookupCNAME(hostname)
+	if err != nil {
+		fqdn = hostname
+	}
+
+	return strings.TrimSuffix(fqdn, ".")
 }
 
 // convRelativeToAbsPaths converts the possible relative paths of various

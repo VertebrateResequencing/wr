@@ -391,7 +391,7 @@ type ServerConfig struct {
 	KeyFile string
 
 	// Domain that a generated CertFile should be valid for. If not supplied,
-	// defaults to "localhost".
+	// defaults to the fqdn of the current host.
 	//
 	// When using your own CertFile, this should be set to a domain that the
 	// certifcate is valid for, as when the server spawns clients, those clients
@@ -507,7 +507,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	keyFile := config.KeyFile
 	certDomain := config.CertDomain
 	if certDomain == "" {
-		certDomain = localhost
+		certDomain = internal.FQDN()
 	}
 	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string
@@ -1652,10 +1652,12 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobKey := job.Key()
 				jobHost := job.Host
 				jobPID := job.Pid
+				serverLostJobCheckTimeout := ServerLostJobCheckTimeout
 				job.Unlock()
 
 				go func() {
-					if !killCalled && !s.recoveredRunningJobs[jobKey] && s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID) {
+					if !killCalled && !s.recoveredRunningJobs[jobKey] &&
+						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout) {
 						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
 					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
@@ -1862,24 +1864,10 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 // confirm the job is dead due to an ssh issue, but later on the job really does
 // die because the server it was running on gets rebooted, we eventually
 // auto-kill the job.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string, jobPID int) bool {
-	if !s.confirmJobDead(jobPID, jobHost) {
-		go func() {
-			select {
-			case <-time.After(ServerLostJobCheckRetryTime):
-				item, err := s.q.Get(jobKey)
-				if err != nil || item.Stats().State != queue.ItemStateRun {
-					return
-				}
-
-				job := item.Data().(*Job)
-				if job.State == JobStateRunning && job.Lost {
-					s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid)
-				}
-			case <-s.stopClientHandling:
-				return
-			}
-		}()
+func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string,
+	jobPID int, serverLostJobCheckTimeout time.Duration) bool {
+	if !s.confirmJobDead(ctx, jobPID, jobHost, serverLostJobCheckTimeout) {
+		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey)
 
 		return false
 	}
@@ -1907,17 +1895,36 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 }
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
-//
-// You must hold the job.Lock() before calling this.
-func (s *Server) confirmJobDead(jobPID int, jobHost string) bool {
+func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
+	serverLostJobCheckTimeout time.Duration) bool {
 	if jobPID == 0 {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ServerLostJobCheckTimeout)
+	ctx, cancel := context.WithTimeout(ctx, serverLostJobCheckTimeout)
 	defer cancel()
 
 	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
+}
+
+func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string) { //nolint:gocyclo
+	select {
+	case <-time.After(ServerLostJobCheckRetryTime):
+		item, err := s.q.Get(jobKey)
+		if err != nil || item.Stats().State != queue.ItemStateRun {
+			return
+		}
+
+		job, ok := item.Data().(*Job)
+		if ok && job.State == JobStateRunning && job.Lost {
+			job.Lock()
+			serverLostJobCheckTimeout := ServerLostJobCheckTimeout
+			job.Unlock()
+			s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid, serverLostJobCheckTimeout)
+		}
+	case <-s.stopClientHandling:
+		return
+	}
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates

@@ -149,15 +149,13 @@ func TestJobqueueUtils(t *testing.T) {
 	})
 
 	Convey("GenerateCerts creates certificate files", t, func() {
-		certtmpdir, err := os.MkdirTemp("", "wr_jobqueue_cert_dir_")
-		So(err, ShouldBeNil)
-		defer os.RemoveAll(certtmpdir)
+		certtmpdir := t.TempDir()
 
 		caFile := filepath.Join(certtmpdir, "ca.pem")
 		certFile := filepath.Join(certtmpdir, "cert.pem")
 		keyFile := filepath.Join(certtmpdir, "key.pem")
 		certDomain := "localhost"
-		err = internal.GenerateCerts(caFile, certFile, keyFile, certDomain, internal.DefaultBitsForRootRSAKey,
+		err := internal.GenerateCerts(caFile, certFile, keyFile, certDomain, internal.DefaultBitsForRootRSAKey,
 			internal.DefualtBitsForServerRSAKey, crand.Reader,
 			internal.DefaultCertFileFlags)
 		So(err, ShouldBeNil)
@@ -444,22 +442,14 @@ func TestJobqueueSignal(t *testing.T) {
 
 	config, _, addr, _, clientConnectTime := jobqueueTestInit(false)
 
-	pwd, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	servertmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_server_dir_")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer os.RemoveAll(servertmpdir)
+	servertmpdir := t.TempDir()
 
 	// these tests need the server running in it's own pid so we can test signal
 	// handling in the client. Our server will be ourself in --servermode, so
 	// first we'll compile ourselves to the tmpdir
 	serverExe := filepath.Join(servertmpdir, "server")
 	cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", serverExe)
-	err = cmd.Run()
+	err := cmd.Run()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -931,6 +921,10 @@ func TestJobqueueBasics(t *testing.T) {
 			jq, err := ConnectUsingConfig(ctx, "development", clientConnectTime)
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
+
+			So(jq.ServerInfo.Host, ShouldNotBeBlank)
+			So(jq.ServerInfo.Host, ShouldNotEqual, "localhost")
+			So(jq.ServerInfo.Host, ShouldNotEndWith, ".")
 		})
 
 		Convey("You can connect to the server and add jobs and get back their IDs", func() {
@@ -1898,9 +1892,8 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("The stdout/err of jobs is only kept for failed jobs, and cwd&TMPDIR&HOME get set appropriately", func() {
 					jobs = nil
-					baseDir, err := os.MkdirTemp("", "wr_jobqueue_test_runner_dir_")
+					baseDir := t.TempDir()
 					So(err, ShouldBeNil)
-					defer os.RemoveAll(baseDir)
 					tmpDir := filepath.Join(baseDir, "jobqueue tmpdir") // testing that it works with spaces in the name
 					err = os.Mkdir(tmpDir, os.ModePerm)
 					So(err, ShouldBeNil)
@@ -2165,9 +2158,8 @@ func TestJobqueueMedium(t *testing.T) {
 
 				Convey("Job behaviours trigger correctly", func() {
 					jobs = nil
-					cwd, err := os.MkdirTemp("", "wr_jobqueue_test_runner_dir_")
+					cwd := t.TempDir()
 					So(err, ShouldBeNil)
-					defer os.RemoveAll(cwd)
 					b1 := &Behaviour{When: OnSuccess, Do: CleanupAll}
 					b2 := &Behaviour{When: OnFailure, Do: Run, Arg: "touch foo"}
 					bs := Behaviours{b1, b2}
@@ -4358,21 +4350,13 @@ func TestJobqueueRunners(t *testing.T) {
 		ServerItemTTR = 10 * time.Second
 		ServerCheckRunnerTime = 2 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
-		pwd, err := os.Getwd()
-		if err != nil {
-			log.Fatal(err)
-		}
-		runnertmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_runner_dir_")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer os.RemoveAll(runnertmpdir)
+		runnertmpdir := t.TempDir()
 
 		// our runnerCmd will be running ourselves in --runnermode, so first
 		// we'll compile ourselves to the tmpdir
 		runnerCmd := filepath.Join(runnertmpdir, "runner")
 		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
-		err = cmd.Run()
+		err := cmd.Run()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -4587,11 +4571,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
 			var jobs []*Job
@@ -4769,11 +4749,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			var jobs []*Job
 			count := maxCPU * 2
@@ -4844,11 +4820,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			var jobs []*Job
 			count := maxCPU * 2
@@ -4922,11 +4894,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			maxMem, errp := internal.ProcMeminfoMBs()
 			So(errp, ShouldBeNil)
@@ -4996,11 +4964,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "echo 1 && false", Cwd: tmpdir, ReqGroup: "echo", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
@@ -5305,11 +5269,7 @@ func TestJobqueueRunners(t *testing.T) {
 				So(err, ShouldBeNil)
 				defer disconnect(jq)
 
-				tmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_output_dir_")
-				if err != nil {
-					log.Fatal(err)
-				}
-				defer os.RemoveAll(tmpdir)
+				tmpdir := t.TempDir()
 
 				req := &jqs.Requirements{RAM: 300, Time: 1 * time.Second, Cores: 1}
 				var jobs []*Job
@@ -5480,21 +5440,13 @@ func TestJobqueueRunners(t *testing.T) {
 		ServerItemTTR = 1 * time.Second
 		ServerCheckRunnerTime = 2 * time.Second
 		ClientTouchInterval = 50 * time.Millisecond
-		pwd, err := os.Getwd()
-		if err != nil {
-			log.Fatal(err)
-		}
-		runnertmpdir, err := os.MkdirTemp(pwd, "wr_jobqueue_test_runner_dir_")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer os.RemoveAll(runnertmpdir)
+		runnertmpdir := t.TempDir()
 
 		// our runnerCmd will be running ourselves in --runnermode, so first
 		// we'll compile ourselves to the tmpdir
 		runnerCmd := filepath.Join(runnertmpdir, "runner")
 		cmd := exec.Command("go", "test", "-tags", "netgo", "-run", "TestJobqueue", "-c", "-o", runnerCmd)
-		err = cmd.Run()
+		err := cmd.Run()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -5512,11 +5464,7 @@ func TestJobqueueRunners(t *testing.T) {
 			So(err, ShouldBeNil)
 			defer disconnect(jq)
 
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			var jobs []*Job
 			jobs = append(jobs, &Job{Cmd: "true", Cwd: tmpdir, ReqGroup: "true", Requirements: &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}, Retries: uint8(0), Override: uint8(2), RepGroup: "manually_added"})
@@ -5625,11 +5573,7 @@ func TestJobqueueWithOpenStack(t *testing.T) {
 
 	setDomainIP(config.ManagerCertDomain)
 
-	runnertmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_runner_dir_")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer os.RemoveAll(runnertmpdir)
+	runnertmpdir := t.TempDir()
 
 	// our runnerCmd will be running ourselves in --runnermode, so first
 	// we'll compile ourselves to the tmpdir
@@ -5725,11 +5669,7 @@ sudo usermod -aG docker ` + osUser
 
 		Convey("You can add a job that runs on localhost", func() {
 			buff := clog.ToBufferAtLevel("debug")
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
 
@@ -5779,11 +5719,7 @@ sudo usermod -aG docker ` + osUser
 		})
 
 		Convey("You can add a chain of jobs that run quickly one after the other", func() {
-			tmpdir, err := os.MkdirTemp("", "wr_jobqueue_test_output_dir_")
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer os.RemoveAll(tmpdir)
+			tmpdir := t.TempDir()
 
 			zeroReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 0}
 			oneReq := &jqs.Requirements{RAM: 1, Time: 1 * time.Second, Cores: 1}
@@ -6786,11 +6722,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 	})
 
 	Convey("You can connect and run commands that rely on files in a remote S3 object store", t, func() {
-		cwd, err := os.MkdirTemp("", "wr_jobqueue_test_s3_dir_")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer os.RemoveAll(cwd)
+		cwd := t.TempDir()
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
