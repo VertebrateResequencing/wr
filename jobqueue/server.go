@@ -507,7 +507,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	keyFile := config.KeyFile
 	certDomain := config.CertDomain
 	if certDomain == "" {
-		certDomain = localhost
+		certDomain = internal.FQDN()
 	}
 	err = internal.CheckCerts(certFile, keyFile)
 	var certMsg string

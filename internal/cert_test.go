@@ -25,7 +25,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,12 +40,7 @@ const (
 
 func TestCert(t *testing.T) {
 	Convey("Given the certificates key file paths", t, func() {
-		certtmpdir, err1 := ioutil.TempDir(".", "wr_jobqueue_cert_dir_")
-		if err1 != nil {
-			log.Fatal(err1)
-		}
-		defer os.RemoveAll(certtmpdir)
-
+		certtmpdir := t.TempDir()
 		caFile := filepath.Join(certtmpdir, "ca.pem")
 		certFile := filepath.Join(certtmpdir, "cert.pem")
 		keyFile := filepath.Join(certtmpdir, "key.pem")

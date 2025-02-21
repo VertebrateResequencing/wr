@@ -64,7 +64,6 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 		TokenFile:       filepath.Join(managerDirActual, "client.token"),
 		CAFile:          filepath.Join(managerDirActual, "ca.pem"),
 		CertFile:        filepath.Join(managerDirActual, "cert.pem"),
-		CertDomain:      "localhost",
 		KeyFile:         filepath.Join(managerDirActual, "key.pem"),
 		Deployment:      "development",
 	}

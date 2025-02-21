@@ -43,11 +43,9 @@ func TestBehaviours(t *testing.T) {
 		b10 := &Behaviour{When: 10, Do: Cleanup}
 		b11 := &Behaviour{When: OnFailure, Do: Remove}
 
-		cwd, err := os.MkdirTemp("", "wr_jobqueue_test_behaviour_dir_")
-		So(err, ShouldBeNil)
-		defer os.RemoveAll(cwd)
+		cwd := t.TempDir()
 		actualCwd := filepath.Join(cwd, "a", "b", "c", "def", "cwd")
-		err = os.MkdirAll(actualCwd, os.ModePerm)
+		err := os.MkdirAll(actualCwd, os.ModePerm)
 		So(err, ShouldBeNil)
 		_, err = os.OpenFile(filepath.Join(actualCwd, "a.file"), os.O_RDONLY|os.O_CREATE, 0o666)
 		So(err, ShouldBeNil)

@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -553,7 +554,7 @@ func reportLiveStatus(jq *jobqueue.Client) {
 
 	s := jq.ServerInfo
 
-	fmt.Printf("%s\n\nStatus website: %s\nScheduler: %s\nVersion: %s\nHost: %s; PID: %d\n", //nolint:forbidigo
+	fmt.Printf("%s\n\nStatus website: %s\nScheduler: %s\nVersion: %s\nHost: %s; PID: %d\n",
 		s.Mode, websiteURL(s, token), s.Scheduler, jobqueue.ServerVersion, sAddr(s), s.PID)
 }
 
@@ -632,7 +633,7 @@ func logStarted(s *jobqueue.ServerInfo, token []byte) {
 }
 
 func websiteURL(s *jobqueue.ServerInfo, token []byte) string {
-	return fmt.Sprintf("https://%s:%s/?token=%s", s.Host, s.WebPort, string(token))
+	return fmt.Sprintf("https://%s/?token=%s", net.JoinHostPort(s.Host, s.WebPort), string(token))
 }
 
 func startJQ(postCreation, preDestroy []byte) {

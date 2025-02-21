@@ -800,6 +800,9 @@ func TestConfig(t *testing.T) {
 
 			So(config, ShouldNotBeNil)
 			So(config.IsProduction(), ShouldBeTrue)
+			So(config.ManagerCertDomain, ShouldNotEqual, "localhost")
+			So(config.ManagerCertDomain, ShouldContainSubstring, ".")
+			So(config.ManagerCertDomain, ShouldNotEndWith, ".")
 
 			Convey("It can get the Default server", func() {
 				server := DefaultServer(ctx)

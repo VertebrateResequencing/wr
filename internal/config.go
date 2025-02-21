@@ -19,11 +19,10 @@
 package internal
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -85,8 +84,6 @@ const (
 
 	// localhost is the name of the host that we check ports on.
 	localhost = "localhost"
-
-	minFQDNLen = 2
 
 	// noPortFoundErr is the error returned when no available port was found.
 	noPortFoundErr = "The default ports couldn't be used for you; " +
@@ -443,31 +440,27 @@ func (c *Config) adjustConfigProperties(ctx context.Context, uid int, deployment
 	c.ManagerDir += "_" + deployment
 
 	if c.ManagerCertDomain == "" {
-		c.ManagerCertDomain = fqdn()
+		c.ManagerCertDomain = FQDN()
 	}
 
 	c.convRelativeToAbsPaths()
 	c.setManagerPort(ctx, uid)
 }
 
-func fqdn() string {
-	cmd := exec.Command("hostname", "--fqdn")
-
-	var out bytes.Buffer
-
-	cmd.Stdout = &out
-
-	err := cmd.Run()
+// FQDN returns the fully qualified domain name of the current host, or
+// "localhost" or just the hostname on error.
+func FQDN() string {
+	hostname, err := os.Hostname()
 	if err != nil {
 		return localhost
 	}
 
-	fqdn := out.String()
-	if len(fqdn) < minFQDNLen {
-		return localhost
+	fqdn, err := net.LookupCNAME(hostname)
+	if err != nil {
+		fqdn = hostname
 	}
 
-	return fqdn[:len(fqdn)-1]
+	return strings.TrimSuffix(fqdn, ".")
 }
 
 // convRelativeToAbsPaths converts the possible relative paths of various
