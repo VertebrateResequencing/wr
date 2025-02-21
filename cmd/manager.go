@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -66,6 +67,8 @@ const (
 	kubernetes      = "kubernetes"
 	deadlockTimeout = 5 * time.Minute
 )
+
+var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
 
 // managerCmd represents the manager command
 var managerCmd = &cobra.Command{
@@ -199,17 +202,7 @@ fully.`,
 				internal.WaitForFile(config.ManagerTokenFile, preStart, mTimeout)
 				jq := connect(mTimeout, true)
 				if jq == nil {
-					// display any error or crit lines in the log
-					f, errf := os.Open(config.ManagerLogFile)
-					if errf == nil {
-						scanner := bufio.NewScanner(f)
-						for scanner.Scan() {
-							line := scanner.Text()
-							if strings.Contains(line, "lvl=crit") || strings.Contains(line, "lvl=eror") {
-								fmt.Println(line)
-							}
-						}
-					}
+					printLines(getBadLogLines())
 					die("wr manager failed to start on port %s after %ds", config.ManagerPort, managerTimeoutSeconds)
 				}
 				token, err := token()
@@ -230,6 +223,38 @@ fully.`,
 			}
 		}
 	},
+}
+
+func printLines(lines []string) {
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+}
+
+// getBadLogLines finds any error or crit lines in the log since the manager
+// was last started.
+func getBadLogLines() []string {
+	var lines []string
+
+	f, err := os.Open(config.ManagerLogFile)
+	if err != nil {
+		return lines
+	}
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.Contains(line, "lvl=crit") || strings.Contains(line, "lvl=eror") {
+			lines = append(lines, line)
+		}
+
+		if managerStartedLogRegex.MatchString(line) {
+			lines = []string{}
+		}
+	}
+
+	return lines
 }
 
 func handleScript(path, arg string, extraArgs *[]string) []byte {
@@ -554,8 +579,14 @@ func reportLiveStatus(jq *jobqueue.Client) {
 
 	s := jq.ServerInfo
 
-	fmt.Printf("%s\n\nStatus website: %s\nScheduler: %s\nVersion: %s\nHost: %s; PID: %d\n",
-		s.Mode, websiteURL(s, token), s.Scheduler, jobqueue.ServerVersion, sAddr(s), s.PID)
+	fmt.Printf("%s\n\nStatus website: %s\nScheduler: %s\nVersion: %s\nHost: %s; PID: %d\nLog file: %s\n",
+		s.Mode, websiteURL(s, token), s.Scheduler, jobqueue.ServerVersion, sAddr(s), s.PID, config.ManagerLogFile)
+
+	lines := getBadLogLines()
+	if len(lines) > 0 {
+		fmt.Println("\nErrors in the log:")
+		printLines(lines)
+	}
 }
 
 func init() {
