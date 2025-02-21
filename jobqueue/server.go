@@ -1652,10 +1652,12 @@ func (s *Server) createQueue(ctx context.Context) {
 				jobKey := job.Key()
 				jobHost := job.Host
 				jobPID := job.Pid
+				serverLostJobCheckTimeout := ServerLostJobCheckTimeout
 				job.Unlock()
 
 				go func() {
-					if !killCalled && !s.recoveredRunningJobs[jobKey] && s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID) {
+					if !killCalled && !s.recoveredRunningJobs[jobKey] &&
+						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout) {
 						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
 					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
@@ -1862,8 +1864,8 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 // confirm the job is dead due to an ssh issue, but later on the job really does
 // die because the server it was running on gets rebooted, we eventually
 // auto-kill the job.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string, jobPID int) bool {
-	if !s.confirmJobDead(jobPID, jobHost) {
+func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string, jobPID int, serverLostJobCheckTimeout time.Duration) bool {
+	if !s.confirmJobDead(jobPID, jobHost, serverLostJobCheckTimeout) {
 		go func() {
 			select {
 			case <-time.After(ServerLostJobCheckRetryTime):
@@ -1874,7 +1876,10 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 
 				job := item.Data().(*Job)
 				if job.State == JobStateRunning && job.Lost {
-					s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid)
+					job.Lock()
+					serverLostJobCheckTimeout = ServerLostJobCheckTimeout
+					job.Unlock()
+					s.confirmJobDeadAndKill(ctx, job.Key(), job.Host, job.Pid, serverLostJobCheckTimeout)
 				}
 			case <-s.stopClientHandling:
 				return
@@ -1909,12 +1914,12 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
 //
 // You must hold the job.Lock() before calling this.
-func (s *Server) confirmJobDead(jobPID int, jobHost string) bool {
+func (s *Server) confirmJobDead(jobPID int, jobHost string, serverLostJobCheckTimeout time.Duration) bool {
 	if jobPID == 0 {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ServerLostJobCheckTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), serverLostJobCheckTimeout)
 	defer cancel()
 
 	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
