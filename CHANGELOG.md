@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.35.2] - 2025-03-05
+### Changed
+- When `wr manager start` tells you the URL of the status website, it now uses
+  the FQDN of your host if you haven't configured this. NB: FQDN is also used by
+  clients to connect to the manager, which means existing certificates where the
+  host is set to "localhost" will need to be deleted so the manager can create
+  new ones with the FQDN.
+- `wr managager status` now tells you more than just 'started'; it tells you the
+  scheduler used, the website URL and other useful information.
+- The client package introduced in v0.35.0 gains a KillJobs() method.
+
+
 ## [0.35.1] - 2025-02-20
 ### Fixed
 - Fixed bsub --misc arg validation to include the queue when testing to see if
