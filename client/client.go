@@ -83,6 +83,7 @@ type jobqueueClient interface {
 	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
 	GetByRepGroup(repgroup string, subStr bool, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
+	Kill(jes []*jobqueue.JobEssence) (int, error)
 	Delete(jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
 }
@@ -132,6 +133,23 @@ func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 	}
 
 	return jobs, nil
+}
+
+// Kill returns a count of jobs that were eligible to be killed (those still in
+// running state).
+func (p *pretendJobqueue) Kill(jeses []*jobqueue.JobEssence) (int, error) {
+	var n int
+
+	for _, j := range p.jobBuffer {
+		key := j.Key()
+
+		if j.StartTime.After(j.EndTime) && slices.ContainsFunc(jeses, func(j *jobqueue.JobEssence) bool { return j.JobKey == key }) { //nolint:lll
+			j.EndTime = time.Now()
+			n++
+		}
+	}
+
+	return n, nil
 }
 
 func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {
@@ -384,17 +402,28 @@ func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, er
 	}), nil
 }
 
-// RemoveJobs removes all of the supplied jobs from the wr queues.
-//
-// NB: Running jobs will not be removed.
-func (s *Scheduler) RemoveJobs(jobs ...*jobqueue.Job) error {
+// Kill asks the server to kill the provided jobs.
+func (s *Scheduler) KillJobs(jobs ...*jobqueue.Job) error {
+	_, err := s.jq.Kill(jobsToEssences(jobs))
+
+	return err
+}
+
+func jobsToEssences(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 	es := make([]*jobqueue.JobEssence, len(jobs))
 
 	for n, job := range jobs {
 		es[n] = &jobqueue.JobEssence{JobKey: job.Key()}
 	}
 
-	_, err := s.jq.Delete(es)
+	return es
+}
+
+// RemoveJobs removes all of the supplied jobs from the wr queues.
+//
+// NB: Running jobs will not be removed.
+func (s *Scheduler) RemoveJobs(jobs ...*jobqueue.Job) error {
+	_, err := s.jq.Delete(jobsToEssences(jobs))
 
 	return err
 }
