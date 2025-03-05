@@ -384,17 +384,33 @@ func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, er
 	}), nil
 }
 
-// RemoveJobs removes all of the supplied jobs from the wr queues.
-//
-// NB: Running jobs will not be removed.
-func (s *Scheduler) RemoveJobs(jobs ...*jobqueue.Job) error {
+// Kill asks the server to kill the provided jobs.
+func (s *Scheduler) KillJobs(jobs ...*jobqueue.Job) error {
+	jq, ok := s.jq.(*jobqueue.Client)
+	if !ok {
+		return nil
+	}
+
+	_, err := jq.Kill(jobsToEssences(jobs))
+
+	return err
+}
+
+func jobsToEssences(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 	es := make([]*jobqueue.JobEssence, len(jobs))
 
 	for n, job := range jobs {
 		es[n] = &jobqueue.JobEssence{JobKey: job.Key()}
 	}
 
-	_, err := s.jq.Delete(es)
+	return es
+}
+
+// RemoveJobs removes all of the supplied jobs from the wr queues.
+//
+// NB: Running jobs will not be removed.
+func (s *Scheduler) RemoveJobs(jobs ...*jobqueue.Job) error {
+	_, err := s.jq.Delete(jobsToEssences(jobs))
 
 	return err
 }
