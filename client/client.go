@@ -246,12 +246,16 @@ func DefaultRequirements() *jqs.Requirements {
 	}
 }
 
-// NewJob is a convenience function for creating Jobs. It sets the job's Cwd
-// to the current working directory, sets CwdMatters to true, applies the given
+// NewJob is a convenience function for creating Jobs. It sets the job's Cwd to
+// the current working directory, sets CwdMatters to true, applies the given
 // Requirements, and sets Retries to 3.
 //
 // If this Scheduler had been made with sudo: true, cmd will be prefixed with
 // 'sudo '.
+//
+// NB: When running with sudo that is configured to not pass through
+// environmental variables, you must have a wr config file, accessible from the
+// working directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.
 //
 // The supplied depGroup and dep can be blank to not set DepGroups and
 // Dependencies.
