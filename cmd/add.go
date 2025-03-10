@@ -433,7 +433,11 @@ machine was started.
 "bsub_mode" is a boolean that results in the job being assigned a unique (for
 this manager session) job id, and turns on bsub emulation, which means that if
 your Cmd calls bsub, it will instead result in a command being added to wr. The
-new job will have this job's mount and cloud_* options.`,
+new job will have this job's mount and cloud_* options.
+
+NB: When running with sudo that is configured to not pass through environmental
+variables, you must have a wr config file, accessible from the working
+directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 	Run: func(combraCmd *cobra.Command, args []string) {
 		// check the command line options
 		if cmdFile == "" {
