@@ -808,19 +808,19 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server status casting", true)
 			defer wg.Done(wgk3)
-			s.statusCaster.Broadcasting(0)
+			s.statusCaster.Broadcast(0)
 		}()
 		wgk4 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server server casting", true)
 			defer wg.Done(wgk4)
-			s.badServerCaster.Broadcasting(0)
+			s.badServerCaster.Broadcast(0)
 		}()
 		wgk5 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server scheduler casting", true)
 			defer wg.Done(wgk5)
-			s.schedCaster.Broadcasting(0)
+			s.schedCaster.Broadcast(0)
 		}()
 
 		badServerCB := func(server *cloud.Server) {

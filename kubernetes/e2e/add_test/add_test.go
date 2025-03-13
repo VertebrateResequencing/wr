@@ -65,7 +65,7 @@ func init() {
 		return
 	}
 
-	_, autherr := clientset.CoreV1().Endpoints("default").List(metav1.ListOptions{})
+	_, autherr := clientset.CoreV1().Endpoints("default").List(ctx, metav1.ListOptions{})
 	if autherr != nil {
 		skip = true
 		fmt.Printf("Failed to list endpoints for default namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
@@ -152,7 +152,7 @@ func TestEchoes(t *testing.T) {
 
 		// Now check the pods are deleted after successful completion. They are
 		// kept if they error.
-		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
+		_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(context.Background(), job.Host, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
 		} else if err != nil {
@@ -211,7 +211,7 @@ func TestFileCreation(t *testing.T) {
 
 		// Clean up manually. This is because we have a limited number of cores
 		// in CI, and everything will time out if we don't.
-		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
+		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(context.Background(), job.Host, metav1.DeleteOptions{})
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
 		}
@@ -260,7 +260,7 @@ func TestContainerImage(t *testing.T) {
 
 		// Now the job has completed successfully we check that the image used is
 		// as expected
-		pod, err := clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
+		pod, err := clientset.CoreV1().Pods(tc.NewNamespaceName).Get(context.Background(), job.Host, metav1.GetOptions{})
 		if err != nil {
 			t.Errorf("Getting pod failed %s", err)
 		}
@@ -288,7 +288,7 @@ func TestContainerImage(t *testing.T) {
 
 		// Clean up manually. This is because we have a limited number of cores
 		// in CI, and everything will time out if we don't.
-		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(job.Host, &metav1.DeleteOptions{})
+		err = clientset.CoreV1().Pods(tc.NewNamespaceName).Delete(context.Background(), job.Host, metav1.DeleteOptions{})
 		if err != nil {
 			t.Errorf("Failed to delete pod %s: %s", job.Host, err)
 		}

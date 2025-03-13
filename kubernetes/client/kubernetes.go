@@ -137,11 +137,11 @@ func boolTrue() *bool {
 
 // CreateNewNamespace Creates a new namespace with the provided name.
 func (p *Kubernetesp) CreateNewNamespace(name string) error {
-	_, nsErr := p.clientset.CoreV1().Namespaces().Create(&apiv1.Namespace{
+	_, nsErr := p.clientset.CoreV1().Namespaces().Create(context.Background(), &apiv1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
-	})
+	}, metav1.CreateOptions{})
 	return nsErr
 }
 
@@ -236,7 +236,7 @@ func (p *Kubernetesp) Initialize(ctx context.Context, clientset kubernetes.Inter
 	// no namespace passed, create a random one.
 	if len(namespace) == 1 {
 		p.NewNamespaceName = namespace[0]
-		_, err := clientset.CoreV1().Namespaces().Get(p.NewNamespaceName, metav1.GetOptions{})
+		_, err := clientset.CoreV1().Namespaces().Get(context.Background(), p.NewNamespaceName, metav1.GetOptions{})
 		if err != nil {
 			if errors.IsNotFound(err) {
 				err = p.CreateNewNamespace(p.NewNamespaceName)
@@ -306,7 +306,7 @@ func (p *Kubernetesp) Initialize(ctx context.Context, clientset kubernetes.Inter
 // the name of the configmap to mount at the configMountPath provided.
 func (p *Kubernetesp) Deploy(ctx context.Context, tempMountPath string, command string, cmdArgs []string, configMapName string, configMountPath string, requiredPorts []int) error {
 	// Patch the default cluster role to allow pods and nodes to be viewed.
-	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(&rbacapi.ClusterRoleBinding{
+	_, err := p.clientset.RbacV1().ClusterRoleBindings().Create(context.Background(), &rbacapi.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-cluster-role-binding-",
 			Labels:       map[string]string{"wr-" + p.NewNamespaceName: "ClusterRoleBinding"},
@@ -323,7 +323,7 @@ func (p *Kubernetesp) Deploy(ctx context.Context, tempMountPath string, command 
 			Kind:     "ClusterRole",
 			Name:     "cluster-admin",
 		},
-	})
+	}, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to create cluster role binding in namespace %s: %s", p.NewNamespaceName, err)
 	}
@@ -436,7 +436,7 @@ func (p *Kubernetesp) Deploy(ctx context.Context, tempMountPath string, command 
 
 	// Create Deployment
 	clog.Debug(ctx, "Creating deployment...")
-	result, err := p.deploymentsClient.Create(deployment)
+	result, err := p.deploymentsClient.Create(context.Background(), deployment, metav1.CreateOptions{})
 	if err != nil {
 		clog.Error(ctx, "creating deployment", "err", err)
 		return err
@@ -574,7 +574,7 @@ func (p *Kubernetesp) Spawn(ctx context.Context, baseContainerImage string, temp
 	}
 
 	// Create pod
-	pod, err := p.podClient.Create(pod)
+	pod, err := p.podClient.Create(context.Background(), pod, metav1.CreateOptions{})
 	if err != nil {
 		clog.Error(ctx, "failed to create pod", "err", err)
 		return nil, err
@@ -585,20 +585,20 @@ func (p *Kubernetesp) Spawn(ctx context.Context, baseContainerImage string, temp
 
 // TearDown deletes the namespace and cluster role binding created for wr.
 func (p *Kubernetesp) TearDown(ctx context.Context, namespace string) error {
-	err := p.clientset.CoreV1().Namespaces().Delete(namespace, &metav1.DeleteOptions{})
+	err := p.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace, metav1.DeleteOptions{})
 	if err != nil {
 		clog.Error(ctx, "deleting namespace", "err", err, "namespace", namespace)
 		return err
 	}
 
-	crbl, err := p.clientset.RbacV1().ClusterRoleBindings().List(metav1.ListOptions{
+	crbl, err := p.clientset.RbacV1().ClusterRoleBindings().List(context.Background(), metav1.ListOptions{
 		LabelSelector: "wr-" + namespace,
 	})
 	if err != nil {
 		clog.Error(ctx, "getting ClusterRoleBindings", "err", err)
 		return err
 	}
-	err = p.clientset.RbacV1().ClusterRoleBindings().Delete(crbl.Items[0].ObjectMeta.Name, &metav1.DeleteOptions{})
+	err = p.clientset.RbacV1().ClusterRoleBindings().Delete(context.Background(), crbl.Items[0].ObjectMeta.Name, metav1.DeleteOptions{})
 	if err != nil {
 		clog.Error(ctx, "deleting ClusterRoleBinding", "ClusterRoleBinding", crbl.Items[0].ObjectMeta.Name, "err", err)
 		return err
@@ -609,7 +609,7 @@ func (p *Kubernetesp) TearDown(ctx context.Context, namespace string) error {
 
 // DestroyPod deletes the given pod, doesn't check it exists first.
 func (p *Kubernetesp) DestroyPod(ctx context.Context, podName string) error {
-	err := p.podClient.Delete(podName, &metav1.DeleteOptions{})
+	err := p.podClient.Delete(context.Background(), podName, metav1.DeleteOptions{})
 	if err != nil {
 		clog.Error(ctx, "deleting pod", "err", err, "pod", podName)
 		return err
@@ -642,16 +642,16 @@ func (p *Kubernetesp) NewConfigMap(opts *ConfigMapOpts) (*apiv1.ConfigMap, error
 		}
 	}
 	if len(match) != 0 {
-		return p.configMapClient.Get(match, metav1.GetOptions{})
+		return p.configMapClient.Get(context.Background(), match, metav1.GetOptions{})
 	}
 
 	// No configmap with the data we want exists, so create one.
-	configMap, err := p.configMapClient.Create(&apiv1.ConfigMap{
+	configMap, err := p.configMapClient.Create(context.Background(), &apiv1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "wr-script-",
 		},
 		Data: opts.Data,
-	})
+	}, metav1.CreateOptions{})
 
 	// Store the name and md5 in configMapHashes
 	p.configMapHashes[configMap.ObjectMeta.Name] = md5
@@ -697,7 +697,7 @@ func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
 		},
 	}
 
-	_, err := p.serviceClient.Create(service)
+	_, err := p.serviceClient.Create(context.Background(), service, metav1.CreateOptions{})
 	return err
 }
 
@@ -706,7 +706,7 @@ func (p *Kubernetesp) CreateService(opts *ServiceOpts) error {
 // false and silences the not found error. If the deployment exists but an error is
 // returned it returns true with the error.
 func (p *Kubernetesp) CheckWRDeploymentExists(namespace string) (bool, error) {
-	_, err := p.clientset.AppsV1beta1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+	_, err := p.clientset.AppsV1beta1().Deployments(namespace).Get(context.Background(), "wr-manager", metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// The deployment was not found, therefore it is not healthy.
@@ -721,7 +721,7 @@ func (p *Kubernetesp) CheckWRDeploymentExists(namespace string) (bool, error) {
 // healthy. It does this by getting the deployment object for 'wr-manager' and
 // checking the DeploymentAvailable condition is true.
 func (p *Kubernetesp) CheckWRDeploymentHealthy(namespace string) (bool, error) {
-	deployment, err := p.clientset.AppsV1beta1().Deployments(namespace).Get("wr-manager", metav1.GetOptions{})
+	deployment, err := p.clientset.AppsV1beta1().Deployments(namespace).Get(context.Background(), "wr-manager", metav1.GetOptions{})
 	if err != nil {
 		return false, err
 	}

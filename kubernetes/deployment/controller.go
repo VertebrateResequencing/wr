@@ -78,16 +78,18 @@ func (c *Controller) createQueueAndInformer() {
 	c.informer = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).List(metav1.ListOptions{
-					LabelSelector: "app=wr-manager",
-				})
+				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).List(context.Background(),
+					metav1.ListOptions{
+						LabelSelector: "app=wr-manager",
+					})
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).Watch(metav1.ListOptions{
-					LabelSelector:        "app=wr-manager",
-					IncludeUninitialized: true,
-					Watch:                true,
-				})
+				return c.Clientset.CoreV1().Pods(c.Client.NewNamespaceName).Watch(context.Background(),
+					metav1.ListOptions{
+						LabelSelector: "app=wr-manager",
+						//IncludeUninitialized: true,
+						Watch: true,
+					})
 			},
 		},
 		&apiv1.Pod{},

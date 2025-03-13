@@ -249,7 +249,7 @@ func (s *k8s) initialize(ctx context.Context, config interface{}) error {
 	// Initialise the informer factory Confine all informers to the provided
 	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient, time.Second*15, s.config.Namespace, func(listopts *metav1.ListOptions) {
-		listopts.IncludeUninitialized = true
+		//listopts.IncludeUninitialized = true
 		// listopts.Watch = true
 	})
 

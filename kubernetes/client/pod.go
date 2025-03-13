@@ -360,7 +360,7 @@ func (p *Kubernetesp) GetLog(pod *apiv1.Pod, lines int) (string, error) {
 		Param("container", "wr-runner").
 		Param("tailLines", fmt.Sprintf("%v", lines))
 
-	readCloser, err := req.Stream()
+	readCloser, err := req.Stream(context.Background())
 	if err != nil {
 		return "", err
 	}

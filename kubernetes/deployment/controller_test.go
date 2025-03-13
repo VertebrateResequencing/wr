@@ -81,7 +81,7 @@ func init() {
 		return
 	}
 
-	_, autherr := dc.Clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	_, autherr := dc.Clientset.CoreV1().Endpoints(testingNamespace).List(ctx, metav1.ListOptions{})
 	if autherr != nil {
 		skip = true
 		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)

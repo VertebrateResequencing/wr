@@ -66,7 +66,7 @@ func init() {
 
 	autherr = tc.Initialize(ctx, clientset, testingNamespace)
 
-	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(context.Background(), metav1.ListOptions{})
 	if autherr != nil {
 		skip = true
 		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
@@ -89,12 +89,12 @@ func TestCreateNewNamespace(t *testing.T) {
 		if err != nil {
 			t.Error(err.Error())
 		}
-		_, err = clientset.CoreV1().Namespaces().Get(c.namespaceName, metav1.GetOptions{})
+		_, err = clientset.CoreV1().Namespaces().Get(context.Background(), c.namespaceName, metav1.GetOptions{})
 		if err != nil {
 			t.Error(err.Error())
 		}
 		// Clean up
-		err = clientset.CoreV1().Namespaces().Delete(c.namespaceName, &metav1.DeleteOptions{})
+		err = clientset.CoreV1().Namespaces().Delete(context.Background(), c.namespaceName, metav1.DeleteOptions{})
 		if err != nil {
 			t.Log("failed to clean up namespace", err.Error())
 		}
@@ -211,7 +211,7 @@ func TestSpawn(t *testing.T) {
 
 		// wait on the status to be running or pending
 		err = wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-			pod, err = clientset.CoreV1().Pods(testingNamespace).Get(pod.ObjectMeta.Name, metav1.GetOptions{})
+			pod, err = clientset.CoreV1().Pods(testingNamespace).Get(context.Background(), pod.ObjectMeta.Name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}

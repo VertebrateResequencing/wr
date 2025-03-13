@@ -106,7 +106,7 @@ func init() {
 		return
 	}
 
-	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(metav1.ListOptions{})
+	_, autherr := clientset.CoreV1().Endpoints(testingNamespace).List(ctx, metav1.ListOptions{})
 	if autherr != nil {
 		skip = true
 		fmt.Printf("Failed to list endpoints for testing namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
@@ -122,7 +122,7 @@ func init() {
 	// Initialise the informer factory Confine all informers to the provided
 	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(clientset, time.Second*15, testingNamespace, func(listopts *metav1.ListOptions) {
-		listopts.IncludeUninitialized = true
+		//listopts.IncludeUninitialized = true
 	})
 
 	// Use certificate files from the deployment controller tests
