@@ -63,7 +63,7 @@ func init() {
 		return
 	}
 
-	_, autherr := clientset.CoreV1().Endpoints("default").List(metav1.ListOptions{})
+	_, autherr := clientset.CoreV1().Endpoints("default").List(ctx, metav1.ListOptions{})
 	if autherr != nil {
 		skip = true
 		fmt.Printf("Failed to list endpoints for default namespace, assuming cluster connection failure.\n Skipping tests with error: %s\n", autherr)
@@ -136,7 +136,7 @@ func TestClusterPend(t *testing.T) {
 			}
 
 			// If there arent
-			nodeList, errl := clientset.CoreV1().Nodes().List(metav1.ListOptions{})
+			nodeList, errl := clientset.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 			if errl != nil {
 				t.Errorf("Failed to list nodes: %s", errl)
 			}
@@ -171,7 +171,8 @@ func TestClusterPend(t *testing.T) {
 			if len(job.Host) == 0 {
 				t.Errorf("job %+v has no host.", job)
 			}
-			_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(job.Host, metav1.GetOptions{})
+
+			_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(context.Background(), job.Host, metav1.GetOptions{})
 			if err != nil && errors.IsNotFound(err) {
 				t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)
 			} else if err != nil {

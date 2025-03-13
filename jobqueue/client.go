@@ -612,6 +612,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	touchTicker := time.NewTicker(ClientTouchInterval) //*** this should be less than the ServerItemTTR set when the server started, not a fixed value
 
 	var wkbsMutex sync.RWMutex
+
 	killDoneCh := make(chan bool, 1)
 	whenKilledByServer := func() {
 		killDoneCh <- true
@@ -1042,6 +1043,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			stateMutex.Lock()
 			killCalled = true
 			stateMutex.Unlock()
+
 			killErr = killCmd()
 			killDoneCh <- true
 		}
@@ -1315,7 +1317,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		finalStdOut = append(finalStdOut, errsow.Error()...)
 	}
 
-	if err != nil {
+	if err != nil { //nolint:nestif
 		cmdOut := ""
 		if len(finalStdOut) > 0 {
 			cmdOut = fmt.Sprintf(" [stdout: %s]", string(finalStdOut))
@@ -1328,20 +1330,21 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitcode = exitError.Sys().(syscall.WaitStatus).ExitStatus()
 			switch exitcode {
-			case 126:
+			case 126: //nolint:mnd
 				dobury = true
 				failreason = FailReasonCPerm
 				myerr = fmt.Errorf("command [%s] exited with code %d (permission problem, or command is not executable), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
-			case 127:
+			case 127: //nolint:mnd
 				dobury = true
 				failreason = FailReasonCFound
 				myerr = fmt.Errorf("command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
-			case 128:
+			case 128: //nolint:mnd
 				dobury = true
 				failreason = FailReasonCExit
 				myerr = fmt.Errorf("command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s", job.Cmd, exitcode, cmdOut)
 			default:
 				dorelease = true
+
 				switch {
 				case ranoutMem:
 					failreason = FailReasonRAM
@@ -1667,11 +1670,15 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	if err != nil {
 		return err
 	}
+
 	c.teMutex.Lock()
 	defer c.teMutex.Unlock()
+
 	job.Lock()
 	defer job.Unlock()
+
 	job.FailReason = failreason
+
 	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
@@ -1681,6 +1688,7 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	if job.Exited && job.Exitcode != 0 {
 		job.UntilBuried--
 	}
+
 	if job.UntilBuried <= 0 {
 		job.State = JobStateBuried
 	} else {

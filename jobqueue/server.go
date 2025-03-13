@@ -87,6 +87,8 @@ const (
 	ServerModeDrain     = "draining"
 )
 
+const userOnlyPerms = 0600
+
 // ServerVersion gets set during build:
 // go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
 var ServerVersion string
@@ -808,19 +810,19 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server status casting", true)
 			defer wg.Done(wgk3)
-			s.statusCaster.Broadcasting(0)
+			s.statusCaster.Broadcast(0)
 		}()
 		wgk4 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server server casting", true)
 			defer wg.Done(wgk4)
-			s.badServerCaster.Broadcasting(0)
+			s.badServerCaster.Broadcast(0)
 		}()
 		wgk5 := wg.Add(1)
 		go func() {
 			defer internal.LogPanic(ctx, "jobqueue web server scheduler casting", true)
 			defer wg.Done(wgk5)
-			s.schedCaster.Broadcasting(0)
+			s.schedCaster.Broadcast(0)
 		}()
 
 		badServerCB := func(server *cloud.Server) {
@@ -912,7 +914,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// store token on disk
 	if config.TokenFile != "" {
-		err = os.WriteFile(config.TokenFile, token, 0o600)
+		err = os.WriteFile(config.TokenFile, token, userOnlyPerms)
 		if err != nil {
 			return s, msg, token, err
 		}
@@ -1137,21 +1139,25 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 				return "", err
 			}
 		}
+
 		file, err = os.CreateTemp(s.uploadDir, "file_upload")
 		if err != nil {
 			clog.Error(ctx, "uploadFile temp file create error", "err", err)
 			return "", err
 		}
+
 		savePath = file.Name()
 		usedTempFile = true
 	} else {
 		savePath = internal.TildaToHome(savePath)
+
 		err = os.MkdirAll(filepath.Dir(savePath), os.ModePerm)
 		if err != nil {
 			clog.Error(ctx, "uploadFile create directory error", "err", err)
 			return "", err
 		}
-		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, 0o600)
+
+		file, err = os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, userOnlyPerms)
 		if err != nil {
 			clog.Error(ctx, "uploadFile create file error", "err", err)
 			return "", err
@@ -1656,8 +1662,7 @@ func (s *Server) createQueue(ctx context.Context) {
 				job.Unlock()
 
 				go func() {
-					if !killCalled && !s.recoveredRunningJobs[jobKey] &&
-						s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout) {
+					if !killCalled && !s.recoveredRunningJobs[jobKey] && s.confirmJobDeadAndKill(ctx, jobKey, jobHost, jobPID, serverLostJobCheckTimeout) { //nolint:lll
 						clog.Info(ctx, "killed a job after confirming it was dead", "key", job.Key())
 					} else if killCalled {
 						defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
@@ -1865,7 +1870,8 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr 
 // die because the server it was running on gets rebooted, we eventually
 // auto-kill the job.
 func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string,
-	jobPID int, serverLostJobCheckTimeout time.Duration) bool {
+	jobPID int, serverLostJobCheckTimeout time.Duration,
+) bool {
 	if !s.confirmJobDead(ctx, jobPID, jobHost, serverLostJobCheckTimeout) {
 		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey)
 
@@ -1896,7 +1902,8 @@ func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost stri
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
 func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
-	serverLostJobCheckTimeout time.Duration) bool {
+	serverLostJobCheckTimeout time.Duration,
+) bool {
 	if jobPID == 0 {
 		return false
 	}
@@ -2641,7 +2648,7 @@ func (s *Server) killCloudServer(ctx context.Context, hostName string) (*BadServ
 func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.GroupData, string, error) {
 	name, limit := s.splitSuffixedLimitGroup(group)
 
-	if limit != nil {
+	if limit != nil { //nolint:nestif
 		_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
 		if err != nil {
 			return limiter.NewCountGroupData(-1), ErrDBError, err

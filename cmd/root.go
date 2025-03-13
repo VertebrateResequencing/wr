@@ -207,7 +207,7 @@ func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *da
 
 	dContext := &daemon.Context{
 		PidFileName: pidFile,
-		PidFilePerm: 0o644,
+		PidFilePerm: 0o644, //nolint:mnd
 		WorkDir:     "/",
 		Args:        args,
 		Umask:       umask,

@@ -557,7 +557,8 @@ func (s *lsf) generateBsubArgs(ctx context.Context, queue string, req *Requireme
 }
 
 func generateBsubArgs(queue string, req *Requirements, cmd, deployment string,
-	needed int, memLimitMultiplier float32) ([]string, error) {
+	needed int, memLimitMultiplier float32,
+) ([]string, error) {
 	var bsubArgs []string
 	megabytes := req.RAM
 	m := float32(megabytes) * memLimitMultiplier
@@ -650,7 +651,9 @@ func (s BsubValidator) Validate(opts, queue string) (valid bool) {
 	}
 
 	cmd := exec.Command("bsub", args...)
+
 	cmd.Env = append(os.Environ(), "BSUB_CHK_RESREQ=1")
+
 	err = cmd.Run()
 	valid = err == nil
 

@@ -34,7 +34,6 @@ import (
 	"github.com/wtsi-ssg/wr/clog"
 	fsd "github.com/wtsi-ssg/wr/fs/dir"
 	fp "github.com/wtsi-ssg/wr/fs/filepath"
-	"github.com/wtsi-ssg/wr/network/port"
 )
 
 const (
@@ -544,8 +543,8 @@ func getMinPort(ctx context.Context, hostname string, uid int) (int, bool) {
 }
 
 // getPortChecker returns a port checker given a hostname and exits on error.
-func getPortChecker(ctx context.Context, hostname string) *port.Checker {
-	checker, err := port.NewChecker(hostname)
+func getPortChecker(ctx context.Context, hostname string) *portChecker {
+	checker, err := newPortChecker(hostname)
 	if err != nil {
 		exitDueToNoPorts(ctx, err, "localhost couldn't be connected to")
 
@@ -555,9 +554,60 @@ func getPortChecker(ctx context.Context, hostname string) *port.Checker {
 	return checker
 }
 
+type portChecker struct {
+	Addr *net.TCPAddr
+}
+
+func newPortChecker(host string) (*portChecker, error) {
+	addr, err := net.ResolveTCPAddr("tcp", host+":0")
+	if err != nil {
+		return nil, err
+	}
+
+	addr.Port = 0
+
+	return &portChecker{Addr: addr}, nil
+}
+
+func (p *portChecker) AvailableRange(n int) (int, int, error) {
+	var l net.Listener
+	var err error
+
+Loop:
+	for range 1000 {
+		l, err = net.ListenTCP("tcp", p.Addr)
+		if err != nil {
+			return -1, -1, err
+		}
+
+		addr := l.Addr().(*net.TCPAddr)
+		start := addr.Port
+
+		l.Close()
+
+		for range n - 1 {
+			addr.Port++
+
+			if l, err = net.ListenTCP("tcp", addr); err != nil {
+				continue Loop
+			}
+
+			l.Close()
+		}
+
+		return start, addr.Port, nil
+	}
+
+	return -1, -1, err
+}
+
+type PortChecker interface {
+	AvailableRange(num int) (int, int, error)
+}
+
 // findPorts asks the OS for an available port range, then asks the user if
 // they'd like to use it and writes it to their config file.
-func findPorts(ctx context.Context, checker *port.Checker) int {
+func findPorts(ctx context.Context, checker PortChecker) int {
 	min, max := getAvailableRange(ctx, checker)
 	if min == 0 || max == 0 {
 		return 0
@@ -583,7 +633,7 @@ func findPorts(ctx context.Context, checker *port.Checker) int {
 
 // getAvailableRange returns the min and max port numbers available, else
 // returns 0, 0 and exits on error.
-func getAvailableRange(ctx context.Context, checker *port.Checker) (int, int) {
+func getAvailableRange(ctx context.Context, checker PortChecker) (int, int) {
 	min, max, err := checker.AvailableRange(portsNeeded)
 	if err != nil {
 		exitDueToNoPorts(ctx, err, "available localhost ports couldn't be checked")

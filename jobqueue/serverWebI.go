@@ -372,7 +372,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				select {
 				case <-stop:
 					return
-				case status := <-statusReceiver.In:
+				case status := <-statusReceiver.Read:
 					writeMutex.Lock()
 					err := conn.WriteJSON(status)
 					writeMutex.Unlock()
@@ -394,7 +394,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				select {
 				case <-stop:
 					return
-				case server := <-badserverReceiver.In:
+				case server := <-badserverReceiver.Read:
 					writeMutex.Lock()
 					err := conn.WriteJSON(server)
 					writeMutex.Unlock()
@@ -416,7 +416,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				select {
 				case <-stop:
 					return
-				case si := <-schedIssueReceiver.In:
+				case si := <-schedIssueReceiver.Read:
 					writeMutex.Lock()
 					err := conn.WriteJSON(si)
 					writeMutex.Unlock()

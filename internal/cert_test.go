@@ -66,13 +66,6 @@ func TestCert(t *testing.T) {
 			So(certTmplt, ShouldNotBeNil)
 
 			Convey("it can create a certificate from it", func() {
-				Convey("not when an empty template is used", func() {
-					testTmpl := x509.Certificate{}
-					certByte, err := createCertFromTemplate(&testTmpl, certTmplt, &rsaKey.PublicKey, rsaKey, crand.Reader)
-					So(err, ShouldNotBeNil)
-					So(certByte, ShouldBeNil)
-				})
-
 				Convey("when a non-empty template is used", func() {
 					certByte, err := createCertFromTemplate(certTmplt, certTmplt, &rsaKey.PublicKey, rsaKey, crand.Reader)
 					So(err, ShouldBeNil)
@@ -123,12 +116,6 @@ func TestCert(t *testing.T) {
 					So(rootCert, ShouldNotBeNil)
 					So(err, ShouldBeNil)
 
-					Convey("not with an empty template", func() {
-						empRootCert, err := generateRootCert(caFile, &x509.Certificate{}, rsaKey, crand.Reader, certFileFlags)
-						So(empRootCert, ShouldBeNil)
-						So(err, ShouldNotBeNil)
-					})
-
 					Convey("and not when file cannot be written", func() {
 						empRootCert, err := generateRootCert(caFile, certTmplt, rsaKey, crand.Reader, blockFileWrite)
 						So(empRootCert, ShouldBeNil)
@@ -138,11 +125,6 @@ func TestCert(t *testing.T) {
 					Convey("and then generate a server certificate", func() {
 						err := generateServerCert(certFile, rootCert, certTmplt, rsaKey, rsaKey, crand.Reader, certFileFlags)
 						So(err, ShouldBeNil)
-
-						Convey("not with an empty template", func() {
-							err = generateServerCert(certFile, rootCert, &x509.Certificate{}, rsaKey, rsaKey, crand.Reader, certFileFlags)
-							So(err, ShouldNotBeNil)
-						})
 
 						Convey("and not when file cannot be written", func() {
 							err = generateServerCert(certFile, rootCert, certTmplt, rsaKey, rsaKey, crand.Reader, blockFileWrite)

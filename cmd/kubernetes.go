@@ -259,7 +259,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 			die("could not get authentication details for the cluster: %s", err)
 		}
 
-		_, err = c.Clientset.CoreV1().Namespaces().List(metav1.ListOptions{})
+		_, err = c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 		if err != nil {
 			die("could not connect to the cluster: %s", err)
 		}
@@ -456,7 +456,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				resources.Details["managerConfigMapName"] = managerConfigMapName
 
 				// Save resources.
-				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:mnd
 				if erro != nil {
 					warn("failed to open resource file %s for writing: %s", resourcePath, erro)
 				}
@@ -574,7 +574,7 @@ accessible.`,
 		if err != nil {
 			die("could not get authentication details for the cluster: %s", err)
 		}
-		_, err = clientset.CoreV1().Namespaces().List(metav1.ListOptions{})
+		_, err = clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 		if err != nil {
 			die("could not connect to the cluster: %s", err)
 		}
