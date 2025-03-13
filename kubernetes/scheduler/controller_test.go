@@ -122,7 +122,7 @@ func init() {
 	// Initialise the informer factory Confine all informers to the provided
 	// namespace
 	kubeInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(clientset, time.Second*15, testingNamespace, func(listopts *metav1.ListOptions) {
-		//listopts.IncludeUninitialized = true
+		// listopts.IncludeUninitialized = true
 	})
 
 	// Use certificate files from the deployment controller tests

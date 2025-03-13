@@ -53,6 +53,8 @@ const wrConfigFileName = ".wr_config.yml"
 // when we start the manager on our created cloud server
 const wrEnvFileName = ".wr_envvars"
 
+const userOnlyPerms = 0600
+
 // options for this cmd
 var (
 	providerName                string
@@ -881,7 +883,7 @@ func bootstrapOnRemote(provider *cloud.Provider, server *cloud.Server, exe strin
 	}
 	localKeyFile := filepath.Join(config.ManagerDir, "cloud_resources."+providerName+".key")
 
-	if err = os.WriteFile(localKeyFile, []byte(provider.PrivateKey()), 0o600); err != nil {
+	if err = os.WriteFile(localKeyFile, []byte(provider.PrivateKey()), userOnlyPerms); err != nil {
 		teardown(ctx, provider)
 		die("failed to create key file %s: %s", localKeyFile, err)
 	}
@@ -1127,7 +1129,7 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 	}
 
 	// store ssh's pid to file
-	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
+	err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), userOnlyPerms)
 
 	// don't cmd.Wait(); ssh will continue running in the background after we
 	// exit

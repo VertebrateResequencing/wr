@@ -570,10 +570,8 @@ func newPortChecker(host string) (*portChecker, error) {
 }
 
 func (p *portChecker) AvailableRange(n int) (int, int, error) {
-	var (
-		l   net.Listener
-		err error
-	)
+	var l net.Listener
+	var err error
 
 Loop:
 	for range 1000 {
@@ -583,7 +581,6 @@ Loop:
 		}
 
 		addr := l.Addr().(*net.TCPAddr)
-
 		start := addr.Port
 
 		l.Close()
@@ -591,8 +588,7 @@ Loop:
 		for range n - 1 {
 			addr.Port++
 
-			l, err = net.ListenTCP("tcp", addr)
-			if err != nil {
+			if l, err = net.ListenTCP("tcp", addr); err != nil {
 				continue Loop
 			}
 
@@ -606,7 +602,7 @@ Loop:
 }
 
 type PortChecker interface {
-	AvailableRange(int) (int, int, error)
+	AvailableRange(num int) (int, int, error)
 }
 
 // findPorts asks the OS for an available port range, then asks the user if

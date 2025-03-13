@@ -482,7 +482,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 		// remove these dirs
 		tries = 0
 		var f *os.File
-		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, 0o600)
+		f, err = os.OpenFile(holdFile, os.O_RDONLY|os.O_CREATE, userOnlyPerms)
 		if err != nil {
 			tries++
 			if tries <= 3 {

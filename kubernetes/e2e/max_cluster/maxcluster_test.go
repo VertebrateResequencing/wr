@@ -171,6 +171,7 @@ func TestClusterPend(t *testing.T) {
 			if len(job.Host) == 0 {
 				t.Errorf("job %+v has no host.", job)
 			}
+
 			_, err = clientset.CoreV1().Pods(tc.NewNamespaceName).Get(context.Background(), job.Host, metav1.GetOptions{})
 			if err != nil && errors.IsNotFound(err) {
 				t.Logf("Success, pod %s with cmd %s deleted.", job.Host, job.Cmd)

@@ -211,7 +211,7 @@ func TestSpawn(t *testing.T) {
 
 		// wait on the status to be running or pending
 		err = wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
-			pod, err = clientset.CoreV1().Pods(testingNamespace).Get(context.Background(), pod.ObjectMeta.Name, metav1.GetOptions{})
+			pod, err = clientset.CoreV1().Pods(testingNamespace).Get(context.Background(), pod.ObjectMeta.Name, metav1.GetOptions{}) //nolint:lll
 			if err != nil {
 				return false, err
 			}

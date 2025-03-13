@@ -456,7 +456,7 @@ pointed to by the $KUBECONFIG variable, else ~/.kube/config.`,
 				resources.Details["managerConfigMapName"] = managerConfigMapName
 
 				// Save resources.
-				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+				file, erro := os.OpenFile(resourcePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:mnd
 				if erro != nil {
 					warn("failed to open resource file %s for writing: %s", resourcePath, erro)
 				}

@@ -810,9 +810,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 			die("line %d had a problem: %s", lineNum, errf)
 		}
 
-		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" &&
-			jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm, job.Requirements.Other["scheduler_queue"]) {
-			die("invalid lsf resource string") //nolint:whitespace
+		if sm := job.Requirements.Other["scheduler_misc"]; sm != "" && jq.ServerInfo.Scheduler == "lsf" && !validator.Validate(sm, job.Requirements.Other["scheduler_queue"]) { //nolint:lll
+			die("%s", "invalid lsf resource string")
 		}
 
 		jobs = append(jobs, job)
