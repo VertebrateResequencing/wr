@@ -143,3 +143,5 @@ replace github.com/docker/spdystream => github.com/docker/spdystream v0.1.0
 
 // mergo moved to a vanity URL in v1.0.0
 replace github.com/imdario/mergo => github.com/imdario/mergo v0.3.16
+
+replace vimagination.zapto.org/parser => github.com/mjkwoolnough/parser v1.0.4
