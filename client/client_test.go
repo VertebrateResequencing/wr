@@ -277,6 +277,28 @@ func TestFakeScheduler(t *testing.T) {
 				So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
 			})
 
+			Convey("You can FindJobsByRepGroupPrefixAndState", func() {
+				jobs, err := s.FindJobsByRepGroupPrefixAndState("none", "")
+				So(err, ShouldBeNil)
+				So(jobs, ShouldBeNil)
+
+				jobs, err = s.FindJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateDelayed)
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job1})
+
+				jobs, err = s.FindJobsByRepGroupPrefixAndState("ep1", jobqueue.JobStateDelayed)
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{})
+
+				jobs, err = s.FindJobsByRepGroupPrefixAndState("rep1", jobqueue.JobStateRunning)
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job(nil))
+
+				jobs, err = s.FindJobsByRepGroupPrefixAndState("rep", "")
+				So(err, ShouldBeNil)
+				So(jobs, ShouldResemble, []*jobqueue.Job{job1, job2})
+			})
+
 			Convey("You can remove jobs", func() {
 				err := s.RemoveJobs(job1)
 				So(err, ShouldBeNil)
