@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.35.3] - 2025-04-07
+### Added
+- New client.FindJobsByRepGroupPrefixAndState() function for eg. finding
+  incomplete jobs when interacting with a manager using the go client API.
+
+
 ## [0.35.2] - 2025-03-05
 ### Changed
 - When `wr manager start` tells you the URL of the status website, it now uses
