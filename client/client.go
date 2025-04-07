@@ -104,6 +104,10 @@ func newPretendJobqueue() *pretendJobqueue {
 }
 
 func (p *pretendJobqueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
+	for _, job := range jobs {
+		job.State = jobqueue.JobStateDelayed
+	}
+
 	p.jobBuffer = append(p.jobBuffer, jobs...)
 
 	if p.output != nil {
@@ -122,11 +126,11 @@ func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
 // GetByRepGroup behaves like jobqueue.GetByRepGroup, but only repgroup is
 // considered (as a substring).
 func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
-	_ jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
+	state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
 	var jobs []*jobqueue.Job
 
 	for _, job := range p.jobBuffer {
-		if strings.Contains(job.RepGroup, repgroup) {
+		if strings.Contains(job.RepGroup, repgroup) && (state == "" || job.State == state) {
 			jobs = append(jobs, job)
 		}
 	}
@@ -385,6 +389,19 @@ func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, er
 
 	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
 		return !strings.HasSuffix(job.RepGroup, suffix)
+	}), nil
+}
+
+// FindJobsByRepGroupPrefixAndState finds all of the jobs in wr whose rep group has the
+// supplied prefix with the matching state, if one is provided.
+func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobqueue.JobState) ([]*jobqueue.Job, error) {
+	jobs, err := s.jq.GetByRepGroup(prefix, true, 0, state, true, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.DeleteFunc(jobs, func(job *jobqueue.Job) bool {
+		return !strings.HasPrefix(job.RepGroup, prefix)
 	}), nil
 }
 
