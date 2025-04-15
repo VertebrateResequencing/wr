@@ -38,7 +38,7 @@ require (
 	github.com/ugorji/go/codec v1.2.12
 	github.com/wtsi-ssg/wr v0.5.12
 	go.etcd.io/bbolt v1.3.11
-	golang.org/x/crypto v0.33.0
+	golang.org/x/crypto v0.35.0
 	k8s.io/api v0.32.1
 	k8s.io/apimachinery v0.32.1
 	k8s.io/client-go v11.0.0+incompatible
