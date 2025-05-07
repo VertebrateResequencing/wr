@@ -833,15 +833,23 @@ func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, g
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
 // extracting them from the database.
 func (s *Server) jobPopulateStdEnv(ctx context.Context, job *Job, getStd bool, getEnv bool) {
+	if !getStd && !getEnv {
+		return
+	}
+
 	job.Lock()
 	defer job.Unlock()
-	if getStd && ((job.Exited && job.Exitcode != 0) || job.State == JobStateBuried) {
+	if getStd && jobCouldHaveStd(job) {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(ctx, job.Key())
 	}
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(ctx, job.EnvKey)
 		job.EnvCRetrieved = true
 	}
+}
+
+func jobCouldHaveStd(job *Job) bool {
+	return (job.Exited && job.Exitcode != 0) || job.State == JobStateBuried
 }
 
 // reserveWithLimits reserves the next item in the queue (optionally limited to
