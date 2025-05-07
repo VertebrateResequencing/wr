@@ -46,7 +46,6 @@ var (
 	cmdLine         string
 	showBuried      bool
 	showRunning     bool
-	showStd         bool
 	showEnv         bool
 	outputFormat    string
 	statusLimit     int
@@ -90,13 +89,22 @@ name to just the first letter, eg. -o c):
     (and you are told how many are not being displayed). A limit of 0 turns off
     grouping and shows all your desired commands individually, but you could hit
     a timeout if retrieving the details of very many (tens of thousands+)
-	commands.
+	commands. If more than 1000 buried job get displayed, their STDOUT and
+	STDERR are not shown.
   "plain" outputs 2 tab separated columns: internal job id and current state of
 	that job. Possible states are: delayed, ready, reserved, running, lost,
 	buried, complete. If any jobs are buried, exits non-0 as well.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
-    documentation for wr's REST API.`,
+    documentation for wr's REST API. If more than 1000 buried job get
+	returned, their STDOUT and STDERR are excluded.
+
+Note that when jobs run, wr only stores the head and tail of STDOUT and STDERR,
+and these are only kept and displayed for buried jobs. This should be all you
+need for debugging. If your command produces something you must keep on STDOUT
+or STDERR, your command should write that to a file itself with a normal shell
+redirect (eg. "mycmd > stdout.txt").
+`,
 	Run: func(cmd *cobra.Command, args []string) {
 		set := countGetJobArgs()
 		if set > 1 {
@@ -121,10 +129,10 @@ name to just the first letter, eg. -o c):
 
 		if !strings.HasPrefix(outputFormat, "d") && !strings.HasPrefix(outputFormat, "j") {
 			statusLimit = 0
-			showStd = false
 			showEnv = false
 		}
-		jobs := getJobs(jq, cmdState, set == 0, statusLimit, showStd, showEnv)
+
+		jobs := getJobs(jq, cmdState, set == 0, statusLimit, true, showEnv)
 		showextra := cmdFileStatus == ""
 
 		if fromHost != "" {
@@ -367,7 +375,7 @@ name to just the first letter, eg. -o c):
 						prefix = "Stats of previous attempt"
 					}
 					fmt.Printf("%s: { Exit code: %d; Peak memory: %dMB; Peak disk: %dMB; Wall time: %s; CPU time: %s }\nHost: %s (IP: %s%s); Pid: %d\n", prefix, job.Exitcode, job.PeakRAM, job.PeakDisk, job.WallTime(), job.CPUtime, job.Host, job.HostIP, hostID, job.Pid)
-					if showextra && showStd && job.Exitcode != 0 {
+					if showextra && job.Exitcode != 0 {
 						stdout, errs := job.StdOut()
 						if errs != nil {
 							warn("problem reading the cmd's STDOUT: %s", errs)
@@ -391,7 +399,7 @@ name to just the first letter, eg. -o c):
 					// Peak memory during a run... but is that possible/ too
 					// expensive? Maybe we could communicate directly with the
 					// runner?...
-				} else if showextra && showStd {
+				} else if showextra {
 					// it's possible for jobs that got buried before they even
 					// ran to have details of the bury in their stderr
 					stderr, errs := job.StdErr()
@@ -463,7 +471,6 @@ func init() {
 	statusCmd.Flags().BoolVarP(&showBuried, "buried", "b", false, "in default or -i mode only, only show the status of buried commands")
 	statusCmd.Flags().StringVar(&fromHost, "host", "", "filter output to only show the status of commands that ran on the given host (ID, name or IP)")
 	statusCmd.Flags().BoolVarP(&showRunning, "running", "r", false, "in default or -i mode only, only show the status of running commands")
-	statusCmd.Flags().BoolVarP(&showStd, "std", "s", false, "in -o d mode, except in -f mode, also show the most recent STDOUT and STDERR of incomplete commands")
 	statusCmd.Flags().BoolVarP(&showEnv, "env", "e", false, "in -o d mode, except in -f mode, also show the environment variables the command(s) ran with")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details", "['counts','summary','details','json'] output format")
 	statusCmd.Flags().IntVar(&statusLimit, "limit", 1, "in -o d mode, number of commands that share the same properties to display; 0 displays all")
