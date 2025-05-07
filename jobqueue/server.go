@@ -2414,6 +2414,9 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state Jo
 	return limited
 }
 
+// shouldPopulateStd only returns true if the given getStd is true and if the
+// number of jobs that could potentially have std is less than or equal to the
+// maxJobsForStd.
 func shouldPopulateStd(jobs []*Job, getStd bool) bool {
 	if !getStd {
 		return false
