@@ -89,14 +89,14 @@ name to just the first letter, eg. -o c):
     (and you are told how many are not being displayed). A limit of 0 turns off
     grouping and shows all your desired commands individually, but you could hit
     a timeout if retrieving the details of very many (tens of thousands+)
-	commands. If more than 1000 buried job get displayed, their STDOUT and
+	commands. If more than 1000 buried jobs get displayed, their STDOUT and
 	STDERR are not shown.
   "plain" outputs 2 tab separated columns: internal job id and current state of
 	that job. Possible states are: delayed, ready, reserved, running, lost,
 	buried, complete. If any jobs are buried, exits non-0 as well.
   "json" simply dumps the complete details of every job out as an array of
     JSON objects. The properties of the JSON objects are described in the
-    documentation for wr's REST API. If more than 1000 buried job get
+    documentation for wr's REST API. If more than 1000 buried jobs get
 	returned, their STDOUT and STDERR are excluded.
 
 Note that when jobs run, wr only stores the head and tail of STDOUT and STDERR,
