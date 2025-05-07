@@ -839,9 +839,11 @@ func (s *Server) jobPopulateStdEnv(ctx context.Context, job *Job, getStd bool, g
 
 	job.Lock()
 	defer job.Unlock()
+
 	if getStd && jobCouldHaveStd(job) {
 		job.StdOutC, job.StdErrC = s.db.retrieveJobStd(ctx, job.Key())
 	}
+
 	if getEnv {
 		job.EnvC = s.db.retrieveEnv(ctx, job.EnvKey)
 		job.EnvCRetrieved = true
