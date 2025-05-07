@@ -108,10 +108,11 @@ future.
 You can also supply just a single command and the --sync option (for
 "synchronous add"), which will result in this command not exiting until the
 manager has finished executing the command. This command will then exit with
-your command's exit code and output the top and tail of its STDOUT and STDERR if
-it had failed. You might use synchronous mode within a simple script that runs
-other commands but needs one of them executed by wr in your cluster environment,
-and if your script can't easily cope with wr's normally asynchonous behaviour.
+your command's exit code and output the head and tail of its STDOUT and STDERR
+if it had failed. You might use synchronous mode within a simple script that
+runs other commands but needs one of them executed by wr in your cluster
+environment, and if your script can't easily cope with wr's normally asynchonous
+behaviour.
 
 You can supply your commands by putting them in a text file (1 per line), or
 by piping them in. In addition to the command itself, you can specify command-
