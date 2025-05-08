@@ -13,6 +13,7 @@ require (
 	github.com/fanatic/go-infoblox v0.0.0-20190709161059-e25f3820238c
 	github.com/fatih/color v1.18.0
 	github.com/gofrs/uuid v4.4.0+incompatible
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/gophercloud/gophercloud v1.14.1
 	github.com/gophercloud/utils v0.0.0-20231010081019-80377eca5d56
 	github.com/gorilla/websocket v1.5.3

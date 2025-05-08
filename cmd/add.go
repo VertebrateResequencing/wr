@@ -816,6 +816,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 			die("invalid lsf resource string") //nolint:whitespace
 		}
 
+		checkForRelativePathsInNonCwdMatters(job)
+
 		jobs = append(jobs, job)
 	}
 
@@ -860,6 +862,20 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
 	}
 	return strings.Join(remoteConfigFiles, ",")
+}
+
+// checkForRelativePathsInNonCwdMatters checks the cmd of jobs where cwd doesn't
+// matter and dies if it contains relative paths.
+func checkForRelativePathsInNonCwdMatters(job *jobqueue.Job) {
+	if job.CwdMatters {
+		return
+	}
+
+	if internal.CmdlineHasRelativePaths(job.Cwd, job.Cmd) {
+		die("your job command contains relative paths, but the job would run in " +
+			"a newly created unique sub-directory.\n" +
+			"Use absolute paths instead, or say --cwd_matters")
+	}
 }
 
 // synchronousAdd waits for the job with the given interal id to complete, then
