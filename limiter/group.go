@@ -135,7 +135,7 @@ func beforeDateTimeLimitParse(name string) (string, *GroupData) {
 		return "", nil
 	}
 
-	t, err := time.Parse(time.DateTime, matches[1])
+	t, err := time.ParseInLocation(time.DateTime, matches[1], time.Local) //nolint:gosmopolitan
 	if err != nil {
 		return "", nil
 	}
@@ -149,7 +149,7 @@ func afterDateTimeLimitParse(name string) (string, *GroupData) {
 		return "", nil
 	}
 
-	t, err := time.Parse(time.DateTime, matches[1])
+	t, err := time.ParseInLocation(time.DateTime, matches[1], time.Local) //nolint:gosmopolitan
 	if err != nil {
 		return "", nil
 	}
@@ -163,12 +163,12 @@ func betweenDateTimesLimitParse(name string) (string, *GroupData) {
 		return "", nil
 	}
 
-	t, err := time.Parse(time.DateTime, matches[1])
+	t, err := time.ParseInLocation(time.DateTime, matches[1], time.Local) //nolint:gosmopolitan
 	if err != nil {
 		return "", nil
 	}
 
-	u, err := time.Parse(time.DateTime, matches[2])
+	u, err := time.ParseInLocation(time.DateTime, matches[2], time.Local) //nolint:gosmopolitan
 	if err != nil {
 		return "", nil
 	}

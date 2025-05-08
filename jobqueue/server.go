@@ -87,6 +87,8 @@ const (
 	ServerModeDrain     = "draining"
 )
 
+const maxJobsForStd = 1000
+
 // ServerVersion gets set during build:
 // go build -ldflags "-X github.com/VertebrateResequencing/wr/jobqueue.ServerVersion=`git describe --tags --always --long --dirty`"
 var ServerVersion string
@@ -2196,13 +2198,21 @@ func (s *Server) getJobsByKeys(ctx context.Context, keys []string, getStd bool, 
 		item, err := s.q.Get(jobkey)
 		var job *Job
 		if err == nil && item != nil {
-			job = s.itemToJob(ctx, item, getStd, getEnv)
+			job = s.itemToJob(ctx, item, false, false)
 		} else {
 			notfound = append(notfound, jobkey)
 		}
 
 		if job != nil {
 			jobs = append(jobs, job)
+		}
+	}
+
+	getStd = shouldPopulateStd(jobs, getStd)
+
+	if getStd || getEnv {
+		for _, job := range jobs {
+			s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
 		}
 	}
 
@@ -2393,6 +2403,8 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state Jo
 		}
 	}
 
+	getStd = shouldPopulateStd(limited, getStd)
+
 	if getEnv || getStd {
 		for _, job := range limited {
 			s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
@@ -2400,6 +2412,25 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state Jo
 	}
 
 	return limited
+}
+
+// shouldPopulateStd only returns true if the given getStd is true and if the
+// number of jobs that could potentially have std is less than or equal to the
+// maxJobsForStd.
+func shouldPopulateStd(jobs []*Job, getStd bool) bool {
+	if !getStd {
+		return false
+	}
+
+	hasStd := 0
+
+	for _, job := range jobs {
+		if jobCouldHaveStd(job) {
+			hasStd++
+		}
+	}
+
+	return hasStd <= maxJobsForStd
 }
 
 // schedulerGroupDetails is used for debugging purposes to see how many jobs are
