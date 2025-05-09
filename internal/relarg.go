@@ -34,7 +34,7 @@ const (
 // GetFilesInDir returns a map of all the files in the given directory, with
 // their absolute paths as keys and true as values. It returns nil if the
 // directory does not exist or cannot be read. It actually includes all
-// directory entires, even subdiretories, because we care about those being
+// directory entries, even subdirectories, because we care about those being
 // relative too.
 func GetFilesInDir(dir string) map[string]bool {
 	entries, err := os.ReadDir(dir)
