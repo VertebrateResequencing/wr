@@ -401,6 +401,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				}
 				cr.JobEndState.Stdout = cr.Job.StdOutC
 				cr.JobEndState.Stderr = cr.Job.StdErrC
+				clog.Warn(ctx, "jrelease", "cr.Job.StdErrC", string(cr.Job.StdErrC))
 				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, false)
 				if errq != nil {
 					srerr = ErrInternalError
@@ -417,7 +418,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				if cr.JobEndState == nil {
 					cr.JobEndState = &JobEndState{}
 				}
-
+				clog.Warn(ctx, "jbury", "cr.Job.StdErrC", string(cr.Job.StdErrC), "cr.JobEndState.Stderr", string(cr.JobEndState.Stderr))
 				errq := s.releaseJob(ctx, job, cr.JobEndState, cr.Job.FailReason, true, true)
 				if errq != nil {
 					srerr = ErrInternalError

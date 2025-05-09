@@ -1996,6 +1996,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 	job.Unlock()
 
 	s.decrementGroupCount(ctx, sgroup)
+	clog.Warn(ctx, "will db.updateJobAfterExit", "endState.Stderr", string(endState.Stderr))
 	s.db.updateJobAfterExit(ctx, job, endState.Stdout, endState.Stderr, forceStorage)
 	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
 	return nil

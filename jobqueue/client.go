@@ -1627,6 +1627,7 @@ func (c *Client) ended(job *Job, jes *JobEndState) error {
 	}
 	if len(jes.Stderr) > 0 {
 		job.StdErrC, err = compress(jes.Stderr)
+		clog.Info(context.Background(), "ended job", "err", string(jes.Stderr), "compressed", string(job.StdErrC))
 		if err != nil {
 			return err
 		}
@@ -1672,6 +1673,7 @@ func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
 	job.Lock()
 	defer job.Unlock()
 	job.FailReason = failreason
+	clog.Info(context.Background(), "releasing job", "job err", string(job.StdErrC), "jess err", string(jes.Stderr))
 	_, err = c.request(&clientRequest{Method: "jrelease", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
@@ -1709,6 +1711,7 @@ func (c *Client) Bury(job *Job, jes *JobEndState, failreason string, stderr ...e
 			return err
 		}
 	}
+	clog.Info(context.Background(), "burying job", "job err", string(job.StdErrC), "jes err", string(jes.Stderr))
 	_, err = c.request(&clientRequest{Method: "jbury", Job: job, JobEndState: jes})
 	if err != nil {
 		return err
