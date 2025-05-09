@@ -554,7 +554,8 @@ func init() {
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
-	addCmd.Flags().BoolVar(&cmdAllowRelative, "allow_relative", false, "disable the relative path checking when cwd_matters is false")
+	addCmd.Flags().BoolVar(&cmdAllowRelative, "allow_relative", false,
+		"disable the relative path checking when cwd_matters is false")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
