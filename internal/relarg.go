@@ -100,7 +100,11 @@ func argIsRelativeGlob(filesInDir map[string]bool, arg string) bool {
 		basename := filepath.Base(absPath)
 
 		matched, err := filepath.Match(arg, basename)
-		if err == nil && matched {
+		if err != nil {
+			return false
+		}
+
+		if matched {
 			return true
 		}
 	}
