@@ -163,8 +163,8 @@ paths to your input files in your cmd, assuming they are in your cwd.
 
 Because cwd_matters false means commands with relative paths in them won't
 work, and this is unexpected by new users, wr tries to detect this situation
-and dies with an error message. It's possible for wr to get this wrong, however,
-so there is a flag to disable this check, --allow_relative.
+and warns about it. It's possible for wr to get this wrong, however, so there is
+a flag to disable this check: --disable_relative_check.
 
 "change_home" only has an effect when "cwd_matters" is false. If enabled, sets
 the $HOME environment variable to the actual command working directory before
