@@ -74,7 +74,6 @@ func argIsARelativePath(dir, arg string) bool {
 }
 
 func cleanArg(arg string) string {
-	arg = strings.TrimPrefix(arg, "$(")
 	arg = strings.TrimSuffix(arg, ")")
 	arg = strings.TrimSuffix(arg, ";")
 
