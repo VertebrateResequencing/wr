@@ -31,18 +31,37 @@ const (
 	equalSplitParts = 2
 )
 
+// GetFilesInDir returns a map of all the files in the given directory, with
+// their absolute paths as keys and true as values. It returns nil if the
+// directory does not exist or cannot be read. It actually includes all
+// directory entires, even subdiretories, because we care about those being
+// relative too.
+func GetFilesInDir(dir string) map[string]bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	filesInDir := make(map[string]bool, len(entries))
+
+	for _, entry := range entries {
+		filesInDir[filepath.Join(dir, entry.Name())] = true
+	}
+
+	return filesInDir
+}
+
 // CmdlineHasRelativePaths checks if the given command line has any arguments
-// that are relative to the given directory. There may be false negatives, but
-// the only false positives will be commands where a file in the dir has the
-// same basename as an executable in the PATH, or mentions of the basename in
-// text strings within the cmd.
-func CmdlineHasRelativePaths(dir, cmdline string) bool {
+// that look like relative references to the given files in the given dir. You
+// should use GetFilesInDir() for the filesInDir arg.
+//
+// NB: there may be both false negatives and false positives, so do not rely on
+// this 100%.
+func CmdlineHasRelativePaths(filesInDir map[string]bool, dir, cmdline string) bool {
 	args, err := shlex.Split(cmdline)
 	if err != nil {
 		return false
 	}
-
-	filesInDir := getFilesInDir(dir)
 
 	for i, arg := range args {
 		if i == 0 && isExe(arg) {
@@ -59,26 +78,6 @@ func CmdlineHasRelativePaths(dir, cmdline string) bool {
 	}
 
 	return false
-}
-
-// getFilesInDir returns a map of all the files in the given directory, with
-// their absolute paths as keys and true as values. It returns nil if the
-// directory does not exist or cannot be read. It actually includes all
-// directory entires, even subdiretories, because we care about those being
-// relative too.
-func getFilesInDir(dir string) map[string]bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	filesInDir := make(map[string]bool, len(entries))
-
-	for _, entry := range entries {
-		filesInDir[filepath.Join(dir, entry.Name())] = true
-	}
-
-	return filesInDir
 }
 
 func isExe(arg string) bool {

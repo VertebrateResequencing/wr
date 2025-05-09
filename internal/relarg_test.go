@@ -43,6 +43,13 @@ func TestCmdlineHasRelativePaths(t *testing.T) {
 		err = os.Mkdir(subdirPath, 0755)
 		So(err, ShouldBeNil)
 
+		filesInDir := GetFilesInDir(dir)
+		So(filesInDir, ShouldNotBeNil)
+		So(len(filesInDir), ShouldEqual, 2)
+		So(filesInDir[absPath], ShouldBeTrue)
+		So(filesInDir[subdirPath], ShouldBeTrue)
+		So(filesInDir[filepath.Join(dir, "nonexistent")], ShouldBeFalse)
+
 		Convey("It is correctly detected as relative or not as part of a command line", func() {
 			for _, test := range [...]struct {
 				cmdline  string
@@ -78,7 +85,7 @@ func TestCmdlineHasRelativePaths(t *testing.T) {
 				{"cmd ?" + pathBase[1:], true},
 				{"cmd ?x", false},
 			} {
-				isRel := CmdlineHasRelativePaths(dir, test.cmdline)
+				isRel := CmdlineHasRelativePaths(filesInDir, dir, test.cmdline)
 
 				if isRel != test.expected {
 					t.Logf("\n%s\n", test.cmdline)
