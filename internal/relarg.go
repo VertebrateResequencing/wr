@@ -45,6 +45,8 @@ func CmdlineHasRelativePaths(dir, cmdline string) bool {
 		return false
 	}
 
+	filesInDir := getFilesInDir(dir)
+
 	for i, arg := range args {
 		if i == 0 && isExe(arg) {
 			continue
@@ -54,12 +56,32 @@ func CmdlineHasRelativePaths(dir, cmdline string) bool {
 			return true
 		}
 
-		if argIsARelativePath(dir, arg) {
+		if argIsARelativePath(filesInDir, dir, arg) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// getFilesInDir returns a map of all the files in the given directory, with
+// their absolute paths as keys and true as values. It returns nil if the
+// directory does not exist or cannot be read. It actually includes all
+// directory entires, even subdiretories, because we care about those being
+// relative too.
+func getFilesInDir(dir string) map[string]bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	filesInDir := make(map[string]bool, len(entries))
+
+	for _, entry := range entries {
+		filesInDir[filepath.Join(dir, entry.Name())] = true
+	}
+
+	return filesInDir
 }
 
 func isExe(arg string) bool {
@@ -69,12 +91,13 @@ func isExe(arg string) bool {
 }
 
 // argIsARelativePath checks if the given fragment that came from a command line
-// argument is a path relative to the given directory.
+// argument is one of the given actual absolute file paths in the given
+// directory.
 //
 // NB: use github.com/google/shlex to split your command line into arguments,
 // not github.com/mattn/go-shellwords, as the latter stops at ; and && etc.
-func argIsARelativePath(dir, arg string) bool {
-	if fileInDir(dir, arg) {
+func argIsARelativePath(filesInDir map[string]bool, dir, arg string) bool {
+	if fileInDir(filesInDir, dir, arg) {
 		return true
 	}
 
@@ -83,13 +106,13 @@ func argIsARelativePath(dir, arg string) bool {
 		return false
 	}
 
-	return fileInDir(dir, arg)
+	return fileInDir(filesInDir, dir, arg)
 }
 
-func fileInDir(dir, arg string) bool {
-	_, err := os.Stat(filepath.Join(dir, arg))
+func fileInDir(filesInDir map[string]bool, dir, arg string) bool {
+	path := filepath.Join(dir, arg)
 
-	return err == nil
+	return filesInDir[path]
 }
 
 func cleanArg(arg string) string {
