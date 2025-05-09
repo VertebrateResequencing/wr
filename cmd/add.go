@@ -88,6 +88,7 @@ var (
 	cmdWithSingularity    string
 	cmdContainerMounts    string
 	cmdNoRetry            string
+	cmdAllowRelative      bool
 	rtimeoutint           int
 	simpleOutput          bool
 	syncMode              bool
@@ -159,6 +160,11 @@ that your command creates with relative paths will be easy to find since they'll
 be relative to your own set cwd path (otherwise you'd have to find out the
 actual cwd value in the status of a job). It also lets you specify relative
 paths to your input files in your cmd, assuming they are in your cwd.
+
+Because cwd_matters false means commands with relative paths in them won't
+work, and this is unexpected by new users, wr tries to detect this situation
+and dies with an error message. It's possible for wr to get this wrong, however,
+so there is a flag to disable this check, --allow_relative.
 
 "change_home" only has an effect when "cwd_matters" is false. If enabled, sets
 the $HOME environment variable to the actual command working directory before
@@ -548,6 +554,7 @@ func init() {
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
+	addCmd.Flags().BoolVar(&cmdAllowRelative, "allow_relative", false, "disable the relative path checking when cwd_matters is false")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
@@ -867,14 +874,15 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 // checkForRelativePathsInNonCwdMatters checks the cmd of jobs where cwd doesn't
 // matter and dies if it contains relative paths.
 func checkForRelativePathsInNonCwdMatters(job *jobqueue.Job) {
-	if job.CwdMatters {
+	if job.CwdMatters || cmdAllowRelative {
 		return
 	}
 
 	if internal.CmdlineHasRelativePaths(job.Cwd, job.Cmd) {
-		die("your job command contains relative paths, but the job would run in " +
+		die("a job command seems to contain relative paths, but the job would run in " +
 			"a newly created unique sub-directory.\n" +
-			"Use absolute paths instead, or say --cwd_matters")
+			"Use absolute paths instead, or say --cwd_matters.\n" +
+			"If your command doesn't actually contain relative paths, use --allow_relative to disable this check.")
 	}
 }
 

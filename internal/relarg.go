@@ -20,7 +20,9 @@ package internal
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/google/shlex"
@@ -30,16 +32,28 @@ const (
 	equalSplitParts = 2
 )
 
+var globRegex = regexp.MustCompile(`^(\./)?\*$`)
+
 // CmdlineHasRelativePaths checks if the given command line has any arguments
 // that are relative to the given directory. There may be false negatives, but
-// not false positives.
+// the only false positives will be commands where a file in the dir has the
+// same basename as an executable in the PATH, or mentions of the basename in
+// text strings within the cmd.
 func CmdlineHasRelativePaths(dir, cmdline string) bool {
 	args, err := shlex.Split(cmdline)
 	if err != nil {
 		return false
 	}
 
-	for _, arg := range args {
+	for i, arg := range args {
+		if i == 0 && isExe(arg) {
+			continue
+		}
+
+		if globRegex.MatchString(arg) {
+			return true
+		}
+
 		if argIsARelativePath(dir, arg) {
 			return true
 		}
@@ -48,17 +62,19 @@ func CmdlineHasRelativePaths(dir, cmdline string) bool {
 	return false
 }
 
+func isExe(arg string) bool {
+	exe, _ := exec.LookPath(arg) //nolint:errcheck
+
+	return exe != ""
+}
+
 // argIsARelativePath checks if the given fragment that came from a command line
-// argument is a path relative to the given directory. There may be false
-// negatives, but not false positives.
+// argument is a path relative to the given directory.
 //
 // NB: use github.com/google/shlex to split your command line into arguments,
 // not github.com/mattn/go-shellwords, as the latter stops at ; and && etc.
 func argIsARelativePath(dir, arg string) bool {
-	path := filepath.Join(dir, arg)
-
-	_, err := os.Stat(path)
-	if err == nil {
+	if fileInDir(dir, arg) {
 		return true
 	}
 
@@ -67,8 +83,11 @@ func argIsARelativePath(dir, arg string) bool {
 		return false
 	}
 
-	path = filepath.Join(dir, arg)
-	_, err = os.Stat(path)
+	return fileInDir(dir, arg)
+}
+
+func fileInDir(dir, arg string) bool {
+	_, err := os.Stat(filepath.Join(dir, arg))
 
 	return err == nil
 }

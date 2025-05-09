@@ -58,6 +58,10 @@ func TestCmdlineHasRelativePaths(t *testing.T) {
 				{"echo ./" + pathBase, true},
 				{"echo ../" + pathBase, false},
 				{"echo ../" + dirName + "/" + pathBase, true},
+				{"file " + absPath, false},
+				{"cmd *", true},
+				{"cmd ./*", true},
+				{"cmd " + dirName + "/*", false},
 			} {
 				isRel := CmdlineHasRelativePaths(dir, test.cmdline)
 
