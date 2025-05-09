@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/google/shlex"
@@ -31,8 +30,6 @@ import (
 const (
 	equalSplitParts = 2
 )
-
-var globRegex = regexp.MustCompile(`^(\./)?\*$`)
 
 // CmdlineHasRelativePaths checks if the given command line has any arguments
 // that are relative to the given directory. There may be false negatives, but
@@ -52,7 +49,7 @@ func CmdlineHasRelativePaths(dir, cmdline string) bool {
 			continue
 		}
 
-		if globRegex.MatchString(arg) {
+		if argIsRelativeGlob(filesInDir, arg) {
 			return true
 		}
 
@@ -88,6 +85,27 @@ func isExe(arg string) bool {
 	exe, _ := exec.LookPath(arg) //nolint:errcheck
 
 	return exe != ""
+}
+
+func argIsRelativeGlob(filesInDir map[string]bool, arg string) bool {
+	arg = strings.TrimPrefix(arg, "./")
+	arg = strings.TrimSuffix(arg, "/")
+	arg = strings.TrimSuffix(arg, "/*")
+
+	if arg == "" {
+		return false
+	}
+
+	for absPath := range filesInDir {
+		basename := filepath.Base(absPath)
+
+		matched, err := filepath.Match(arg, basename)
+		if err == nil && matched {
+			return true
+		}
+	}
+
+	return false
 }
 
 // argIsARelativePath checks if the given fragment that came from a command line

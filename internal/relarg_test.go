@@ -27,15 +27,20 @@ import (
 )
 
 func TestCmdlineHasRelativePaths(t *testing.T) {
-	Convey("Given a file in a directory", t, func() {
+	Convey("Given a file in a directory and a subdir", t, func() {
 		dir := t.TempDir()
 		dirName := filepath.Base(dir)
 		pathBase := "file"
 		absPath := filepath.Join(dir, pathBase)
+		subdir := "subdir"
+		subdirPath := filepath.Join(dir, subdir)
 
 		f, err := os.Create(absPath)
 		So(err, ShouldBeNil)
 		err = f.Close()
+		So(err, ShouldBeNil)
+
+		err = os.Mkdir(subdirPath, 0755)
 		So(err, ShouldBeNil)
 
 		Convey("It is correctly detected as relative or not as part of a command line", func() {
@@ -62,6 +67,16 @@ func TestCmdlineHasRelativePaths(t *testing.T) {
 				{"cmd *", true},
 				{"cmd ./*", true},
 				{"cmd " + dirName + "/*", false},
+				{"cmd ./" + string(pathBase[0]) + "*", true},
+				{"cmd ./x*", false},
+				{"cmd ./" + subdir + "/*", true},
+				{"cmd ./x/*", false},
+				{"cmd " + string(pathBase[0]) + "*", true},
+				{"cmd x*", false},
+				{"cmd *" + pathBase[1:], true},
+				{"cmd *x", false},
+				{"cmd ?" + pathBase[1:], true},
+				{"cmd ?x", false},
 			} {
 				isRel := CmdlineHasRelativePaths(dir, test.cmdline)
 
