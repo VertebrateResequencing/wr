@@ -1,142 +1,159 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="utf-8">
-        <title>WR Status</title>
 
-        <!-- jQuery for various utility, and needed by bootstrap.js -->
-        <script src="/js/jquery-2.2.4.min.js"></script>
+<head>
+	<meta charset="utf-8">
+	<title>WR Status</title>
 
-        <!-- Bootstrap for presentation and styling -->
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <link rel="stylesheet" href="/css/bootstrap-3.3.7.min.css">
-        <script src="/js/bootstrap-3.3.7.min.js"></script>
+	<!-- jQuery for various utility, and needed by bootstrap.js -->
+	<script src="/js/jquery-2.2.4.min.js"></script>
 
-        <!-- Knockout for event handling -->
-        <script src="/js/knockout-3.4.0.min.js"></script>
+	<!-- Bootstrap for presentation and styling -->
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<link rel="stylesheet" href="/css/bootstrap-3.3.7.min.css">
+	<script src="/js/bootstrap-3.3.7.min.js"></script>
 
-        <!-- Knockstrap to make buttons and things work 2-way between knockout and bootstrap -->
-        <script src="/js/knockstrap-1.3.2.min.js"></script>
+	<!-- Knockout for event handling -->
+	<script src="/js/knockout-3.4.0.min.js"></script>
 
-        <!-- Some of our own general helper functions -->
-        <script src="/js/wr-0.0.1.js"></script>
-        <link rel="stylesheet" href="/css/wr-0.0.1.css">
-    </head>
-    <body>
+	<!-- Knockstrap to make buttons and things work 2-way between knockout and bootstrap -->
+	<script src="/js/knockstrap-1.3.2.min.js"></script>
 
-        <div id="nav" class="navbar navbar-default" role="navigation">
-            <div class="container">
-                <div class="navbar-header">
-                    <span class="navbar-brand">WR Status</span>
-                </div>
-            </div>
-        </div>
+	<!-- Some of our own general helper functions -->
+	<script src="/js/wr-0.0.1.js"></script>
+	<link rel="stylesheet" href="/css/wr-0.0.1.css">
+</head>
 
-        <div id="status" class="container">
-            <div id="statuserrors" data-bind="foreach: statuserror">
-                <div class="alert alert-danger fade in">
-                    <p data-bind="text: $data"></p>
-                </div>
-            </div>
+<body>
 
-            <div id="badservers" data-bind="foreach: badservers">
-                <div class="alert alert-danger fade in">
-                    <div class="panel panel-warning">
-                        <div class="panel-heading">
-                            Server
-                                <!-- ko if: Problem == "" -->
-                                    <u class="dotted" data-bind="tooltip: { title: 'If this is just a temporary connectivity issue, this message will go away by itself.' }">might be dead</u>
-                                <!-- /ko -->
-                                <!-- ko if: !Problem == "" -->
-                                    <u class="dotted" data-bind="tooltip: { title: 'There was a problem using this server. It will not be used to run other jobs. Investigate it manually if you like, before hitting the `Kill it` button.' }">is no longer usable</u>
-                                <!-- /ko -->
-                        </div>
-                        <div class="panel-body">
-                            Name: <span data-bind="text: Name"></span><br>
-                            ID: <span data-bind="text: ID"></span><br>
-                            IP: <span data-bind="text: IP"></span><br>
-                            <!-- ko if: Problem == "" -->
-                                Lost contact: <span data-bind="text: Date.toDate()"></span>
-                                <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">It's really dead</button>
-                            <!-- /ko -->
-                            <!-- ko if: !Problem == "" -->
-                                Problem encountered: <span data-bind="text: Problem"></span><br>
-                                Problem encountered at: <span data-bind="text: Date.toDate()"></span>
-                                <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDeadServer">Kill it</button>
-                            <!-- /ko -->
-                        </div>
-                    </div>
-                </div>
-            </div>
+	<div id="nav" class="navbar navbar-default" role="navigation">
+		<div class="container">
+			<div class="navbar-header">
+				<span class="navbar-brand">WR Status</span>
+			</div>
+		</div>
+	</div>
 
-            <!-- ko if: messages().length > 1 -->
-                <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessages">Dismiss All</button>
-            <!-- /ko -->
-            <!-- ko if: messages().length > 0 -->
-                <div class="alert alert-danger fade in">
-                    <div id="messages" data-bind="foreach: messages">
-                        <div class="panel panel-warning">
-                            <div class="panel-heading">
-                                Scheduler Issue
-                                    <!-- ko if: Count() > 1 -->
-                                        [first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
-                                    <!-- /ko -->
-                            </div>
-                            <div class="panel-body">
-                                <span data-bind="text: Msg"></span><br>
-                                Reported at: <span data-bind="text: LastDate().toDate()"></span>
-                                <!-- ko if: Count() > 1 -->
-                                    <br>Reported: <span data-bind="text: Count"></span> times
-                                <!-- /ko -->
-                                <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessage">Dismiss</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            <!-- /ko -->
+	<div id="status" class="container">
+		<div id="statuserrors" data-bind="foreach: statuserror">
+			<div class="alert alert-danger fade in">
+				<p data-bind="text: $data"></p>
+			</div>
+		</div>
 
-            <div style="width: 100%;" class="well well-sm top-margin">
-                <div style="margin: 0 auto;">
-                    <h5 style="margin: 0; padding: 0">Incomplete <span class="badge" data-bind="text: inflight.total"></span></h5>
-                    <div class="top-margin" data-bind="if: inflight.total() > 0">
-                        <div class="progress" style="margin-bottom: 0">
-                            <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.delayPct() + '%' }">
-                                <!-- ko if: inflight.delayed() > 0 -->
-                                    <span data-bind="text: inflight.delayed"></span> delayed
-                                <!-- /ko -->
-                            </div>
-                            <div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar" data-bind="style: { width: inflight.dependentPct() + '%' }">
-                                <!-- ko if: inflight.dependent() > 0 -->
-                                    <span data-bind="text: inflight.dependent"></span> dependent
-                                <!-- /ko -->
-                            </div>
-                            <div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar" data-bind="style: { width: inflight.readyPct() + '%' }">
-                                <!-- ko if: inflight.ready() > 0 -->
-                                    <span data-bind="text: inflight.ready"></span> pending
-                                <!-- /ko -->
-                            </div>
-                            <div class="progress-bar progress-bar-striped active" role="progressbar" data-bind="style: { width: inflight.runPct() + '%' }">
-                                <!-- ko if: inflight.running() > 0 -->
-                                    <span data-bind="text: inflight.running"></span> running
-                                <!-- /ko -->
-                            </div>
-                            <div class="progress-bar progress-bar-striped active progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.lostPct() + '%' }">
-                                <!-- ko if: inflight.lost() > 0 -->
-                                    <span data-bind="text: inflight.lost"></span> lost contact
-                                <!-- /ko -->
-                            </div>
-                            <div class="progress-bar progress-bar-danger" role="progressbar" data-bind="style: { width: inflight.buryPct() + '%' }">
-                                <!-- ko if: inflight.buried() > 0 -->
-                                    <span data-bind="text: inflight.buried"></span> buried
-                                <!-- /ko -->
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+		<div id="badservers" data-bind="foreach: badservers">
+			<div class="alert alert-danger fade in">
+				<div class="panel panel-warning">
+					<div class="panel-heading">
+						Server
+						<!-- ko if: Problem == "" -->
+						<u class="dotted"
+							data-bind="tooltip: { title: 'If this is just a temporary connectivity issue, this message will go away by itself.' }">might
+							be dead</u>
+						<!-- /ko -->
+						<!-- ko if: !Problem == "" -->
+						<u class="dotted"
+							data-bind="tooltip: { title: 'There was a problem using this server. It will not be used to run other jobs. Investigate it manually if you like, before hitting the `Kill it` button.' }">is
+							no longer usable</u>
+						<!-- /ko -->
+					</div>
+					<div class="panel-body">
+						Name: <span data-bind="text: Name"></span><br>
+						ID: <span data-bind="text: ID"></span><br>
+						IP: <span data-bind="text: IP"></span><br>
+						<!-- ko if: Problem == "" -->
+						Lost contact: <span data-bind="text: Date.toDate()"></span>
+						<button type="button" class="btn btn-danger pull-right"
+							data-bind="click: $root.confirmDeadServer">It's really dead</button>
+						<!-- /ko -->
+						<!-- ko if: !Problem == "" -->
+						Problem encountered: <span data-bind="text: Problem"></span><br>
+						Problem encountered at: <span data-bind="text: Date.toDate()"></span>
+						<button type="button" class="btn btn-danger pull-right"
+							data-bind="click: $root.confirmDeadServer">Kill it</button>
+						<!-- /ko -->
+					</div>
+				</div>
+			</div>
+		</div>
 
-            <!-- *** not yet implemented
+		<!-- ko if: messages().length > 1 -->
+		<button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessages">Dismiss
+			All</button>
+		<!-- /ko -->
+		<!-- ko if: messages().length > 0 -->
+		<div class="alert alert-danger fade in">
+			<div id="messages" data-bind="foreach: messages">
+				<div class="panel panel-warning">
+					<div class="panel-heading">
+						Scheduler Issue
+						<!-- ko if: Count() > 1 -->
+						[first reported at: <span data-bind="text: FirstDate.toDate()"></span>]
+						<!-- /ko -->
+					</div>
+					<div class="panel-body">
+						<span data-bind="text: Msg"></span><br>
+						Reported at: <span data-bind="text: LastDate().toDate()"></span>
+						<!-- ko if: Count() > 1 -->
+						<br>Reported: <span data-bind="text: Count"></span> times
+						<!-- /ko -->
+						<button type="button" class="btn btn-warning pull-right"
+							data-bind="click: $root.dismissMessage">Dismiss</button>
+					</div>
+				</div>
+			</div>
+		</div>
+		<!-- /ko -->
+
+		<div style="width: 100%;" class="well well-sm top-margin">
+			<div style="margin: 0 auto;">
+				<h5 style="margin: 0; padding: 0">Incomplete <span class="badge"
+						data-bind="text: inflight.total"></span></h5>
+				<div class="top-margin" data-bind="if: inflight.total() > 0">
+					<div class="progress" style="margin-bottom: 0">
+						<div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar"
+							data-bind="style: { width: inflight.delayPct() + '%' }">
+							<!-- ko if: inflight.delayed() > 0 -->
+							<span data-bind="text: inflight.delayed"></span> delayed
+							<!-- /ko -->
+						</div>
+						<div class="progress-bar progress-bar-striped active progress-bar-warning" role="progressbar"
+							data-bind="style: { width: inflight.dependentPct() + '%' }">
+							<!-- ko if: inflight.dependent() > 0 -->
+							<span data-bind="text: inflight.dependent"></span> dependent
+							<!-- /ko -->
+						</div>
+						<div class="progress-bar progress-bar-striped active progress-bar-info" role="progressbar"
+							data-bind="style: { width: inflight.readyPct() + '%' }">
+							<!-- ko if: inflight.ready() > 0 -->
+							<span data-bind="text: inflight.ready"></span> pending
+							<!-- /ko -->
+						</div>
+						<div class="progress-bar progress-bar-striped active" role="progressbar"
+							data-bind="style: { width: inflight.runPct() + '%' }">
+							<!-- ko if: inflight.running() > 0 -->
+							<span data-bind="text: inflight.running"></span> running
+							<!-- /ko -->
+						</div>
+						<div class="progress-bar progress-bar-striped active progress-bar-danger" role="progressbar"
+							data-bind="style: { width: inflight.lostPct() + '%' }">
+							<!-- ko if: inflight.lost() > 0 -->
+							<span data-bind="text: inflight.lost"></span> lost contact
+							<!-- /ko -->
+						</div>
+						<div class="progress-bar progress-bar-danger" role="progressbar"
+							data-bind="style: { width: inflight.buryPct() + '%' }">
+							<!-- ko if: inflight.buried() > 0 -->
+							<span data-bind="text: inflight.buried"></span> buried
+							<!-- /ko -->
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- *** not yet implemented
             <div class="row bottom-margin">
                 <div class="col-xs-5">
                     <form data-bind="submit: requestRepGroup">
@@ -152,370 +169,410 @@
             </div>
             -->
 
-            <!-- ko if: sortableRepGroups().length > 0 -->
-                <hr>
-            <!-- /ko -->
+		<!-- ko if: sortableRepGroups().length > 0 -->
+		<hr>
+		<!-- /ko -->
 
-            <div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
-                <div style="width: 100%;" class="well well-sm">
-                    <div style="margin: 0 auto;">
-                        <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge" data-bind="text: total"></span></h5>
-                        <div class="top-margin" data-bind="if: total() > 0">
-                            <div class="progress" style="margin-bottom: 0">
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed, attr: { 'aria-valuenow': delayPct() }">
-                                    <!-- ko if: delayed() > 0 -->
-                                        <span data-bind="text: delayed"></span> delayed
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent, attr: { 'aria-valuenow': dependentPct() }">
-                                    <!-- ko if: dependent() > 0 -->
-                                        <span data-bind="text: dependent"></span> dependent
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-info clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady, attr: { 'aria-valuenow': readyPct() }">
-                                    <!-- ko if: ready() > 0 -->
-                                        <span data-bind="text: ready"></span> pending
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-striped active clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning, attr: { 'aria-valuenow': runPct() }">
-                                    <!-- ko if: running() > 0 -->
-                                        <span data-bind="text: running"></span> running
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-danger clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: lostPct() + '%' }, click: $parent.showRepgroupLost, attr: { 'aria-valuenow': lostPct() }">
-                                    <!-- ko if: lost() > 0 -->
-                                        <span data-bind="text: lost"></span> lost contact
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-danger clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried, attr: { 'aria-valuenow': buryPct() }">
-                                    <!-- ko if: buried() > 0 -->
-                                        <span data-bind="text: buried"></span> buried
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-danger" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: deletePct() + '%' }, attr: { 'aria-valuenow': deletePct() }">
-                                    <!-- ko if: deleted() > 0 -->
-                                        <span data-bind="text: deleted"></span> deleted
-                                    <!-- /ko -->
-                                </div>
-                                <div class="progress-bar progress-bar-success clickable" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete, attr: { 'aria-valuenow': completePct() }">
-                                    <!-- ko if: complete() > 0 -->
-                                        <span data-bind="text: complete"></span> complete
-                                    <!-- /ko -->
-                                </div>
-                            </div>
-                        </div>
+		<div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
+			<div style="width: 100%;" class="well well-sm">
+				<div style="margin: 0 auto;">
+					<h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge"
+							data-bind="text: total"></span></h5>
+					<div class="top-margin" data-bind="if: total() > 0">
+						<div class="progress" style="margin-bottom: 0">
+							<div class="progress-bar progress-bar-striped active progress-bar-warning clickable"
+								role="progressbar" aria-valuemin="0" aria-valuemax="100"
+								data-bind="style: { width: delayPct() + '%' }, click: $parent.showRepgroupDelayed, attr: { 'aria-valuenow': delayPct() }">
+								<!-- ko if: delayed() > 0 -->
+								<span data-bind="text: delayed"></span> delayed
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-striped active progress-bar-warning clickable"
+								role="progressbar" aria-valuemin="0" aria-valuemax="100"
+								data-bind="style: { width: dependentPct() + '%' }, click: $parent.showRepgroupDependent, attr: { 'aria-valuenow': dependentPct() }">
+								<!-- ko if: dependent() > 0 -->
+								<span data-bind="text: dependent"></span> dependent
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-striped active progress-bar-info clickable"
+								role="progressbar" aria-valuemin="0" aria-valuemax="100"
+								data-bind="style: { width: readyPct() + '%' }, click: $parent.showRepgroupReady, attr: { 'aria-valuenow': readyPct() }">
+								<!-- ko if: ready() > 0 -->
+								<span data-bind="text: ready"></span> pending
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-striped active clickable" role="progressbar"
+								aria-valuemin="0" aria-valuemax="100"
+								data-bind="style: { width: runPct() + '%' }, click: $parent.showRepgroupRunning, attr: { 'aria-valuenow': runPct() }">
+								<!-- ko if: running() > 0 -->
+								<span data-bind="text: running"></span> running
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-striped active progress-bar-danger clickable"
+								role="progressbar" aria-valuemin="0" aria-valuemax="100"
+								data-bind="style: { width: lostPct() + '%' }, click: $parent.showRepgroupLost, attr: { 'aria-valuenow': lostPct() }">
+								<!-- ko if: lost() > 0 -->
+								<span data-bind="text: lost"></span> lost contact
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-danger clickable" role="progressbar" aria-valuemin="0"
+								aria-valuemax="100"
+								data-bind="style: { width: buryPct() + '%' }, click: $parent.showRepgroupBuried, attr: { 'aria-valuenow': buryPct() }">
+								<!-- ko if: buried() > 0 -->
+								<span data-bind="text: buried"></span> buried
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-danger" role="progressbar" aria-valuemin="0"
+								aria-valuemax="100"
+								data-bind="style: { width: deletePct() + '%' }, attr: { 'aria-valuenow': deletePct() }">
+								<!-- ko if: deleted() > 0 -->
+								<span data-bind="text: deleted"></span> deleted
+								<!-- /ko -->
+							</div>
+							<div class="progress-bar progress-bar-success clickable" role="progressbar"
+								aria-valuemin="0" aria-valuemax="100"
+								data-bind="style: { width: completePct() + '%' }, click: $parent.showRepgroupComplete, attr: { 'aria-valuenow': completePct() }">
+								<!-- ko if: complete() > 0 -->
+								<span data-bind="text: complete"></span> complete
+								<!-- /ko -->
+							</div>
+						</div>
+					</div>
 
-                        <!-- ko foreach: details -->
-                            <div class="top-margin panel" style="margin-bottom: 0" data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
-                                <div class="panel-heading">
-                                    <h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
-                                    <div style="overflow-x: auto">
-                                        <small><i><span data-bind="text: CwdBase"></span><span data-bind="text: Cwd" style="color: grey"></span></i></small>
-                                    </div>
-                                    <!-- ko if: WithDocker != '' -->
-                                        <small><i>docker image: <span data-bind="text: WithDocker"></span></i></small>
-                                    <!-- /ko -->
-                                    <!-- ko if: WithSingularity != '' -->
-                                        <small><i>singularity image: <span data-bind="text: WithSingularity"></span></i></small>
-                                    <!-- /ko -->
-                                    <!-- ko if: Mounts -->
-                                        <div style="overflow-x: auto">
-                                            <small><i>mounts: <span data-bind="text: Mounts"></span></i></small>
-                                        </div>
-                                    <!-- /ko -->
-                                    <!-- ko if: ContainerMounts -->
-                                        <div style="overflow-x: auto">
-                                            <small><i>container mounts: <span data-bind="text: ContainerMounts"></span></i></small>
-                                        </div>
-                                    <!-- /ko -->
-                                    <div style="overflow-x: auto">
-                                        <small>internal id: <span data-bind="text: Key"></span></small>
-                                    </div>
-                                </div>
-                                <div class="panel-body keyvals">
-                                    <dl>
-                                        <dt>Attempts</dt>
-                                        <dd data-bind="text: Attempts"></dd>
-                                    </dl>
-                                    <dl>
-                                        <dt>Expected RAM</dt>
-                                        <dd data-bind="text: ExpectedRAM.mbIEC()"></dd>
-                                    </dl>
-                                    <dl>
-                                        <dt>Expected Time</dt>
-                                        <dd data-bind="text: ExpectedTime.toDuration()"></dd>
-                                    </dl>
-                                    <!-- ko if: RequestedDisk > 0 -->
-                                        <dl>
-                                            <dt>Requested Disk</dt>
-                                            <dd><span data-bind="text: RequestedDisk"></span> GB</dd>
-                                        </dl>
-                                    <!-- /ko -->
-                                    <dl>
-                                        <dt>Cores</dt>
-                                        <dd data-bind="text: Cores"></dd>
-                                    </dl>
-                                    <!-- ko if: MonitorDocker != '' -->
-                                        <dl>
-                                            <dt>Monitor Docker</dt>
-                                            <dd><span data-bind="text: MonitorDocker"></span></dd>
-                                        </dl>
-                                    <!-- /ko -->
-                                    <!-- ko if: FailReason -->
-                                        <dl>
-                                            <!-- ko if: State == 'running' -->
-                                                <dt>Previous Failure</dt>
-                                            <!-- /ko -->
-                                            <!-- ko if: State != 'running' -->
-                                                <dt>Reason for Failure</dt>
-                                            <!-- /ko -->
-                                            <dd data-bind="text: FailReason"></dd>
-                                        </dl>
-                                    <!-- /ko -->
+					<!-- ko foreach: details -->
+					<div class="top-margin panel" style="margin-bottom: 0"
+						data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
+						<div class="panel-heading">
+							<h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
+							<div style="overflow-x: auto">
+								<small><i><span data-bind="text: CwdBase"></span><span data-bind="text: Cwd"
+											style="color: grey"></span></i></small>
+							</div>
+							<!-- ko if: WithDocker != '' -->
+							<small><i>docker image: <span data-bind="text: WithDocker"></span></i></small>
+							<!-- /ko -->
+							<!-- ko if: WithSingularity != '' -->
+							<small><i>singularity image: <span data-bind="text: WithSingularity"></span></i></small>
+							<!-- /ko -->
+							<!-- ko if: Mounts -->
+							<div style="overflow-x: auto">
+								<small><i>mounts: <span data-bind="text: Mounts"></span></i></small>
+							</div>
+							<!-- /ko -->
+							<!-- ko if: ContainerMounts -->
+							<div style="overflow-x: auto">
+								<small><i>container mounts: <span data-bind="text: ContainerMounts"></span></i></small>
+							</div>
+							<!-- /ko -->
+						</div>
+						<div class="panel-body keyvals">
+							<dl>
+								<dt>Attempts</dt>
+								<dd data-bind="text: Attempts"></dd>
+							</dl>
+							<dl>
+								<dt>Expected RAM</dt>
+								<dd data-bind="text: ExpectedRAM.mbIEC()"></dd>
+							</dl>
+							<dl>
+								<dt>Expected Time</dt>
+								<dd data-bind="text: ExpectedTime.toDuration()"></dd>
+							</dl>
+							<!-- ko if: RequestedDisk > 0 -->
+							<dl>
+								<dt>Requested Disk</dt>
+								<dd><span data-bind="text: RequestedDisk"></span> GB</dd>
+							</dl>
+							<!-- /ko -->
+							<dl>
+								<dt>Cores</dt>
+								<dd data-bind="text: Cores"></dd>
+							</dl>
+							<!-- ko if: MonitorDocker != '' -->
+							<dl>
+								<dt>Monitor Docker</dt>
+								<dd><span data-bind="text: MonitorDocker"></span></dd>
+							</dl>
+							<!-- /ko -->
+							<!-- ko if: FailReason -->
+							<dl>
+								<!-- ko if: State == 'running' -->
+								<dt>Previous Failure</dt>
+								<!-- /ko -->
+								<!-- ko if: State != 'running' -->
+								<dt>Reason for Failure</dt>
+								<!-- /ko -->
+								<dd data-bind="text: FailReason"></dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: Exited -->
-                                        <dl>
-                                            <dt>Exit code</dt>
-                                            <dd data-bind="text: Exitcode"></dd>
-                                        </dl>
-                                        <!-- ko if: Exitcode != 0 -->
-                                            <dl>
-                                                <dt>StdOut</dt>
-                                                <dd>
-                                                    <!-- ko if: StdOut -->
-                                                        <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdOut')">&lt;show&gt;</span>
-                                                    <!-- /ko -->
-                                                    <!-- ko if: ! StdOut -->
-                                                        &lt;none&gt;
-                                                    <!-- /ko -->
-                                                </dd>
-                                            </dl>
-                                            <dl>
-                                                <dt>StdErr</dt>
-                                                <dd>
-                                                    <!-- ko if: StdErr -->
-                                                        <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
-                                                    <!-- /ko -->
-                                                    <!-- ko if: ! StdErr -->
-                                                        &lt;none&gt;
-                                                    <!-- /ko -->
-                                                </dd>
-                                            </dl>
-                                        <!-- /ko -->
-                                        <dl>
-                                            <dt>Peak RAM</dt>
-                                            <dd data-bind="text: PeakRAM.mbIEC()"></dd>
-                                        </dl>
-                                        <!-- ko if: PeakDisk > 0 -->
-                                            <dl>
-                                                <dt>Peak Disk</dt>
-                                                <dd data-bind="text: PeakDisk.mbIEC()"></dd>
-                                            </dl>
-                                        <!-- /ko -->
-                                        <dl>
-                                            <dt>Started</dt>
-                                            <dd data-bind="text: Started.toDate()"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>Ended</dt>
-                                            <dd data-bind="text: Ended.toDate()"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>Walltime</dt>
-                                            <dd data-bind="text: Walltime.toDuration()"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>CPUtime</dt>
-                                            <dd data-bind="text: CPUtime.toDuration()"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>Host</dt>
-                                            <dd data-bind="text: Host"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>Host IP</dt>
-                                            <dd data-bind="text: HostIP"></dd>
-                                        </dl>
-                                        <!-- ko if: HostID != "" -->
-                                            <dl>
-                                                <dt>Host ID</dt>
-                                                <dd data-bind="text: HostID"></dd>
-                                            </dl>
-                                        <!-- /ko -->
-                                        <dl>
-                                            <dt>Pid</dt>
-                                            <dd data-bind="text: Pid"></dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: Exited -->
+							<dl>
+								<dt>Exit code</dt>
+								<dd data-bind="text: Exitcode"></dd>
+							</dl>
+							<!-- ko if: Exitcode != 0 -->
+							<dl>
+								<dt>StdOut</dt>
+								<dd>
+									<!-- ko if: StdOut -->
+									<span class="clickable"
+										data-bind="click: $root.showStd.bind($data, 'StdOut')">&lt;show&gt;</span>
+									<!-- /ko -->
+									<!-- ko if: ! StdOut -->
+									&lt;none&gt;
+									<!-- /ko -->
+								</dd>
+							</dl>
+							<dl>
+								<dt>StdErr</dt>
+								<dd>
+									<!-- ko if: StdErr -->
+									<span class="clickable"
+										data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
+									<!-- /ko -->
+									<!-- ko if: ! StdErr -->
+									&lt;none&gt;
+									<!-- /ko -->
+								</dd>
+							</dl>
+							<!-- /ko -->
+							<dl>
+								<dt>Peak RAM</dt>
+								<dd data-bind="text: PeakRAM.mbIEC()"></dd>
+							</dl>
+							<!-- ko if: PeakDisk > 0 -->
+							<dl>
+								<dt>Peak Disk</dt>
+								<dd data-bind="text: PeakDisk.mbIEC()"></dd>
+							</dl>
+							<!-- /ko -->
+							<dl>
+								<dt>Started</dt>
+								<dd data-bind="text: Started.toDate()"></dd>
+							</dl>
+							<dl>
+								<dt>Ended</dt>
+								<dd data-bind="text: Ended.toDate()"></dd>
+							</dl>
+							<dl>
+								<dt>Walltime</dt>
+								<dd data-bind="text: Walltime.toDuration()"></dd>
+							</dl>
+							<dl>
+								<dt>CPUtime</dt>
+								<dd data-bind="text: CPUtime.toDuration()"></dd>
+							</dl>
+							<dl>
+								<dt>Host</dt>
+								<dd data-bind="text: Host"></dd>
+							</dl>
+							<dl>
+								<dt>Host IP</dt>
+								<dd data-bind="text: HostIP"></dd>
+							</dl>
+							<!-- ko if: HostID != "" -->
+							<dl>
+								<dt>Host ID</dt>
+								<dd data-bind="text: HostID"></dd>
+							</dl>
+							<!-- /ko -->
+							<dl>
+								<dt>Pid</dt>
+								<dd data-bind="text: Pid"></dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: ! Exited && (State == "reserved" || State == "running" || State == "lost") -->
-                                        <dl>
-                                            <dt>Started</dt>
-                                            <dd data-bind="text: Started.toDate()"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>Walltime</dt>
-                                            <!-- ko if: State == "lost" -->
-                                                <dd data-bind="text: Walltime.toDuration()"></dd>
-                                            <!-- /ko -->
-                                            <!-- ko if: State != "lost" -->
-                                                <dd data-bind="text: LiveWalltime().toDuration()"></dd>
-                                            <!-- /ko -->
-                                        </dl>
-                                        <dl>
-                                            <dt>Host</dt>
-                                            <dd data-bind="text: Host"></dd>
-                                        </dl>
-                                        <dl>
-                                            <dt>Host IP</dt>
-                                            <dd data-bind="text: HostIP"></dd>
-                                        </dl>
-                                        <!-- ko if: HostID != "" -->
-                                            <dl>
-                                                <dt>Host ID</dt>
-                                                <dd data-bind="text: HostID"></dd>
-                                            </dl>
-                                        <!-- /ko -->
-                                        <dl>
-                                            <dt>Pid</dt>
-                                            <dd data-bind="text: Pid"></dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: ! Exited && (State == "reserved" || State == "running" || State == "lost") -->
+							<dl>
+								<dt>Started</dt>
+								<dd data-bind="text: Started.toDate()"></dd>
+							</dl>
+							<dl>
+								<dt>Walltime</dt>
+								<!-- ko if: State == "lost" -->
+								<dd data-bind="text: Walltime.toDuration()"></dd>
+								<!-- /ko -->
+								<!-- ko if: State != "lost" -->
+								<dd data-bind="text: LiveWalltime().toDuration()"></dd>
+								<!-- /ko -->
+							</dl>
+							<dl>
+								<dt>Host</dt>
+								<dd data-bind="text: Host"></dd>
+							</dl>
+							<dl>
+								<dt>Host IP</dt>
+								<dd data-bind="text: HostIP"></dd>
+							</dl>
+							<!-- ko if: HostID != "" -->
+							<dl>
+								<dt>Host ID</dt>
+								<dd data-bind="text: HostID"></dd>
+							</dl>
+							<!-- /ko -->
+							<dl>
+								<dt>Pid</dt>
+								<dd data-bind="text: Pid"></dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: ! Exited && State == "buried" && StdErr -->
-                                        <dl>
-                                            <dt>StdErr</dt>
-                                            <dd>
-                                                <span class="clickable" data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
-                                            </dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: ! Exited && State == "buried" && StdErr -->
+							<dl>
+								<dt>StdErr</dt>
+								<dd>
+									<span class="clickable"
+										data-bind="click: $root.showStd.bind($data, 'StdErr')">&lt;show&gt;</span>
+								</dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: LimitGroups -->
-                                        <dl>
-                                            <dt>LimitGroups</dt>
-                                            <dd>
-                                                <span class="clickable" data-bind="click: $root.showLimitGroups">&lt;show&gt;</span>
-                                            </dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: LimitGroups -->
+							<dl>
+								<dt>LimitGroups</dt>
+								<dd>
+									<span class="clickable" data-bind="click: $root.showLimitGroups">&lt;show&gt;</span>
+								</dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: DepGroups -->
-                                        <dl>
-                                            <dt>DepGroups</dt>
-                                            <dd>
-                                                <span class="clickable" data-bind="click: $root.showDepGroups">&lt;show&gt;</span>
-                                            </dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: DepGroups -->
+							<dl>
+								<dt>DepGroups</dt>
+								<dd>
+									<span class="clickable" data-bind="click: $root.showDepGroups">&lt;show&gt;</span>
+								</dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: Dependencies -->
-                                        <dl>
-                                            <dt>Dependencies</dt>
-                                            <dd>
-                                                <span class="clickable" data-bind="click: $root.showDependencies">&lt;show&gt;</span>
-                                            </dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: Dependencies -->
+							<dl>
+								<dt>Dependencies</dt>
+								<dd>
+									<span class="clickable"
+										data-bind="click: $root.showDependencies">&lt;show&gt;</span>
+								</dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <dl>
-                                        <dt>Env</dt>
-                                        <dd>
-                                            <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
-                                        </dd>
-                                    </dl>
+							<dl>
+								<dt>Env</dt>
+								<dd>
+									<span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
+								</dd>
+							</dl>
 
-                                    <!-- ko if: Cwd -->
-                                        <dl>
-                                            <dt>Home Changed</dt>
-                                            <dd data-bind="text: HomeChanged"></dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: Cwd -->
+							<dl>
+								<dt>Home Changed</dt>
+								<dd data-bind="text: HomeChanged"></dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: Behaviours -->
-                                        <dl>
-                                            <dt>Behaviours</dt>
-                                            <dd>
-                                                <span class="clickable" data-bind="click: $root.showBehaviours">&lt;show&gt;</span>
-                                            </dd>
-                                        </dl>
-                                    <!-- /ko -->
+							<!-- ko if: Behaviours -->
+							<dl>
+								<dt>Behaviours</dt>
+								<dd>
+									<span class="clickable" data-bind="click: $root.showBehaviours">&lt;show&gt;</span>
+								</dd>
+							</dl>
+							<!-- /ko -->
 
-                                    <!-- ko if: OtherRequests -->
-                                        <dl>
-                                            <dt>Resource Requirements</dt>
-                                            <dd>
-                                                <span class="clickable" data-bind="click: $root.showOther">&lt;show&gt;</span>
-                                            </dd>
-                                        </dl>
-                                    <!-- /ko -->
-                                </div>
-                                <div class="panel-footer clearfix">
-                                    <!-- ko if: Similar -->
-                                        + <span data-bind="text: Similar"></span> other commands
-                                        <!-- ko if: Exited && Exitcode != 0 -->
-                                            with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
-                                        <!-- /ko -->
-                                    <!-- /ko -->
-                                    <!-- ko if: State == "delayed" -->
-                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDelay">Remove</button>
-                                    <!-- /ko -->
-                                    <!-- ko if: State == "ready" -->
-                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemovePend">Remove</button>
-                                    <!-- /ko -->
-                                    <!-- ko if: State == "dependent" -->
-                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmRemoveDep">Remove</button>
-                                    <!-- /ko -->
-                                    <!-- ko if: State == "running" -->
-                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmKill">Kill</button>
-                                    <!-- /ko -->
-                                    <!-- ko if: State == "lost" -->
-                                        <small>This job appears dead, but this could be due to a temporary issue such as a networking failure; if the job is actually fine, it will revert to running state automatically when the problem is fixed.</small><br>
-                                        <button type="button" class="btn btn-danger pull-right" data-bind="click: $root.confirmDead">Confirm Dead</button>
-                                    <!-- /ko -->
-                                    <!-- ko if: State == "buried" -->
-                                        <div class="btn-group pull-right">
-                                            <button type="button" class="btn btn-danger" data-bind="click: $root.confirmRemoveFail">Remove</button>
-                                            <button type="button" class="btn btn-primary" data-bind="click: $root.confirmRetry">Retry</button>
-                                        </div>
-                                    <!-- /ko -->
-                                </div>
-                            </div>
-                        <!-- /ko -->
-                    </div>
-                </div>
-            </div>
+							<!-- ko if: OtherRequests -->
+							<dl>
+								<dt>Resource Requirements</dt>
+								<dd>
+									<span class="clickable" data-bind="click: $root.showOther">&lt;show&gt;</span>
+								</dd>
+							</dl>
+							<!-- /ko -->
 
-            <!-- action modals -->
-            <div data-bind="modal: {
+							<dl>
+								<dt>Internal ID</dt>
+								<dd>
+									<span class="clickable" data-bind="click: $root.showInternalID">&lt;show&gt;</span>
+								</dd>
+							</dl>
+						</div>
+						<div class="panel-footer clearfix">
+							<!-- ko if: Similar -->
+							+ <span data-bind="text: Similar"></span> other commands
+							<!-- ko if: Exited && Exitcode != 0 -->
+							with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
+							<!-- /ko -->
+							<!-- /ko -->
+							<!-- ko if: State == "delayed" -->
+							<button type="button" class="btn btn-danger pull-right"
+								data-bind="click: $root.confirmRemoveDelay">Remove</button>
+							<!-- /ko -->
+							<!-- ko if: State == "ready" -->
+							<button type="button" class="btn btn-danger pull-right"
+								data-bind="click: $root.confirmRemovePend">Remove</button>
+							<!-- /ko -->
+							<!-- ko if: State == "dependent" -->
+							<button type="button" class="btn btn-danger pull-right"
+								data-bind="click: $root.confirmRemoveDep">Remove</button>
+							<!-- /ko -->
+							<!-- ko if: State == "running" -->
+							<button type="button" class="btn btn-danger pull-right"
+								data-bind="click: $root.confirmKill">Kill</button>
+							<!-- /ko -->
+							<!-- ko if: State == "lost" -->
+							<small>This job appears dead, but this could be due to a temporary issue such as a
+								networking failure; if the job is actually fine, it will revert to running state
+								automatically when the problem is fixed.</small><br>
+							<button type="button" class="btn btn-danger pull-right"
+								data-bind="click: $root.confirmDead">Confirm Dead</button>
+							<!-- /ko -->
+							<!-- ko if: State == "buried" -->
+							<div class="btn-group pull-right">
+								<button type="button" class="btn btn-danger"
+									data-bind="click: $root.confirmRemoveFail">Remove</button>
+								<button type="button" class="btn btn-primary"
+									data-bind="click: $root.confirmRetry">Retry</button>
+							</div>
+							<!-- /ko -->
+						</div>
+					</div>
+					<!-- /ko -->
+				</div>
+			</div>
+		</div>
+
+		<!-- action modals -->
+		<div data-bind="modal: {
                 visible: actionModalVisible,
                 dialogCss: 'modal-sm',
                 header: { data: { label: actionModalHeader } },
                 body: { name: 'actionModalBodyTemplate', data: actionDetails },
                 footer: { name: 'actionModalFooterTemplate', data: actionDetails }
             }"></div>
-            <script type="text/html" id="actionModalBodyTemplate">
+		<script type="text/html" id="actionModalBodyTemplate">
                 <!-- ko if: button() != "confirm" -->
-                Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>"
-                    <!-- ko if: exited -->
-                        that had exit code <span data-bind="text: exitCode"></span> and failed because "<span data-bind="text: failReason"></span>"?
-                    <!-- /ko -->
-                    <!-- ko if: ! exited -->
-                        ?
-                    <!-- /ko -->
-                <!-- /ko -->
-                <!-- ko if: button() == "confirm" -->
-                Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span data-bind="text: repGroup"></span>" are really dead?
-                <!-- /ko -->
-                <br>
-                <!-- ko if: button() == "kill" -->
-                    <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become buried)</small>
-                <!-- /ko -->
-                <!-- ko if: button() == "remove" -->
-                    <small>(removal of commands that have other commands depending on them will silently fail)</small>
-                <!-- /ko -->
-            </script>
-            <script type="text/html" id="actionModalFooterTemplate">
+                Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span>
+		commands with the identifier "<span data-bind="text: repGroup"></span>"
+		<!-- ko if: exited -->
+		that had exit code <span data-bind="text: exitCode"></span> and failed because "<span
+			data-bind="text: failReason"></span>"?
+		<!-- /ko -->
+		<!-- ko if: ! exited -->
+		?
+		<!-- /ko -->
+		<!-- /ko -->
+		<!-- ko if: button() == "confirm" -->
+		Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span
+			data-bind="text: repGroup"></span>" are really dead?
+		<!-- /ko -->
+		<br>
+		<!-- ko if: button() == "kill" -->
+		<small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become
+			buried)</small>
+		<!-- /ko -->
+		<!-- ko if: button() == "remove" -->
+		<small>(removal of commands that have other commands depending on them will silently fail)</small>
+		<!-- /ko -->
+		</script>
+		<script type="text/html" id="actionModalFooterTemplate">
                 <div class="btn-group">
                     <!-- ko if: count() > 1 -->
                         <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: button().capitalizeFirstLetter() + ' all'"></button>
@@ -528,623 +585,640 @@
                 </div>
             </script>
 
-            <!-- stdout/err modals -->
-            <div data-bind="modal: {
+		<!-- stdout/err modals -->
+		<div data-bind="modal: {
                 visible: stdModalVisible,
                 dialogCss: 'modal-lg, modal-std',
                 header: { data: { label: stdModalHeader } },
                 body: { data: { content: stdOutput } }
             }"></div>
 
-            <!-- limitgroups modal -->
-            <div data-bind="modal: {
+		<!-- limitgroups modal -->
+		<div data-bind="modal: {
                 visible: lgModalVisible,
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Limit Groups' } },
                 body: { name: 'envModalBodyTemplate', data: lgVars }
             }"></div>
 
-            <!-- depgroups modal -->
-            <div data-bind="modal: {
+		<!-- depgroups modal -->
+		<div data-bind="modal: {
                 visible: dgModalVisible,
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Dependency Groups' } },
                 body: { name: 'envModalBodyTemplate', data: dgVars }
             }"></div>
 
-            <!-- dependencies modal -->
-            <div data-bind="modal: {
+		<!-- dependencies modal -->
+		<div data-bind="modal: {
                 visible: depModalVisible,
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Dependencies' } },
                 body: { name: 'envModalBodyTemplate', data: depVars }
             }"></div>
 
-            <!-- behaviours modal -->
-            <div data-bind="modal: {
+		<!-- behaviours modal -->
+		<div data-bind="modal: {
                 visible: behModalVisible,
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Behaviours' } },
                 body: { name: 'envModalBodyTemplate', data: behVars }
             }"></div>
 
-            <!-- other modal -->
-            <div data-bind="modal: {
+		<!-- other modal -->
+		<div data-bind="modal: {
                 visible: otherModalVisible,
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Other Resource Requirements' } },
                 body: { name: 'envModalBodyTemplate', data: otherVars }
             }"></div>
 
-            <!-- env modal -->
-            <div data-bind="modal: {
+		<!-- internalID modal -->
+		<div data-bind="modal: {
+			visible: internalModalVisible,
+			dialogCss: 'modal-lg',
+			header: { data: { label: 'Internal Job ID' } },
+			body: { name: 'envModalBodyTemplate', data: internalVars }
+		}"></div>
+
+		<!-- env modal -->
+		<div data-bind="modal: {
                 visible: envModalVisible,
                 dialogCss: 'modal-lg',
                 header: { data: { label: 'Environment Variables' } },
                 body: { name: 'envModalBodyTemplate', data: envVars }
             }"></div>
-            <script type="text/html" id="envModalBodyTemplate">
+		<script type="text/html" id="envModalBodyTemplate">
                 <div data-bind="foreach: $data">
                     <span data-bind="text: $data"></span><br>
                 </div>
             </script>
 
-            <hr>
+		<hr>
 
-            <footer id="footer">
-                <small>&copy; 2016-2021 Genome Research Limited.</small>
-            </footer>
-        </div>
+		<footer id="footer">
+			<small>&copy; 2016-2021 Genome Research Limited.</small>
+		</footer>
+	</div>
 
-        <script type="text/javascript">
-            ko.options.deferUpdates = true;
+	<script type="text/javascript">
+		ko.options.deferUpdates = true;
 
-            // viewmodel for displaying status
-            function StatusViewModel() {
-                var self = this;
-                self.token = getParameterByName("token");
-                self.aquiringstatus = ko.observableArray();
-                self.statuserror = ko.observableArray();
-                self.badservers = ko.observableArray();
-                self.messages = ko.observableArray();
-                self.repGroup = ko.observable();
-                self.detailsRepgroup = '';
-                self.detailsState = '';
-                self.detailsOA;
-                self.wallTimeUpdater;
-                self.wallTimeUpdaters = new Array();
-                self.rateLimit = 350;
+		// viewmodel for displaying status
+		function StatusViewModel() {
+			var self = this;
+			self.token = getParameterByName("token");
+			self.aquiringstatus = ko.observableArray();
+			self.statuserror = ko.observableArray();
+			self.badservers = ko.observableArray();
+			self.messages = ko.observableArray();
+			self.repGroup = ko.observable();
+			self.detailsRepgroup = '';
+			self.detailsState = '';
+			self.detailsOA;
+			self.wallTimeUpdater;
+			self.wallTimeUpdaters = new Array();
+			self.rateLimit = 350;
 
-                self.removeBadServer = function (id) {
-                    self.badservers.remove(function(server) {
-                        return server.ID == id;
-                    });
-                }
+			self.removeBadServer = function (id) {
+				self.badservers.remove(function (server) {
+					return server.ID == id;
+				});
+			}
 
-                self.removeMessage = function (msg) {
-                    self.messages.remove(function(schedIssue) {
-                        return schedIssue.Msg == msg;
-                    });
-                }
+			self.removeMessage = function (msg) {
+				self.messages.remove(function (schedIssue) {
+					return schedIssue.Msg == msg;
+				});
+			}
 
-                self.inflight = {
-                    'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'running': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'lost': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'buried': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'delayPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'dependentPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'readyPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'runPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'lostPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'buryPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                    'old_total': 0,
-                    'delay_compute': 0
-                };
-                self.inflight['total'] = ko.computed(function() {
-                    if (self.inflight['delay_compute']) {
-                        return self.inflight['old_total'];
-                    }
+			self.inflight = {
+				'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'running': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'lost': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'buried': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'delayPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'dependentPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'readyPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'runPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'lostPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'buryPct': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+				'old_total': 0,
+				'delay_compute': 0
+			};
+			self.inflight['total'] = ko.computed(function () {
+				if (self.inflight['delay_compute']) {
+					return self.inflight['old_total'];
+				}
 
-                    var total = self.inflight['delayed']() + self.inflight['dependent']() + self.inflight['ready']() + self.inflight['running']() + self.inflight['lost']() + self.inflight['buried']();
-                    if (total > 0) {
-                        var multiplier = 100 / total;
-                        // we scale to 98 to avoid a bug in bootstrap progress
-                        // bars which will result in the right-most bar
-                        // flickering out of existence, even though we never
-                        // total over 100
-                        var scaled = percentScaler([(multiplier * self.inflight['delayed']()), (multiplier * self.inflight['dependent']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['running']()), (multiplier * self.inflight['lost']()), (multiplier * self.inflight['buried']())], 98);
-                        var rounded = percentRounder(scaled, 2);
-                        self.inflight['delayPct'](rounded[0]);
-                        self.inflight['dependentPct'](rounded[1]);
-                        self.inflight['readyPct'](rounded[2]);
-                        self.inflight['runPct'](rounded[3]);
-                        self.inflight['lostPct'](rounded[4]);
-                        self.inflight['buryPct'](rounded[5]);
-                    }
+				var total = self.inflight['delayed']() + self.inflight['dependent']() + self.inflight['ready']() + self.inflight['running']() + self.inflight['lost']() + self.inflight['buried']();
+				if (total > 0) {
+					var multiplier = 100 / total;
+					// we scale to 98 to avoid a bug in bootstrap progress
+					// bars which will result in the right-most bar
+					// flickering out of existence, even though we never
+					// total over 100
+					var scaled = percentScaler([(multiplier * self.inflight['delayed']()), (multiplier * self.inflight['dependent']()), (multiplier * self.inflight['ready']()), (multiplier * self.inflight['running']()), (multiplier * self.inflight['lost']()), (multiplier * self.inflight['buried']())], 98);
+					var rounded = percentRounder(scaled, 2);
+					self.inflight['delayPct'](rounded[0]);
+					self.inflight['dependentPct'](rounded[1]);
+					self.inflight['readyPct'](rounded[2]);
+					self.inflight['runPct'](rounded[3]);
+					self.inflight['lostPct'](rounded[4]);
+					self.inflight['buryPct'](rounded[5]);
+				}
 
-                    self.inflight['old_total'] = total;
-                    return total;
-                }).extend({ rateLimit: self.rateLimit });
+				self.inflight['old_total'] = total;
+				return total;
+			}).extend({ rateLimit: self.rateLimit });
 
-                self.repGroups = [];
-                self.repGroupLookup = {};
-                self.sortableRepGroups = ko.observableArray();
-                self.ignore = {};
+			self.repGroups = [];
+			self.repGroupLookup = {};
+			self.sortableRepGroups = ko.observableArray();
+			self.ignore = {};
 
-                // set up the websocket
-                if (window.WebSocket === undefined) {
-                    self.statuserror.push("Your browser does not support WebSockets");
-                } else {
-                    self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws?token=" + self.token);
-                    self.ws.onopen = function() {
-                        self.ws.send(JSON.stringify({ Request: "current" }));
-                    };
-                    self.ws.onclose = function () {
-                        self.statuserror.push("Connection to the manager has been lost!");
-                        //*** we could poll and try to re-establish the connection...
-                    }
-                    self.ws.onmessage = function (e) {
-                        json = JSON.parse(e.data)
-                        if (json.hasOwnProperty('FromState')) {
-                            // state numbers have changed
-                            rg = json['RepGroup']
-                            var repgroup
-                            if (rg == "+all+") {
-                                repgroup = self.inflight;
-                            } else if (self.repGroupLookup.hasOwnProperty(rg)) {
-                                repgroup = self.repGroups[self.repGroupLookup[rg]];
-                            } else {
-                                repgroup = {
-                                    'id': rg,
-                                    'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'running': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'lost': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'buried': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'deleted': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'complete': ko.observable(0).extend({ rateLimit: self.rateLimit }),
-                                    'delayPct': ko.observable(0),
-                                    'dependentPct': ko.observable(0),
-                                    'readyPct': ko.observable(0),
-                                    'runPct': ko.observable(0),
-                                    'lostPct': ko.observable(0),
-                                    'buryPct': ko.observable(0),
-                                    'deletePct': ko.observable(0),
-                                    'completePct': ko.observable(0),
-                                    'details': ko.observableArray(),
-                                    'old_total': 0,
-                                    'delay_compute': 0
-                                };
-                                repgroup['total'] = ko.computed(function() {
-                                    if (repgroup['delay_compute']) {
-                                        return repgroup['old_total'];
-                                    }
+			// set up the websocket
+			if (window.WebSocket === undefined) {
+				self.statuserror.push("Your browser does not support WebSockets");
+			} else {
+				self.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws?token=" + self.token);
+				self.ws.onopen = function () {
+					self.ws.send(JSON.stringify({ Request: "current" }));
+				};
+				self.ws.onclose = function () {
+					self.statuserror.push("Connection to the manager has been lost!");
+					//*** we could poll and try to re-establish the connection...
+				}
+				self.ws.onmessage = function (e) {
+					json = JSON.parse(e.data)
+					if (json.hasOwnProperty('FromState')) {
+						// state numbers have changed
+						rg = json['RepGroup']
+						var repgroup
+						if (rg == "+all+") {
+							repgroup = self.inflight;
+						} else if (self.repGroupLookup.hasOwnProperty(rg)) {
+							repgroup = self.repGroups[self.repGroupLookup[rg]];
+						} else {
+							repgroup = {
+								'id': rg,
+								'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'ready': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'running': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'lost': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'buried': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'deleted': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'complete': ko.observable(0).extend({ rateLimit: self.rateLimit }),
+								'delayPct': ko.observable(0),
+								'dependentPct': ko.observable(0),
+								'readyPct': ko.observable(0),
+								'runPct': ko.observable(0),
+								'lostPct': ko.observable(0),
+								'buryPct': ko.observable(0),
+								'deletePct': ko.observable(0),
+								'completePct': ko.observable(0),
+								'details': ko.observableArray(),
+								'old_total': 0,
+								'delay_compute': 0
+							};
+							repgroup['total'] = ko.computed(function () {
+								if (repgroup['delay_compute']) {
+									return repgroup['old_total'];
+								}
 
-                                    var total = repgroup['delayed']() + repgroup['dependent']() + repgroup['ready']() + repgroup['running']() + repgroup['lost']() + repgroup['buried']() + repgroup['deleted']() + repgroup['complete']();
-                                    if (total > 0) {
-                                        var multiplier = 100 / total;
-                                        // we scale to 98 to avoid a bug in
-                                        // bootstrap progress bars which will
-                                        // result in the right-most bar
-                                        // flickering out of existence, even
-                                        // though we never total over 100
-                                        var scaled = percentScaler([(multiplier * repgroup['delayed']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['running']()), (multiplier * repgroup['lost']()), (multiplier * repgroup['buried']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 98);
-                                        var rounded = percentRounder(scaled, 2);
+								var total = repgroup['delayed']() + repgroup['dependent']() + repgroup['ready']() + repgroup['running']() + repgroup['lost']() + repgroup['buried']() + repgroup['deleted']() + repgroup['complete']();
+								if (total > 0) {
+									var multiplier = 100 / total;
+									// we scale to 98 to avoid a bug in
+									// bootstrap progress bars which will
+									// result in the right-most bar
+									// flickering out of existence, even
+									// though we never total over 100
+									var scaled = percentScaler([(multiplier * repgroup['delayed']()), (multiplier * repgroup['dependent']()), (multiplier * repgroup['ready']()), (multiplier * repgroup['running']()), (multiplier * repgroup['lost']()), (multiplier * repgroup['buried']()), (multiplier * repgroup['deleted']()), (multiplier * repgroup['complete']())], 98);
+									var rounded = percentRounder(scaled, 2);
 
-                                        // to avoid the percentage bars
-                                        // totalling over 100 at any point in
-                                        // time, do all decrementing updates
-                                        // first; not sure if this really helps
-                                        // avoid some instances of flickering,
-                                        // but it might...
-                                        var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
-                                        for (var i = 0; i < 8; i++) {
-                                            if (repgroup[keys[i]]() > rounded[i]) {
-                                                repgroup[keys[i]](rounded[i]);
-                                            }
-                                        }
-                                        for (var i = 0; i < 8; i++) {
-                                            if (repgroup[keys[i]]() < rounded[i]) {
-                                                repgroup[keys[i]](rounded[i]);
-                                            }
-                                        }
-                                    }
+									// to avoid the percentage bars
+									// totalling over 100 at any point in
+									// time, do all decrementing updates
+									// first; not sure if this really helps
+									// avoid some instances of flickering,
+									// but it might...
+									var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct', 'deletePct', 'completePct'];
+									for (var i = 0; i < 8; i++) {
+										if (repgroup[keys[i]]() > rounded[i]) {
+											repgroup[keys[i]](rounded[i]);
+										}
+									}
+									for (var i = 0; i < 8; i++) {
+										if (repgroup[keys[i]]() < rounded[i]) {
+											repgroup[keys[i]](rounded[i]);
+										}
+									}
+								}
 
-                                    repgroup['old_total'] = total;
-                                    return total;
-                                }).extend({ rateLimit: self.rateLimit });
+								repgroup['old_total'] = total;
+								return total;
+							}).extend({ rateLimit: self.rateLimit });
 
-                                self.repGroups.push(repgroup);
-                                self.repGroupLookup[rg] = self.repGroups.length - 1;
+							self.repGroups.push(repgroup);
+							self.repGroupLookup[rg] = self.repGroups.length - 1;
 
-                                // because of our lookup, repGroup sort order
-                                // must not change, but we want them displayed
-                                // sorted, so we also push to an independent
-                                // observableArray
-                                self.sortableRepGroups.push(repgroup);
-                            }
+							// because of our lookup, repGroup sort order
+							// must not change, but we want them displayed
+							// sorted, so we also push to an independent
+							// observableArray
+							self.sortableRepGroups.push(repgroup);
+						}
 
-                            var from, to
-                            switch(json['FromState']) {
-                                case 'delayed':
-                                    from = repgroup['delayed'];
-                                    break;
-                                case 'dependent':
-                                    from = repgroup['dependent'];
-                                    break;
-                                case 'ready':
-                                    from = repgroup['ready'];
-                                    break;
-                                case 'running':
-                                    from = repgroup['running'];
-                                    break;
-                                case 'lost':
-                                    from = repgroup['lost'];
-                                    break;
-                                case 'buried':
-                                    from = repgroup['buried'];
-                                    break;
-                            }
+						var from, to
+						switch (json['FromState']) {
+							case 'delayed':
+								from = repgroup['delayed'];
+								break;
+							case 'dependent':
+								from = repgroup['dependent'];
+								break;
+							case 'ready':
+								from = repgroup['ready'];
+								break;
+							case 'running':
+								from = repgroup['running'];
+								break;
+							case 'lost':
+								from = repgroup['lost'];
+								break;
+							case 'buried':
+								from = repgroup['buried'];
+								break;
+						}
 
-                            if (self.ignore.hasOwnProperty(json['RepGroup']) && self.ignore[json['RepGroup']].hasOwnProperty(json['ToState']) && self.ignore[json['RepGroup']][json['ToState']] >= json['Count']) {
-                                // ignore this 'to' transition, because things
-                                // are out of order and we already accounted for
-                                // it
-                                self.ignore[json['RepGroup']][json['ToState']] -= json['Count'];
-                                if (self.ignore[json['RepGroup']][json['ToState']] == 0) {
-                                    delete self.ignore[json['RepGroup']][json['ToState']];
-                                    if (Object.keys(self.ignore[json['RepGroup']]).length == 0) {
-                                        delete self.ignore[json['RepGroup']];
-                                    }
-                                }
-                            } else {
-                                switch(json['ToState']) {
-                                    case 'delayed':
-                                        to = repgroup['delayed'];
-                                        break;
-                                    case 'dependent':
-                                        to = repgroup['dependent'];
-                                        break;
-                                    case 'ready':
-                                        to = repgroup['ready'];
-                                        break;
-                                    case 'running':
-                                        to = repgroup['running'];
-                                        break;
-                                    case 'lost':
-                                        to = repgroup['lost'];
-                                        break;
-                                    case 'buried':
-                                        to = repgroup['buried'];
-                                        break;
-                                    case 'complete':
-                                        if (rg != "+all+") {
-                                            to = repgroup['complete'];
-                                        }
-                                        break;
-                                    case 'deleted':
-                                        if (rg != "+all+") {
-                                            to = repgroup['deleted'];
-                                        }
-                                        break;
-                                }
-                            }
+						if (self.ignore.hasOwnProperty(json['RepGroup']) && self.ignore[json['RepGroup']].hasOwnProperty(json['ToState']) && self.ignore[json['RepGroup']][json['ToState']] >= json['Count']) {
+							// ignore this 'to' transition, because things
+							// are out of order and we already accounted for
+							// it
+							self.ignore[json['RepGroup']][json['ToState']] -= json['Count'];
+							if (self.ignore[json['RepGroup']][json['ToState']] == 0) {
+								delete self.ignore[json['RepGroup']][json['ToState']];
+								if (Object.keys(self.ignore[json['RepGroup']]).length == 0) {
+									delete self.ignore[json['RepGroup']];
+								}
+							}
+						} else {
+							switch (json['ToState']) {
+								case 'delayed':
+									to = repgroup['delayed'];
+									break;
+								case 'dependent':
+									to = repgroup['dependent'];
+									break;
+								case 'ready':
+									to = repgroup['ready'];
+									break;
+								case 'running':
+									to = repgroup['running'];
+									break;
+								case 'lost':
+									to = repgroup['lost'];
+									break;
+								case 'buried':
+									to = repgroup['buried'];
+									break;
+								case 'complete':
+									if (rg != "+all+") {
+										to = repgroup['complete'];
+									}
+									break;
+								case 'deleted':
+									if (rg != "+all+") {
+										to = repgroup['deleted'];
+									}
+									break;
+							}
+						}
 
-                            repgroup['delay_compute'] = to ? 1 : 0;
-                            if (from) {
-                                var newfrom = from() - json['Count'];
-                                if (newfrom >= 0) {
-                                    from(newfrom);
-                                } else {
-                                    // sometimes transitions can arrive out of
-                                    // order; we'll let this one go through, and
-                                    // mark to ignore the previous transition
-                                    // when it comes in later
-                                    if (! self.ignore.hasOwnProperty(json['RepGroup'])) {
-                                        self.ignore[json['RepGroup']] = {};
-                                    }
-                                    if (self.ignore[json['RepGroup']].hasOwnProperty(json['FromState'])) {
-                                        self.ignore[json['RepGroup']][json['FromState']] += json['Count'];
-                                    } else {
-                                        self.ignore[json['RepGroup']][json['FromState']] = json['Count'];
-                                    }
+						repgroup['delay_compute'] = to ? 1 : 0;
+						if (from) {
+							var newfrom = from() - json['Count'];
+							if (newfrom >= 0) {
+								from(newfrom);
+							} else {
+								// sometimes transitions can arrive out of
+								// order; we'll let this one go through, and
+								// mark to ignore the previous transition
+								// when it comes in later
+								if (!self.ignore.hasOwnProperty(json['RepGroup'])) {
+									self.ignore[json['RepGroup']] = {};
+								}
+								if (self.ignore[json['RepGroup']].hasOwnProperty(json['FromState'])) {
+									self.ignore[json['RepGroup']][json['FromState']] += json['Count'];
+								} else {
+									self.ignore[json['RepGroup']][json['FromState']] = json['Count'];
+								}
 
-                                    from(0);
-                                }
-                            }
-                            repgroup['delay_compute'] = 0;
-                            if (to) {
-                                to(to() + json['Count']);
-                            }
-                        } else if (json.hasOwnProperty('State')) {
-                            rg = json['RepGroup']
-                            if (self.detailsOA && rg == self.detailsRepgroup) {
-                                // the user has clicked on a progress bar for
-                                // a particular repgroup; add to its details
-                                var walltime = json['Walltime'];
-                                if (json['State'] == "running") {
-                                    // have Walltime on running jobs auto-
-                                    // increment
-                                    var began = new Date();
-                                    var now = ko.observable(new Date());
-                                    json['LiveWalltime'] = ko.computed(function() {
-                                        return walltime + ((now() - began) / 1000);
-                                    });
-                                    self.wallTimeUpdaters.push(now)
-                                    if (! self.wallTimeUpdater) {
-                                        self.wallTimeUpdater = window.setInterval(function() {
-                                            var arrayLength = self.wallTimeUpdaters.length;
-                                            for (var i = 0; i < arrayLength; i++) {
-                                                self.wallTimeUpdaters[i](new Date());
-                                            };
-                                        }, 1000);
-                                    }
-                                } else {
-                                    json['LiveWalltime'] = ko.computed(function() {
-                                        return walltime;
-                                    });
-                                }
-                                self.detailsOA.push(json);
-                            }
-                        } else if (json.hasOwnProperty('IP')) {
-                            // it's either a new bad server, or an existing
-                            // bad server that is now fine
-                            if (json['IsBad']) {
-                                self.badservers.push(json);
-                            } else {
-                                self.removeBadServer(json['ID'])
-                            }
-                        } else if (json.hasOwnProperty('Msg')) {
-                            // it's either a new scheduler message, or we want
-                            // to update one we're already displaying
-                            var updated = false
-                            var messages = self.messages();
-                            for (var i = 0; i < messages.length; ++i) {
-                                var si = messages[i];
-                                if (si.Msg == json['Msg']) {
-                                    si.LastDate(json['LastDate'])
-                                    si.Count(json['Count'])
-                                    updated = true
-                                    break
-                                }
-                            }
+								from(0);
+							}
+						}
+						repgroup['delay_compute'] = 0;
+						if (to) {
+							to(to() + json['Count']);
+						}
+					} else if (json.hasOwnProperty('State')) {
+						rg = json['RepGroup']
+						if (self.detailsOA && rg == self.detailsRepgroup) {
+							// the user has clicked on a progress bar for
+							// a particular repgroup; add to its details
+							var walltime = json['Walltime'];
+							if (json['State'] == "running") {
+								// have Walltime on running jobs auto-
+								// increment
+								var began = new Date();
+								var now = ko.observable(new Date());
+								json['LiveWalltime'] = ko.computed(function () {
+									return walltime + ((now() - began) / 1000);
+								});
+								self.wallTimeUpdaters.push(now)
+								if (!self.wallTimeUpdater) {
+									self.wallTimeUpdater = window.setInterval(function () {
+										var arrayLength = self.wallTimeUpdaters.length;
+										for (var i = 0; i < arrayLength; i++) {
+											self.wallTimeUpdaters[i](new Date());
+										};
+									}, 1000);
+								}
+							} else {
+								json['LiveWalltime'] = ko.computed(function () {
+									return walltime;
+								});
+							}
+							self.detailsOA.push(json);
+						}
+					} else if (json.hasOwnProperty('IP')) {
+						// it's either a new bad server, or an existing
+						// bad server that is now fine
+						if (json['IsBad']) {
+							self.badservers.push(json);
+						} else {
+							self.removeBadServer(json['ID'])
+						}
+					} else if (json.hasOwnProperty('Msg')) {
+						// it's either a new scheduler message, or we want
+						// to update one we're already displaying
+						var updated = false
+						var messages = self.messages();
+						for (var i = 0; i < messages.length; ++i) {
+							var si = messages[i];
+							if (si.Msg == json['Msg']) {
+								si.LastDate(json['LastDate'])
+								si.Count(json['Count'])
+								updated = true
+								break
+							}
+						}
 
-                            if (! updated) {
-                                var schedIssue = {
-                                    'Msg': json['Msg'],
-                                    'FirstDate': json['FirstDate'],
-                                    'LastDate': ko.observable(json['LastDate']),
-                                    'Count': ko.observable(json['Count']),
-                                }
-                                self.messages.push(schedIssue);
-                            }
-                        }
-                    }
-                }
+						if (!updated) {
+							var schedIssue = {
+								'Msg': json['Msg'],
+								'FirstDate': json['FirstDate'],
+								'LastDate': ko.observable(json['LastDate']),
+								'Count': ko.observable(json['Count']),
+							}
+							self.messages.push(schedIssue);
+						}
+					}
+				}
+			}
 
-                // act if the user requests a repGroup
-                self.requestRepGroup = function(formElement) {
-                    console.log("requesting rep group " + self.repGroup())
-                    self.ws.send(JSON.stringify({ Request: 'search', RepGroup: self.repGroup() }));
-                    // *** not yet implemented in the manager, does nothing
-                };
+			// act if the user requests a repGroup
+			self.requestRepGroup = function (formElement) {
+				console.log("requesting rep group " + self.repGroup())
+				self.ws.send(JSON.stringify({ Request: 'search', RepGroup: self.repGroup() }));
+				// *** not yet implemented in the manager, does nothing
+			};
 
-                // act if the user clicks on the different types of progress
-                // bar for a repGroup
-                self.showRepgroupDelayed = function(repGroup) {
-                    self.showGroupState(repGroup, 'delayed');
-                };
-                self.showRepgroupDependent = function(repGroup) {
-                    self.showGroupState(repGroup, 'dependent');
-                };
-                self.showRepgroupReady = function(repGroup) {
-                    self.showGroupState(repGroup, 'ready');
-                };
-                self.showRepgroupRunning = function(repGroup) {
-                    self.showGroupState(repGroup, 'reserved'); // which includes 'running'
-                };
-                self.showRepgroupLost = function(repGroup) {
-                    self.showGroupState(repGroup, 'lost');
-                };
-                self.showRepgroupBuried = function(repGroup) {
-                    self.showGroupState(repGroup, 'buried');
-                };
-                self.showRepgroupComplete = function(repGroup) {
-                    self.showGroupState(repGroup, 'complete');
-                };
-                self.showGroupState = function(repGroup, state) {
-                    if (self.detailsOA) {
-                        if (self.wallTimeUpdater) {
-                            self.wallTimeUpdaters = new Array();
-                            window.clearInterval(self.wallTimeUpdater);
-                            self.wallTimeUpdater = '';
-                        }
-                        self.detailsOA([]);
-                    }
+			// act if the user clicks on the different types of progress
+			// bar for a repGroup
+			self.showRepgroupDelayed = function (repGroup) {
+				self.showGroupState(repGroup, 'delayed');
+			};
+			self.showRepgroupDependent = function (repGroup) {
+				self.showGroupState(repGroup, 'dependent');
+			};
+			self.showRepgroupReady = function (repGroup) {
+				self.showGroupState(repGroup, 'ready');
+			};
+			self.showRepgroupRunning = function (repGroup) {
+				self.showGroupState(repGroup, 'reserved'); // which includes 'running'
+			};
+			self.showRepgroupLost = function (repGroup) {
+				self.showGroupState(repGroup, 'lost');
+			};
+			self.showRepgroupBuried = function (repGroup) {
+				self.showGroupState(repGroup, 'buried');
+			};
+			self.showRepgroupComplete = function (repGroup) {
+				self.showGroupState(repGroup, 'complete');
+			};
+			self.showGroupState = function (repGroup, state) {
+				if (self.detailsOA) {
+					if (self.wallTimeUpdater) {
+						self.wallTimeUpdaters = new Array();
+						window.clearInterval(self.wallTimeUpdater);
+						self.wallTimeUpdater = '';
+					}
+					self.detailsOA([]);
+				}
 
-                    if (repGroup.id == self.detailsRepgroup && state == self.detailsState) {
-                        // stop showing
-                        repGroup.details([]);
-                        self.detailsRepgroup = '';
-                        self.detailsState = '';
-                        self.detailsOA = '';
-                        return;
-                    }
+				if (repGroup.id == self.detailsRepgroup && state == self.detailsState) {
+					// stop showing
+					repGroup.details([]);
+					self.detailsRepgroup = '';
+					self.detailsState = '';
+					self.detailsOA = '';
+					return;
+				}
 
-                    self.detailsRepgroup = repGroup.id;
-                    self.detailsState = state;
-                    self.detailsOA = repGroup.details;
-                    self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state }));
-                }
+				self.detailsRepgroup = repGroup.id;
+				self.detailsState = state;
+				self.detailsOA = repGroup.details;
+				self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state }));
+			}
 
-                // act if the user clicks to view stdout/err
-                self.stdModalVisible = ko.observable(false);
-                self.stdModalHeader = ko.observable();
-                self.stdOutput = ko.observable();
-                self.showStd = function(type, job) {
-                    self.stdModalHeader(type);
-                    self.stdOutput(job[type]);
-                    self.stdModalVisible(true);
-                }
+			// act if the user clicks to view stdout/err
+			self.stdModalVisible = ko.observable(false);
+			self.stdModalHeader = ko.observable();
+			self.stdOutput = ko.observable();
+			self.showStd = function (type, job) {
+				self.stdModalHeader(type);
+				self.stdOutput(job[type]);
+				self.stdModalVisible(true);
+			}
 
-                // act if the user clicks to view LimitGroups
-                self.lgModalVisible = ko.observable(false);
-                self.lgVars = ko.observableArray();
-                self.showLimitGroups = function(job) {
-                    self.lgVars(job.LimitGroups);
-                    self.lgModalVisible(true);
-                }
+			// act if the user clicks to view LimitGroups
+			self.lgModalVisible = ko.observable(false);
+			self.lgVars = ko.observableArray();
+			self.showLimitGroups = function (job) {
+				self.lgVars(job.LimitGroups);
+				self.lgModalVisible(true);
+			}
 
-                // act if the user clicks to view DepGroups
-                self.dgModalVisible = ko.observable(false);
-                self.dgVars = ko.observableArray();
-                self.showDepGroups = function(job) {
-                    self.dgVars(job.DepGroups);
-                    self.dgModalVisible(true);
-                }
+			// act if the user clicks to view DepGroups
+			self.dgModalVisible = ko.observable(false);
+			self.dgVars = ko.observableArray();
+			self.showDepGroups = function (job) {
+				self.dgVars(job.DepGroups);
+				self.dgModalVisible(true);
+			}
 
-                // act if the user clicks to view Dependencies
-                self.depModalVisible = ko.observable(false);
-                self.depVars = ko.observableArray();
-                self.showDependencies = function(job) {
-                    self.depVars(job.Dependencies);
-                    self.depModalVisible(true);
-                }
+			// act if the user clicks to view Dependencies
+			self.depModalVisible = ko.observable(false);
+			self.depVars = ko.observableArray();
+			self.showDependencies = function (job) {
+				self.depVars(job.Dependencies);
+				self.depModalVisible(true);
+			}
 
-                // act if the user clicks to view Behaviours
-                self.behModalVisible = ko.observable(false);
-                self.behVars = ko.observableArray();
-                self.showBehaviours = function(job) {
-                    self.behVars([job.Behaviours]);
-                    self.behModalVisible(true);
-                }
+			// act if the user clicks to view Behaviours
+			self.behModalVisible = ko.observable(false);
+			self.behVars = ko.observableArray();
+			self.showBehaviours = function (job) {
+				self.behVars([job.Behaviours]);
+				self.behModalVisible(true);
+			}
 
-                // act if the user clicks to view Other
-                self.otherModalVisible = ko.observable(false);
-                self.otherVars = ko.observableArray();
-                self.showOther = function(job) {
-                    self.otherVars(job.OtherRequests);
-                    self.otherModalVisible(true);
-                }
+			// act if the user clicks to view Other
+			self.otherModalVisible = ko.observable(false);
+			self.otherVars = ko.observableArray();
+			self.showOther = function (job) {
+				self.otherVars(job.OtherRequests);
+				self.otherModalVisible(true);
+			}
 
-                // act if the user clicks to view env
-                self.envModalVisible = ko.observable(false);
-                self.envVars = ko.observableArray();
-                self.showEnv = function(job) {
-                    self.envVars(job.Env);
-                    self.envModalVisible(true);
-                }
+			// act if the user clicks to view InternalID
+			self.internalModalVisible = ko.observable(false);
+			self.internalVars = ko.observableArray();
+			self.showInternalID = function (job) {
+				self.internalVars([job.Key]);
+				self.internalModalVisible(true);
+			}
 
-                // act if the user clicks one of the action buttons in the
-                // details of a progress bar
-                self.actionModalVisible = ko.observable(false);
-                self.actionModalHeader = ko.observable();
-                self.actionDetails = {
-                    action: ko.observable(),
-                    button: ko.observable(),
-                    key: ko.observable(),
-                    repGroup: ko.observable(),
-                    state: ko.observable(),
-                    exited: ko.observable(),
-                    exitCode: ko.observable(),
-                    failReason: ko.observable(),
-                    count: ko.observable()
-                };
-                self.jobToActionDetails = function(job, action, button) {
-                    self.actionDetails.action(action);
-                    self.actionDetails.button(button);
-                    self.actionDetails.key(job.Key);
-                    self.actionDetails.repGroup(job.RepGroup);
-                    self.actionDetails.state(job.State);
-                    self.actionDetails.exitCode(job.Exited);
-                    self.actionDetails.exitCode(job.Exitcode);
-                    self.actionDetails.failReason(job.FailReason);
-                    self.actionDetails.count(job.Similar + 1);
-                };
-                self.commitAction = function(all) {
-                    // request the action
-                    if (all) {
-                        self.ws.send(JSON.stringify({
-                            Request: self.actionDetails.action(),
-                            RepGroup: self.actionDetails.repGroup(),
-                            State: self.actionDetails.state(),
-                            Exitcode: self.actionDetails.exitCode(),
-                            FailReason: self.actionDetails.failReason(),
-                        }));
-                    } else {
-                        self.ws.send(JSON.stringify({
-                            Request: self.actionDetails.action(),
-                            Key: self.actionDetails.key(),
-                        }));
-                    }
+			// act if the user clicks to view env
+			self.envModalVisible = ko.observable(false);
+			self.envVars = ko.observableArray();
+			self.showEnv = function (job) {
+				self.envVars(job.Env);
+				self.envModalVisible(true);
+			}
 
-                    // reset the ui
-                    if (self.detailsOA) {
-                        self.detailsOA([]);
-                    }
-                    self.detailsRepgroup = '';
-                    self.detailsState = '';
-                    self.detailsOA = '';
-                    self.actionModalVisible(false);
-                };
-                self.confirmRetry = function(job) {
-                    self.jobToActionDetails(job, 'retry', 'retry');
-                    self.actionModalHeader('Retry Buried Commands');
-                    self.actionModalVisible(true);
-                };
-                self.confirmRemoveFail = function(job) {
-                    self.jobToActionDetails(job, 'remove', 'remove');
-                    self.actionModalHeader('Remove Failed Commands');
-                    self.actionModalVisible(true);
-                };
-                self.confirmRemoveDep = function(job) {
-                    self.jobToActionDetails(job, 'remove', 'remove');
-                    self.actionModalHeader('Remove Dependent Commands');
-                    self.actionModalVisible(true);
-                };
-                self.confirmRemovePend = function(job) {
-                    self.jobToActionDetails(job, 'remove', 'remove');
-                    self.actionModalHeader('Remove Pending Commands');
-                    self.actionModalVisible(true);
-                };
-                self.confirmRemoveDelay = function(job) {
-                    self.jobToActionDetails(job, 'remove', 'remove');
-                    self.actionModalHeader('Remove Delayed Commands');
-                    self.actionModalVisible(true);
-                };
-                self.confirmKill = function(job) {
-                    self.jobToActionDetails(job, 'kill', 'kill');
-                    self.actionModalHeader('Kill Running Commands');
-                    self.actionModalVisible(true);
-                };
-                self.confirmDead = function(job) {
-                    self.jobToActionDetails(job, 'kill', 'confirm');
-                    self.actionModalHeader('Confirm Commands are Dead');
-                    self.actionModalVisible(true);
-                };
+			// act if the user clicks one of the action buttons in the
+			// details of a progress bar
+			self.actionModalVisible = ko.observable(false);
+			self.actionModalHeader = ko.observable();
+			self.actionDetails = {
+				action: ko.observable(),
+				button: ko.observable(),
+				key: ko.observable(),
+				repGroup: ko.observable(),
+				state: ko.observable(),
+				exited: ko.observable(),
+				exitCode: ko.observable(),
+				failReason: ko.observable(),
+				count: ko.observable()
+			};
+			self.jobToActionDetails = function (job, action, button) {
+				self.actionDetails.action(action);
+				self.actionDetails.button(button);
+				self.actionDetails.key(job.Key);
+				self.actionDetails.repGroup(job.RepGroup);
+				self.actionDetails.state(job.State);
+				self.actionDetails.exitCode(job.Exited);
+				self.actionDetails.exitCode(job.Exitcode);
+				self.actionDetails.failReason(job.FailReason);
+				self.actionDetails.count(job.Similar + 1);
+			};
+			self.commitAction = function (all) {
+				// request the action
+				if (all) {
+					self.ws.send(JSON.stringify({
+						Request: self.actionDetails.action(),
+						RepGroup: self.actionDetails.repGroup(),
+						State: self.actionDetails.state(),
+						Exitcode: self.actionDetails.exitCode(),
+						FailReason: self.actionDetails.failReason(),
+					}));
+				} else {
+					self.ws.send(JSON.stringify({
+						Request: self.actionDetails.action(),
+						Key: self.actionDetails.key(),
+					}));
+				}
 
-                // act if the user confirms that a server is dead
-                self.confirmDeadServer = function(server) {
-                    self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
-                    self.removeBadServer(server.ID)
-                };
+				// reset the ui
+				if (self.detailsOA) {
+					self.detailsOA([]);
+				}
+				self.detailsRepgroup = '';
+				self.detailsState = '';
+				self.detailsOA = '';
+				self.actionModalVisible(false);
+			};
+			self.confirmRetry = function (job) {
+				self.jobToActionDetails(job, 'retry', 'retry');
+				self.actionModalHeader('Retry Buried Commands');
+				self.actionModalVisible(true);
+			};
+			self.confirmRemoveFail = function (job) {
+				self.jobToActionDetails(job, 'remove', 'remove');
+				self.actionModalHeader('Remove Failed Commands');
+				self.actionModalVisible(true);
+			};
+			self.confirmRemoveDep = function (job) {
+				self.jobToActionDetails(job, 'remove', 'remove');
+				self.actionModalHeader('Remove Dependent Commands');
+				self.actionModalVisible(true);
+			};
+			self.confirmRemovePend = function (job) {
+				self.jobToActionDetails(job, 'remove', 'remove');
+				self.actionModalHeader('Remove Pending Commands');
+				self.actionModalVisible(true);
+			};
+			self.confirmRemoveDelay = function (job) {
+				self.jobToActionDetails(job, 'remove', 'remove');
+				self.actionModalHeader('Remove Delayed Commands');
+				self.actionModalVisible(true);
+			};
+			self.confirmKill = function (job) {
+				self.jobToActionDetails(job, 'kill', 'kill');
+				self.actionModalHeader('Kill Running Commands');
+				self.actionModalVisible(true);
+			};
+			self.confirmDead = function (job) {
+				self.jobToActionDetails(job, 'kill', 'confirm');
+				self.actionModalHeader('Confirm Commands are Dead');
+				self.actionModalVisible(true);
+			};
 
-                // act if the user dismisses a message
-                self.dismissMessage = function(si) {
-                    self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));
-                    self.removeMessage(si.Msg)
-                };
-                self.dismissMessages = function(si) {
-                    self.ws.send(JSON.stringify({ Request: 'dismissMsgs' }));
-                    self.messages([])
-                };
-            }
-            var svm = new StatusViewModel();
-            ko.applyBindings(svm, $('#status')[0]);
-        </script>
-    </body>
+			// act if the user confirms that a server is dead
+			self.confirmDeadServer = function (server) {
+				self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
+				self.removeBadServer(server.ID)
+			};
+
+			// act if the user dismisses a message
+			self.dismissMessage = function (si) {
+				self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));
+				self.removeMessage(si.Msg)
+			};
+			self.dismissMessages = function (si) {
+				self.ws.send(JSON.stringify({ Request: 'dismissMsgs' }));
+				self.messages([])
+			};
+		}
+		var svm = new StatusViewModel();
+		ko.applyBindings(svm, $('#status')[0]);
+	</script>
+</body>
+
 </html>
