@@ -95,3 +95,51 @@ u.dotted {
 	border-bottom: 1px dashed #999;
 	text-decoration: none;
 }
+
+.output-divider {
+	position: relative;
+	margin: 15px 0 5px 0;
+	height: 1px;
+	background: linear-gradient(to right, transparent, rgba(150, 150, 150, 0.5) 10%, rgba(150, 150, 150, 0.5) 90%, transparent);
+}
+
+.output-label {
+	position: absolute;
+	top: -8px;
+	left: 10px;
+	font-size: 11px;
+	font-weight: bold;
+	padding: 0 5px;
+	border-radius: 3px;
+	background-color: black;
+	box-shadow: 0 0 2px rgba(255, 255, 255, 0.3);
+}
+
+.stdout-label {
+	color: #4CAF50;
+	border: 1px solid #4CAF50;
+}
+
+.stderr-label {
+	color: #F44336;
+	border: 1px solid #F44336;
+}
+
+.stdout-text,
+.stderr-text {
+	display: block;
+	padding: 2px 4px;
+	margin-top: 2px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.stdout-text {
+	border-left: 2px solid rgba(76, 175, 80, 0.4);
+	padding-left: 8px;
+}
+
+.stderr-text {
+	border-left: 2px solid rgba(244, 67, 54, 0.4);
+	padding-left: 8px;
+}

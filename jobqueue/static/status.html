@@ -268,12 +268,16 @@
 								<h5 style="margin: 0; padding: 0">$ <span data-bind="text: Cmd"></span></h5>
 
 								<!-- ko if: StdOut -->
-								<hr style="padding: 0; margin: 0">
-								<span data-bind="text: StdOut"></span>
+								<div class="output-divider">
+									<span class="output-label stdout-label">STDOUT</span>
+								</div>
+								<span data-bind="text: StdOut" class="stdout-text"></span>
 								<!-- /ko -->
 								<!-- ko if: StdErr -->
-								<hr style="padding: 0; margin: 0">
-								<span data-bind="text: StdErr"></span>
+								<div class="output-divider">
+									<span class="output-label stderr-label">STDERR</span>
+								</div>
+								<span data-bind="text: StdErr" class="stderr-text"></span>
 								<!-- /ko -->
 							</div>
 						</div>
