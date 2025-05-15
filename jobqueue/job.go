@@ -532,11 +532,12 @@ func (j *Job) StdOut() (string, error) {
 	if len(j.StdOutC) == 0 {
 		return "", nil
 	}
-	fmt.Printf("StdOutC: %s\n", string(j.StdOutC))
+
 	decomp, err := decompress(j.StdOutC)
 	if err != nil {
 		return "", err
 	}
+
 	return string(decomp), err
 }
 
@@ -549,11 +550,12 @@ func (j *Job) StdErr() (string, error) {
 	if len(j.StdErrC) == 0 {
 		return "", nil
 	}
-	fmt.Printf("StdErrC: %s\n", string(j.StdErrC))
+
 	decomp, err := decompress(j.StdErrC)
 	if err != nil {
 		return "", err
 	}
+
 	return string(decomp), err
 }
 
