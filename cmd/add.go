@@ -51,46 +51,47 @@ const (
 
 // options for this cmd
 var (
-	reqGroup              string
-	cmdTime               string
-	cmdMem                string
-	cmdCPUs               float64
-	cmdDisk               int
-	cmdOvr                int
-	cmdPri                int
-	cmdRet                int
-	cmdFile               string
-	cmdCwdMatters         bool
-	cmdChangeHome         bool
-	cmdRepGroup           string
-	cmdLimitGroups        string
-	cmdDepGroups          string
-	cmdCmdDeps            string
-	cmdGroupDeps          string
-	cmdOnFailure          string
-	cmdOnSuccess          string
-	cmdOnExit             string
-	cmdEnv                string
-	cmdReRun              bool
-	cmdOsPrefix           string
-	cmdOsUsername         string
-	cmdOsRAM              int
-	cmdBsubMode           bool
-	cmdPostCreationScript string
-	cmdCloudConfigs       string
-	cmdCloudSharedDisk    bool
-	cmdFlavor             string
-	cmdQueue              string
-	cmdQueuesAvoid        string
-	cmdMisc               string
-	cmdMonitorDocker      string
-	cmdWithDocker         string
-	cmdWithSingularity    string
-	cmdContainerMounts    string
-	cmdNoRetry            string
-	rtimeoutint           int
-	simpleOutput          bool
-	syncMode              bool
+	reqGroup                string
+	cmdTime                 string
+	cmdMem                  string
+	cmdCPUs                 float64
+	cmdDisk                 int
+	cmdOvr                  int
+	cmdPri                  int
+	cmdRet                  int
+	cmdFile                 string
+	cmdCwdMatters           bool
+	cmdChangeHome           bool
+	cmdRepGroup             string
+	cmdLimitGroups          string
+	cmdDepGroups            string
+	cmdCmdDeps              string
+	cmdGroupDeps            string
+	cmdOnFailure            string
+	cmdOnSuccess            string
+	cmdOnExit               string
+	cmdEnv                  string
+	cmdReRun                bool
+	cmdOsPrefix             string
+	cmdOsUsername           string
+	cmdOsRAM                int
+	cmdBsubMode             bool
+	cmdPostCreationScript   string
+	cmdCloudConfigs         string
+	cmdCloudSharedDisk      bool
+	cmdFlavor               string
+	cmdQueue                string
+	cmdQueuesAvoid          string
+	cmdMisc                 string
+	cmdMonitorDocker        string
+	cmdWithDocker           string
+	cmdWithSingularity      string
+	cmdContainerMounts      string
+	cmdNoRetry              string
+	cmdDisableRelativeCheck bool
+	rtimeoutint             int
+	simpleOutput            bool
+	syncMode                bool
 )
 
 // addCmd represents the add command
@@ -159,6 +160,11 @@ that your command creates with relative paths will be easy to find since they'll
 be relative to your own set cwd path (otherwise you'd have to find out the
 actual cwd value in the status of a job). It also lets you specify relative
 paths to your input files in your cmd, assuming they are in your cwd.
+
+Because cwd_matters false means commands with relative paths in them won't
+work, and this is unexpected by new users, wr tries to detect this situation
+and warns about it. It's possible for wr to get this wrong, however, so there is
+a flag to disable this check: --disable_relative_check.
 
 "change_home" only has an effect when "cwd_matters" is false. If enabled, sets
 the $HOME environment variable to the actual command working directory before
@@ -548,6 +554,8 @@ func init() {
 	addCmd.Flags().StringVar(&cmdEnv, "env", "", "comma-separated list of key=value environment variables to set before running the commands")
 	addCmd.Flags().BoolVar(&cmdReRun, "rerun", false, "re-run any commands that you add that had been previously added and have since completed")
 	addCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
+	addCmd.Flags().BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
+		"disable the relative path checking when cwd_matters is false")
 
 	addCmd.Flags().IntVar(&timeoutint, "timeout", 120, "how long (seconds) to wait to get a reply from 'wr manager'")
 	addCmd.Flags().IntVar(&rtimeoutint, "reserve_timeout", 1, "how long (seconds) to wait before a runner exits when there is no more work'")
@@ -755,6 +763,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 	defaultedRepG := false
 	lineNum := 0
 	validator := make(jscheduler.BsubValidator)
+	warnedAboutRelative := false
+	cwdContents := make(map[string]map[string]bool)
 
 	for scanner.Scan() {
 		lineNum++
@@ -816,6 +826,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool) ([]*jobqueue.Job, bool, boo
 			die("invalid lsf resource string") //nolint:whitespace
 		}
 
+		checkForRelativePathsInNonCwdMatters(&warnedAboutRelative, cwdContents, job)
+
 		jobs = append(jobs, job)
 	}
 
@@ -860,6 +872,30 @@ func copyCloudConfigFiles(jq *jobqueue.Client, configFiles string) string {
 		remoteConfigFiles = append(remoteConfigFiles, remote+":"+desired)
 	}
 	return strings.Join(remoteConfigFiles, ",")
+}
+
+// checkForRelativePathsInNonCwdMatters checks the cmd of jobs where cwd doesn't
+// matter and warns once if it contains relative paths.
+func checkForRelativePathsInNonCwdMatters(
+	warnedAboutRelative *bool, cwdContents map[string]map[string]bool, job *jobqueue.Job) {
+	if job.CwdMatters || cmdDisableRelativeCheck || *warnedAboutRelative {
+		return
+	}
+
+	filesInDir, ok := cwdContents[job.Cwd]
+	if !ok {
+		filesInDir = internal.GetFilesInDir(job.Cwd)
+		cwdContents[job.Cwd] = filesInDir
+	}
+
+	if internal.CmdlineHasRelativePaths(filesInDir, job.Cwd, job.Cmd) {
+		warn("a job may fail because it seems to contain relative paths, but the job would run in " +
+			"a newly created unique sub-directory.\n" +
+			"Use absolute paths instead, or say --cwd_matters.\n" +
+			"You can also use --disable_relative_check to disable this warning.")
+
+		*warnedAboutRelative = true
+	}
 }
 
 // synchronousAdd waits for the job with the given interal id to complete, then
