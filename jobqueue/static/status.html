@@ -243,9 +243,9 @@
 					<div class="top-margin panel" style="margin-bottom: 0"
 						data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
 						<div class="panel-heading">
-							<h5 style="margin: 0; padding: 0" data-bind="text: Cmd"></h5>
 							<div style="overflow-x: auto">
-								<small><i><span data-bind="text: CwdBase"></span><span data-bind="text: Cwd"
+								<small><i>@<span data-bind="text: Host"></span>:<span
+											data-bind="text: CwdBase"></span><span data-bind="text: Cwd"
 											style="color: grey"></span></i></small>
 							</div>
 							<!-- ko if: WithDocker != '' -->
@@ -264,6 +264,8 @@
 								<small><i>container mounts: <span data-bind="text: ContainerMounts"></span></i></small>
 							</div>
 							<!-- /ko -->
+
+							<h5 style="margin: 0; padding: 0">$ <span data-bind="text: Cmd"></span></h5>
 						</div>
 						<div class="panel-body keyvals">
 							<dl>
@@ -362,10 +364,6 @@
 							<dl>
 								<dt>CPUtime</dt>
 								<dd data-bind="text: CPUtime.toDuration()"></dd>
-							</dl>
-							<dl>
-								<dt>Host</dt>
-								<dd data-bind="text: Host"></dd>
 							</dl>
 							<dl>
 								<dt>Host IP</dt>
