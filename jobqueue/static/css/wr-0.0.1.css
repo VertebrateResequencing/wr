@@ -1,52 +1,97 @@
 .loader {
-    background-image: url(data:image/gif;base64,R0lGODlhEAALAPQAAP///0pISOTk5N3d3e/v705MTEpISGpoaKalpY6MjM3NzWJgYH59fauqqpCPj9DQ0GRjY0xKSoF/f+zs7OPi4vb29nFwcOXl5fX19crKyru6utnY2PLy8gAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh/hpDcmVhdGVkIHdpdGggYWpheGxvYWQuaW5mbwAh+QQJCwAAACwAAAAAEAALAAAFLSAgjmRpnqSgCuLKAq5AEIM4zDVw03ve27ifDgfkEYe04kDIDC5zrtYKRa2WQgAh+QQJCwAAACwAAAAAEAALAAAFJGBhGAVgnqhpHIeRvsDawqns0qeN5+y967tYLyicBYE7EYkYAgAh+QQJCwAAACwAAAAAEAALAAAFNiAgjothLOOIJAkiGgxjpGKiKMkbz7SN6zIawJcDwIK9W/HISxGBzdHTuBNOmcJVCyoUlk7CEAAh+QQJCwAAACwAAAAAEAALAAAFNSAgjqQIRRFUAo3jNGIkSdHqPI8Tz3V55zuaDacDyIQ+YrBH+hWPzJFzOQQaeavWi7oqnVIhACH5BAkLAAAALAAAAAAQAAsAAAUyICCOZGme1rJY5kRRk7hI0mJSVUXJtF3iOl7tltsBZsNfUegjAY3I5sgFY55KqdX1GgIAIfkECQsAAAAsAAAAABAACwAABTcgII5kaZ4kcV2EqLJipmnZhWGXaOOitm2aXQ4g7P2Ct2ER4AMul00kj5g0Al8tADY2y6C+4FIIACH5BAkLAAAALAAAAAAQAAsAAAUvICCOZGme5ERRk6iy7qpyHCVStA3gNa/7txxwlwv2isSacYUc+l4tADQGQ1mvpBAAIfkECQsAAAAsAAAAABAACwAABS8gII5kaZ7kRFGTqLLuqnIcJVK0DeA1r/u3HHCXC/aKxJpxhRz6Xi0ANAZDWa+kEAA7AAAAAAAAAAAA);
-    height: 11px;
-    width: 16px;
+	background-image: url(data:image/gif;base64,R0lGODlhEAALAPQAAP///0pISOTk5N3d3e/v705MTEpISGpoaKalpY6MjM3NzWJgYH59fauqqpCPj9DQ0GRjY0xKSoF/f+zs7OPi4vb29nFwcOXl5fX19crKyru6utnY2PLy8gAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh/hpDcmVhdGVkIHdpdGggYWpheGxvYWQuaW5mbwAh+QQJCwAAACwAAAAAEAALAAAFLSAgjmRpnqSgCuLKAq5AEIM4zDVw03ve27ifDgfkEYe04kDIDC5zrtYKRa2WQgAh+QQJCwAAACwAAAAAEAALAAAFJGBhGAVgnqhpHIeRvsDawqns0qeN5+y967tYLyicBYE7EYkYAgAh+QQJCwAAACwAAAAAEAALAAAFNiAgjothLOOIJAkiGgxjpGKiKMkbz7SN6zIawJcDwIK9W/HISxGBzdHTuBNOmcJVCyoUlk7CEAAh+QQJCwAAACwAAAAAEAALAAAFNSAgjqQIRRFUAo3jNGIkSdHqPI8Tz3V55zuaDacDyIQ+YrBH+hWPzJFzOQQaeavWi7oqnVIhACH5BAkLAAAALAAAAAAQAAsAAAUyICCOZGme1rJY5kRRk7hI0mJSVUXJtF3iOl7tltsBZsNfUegjAY3I5sgFY55KqdX1GgIAIfkECQsAAAAsAAAAABAACwAABTcgII5kaZ4kcV2EqLJipmnZhWGXaOOitm2aXQ4g7P2Ct2ER4AMul00kj5g0Al8tADY2y6C+4FIIACH5BAkLAAAALAAAAAAQAAsAAAUvICCOZGme5ERRk6iy7qpyHCVStA3gNa/7txxwlwv2isSacYUc+l4tADQGQ1mvpBAAIfkECQsAAAAsAAAAABAACwAABS8gII5kaZ7kRFGTqLLuqnIcJVK0DeA1r/u3HHCXC/aKxJpxhRz6Xi0ANAZDWa+kEAA7AAAAAAAAAAAA);
+	height: 11px;
+	width: 16px;
 }
+
 .top-margin {
-    margin-top: 5px;
+	margin-top: 5px;
 }
+
 .bottom-margin {
-    margin-bottom: 20px;
+	margin-bottom: 20px;
 }
 
 .clickable {
-    -webkit-user-select: none; /* webkit (safari, chrome) browsers */
-    -moz-user-select: none; /* mozilla browsers */
-    -khtml-user-select: none; /* webkit (konqueror) browsers */
-    -ms-user-select: none; /* IE10+ */
-    cursor: pointer;
+	-webkit-user-select: none;
+	/* webkit (safari, chrome) browsers */
+	-moz-user-select: none;
+	/* mozilla browsers */
+	-khtml-user-select: none;
+	/* webkit (konqueror) browsers */
+	-ms-user-select: none;
+	/* IE10+ */
+	cursor: pointer;
 }
 
 .keyvals {
-    padding: 5px 0 0 5px;
-    margin: 0;
+	padding: 5px 0 0 5px;
+	margin: 0;
 }
 
 .keyvals dl {
-    background-color: #f5f5f5;
-    text-align: center;
-    font-size: 75%;
-    padding: 5px;
-    float: left;
-    margin: 0px 5px 5px 0px;
+	background-color: #f5f5f5;
+	text-align: center;
+	font-size: 75%;
+	padding: 5px;
+	float: left;
+	margin: 0px 5px 5px 0px;
 }
-.keyvals dl dt { font-weight: bold; }
+
+.keyvals dl dt {
+	font-weight: bold;
+}
+
 .keyvals dl dd {
-    margin: 0;
-    padding: 0;
+	margin: 0;
+	padding: 0;
 }
 
-.modal-body {
-    overflow-x: auto;
+.terminal {
+	overflow-x: auto;
+	font-family: monospace;
+	background-color: black;
+	color: white;
+	padding: 5px;
+	margin: 0;
 }
 
-.modal-std .modal-body {
-    font-family: monospace;
-    white-space: pre;
+.command-path {
+	white-space: nowrap;
+	display: inline-block;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	transition: all 0.3s ease;
+	border-radius: 2px;
+}
+
+/* On hover, allow text to wrap and expand */
+.command-path:hover {
+	white-space: normal;
+	word-break: break-all;
+	background-color: #222;
+	overflow: visible;
+	text-overflow: clip;
+	cursor: default;
+	box-shadow: 0 0 3px rgba(255, 255, 255, 0.2);
+}
+
+@media (max-width: 768px) {
+	.command-path {
+		font-size: 0.8em;
+		/* Smaller text on smaller screens */
+	}
+}
+
+@media (max-width: 480px) {
+	.command-path {
+		font-size: 0.7em;
+		/* Even smaller text on very small screens */
+	}
 }
 
 u.dotted {
-    border-bottom: 1px dashed #999;
-    text-decoration: none;
+	border-bottom: 1px dashed #999;
+	text-decoration: none;
 }
