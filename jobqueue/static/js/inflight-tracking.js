@@ -1,6 +1,7 @@
 /* In-Flight Job Tracking
  * Handles tracking of in-flight jobs in the WR status page.
  */
+import { percentRounder, percentScaler } from '/js/utility.js';
 
 /**
  * Creates and configures in-flight job tracking observables
@@ -41,7 +42,7 @@ export function setupInflightTracking(rateLimit) {
             // bars which will result in the right-most bar
             // flickering out of existence, even though we never
             // total over 100
-            var scaled = window.percentScaler([
+            var scaled = percentScaler([
                 (multiplier * inflight['delayed']()),
                 (multiplier * inflight['dependent']()),
                 (multiplier * inflight['ready']()),
@@ -50,7 +51,7 @@ export function setupInflightTracking(rateLimit) {
                 (multiplier * inflight['buried']())
             ], 98);
 
-            var rounded = window.percentRounder(scaled, 2);
+            var rounded = percentRounder(scaled, 2);
             inflight['delayPct'](rounded[0]);
             inflight['dependentPct'](rounded[1]);
             inflight['readyPct'](rounded[2]);
@@ -108,7 +109,7 @@ export function createRepGroupTracker(rg, rateLimit) {
 
         if (total > 0) {
             var multiplier = 100 / total;
-            var scaled = window.percentScaler([
+            var scaled = percentScaler([
                 (multiplier * repgroup['delayed']()),
                 (multiplier * repgroup['dependent']()),
                 (multiplier * repgroup['ready']()),
@@ -119,7 +120,7 @@ export function createRepGroupTracker(rg, rateLimit) {
                 (multiplier * repgroup['complete']())
             ], 98);
 
-            var rounded = window.percentRounder(scaled, 2);
+            var rounded = percentRounder(scaled, 2);
 
             // To avoid the percentage bars totalling over 100 at any point in
             // time, do all decrementing updates first

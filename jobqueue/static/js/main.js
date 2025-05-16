@@ -1,24 +1,10 @@
-import { getParameterByName } from '/js/utility.js';
-import { setupInflightTracking, createRepGroupTracker } from './inflight-tracking.js';
-import { setupWebSocket } from '/js/websocket-handler.js';
-import { requestRepGroup, showGroupState, loadMoreJobs } from './repgroup-handler.js';
-import { modalHandlers } from '/js/modal-handlers.js';
-import { actionHandlers } from '/js/action-handlers.js';
+import { initNumberPrototypes, initStringPrototypes, initKnockoutBindings } from '/js/utility.js';
 import { StatusViewModel } from '/js/status-viewmodel.js';
 
-// Helper function to initialize percentage calculations
-window.percentScaler = function (arr, max) {
-    return arr;
-};
-
-window.percentRounder = function (arr, precision) {
-    return arr;
-};
-
-// Extend String prototype with utility method
-String.prototype.capitalizeFirstLetter = function () {
-    return this.charAt(0).toUpperCase() + this.slice(1);
-};
+// Initialize prototype extensions
+initNumberPrototypes();
+initStringPrototypes();
+initKnockoutBindings();
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
