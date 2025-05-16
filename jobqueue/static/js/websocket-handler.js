@@ -157,6 +157,22 @@ function handleStateChangeMessage(viewModel, json) {
 }
 
 /**
+ * Checks if a job with the given key already exists in the details array
+ * @param {ObservableArray} detailsArray - The array of job details
+ * @param {string} key - The job key to check for
+ * @returns {boolean} True if job already exists
+ */
+function jobExists(detailsArray, key) {
+    const jobs = detailsArray();
+    for (let i = 0; i < jobs.length; i++) {
+        if (jobs[i].Key === key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Handles job details messages from the WebSocket
  * @param {StatusViewModel} viewModel - The main view model
  * @param {object} json - The JSON message data
@@ -165,6 +181,11 @@ function handleJobDetailsMessage(viewModel, json) {
     var rg = json['RepGroup'];
 
     if (viewModel.detailsOA && rg == viewModel.detailsRepgroup) {
+        // Skip if this job already exists in the details array
+        if (jobExists(viewModel.detailsOA, json['Key'])) {
+            return;
+        }
+
         var walltime = json['Walltime'];
 
         if (json['State'] == "running") {

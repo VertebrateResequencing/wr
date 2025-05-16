@@ -63,4 +63,33 @@ export function setupCommandPathBehavior(viewModel) {
         childList: true,
         subtree: true
     });
+
+    // Check when new jobs are loaded
+    if (viewModel.detailsOA) {
+        viewModel.detailsOA.subscribe(function (jobs) {
+            // Only run if there are jobs and this is not an initial load (length > 1)
+            if (jobs.length > 1) {
+                setTimeout(checkForTruncation, 100);
+            }
+        });
+    }
+}
+
+/**
+ * Updates the view after loading more jobs
+ * @param {StatusViewModel} viewModel - The main view model
+ * @param {number} previousLength - The previous length of the jobs array
+ */
+export function handleMoreJobsLoaded(viewModel, previousLength) {
+    // Ensure truncation is checked for new elements
+    setTimeout(function () {
+        checkForTruncation();
+
+        // Find new elements
+        const newElements = document.querySelectorAll('.panel');
+        if (newElements.length > previousLength) {
+            // Focus stays on the page where it was
+            // No need to scroll as the new jobs are appended below
+        }
+    }, 100);
 }

@@ -181,7 +181,7 @@ export function StatusViewModel() {
     //-------------------------------------------------------------------------
     // JOB LOADING
     //-------------------------------------------------------------------------
-    self.loadMoreJobs = function () {
-        loadMoreJobs(self);
+    self.loadMoreJobs = function (job, event) {
+        loadMoreJobs(self, job, event);
     };
 }

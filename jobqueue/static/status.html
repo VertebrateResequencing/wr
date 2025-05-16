@@ -440,15 +440,17 @@
 
                         <!-- ====================== JOB ACTION BUTTONS ====================== -->
                         <div class="panel-footer clearfix">
-                            <!-- ko if: Similar -->
-                            + <span data-bind="text: Similar"></span> other commands
-                            <!-- ko if: Exited && Exitcode != 0 -->
-                            with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
-                            <!-- /ko -->
-                            <button type="button" class="btn btn-sm btn-info"
-                                data-bind="click: $root.loadMoreJobs, visible: Similar > 0">
-                                Load more
-                            </button>
+                            <!-- ko if: Similar > 0 -->
+                            <span class="load-more-section">
+                                + <span data-bind="text: Similar"></span> other commands
+                                <!-- ko if: Exited && Exitcode != 0 -->
+                                with same exit code (<span data-bind="text: Exitcode"></span>) and reason for failure
+                                <!-- /ko -->
+                                <button type="button" class="btn btn-sm btn-info load-more-btn"
+                                    data-bind="click: function(data, event) { $root.loadMoreJobs(data, event) }">
+                                    Load more
+                                </button>
+                            </span>
                             <!-- /ko -->
                             <!-- ko if: State == "delayed" -->
                             <button type="button" class="btn btn-danger pull-right"

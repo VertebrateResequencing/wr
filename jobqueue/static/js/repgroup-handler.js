@@ -56,15 +56,25 @@ export function showGroupState(viewModel, repGroup, state) {
 /**
  * Loads more jobs for the current details view
  * @param {StatusViewModel} viewModel - The main view model
+ * @param {object} job - The job object that triggered the action
+ * @param {Event} event - The click event
  */
-export function loadMoreJobs(viewModel) {
+export function loadMoreJobs(viewModel, job, event) {
+    // Find the parent panel-footer element containing the button
+    const clickedElement = event.target;
+    const panelFooter = clickedElement.closest('.panel-footer');
+
+    if (panelFooter) {
+        // Find the load-more section
+        const loadMoreSection = panelFooter.querySelector('.load-more-section');
+        if (loadMoreSection) {
+            // Hide the entire load-more-section
+            loadMoreSection.style.display = 'none';
+        }
+    }
+
     // Increase the limit by a reasonable number
     viewModel.currentLimit += 5;
-
-    // Clear the current details to avoid duplicates
-    if (viewModel.detailsOA) {
-        viewModel.detailsOA([]);
-    }
 
     // Request more jobs with the increased limit
     viewModel.ws.send(JSON.stringify({
