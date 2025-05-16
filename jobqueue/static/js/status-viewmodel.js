@@ -5,6 +5,10 @@
 // viewmodel for displaying status
 function StatusViewModel() {
     var self = this;
+
+    //-------------------------------------------------------------------------
+    // PROPERTIES AND BASIC OBSERVABLES
+    //-------------------------------------------------------------------------
     self.token = getParameterByName("token");
     self.aquiringstatus = ko.observableArray();
     self.statuserror = ko.observableArray();
@@ -17,8 +21,15 @@ function StatusViewModel() {
     self.wallTimeUpdater;
     self.wallTimeUpdaters = new Array();
     self.rateLimit = 350;
-    self.currentLimit = 1; // Add this new property to track current limit
+    self.currentLimit = 1;
+    self.repGroups = [];
+    self.repGroupLookup = {};
+    self.sortableRepGroups = ko.observableArray();
+    self.ignore = {};
 
+    //-------------------------------------------------------------------------
+    // UTILITY FUNCTIONS
+    //-------------------------------------------------------------------------
     self.removeBadServer = function (id) {
         self.badservers.remove(function (server) {
             return server.ID == id;
@@ -31,6 +42,9 @@ function StatusViewModel() {
         });
     }
 
+    //-------------------------------------------------------------------------
+    // IN-FLIGHT JOB TRACKING
+    //-------------------------------------------------------------------------
     self.inflight = {
         'delayed': ko.observable(0).extend({ rateLimit: self.rateLimit }),
         'dependent': ko.observable(0).extend({ rateLimit: self.rateLimit }),
@@ -73,11 +87,9 @@ function StatusViewModel() {
         return total;
     }).extend({ rateLimit: self.rateLimit });
 
-    self.repGroups = [];
-    self.repGroupLookup = {};
-    self.sortableRepGroups = ko.observableArray();
-    self.ignore = {};
-
+    //-------------------------------------------------------------------------
+    // WEBSOCKET SETUP AND MESSAGE HANDLING
+    //-------------------------------------------------------------------------
     // set up the websocket
     if (window.WebSocket === undefined) {
         self.statuserror.push("Your browser does not support WebSockets");
@@ -330,6 +342,9 @@ function StatusViewModel() {
         }
     }
 
+    //-------------------------------------------------------------------------
+    // REPGROUP HANDLING
+    //-------------------------------------------------------------------------
     // act if the user requests a repGroup
     self.requestRepGroup = function (formElement) {
         console.log("requesting rep group " + self.repGroup())
@@ -387,6 +402,9 @@ function StatusViewModel() {
         self.ws.send(JSON.stringify({ Request: 'details', RepGroup: repGroup.id, State: state, Limit: self.currentLimit }));
     }
 
+    //-------------------------------------------------------------------------
+    // MODAL DISPLAY HANDLERS
+    //-------------------------------------------------------------------------
     // act if the user clicks to view LimitGroups
     self.lgModalVisible = ko.observable(false);
     self.lgVars = ko.observableArray();
@@ -443,6 +461,9 @@ function StatusViewModel() {
         self.envModalVisible(true);
     }
 
+    //-------------------------------------------------------------------------
+    // ACTION HANDLING
+    //-------------------------------------------------------------------------
     // act if the user clicks one of the action buttons in the
     // details of a progress bar
     self.actionModalVisible = ko.observable(false);
@@ -495,6 +516,10 @@ function StatusViewModel() {
         self.detailsOA = '';
         self.actionModalVisible(false);
     };
+
+    //-------------------------------------------------------------------------
+    // ACTION CONFIRMATION HANDLERS
+    //-------------------------------------------------------------------------
     self.confirmRetry = function (job) {
         self.jobToActionDetails(job, 'retry', 'retry');
         self.actionModalHeader('Retry Buried Commands');
@@ -531,12 +556,18 @@ function StatusViewModel() {
         self.actionModalVisible(true);
     };
 
+    //-------------------------------------------------------------------------
+    // SERVER MANAGEMENT
+    //-------------------------------------------------------------------------
     // act if the user confirms that a server is dead
     self.confirmDeadServer = function (server) {
         self.ws.send(JSON.stringify({ Request: 'confirmBadServer', ServerID: server.ID }));
         self.removeBadServer(server.ID)
     };
 
+    //-------------------------------------------------------------------------
+    // MESSAGE HANDLING
+    //-------------------------------------------------------------------------
     // act if the user dismisses a message
     self.dismissMessage = function (si) {
         self.ws.send(JSON.stringify({ Request: 'dismissMsg', Msg: si.Msg }));
@@ -547,6 +578,9 @@ function StatusViewModel() {
         self.messages([])
     };
 
+    //-------------------------------------------------------------------------
+    // JOB LOADING
+    //-------------------------------------------------------------------------
     self.loadMoreJobs = function () {
         // Increase the limit by a reasonable number (e.g., 5 more at a time)
         self.currentLimit += 5;

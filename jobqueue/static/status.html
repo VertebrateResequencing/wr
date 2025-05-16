@@ -23,12 +23,11 @@
     <!-- Some of our own general helper functions -->
     <script src="/js/wr-0.0.1.js"></script>
     <script src="/js/status-viewmodel.js"></script>
-    <script src="/js/status-handlers.js"></script>
     <link rel="stylesheet" href="/css/wr-0.0.1.css">
 </head>
 
 <body>
-
+    <!-- ====================== NAVIGATION BAR ====================== -->
     <div id="nav" class="navbar navbar-default" role="navigation">
         <div class="container">
             <div class="navbar-header">
@@ -38,12 +37,14 @@
     </div>
 
     <div id="status" class="container">
+        <!-- ====================== ERROR MESSAGES SECTION ====================== -->
         <div id="statuserrors" data-bind="foreach: statuserror">
             <div class="alert alert-danger fade in">
                 <p data-bind="text: $data"></p>
             </div>
         </div>
 
+        <!-- ====================== BAD SERVERS SECTION ====================== -->
         <div id="badservers" data-bind="foreach: badservers">
             <div class="alert alert-danger fade in">
                 <div class="panel panel-warning">
@@ -80,6 +81,7 @@
             </div>
         </div>
 
+        <!-- ====================== SYSTEM MESSAGES SECTION ====================== -->
         <!-- ko if: messages().length > 1 -->
         <button type="button" class="btn btn-warning pull-right" data-bind="click: $root.dismissMessages">Dismiss
             All</button>
@@ -108,6 +110,7 @@
         </div>
         <!-- /ko -->
 
+        <!-- ====================== IN-FLIGHT JOBS SUMMARY ====================== -->
         <div style="width: 100%;" class="well well-sm top-margin">
             <div style="margin: 0 auto;">
                 <h5 style="margin: 0; padding: 0">Incomplete <span class="badge"
@@ -155,6 +158,7 @@
             </div>
         </div>
 
+        <!-- ====================== REP GROUP SEARCH ====================== -->
         <!-- *** not yet implemented
             <div class="row bottom-margin">
                 <div class="col-xs-5">
@@ -171,6 +175,7 @@
             </div>
             -->
 
+        <!-- ====================== REP GROUPS SECTION ====================== -->
         <!-- ko if: sortableRepGroups().length > 0 -->
         <hr>
         <!-- /ko -->
@@ -241,6 +246,7 @@
                         </div>
                     </div>
 
+                    <!-- ====================== JOB DETAILS PANEL ====================== -->
                     <!-- ko foreach: details -->
                     <div class="top-margin panel" style="margin-bottom: 0"
                         data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
@@ -283,6 +289,8 @@
                                 <!-- /ko -->
                             </div>
                         </div>
+
+                        <!-- ====================== JOB PROPERTIES SECTION ====================== -->
                         <div class="panel-body keyvals">
                             <dl>
                                 <dt>Attempts</dt>
@@ -324,6 +332,7 @@
                             </dl>
                             <!-- /ko -->
 
+                            <!-- ====================== JOB DETAILS FOR EXITED JOBS ====================== -->
                             <!-- ko if: Exited -->
                             <dl>
                                 <dt>Exit code</dt>
@@ -371,6 +380,7 @@
                             </dl>
                             <!-- /ko -->
 
+                            <!-- ====================== JOB DETAILS FOR RUNNING JOBS ====================== -->
                             <!-- ko if: ! Exited && (State == "reserved" || State == "running" || State == "lost") -->
                             <dl>
                                 <dt>Started</dt>
@@ -405,6 +415,7 @@
                             </dl>
                             <!-- /ko -->
 
+                            <!-- ====================== JOB DETAILS - ADVANCED PROPERTIES ====================== -->
                             <!-- ko if: LimitGroups -->
                             <dl>
                                 <dt>LimitGroups</dt>
@@ -472,6 +483,8 @@
                                 </dd>
                             </dl>
                         </div>
+
+                        <!-- ====================== JOB ACTION BUTTONS ====================== -->
                         <div class="panel-footer clearfix">
                             <!-- ko if: Similar -->
                             + <span data-bind="text: Similar"></span> other commands
@@ -521,6 +534,7 @@
             </div>
         </div>
 
+        <!-- ====================== MODAL DIALOGS ====================== -->
         <!-- action modals -->
         <div data-bind="modal: {
                 visible: actionModalVisible,
@@ -609,11 +623,11 @@
 
         <!-- internalID modal -->
         <div data-bind="modal: {
-			visible: internalModalVisible,
-			dialogCss: 'modal-lg',
-			header: { data: { label: 'Internal Job ID' } },
-			body: { name: 'envModalBodyTemplate', data: internalVars }
-		}"></div>
+            visible: internalModalVisible,
+            dialogCss: 'modal-lg',
+            header: { data: { label: 'Internal Job ID' } },
+            body: { name: 'envModalBodyTemplate', data: internalVars }
+        }"></div>
 
         <!-- env modal -->
         <div data-bind="modal: {
@@ -630,6 +644,7 @@
 
         <hr>
 
+        <!-- ====================== FOOTER ====================== -->
         <footer id="footer">
             <small>&copy; 2016-2021 Genome Research Limited.</small>
         </footer>
