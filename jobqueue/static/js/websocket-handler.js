@@ -14,29 +14,45 @@ export function setupWebSocket(viewModel) {
         return;
     }
 
-    viewModel.ws = new WebSocket("wss://" + location.hostname + ":" + location.port + "/status_ws?token=" + viewModel.token);
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${location.hostname}:${location.port}/status_ws?token=${viewModel.token}`;
 
-    viewModel.ws.onopen = function () {
-        viewModel.ws.send(JSON.stringify({ Request: "current" }));
-    };
+    try {
+        viewModel.ws = new WebSocket(wsUrl);
 
-    viewModel.ws.onclose = function () {
-        viewModel.statuserror.push("Connection to the manager has been lost!");
-    };
+        viewModel.ws.onopen = () => {
+            viewModel.ws.send(JSON.stringify({ Request: "current" }));
+        };
 
-    viewModel.ws.onmessage = function (e) {
-        var json = JSON.parse(e.data);
+        viewModel.ws.onclose = () => {
+            viewModel.statuserror.push("Connection to the manager has been lost!");
+        };
 
-        if (json.hasOwnProperty('FromState')) {
-            handleStateChangeMessage(viewModel, json);
-        } else if (json.hasOwnProperty('State')) {
-            handleJobDetailsMessage(viewModel, json);
-        } else if (json.hasOwnProperty('IP')) {
-            handleServerMessage(viewModel, json);
-        } else if (json.hasOwnProperty('Msg')) {
-            handleSchedulerMessage(viewModel, json);
-        }
-    };
+        viewModel.ws.onerror = (error) => {
+            viewModel.statuserror.push(`WebSocket error: ${error.message || 'Unknown error'}`);
+        };
+
+        viewModel.ws.onmessage = (e) => {
+            try {
+                const json = JSON.parse(e.data);
+
+                if (json.hasOwnProperty('FromState')) {
+                    handleStateChangeMessage(viewModel, json);
+                } else if (json.hasOwnProperty('State')) {
+                    handleJobDetailsMessage(viewModel, json);
+                } else if (json.hasOwnProperty('IP')) {
+                    handleServerMessage(viewModel, json);
+                } else if (json.hasOwnProperty('Msg')) {
+                    handleSchedulerMessage(viewModel, json);
+                }
+            } catch (error) {
+                console.error("Error processing message:", error);
+                viewModel.statuserror.push(`Error processing message: ${error.message}`);
+            }
+        };
+    } catch (error) {
+        viewModel.statuserror.push(`Failed to connect: ${error.message}`);
+    }
 }
 
 /**

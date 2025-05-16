@@ -9,60 +9,59 @@ import { percentRounder, percentScaler } from '/js/utility.js';
  * @returns {object} The configured in-flight tracking object
  */
 export function setupInflightTracking(rateLimit) {
-    var inflight = {
-        'delayed': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'dependent': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'ready': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'running': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'lost': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'buried': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'delayPct': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'dependentPct': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'readyPct': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'runPct': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'lostPct': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'buryPct': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'old_total': 0,
-        'delay_compute': 0
+    const inflight = {
+        delayed: ko.observable(0).extend({ rateLimit }),
+        dependent: ko.observable(0).extend({ rateLimit }),
+        ready: ko.observable(0).extend({ rateLimit }),
+        running: ko.observable(0).extend({ rateLimit }),
+        lost: ko.observable(0).extend({ rateLimit }),
+        buried: ko.observable(0).extend({ rateLimit }),
+        delayPct: ko.observable(0).extend({ rateLimit }),
+        dependentPct: ko.observable(0).extend({ rateLimit }),
+        readyPct: ko.observable(0).extend({ rateLimit }),
+        runPct: ko.observable(0).extend({ rateLimit }),
+        lostPct: ko.observable(0).extend({ rateLimit }),
+        buryPct: ko.observable(0).extend({ rateLimit }),
+        old_total: 0,
+        delay_compute: 0
     };
 
     // Create a computed for the total that updates the percentage values
-    inflight['total'] = ko.computed(function () {
-        if (inflight['delay_compute']) {
-            return inflight['old_total'];
+    inflight.total = ko.computed(() => {
+        if (inflight.delay_compute) {
+            return inflight.old_total;
         }
 
-        var total = inflight['delayed']() + inflight['dependent']() +
-            inflight['ready']() + inflight['running']() +
-            inflight['lost']() + inflight['buried']();
+        const total = inflight.delayed() + inflight.dependent() +
+            inflight.ready() + inflight.running() +
+            inflight.lost() + inflight.buried();
 
         if (total > 0) {
-            var multiplier = 100 / total;
-            // We scale to 98 to avoid a bug in bootstrap progress
-            // bars which will result in the right-most bar
-            // flickering out of existence, even though we never
-            // total over 100
-            var scaled = percentScaler([
-                (multiplier * inflight['delayed']()),
-                (multiplier * inflight['dependent']()),
-                (multiplier * inflight['ready']()),
-                (multiplier * inflight['running']()),
-                (multiplier * inflight['lost']()),
-                (multiplier * inflight['buried']())
+            const multiplier = 100 / total;
+            // We scale to 98 to avoid a bug in bootstrap progress bars which
+            // will result in the right-most bar flickering out of existence,
+            // even though we never total over 100
+            const scaled = percentScaler([
+                (multiplier * inflight.delayed()),
+                (multiplier * inflight.dependent()),
+                (multiplier * inflight.ready()),
+                (multiplier * inflight.running()),
+                (multiplier * inflight.lost()),
+                (multiplier * inflight.buried())
             ], 98);
 
-            var rounded = percentRounder(scaled, 2);
-            inflight['delayPct'](rounded[0]);
-            inflight['dependentPct'](rounded[1]);
-            inflight['readyPct'](rounded[2]);
-            inflight['runPct'](rounded[3]);
-            inflight['lostPct'](rounded[4]);
-            inflight['buryPct'](rounded[5]);
+            const rounded = percentRounder(scaled, 2);
+            inflight.delayPct(rounded[0]);
+            inflight.dependentPct(rounded[1]);
+            inflight.readyPct(rounded[2]);
+            inflight.runPct(rounded[3]);
+            inflight.lostPct(rounded[4]);
+            inflight.buryPct(rounded[5]);
         }
 
-        inflight['old_total'] = total;
+        inflight.old_total = total;
         return total;
-    }).extend({ rateLimit: rateLimit });
+    }).extend({ rateLimit });
 
     return inflight;
 }

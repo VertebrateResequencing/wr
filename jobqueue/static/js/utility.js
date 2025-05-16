@@ -8,9 +8,7 @@
  * @param {string} id - The ID of the server to remove
  */
 export function removeBadServer(viewModel, id) {
-    viewModel.badservers.remove(function (server) {
-        return server.ID == id;
-    });
+    viewModel.badservers.remove(server => server.ID === id);
 }
 
 /**
@@ -19,23 +17,23 @@ export function removeBadServer(viewModel, id) {
  * @param {string} msg - The message to remove
  */
 export function removeMessage(viewModel, msg) {
-    viewModel.messages.remove(function (schedIssue) {
-        return schedIssue.Msg == msg;
-    });
+    viewModel.messages.remove(schedIssue => schedIssue.Msg === msg);
 }
 
 /**
  * Gets a URL parameter by name
  * @param {string} name - The name of the parameter
- * @returns {string} The value of the parameter
+ * @returns {string|null} The value of the parameter or null if not found
  */
 export function getParameterByName(name) {
-    var url = window.location.href;
-    name = name.replace(/[\[\]]/g, "\\$&");
-    var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
-        results = regex.exec(url);
+    const url = window.location.href;
+    const sanitizedName = name.replace(/[\[\]]/g, "\\$&");
+    const regex = new RegExp(`[?&]${sanitizedName}(=([^&#]*)|&|#|$)`);
+    const results = regex.exec(url);
+
     if (!results) return null;
     if (!results[2]) return '';
+
     return decodeURIComponent(results[2].replace(/\+/g, " "));
 }
 
@@ -46,41 +44,51 @@ export function getParameterByName(name) {
  * @returns {Array} Array of integers that add up to exactly 100
  */
 export function percentRounder(floats, min) {
-    var cumul = 0;
-    var baseline = 0;
-    var increased = 0;
-    var ints = [];
-    for (var i = 0; i < floats.length; i++) {
+    let cumul = 0;
+    let baseline = 0;
+    let increased = 0;
+    const ints = [];
+
+    // First pass: round numbers and identify values below minimum
+    for (let i = 0; i < floats.length; i++) {
         cumul += floats[i];
-        var cumulRounded = Math.round(cumul);
-        var int = cumulRounded - baseline;
+        const cumulRounded = Math.round(cumul);
+        let int = cumulRounded - baseline;
+
         if (min > 0 && floats[i] > 0 && int < min) {
             increased += (min - int);
             int = min;
         }
+
         ints.push(int);
         baseline = cumulRounded;
     }
 
+    // Only proceed with adjustments if we increased some values
     if (increased > 0) {
-        var over = [];
-        var totalOver = 0;
-        for (var i = 0; i < ints.length; i++) {
+        const over = [];
+        let totalOver = 0;
+
+        // Identify values that are above minimum
+        for (let i = 0; i < ints.length; i++) {
             if (ints[i] > min) {
                 over.push(i);
                 totalOver += ints[i];
             }
         }
 
-        var decreased = 0;
-        for (var i = 0; i < over.length; i++) {
-            var intIndex = over[i];
-            var intVal = ints[intIndex];
-            var proportion = intVal / totalOver;
-            var decrease = Math.ceil(proportion * increased);
+        // Decrease values proportionally to maintain total
+        let decreased = 0;
+        for (let i = 0; i < over.length; i++) {
+            const intIndex = over[i];
+            const intVal = ints[intIndex];
+            const proportion = intVal / totalOver;
+            let decrease = Math.ceil(proportion * increased);
+
             if (decreased + decrease > increased) {
                 decrease = increased - decreased;
             }
+
             ints[intIndex] = intVal - decrease;
             decreased += decrease;
         }
@@ -96,13 +104,7 @@ export function percentRounder(floats, min) {
  * @returns {Array} Scaled values
  */
 export function percentScaler(ints, max) {
-    var floats = [];
-    for (var i = 0; i < ints.length; i++) {
-        var unscaled = ints[i];
-        var scaled = (unscaled / 100) * max;
-        floats.push(scaled);
-    }
-    return floats;
+    return ints.map(unscaled => (unscaled / 100) * max);
 }
 
 /**
