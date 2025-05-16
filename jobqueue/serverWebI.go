@@ -62,6 +62,7 @@ type jstatusReq struct {
 	RepGroup string
 
 	State      JobState // A Job.State to limit RepGroup by in details mode
+	Limit      int      // Limit the number of jobs returned in details mode (0 = no limit)
 	Exitcode   int
 	FailReason string
 	ServerID   string // required argument for confirmBadServer
@@ -276,10 +277,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							break
 						}
 					case "details":
-						// *** probably want to take the count as a req option,
-						// so user can request to see more than just 1 job per
-						// State+Exitcode+FailReason
-						jobs, _, errstr := s.getJobsByRepGroup(ctx, req.RepGroup, false, 1, req.State, true, true)
+						jobs, _, errstr := s.getJobsByRepGroup(ctx, req.RepGroup, false, req.Limit, req.State, true, true)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false
