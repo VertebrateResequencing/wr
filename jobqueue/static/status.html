@@ -527,37 +527,29 @@
                 footer: { name: 'actionModalFooterTemplate', data: actionDetails }
             }"></div>
         <script type="text/html" id="actionModalBodyTemplate">
-            <!-- ko if: button() != "confirm" -->
-            <p>
+                <!-- ko if: button() != "confirm" -->
                 Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span>
-                commands with the identifier "<span data-bind="text: repGroup"></span>"
-                <!-- ko if: exited -->
-                that had exit code <span data-bind="text: exitCode"></span> and failed because "<span
-                    data-bind="text: failReason"></span>"?
-                <!-- /ko -->
-                <!-- ko if: !exited -->
-                ?
-                <!-- /ko -->
-            </p>
-            <!-- /ko -->
-            
-            <!-- ko if: button() == "confirm" -->
-            <p>
-                Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span
-                    data-bind="text: repGroup"></span>" are really dead?
-            </p>
-            <!-- /ko -->
-            
-            <br>
-            
-            <!-- ko if: button() == "kill" -->
-            <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become
-                buried)</small>
-            <!-- /ko -->
-            
-            <!-- ko if: button() == "remove" -->
-            <small>(removal of commands that have other commands depending on them will silently fail)</small>
-            <!-- /ko -->
+        commands with the identifier "<span data-bind="text: repGroup"></span>"
+        <!-- ko if: exited -->
+        that had exit code <span data-bind="text: exitCode"></span> and failed because "<span
+            data-bind="text: failReason"></span>"?
+        <!-- /ko -->
+        <!-- ko if: ! exited -->
+        ?
+        <!-- /ko -->
+        <!-- /ko -->
+        <!-- ko if: button() == "confirm" -->
+        Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span
+            data-bind="text: repGroup"></span>" are really dead?
+        <!-- /ko -->
+        <br>
+        <!-- ko if: button() == "kill" -->
+        <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become
+            buried)</small>
+        <!-- /ko -->
+        <!-- ko if: button() == "remove" -->
+        <small>(removal of commands that have other commands depending on them will silently fail)</small>
+        <!-- /ko -->
         </script>
         <script type="text/html" id="actionModalFooterTemplate">
             <div class="btn-group">
