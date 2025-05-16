@@ -1,3 +1,24 @@
+:root {
+    /* Color variables */
+    --text-color: white;
+    --bg-dark: #121212;
+    --bg-light: #f5f5f5;
+    --border-dark: #222;
+    --success-color: #4CAF50;
+    --error-color: #F44336;
+    --success-border: rgba(76, 175, 80, 0.4);
+    --error-border: rgba(244, 67, 54, 0.4);
+    --success-scroll: rgba(76, 175, 80, 0.6);
+    --error-scroll: rgba(244, 67, 54, 0.6);
+
+    /* Spacing */
+    --spacing-xs: 2px;
+    --spacing-sm: 5px;
+    --spacing-md: 10px;
+    --spacing-lg: 15px;
+    --spacing-xl: 20px;
+}
+
 .loader {
     background-image: url(data:image/gif;base64,R0lGODlhEAALAPQAAP///0pISOTk5N3d3e/v705MTEpISGpoaKalpY6MjM3NzWJgYH59fauqqpCPj9DQ0GRjY0xKSoF/f+zs7OPi4vb29nFwcOXl5fX19crKyru6utnY2PLy8gAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh/hpDcmVhdGVkIHdpdGggYWpheGxvYWQuaW5mbwAh+QQJCwAAACwAAAAAEAALAAAFLSAgjmRpnqSgCuLKAq5AEIM4zDVw03ve27ifDgfkEYe04kDIDC5zrtYKRa2WQgAh+QQJCwAAACwAAAAAEAALAAAFJGBhGAVgnqhpHIeRvsDawqns0qeN5+y967tYLyicBYE7EYkYAgAh+QQJCwAAACwAAAAAEAALAAAFNiAgjothLOOIJAkiGgxjpGKiKMkbz7SN6zIawJcDwIK9W/HISxGBzdHTuBNOmcJVCyoUlk7CEAAh+QQJCwAAACwAAAAAEAALAAAFNSAgjqQIRRFUAo3jNGIkSdHqPI8Tz3V55zuaDacDyIQ+YrBH+hWPzJFzOQQaeavWi7oqnVIhACH5BAkLAAAALAAAAAAQAAsAAAUyICCOZGme1rJY5kRRk7hI0mJSVUXJtF3iOl7tltsBZsNfUegjAY3I5sgFY55KqdX1GgIAIfkECQsAAAAsAAAAABAACwAABTcgII5kaZ4kcV2EqLJipmnZhWGXaOOitm2aXQ4g7P2Ct2ER4AMul00kj5g0Al8tADY2y6C+4FIIACH5BAkLAAAALAAAAAAQAAsAAAUvICCOZGme5ERRk6iy7qpyHCVStA3gNa/7txxwlwv2isSacYUc+l4tADQGQ1mvpBAAIfkECQsAAAAsAAAAABAACwAABS8gII5kaZ7kRFGTqLLuqnIcJVK0DeA1r/u3HHCXC/aKxJpxhRz6Xi0ANAZDWa+kEAA7AAAAAAAAAAAA);
     height: 11px;
@@ -5,37 +26,31 @@
 }
 
 .top-margin {
-    margin-top: 5px;
+    margin-top: var(--spacing-sm);
 }
 
 .bottom-margin {
-    margin-bottom: 20px;
+    margin-bottom: var(--spacing-xl);
 }
 
+/* Modern non-selectable clickable elements */
 .clickable {
-    -webkit-user-select: none;
-    /* webkit (safari, chrome) browsers */
-    -moz-user-select: none;
-    /* mozilla browsers */
-    -khtml-user-select: none;
-    /* webkit (konqueror) browsers */
-    -ms-user-select: none;
-    /* IE10+ */
     cursor: pointer;
+    user-select: none;
 }
 
 .keyvals {
-    padding: 5px 0 0 5px;
+    padding: var(--spacing-sm) 0 0 var(--spacing-sm);
     margin: 0;
 }
 
 .keyvals dl {
-    background-color: #f5f5f5;
+    background-color: var(--bg-light);
     text-align: center;
     font-size: 75%;
-    padding: 5px;
+    padding: var(--spacing-sm);
     float: left;
-    margin: 0px 5px 5px 0px;
+    margin: 0 var(--spacing-sm) var(--spacing-sm) 0;
 }
 
 .keyvals dl dt {
@@ -49,19 +64,19 @@
 
 .terminal {
     overflow-x: auto;
-    font-family: monospace;
-    background-color: #121212;
-    color: white;
-    padding: 10px;
-    margin: -10px -10px 0 -10px;
+    font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+    background-color: var(--bg-dark);
+    color: var(--text-color);
+    padding: var(--spacing-md);
+    margin: calc(-1 * var(--spacing-md)) calc(-1 * var(--spacing-md)) 0 calc(-1 * var(--spacing-md));
     border-radius: 4px;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
-    border: 1px solid #222;
+    border: 1px solid var(--border-dark);
 }
 
 /* Add a bit of spacing to panel-heading to accommodate the terminal */
 .panel-heading {
-    padding: 10px;
+    padding: var(--spacing-md);
 }
 
 .command-path {
@@ -78,25 +93,11 @@
 .command-path:hover {
     white-space: normal;
     word-break: break-all;
-    background-color: #222;
+    background-color: var(--border-dark);
     overflow: visible;
     text-overflow: clip;
     cursor: default;
     box-shadow: 0 0 3px rgba(255, 255, 255, 0.2);
-}
-
-@media (max-width: 768px) {
-    .command-path {
-        font-size: 0.8em;
-        /* Smaller text on smaller screens */
-    }
-}
-
-@media (max-width: 480px) {
-    .command-path {
-        font-size: 0.7em;
-        /* Even smaller text on very small screens */
-    }
 }
 
 u.dotted {
@@ -106,7 +107,7 @@ u.dotted {
 
 .output-divider {
     position: relative;
-    margin: 15px 0 5px 0;
+    margin: var(--spacing-lg) 0 var(--spacing-sm) 0;
     height: 1px;
     background: linear-gradient(to right, transparent, rgba(150, 150, 150, 0.5) 10%, rgba(150, 150, 150, 0.5) 90%, transparent);
 }
@@ -114,50 +115,49 @@ u.dotted {
 .output-label {
     position: absolute;
     top: -8px;
-    left: 10px;
+    left: var(--spacing-md);
     font-size: 11px;
     font-weight: bold;
-    padding: 0 5px;
+    padding: 0 var(--spacing-sm);
     border-radius: 3px;
     background-color: black;
     box-shadow: 0 0 2px rgba(255, 255, 255, 0.3);
 }
 
 .stdout-label {
-    color: #4CAF50;
-    border: 1px solid #4CAF50;
+    color: var(--success-color);
+    border: 1px solid var(--success-color);
 }
 
 .stderr-label {
-    color: #F44336;
-    border: 1px solid #F44336;
+    color: var(--error-color);
+    border: 1px solid var(--error-color);
 }
 
+/* Common styles for stdout and stderr text */
 .stdout-text,
 .stderr-text {
     display: block;
-    padding: 2px 4px;
-    margin-top: 2px;
+    padding: var(--spacing-xs) 4px;
+    margin-top: var(--spacing-xs);
     white-space: pre-wrap;
     word-break: break-word;
     max-height: 300px;
     overflow-y: auto;
     border-radius: 2px;
-
-    /* Firefox scrollbar */
     scrollbar-width: thin;
 }
 
 .stdout-text {
-    border-left: 2px solid rgba(76, 175, 80, 0.4);
+    border-left: 2px solid var(--success-border);
     padding-left: 8px;
-    scrollbar-color: rgba(76, 175, 80, 0.6) rgba(0, 0, 0, 0.3);
+    scrollbar-color: var(--success-scroll) rgba(0, 0, 0, 0.3);
 }
 
 .stderr-text {
-    border-left: 2px solid rgba(244, 67, 54, 0.4);
+    border-left: 2px solid var(--error-border);
     padding-left: 8px;
-    scrollbar-color: rgba(244, 67, 54, 0.6) rgba(0, 0, 0, 0.3);
+    scrollbar-color: var(--error-scroll) rgba(0, 0, 0, 0.3);
 }
 
 /* WebKit browser scrollbar styling (Chrome, Safari, Edge) */
@@ -169,12 +169,12 @@ u.dotted {
 }
 
 .stdout-text::-webkit-scrollbar-thumb {
-    background-color: rgba(76, 175, 80, 0.6);
+    background-color: var(--success-scroll);
     border-radius: 4px;
 }
 
 .stderr-text::-webkit-scrollbar-thumb {
-    background-color: rgba(244, 67, 54, 0.6);
+    background-color: var(--error-scroll);
     border-radius: 4px;
 }
 
@@ -193,8 +193,28 @@ u.dotted {
     transition: width 0.25s ease;
     position: relative;
     z-index: 1;
-    backface-visibility: hidden;
-    -webkit-backface-visibility: hidden;
+    will-change: width;
     transform: translateZ(0);
-    -webkit-transform: translateZ(0);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .command-path {
+        font-size: 0.8em;
+    }
+
+    .keyvals dl {
+        font-size: 70%;
+    }
+}
+
+@media (max-width: 480px) {
+    .command-path {
+        font-size: 0.7em;
+    }
+
+    .keyvals dl {
+        width: calc(50% - var(--spacing-sm));
+        font-size: 65%;
+    }
 }
