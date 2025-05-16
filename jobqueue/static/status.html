@@ -254,7 +254,8 @@
                             <div class="terminal"
                                 data-bind="css: { 'border-warning': State == 'delayed' || State == 'dependent', 'border-info': State == 'ready', 'border-primary': State == 'running', 'border-danger': State == 'buried' || State == 'lost', 'border-success': State == 'complete' }">
                                 <small>
-                                    <div class="command-path">
+                                    <div class="command-path"
+                                        data-bind="attr: {'data-expanded': false}, click: $root.togglePathExpansion">
                                         @<span data-bind="text: Host" style="color: #00FF00;"></span>:
                                         <span data-bind="text: CwdBase" style="color: #FFFF00;"></span><span
                                             data-bind="text: Cwd" style="color:#E5C700"></span>

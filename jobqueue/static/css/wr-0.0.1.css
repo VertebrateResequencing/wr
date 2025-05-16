@@ -115,15 +115,18 @@
     border-radius: 2px;
 }
 
-/* On hover, allow text to wrap and expand */
-.command-path:hover {
+/* Show pointer cursor only when text is truncated */
+.command-path.truncated {
+    cursor: pointer;
+}
+
+/* On click (with expanded class), allow text to wrap and expand */
+.command-path.expanded {
     white-space: normal;
     word-break: break-all;
-    background-color: var(--border-dark);
     overflow: visible;
     text-overflow: clip;
     cursor: default;
-    box-shadow: 0 0 3px rgba(255, 255, 255, 0.2);
 }
 
 u.dotted {
