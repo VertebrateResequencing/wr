@@ -295,7 +295,7 @@
                         <!-- ====================== JOB PROPERTIES SECTION ====================== -->
                         <div class="panel-body compact-props">
                             <!-- Core Properties (always visible) -->
-                            <div class="prop-section resources">
+                            <div class="prop-section">
                                 <span class="prop-section-title">Resources:</span>
                                 <div class="prop-tag">
                                     <span class="prop-name">Cores</span>
@@ -324,7 +324,7 @@
                                         <span class="actual-value"
                                             data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
                                         <span class="prop-separator">•</span>
-                                        <span class="cpu-time" data-bind="text: 'CPU: ' + CPUtime.toDuration()"></span>
+                                        <span data-bind="text: 'CPU: ' + CPUtime.toDuration()"></span>
                                         <!-- /ko -->
 
                                         <!-- ko if: !Exited && (State == 'running' || State == 'reserved') -->
@@ -349,14 +349,14 @@
                                         <!-- ko if: Exited -->
                                         <span class="prop-separator">→</span>
                                         <span class="actual-value"
-                                            data-bind="text: PeakDisk === 0 ? '0GB' : PeakDisk.mbIEC(), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk }"></span>
+                                            data-bind="text: PeakDisk === 0 ? '0GB' : PeakDisk.mbIEC(), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk*1024 }"></span>
                                         <!-- /ko -->
                                     </span>
                                 </div>
 
                                 <!-- Docker (conditional) -->
                                 <!-- ko if: MonitorDocker != '' -->
-                                <div class="prop-tag docker">
+                                <div class="prop-tag">
                                     <span class="prop-name">Docker</span>
                                     <span class="prop-value" data-bind="text: MonitorDocker"></span>
                                 </div>
@@ -365,6 +365,7 @@
 
                             <!-- Combined status section -->
                             <div class="prop-section">
+                                <span class="prop-section-title">Status:</span>
                                 <div class="prop-tag">
                                     <span class="prop-name">Attempts</span>
                                     <span class="prop-value" data-bind="text: Attempts"></span>
@@ -375,8 +376,7 @@
                                 <div class="prop-tag">
                                     <span class="prop-name">Exit</span>
                                     <span class="prop-value">
-                                        <span class="exit-code"
-                                            data-bind="text: Exitcode, css: { 'exit-success': Exitcode == 0, 'exit-error': Exitcode != 0 }"></span>
+                                        <span data-bind="text: Exitcode"></span>
                                     </span>
                                 </div>
                                 <!-- /ko -->
@@ -386,8 +386,7 @@
                                 <div class="prop-tag">
                                     <span class="prop-name">Reason</span>
                                     <span class="prop-value">
-                                        <span class="fail-reason truncate-text"
-                                            data-bind="text: FailReason, attr: { title: FailReason }"></span>
+                                        <span data-bind="text: FailReason, attr: { title: FailReason }"></span>
                                     </span>
                                 </div>
                                 <!-- /ko -->
@@ -395,6 +394,7 @@
 
                             <!-- Execution information -->
                             <div class="prop-section">
+                                <span class="prop-section-title">Execution:</span>
                                 <!-- Started/Ended dates -->
                                 <div class="prop-tag">
                                     <span class="prop-name">When</span>
@@ -408,7 +408,7 @@
                                 </div>
 
                                 <!-- Combined host information -->
-                                <div class="prop-tag host">
+                                <div class="prop-tag">
                                     <span class="prop-name">Where</span>
                                     <span class="prop-value">
                                         <span data-bind="text: Host"></span>
@@ -423,12 +423,11 @@
                                     </span>
                                 </div>
 
-                                <!-- Individual advanced properties buttons - Replace with single button -->
+                                <!-- Misc properties -->
                                 <div class="prop-section advanced">
-                                    <!-- Single "Details" button that shows all job properties -->
                                     <div class="prop-tag clickable details-button"
                                         data-bind="click: $root.showJobDetails">
-                                        <span class="prop-name">Details</span>
+                                        <span class="prop-name">Misc</span>
                                         <span class="prop-value"><i class="glyphicon glyphicon-info-sign"></i></span>
                                     </div>
                                 </div>

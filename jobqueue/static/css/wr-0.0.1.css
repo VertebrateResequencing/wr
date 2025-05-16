@@ -289,46 +289,15 @@ u.dotted {
     color: #333;
 }
 
-/* Color coding for different property types */
-.prop-tag.host .prop-name {
-    background-color: #e8f4f8;
-    color: #31708f;
-}
-
-.prop-tag.status .prop-name {
-    background-color: #dff0d8;
-    color: #3c763d;
-}
-
-.prop-tag.docker .prop-name {
-    background-color: #f7f7f7;
-    color: #0db7ed;
-}
-
-.prop-tag.fail {
-    border-color: #ebccd1;
-}
-
-.prop-tag.fail .prop-name {
-    background-color: #f2dede;
-    color: #a94442;
-}
-
 .prop-tag.clickable {
     cursor: pointer;
     border-color: #bce8f1;
-}
-
-.prop-tag.clickable .prop-name {
-    background-color: #d9edf7;
-    color: #31708f;
 }
 
 .prop-tag.clickable:hover {
     box-shadow: 0 0 3px rgba(0, 123, 255, 0.5);
 }
 
-/* Sections separator - very subtle */
 .prop-section+.prop-section {
     border-top: 1px dotted #eee;
     padding-top: 4px;
@@ -361,23 +330,6 @@ u.dotted {
 
 .over-limit {
     color: #d9534f;
-}
-
-.exit-success {
-    color: #5cb85c;
-    font-weight: 500;
-}
-
-.exit-error {
-    color: #d9534f;
-    font-weight: 500;
-}
-
-.fail-reason {
-    color: #d9534f;
-    max-width: 200px;
-    display: inline-block;
-    vertical-align: bottom;
 }
 
 .status-section {
@@ -551,9 +503,4 @@ u.dotted {
 .details-content::-webkit-scrollbar-thumb {
     background-color: #ccc;
     border-radius: 3px;
-}
-
-.cpu-time {
-    color: #5bc0de;
-    font-weight: 500;
 }
