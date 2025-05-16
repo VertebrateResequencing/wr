@@ -247,7 +247,20 @@ u.dotted {
     flex-wrap: wrap;
     gap: 5px;
     margin-bottom: 4px;
-    align-items: center;
+    align-items: flex-start;
+}
+
+.prop-section-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: #666;
+    padding: 2px 0;
+    align-self: center;
+    min-width: 65px;
+    margin-right: 3px;
+    white-space: nowrap;
+    position: relative;
+    top: 0;
 }
 
 .prop-section:last-child {
@@ -340,22 +353,6 @@ u.dotted {
     font-size: 10px;
     margin: 0 3px;
     opacity: 0.7;
-}
-
-.wide-tag {
-    flex-grow: 1;
-    min-width: 300px;
-}
-
-.wide-tag .prop-value {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.wide-tag:hover .prop-value {
-    white-space: normal;
-    word-break: break-word;
 }
 
 .actual-value {

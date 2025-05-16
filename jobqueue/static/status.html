@@ -296,6 +296,7 @@
                         <div class="panel-body compact-props">
                             <!-- Core Properties (always visible) -->
                             <div class="prop-section resources">
+                                <span class="prop-section-title">Resources:</span>
                                 <div class="prop-tag">
                                     <span class="prop-name">Cores</span>
                                     <span class="prop-value" data-bind="text: Cores"></span>
@@ -340,15 +341,15 @@
                                     </span>
                                 </div>
 
-                                <!-- Disk (conditional) -->
-                                <div class="prop-tag" data-bind="if: RequestedDisk > 0">
+                                <!-- Disk -->
+                                <div class="prop-tag" data-bind="if: RequestedDisk > 0 || PeakDisk > 0">
                                     <span class="prop-name">Disk</span>
                                     <span class="prop-value">
                                         <span data-bind="text: RequestedDisk + ' GB'"></span>
-                                        <!-- ko if: Exited && PeakDisk > 0 -->
+                                        <!-- ko if: Exited -->
                                         <span class="prop-separator">→</span>
                                         <span class="actual-value"
-                                            data-bind="text: PeakDisk.mbIEC(), css: { 'over-limit': PeakDisk > (RequestedDisk * 1024) }"></span>
+                                            data-bind="text: PeakDisk === 0 ? '0GB' : PeakDisk.mbIEC(), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk }"></span>
                                         <!-- /ko -->
                                     </span>
                                 </div>
@@ -364,31 +365,38 @@
 
                             <!-- Combined status section -->
                             <div class="prop-section">
-                                <!-- Status - combines attempts, exit code, and failure reason -->
-                                <div class="prop-tag wide-tag">
-                                    <span class="prop-name">Status</span>
+                                <div class="prop-tag">
+                                    <span class="prop-name">Attempts</span>
+                                    <span class="prop-value" data-bind="text: Attempts"></span>
+                                </div>
+
+                                <!-- Exit code, only visible when job has exited -->
+                                <!-- ko if: Exited -->
+                                <div class="prop-tag">
+                                    <span class="prop-name">Exit</span>
                                     <span class="prop-value">
-                                        <span data-bind="text: 'Attempt ' + Attempts"></span>
-
-                                        <!-- ko if: Exited -->
-                                        <span class="prop-separator">•</span>
                                         <span class="exit-code"
-                                            data-bind="text: 'Exit: ' + Exitcode, css: { 'exit-success': Exitcode == 0, 'exit-error': Exitcode != 0 }"></span>
-                                        <!-- /ko -->
-
-                                        <!-- ko if: FailReason -->
-                                        <span class="prop-separator">•</span>
-                                        <span class="fail-reason truncate-text"
-                                            data-bind="text: FailReason, attr: { title: FailReason }"></span>
-                                        <!-- /ko -->
+                                            data-bind="text: Exitcode, css: { 'exit-success': Exitcode == 0, 'exit-error': Exitcode != 0 }"></span>
                                     </span>
                                 </div>
+                                <!-- /ko -->
+
+                                <!-- Failure reason as separate tag, only visible when there is a reason -->
+                                <!-- ko if: FailReason -->
+                                <div class="prop-tag">
+                                    <span class="prop-name">Reason</span>
+                                    <span class="prop-value">
+                                        <span class="fail-reason truncate-text"
+                                            data-bind="text: FailReason, attr: { title: FailReason }"></span>
+                                    </span>
+                                </div>
+                                <!-- /ko -->
                             </div>
 
                             <!-- Execution information -->
                             <div class="prop-section">
                                 <!-- Started/Ended dates -->
-                                <div class="prop-tag wide-tag">
+                                <div class="prop-tag">
                                     <span class="prop-name">When</span>
                                     <span class="prop-value">
                                         <span data-bind="text: 'Started: ' + Started.toDate()"></span>
@@ -400,7 +408,7 @@
                                 </div>
 
                                 <!-- Combined host information -->
-                                <div class="prop-tag wide-tag host">
+                                <div class="prop-tag host">
                                     <span class="prop-name">Where</span>
                                     <span class="prop-value">
                                         <span data-bind="text: Host"></span>
