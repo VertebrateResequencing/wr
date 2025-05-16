@@ -251,7 +251,8 @@
                     <div class="top-margin panel" style="margin-bottom: 0"
                         data-bind="css: { 'panel-warning': State == 'delayed' || State == 'dependent', 'panel-info': State == 'ready', 'panel-primary': State == 'running', 'panel-danger': State == 'buried' || State == 'lost', 'panel-success': State == 'complete' }">
                         <div class="panel-heading">
-                            <div class="terminal" data-bind="css: $root.terminalBorderClass">
+                            <div class="terminal"
+                                data-bind="css: { 'border-warning': State == 'delayed' || State == 'dependent', 'border-info': State == 'ready', 'border-primary': State == 'running', 'border-danger': State == 'buried' || State == 'lost', 'border-success': State == 'complete' }">
                                 <small>
                                     <div class="command-path">
                                         @<span data-bind="text: Host" style="color: #00FF00;"></span>:

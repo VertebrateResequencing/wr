@@ -33,9 +33,6 @@ export function StatusViewModel() {
     self.sortableRepGroups = ko.observableArray();
     self.ignore = {};
 
-    // Add observable for the terminal border class
-    self.terminalBorderClass = ko.observable('');
-
     //-------------------------------------------------------------------------
     // UTILITY FUNCTIONS
     //-------------------------------------------------------------------------
@@ -66,42 +63,34 @@ export function StatusViewModel() {
 
     // Functions for clicking on different progress bar types
     self.showRepgroupDelayed = function (repGroup) {
-        self.terminalBorderClass('border-warning');
         showGroupState(self, repGroup, 'delayed');
     };
 
     self.showRepgroupDependent = function (repGroup) {
-        self.terminalBorderClass('border-warning');
         showGroupState(self, repGroup, 'dependent');
     };
 
     self.showRepgroupReady = function (repGroup) {
-        self.terminalBorderClass('border-info');
         showGroupState(self, repGroup, 'ready');
     };
 
     self.showRepgroupRunning = function (repGroup) {
-        self.terminalBorderClass('border-primary');
         showGroupState(self, repGroup, 'reserved'); // which includes 'running'
     };
 
     self.showRepgroupLost = function (repGroup) {
-        self.terminalBorderClass('border-danger');
         showGroupState(self, repGroup, 'lost');
     };
 
     self.showRepgroupBuried = function (repGroup) {
-        self.terminalBorderClass('border-danger');
         showGroupState(self, repGroup, 'buried');
     };
 
     self.showRepgroupComplete = function (repGroup) {
-        self.terminalBorderClass('border-success');
         showGroupState(self, repGroup, 'complete');
     };
 
     self.showGroupState = function (repGroup, state) {
-        self.terminalBorderClass('');
         showGroupState(self, repGroup, state);
     };
 
