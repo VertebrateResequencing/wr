@@ -139,6 +139,12 @@ export function StatusViewModel() {
         modalHandlers.showEnv(self, job);
     };
 
+    self.jobDetailsModalVisible = ko.observable(false);
+    self.jobDetailsData = null;
+    self.showJobDetails = function (job) {
+        modalHandlers.showJobDetails(self, job);
+    };
+
     //-------------------------------------------------------------------------
     // ACTION HANDLING
     //-------------------------------------------------------------------------

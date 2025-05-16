@@ -293,197 +293,178 @@
                         </div>
 
                         <!-- ====================== JOB PROPERTIES SECTION ====================== -->
-                        <div class="panel-body keyvals">
-                            <dl>
-                                <dt>Attempts</dt>
-                                <dd data-bind="text: Attempts"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Expected RAM</dt>
-                                <dd data-bind="text: ExpectedRAM.mbIEC()"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Expected Time</dt>
-                                <dd data-bind="text: ExpectedTime.toDuration()"></dd>
-                            </dl>
-                            <!-- ko if: RequestedDisk > 0 -->
-                            <dl>
-                                <dt>Requested Disk</dt>
-                                <dd><span data-bind="text: RequestedDisk"></span> GB</dd>
-                            </dl>
-                            <!-- /ko -->
-                            <dl>
-                                <dt>Cores</dt>
-                                <dd data-bind="text: Cores"></dd>
-                            </dl>
-                            <!-- ko if: MonitorDocker != '' -->
-                            <dl>
-                                <dt>Monitor Docker</dt>
-                                <dd><span data-bind="text: MonitorDocker"></span></dd>
-                            </dl>
-                            <!-- /ko -->
-                            <!-- ko if: FailReason -->
-                            <dl>
-                                <!-- ko if: State == 'running' -->
-                                <dt>Previous Failure</dt>
+                        <div class="panel-body compact-props">
+                            <!-- Core Properties (always visible) -->
+                            <div class="prop-section resources">
+                                <div class="prop-tag">
+                                    <span class="prop-name">Cores</span>
+                                    <span class="prop-value" data-bind="text: Cores"></span>
+                                </div>
+
+                                <div class="prop-tag">
+                                    <span class="prop-name">RAM</span>
+                                    <span class="prop-value">
+                                        <span data-bind="text: ExpectedRAM.mbIEC()"></span>
+                                        <!-- ko if: Exited && PeakRAM > 0 -->
+                                        <span class="prop-separator">→</span>
+                                        <span class="actual-value"
+                                            data-bind="text: PeakRAM.mbIEC(), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                        <!-- /ko -->
+                                    </span>
+                                </div>
+
+                                <div class="prop-tag">
+                                    <span class="prop-name">Time</span>
+                                    <span class="prop-value">
+                                        <span data-bind="text: ExpectedTime.toDuration()"></span>
+
+                                        <!-- ko if: Exited -->
+                                        <span class="prop-separator">→</span>
+                                        <span class="actual-value"
+                                            data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                        <span class="prop-separator">•</span>
+                                        <span class="cpu-time" data-bind="text: 'CPU: ' + CPUtime.toDuration()"></span>
+                                        <!-- /ko -->
+
+                                        <!-- ko if: !Exited && (State == 'running' || State == 'reserved') -->
+                                        <span class="prop-separator">→</span>
+                                        <span class="actual-value"
+                                            data-bind="text: LiveWalltime().toDuration(), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
+                                        <!-- /ko -->
+
+                                        <!-- ko if: !Exited && State == 'lost' -->
+                                        <span class="prop-separator">→</span>
+                                        <span class="actual-value"
+                                            data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                        <!-- /ko -->
+                                    </span>
+                                </div>
+
+                                <!-- Disk (conditional) -->
+                                <div class="prop-tag" data-bind="if: RequestedDisk > 0">
+                                    <span class="prop-name">Disk</span>
+                                    <span class="prop-value">
+                                        <span data-bind="text: RequestedDisk + ' GB'"></span>
+                                        <!-- ko if: Exited && PeakDisk > 0 -->
+                                        <span class="prop-separator">→</span>
+                                        <span class="actual-value"
+                                            data-bind="text: PeakDisk.mbIEC(), css: { 'over-limit': PeakDisk > (RequestedDisk * 1024) }"></span>
+                                        <!-- /ko -->
+                                    </span>
+                                </div>
+
+                                <!-- Docker (conditional) -->
+                                <!-- ko if: MonitorDocker != '' -->
+                                <div class="prop-tag docker">
+                                    <span class="prop-name">Docker</span>
+                                    <span class="prop-value" data-bind="text: MonitorDocker"></span>
+                                </div>
                                 <!-- /ko -->
-                                <!-- ko if: State != 'running' -->
-                                <dt>Reason for Failure</dt>
-                                <!-- /ko -->
-                                <dd data-bind="text: FailReason"></dd>
-                            </dl>
-                            <!-- /ko -->
+                            </div>
 
-                            <!-- ====================== JOB DETAILS FOR EXITED JOBS ====================== -->
-                            <!-- ko if: Exited -->
-                            <dl>
-                                <dt>Exit code</dt>
-                                <dd data-bind="text: Exitcode"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Peak RAM</dt>
-                                <dd data-bind="text: PeakRAM.mbIEC()"></dd>
-                            </dl>
-                            <!-- ko if: PeakDisk > 0 -->
-                            <dl>
-                                <dt>Peak Disk</dt>
-                                <dd data-bind="text: PeakDisk.mbIEC()"></dd>
-                            </dl>
-                            <!-- /ko -->
-                            <dl>
-                                <dt>Started</dt>
-                                <dd data-bind="text: Started.toDate()"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Ended</dt>
-                                <dd data-bind="text: Ended.toDate()"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Walltime</dt>
-                                <dd data-bind="text: Walltime.toDuration()"></dd>
-                            </dl>
-                            <dl>
-                                <dt>CPUtime</dt>
-                                <dd data-bind="text: CPUtime.toDuration()"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Host IP</dt>
-                                <dd data-bind="text: HostIP"></dd>
-                            </dl>
-                            <!-- ko if: HostID != "" -->
-                            <dl>
-                                <dt>Host ID</dt>
-                                <dd data-bind="text: HostID"></dd>
-                            </dl>
-                            <!-- /ko -->
-                            <dl>
-                                <dt>Pid</dt>
-                                <dd data-bind="text: Pid"></dd>
-                            </dl>
-                            <!-- /ko -->
+                            <!-- Combined status section -->
+                            <div class="prop-section">
+                                <!-- Status - combines attempts, exit code, and failure reason -->
+                                <div class="prop-tag wide-tag">
+                                    <span class="prop-name">Status</span>
+                                    <span class="prop-value">
+                                        <span data-bind="text: 'Attempt ' + Attempts"></span>
 
-                            <!-- ====================== JOB DETAILS FOR RUNNING JOBS ====================== -->
-                            <!-- ko if: ! Exited && (State == "reserved" || State == "running" || State == "lost") -->
-                            <dl>
-                                <dt>Started</dt>
-                                <dd data-bind="text: Started.toDate()"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Walltime</dt>
-                                <!-- ko if: State == "lost" -->
-                                <dd data-bind="text: Walltime.toDuration()"></dd>
-                                <!-- /ko -->
-                                <!-- ko if: State != "lost" -->
-                                <dd data-bind="text: LiveWalltime().toDuration()"></dd>
-                                <!-- /ko -->
-                            </dl>
-                            <dl>
-                                <dt>Host</dt>
-                                <dd data-bind="text: Host"></dd>
-                            </dl>
-                            <dl>
-                                <dt>Host IP</dt>
-                                <dd data-bind="text: HostIP"></dd>
-                            </dl>
-                            <!-- ko if: HostID != "" -->
-                            <dl>
-                                <dt>Host ID</dt>
-                                <dd data-bind="text: HostID"></dd>
-                            </dl>
-                            <!-- /ko -->
-                            <dl>
-                                <dt>Pid</dt>
-                                <dd data-bind="text: Pid"></dd>
-                            </dl>
-                            <!-- /ko -->
+                                        <!-- ko if: Exited -->
+                                        <span class="prop-separator">•</span>
+                                        <span class="exit-code"
+                                            data-bind="text: 'Exit: ' + Exitcode, css: { 'exit-success': Exitcode == 0, 'exit-error': Exitcode != 0 }"></span>
+                                        <!-- /ko -->
 
-                            <!-- ====================== JOB DETAILS - ADVANCED PROPERTIES ====================== -->
-                            <!-- ko if: LimitGroups -->
-                            <dl>
-                                <dt>LimitGroups</dt>
-                                <dd>
-                                    <span class="clickable" data-bind="click: $root.showLimitGroups">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
-                            <!-- /ko -->
+                                        <!-- ko if: FailReason -->
+                                        <span class="prop-separator">•</span>
+                                        <span class="fail-reason truncate-text"
+                                            data-bind="text: FailReason, attr: { title: FailReason }"></span>
+                                        <!-- /ko -->
+                                    </span>
+                                </div>
+                            </div>
 
-                            <!-- ko if: DepGroups -->
-                            <dl>
-                                <dt>DepGroups</dt>
-                                <dd>
-                                    <span class="clickable" data-bind="click: $root.showDepGroups">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
-                            <!-- /ko -->
+                            <!-- Execution information -->
+                            <div class="prop-section">
+                                <!-- Started/Ended dates -->
+                                <div class="prop-tag wide-tag">
+                                    <span class="prop-name">When</span>
+                                    <span class="prop-value">
+                                        <span data-bind="text: 'Started: ' + Started.toDate()"></span>
+                                        <!-- ko if: Exited -->
+                                        <span class="prop-separator">→</span>
+                                        <span data-bind="text: 'Ended: ' + Ended.toDate()"></span>
+                                        <!-- /ko -->
+                                    </span>
+                                </div>
 
-                            <!-- ko if: Dependencies -->
-                            <dl>
-                                <dt>Dependencies</dt>
-                                <dd>
-                                    <span class="clickable"
-                                        data-bind="click: $root.showDependencies">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
-                            <!-- /ko -->
+                                <!-- Combined host information -->
+                                <div class="prop-tag wide-tag host">
+                                    <span class="prop-name">Where</span>
+                                    <span class="prop-value">
+                                        <span data-bind="text: Host"></span>
+                                        <span class="prop-separator">•</span>
+                                        <span data-bind="text: 'IP: ' + HostIP"></span>
+                                        <!-- ko if: HostID != "" -->
+                                        <span class="prop-separator">•</span>
+                                        <span data-bind="text: 'ID: ' + HostID"></span>
+                                        <!-- /ko -->
+                                        <span class="prop-separator">•</span>
+                                        <span data-bind="text: 'PID: ' + Pid"></span>
+                                    </span>
+                                </div>
 
-                            <dl>
-                                <dt>Env</dt>
-                                <dd>
-                                    <span class="clickable" data-bind="click: $root.showEnv">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
+                                <!-- Individual advanced properties buttons -->
+                                <div class="prop-section advanced">
+                                    <!-- ko if: LimitGroups && LimitGroups.length > 0 -->
+                                    <div class="prop-tag clickable" data-bind="click: $root.showLimitGroups">
+                                        <span class="prop-name">LG</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+                                    <!-- /ko -->
 
-                            <!-- ko if: Cwd -->
-                            <dl>
-                                <dt>Home Changed</dt>
-                                <dd data-bind="text: HomeChanged"></dd>
-                            </dl>
-                            <!-- /ko -->
+                                    <!-- ko if: DepGroups && DepGroups.length > 0 -->
+                                    <div class="prop-tag clickable" data-bind="click: $root.showDepGroups">
+                                        <span class="prop-name">DG</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+                                    <!-- /ko -->
 
-                            <!-- ko if: Behaviours -->
-                            <dl>
-                                <dt>Behaviours</dt>
-                                <dd>
-                                    <span class="clickable" data-bind="click: $root.showBehaviours">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
-                            <!-- /ko -->
+                                    <!-- ko if: Dependencies && Dependencies.length > 0 -->
+                                    <div class="prop-tag clickable" data-bind="click: $root.showDependencies">
+                                        <span class="prop-name">Deps</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+                                    <!-- /ko -->
 
-                            <!-- ko if: OtherRequests -->
-                            <dl>
-                                <dt>Resource Requirements</dt>
-                                <dd>
-                                    <span class="clickable" data-bind="click: $root.showOther">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
-                            <!-- /ko -->
+                                    <!-- ko if: Behaviours -->
+                                    <div class="prop-tag clickable" data-bind="click: $root.showBehaviours">
+                                        <span class="prop-name">Beh</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+                                    <!-- /ko -->
 
-                            <dl>
-                                <dt>Internal ID</dt>
-                                <dd>
-                                    <span class="clickable" data-bind="click: $root.showInternalID">&lt;show&gt;</span>
-                                </dd>
-                            </dl>
+                                    <!-- ko if: OtherRequests && OtherRequests.length > 0 -->
+                                    <div class="prop-tag clickable" data-bind="click: $root.showOther">
+                                        <span class="prop-name">Reqs</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+                                    <!-- /ko -->
+
+                                    <div class="prop-tag clickable" data-bind="click: $root.showInternalID">
+                                        <span class="prop-name">ID</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+
+                                    <!-- ko if: Env && Env.length > 0 -->
+                                    <div class="prop-tag clickable" data-bind="click: $root.showEnv">
+                                        <span class="prop-name">Env</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    </div>
+                                    <!-- /ko -->
+                                </div>
+                            </div>
                         </div>
 
                         <!-- ====================== JOB ACTION BUTTONS ====================== -->
@@ -546,44 +527,52 @@
                 footer: { name: 'actionModalFooterTemplate', data: actionDetails }
             }"></div>
         <script type="text/html" id="actionModalBodyTemplate">
-                <!-- ko if: button() != "confirm" -->
+            <!-- ko if: button() != "confirm" -->
+            <p>
                 Are you sure you want to <span data-bind="text: action"></span> the <span data-bind="text: count"></span>
-        commands with the identifier "<span data-bind="text: repGroup"></span>"
-        <!-- ko if: exited -->
-        that had exit code <span data-bind="text: exitCode"></span> and failed because "<span
-            data-bind="text: failReason"></span>"?
-        <!-- /ko -->
-        <!-- ko if: ! exited -->
-        ?
-        <!-- /ko -->
-        <!-- /ko -->
-        <!-- ko if: button() == "confirm" -->
-        Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span
-            data-bind="text: repGroup"></span>" are really dead?
-        <!-- /ko -->
-        <br>
-        <!-- ko if: button() == "kill" -->
-        <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become
-            buried)</small>
-        <!-- /ko -->
-        <!-- ko if: button() == "remove" -->
-        <small>(removal of commands that have other commands depending on them will silently fail)</small>
-        <!-- /ko -->
+                commands with the identifier "<span data-bind="text: repGroup"></span>"
+                <!-- ko if: exited -->
+                that had exit code <span data-bind="text: exitCode"></span> and failed because "<span
+                    data-bind="text: failReason"></span>"?
+                <!-- /ko -->
+                <!-- ko if: !exited -->
+                ?
+                <!-- /ko -->
+            </p>
+            <!-- /ko -->
+            
+            <!-- ko if: button() == "confirm" -->
+            <p>
+                Are you sure the <span data-bind="text: count"></span> commands with the identifier "<span
+                    data-bind="text: repGroup"></span>" are really dead?
+            </p>
+            <!-- /ko -->
+            
+            <br>
+            
+            <!-- ko if: button() == "kill" -->
+            <small>(there will be a delay before the cmds stop executing; after killing wait until the jobs become
+                buried)</small>
+            <!-- /ko -->
+            
+            <!-- ko if: button() == "remove" -->
+            <small>(removal of commands that have other commands depending on them will silently fail)</small>
+            <!-- /ko -->
         </script>
         <script type="text/html" id="actionModalFooterTemplate">
-                <div class="btn-group">
-                    <!-- ko if: count() > 1 -->
-                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: button().capitalizeFirstLetter() + ' all'"></button>
-                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter() + ' 1'"></button>
-                    <!-- /ko -->
-                    <!-- ko if: count() == 1 -->
-                        <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter()"></button>
-                    <!-- /ko -->
-                    <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-                </div>
-            </script>
+            <div class="btn-group">
+                <!-- ko if: count() > 1 -->
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, true), text: button().capitalizeFirstLetter() + ' all'"></button>
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter() + ' 1'"></button>
+                <!-- /ko -->
+                <!-- ko if: count() == 1 -->
+                    <button type="button" class="btn btn-primary" data-bind="click: $root.commitAction.bind($data, false), text: button().capitalizeFirstLetter()"></button>
+                <!-- /ko -->
+                <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+            </div>
+        </script>
 
-        <!-- limitgroups modal -->
+        <!-- Individual component modals (kept for backward compatibility) -->
         <div data-bind="modal: {
                 visible: lgModalVisible,
                 dialogCss: 'modal-lg',
@@ -591,7 +580,6 @@
                 body: { name: 'envModalBodyTemplate', data: lgVars }
             }"></div>
 
-        <!-- depgroups modal -->
         <div data-bind="modal: {
                 visible: dgModalVisible,
                 dialogCss: 'modal-lg',
@@ -599,7 +587,6 @@
                 body: { name: 'envModalBodyTemplate', data: dgVars }
             }"></div>
 
-        <!-- dependencies modal -->
         <div data-bind="modal: {
                 visible: depModalVisible,
                 dialogCss: 'modal-lg',
@@ -607,7 +594,6 @@
                 body: { name: 'envModalBodyTemplate', data: depVars }
             }"></div>
 
-        <!-- behaviours modal -->
         <div data-bind="modal: {
                 visible: behModalVisible,
                 dialogCss: 'modal-lg',
@@ -615,7 +601,6 @@
                 body: { name: 'envModalBodyTemplate', data: behVars }
             }"></div>
 
-        <!-- other modal -->
         <div data-bind="modal: {
                 visible: otherModalVisible,
                 dialogCss: 'modal-lg',
@@ -623,15 +608,13 @@
                 body: { name: 'envModalBodyTemplate', data: otherVars }
             }"></div>
 
-        <!-- internalID modal -->
         <div data-bind="modal: {
-            visible: internalModalVisible,
-            dialogCss: 'modal-lg',
-            header: { data: { label: 'Internal Job ID' } },
-            body: { name: 'envModalBodyTemplate', data: internalVars }
-        }"></div>
+                visible: internalModalVisible,
+                dialogCss: 'modal-lg',
+                header: { data: { label: 'Internal Job ID' } },
+                body: { name: 'envModalBodyTemplate', data: internalVars }
+            }"></div>
 
-        <!-- env modal -->
         <div data-bind="modal: {
                 visible: envModalVisible,
                 dialogCss: 'modal-lg',
