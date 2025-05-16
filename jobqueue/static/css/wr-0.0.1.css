@@ -216,20 +216,16 @@ u.dotted {
     overflow: hidden;
     position: relative;
     height: 20px;
-    /* Fixed height to prevent resizing */
 }
 
 .progress-bar {
     transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    /* Smoother easing */
     position: relative;
     z-index: 1;
     will-change: width;
     transform: translateZ(0);
     min-width: 0;
-    /* Allow bars to collapse to 0 */
     height: 100%;
-    /* Ensure full height */
 }
 
 /* Force immediate updates when needed with this class */
@@ -239,34 +235,46 @@ u.dotted {
 
 /* Ultra-compact Job Properties Layout */
 .compact-props {
-    padding: 8px 10px !important;
+    padding: 4px 10px !important;
 }
 
-.prop-section {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-bottom: 4px;
-    align-items: flex-start;
+.prop-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0;
 }
 
-.prop-section-title {
+.prop-row+.prop-row:before {
+    display: none;
+}
+
+.prop-row+.prop-row td {
+    border-top: 1px dotted #eee;
+    padding-top: 4px;
+}
+
+.prop-row:first-child td {
+    padding-top: 2px;
+    padding-bottom: 2px;
+}
+
+.prop-title {
     font-size: 10px;
     font-weight: 600;
     color: #666;
-    padding: 2px 0;
-    align-self: center;
-    min-width: 65px;
-    margin-right: 3px;
     white-space: nowrap;
-    position: relative;
-    top: 0;
+    padding: 2px 8px 2px 0;
+    vertical-align: middle;
+    width: 1%;
+    text-align: right;
 }
 
-.prop-section:last-child {
-    margin-bottom: 0;
+.prop-content {
+    vertical-align: top;
+    padding: 2px 0;
 }
 
+/* Adjust tag margins for more compact spacing */
 .prop-tag {
     display: inline-flex;
     font-size: 11px;
@@ -274,6 +282,7 @@ u.dotted {
     border: 1px solid #ddd;
     border-radius: 3px;
     overflow: hidden;
+    margin: 0 5px 2px 0;
 }
 
 .prop-name {
@@ -396,10 +405,6 @@ u.dotted {
 }
 
 /* Details button styling */
-.details-button {
-    margin-left: auto;
-}
-
 .details-button .prop-name {
     background-color: #d9edf7;
     color: #31708f;

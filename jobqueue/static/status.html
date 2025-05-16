@@ -294,144 +294,148 @@
 
                         <!-- ====================== JOB PROPERTIES SECTION ====================== -->
                         <div class="panel-body compact-props">
-                            <!-- Core Properties (always visible) -->
-                            <div class="prop-section">
-                                <span class="prop-section-title">Resources:</span>
-                                <div class="prop-tag">
-                                    <span class="prop-name">Cores</span>
-                                    <span class="prop-value" data-bind="text: Cores"></span>
-                                </div>
+                            <table class="prop-table">
+                                <!-- Core Properties (always visible) -->
+                                <tr class="prop-row">
+                                    <td class="prop-title">Resources:</td>
+                                    <td class="prop-content">
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Cores</span>
+                                            <span class="prop-value" data-bind="text: Cores"></span>
+                                        </div>
 
-                                <div class="prop-tag">
-                                    <span class="prop-name">RAM</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: ExpectedRAM.mbIEC()"></span>
-                                        <!-- ko if: Exited && PeakRAM > 0 -->
-                                        <span class="prop-separator">→</span>
-                                        <span class="actual-value"
-                                            data-bind="text: PeakRAM.mbIEC(), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                        <div class="prop-tag">
+                                            <span class="prop-name">RAM</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: ExpectedRAM.mbIEC()"></span>
+                                                <!-- ko if: Exited && PeakRAM > 0 -->
+                                                <span class="prop-separator">→</span>
+                                                <span class="actual-value"
+                                                    data-bind="text: PeakRAM.mbIEC(), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                                <!-- /ko -->
+                                            </span>
+                                        </div>
+
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Time</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: ExpectedTime.toDuration()"></span>
+
+                                                <!-- ko if: Exited -->
+                                                <span class="prop-separator">→</span>
+                                                <span class="actual-value"
+                                                    data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                                <span class="prop-separator">•</span>
+                                                <span data-bind="text: 'CPU: ' + CPUtime.toDuration()"></span>
+                                                <!-- /ko -->
+
+                                                <!-- ko if: !Exited && (State == 'running' || State == 'reserved') -->
+                                                <span class="prop-separator">→</span>
+                                                <span class="actual-value"
+                                                    data-bind="text: LiveWalltime().toDuration(), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
+                                                <!-- /ko -->
+
+                                                <!-- ko if: !Exited && State == 'lost' -->
+                                                <span class="prop-separator">→</span>
+                                                <span class="actual-value"
+                                                    data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                                <!-- /ko -->
+                                            </span>
+                                        </div>
+
+                                        <!-- Disk -->
+                                        <div class="prop-tag" data-bind="if: RequestedDisk > 0 || PeakDisk > 0">
+                                            <span class="prop-name">Disk</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: RequestedDisk + ' GB'"></span>
+                                                <!-- ko if: Exited -->
+                                                <span class="prop-separator">→</span>
+                                                <span class="actual-value"
+                                                    data-bind="text: PeakDisk === 0 ? '0GB' : PeakDisk.mbIEC(), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk*1024 }"></span>
+                                                <!-- /ko -->
+                                            </span>
+                                        </div>
+
+                                        <!-- Docker (conditional) -->
+                                        <!-- ko if: MonitorDocker != '' -->
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Docker</span>
+                                            <span class="prop-value" data-bind="text: MonitorDocker"></span>
+                                        </div>
                                         <!-- /ko -->
-                                    </span>
-                                </div>
+                                    </td>
+                                </tr>
 
-                                <div class="prop-tag">
-                                    <span class="prop-name">Time</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: ExpectedTime.toDuration()"></span>
+                                <!-- Combined status section -->
+                                <tr class="prop-row">
+                                    <td class="prop-title">Status:</td>
+                                    <td class="prop-content">
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Attempts</span>
+                                            <span class="prop-value" data-bind="text: Attempts"></span>
+                                        </div>
 
+                                        <!-- Exit code, only visible when job has exited -->
                                         <!-- ko if: Exited -->
-                                        <span class="prop-separator">→</span>
-                                        <span class="actual-value"
-                                            data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
-                                        <span class="prop-separator">•</span>
-                                        <span data-bind="text: 'CPU: ' + CPUtime.toDuration()"></span>
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Exit</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: Exitcode"></span>
+                                            </span>
+                                        </div>
                                         <!-- /ko -->
 
-                                        <!-- ko if: !Exited && (State == 'running' || State == 'reserved') -->
-                                        <span class="prop-separator">→</span>
-                                        <span class="actual-value"
-                                            data-bind="text: LiveWalltime().toDuration(), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
+                                        <!-- Failure reason as separate tag, only visible when there is a reason -->
+                                        <!-- ko if: FailReason -->
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Reason</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: FailReason, attr: { title: FailReason }"></span>
+                                            </span>
+                                        </div>
                                         <!-- /ko -->
+                                    </td>
+                                </tr>
 
-                                        <!-- ko if: !Exited && State == 'lost' -->
-                                        <span class="prop-separator">→</span>
-                                        <span class="actual-value"
-                                            data-bind="text: Walltime.toDuration(), css: { 'over-limit': Walltime > ExpectedTime }"></span>
-                                        <!-- /ko -->
-                                    </span>
-                                </div>
+                                <!-- Execution information -->
+                                <tr class="prop-row">
+                                    <td class="prop-title">Execution:</td>
+                                    <td class="prop-content">
+                                        <div class="prop-tag">
+                                            <span class="prop-name">When</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: 'Started: ' + Started.toDate()"></span>
+                                                <!-- ko if: Exited -->
+                                                <span class="prop-separator">→</span>
+                                                <span data-bind="text: 'Ended: ' + Ended.toDate()"></span>
+                                                <!-- /ko -->
+                                            </span>
+                                        </div>
 
-                                <!-- Disk -->
-                                <div class="prop-tag" data-bind="if: RequestedDisk > 0 || PeakDisk > 0">
-                                    <span class="prop-name">Disk</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: RequestedDisk + ' GB'"></span>
-                                        <!-- ko if: Exited -->
-                                        <span class="prop-separator">→</span>
-                                        <span class="actual-value"
-                                            data-bind="text: PeakDisk === 0 ? '0GB' : PeakDisk.mbIEC(), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk*1024 }"></span>
-                                        <!-- /ko -->
-                                    </span>
-                                </div>
+                                        <div class="prop-tag">
+                                            <span class="prop-name">Where</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: Host"></span>
+                                                <span class="prop-separator">•</span>
+                                                <span data-bind="text: 'IP: ' + HostIP"></span>
+                                                <!-- ko if: HostID != "" -->
+                                                <span class="prop-separator">•</span>
+                                                <span data-bind="text: 'ID: ' + HostID"></span>
+                                                <!-- /ko -->
+                                                <span class="prop-separator">•</span>
+                                                <span data-bind="text: 'PID: ' + Pid"></span>
+                                            </span>
+                                        </div>
 
-                                <!-- Docker (conditional) -->
-                                <!-- ko if: MonitorDocker != '' -->
-                                <div class="prop-tag">
-                                    <span class="prop-name">Docker</span>
-                                    <span class="prop-value" data-bind="text: MonitorDocker"></span>
-                                </div>
-                                <!-- /ko -->
-                            </div>
-
-                            <!-- Combined status section -->
-                            <div class="prop-section">
-                                <span class="prop-section-title">Status:</span>
-                                <div class="prop-tag">
-                                    <span class="prop-name">Attempts</span>
-                                    <span class="prop-value" data-bind="text: Attempts"></span>
-                                </div>
-
-                                <!-- Exit code, only visible when job has exited -->
-                                <!-- ko if: Exited -->
-                                <div class="prop-tag">
-                                    <span class="prop-name">Exit</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: Exitcode"></span>
-                                    </span>
-                                </div>
-                                <!-- /ko -->
-
-                                <!-- Failure reason as separate tag, only visible when there is a reason -->
-                                <!-- ko if: FailReason -->
-                                <div class="prop-tag">
-                                    <span class="prop-name">Reason</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: FailReason, attr: { title: FailReason }"></span>
-                                    </span>
-                                </div>
-                                <!-- /ko -->
-                            </div>
-
-                            <!-- Execution information -->
-                            <div class="prop-section">
-                                <span class="prop-section-title">Execution:</span>
-                                <!-- Started/Ended dates -->
-                                <div class="prop-tag">
-                                    <span class="prop-name">When</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: 'Started: ' + Started.toDate()"></span>
-                                        <!-- ko if: Exited -->
-                                        <span class="prop-separator">→</span>
-                                        <span data-bind="text: 'Ended: ' + Ended.toDate()"></span>
-                                        <!-- /ko -->
-                                    </span>
-                                </div>
-
-                                <!-- Combined host information -->
-                                <div class="prop-tag">
-                                    <span class="prop-name">Where</span>
-                                    <span class="prop-value">
-                                        <span data-bind="text: Host"></span>
-                                        <span class="prop-separator">•</span>
-                                        <span data-bind="text: 'IP: ' + HostIP"></span>
-                                        <!-- ko if: HostID != "" -->
-                                        <span class="prop-separator">•</span>
-                                        <span data-bind="text: 'ID: ' + HostID"></span>
-                                        <!-- /ko -->
-                                        <span class="prop-separator">•</span>
-                                        <span data-bind="text: 'PID: ' + Pid"></span>
-                                    </span>
-                                </div>
-
-                                <!-- Misc properties -->
-                                <div class="prop-section advanced">
-                                    <div class="prop-tag clickable details-button"
-                                        data-bind="click: $root.showJobDetails">
-                                        <span class="prop-name">Misc</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-info-sign"></i></span>
-                                    </div>
-                                </div>
-                            </div>
+                                        <div class="prop-tag clickable details-button"
+                                            data-bind="click: $root.showJobDetails">
+                                            <span class="prop-name">Details</span>
+                                            <span class="prop-value"><i
+                                                    class="glyphicon glyphicon-info-sign"></i></span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
                         </div>
 
                         <!-- ====================== JOB ACTION BUTTONS ====================== -->
@@ -531,11 +535,11 @@
             </div>
         </script>
 
-        <!-- Single combined job details modal with rich template -->
+        <!-- Single combined misc job details modal -->
         <div data-bind="modal: {
                 visible: jobDetailsModalVisible,
                 dialogCss: 'modal-lg',
-                header: { data: { label: 'Job Details' } },
+                header: { data: { label: 'Execution Details' } },
                 body: { name: 'jobDetailsModalBodyTemplate', data: jobDetailsData }
             }"></div>
 
