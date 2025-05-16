@@ -182,3 +182,19 @@ u.dotted {
 .stderr-text::-webkit-scrollbar-thumb:hover {
     background-color: rgba(255, 255, 255, 0.5);
 }
+
+/* Fix for progress bar flickering */
+.progress {
+    overflow: hidden;
+    position: relative;
+}
+
+.progress-bar {
+    transition: width 0.25s ease;
+    position: relative;
+    z-index: 1;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+}

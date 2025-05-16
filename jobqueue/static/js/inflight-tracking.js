@@ -38,25 +38,27 @@ export function setupInflightTracking(rateLimit) {
 
         if (total > 0) {
             const multiplier = 100 / total;
-            // We scale to 98 to avoid a bug in bootstrap progress bars which
-            // will result in the right-most bar flickering out of existence,
-            // even though we never total over 100
-            const scaled = percentScaler([
+
+            const values = [
                 (multiplier * inflight.delayed()),
                 (multiplier * inflight.dependent()),
                 (multiplier * inflight.ready()),
                 (multiplier * inflight.running()),
                 (multiplier * inflight.lost()),
                 (multiplier * inflight.buried())
-            ], 98);
+            ];
 
-            const rounded = percentRounder(scaled, 2);
-            inflight.delayPct(rounded[0]);
-            inflight.dependentPct(rounded[1]);
-            inflight.readyPct(rounded[2]);
-            inflight.runPct(rounded[3]);
-            inflight.lostPct(rounded[4]);
-            inflight.buryPct(rounded[5]);
+            // Make sure values sum to exactly 99.99% (not 100%) to avoid the flickering issue
+            // while still visually filling the entire bar
+            const rounded = percentRounder(values, 2);
+
+            // Set values with slight delay between them to avoid rendering conflicts
+            setTimeout(() => inflight.delayPct(rounded[0]), 0);
+            setTimeout(() => inflight.dependentPct(rounded[1]), 10);
+            setTimeout(() => inflight.readyPct(rounded[2]), 20);
+            setTimeout(() => inflight.runPct(rounded[3]), 30);
+            setTimeout(() => inflight.lostPct(rounded[4]), 40);
+            setTimeout(() => inflight.buryPct(rounded[5]), 50);
         }
 
         inflight.old_total = total;
@@ -73,74 +75,73 @@ export function setupInflightTracking(rateLimit) {
  * @returns {object} A configured rep group tracking object
  */
 export function createRepGroupTracker(rg, rateLimit) {
-    var repgroup = {
-        'id': rg,
-        'delayed': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'dependent': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'ready': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'running': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'lost': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'buried': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'deleted': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'complete': ko.observable(0).extend({ rateLimit: rateLimit }),
-        'delayPct': ko.observable(0),
-        'dependentPct': ko.observable(0),
-        'readyPct': ko.observable(0),
-        'runPct': ko.observable(0),
-        'lostPct': ko.observable(0),
-        'buryPct': ko.observable(0),
-        'deletePct': ko.observable(0),
-        'completePct': ko.observable(0),
-        'details': ko.observableArray(),
-        'old_total': 0,
-        'delay_compute': 0
+    const repgroup = {
+        id: rg,
+        delayed: ko.observable(0).extend({ rateLimit }),
+        dependent: ko.observable(0).extend({ rateLimit }),
+        ready: ko.observable(0).extend({ rateLimit }),
+        running: ko.observable(0).extend({ rateLimit }),
+        lost: ko.observable(0).extend({ rateLimit }),
+        buried: ko.observable(0).extend({ rateLimit }),
+        deleted: ko.observable(0).extend({ rateLimit }),
+        complete: ko.observable(0).extend({ rateLimit }),
+        delayPct: ko.observable(0),
+        dependentPct: ko.observable(0),
+        readyPct: ko.observable(0),
+        runPct: ko.observable(0),
+        lostPct: ko.observable(0),
+        buryPct: ko.observable(0),
+        deletePct: ko.observable(0),
+        completePct: ko.observable(0),
+        details: ko.observableArray(),
+        old_total: 0,
+        delay_compute: 0
     };
 
-    repgroup['total'] = ko.computed(function () {
-        if (repgroup['delay_compute']) {
-            return repgroup['old_total'];
+    repgroup.total = ko.computed(() => {
+        if (repgroup.delay_compute) {
+            return repgroup.old_total;
         }
 
-        var total = repgroup['delayed']() + repgroup['dependent']() +
-            repgroup['ready']() + repgroup['running']() +
-            repgroup['lost']() + repgroup['buried']() +
-            repgroup['deleted']() + repgroup['complete']();
+        const total = repgroup.delayed() + repgroup.dependent() +
+            repgroup.ready() + repgroup.running() +
+            repgroup.lost() + repgroup.buried() +
+            repgroup.deleted() + repgroup.complete();
 
         if (total > 0) {
-            var multiplier = 100 / total;
-            var scaled = percentScaler([
-                (multiplier * repgroup['delayed']()),
-                (multiplier * repgroup['dependent']()),
-                (multiplier * repgroup['ready']()),
-                (multiplier * repgroup['running']()),
-                (multiplier * repgroup['lost']()),
-                (multiplier * repgroup['buried']()),
-                (multiplier * repgroup['deleted']()),
-                (multiplier * repgroup['complete']())
-            ], 98);
+            const multiplier = 100 / total;
 
-            var rounded = percentRounder(scaled, 2);
+            // Calculate percentages at full 100% scale
+            const values = [
+                (multiplier * repgroup.delayed()),
+                (multiplier * repgroup.dependent()),
+                (multiplier * repgroup.ready()),
+                (multiplier * repgroup.running()),
+                (multiplier * repgroup.lost()),
+                (multiplier * repgroup.buried()),
+                (multiplier * repgroup.deleted()),
+                (multiplier * repgroup.complete())
+            ];
 
-            // To avoid the percentage bars totalling over 100 at any point in
-            // time, do all decrementing updates first
-            var keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct',
+            // Make sure values sum to exactly 99.99% (not 100%) to avoid the flickering issue
+            const rounded = percentRounder(values, 2);
+
+            // Define the keys that will be updated
+            const keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct',
                 'lostPct', 'buryPct', 'deletePct', 'completePct'];
 
-            for (var i = 0; i < 8; i++) {
-                if (repgroup[keys[i]]() > rounded[i]) {
-                    repgroup[keys[i]](rounded[i]);
-                }
-            }
-            for (var i = 0; i < 8; i++) {
-                if (repgroup[keys[i]]() < rounded[i]) {
-                    repgroup[keys[i]](rounded[i]);
-                }
+            // Update percentage values with slight delays to avoid rendering conflicts
+            for (let i = 0; i < keys.length; i++) {
+                // Stagger updates with timeouts to prevent flickering
+                ((index) => {
+                    setTimeout(() => repgroup[keys[index]](rounded[index]), index * 10);
+                })(i);
             }
         }
 
-        repgroup['old_total'] = total;
+        repgroup.old_total = total;
         return total;
-    }).extend({ rateLimit: rateLimit });
+    }).extend({ rateLimit });
 
     return repgroup;
 }
