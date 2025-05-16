@@ -1,6 +1,10 @@
 import { initNumberPrototypes, initStringPrototypes, initKnockoutBindings } from '/js/utility.js';
 import { StatusViewModel } from '/js/status-viewmodel.js';
 import { setupCommandPathBehavior } from '/js/ui-helpers.js';
+import { processJobBatch } from '/js/repgroup-handler.js';
+
+// Make certain functions available globally
+window.processJobBatch = processJobBatch;
 
 // Initialize prototype extensions
 initNumberPrototypes();

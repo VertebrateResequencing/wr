@@ -186,6 +186,7 @@ function handleJobDetailsMessage(viewModel, json) {
             return;
         }
 
+        // Prepare the job with walltime handling
         var walltime = json['Walltime'];
 
         if (json['State'] == "running") {
@@ -214,6 +215,19 @@ function handleJobDetailsMessage(viewModel, json) {
             });
         }
 
+        // Check if we're in batch loading mode
+        // If the job is processed as part of a batch, processJobBatch will handle it
+        if (viewModel.loadingSourceJob) {
+            const processed = window.processJobBatch ?
+                window.processJobBatch(viewModel, json) :
+                false;
+
+            if (processed) {
+                return; // The job was handled by the batch processor
+            }
+        }
+
+        // Normal case - add the job to the display
         viewModel.detailsOA.push(json);
     }
 }
