@@ -141,7 +141,7 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 
 		switch {
 		case strings.HasPrefix(path, "static/js"):
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		case strings.HasPrefix(path, "static/css"):
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		case strings.HasPrefix(path, "static/fonts"):
