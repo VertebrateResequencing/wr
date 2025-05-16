@@ -3,6 +3,68 @@
  */
 import { percentRounder, percentScaler } from '/js/utility.js';
 
+// Define the standard property sets first
+const STANDARD_COUNT_PROPS = ['delayed', 'dependent', 'ready', 'running', 'lost', 'buried'];
+
+// Define RepGroup properties by extending the standard ones
+const REPGROUP_COUNT_PROPS = [...STANDARD_COUNT_PROPS, 'deleted', 'complete'];
+
+// Define corresponding percentage property names
+const STANDARD_PCT_PROPS = ['delayPct', 'dependentPct', 'readyPct', 'runPct', 'lostPct', 'buryPct'];
+const REPGROUP_PCT_PROPS = [...STANDARD_PCT_PROPS, 'deletePct', 'completePct'];
+
+/**
+ * Updates progress bar percentages based on counts
+ * @param {Object} tracker - The tracker object with observables
+ * @param {Array<string>} countProps - Array of property names for count observables
+ * @param {Array<string>} pctProps - Array of property names for percentage observables
+ * @returns {boolean} True if values were updated
+ */
+function updateProgressBars(tracker, countProps, pctProps) {
+    // Calculate total from all count properties
+    const counts = countProps.map(prop => tracker[prop]());
+    const total = counts.reduce((sum, count) => sum + count, 0);
+
+    if (total <= 0) return false;
+
+    // Calculate percentages
+    const multiplier = 100 / total;
+    const values = counts.map(count => multiplier * count);
+
+    // Hardcoded scale to 99.9% to avoid bootstrap's progress bar flickering
+    const scaled = percentScaler(values, 99.9);
+
+    // Ensure percentages sum correctly
+    const rounded = percentRounder(scaled, 2);
+
+    // Get current percentage values for comparison
+    const currentValues = pctProps.map(prop => tracker[prop]());
+
+    // Only update if values have changed significantly
+    const hasChanged = rounded.some((val, i) => Math.abs(val - currentValues[i]) > 0.01);
+
+    if (hasChanged) {
+        // Create batch update function
+        const batchUpdate = () => {
+            // Update all percentage properties at once
+            pctProps.forEach((prop, i) => {
+                tracker[prop](rounded[i]);
+            });
+        };
+
+        // Use requestAnimationFrame for smoother updates
+        if (window.requestAnimationFrame) {
+            window.requestAnimationFrame(batchUpdate);
+        } else {
+            batchUpdate();
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 /**
  * Creates and configures in-flight job tracking observables
  * @param {number} rateLimit - The rate limit for updates
@@ -37,28 +99,7 @@ export function setupInflightTracking(rateLimit) {
             inflight.lost() + inflight.buried();
 
         if (total > 0) {
-            const multiplier = 100 / total;
-
-            const values = [
-                (multiplier * inflight.delayed()),
-                (multiplier * inflight.dependent()),
-                (multiplier * inflight.ready()),
-                (multiplier * inflight.running()),
-                (multiplier * inflight.lost()),
-                (multiplier * inflight.buried())
-            ];
-
-            // Make sure values sum to exactly 99.99% (not 100%) to avoid the flickering issue
-            // while still visually filling the entire bar
-            const rounded = percentRounder(values, 2);
-
-            // Set values with slight delay between them to avoid rendering conflicts
-            setTimeout(() => inflight.delayPct(rounded[0]), 0);
-            setTimeout(() => inflight.dependentPct(rounded[1]), 10);
-            setTimeout(() => inflight.readyPct(rounded[2]), 20);
-            setTimeout(() => inflight.runPct(rounded[3]), 30);
-            setTimeout(() => inflight.lostPct(rounded[4]), 40);
-            setTimeout(() => inflight.buryPct(rounded[5]), 50);
+            updateProgressBars(inflight, STANDARD_COUNT_PROPS, STANDARD_PCT_PROPS);
         }
 
         inflight.old_total = total;
@@ -109,34 +150,7 @@ export function createRepGroupTracker(rg, rateLimit) {
             repgroup.deleted() + repgroup.complete();
 
         if (total > 0) {
-            const multiplier = 100 / total;
-
-            // Calculate percentages at full 100% scale
-            const values = [
-                (multiplier * repgroup.delayed()),
-                (multiplier * repgroup.dependent()),
-                (multiplier * repgroup.ready()),
-                (multiplier * repgroup.running()),
-                (multiplier * repgroup.lost()),
-                (multiplier * repgroup.buried()),
-                (multiplier * repgroup.deleted()),
-                (multiplier * repgroup.complete())
-            ];
-
-            // Make sure values sum to exactly 99.99% (not 100%) to avoid the flickering issue
-            const rounded = percentRounder(values, 2);
-
-            // Define the keys that will be updated
-            const keys = ['delayPct', 'dependentPct', 'readyPct', 'runPct',
-                'lostPct', 'buryPct', 'deletePct', 'completePct'];
-
-            // Update percentage values with slight delays to avoid rendering conflicts
-            for (let i = 0; i < keys.length; i++) {
-                // Stagger updates with timeouts to prevent flickering
-                ((index) => {
-                    setTimeout(() => repgroup[keys[index]](rounded[index]), index * 10);
-                })(i);
-            }
+            updateProgressBars(repgroup, REPGROUP_COUNT_PROPS, REPGROUP_PCT_PROPS);
         }
 
         repgroup.old_total = total;

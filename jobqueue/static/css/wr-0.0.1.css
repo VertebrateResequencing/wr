@@ -183,18 +183,29 @@ u.dotted {
     background-color: rgba(255, 255, 255, 0.5);
 }
 
-/* Fix for progress bar flickering */
 .progress {
     overflow: hidden;
     position: relative;
+    height: 20px;
+    /* Fixed height to prevent resizing */
 }
 
 .progress-bar {
-    transition: width 0.25s ease;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Smoother easing */
     position: relative;
     z-index: 1;
     will-change: width;
     transform: translateZ(0);
+    min-width: 0;
+    /* Allow bars to collapse to 0 */
+    height: 100%;
+    /* Ensure full height */
+}
+
+/* Force immediate updates when needed with this class */
+.progress-bar.no-transition {
+    transition: none !important;
 }
 
 /* Responsive adjustments */
