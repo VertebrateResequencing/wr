@@ -415,54 +415,14 @@
                                     </span>
                                 </div>
 
-                                <!-- Individual advanced properties buttons -->
+                                <!-- Individual advanced properties buttons - Replace with single button -->
                                 <div class="prop-section advanced">
-                                    <!-- ko if: LimitGroups && LimitGroups.length > 0 -->
-                                    <div class="prop-tag clickable" data-bind="click: $root.showLimitGroups">
-                                        <span class="prop-name">LG</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
+                                    <!-- Single "Details" button that shows all job properties -->
+                                    <div class="prop-tag clickable details-button"
+                                        data-bind="click: $root.showJobDetails">
+                                        <span class="prop-name">Details</span>
+                                        <span class="prop-value"><i class="glyphicon glyphicon-info-sign"></i></span>
                                     </div>
-                                    <!-- /ko -->
-
-                                    <!-- ko if: DepGroups && DepGroups.length > 0 -->
-                                    <div class="prop-tag clickable" data-bind="click: $root.showDepGroups">
-                                        <span class="prop-name">DG</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
-                                    </div>
-                                    <!-- /ko -->
-
-                                    <!-- ko if: Dependencies && Dependencies.length > 0 -->
-                                    <div class="prop-tag clickable" data-bind="click: $root.showDependencies">
-                                        <span class="prop-name">Deps</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
-                                    </div>
-                                    <!-- /ko -->
-
-                                    <!-- ko if: Behaviours -->
-                                    <div class="prop-tag clickable" data-bind="click: $root.showBehaviours">
-                                        <span class="prop-name">Beh</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
-                                    </div>
-                                    <!-- /ko -->
-
-                                    <!-- ko if: OtherRequests && OtherRequests.length > 0 -->
-                                    <div class="prop-tag clickable" data-bind="click: $root.showOther">
-                                        <span class="prop-name">Reqs</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
-                                    </div>
-                                    <!-- /ko -->
-
-                                    <div class="prop-tag clickable" data-bind="click: $root.showInternalID">
-                                        <span class="prop-name">ID</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
-                                    </div>
-
-                                    <!-- ko if: Env && Env.length > 0 -->
-                                    <div class="prop-tag clickable" data-bind="click: $root.showEnv">
-                                        <span class="prop-name">Env</span>
-                                        <span class="prop-value"><i class="glyphicon glyphicon-eye-open"></i></span>
-                                    </div>
-                                    <!-- /ko -->
                                 </div>
                             </div>
                         </div>
@@ -518,7 +478,7 @@
         </div>
 
         <!-- ====================== MODAL DIALOGS ====================== -->
-        <!-- action modals -->
+        <!-- action modals - keep this separate -->
         <div data-bind="modal: {
                 visible: actionModalVisible,
                 dialogCss: 'modal-sm',
@@ -564,60 +524,77 @@
             </div>
         </script>
 
-        <!-- Individual component modals (kept for backward compatibility) -->
+        <!-- Single combined job details modal with rich template -->
         <div data-bind="modal: {
-                visible: lgModalVisible,
+                visible: jobDetailsModalVisible,
                 dialogCss: 'modal-lg',
-                header: { data: { label: 'Limit Groups' } },
-                body: { name: 'envModalBodyTemplate', data: lgVars }
+                header: { data: { label: 'Job Details' } },
+                body: { name: 'jobDetailsModalBodyTemplate', data: jobDetailsData }
             }"></div>
 
-        <div data-bind="modal: {
-                visible: dgModalVisible,
-                dialogCss: 'modal-lg',
-                header: { data: { label: 'Dependency Groups' } },
-                body: { name: 'envModalBodyTemplate', data: dgVars }
-            }"></div>
+        <script type="text/html" id="jobDetailsModalBodyTemplate">
+            <!-- ko if: $data -->
+        <div class="job-details-container">
+            <!-- Internal Job ID Section -->
+            <div class="details-section">
+                <h4 class="details-heading">Internal Job ID</h4>
+                <div class="details-content" data-bind="text: Key"></div>
+            </div>
 
-        <div data-bind="modal: {
-                visible: depModalVisible,
-                dialogCss: 'modal-lg',
-                header: { data: { label: 'Dependencies' } },
-                body: { name: 'envModalBodyTemplate', data: depVars }
-            }"></div>
+            <!-- Limit Groups Section -->
+            <!-- ko if: LimitGroups && LimitGroups.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Limit Groups</h4>
+                <div class="details-content" data-bind="text: LimitGroups.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
 
-        <div data-bind="modal: {
-                visible: behModalVisible,
-                dialogCss: 'modal-lg',
-                header: { data: { label: 'Behaviours' } },
-                body: { name: 'envModalBodyTemplate', data: behVars }
-            }"></div>
+            <!-- Dependency Groups Section -->
+            <!-- ko if: DepGroups && DepGroups.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Dependency Groups</h4>
+                <div class="details-content" data-bind="text: DepGroups.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
 
-        <div data-bind="modal: {
-                visible: otherModalVisible,
-                dialogCss: 'modal-lg',
-                header: { data: { label: 'Other Resource Requirements' } },
-                body: { name: 'envModalBodyTemplate', data: otherVars }
-            }"></div>
+            <!-- Dependencies Section -->
+            <!-- ko if: Dependencies && Dependencies.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Dependencies</h4>
+                <div class="details-content" data-bind="text: Dependencies.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
 
-        <div data-bind="modal: {
-                visible: internalModalVisible,
-                dialogCss: 'modal-lg',
-                header: { data: { label: 'Internal Job ID' } },
-                body: { name: 'envModalBodyTemplate', data: internalVars }
-            }"></div>
+            <!-- Behaviours Section -->
+            <!-- ko if: Behaviours -->
+            <div class="details-section">
+                <h4 class="details-heading">Behaviours</h4>
+                <div class="details-content" data-bind="text: Behaviours"></div>
+            </div>
+            <!-- /ko -->
 
-        <div data-bind="modal: {
-                visible: envModalVisible,
-                dialogCss: 'modal-lg',
-                header: { data: { label: 'Environment Variables' } },
-                body: { name: 'envModalBodyTemplate', data: envVars }
-            }"></div>
-        <script type="text/html" id="envModalBodyTemplate">
-                <div data-bind="foreach: $data">
-                    <span data-bind="text: $data"></span><br>
-                </div>
-            </script>
+            <!-- Other Requirements Section -->
+            <!-- ko if: OtherRequests && OtherRequests.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Other Requirements</h4>
+                <div class="details-content" data-bind="text: OtherRequests.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
+
+            <!-- Environment Variables Section -->
+            <!-- ko if: Env && Env.length > 0 -->
+            <div class="details-section">
+                <h4 class="details-heading">Environment Variables</h4>
+                <div class="details-content" data-bind="html: Env.join('<br>')"></div>
+            </div>
+            <!-- /ko -->
+        </div>
+        <!-- /ko -->
+
+        <!-- ko ifnot: $data -->
+        <div class="alert alert-info">No details available for this job.</div>
+        <!-- /ko -->
+        </script>
 
         <hr>
 

@@ -57,45 +57,8 @@ export function commitAction(viewModel, all) {
  * Setup functions for each modal type
  */
 export const modalHandlers = {
-    // LimitGroups modal
-    showLimitGroups: function (viewModel, job) {
-        viewModel.lgVars(job.LimitGroups);
-        viewModel.lgModalVisible(true);
-    },
-
-    // DepGroups modal
-    showDepGroups: function (viewModel, job) {
-        viewModel.dgVars(job.DepGroups);
-        viewModel.dgModalVisible(true);
-    },
-
-    // Dependencies modal
-    showDependencies: function (viewModel, job) {
-        viewModel.depVars(job.Dependencies);
-        viewModel.depModalVisible(true);
-    },
-
-    // Behaviours modal
-    showBehaviours: function (viewModel, job) {
-        viewModel.behVars([job.Behaviours]);
-        viewModel.behModalVisible(true);
-    },
-
-    // Other modal
-    showOther: function (viewModel, job) {
-        viewModel.otherVars(job.OtherRequests);
-        viewModel.otherModalVisible(true);
-    },
-
-    // InternalID modal
-    showInternalID: function (viewModel, job) {
-        viewModel.internalVars([job.Key]);
-        viewModel.internalModalVisible(true);
-    },
-
-    // Env modal
-    showEnv: function (viewModel, job) {
-        viewModel.envVars(job.Env);
-        viewModel.envModalVisible(true);
+    showJobDetails: function (viewModel, job) {
+        viewModel.jobDetailsData(job);
+        viewModel.jobDetailsModalVisible(true);
     }
 };

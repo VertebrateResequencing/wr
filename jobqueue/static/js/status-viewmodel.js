@@ -97,57 +97,13 @@ export function StatusViewModel() {
     //-------------------------------------------------------------------------
     // MODAL DISPLAY HANDLERS
     //-------------------------------------------------------------------------
-    self.lgModalVisible = ko.observable(false);
-    self.lgVars = ko.observableArray();
-    self.showLimitGroups = function (job) {
-        modalHandlers.showLimitGroups(self, job);
-    };
-
-    self.dgModalVisible = ko.observable(false);
-    self.dgVars = ko.observableArray();
-    self.showDepGroups = function (job) {
-        modalHandlers.showDepGroups(self, job);
-    };
-
-    self.depModalVisible = ko.observable(false);
-    self.depVars = ko.observableArray();
-    self.showDependencies = function (job) {
-        modalHandlers.showDependencies(self, job);
-    };
-
-    self.behModalVisible = ko.observable(false);
-    self.behVars = ko.observableArray();
-    self.showBehaviours = function (job) {
-        modalHandlers.showBehaviours(self, job);
-    };
-
-    self.otherModalVisible = ko.observable(false);
-    self.otherVars = ko.observableArray();
-    self.showOther = function (job) {
-        modalHandlers.showOther(self, job);
-    };
-
-    self.internalModalVisible = ko.observable(false);
-    self.internalVars = ko.observableArray();
-    self.showInternalID = function (job) {
-        modalHandlers.showInternalID(self, job);
-    };
-
-    self.envModalVisible = ko.observable(false);
-    self.envVars = ko.observableArray();
-    self.showEnv = function (job) {
-        modalHandlers.showEnv(self, job);
-    };
-
+    // Use observable instead of observableArray since we're now passing the whole job object
     self.jobDetailsModalVisible = ko.observable(false);
-    self.jobDetailsData = null;
+    self.jobDetailsData = ko.observable();
     self.showJobDetails = function (job) {
         modalHandlers.showJobDetails(self, job);
     };
 
-    //-------------------------------------------------------------------------
-    // ACTION HANDLING
-    //-------------------------------------------------------------------------
     self.actionModalVisible = ko.observable(false);
     self.actionModalHeader = ko.observable();
     self.actionDetails = {
@@ -162,6 +118,9 @@ export function StatusViewModel() {
         count: ko.observable()
     };
 
+    //-------------------------------------------------------------------------
+    // ACTION HANDLING
+    //-------------------------------------------------------------------------
     self.jobToActionDetails = function (job, action, button) {
         jobToActionDetails(self, job, action, button);
     };

@@ -237,86 +237,6 @@ u.dotted {
     transition: none !important;
 }
 
-/* Job Properties Grid Layout */
-.job-properties-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    grid-gap: 12px;
-    margin-top: 8px;
-}
-
-.property-group {
-    background-color: #f9f9f9;
-    border-radius: 4px;
-    padding: 8px 12px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-    border-left: 3px solid #ccc;
-}
-
-.property-group-title {
-    margin: 0 0 6px 0;
-    font-weight: 600;
-    color: #555;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.property {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 4px;
-    font-size: 13px;
-}
-
-.property:last-child {
-    margin-bottom: 0;
-}
-
-.property-label {
-    font-weight: 500;
-    color: #666;
-    padding-right: 8px;
-}
-
-.property-value {
-    text-align: right;
-    word-break: break-word;
-    max-width: 70%;
-}
-
-.property-value-expandable {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.property-value-expandable:hover {
-    white-space: normal;
-    overflow: visible;
-}
-
-/* Group color coding */
-.property-group-error {
-    border-left-color: #d9534f;
-    background-color: #fdf7f7;
-}
-
-.property-group-completion {
-    border-left-color: #5cb85c;
-    background-color: #f9fcf9;
-}
-
-.property-group-timing {
-    border-left-color: #5bc0de;
-    background-color: #f4f8fa;
-}
-
-.property-group-advanced {
-    border-left-color: #f0ad4e;
-    background-color: #fdfaf6;
-}
-
 /* Ultra-compact Job Properties Layout */
 .compact-props {
     padding: 8px 10px !important;
@@ -494,10 +414,6 @@ u.dotted {
         font-size: 70%;
     }
 
-    .job-properties-grid {
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    }
-
     .prop-section {
         gap: 3px;
     }
@@ -517,12 +433,8 @@ u.dotted {
         font-size: 65%;
     }
 
-    .job-properties-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .property-value {
-        max-width: 60%;
+    .prop-section {
+        gap: 3px;
     }
 
     .prop-tag {
@@ -577,13 +489,11 @@ u.dotted {
 
 .details-section {
     margin-bottom: 15px;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 10px;
+    padding-bottom: 8px;
 }
 
 .details-section:last-child {
     margin-bottom: 0;
-    border-bottom: none;
     padding-bottom: 0;
 }
 
@@ -601,12 +511,38 @@ u.dotted {
     background-color: #f9f9f9;
     border: 1px solid #eee;
     border-radius: 3px;
-    padding: 8px;
+    padding: 6px 8px;
     max-height: 200px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
     scrollbar-width: thin;
+}
+
+.details-content>div {
+    margin-bottom: 2px;
+    padding: 2px 0;
+    line-height: 1.3;
+    position: relative;
+}
+
+.details-content>div:not(:last-child) {
+    border-bottom: 1px dotted #eee;
+}
+
+.details-content>div:nth-child(even) {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* Combined styling for details content divs */
+.details-content>div {
+    padding-left: 8px;
+    border-left: 2px solid transparent;
+}
+
+.details-content>div:hover {
+    border-left-color: #5bc0de;
+    background-color: rgba(91, 192, 222, 0.05);
 }
 
 .details-content::-webkit-scrollbar {
@@ -623,12 +559,4 @@ u.dotted {
 .cpu-time {
     color: #5bc0de;
     font-weight: 500;
-}
-
-/* Remove the status section and execution color bars */
-.status-section,
-.execution {
-    border-left: none;
-    padding-left: 0;
-    margin-left: 0;
 }
