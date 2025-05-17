@@ -638,14 +638,18 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 				srerr = ErrBadRequest
 			} else {
 				var jobs []*Job
+
 				opts := repGroupOptions{
 					RepGroup: cr.Job.RepGroup,
 					Search:   cr.Search,
-					Limit:    cr.Limit,
-					State:    cr.State,
-					GetStd:   cr.GetStd,
-					GetEnv:   cr.GetEnv,
+					limitJobsOptions: limitJobsOptions{
+						Limit:  cr.Limit,
+						State:  cr.State,
+						GetStd: cr.GetStd,
+						GetEnv: cr.GetEnv,
+					},
 				}
+
 				jobs, srerr, qerr = s.getJobsByRepGroup(ctx, opts)
 				if len(jobs) > 0 {
 					sr = &serverResponse{Jobs: jobs}

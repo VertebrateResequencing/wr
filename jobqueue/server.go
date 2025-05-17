@@ -2303,13 +2303,19 @@ func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
 }
 
 type repGroupOptions struct {
-	RepGroup string   // The RepGroup to get jobs for
-	Search   bool     // If true, search for RepGroups containing RepGroup
-	Limit    int      // Maximum number of jobs to return (0 = no limit)
-	Offset   int      // Starting offset for pagination
-	State    JobState // Filter jobs by this state
-	GetStd   bool     // If true, populate StdOut and StdErr of jobs
-	GetEnv   bool     // If true, populate Env of jobs
+	RepGroup string // The RepGroup to get jobs for
+	Search   bool   // If true, search for RepGroups containing RepGroup
+	limitJobsOptions
+}
+
+func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
+	return limitJobsOptions{
+		Limit:  opts.Limit,
+		Offset: opts.Offset,
+		State:  opts.State,
+		GetStd: opts.GetStd,
+		GetEnv: opts.GetEnv,
+	}
 }
 
 // getJobsByRepGroup gets jobs in the given group (current and complete).
@@ -2355,8 +2361,9 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 	}
 
 	if opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv {
-		jobs = s.limitJobs(ctx, jobs, opts.Limit, opts.State, opts.GetStd, opts.GetEnv)
+		jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
 	}
+
 	return jobs, srerr, qerr
 }
 
@@ -2379,16 +2386,31 @@ func (s *Server) getJobsCurrent(ctx context.Context, limit int, state JobState, 
 	}
 
 	if limit > 0 || state != "" || getStd || getEnv {
-		jobs = s.limitJobs(ctx, jobs, limit, state, getStd, getEnv)
+		jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
+			Limit:  limit,
+			State:  state,
+			GetStd: getStd,
+			GetEnv: getEnv,
+		})
 	}
 
 	return jobs
 }
 
+type limitJobsOptions struct {
+	Limit      int      // Maximum number of jobs to return (0 = no limit)
+	Offset     int      // Starting offset for pagination
+	FailReason string   // Fail reason to filter jobs by
+	ExitCode   int      // Exit code to filter jobs by (if FailReason is set)
+	State      JobState // Filter jobs by this state
+	GetStd     bool     // If true, populate StdOut and StdErr of jobs
+	GetEnv     bool     // If true, populate Env of jobs
+}
+
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
-func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state JobState, getStd bool, getEnv bool) []*Job {
+func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptions) []*Job {
 	groups := make(map[string][]*Job)
 	var limited []*Job
 	for _, job := range jobs {
@@ -2406,27 +2428,32 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state Jo
 			}
 		}
 
-		if state != "" {
-			if state == JobStateRunning {
-				state = JobStateReserved
+		if opts.State != "" {
+			if opts.State == JobStateRunning {
+				opts.State = JobStateReserved
 			}
-			if state == JobStateDeletable {
+
+			if opts.State == JobStateDeletable {
 				if jState == JobStateRunning || jState == JobStateComplete {
 					continue
 				}
-			} else if jState != state {
+			} else if jState != opts.State {
 				continue
 			}
 		}
 
-		if limit == 0 {
+		if opts.FailReason != "" && (jFailReason != opts.FailReason || jExitCode != opts.ExitCode) {
+			continue
+		}
+
+		if opts.Limit == 0 {
 			limited = append(limited, job)
 		} else {
 			group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
 			jobs, existed := groups[group]
 			if existed {
 				lenj := len(jobs)
-				if lenj == limit {
+				if lenj == opts.Limit {
 					jobs[lenj-1].Similar++
 				} else {
 					jobs = append(jobs, job)
@@ -2439,17 +2466,27 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, limit int, state Jo
 		}
 	}
 
-	if limit > 0 {
+	if opts.Offset > 0 {
+		for group, jobs := range groups {
+			if opts.Offset < len(jobs) {
+				groups[group] = jobs[opts.Offset:]
+			} else {
+				delete(groups, group)
+			}
+		}
+	}
+
+	if opts.Limit > 0 {
 		for _, jobs := range groups {
 			limited = append(limited, jobs...)
 		}
 	}
 
-	getStd = shouldPopulateStd(limited, getStd)
+	getStd := shouldPopulateStd(limited, opts.GetStd)
 
-	if getEnv || getStd {
+	if opts.GetEnv || getStd {
 		for _, job := range limited {
-			s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+			s.jobPopulateStdEnv(ctx, job, getStd, opts.GetEnv)
 		}
 	}
 

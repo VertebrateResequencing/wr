@@ -63,6 +63,7 @@ type jstatusReq struct {
 
 	State      JobState // A Job.State to limit RepGroup by in details mode
 	Limit      int      // Limit the number of jobs returned in details mode (0 = no limit)
+	Offset     int      // Offset the start of the returned jobs in details mode
 	Exitcode   int
 	FailReason string
 	ServerID   string // required argument for confirmBadServer
@@ -136,36 +137,45 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 		if err != nil {
 			clog.Warn(ctx, "not found", "err", err)
 			http.NotFound(w, r)
+
 			return
 		}
 
-		switch {
-		case strings.HasPrefix(path, "static/js"):
-			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		case strings.HasPrefix(path, "static/css"):
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case strings.HasPrefix(path, "static/fonts"):
-			switch {
-			case strings.HasSuffix(path, ".eot"):
-				w.Header().Set("Content-Type", "application/vnd.ms-fontobject")
-			case strings.HasSuffix(path, ".svg"):
-				w.Header().Set("Content-Type", "image/svg+xml")
-			case strings.HasSuffix(path, ".ttf"):
-				w.Header().Set("Content-Type", "application/x-font-truetype")
-			case strings.HasSuffix(path, ".woff"):
-				w.Header().Set("Content-Type", "application/font-woff")
-			case strings.HasSuffix(path, ".woff2"):
-				w.Header().Set("Content-Type", "application/font-woff2")
-			}
-		case strings.HasSuffix(path, "favicon.ico"):
-			w.Header().Set("Content-Type", "image/x-icon")
-		}
+		w.Header().Set("Content-Type", getContentTypeForPath(path))
 
 		_, err = w.Write(doc)
 		if err != nil {
 			clog.Error(ctx, "web interface static document write failed", "err", err)
 		}
 	}
+}
+
+// getContentTypeForPath determines the appropriate Content-Type header based on
+// the file path.
+func getContentTypeForPath(path string) string {
+	switch {
+	case strings.HasPrefix(path, "static/js"):
+		return "text/javascript; charset=utf-8"
+	case strings.HasPrefix(path, "static/css"):
+		return "text/css; charset=utf-8"
+	case strings.HasPrefix(path, "static/fonts"):
+		switch {
+		case strings.HasSuffix(path, ".eot"):
+			return "application/vnd.ms-fontobject"
+		case strings.HasSuffix(path, ".svg"):
+			return "image/svg+xml"
+		case strings.HasSuffix(path, ".ttf"):
+			return "application/x-font-truetype"
+		case strings.HasSuffix(path, ".woff"):
+			return "application/font-woff"
+		case strings.HasSuffix(path, ".woff2"):
+			return "application/font-woff2"
+		}
+	case strings.HasSuffix(path, "favicon.ico"):
+		return "image/x-icon"
+	}
+
+	return "text/html; charset=utf-8"
 }
 
 // webSocket upgrades a http connection to a websocket
@@ -280,10 +290,15 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						opts := repGroupOptions{
 							RepGroup: req.RepGroup,
 							Search:   false,
-							Limit:    req.Limit,
-							State:    req.State,
-							GetStd:   true,
-							GetEnv:   true,
+							limitJobsOptions: limitJobsOptions{
+								Limit:      req.Limit,
+								Offset:     req.Offset,
+								State:      req.State,
+								ExitCode:   req.Exitcode,
+								FailReason: req.FailReason,
+								GetStd:     true,
+								GetEnv:     true,
+							},
 						}
 						jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
 						if errstr == "" && len(jobs) > 0 {

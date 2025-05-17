@@ -684,10 +684,12 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			opts := repGroupOptions{
 				RepGroup: id,
 				Search:   search,
-				Limit:    limit,
-				State:    state,
-				GetStd:   getStd,
-				GetEnv:   getEnv,
+				limitJobsOptions: limitJobsOptions{
+					Limit:  limit,
+					State:  state,
+					GetStd: getStd,
+					GetEnv: getEnv,
+				},
 			}
 			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
 			if qerr != "" {
