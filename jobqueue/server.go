@@ -41,20 +41,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wtsi-ssg/wr/clog"
-
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
-	"github.com/VertebrateResequencing/wr/plist"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
 	"github.com/inconshreveable/log15"
 	logext "github.com/inconshreveable/log15/ext"
+	"github.com/lindell/go-ordered-set/orderedset"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
+	"github.com/wtsi-ssg/wr/clog"
 	mangos "nanomsg.org/go-mangos"
 	"nanomsg.org/go-mangos/protocol/rep"
 	"nanomsg.org/go-mangos/transport/tlstcp"
@@ -182,14 +181,18 @@ type ServerStats struct {
 // rgToKeys is a thread-safe map of RepGroup to a PList of keys.
 type rgToKeys struct {
 	sync.RWMutex
-	lookup map[string]*plist.PList[string]
+	lookup map[string]*orderedset.OrderedSet[string]
+}
+
+func newRGToKeys() *rgToKeys {
+	return &rgToKeys{lookup: make(map[string]*orderedset.OrderedSet[string])}
 }
 
 // Add adds the key to the list of keys for the given RepGroup. You must hold a
 // Lock() when using this method!
 func (r *rgToKeys) Add(rg string, key string) {
 	if _, ok := r.lookup[rg]; !ok {
-		r.lookup[rg] = plist.New[string]()
+		r.lookup[rg] = orderedset.New[string]()
 	}
 
 	r.lookup[rg].Add(key)
@@ -703,7 +706,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		uploadDir:                 uploadDir,
 		sock:                      sock,
 		ch:                        new(codec.BincHandle),
-		rpl:                       &rgToKeys{lookup: make(map[string]*plist.PList[string])},
+		rpl:                       newRGToKeys(),
 		limiter:                   l,
 		db:                        db,
 		stopSigHandling:           stopSigHandling,
