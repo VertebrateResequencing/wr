@@ -218,7 +218,6 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(status2.Cmd, ShouldEqual, "echo 1")
 				So(status2.RepGroup, ShouldEqual, "rg1")
-
 			})
 
 			Convey("The websocket handler responds to key requests", func() {
@@ -322,7 +321,7 @@ func TestServerWebI(t *testing.T) {
 
 					var sc jstateCount
 
-					ws.ReadJSON(&sc)
+					ws.ReadJSON(&sc) //nolint:errcheck
 					r1ch <- sc
 				}()
 
@@ -331,7 +330,7 @@ func TestServerWebI(t *testing.T) {
 
 					var sc jstateCount
 
-					ws2.ReadJSON(&sc)
+					ws2.ReadJSON(&sc) //nolint:errcheck
 					r2ch <- sc
 				}()
 
@@ -340,7 +339,7 @@ func TestServerWebI(t *testing.T) {
 
 					var sc jstateCount
 
-					ws3.ReadJSON(&sc)
+					ws3.ReadJSON(&sc) //nolint:errcheck
 					r3ch <- sc
 				}()
 

@@ -152,7 +152,7 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 
 // getContentTypeForPath determines the appropriate Content-Type header based on
 // the file path.
-func getContentTypeForPath(path string) string {
+func getContentTypeForPath(path string) string { //nolint:gocyclo
 	switch {
 	case strings.HasPrefix(path, "static/js"):
 		return "text/javascript; charset=utf-8"
