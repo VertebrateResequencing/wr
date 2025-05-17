@@ -277,7 +277,15 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							break
 						}
 					case "details":
-						jobs, _, errstr := s.getJobsByRepGroup(ctx, req.RepGroup, false, req.Limit, req.State, true, true)
+						opts := repGroupOptions{
+							RepGroup: req.RepGroup,
+							Search:   false,
+							Limit:    req.Limit,
+							State:    req.State,
+							GetStd:   true,
+							GetEnv:   true,
+						}
+						jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false

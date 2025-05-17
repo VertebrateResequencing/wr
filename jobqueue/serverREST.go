@@ -681,7 +681,15 @@ func restJobsStatus(ctx context.Context, r *http.Request, s *Server) ([]*Job, in
 			}
 
 			// id might be a Job.RepGroup
-			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, id, search, limit, state, getStd, getEnv)
+			opts := repGroupOptions{
+				RepGroup: id,
+				Search:   search,
+				Limit:    limit,
+				State:    state,
+				GetStd:   getStd,
+				GetEnv:   getEnv,
+			}
+			theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
 			if qerr != "" {
 				return nil, http.StatusInternalServerError, Error{Err: qerr}
 			}

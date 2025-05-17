@@ -2302,17 +2302,28 @@ func (s *Server) searchRepGroups(partialRepGroup string) ([]string, error) {
 	return matching, err
 }
 
+type repGroupOptions struct {
+	RepGroup string   // The RepGroup to get jobs for
+	Search   bool     // If true, search for RepGroups containing RepGroup
+	Limit    int      // Maximum number of jobs to return (0 = no limit)
+	Offset   int      // Starting offset for pagination
+	State    JobState // Filter jobs by this state
+	GetStd   bool     // If true, populate StdOut and StdErr of jobs
+	GetEnv   bool     // If true, populate Env of jobs
+}
+
 // getJobsByRepGroup gets jobs in the given group (current and complete).
-func (s *Server) getJobsByRepGroup(ctx context.Context, repgroup string, search bool, limit int, state JobState, getStd bool, getEnv bool) (jobs []*Job, srerr string, qerr string) {
+func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (jobs []*Job, srerr string, qerr string) {
 	var rgs []string
-	if search {
+
+	if opts.Search {
 		var errs error
-		rgs, errs = s.searchRepGroups(repgroup)
+		rgs, errs = s.searchRepGroups(opts.RepGroup)
 		if errs != nil {
 			return nil, ErrDBError, errs.Error()
 		}
 	} else {
-		rgs = append(rgs, repgroup)
+		rgs = append(rgs, opts.RepGroup)
 	}
 
 	for _, rg := range rgs {
@@ -2326,7 +2337,7 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, repgroup string, search 
 		}
 
 		// look in the permanent store for matching jobs
-		if state == "" || state == JobStateComplete {
+		if opts.State == "" || opts.State == JobStateComplete {
 			var complete []*Job
 			complete, srerr, qerr = s.getCompleteJobsByRepGroup(rg)
 			if len(complete) > 0 {
@@ -2343,8 +2354,8 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, repgroup string, search 
 		}
 	}
 
-	if limit > 0 || state != "" || getStd || getEnv {
-		jobs = s.limitJobs(ctx, jobs, limit, state, getStd, getEnv)
+	if opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv {
+		jobs = s.limitJobs(ctx, jobs, opts.Limit, opts.State, opts.GetStd, opts.GetEnv)
 	}
 	return jobs, srerr, qerr
 }
