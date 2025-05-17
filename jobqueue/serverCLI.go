@@ -28,6 +28,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
+	"github.com/VertebrateResequencing/wr/plist"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
 	"github.com/wtsi-ssg/wr/clog"
@@ -381,7 +382,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 						} else {
 							s.rpl.Lock()
 							if m, exists := s.rpl.lookup[rgroup]; exists {
-								delete(m, key)
+								m.Delete(key)
 							}
 							s.rpl.Unlock()
 							clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
@@ -557,10 +558,10 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 							rp := keyToRP[new]
 							if _, exists := s.rpl.lookup[rp]; !exists {
-								s.rpl.lookup[rp] = make(map[string]bool)
+								s.rpl.lookup[rp] = plist.New[string]()
 							}
-							delete(s.rpl.lookup[rp], old)
-							s.rpl.lookup[rp][new] = true
+							s.rpl.lookup[rp].Delete(old)
+							s.rpl.lookup[rp].Add(new)
 						}
 						s.rpl.Unlock()
 

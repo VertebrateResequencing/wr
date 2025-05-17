@@ -47,6 +47,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
+	"github.com/VertebrateResequencing/wr/plist"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
 	"github.com/grafov/bcast" // *** must be commit e9affb593f6c871f9b4c3ee6a3c77d421fe953df or status web page updates break in certain cases
@@ -180,7 +181,7 @@ type ServerStats struct {
 
 type rgToKeys struct {
 	sync.RWMutex
-	lookup map[string]map[string]bool
+	lookup map[string]*plist.PList[string]
 }
 
 // jstateCount is the state count change we send to the status webpage; we are
@@ -667,7 +668,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		uploadDir:                 uploadDir,
 		sock:                      sock,
 		ch:                        new(codec.BincHandle),
-		rpl:                       &rgToKeys{lookup: make(map[string]map[string]bool)},
+		rpl:                       &rgToKeys{lookup: make(map[string]*plist.PList[string])},
 		limiter:                   l,
 		db:                        db,
 		stopSigHandling:           stopSigHandling,
@@ -1708,9 +1709,10 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 	for _, itemdef := range itemdefs {
 		rp := itemdef.Data.(*Job).RepGroup
 		if _, exists := s.rpl.lookup[rp]; !exists {
-			s.rpl.lookup[rp] = make(map[string]bool)
+			s.rpl.lookup[rp] = plist.New[string]()
 		}
-		s.rpl.lookup[rp][itemdef.Key] = true
+
+		s.rpl.lookup[rp].Add(itemdef.Key)
 	}
 	s.rpl.Unlock()
 
@@ -2102,7 +2104,9 @@ func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 			// clean up rpl lookups
 			s.rpl.Lock()
 			for i, rg := range repGroups {
-				delete(s.rpl.lookup[rg], toDelete[i])
+				if plist, exists := s.rpl.lookup[rg]; exists {
+					plist.Delete(toDelete[i])
+				}
 			}
 			s.rpl.Unlock()
 
@@ -2285,11 +2289,13 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, repgroup string, search 
 	for _, rg := range rgs {
 		// look in the in-memory queue for matching jobs
 		s.rpl.RLock()
-		for key := range s.rpl.lookup[rg] {
-			item, err := s.q.Get(key)
-			if err == nil && item != nil {
-				job := s.itemToJob(ctx, item, false, false)
-				jobs = append(jobs, job)
+		if plist, exists := s.rpl.lookup[rg]; exists {
+			for _, key := range plist.Values() {
+				item, err := s.q.Get(key)
+				if err == nil && item != nil {
+					job := s.itemToJob(ctx, item, false, false)
+					jobs = append(jobs, job)
+				}
 			}
 		}
 		s.rpl.RUnlock()

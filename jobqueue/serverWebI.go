@@ -440,7 +440,8 @@ func (s *Server) reqToJobs(req jstatusReq, allowedItemStates []queue.ItemState) 
 	if req.RepGroup != "" {
 		s.rpl.RLock()
 		defer s.rpl.RUnlock()
-		for key := range s.rpl.lookup[req.RepGroup] {
+
+		for _, key := range s.rpl.lookup[req.RepGroup].Values() {
 			item, err := s.q.Get(key)
 			if item == nil || err != nil {
 				continue
