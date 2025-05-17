@@ -300,10 +300,12 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 								GetEnv:     true,
 							},
 						}
+
 						jobs, _, errstr := s.getJobsByRepGroup(ctx, opts)
 						if errstr == "" && len(jobs) > 0 {
 							writeMutex.Lock()
 							failed := false
+
 							for _, job := range jobs {
 								status, err := job.ToStatus()
 								if err != nil {

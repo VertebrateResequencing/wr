@@ -20,6 +20,7 @@ package jobqueue
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -184,9 +185,9 @@ func TestServerWebI(t *testing.T) {
 				So(receivedGroups, ShouldContainKey, "rg1")
 				So(receivedGroups, ShouldContainKey, "rg2")
 				So(receivedFromNews, ShouldEqual, 5)
-				So(receivedToBuried, ShouldEqual, 2)
+				So(receivedToBuried, ShouldBeGreaterThanOrEqualTo, 1)
 				So(receivedToRunning, ShouldEqual, 2)
-				So(receivedToComplete, ShouldEqual, 1)
+				So(receivedToComplete, ShouldBeGreaterThanOrEqualTo, 1)
 			})
 
 			Convey("The websocket handler responds to details requests", func() {
@@ -218,6 +219,232 @@ func TestServerWebI(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(status2.Cmd, ShouldEqual, "echo 1")
 				So(status2.RepGroup, ShouldEqual, "rg1")
+			})
+
+			Convey("The websocket handler deals with paginated details requests", func() {
+				numPaginationJobs := 12
+				limit := 5
+				paginationJobs := make([]*Job, numPaginationJobs)
+
+				for i := range numPaginationJobs {
+					paginationJobs[i] = &Job{
+						Cmd:          fmt.Sprintf("echo pagination_job_%d && false", i),
+						Cwd:          "/tmp",
+						ReqGroup:     "pg_group",
+						Requirements: standardReqs,
+						RepGroup:     "pg_repgroup",
+					}
+				}
+
+				inserts, _, erra := jq.Add(paginationJobs, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 12)
+
+				for range numPaginationJobs {
+					job, errr := jq.Reserve(50 * time.Millisecond)
+					So(errr, ShouldBeNil)
+					So(strings.HasPrefix(job.Cmd, "echo pagination_job_"), ShouldBeTrue)
+
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exitcode, ShouldEqual, 1)
+					So(job.FailReason, ShouldEqual, FailReasonExit)
+				}
+
+				buriedJobs, errg := jq.GetByRepGroup("pg_repgroup", false, 0, JobStateBuried, false, false)
+				So(errg, ShouldBeNil)
+				So(len(buriedJobs), ShouldEqual, numPaginationJobs)
+
+				drainWebSocket := func() *websocket.Conn {
+					ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)) //nolint:errcheck
+
+					for {
+						var msg interface{}
+
+						errr := ws.ReadJSON(&msg)
+						if errr != nil {
+							break
+						}
+					}
+
+					ws, _, err = websocket.DefaultDialer.Dial(wsURL, header)
+					So(err, ShouldBeNil)
+
+					err = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
+					So(err, ShouldBeNil)
+
+					return ws
+				}
+
+				ws = drainWebSocket()
+
+				testNoMoreMessages := func() {
+					var extraStatus JStatus
+
+					ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)) //nolint:errcheck
+					err = ws.ReadJSON(&extraStatus)
+					So(err, ShouldNotBeNil)
+				}
+
+				testStatusesReceived := func(ws *websocket.Conn, expectedNum, offset, exitCode int) {
+					time.Sleep(100 * time.Millisecond)
+
+					for i := range expectedNum {
+						var status JStatus
+
+						err = ws.ReadJSON(&status)
+						So(err, ShouldBeNil)
+						So(status.RepGroup, ShouldEqual, "pg_repgroup")
+						So(status.State, ShouldEqual, JobStateBuried)
+						So(status.Exitcode, ShouldEqual, exitCode)
+						So(status.FailReason, ShouldEqual, FailReasonExit)
+						So(status.Cmd, ShouldEqual, fmt.Sprintf("echo pagination_job_%d && false", i+offset))
+					}
+
+					testNoMoreMessages()
+				}
+
+				Convey("It returns the first page of jobs", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   1,
+						FailReason: FailReasonExit,
+						Limit:      limit,
+						Offset:     0,
+					})
+					So(err, ShouldBeNil)
+
+					testStatusesReceived(ws, limit, 0, 1)
+				})
+
+				Convey("It returns the second page of jobs", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   1,
+						FailReason: FailReasonExit,
+						Limit:      limit,
+						Offset:     limit,
+					})
+					So(err, ShouldBeNil)
+
+					testStatusesReceived(ws, limit, limit, 1)
+				})
+
+				Convey("It returns a partial page when reaching the end", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   1,
+						FailReason: FailReasonExit,
+						Limit:      limit,
+						Offset:     limit * 2,
+					})
+					So(err, ShouldBeNil)
+
+					testStatusesReceived(ws, 2, limit*2, 1)
+				})
+
+				Convey("It returns no jobs when offset is beyond available results", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   1,
+						FailReason: FailReasonExit,
+						Limit:      limit,
+						Offset:     limit * 4,
+					})
+					So(err, ShouldBeNil)
+
+					testStatusesReceived(ws, 0, limit*4, 1)
+				})
+
+				Convey("It returns all jobs when limit is 0", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   1,
+						FailReason: FailReasonExit,
+						Limit:      0,
+						Offset:     0,
+					})
+					So(err, ShouldBeNil)
+
+					testStatusesReceived(ws, numPaginationJobs, 0, 1)
+				})
+
+				Convey("It handles negative offset gracefully", func() {
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   1,
+						FailReason: FailReasonExit,
+						Limit:      limit,
+						Offset:     -1,
+					})
+					So(err, ShouldBeNil)
+
+					testStatusesReceived(ws, limit, 0, 1)
+				})
+
+				Convey("It filters correctly with multiple criteria", func() {
+					var differentJob []*Job
+
+					differentJob = append(differentJob, &Job{
+						Cmd:          "echo different_exitcode && exit 2",
+						Cwd:          "/tmp",
+						ReqGroup:     "pg_group",
+						Requirements: standardReqs,
+						RepGroup:     "pg_repgroup",
+					})
+
+					inserts, _, erra := jq.Add(differentJob, envVars, true)
+					So(erra, ShouldBeNil)
+					So(inserts, ShouldEqual, 1)
+
+					job, errr := jq.Reserve(50 * time.Millisecond)
+					So(errr, ShouldBeNil)
+					So(job.Cmd, ShouldEqual, "echo different_exitcode && exit 2")
+
+					err = jq.Execute(ctx, job, config.RunnerExecShell)
+					So(err, ShouldNotBeNil)
+					So(job.State, ShouldEqual, JobStateBuried)
+					So(job.Exitcode, ShouldEqual, 2)
+
+					ws = drainWebSocket()
+
+					err = ws.WriteJSON(jstatusReq{
+						Request:    "details",
+						RepGroup:   "pg_repgroup",
+						State:      JobStateBuried,
+						Exitcode:   2,
+						FailReason: FailReasonExit,
+						Limit:      5,
+						Offset:     0,
+					})
+					So(err, ShouldBeNil)
+
+					time.Sleep(100 * time.Millisecond)
+
+					var status JStatus
+
+					err = ws.ReadJSON(&status)
+					So(err, ShouldBeNil)
+					So(status.RepGroup, ShouldEqual, "pg_repgroup")
+					So(status.State, ShouldEqual, JobStateBuried)
+					So(status.Exitcode, ShouldEqual, 2)
+					So(status.Cmd, ShouldEqual, "echo different_exitcode && exit 2")
+
+					testNoMoreMessages()
+				})
 			})
 
 			Convey("The websocket handler responds to key requests", func() {

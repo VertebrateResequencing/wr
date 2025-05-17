@@ -2310,11 +2310,13 @@ type repGroupOptions struct {
 
 func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 	return limitJobsOptions{
-		Limit:  opts.Limit,
-		Offset: opts.Offset,
-		State:  opts.State,
-		GetStd: opts.GetStd,
-		GetEnv: opts.GetEnv,
+		Limit:      opts.Limit,
+		Offset:     opts.Offset,
+		State:      opts.State,
+		ExitCode:   opts.ExitCode,
+		FailReason: opts.FailReason,
+		GetStd:     opts.GetStd,
+		GetEnv:     opts.GetEnv,
 	}
 }
 
@@ -2398,7 +2400,7 @@ func (s *Server) getJobsCurrent(ctx context.Context, limit int, state JobState, 
 }
 
 type limitJobsOptions struct {
-	Limit      int      // Maximum number of jobs to return (0 = no limit)
+	Limit      int      // Maximum number of jobs to return (<1 = no limit)
 	Offset     int      // Starting offset for pagination
 	FailReason string   // Fail reason to filter jobs by
 	ExitCode   int      // Exit code to filter jobs by (if FailReason is set)
@@ -2411,6 +2413,14 @@ type limitJobsOptions struct {
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
 func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptions) []*Job {
+	if opts.Limit < 0 {
+		opts.Limit = 0
+	}
+
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+
 	groups := make(map[string][]*Job)
 	var limited []*Job
 	for _, job := range jobs {
@@ -2453,7 +2463,7 @@ func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptio
 			jobs, existed := groups[group]
 			if existed {
 				lenj := len(jobs)
-				if lenj == opts.Limit {
+				if lenj == opts.Offset+opts.Limit {
 					jobs[lenj-1].Similar++
 				} else {
 					jobs = append(jobs, job)
