@@ -28,7 +28,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
-	"github.com/VertebrateResequencing/wr/plist"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/ugorji/go/codec"
 	"github.com/wtsi-ssg/wr/clog"
@@ -381,9 +380,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							qerr = err.Error()
 						} else {
 							s.rpl.Lock()
-							if m, exists := s.rpl.lookup[rgroup]; exists {
-								m.Delete(key)
-							}
+							s.rpl.Delete(rgroup, key)
 							s.rpl.Unlock()
 							clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
 							s.decrementGroupCount(ctx, sgroup, 1)
@@ -557,11 +554,8 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 							}
 
 							rp := keyToRP[new]
-							if _, exists := s.rpl.lookup[rp]; !exists {
-								s.rpl.lookup[rp] = plist.New[string]()
-							}
-							s.rpl.lookup[rp].Delete(old)
-							s.rpl.lookup[rp].Add(new)
+							s.rpl.Delete(rp, old)
+							s.rpl.Add(rp, new)
 						}
 						s.rpl.Unlock()
 

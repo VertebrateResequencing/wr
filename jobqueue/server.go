@@ -179,9 +179,44 @@ type ServerStats struct {
 	ETC     time.Duration // how long until the the slowest of the currently running jobs is expected to complete
 }
 
+// rgToKeys is a thread-safe map of RepGroup to a PList of keys.
 type rgToKeys struct {
 	sync.RWMutex
 	lookup map[string]*plist.PList[string]
+}
+
+// Add adds the key to the list of keys for the given RepGroup. You must hold a
+// Lock() when using this method!
+func (r *rgToKeys) Add(rg string, key string) {
+	if _, ok := r.lookup[rg]; !ok {
+		r.lookup[rg] = plist.New[string]()
+	}
+
+	r.lookup[rg].Add(key)
+}
+
+// Delete removes the key from the list of keys for the given RepGroup. You must
+// hold a Lock() when using this method!
+func (r *rgToKeys) Delete(rg string, key string) {
+	if _, ok := r.lookup[rg]; !ok {
+		return
+	}
+
+	r.lookup[rg].Delete(key)
+}
+
+// Values gets the keys for the given RepGroup. It does its own RLock(); do not
+// try to RLock() before calling this.
+func (r *rgToKeys) Values(rg string) []string {
+	r.RLock()
+	defer r.RUnlock()
+
+	plist, ok := r.lookup[rg]
+	if !ok {
+		return nil
+	}
+
+	return plist.Values()
 }
 
 // jstateCount is the state count change we send to the status webpage; we are
@@ -1708,11 +1743,7 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 	s.rpl.Lock()
 	for _, itemdef := range itemdefs {
 		rp := itemdef.Data.(*Job).RepGroup
-		if _, exists := s.rpl.lookup[rp]; !exists {
-			s.rpl.lookup[rp] = plist.New[string]()
-		}
-
-		s.rpl.lookup[rp].Add(itemdef.Key)
+		s.rpl.Add(rp, itemdef.Key)
 	}
 	s.rpl.Unlock()
 
@@ -2104,9 +2135,7 @@ func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
 			// clean up rpl lookups
 			s.rpl.Lock()
 			for i, rg := range repGroups {
-				if plist, exists := s.rpl.lookup[rg]; exists {
-					plist.Delete(toDelete[i])
-				}
+				s.rpl.Delete(rg, toDelete[i])
 			}
 			s.rpl.Unlock()
 
@@ -2288,17 +2317,13 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, repgroup string, search 
 
 	for _, rg := range rgs {
 		// look in the in-memory queue for matching jobs
-		s.rpl.RLock()
-		if plist, exists := s.rpl.lookup[rg]; exists {
-			for _, key := range plist.Values() {
-				item, err := s.q.Get(key)
-				if err == nil && item != nil {
-					job := s.itemToJob(ctx, item, false, false)
-					jobs = append(jobs, job)
-				}
+		for _, key := range s.rpl.Values(rg) {
+			item, err := s.q.Get(key)
+			if err == nil && item != nil {
+				job := s.itemToJob(ctx, item, false, false)
+				jobs = append(jobs, job)
 			}
 		}
-		s.rpl.RUnlock()
 
 		// look in the permanent store for matching jobs
 		if state == "" || state == JobStateComplete {
