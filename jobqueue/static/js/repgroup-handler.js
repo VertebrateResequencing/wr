@@ -74,6 +74,12 @@ export function loadMoreJobs(viewModel, job, event) {
         }
     }
 
+    const heightAdjustment = 200;
+    const wellContainer = panelFooter.closest('.well');
+    const scrollToY = wellContainer ?
+        wellContainer.offsetTop + wellContainer.offsetHeight - heightAdjustment :
+        document.body.scrollHeight - heightAdjustment;
+
     // For the first click, start at offset 1 (since we already have offset 0 with limit 1)
     // For subsequent clicks, increment by 5
     if (viewModel.currentOffset === 0) {
@@ -92,4 +98,12 @@ export function loadMoreJobs(viewModel, job, event) {
         Exitcode: job.Exitcode,
         FailReason: job.FailReason
     }));
+
+    // Wait a short moment for the request to be sent, then scroll to the calculated position
+    setTimeout(() => {
+        window.scrollTo({
+            top: scrollToY,
+            behavior: 'smooth'
+        });
+    }, 100);
 }
