@@ -214,7 +214,32 @@ function handleJobDetailsMessage(viewModel, json) {
             });
         }
 
+        // Add the job to the details array
         viewModel.detailsOA.push(json);
+
+        // Count this job if it's part of our "load more" batch
+        if (viewModel.newJobsInfo &&
+            json.Exitcode == viewModel.newJobsInfo.exitCode &&
+            json.FailReason == viewModel.newJobsInfo.failReason) {
+
+            viewModel.newJobsInfo.count++;
+
+            // Update the divider text when we've received all jobs
+            if (viewModel.newJobsInfo.dividerElement && (viewModel.newJobsInfo.count === 5 || json.Similar < 5)) {
+                viewModel.newJobsInfo.dividerElement.innerHTML = `<span class="jobs-divider-label">
+                                                  ${viewModel.newJobsInfo.count} more jobs with 
+                                                  exit code ${viewModel.newJobsInfo.exitCode}
+                                                  ${viewModel.newJobsInfo.failReason ?
+                        ` and reason "${viewModel.newJobsInfo.failReason}"` :
+                        ''}
+                                                 </span>`;
+
+                // Clear the tracking info once we're done
+                setTimeout(() => {
+                    viewModel.newJobsInfo = null;
+                }, 100);
+            }
+        }
     }
 }
 

@@ -29,6 +29,8 @@ export function StatusViewModel() {
     self.rateLimit = 350;
     self.currentLimit = 1;
     self.currentOffset = 0; // Add offset tracking for pagination
+    self.newJobsInfo = null; // Tracks info about newly loaded jobs
+    self.lastDivider = null; // References the divider element
     self.repGroups = [];
     self.repGroupLookup = {};
     self.sortableRepGroups = ko.observableArray();

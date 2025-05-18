@@ -182,7 +182,7 @@
 
         <div data-bind="foreach: sortableRepGroups().sort(function(l,r) { return l.id > r.id ? 1 : -1 })">
             <div style="width: 100%;" class="well well-sm">
-                <div style="margin: 0 auto;">
+                <div style="margin: 0 auto;" data-bind="attr: { 'data-repgroup': id }">
                     <h5 style="margin: 0; padding: 0"><span data-bind="text: id"></span> <span class="badge"
                             data-bind="text: total"></span></h5>
                     <div class="top-margin" data-bind="if: total() > 0">

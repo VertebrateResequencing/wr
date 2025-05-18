@@ -74,36 +74,64 @@ export function loadMoreJobs(viewModel, job, event) {
         }
     }
 
-    const heightAdjustment = 200;
-    const wellContainer = panelFooter.closest('.well');
-    const scrollToY = wellContainer ?
-        wellContainer.offsetTop + wellContainer.offsetHeight - heightAdjustment :
-        document.body.scrollHeight - heightAdjustment;
+    // Find the parent container that holds all the job panels for this RepGroup
+    const container = document.querySelector(`[data-repgroup="${viewModel.detailsRepgroup}"]`);
+    if (container) {
+        // Create a divider element with a temporary message
+        const divider = document.createElement('div');
+        divider.className = 'jobs-divider';
+        divider.id = 'more-jobs-divider'; // Add an ID so we can find it later
+        divider.innerHTML = `<span class="jobs-divider-label">
+                            Loading more jobs with exit code ${job.Exitcode}
+                            ${job.FailReason ? ` and reason "${job.FailReason}"` : ''}...
+                        </span>`;
 
-    // For the first click, start at offset 1 (since we already have offset 0 with limit 1)
-    // For subsequent clicks, increment by 5
-    if (viewModel.currentOffset === 0) {
-        viewModel.currentOffset = 1;
-    } else {
-        viewModel.currentOffset += 5;
+        // Find all existing job panels
+        const jobPanels = container.querySelectorAll('.panel');
+        if (jobPanels.length > 0) {
+            // Add the divider after the last job panel
+            const lastJob = jobPanels[jobPanels.length - 1];
+            lastJob.after(divider);
+        }
+
+        // Calculate scroll position to be just above the divider
+        const dividerRect = divider.getBoundingClientRect();
+        const scrollOffset = 20; // Show some context above the divider
+        const scrollToY = window.scrollY + dividerRect.top - scrollOffset;
+
+        // Store information about this batch
+        viewModel.newJobsInfo = {
+            exitCode: job.Exitcode,
+            failReason: job.FailReason,
+            count: 0,
+            dividerElement: divider
+        };
+
+        // For the first click, start at offset 1 (since we already have offset 0 with limit 1)
+        // For subsequent clicks, increment by 5
+        if (viewModel.currentOffset === 0) {
+            viewModel.currentOffset = 1;
+        } else {
+            viewModel.currentOffset += 5;
+        }
+
+        // Request more jobs with pagination offset and including all job details
+        viewModel.ws.send(JSON.stringify({
+            Request: 'details',
+            RepGroup: viewModel.detailsRepgroup,
+            State: viewModel.detailsState,
+            Limit: 5, // Constant limit of 5
+            Offset: viewModel.currentOffset,
+            Exitcode: job.Exitcode,
+            FailReason: job.FailReason
+        }));
+
+        // Wait a short moment for the request to be sent, then scroll to the divider
+        setTimeout(() => {
+            window.scrollTo({
+                top: scrollToY,
+                behavior: 'smooth'
+            });
+        }, 100);
     }
-
-    // Request more jobs with pagination offset and including all job details
-    viewModel.ws.send(JSON.stringify({
-        Request: 'details',
-        RepGroup: viewModel.detailsRepgroup,
-        State: viewModel.detailsState,
-        Limit: 5, // Constant limit of 5
-        Offset: viewModel.currentOffset,
-        Exitcode: job.Exitcode,
-        FailReason: job.FailReason
-    }));
-
-    // Wait a short moment for the request to be sent, then scroll to the calculated position
-    setTimeout(() => {
-        window.scrollTo({
-            top: scrollToY,
-            behavior: 'smooth'
-        });
-    }, 100);
 }
