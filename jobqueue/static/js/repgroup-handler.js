@@ -107,12 +107,29 @@ export function loadMoreJobs(viewModel, job, event) {
             dividerElement: divider
         };
 
-        // For the first click, start at offset 1 (since we already have offset 0 with limit 1)
-        // For subsequent clicks, increment by 5
-        if (viewModel.currentOffset === 0) {
-            viewModel.currentOffset = 1;
+        // Create a key for this exitcode+reason combination
+        const offsetKey = `${job.Exitcode}:${job.FailReason || ''}`;
+
+        // Get the current offset for this exitcode+reason, or initialize to 1
+        if (!viewModel.offsetMap[offsetKey]) {
+            // Count how many jobs with this exitcode+reason are already displayed
+            let existingCount = 0;
+
+            // We'll check through each existing job to count ones with matching exitcode+reason
+            const jobs = viewModel.detailsOA();
+            for (let i = 0; i < jobs.length; i++) {
+                if (jobs[i].Exitcode === job.Exitcode &&
+                    (jobs[i].FailReason || '') === (job.FailReason || '')) {
+                    existingCount++;
+                }
+            }
+
+            // If we have just one job displayed (the original), start at offset 1
+            // Otherwise, our offset should be the count of existing jobs
+            viewModel.offsetMap[offsetKey] = Math.max(1, existingCount);
         } else {
-            viewModel.currentOffset += 5;
+            // Increment the existing offset by 5 (or whatever the batch size is)
+            viewModel.offsetMap[offsetKey] += 5;
         }
 
         // Request more jobs with pagination offset and including all job details
@@ -121,7 +138,7 @@ export function loadMoreJobs(viewModel, job, event) {
             RepGroup: viewModel.detailsRepgroup,
             State: viewModel.detailsState,
             Limit: 5, // Constant limit of 5
-            Offset: viewModel.currentOffset,
+            Offset: viewModel.offsetMap[offsetKey],
             Exitcode: job.Exitcode,
             FailReason: job.FailReason
         }));

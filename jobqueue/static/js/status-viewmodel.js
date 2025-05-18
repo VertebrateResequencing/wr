@@ -28,9 +28,10 @@ export function StatusViewModel() {
     self.wallTimeUpdaters = new Array();
     self.rateLimit = 350;
     self.currentLimit = 1;
-    self.currentOffset = 0; // Add offset tracking for pagination
-    self.newJobsInfo = null; // Tracks info about newly loaded jobs
-    self.lastDivider = null; // References the divider element
+    self.currentOffset = 0; // Only used for initial loading
+    self.offsetMap = {}; // Track offsets per exitCode+reason
+    self.newJobsInfo = null;
+    self.lastDivider = null;
     self.repGroups = [];
     self.repGroupLookup = {};
     self.sortableRepGroups = ko.observableArray();
