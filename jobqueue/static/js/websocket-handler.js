@@ -183,9 +183,6 @@ function handleJobDetailsMessage(viewModel, json) {
             const jobs = viewModel.detailsOA();
             for (let i = 0; i < jobs.length; i++) {
                 if (jobs[i].Key === json.Key) {
-                    // For a push update, simply replace the job in the observable array
-                    // with the updated version, at the same position
-
                     // Prepare walltime for the new job
                     var walltime = json['Walltime'];
                     if (json['State'] == "running") {
@@ -275,9 +272,8 @@ function handleJobDetailsMessage(viewModel, json) {
 
             // Update the divider text with the current count - do this EVERY time
             batchInfo.dividerElement.innerHTML = `<span class="jobs-divider-label">
-                  ${batchInfo.batchCount} more jobs that 
-                  exited ${batchInfo.exitCode}
-                  ${batchInfo.failReason ? ` because "${batchInfo.failReason}"` : ''}
+                  ${batchInfo.batchCount} more jobs${batchInfo.exitCode < 1 ? '' :
+                    ` that exited ${batchInfo.exitCode}${batchInfo.failReason ? ` because "${batchInfo.failReason}"` : ''}`}
                  </span>`;
         }
     }

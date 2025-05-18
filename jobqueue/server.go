@@ -1694,6 +1694,23 @@ func (s *Server) createQueue(ctx context.Context) {
 				continue
 			}
 
+			if to == JobStateRunning {
+				tries := 0
+
+				for job.StartTime.IsZero() {
+					<-time.After(50 * time.Millisecond)
+
+					tries++
+					if tries > 10 {
+						break
+					}
+				}
+			}
+
+			if from == JobStateRunning {
+				s.jobPopulateStdEnv(ctx, job, true, false)
+			}
+
 			status, err := job.ToStatus()
 			if err != nil {
 				clog.Warn(ctx, "failed to convert job to status", "err", err)
