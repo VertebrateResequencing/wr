@@ -401,6 +401,7 @@
                                 <tr class="prop-row">
                                     <td class="prop-title">Execution:</td>
                                     <td class="prop-content">
+                                        <!-- ko if: Started -->
                                         <div class="prop-tag">
                                             <span class="prop-name">When</span>
                                             <span class="prop-value">
@@ -411,7 +412,9 @@
                                                 <!-- /ko -->
                                             </span>
                                         </div>
+                                        <!-- /ko -->
 
+                                        <!-- ko if: Host -->
                                         <div class="prop-tag">
                                             <span class="prop-name">Where</span>
                                             <span class="prop-value">
@@ -426,6 +429,7 @@
                                                 <span data-bind="text: 'PID: ' + Pid"></span>
                                             </span>
                                         </div>
+                                        <!-- /ko -->
 
                                         <div class="prop-tag clickable details-button"
                                             data-bind="click: $root.showJobDetails">
@@ -444,7 +448,12 @@
                             <span class="load-more-section">
                                 <button type="button" class="btn btn-sm btn-info load-more-btn"
                                     data-bind="click: function(data, event) { $root.loadMoreJobs(data, event) }">
+                                    <!-- ko if: Exitcode === 0 -->
+                                    Load more commands
+                                    <!-- /ko -->
+                                    <!-- ko if: Exitcode !== 0 -->
                                     Load more commands with the same exit code and failure reason
+                                    <!-- /ko -->
                                 </button>
                             </span>
                             <!-- /ko -->
