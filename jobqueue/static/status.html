@@ -448,10 +448,10 @@
                             <span class="load-more-section">
                                 <button type="button" class="btn btn-sm btn-info load-more-btn"
                                     data-bind="click: function(data, event) { $root.loadMoreJobs(data, event) }">
-                                    <!-- ko if: Exitcode === 0 -->
+                                    <!-- ko if: Exitcode <= 0 -->
                                     Load more commands
                                     <!-- /ko -->
-                                    <!-- ko if: Exitcode !== 0 -->
+                                    <!-- ko if: Exitcode > 0 -->
                                     Load more commands with the same exit code and failure reason
                                     <!-- /ko -->
                                 </button>

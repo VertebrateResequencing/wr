@@ -178,7 +178,51 @@ function handleJobDetailsMessage(viewModel, json) {
     var rg = json['RepGroup'];
 
     if (viewModel.detailsOA && rg == viewModel.detailsRepgroup) {
-        // Skip if this job already exists in the details array
+        // Check if this is a push update for an existing job
+        if (json['IsPushUpdate']) {
+            const jobs = viewModel.detailsOA();
+            for (let i = 0; i < jobs.length; i++) {
+                if (jobs[i].Key === json.Key) {
+                    // For a push update, simply replace the job in the observable array
+                    // with the updated version, at the same position
+
+                    // Prepare walltime for the new job
+                    var walltime = json['Walltime'];
+                    if (json['State'] == "running") {
+                        // Auto-increment walltime for running jobs
+                        var began = new Date();
+                        var now = ko.observable(new Date());
+
+                        json['LiveWalltime'] = ko.computed(function () {
+                            return walltime + ((now() - began) / 1000);
+                        });
+
+                        viewModel.wallTimeUpdaters.push(now);
+
+                        if (!viewModel.wallTimeUpdater) {
+                            viewModel.wallTimeUpdater = window.setInterval(function () {
+                                var arrayLength = viewModel.wallTimeUpdaters.length;
+                                for (var i = 0; i < arrayLength; i++) {
+                                    viewModel.wallTimeUpdaters[i](new Date());
+                                }
+                            }, 1000);
+                        }
+                    } else {
+                        json['LiveWalltime'] = ko.computed(function () {
+                            return walltime;
+                        });
+                    }
+
+                    // Simply replace the job at the same index
+                    viewModel.detailsOA.splice(i, 1, json);
+                    return;
+                }
+            }
+            // If we get here, this is a push update for a job we don't have - ignore it
+            return;
+        }
+
+        // Skip if this job already exists in the details array (non-push updates)
         if (jobExists(viewModel.detailsOA, json['Key'])) {
             return;
         }

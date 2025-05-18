@@ -350,6 +350,8 @@ type Server struct {
 	racCheckTimer             *time.Timer
 	pauseRequests             int
 	wsconns                   map[string]*websocket.Conn
+	wsWriteMutexes            map[string]*sync.Mutex     // mutex per websocket connection
+	jobSubscriptions          map[string]map[string]bool // conn ID -> job key -> subscribed
 	badServers                map[string]*cloud.Server
 	schedIssues               map[string]*schedulerIssue
 	racmutex                  sync.RWMutex // to protect the readyaddedcallback
@@ -359,8 +361,9 @@ type Server struct {
 	ssmutex                   sync.RWMutex // "server state mutex" to protect up, drain, blocking and ServerInfo.Mode
 	psgmutex                  sync.RWMutex // to protect previouslyScheduledGroups
 	rpmutex                   sync.Mutex   // to protect racPending, racRunning and waitingReserves
+	jsmutex                   sync.RWMutex // to protect jobSubscriptions
 	sync.Mutex
-	wsmutex              sync.Mutex
+	wsmutex              sync.RWMutex
 	up                   bool
 	drain                bool
 	blocking             bool
@@ -720,6 +723,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		wsconns:                   make(map[string]*websocket.Conn),
 		statusCaster:              bcast.NewGroup(),
 		badServerCaster:           bcast.NewGroup(),
+		wsWriteMutexes:            make(map[string]*sync.Mutex),
+		jobSubscriptions:          make(map[string]map[string]bool),
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               bcast.NewGroup(),
 		schedIssues:               make(map[string]*schedulerIssue),
@@ -1666,6 +1671,66 @@ func (s *Server) createQueue(ctx context.Context) {
 			s.statusCaster.Send(&jstateCount{"+all+", JobStateLost, to, lost})
 			for group, count := range groupsLost {
 				s.statusCaster.Send(&jstateCount{group, JobStateLost, to, count})
+			}
+		}
+
+		// send detailed updates to subscribed connections
+		s.jsmutex.RLock()
+		jobSubscriptions := make(map[string][]string) // job key -> []connection IDs
+
+		for connID, jobs := range s.jobSubscriptions {
+			for jobKey := range jobs {
+				jobSubscriptions[jobKey] = append(jobSubscriptions[jobKey], connID)
+			}
+		}
+		s.jsmutex.RUnlock()
+
+		for _, inter := range data {
+			job := inter.(*Job)
+			jobKey := job.Key()
+
+			connIDs, ok := jobSubscriptions[jobKey]
+			if !ok {
+				continue
+			}
+
+			status, err := job.ToStatus()
+			if err != nil {
+				clog.Warn(ctx, "failed to convert job to status", "err", err)
+
+				continue
+			}
+
+			status.IsPushUpdate = true
+
+			s.wsmutex.RLock()
+
+			connMutexes := make(map[string]struct {
+				conn  *websocket.Conn
+				mutex *sync.Mutex
+			})
+
+			for _, connID := range connIDs {
+				conn, exists := s.wsconns[connID]
+				mutex, mutexExists := s.wsWriteMutexes[connID]
+
+				if exists && mutexExists {
+					connMutexes[connID] = struct {
+						conn  *websocket.Conn
+						mutex *sync.Mutex
+					}{conn, mutex}
+				}
+			}
+			s.wsmutex.RUnlock()
+
+			for _, cm := range connMutexes {
+				cm.mutex.Lock()
+				err = cm.conn.WriteJSON(status)
+				cm.mutex.Unlock()
+
+				if err != nil {
+					clog.Warn(ctx, "failed to send job update to subscriber", "err", err)
+				}
 			}
 		}
 	})
@@ -2801,6 +2866,7 @@ func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
 	defer s.wsmutex.Unlock()
 	unique := logext.RandId(8)
 	s.wsconns[unique] = conn
+	s.wsWriteMutexes[unique] = &sync.Mutex{}
 	return unique
 }
 
@@ -2810,16 +2876,23 @@ func (s *Server) storeWebSocketConnection(conn *websocket.Conn) string {
 // it again.
 func (s *Server) closeWebSocketConnection(ctx context.Context, unique string) {
 	s.wsmutex.Lock()
-	defer s.wsmutex.Unlock()
+
 	conn, found := s.wsconns[unique]
-	if !found {
-		return
+	if found {
+		delete(s.wsconns, unique)
+		delete(s.wsWriteMutexes, unique)
 	}
-	err := conn.Close()
-	if err != nil {
-		clog.Warn(ctx, "websocket close failed", "err", err)
+
+	s.wsmutex.Unlock()
+
+	if found {
+		err := conn.Close()
+		if err != nil {
+			clog.Warn(ctx, "websocket close failed", "err", err)
+		}
 	}
-	delete(s.wsconns, unique)
+
+	s.cleanupSubscriptions(unique)
 }
 
 // shutdown stops listening to client connections, close all queues and
@@ -2886,6 +2959,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 			clog.Warn(ctx, "server shutdown failed to close a websocket", "err", errc)
 		}
 		delete(s.wsconns, unique)
+		delete(s.wsWriteMutexes, unique)
 	}
 	s.wsmutex.Unlock()
 
@@ -2971,4 +3045,53 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	if wasBlocking {
 		s.done <- Error{"Serve", "", reason}
 	}
+}
+
+// subscribeToJobs subscribes the given connection to updates for the specified
+// jobs.
+func (s *Server) subscribeToJobs(connID string, jobKeys []string) {
+	if len(jobKeys) == 0 {
+		return
+	}
+
+	s.jsmutex.Lock()
+	defer s.jsmutex.Unlock()
+
+	if _, exists := s.jobSubscriptions[connID]; !exists {
+		s.jobSubscriptions[connID] = make(map[string]bool)
+	}
+
+	for _, key := range jobKeys {
+		s.jobSubscriptions[connID][key] = true
+	}
+}
+
+// unsubscribeFromJob removes the subscription for a specific job or all jobs if
+// jobKey is empty.
+func (s *Server) unsubscribeFromJob(connID string, jobKey string) {
+	s.jsmutex.Lock()
+	defer s.jsmutex.Unlock()
+
+	subscriptions, exists := s.jobSubscriptions[connID]
+	if !exists {
+		return
+	}
+
+	if jobKey == "" {
+		delete(s.jobSubscriptions, connID)
+	} else {
+		delete(subscriptions, jobKey)
+
+		if len(subscriptions) == 0 {
+			delete(s.jobSubscriptions, connID)
+		}
+	}
+}
+
+// cleanupSubscriptions removes all subscriptions for the given connection.
+func (s *Server) cleanupSubscriptions(connID string) {
+	s.jsmutex.Lock()
+	defer s.jsmutex.Unlock()
+
+	delete(s.jobSubscriptions, connID)
 }

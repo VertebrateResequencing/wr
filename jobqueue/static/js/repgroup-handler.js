@@ -27,6 +27,11 @@ export function showGroupState(viewModel, repGroup, state) {
             viewModel.wallTimeUpdater = '';
         }
         viewModel.detailsOA([]);
+
+        // Unsubscribe from all job updates when clearing the current view
+        viewModel.ws.send(JSON.stringify({
+            Request: "unsubscribe"
+        }));
     }
 
     if (repGroup.id == viewModel.detailsRepgroup && state == viewModel.detailsState) {

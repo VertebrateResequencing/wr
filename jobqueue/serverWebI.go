@@ -25,7 +25,6 @@ import (
 	"embed"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/wtsi-ssg/wr/clog"
 
@@ -50,6 +49,7 @@ type jstatusReq struct {
 	// confirmBadServer = confirm that the server with ID ServerID is bad.
 	// dismissMsg = dismiss the given Msg.
 	// dismissMsgs = dismiss all scheduler messages.
+	// unsubscribe = unsubscribe from job updates for a specific key or all if key is empty.
 	Request string
 
 	// sending Key means "give me detailed info about this single job", and
@@ -112,6 +112,7 @@ type JStatus struct {
 	Attempts        uint32
 	HomeChanged     bool
 	Exited          bool
+	IsPushUpdate    bool
 }
 
 // webInterfaceStatic is a http handler for our static documents in the static
@@ -207,8 +208,6 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 			return
 		}
 
-		writeMutex := &sync.Mutex{}
-
 		// when the server shuts down it will close our conn, ending the main
 		// goroutine
 		storedName := s.storeWebSocketConnection(conn)
@@ -233,6 +232,16 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				errr := conn.ReadJSON(&req)
 				if errr != nil {
 					// browser was refreshed or server shutdown
+					break
+				}
+
+				// Get the write mutex for this connection
+				s.wsmutex.RLock()
+				writeMutex := s.wsWriteMutexes[connStorageName]
+				s.wsmutex.RUnlock()
+
+				if writeMutex == nil {
+					// Connection is being shut down
 					break
 				}
 
@@ -306,6 +315,8 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 							writeMutex.Lock()
 							failed := false
 
+							jobKeys := make([]string, 0, len(jobs))
+
 							for _, job := range jobs {
 								status, err := job.ToStatus()
 								if err != nil {
@@ -318,12 +329,21 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 									failed = true
 									break
 								}
+
+								jobKeys = append(jobKeys, job.Key())
 							}
+
+							if len(jobKeys) > 0 {
+								s.subscribeToJobs(connStorageName, jobKeys)
+							}
+
 							writeMutex.Unlock()
 							if failed {
 								break
 							}
 						}
+					case "unsubscribe":
+						s.unsubscribeFromJob(connStorageName, req.Key)
 					case "retry":
 						jobs := s.reqToJobs(req, []queue.ItemState{queue.ItemStateBury})
 						s.kickJobs(ctx, jobs)
@@ -372,8 +392,14 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 						if err != nil {
 							break
 						}
+
 						writeMutex.Lock()
+
 						err = conn.WriteJSON(status)
+						if err == nil {
+							s.subscribeToJobs(connStorageName, []string{req.Key})
+						}
+
 						writeMutex.Unlock()
 						if err != nil {
 							break
@@ -384,7 +410,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 		}(conn, storedName, stopper)
 
 		// go routines to push changes to the client
-		go func(conn *websocket.Conn, stop chan bool) {
+		go func(conn *websocket.Conn, stop chan bool, connName string) {
 			// log panics and die
 			defer internal.LogPanic(ctx, "jobqueue websocket status updating", true)
 
@@ -396,6 +422,14 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				case <-stop:
 					return
 				case status := <-statusReceiver.In:
+					s.wsmutex.RLock()
+					writeMutex := s.wsWriteMutexes[connName]
+					s.wsmutex.RUnlock()
+
+					if writeMutex == nil {
+						return
+					}
+
 					writeMutex.Lock()
 					err := conn.WriteJSON(status)
 					writeMutex.Unlock()
@@ -405,9 +439,9 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					}
 				}
 			}
-		}(conn, stopper)
+		}(conn, stopper, storedName)
 
-		go func(conn *websocket.Conn, stop chan bool) {
+		go func(conn *websocket.Conn, stop chan bool, connName string) {
 			defer internal.LogPanic(ctx, "jobqueue websocket bad server updating", true)
 
 			badserverReceiver := s.badServerCaster.Join()
@@ -418,6 +452,14 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				case <-stop:
 					return
 				case server := <-badserverReceiver.In:
+					s.wsmutex.RLock()
+					writeMutex := s.wsWriteMutexes[connName]
+					s.wsmutex.RUnlock()
+
+					if writeMutex == nil {
+						return
+					}
+
 					writeMutex.Lock()
 					err := conn.WriteJSON(server)
 					writeMutex.Unlock()
@@ -427,9 +469,9 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					}
 				}
 			}
-		}(conn, stopper)
+		}(conn, stopper, storedName)
 
-		go func(conn *websocket.Conn, stop chan bool) {
+		go func(conn *websocket.Conn, stop chan bool, connName string) {
 			defer internal.LogPanic(ctx, "jobqueue websocket scheduler issue updating", true)
 
 			schedIssueReceiver := s.schedCaster.Join()
@@ -440,6 +482,14 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 				case <-stop:
 					return
 				case si := <-schedIssueReceiver.In:
+					s.wsmutex.RLock()
+					writeMutex := s.wsWriteMutexes[connName]
+					s.wsmutex.RUnlock()
+
+					if writeMutex == nil {
+						return
+					}
+
 					writeMutex.Lock()
 					err := conn.WriteJSON(si)
 					writeMutex.Unlock()
@@ -449,7 +499,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					}
 				}
 			}
-		}(conn, stopper)
+		}(conn, stopper, storedName)
 	}
 }
 
