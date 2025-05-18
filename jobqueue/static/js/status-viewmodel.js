@@ -28,6 +28,7 @@ export function StatusViewModel() {
     self.wallTimeUpdaters = new Array();
     self.rateLimit = 350;
     self.currentLimit = 1;
+    self.currentOffset = 0; // Add offset tracking for pagination
     self.repGroups = [];
     self.repGroupLookup = {};
     self.sortableRepGroups = ko.observableArray();
@@ -92,6 +93,11 @@ export function StatusViewModel() {
 
     self.showGroupState = function (repGroup, state) {
         showGroupState(self, repGroup, state);
+    };
+
+    // Reset pagination when showing new group state
+    self.resetPagination = function () {
+        self.currentOffset = 0;
     };
 
     //-------------------------------------------------------------------------

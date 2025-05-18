@@ -362,6 +362,21 @@ u.dotted {
     opacity: 1;
 }
 
+/* Load more button styling */
+.load-more-section {
+    display: inline-block;
+    margin-right: 10px;
+}
+
+.load-more-btn {
+    white-space: normal;
+    /* Allow text to wrap */
+    text-align: left;
+    line-height: 1.2;
+    padding: 5px 10px;
+    max-width: 100%;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .command-path {

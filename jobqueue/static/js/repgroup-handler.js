@@ -36,6 +36,7 @@ export function showGroupState(viewModel, repGroup, state) {
         viewModel.detailsState = '';
         viewModel.detailsOA = '';
         viewModel.currentLimit = 1; // Reset limit when closing details
+        viewModel.currentOffset = 0; // Reset offset when closing details
         return;
     }
 
@@ -43,6 +44,7 @@ export function showGroupState(viewModel, repGroup, state) {
     viewModel.detailsState = state;
     viewModel.detailsOA = repGroup.details;
     viewModel.currentLimit = 1; // Start with a limit of 1
+    viewModel.currentOffset = 0; // Reset offset for new details view
 
     viewModel.ws.send(JSON.stringify({
         Request: 'details',
@@ -72,14 +74,22 @@ export function loadMoreJobs(viewModel, job, event) {
         }
     }
 
-    // Increase the limit by a reasonable number
-    viewModel.currentLimit += 5;
+    // For the first click, start at offset 1 (since we already have offset 0 with limit 1)
+    // For subsequent clicks, increment by 5
+    if (viewModel.currentOffset === 0) {
+        viewModel.currentOffset = 1;
+    } else {
+        viewModel.currentOffset += 5;
+    }
 
-    // Request more jobs with the increased limit
+    // Request more jobs with pagination offset and including all job details
     viewModel.ws.send(JSON.stringify({
         Request: 'details',
         RepGroup: viewModel.detailsRepgroup,
         State: viewModel.detailsState,
-        Limit: viewModel.currentLimit
+        Limit: 5, // Constant limit of 5
+        Offset: viewModel.currentOffset,
+        Exitcode: job.Exitcode,
+        FailReason: job.FailReason
     }));
 }
