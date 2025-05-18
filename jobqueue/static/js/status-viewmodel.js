@@ -30,7 +30,7 @@ export function StatusViewModel() {
     self.currentLimit = 1;
     self.currentOffset = 0; // Only used for initial loading
     self.offsetMap = {}; // Track offsets per exitCode+reason
-    self.newJobsInfo = null;
+    self.newJobsInfo = {}; // Map to track batches of new jobs by exitCode+reason
     self.lastDivider = null;
     self.repGroups = [];
     self.repGroupLookup = {};

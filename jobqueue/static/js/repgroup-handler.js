@@ -37,6 +37,8 @@ export function showGroupState(viewModel, repGroup, state) {
         viewModel.detailsOA = '';
         viewModel.currentLimit = 1; // Reset limit when closing details
         viewModel.currentOffset = 0; // Reset offset when closing details
+        viewModel.offsetMap = {};    // Clear the offset map
+        viewModel.newJobsInfo = {};  // Clear the batch tracking map
         return;
     }
 
@@ -45,6 +47,8 @@ export function showGroupState(viewModel, repGroup, state) {
     viewModel.detailsOA = repGroup.details;
     viewModel.currentLimit = 1; // Start with a limit of 1
     viewModel.currentOffset = 0; // Reset offset for new details view
+    viewModel.offsetMap = {};    // Clear the offset map when showing a new group
+    viewModel.newJobsInfo = {};  // Clear the batch tracking map
 
     viewModel.ws.send(JSON.stringify({
         Request: 'details',
@@ -99,19 +103,28 @@ export function loadMoreJobs(viewModel, job, event) {
         const scrollOffset = 20; // Show some context above the divider
         const scrollToY = window.scrollY + dividerRect.top - scrollOffset;
 
-        // Store information about this batch
-        viewModel.newJobsInfo = {
-            exitCode: job.Exitcode,
-            failReason: job.FailReason,
-            count: 0,
-            dividerElement: divider
-        };
-
         // Create a key for this exitcode+reason combination
-        const offsetKey = `${job.Exitcode}:${job.FailReason || ''}`;
+        const exitReasonKey = `${job.Exitcode}:${job.FailReason || ''}`;
+
+        // Store batch information in the map
+        if (!viewModel.newJobsInfo[exitReasonKey]) {
+            // First time seeing this exitcode+reason combination
+            viewModel.newJobsInfo[exitReasonKey] = {
+                exitCode: job.Exitcode,
+                failReason: job.FailReason,
+                totalSimilar: job.Similar, // Store the original Similar count
+                batchCount: 0,
+                dividerElement: divider
+            };
+        } else {
+            // Update the existing entry with the new divider
+            viewModel.newJobsInfo[exitReasonKey].dividerElement = divider;
+            viewModel.newJobsInfo[exitReasonKey].batchCount = 0;
+            // Don't update totalSimilar - keep the original value
+        }
 
         // Get the current offset for this exitcode+reason, or initialize to 1
-        if (!viewModel.offsetMap[offsetKey]) {
+        if (!viewModel.offsetMap[exitReasonKey]) {
             // Count how many jobs with this exitcode+reason are already displayed
             let existingCount = 0;
 
@@ -126,10 +139,10 @@ export function loadMoreJobs(viewModel, job, event) {
 
             // If we have just one job displayed (the original), start at offset 1
             // Otherwise, our offset should be the count of existing jobs
-            viewModel.offsetMap[offsetKey] = Math.max(1, existingCount);
+            viewModel.offsetMap[exitReasonKey] = Math.max(1, existingCount);
         } else {
             // Increment the existing offset by 5 (or whatever the batch size is)
-            viewModel.offsetMap[offsetKey] += 5;
+            viewModel.offsetMap[exitReasonKey] += 5;
         }
 
         // Request more jobs with pagination offset and including all job details
@@ -138,7 +151,7 @@ export function loadMoreJobs(viewModel, job, event) {
             RepGroup: viewModel.detailsRepgroup,
             State: viewModel.detailsState,
             Limit: 5, // Constant limit of 5
-            Offset: viewModel.offsetMap[offsetKey],
+            Offset: viewModel.offsetMap[exitReasonKey],
             Exitcode: job.Exitcode,
             FailReason: job.FailReason
         }));

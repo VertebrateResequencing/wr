@@ -18,7 +18,10 @@ export function jobToActionDetails(viewModel, job, action, button) {
     viewModel.actionDetails.exitCode(job.Exited);
     viewModel.actionDetails.exitCode(job.Exitcode);
     viewModel.actionDetails.failReason(job.FailReason);
-    viewModel.actionDetails.count(job.Similar + 1);
+
+    // Use TotalSimilar if available (from pagination), otherwise fallback to Similar + 1
+    const count = job.TotalSimilar !== undefined ? job.TotalSimilar + 1 : job.Similar + 1;
+    viewModel.actionDetails.count(count);
 }
 
 /**

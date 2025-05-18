@@ -214,31 +214,30 @@ function handleJobDetailsMessage(viewModel, json) {
             });
         }
 
+        // Create a key for this exitcode+reason combination
+        const exitReasonKey = `${json.Exitcode}:${json.FailReason || ''}`;
+
+        // Add TotalSimilar to this job if it's part of a tracked batch
+        if (viewModel.newJobsInfo[exitReasonKey]) {
+            json.TotalSimilar = viewModel.newJobsInfo[exitReasonKey].totalSimilar;
+        }
+
         // Add the job to the details array
         viewModel.detailsOA.push(json);
 
-        // Count this job if it's part of our "load more" batch
-        if (viewModel.newJobsInfo &&
-            json.Exitcode == viewModel.newJobsInfo.exitCode &&
-            json.FailReason == viewModel.newJobsInfo.failReason) {
+        // If this job matches a batch we're tracking, update the count and divider text
+        if (viewModel.newJobsInfo[exitReasonKey] && viewModel.newJobsInfo[exitReasonKey].dividerElement) {
+            const batchInfo = viewModel.newJobsInfo[exitReasonKey];
 
-            viewModel.newJobsInfo.count++;
+            // Increment the count for this batch
+            batchInfo.batchCount = (batchInfo.batchCount || 0) + 1;
 
-            // Update the divider text when we've received all jobs
-            if (viewModel.newJobsInfo.dividerElement && (viewModel.newJobsInfo.count === 5 || json.Similar < 5)) {
-                viewModel.newJobsInfo.dividerElement.innerHTML = `<span class="jobs-divider-label">
-                                                  ${viewModel.newJobsInfo.count} more jobs that 
-                                                  exited ${viewModel.newJobsInfo.exitCode}
-                                                  ${viewModel.newJobsInfo.failReason ?
-                        ` because "${viewModel.newJobsInfo.failReason}"` :
-                        ''}
-                                                 </span>`;
-
-                // Clear the tracking info once we're done
-                setTimeout(() => {
-                    viewModel.newJobsInfo = null;
-                }, 100);
-            }
+            // Update the divider text with the current count - do this EVERY time
+            batchInfo.dividerElement.innerHTML = `<span class="jobs-divider-label">
+                  ${batchInfo.batchCount} more jobs that 
+                  exited ${batchInfo.exitCode}
+                  ${batchInfo.failReason ? ` because "${batchInfo.failReason}"` : ''}
+                 </span>`;
         }
     }
 }
