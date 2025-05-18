@@ -82,8 +82,8 @@ export function loadMoreJobs(viewModel, job, event) {
         divider.className = 'jobs-divider';
         divider.id = 'more-jobs-divider'; // Add an ID so we can find it later
         divider.innerHTML = `<span class="jobs-divider-label">
-                            Loading more jobs with exit code ${job.Exitcode}
-                            ${job.FailReason ? ` and reason "${job.FailReason}"` : ''}...
+                            Loading more jobs that exited ${job.Exitcode}
+                            ${job.FailReason ? ` because "${job.FailReason}"` : ''}...
                         </span>`;
 
         // Find all existing job panels

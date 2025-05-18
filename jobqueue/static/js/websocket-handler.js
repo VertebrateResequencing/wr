@@ -227,10 +227,10 @@ function handleJobDetailsMessage(viewModel, json) {
             // Update the divider text when we've received all jobs
             if (viewModel.newJobsInfo.dividerElement && (viewModel.newJobsInfo.count === 5 || json.Similar < 5)) {
                 viewModel.newJobsInfo.dividerElement.innerHTML = `<span class="jobs-divider-label">
-                                                  ${viewModel.newJobsInfo.count} more jobs with 
-                                                  exit code ${viewModel.newJobsInfo.exitCode}
+                                                  ${viewModel.newJobsInfo.count} more jobs that 
+                                                  exited ${viewModel.newJobsInfo.exitCode}
                                                   ${viewModel.newJobsInfo.failReason ?
-                        ` and reason "${viewModel.newJobsInfo.failReason}"` :
+                        ` because "${viewModel.newJobsInfo.failReason}"` :
                         ''}
                                                  </span>`;
 
