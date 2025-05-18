@@ -84,16 +84,11 @@ export function setupInflightTracking(rateLimit) {
         runPct: ko.observable(0).extend({ rateLimit }),
         lostPct: ko.observable(0).extend({ rateLimit }),
         buryPct: ko.observable(0).extend({ rateLimit }),
-        old_total: 0,
-        delay_compute: 0
+        old_total: 0
     };
 
     // Create a computed for the total that updates the percentage values
     inflight.total = ko.computed(() => {
-        if (inflight.delay_compute) {
-            return inflight.old_total;
-        }
-
         const total = inflight.delayed() + inflight.dependent() +
             inflight.ready() + inflight.running() +
             inflight.lost() + inflight.buried();
@@ -135,15 +130,10 @@ export function createRepGroupTracker(rg, rateLimit) {
         deletePct: ko.observable(0),
         completePct: ko.observable(0),
         details: ko.observableArray(),
-        old_total: 0,
-        delay_compute: 0
+        old_total: 0
     };
 
     repgroup.total = ko.computed(() => {
-        if (repgroup.delay_compute) {
-            return repgroup.old_total;
-        }
-
         const total = repgroup.delayed() + repgroup.dependent() +
             repgroup.ready() + repgroup.running() +
             repgroup.lost() + repgroup.buried() +

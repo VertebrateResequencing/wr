@@ -15,7 +15,7 @@ export function jobToActionDetails(viewModel, job, action, button) {
     viewModel.actionDetails.key(job.Key);
     viewModel.actionDetails.repGroup(job.RepGroup);
     viewModel.actionDetails.state(job.State);
-    viewModel.actionDetails.exitCode(job.Exited);
+    viewModel.actionDetails.exited(job.Exited);
     viewModel.actionDetails.exitCode(job.Exitcode);
     viewModel.actionDetails.failReason(job.FailReason);
 

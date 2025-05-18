@@ -126,7 +126,6 @@ function handleStateChangeMessage(viewModel, json) {
     }
 
     // Update the counts
-    repgroup['delay_compute'] = to ? 1 : 0;
 
     if (from) {
         var newfrom = from() - json['Count'];
@@ -148,8 +147,6 @@ function handleStateChangeMessage(viewModel, json) {
             from(0);
         }
     }
-
-    repgroup['delay_compute'] = 0;
 
     if (to) {
         to(to() + json['Count']);

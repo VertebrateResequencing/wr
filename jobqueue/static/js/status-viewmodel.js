@@ -1,7 +1,7 @@
 /* Status View Model
  * Main view model for the WR status page.
  */
-import { getParameterByName, removeBadServer, removeMessage } from '/js/utility.js';
+import { getParameterByName } from '/js/utility.js';
 import { setupInflightTracking } from '/js/inflight-tracking.js';
 import { setupWebSocket } from '/js/websocket-handler.js';
 import { requestRepGroup, showGroupState, loadMoreJobs } from '/js/repgroup-handler.js';
@@ -16,7 +16,6 @@ export function StatusViewModel() {
     // PROPERTIES AND BASIC OBSERVABLES
     //-------------------------------------------------------------------------
     self.token = getParameterByName("token");
-    self.aquiringstatus = ko.observableArray();
     self.statuserror = ko.observableArray();
     self.badservers = ko.observableArray();
     self.messages = ko.observableArray();
@@ -31,22 +30,10 @@ export function StatusViewModel() {
     self.currentOffset = 0; // Only used for initial loading
     self.offsetMap = {}; // Track offsets per exitCode+reason
     self.newJobsInfo = {}; // Map to track batches of new jobs by exitCode+reason
-    self.lastDivider = null;
     self.repGroups = [];
     self.repGroupLookup = {};
     self.sortableRepGroups = ko.observableArray();
     self.ignore = {};
-
-    //-------------------------------------------------------------------------
-    // UTILITY FUNCTIONS
-    //-------------------------------------------------------------------------
-    self.removeBadServer = function (id) {
-        removeBadServer(self, id);
-    };
-
-    self.removeMessage = function (msg) {
-        removeMessage(self, msg);
-    };
 
     //-------------------------------------------------------------------------
     // IN-FLIGHT JOB TRACKING
