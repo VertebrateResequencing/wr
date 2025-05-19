@@ -452,47 +452,26 @@ export function createExecutionChartConfig(jobsData) {
                             ];
                         }
 
-                        // For grouped points, show summary
-                        return [
+                        // For grouped points, show summary with commands from the first few jobs
+                        const maxToShow = Math.min(3, item.allPoints.length);
+                        const result = [
                             `${item.count} jobs at this point`,
                             `Start time: ${item.startDate.toDate()}`,
                             `Duration: ${item.duration.toDuration()}`,
-                            `Status: ${item.count > 1 ? 'Mixed' : item.state}`,
-                            '(Hover longer to see job details)'
+                            `Status: ${item.count > 1 ? 'Mixed' : item.state}`
                         ];
-                    },
-                    afterLabel: function (context) {
-                        const item = context.raw;
 
-                        // Only show details for groups of jobs when hovering for a while
-                        if (item.count > 1 && context.chart.tooltip._active &&
-                            context.chart.tooltip._active.length > 0 &&
-                            context.chart.tooltip._lastActive &&
-                            context.chart.tooltip._lastActive.length > 0) {
-
-                            // If showing the same tooltip for more than 1 second, show details
-                            if (context.chart.tooltip._active[0].element === context.chart.tooltip._lastActive[0].element &&
-                                context.chart.tooltip._tooltipShowTime &&
-                                Date.now() - context.chart.tooltip._tooltipShowTime > 1000) {
-
-                                // Show details for up to 5 jobs
-                                const maxToShow = Math.min(5, item.allPoints.length);
-                                const details = [];
-
-                                for (let i = 0; i < maxToShow; i++) {
-                                    details.push(`Job ${i + 1}: ${item.allPoints[i].cmd}`);
-                                    details.push(`  Status: ${item.allPoints[i].state}`);
-                                }
-
-                                if (item.count > maxToShow) {
-                                    details.push(`...and ${item.count - maxToShow} more jobs`);
-                                }
-
-                                return details;
-                            }
+                        // Add commands for up to 3 jobs directly in the tooltip
+                        for (let i = 0; i < maxToShow; i++) {
+                            result.push(`Job ${i + 1}: ${item.allPoints[i].cmd}`);
                         }
 
-                        return [];
+                        // Add ellipsis if there are more jobs
+                        if (item.count > maxToShow) {
+                            result.push(`...and ${item.count - maxToShow} more`);
+                        }
+
+                        return result;
                     }
                 }
             },
@@ -552,12 +531,6 @@ export function createExecutionChartConfig(jobsData) {
                 }
             }
         }
-    };
-
-    // Track tooltip show time for detailed hover
-    chartOptions.plugins.tooltip.callbacks.beforeShow = function (context) {
-        context.chart.tooltip._tooltipShowTime = Date.now();
-        return true;
     };
 
     // Calculate stats for HTML display - use raw min/max for stats (no padding)
