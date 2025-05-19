@@ -61,6 +61,7 @@ type jstatusReq struct {
 	// the given RepGroup, ExitCode and FailReason
 	RepGroup string
 
+	Search     bool     // RepGroup is treated as a substring search term
 	State      JobState // A Job.State to limit RepGroup by in details mode
 	Limit      int      // Limit the number of jobs returned in details mode (0 = no limit)
 	Offset     int      // Offset the start of the returned jobs in details mode
@@ -298,7 +299,7 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 					case "details":
 						opts := repGroupOptions{
 							RepGroup: req.RepGroup,
-							Search:   false,
+							Search:   req.Search,
 							limitJobsOptions: limitJobsOptions{
 								Limit:      req.Limit,
 								Offset:     req.Offset,
@@ -323,7 +324,14 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 									failed = true
 									break
 								}
-								status.RepGroup = req.RepGroup // since we want to return the group the user asked for, not the most recent group the job was made for
+
+								if !req.Search {
+									// since we want to return the group the
+									// user asked for, not the most recent group
+									// the job was made for
+									status.RepGroup = req.RepGroup
+								}
+
 								err = conn.WriteJSON(status)
 								if err != nil {
 									failed = true

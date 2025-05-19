@@ -351,6 +351,71 @@ func TestServerWebI(t *testing.T) {
 					testStatusesReceived(ws, numPaginationJobs, 0, 1)
 				})
 
+				Convey("It returns jobs from multiple repgroups with Search=true and limit=0", func() {
+					searchJobs := []*Job{
+						{Cmd: "echo search1", Cwd: "/tmp", ReqGroup: "search_group",
+							Requirements: standardReqs, RepGroup: "search_rgA"},
+						{Cmd: "echo search2", Cwd: "/tmp", ReqGroup: "search_group",
+							Requirements: standardReqs, RepGroup: "seach_rgB"}, //nolint:misspell
+						{Cmd: "echo search3", Cwd: "/tmp", ReqGroup: "search_group",
+							Requirements: standardReqs, RepGroup: "search_rgC"},
+					}
+					inserts, _, erra := jq.Add(searchJobs, envVars, true)
+					So(erra, ShouldBeNil)
+					So(inserts, ShouldEqual, 3)
+
+					ws, err = drainWebSocket(wsURL, header)
+					So(err, ShouldBeNil)
+
+					err = ws.WriteJSON(jstatusReq{
+						Request:  "details",
+						RepGroup: "search_rg",
+						Search:   true,
+					})
+					So(err, ShouldBeNil)
+
+					var statuses []JStatus
+
+					timeout := time.After(500 * time.Millisecond)
+					err = ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+					So(err, ShouldBeNil)
+
+				collectLoop:
+					for {
+						select {
+						case <-timeout:
+							break collectLoop
+						default:
+							var status JStatus
+
+							errr := ws.ReadJSON(&status)
+							if errr != nil {
+								break collectLoop
+							}
+
+							statuses = append(statuses, status)
+						}
+					}
+
+					So(len(statuses), ShouldEqual, 2)
+
+					repGroups := map[string]bool{}
+					cmds := map[string]bool{}
+
+					for _, s := range statuses {
+						repGroups[s.RepGroup] = true
+						cmds[s.Cmd] = true
+
+						So(s.State, ShouldEqual, JobStateReady)
+					}
+
+					So(repGroups, ShouldContainKey, "search_rgA")
+					So(repGroups, ShouldContainKey, "search_rgC")
+					So(repGroups, ShouldNotContainKey, "seach_rgB") //nolint:misspell
+					So(cmds, ShouldContainKey, "echo search1")
+					So(cmds, ShouldContainKey, "echo search3")
+				})
+
 				Convey("It handles negative offset gracefully", func() {
 					err = ws.WriteJSON(jstatusReq{
 						Request:    "details",
