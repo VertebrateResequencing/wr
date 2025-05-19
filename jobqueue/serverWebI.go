@@ -26,11 +26,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/wtsi-ssg/wr/clog"
-
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gorilla/websocket"
+	"github.com/grafov/bcast"
+	"github.com/wtsi-ssg/wr/clog"
 )
 
 //go:embed static
@@ -409,97 +409,45 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 			}
 		}(conn, storedName, stopper)
 
-		// go routines to push changes to the client
-		go func(conn *websocket.Conn, stop chan bool, connName string) {
-			// log panics and die
-			defer internal.LogPanic(ctx, "jobqueue websocket status updating", true)
+		// Set up goroutines to push changes to the client
+		go setupUpdateListener(ctx, conn, stopper, storedName, s, s.statusCaster, "status updater")
+		go setupUpdateListener(ctx, conn, stopper, storedName, s, s.badServerCaster, "bad server caster")
+		go setupUpdateListener(ctx, conn, stopper, storedName, s, s.schedCaster, "scheduler issues caster")
+	}
+}
 
-			statusReceiver := s.statusCaster.Join()
-			defer statusReceiver.Close()
+// setupUpdateListener creates a goroutine that listens for updates from a
+// broadcaster and forwards them to the WebSocket client.
+func setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool,
+	connName string, s *Server, caster *bcast.Group, name string) {
+	defer internal.LogPanic(ctx, "jobqueue websocket "+name, true)
 
-			for {
-				select {
-				case <-stop:
-					return
-				case status := <-statusReceiver.In:
-					s.wsmutex.RLock()
-					writeMutex := s.wsWriteMutexes[connName]
-					s.wsmutex.RUnlock()
+	receiver := caster.Join()
+	defer receiver.Close()
 
-					if writeMutex == nil {
-						return
-					}
+	for {
+		select {
+		case <-stop:
+			return
+		case msg := <-receiver.In:
+			s.wsmutex.RLock()
+			writeMutex := s.wsWriteMutexes[connName]
+			s.wsmutex.RUnlock()
 
-					writeMutex.Lock()
-					err := conn.WriteJSON(status)
-					writeMutex.Unlock()
-					if err != nil {
-						clog.Warn(ctx, "status updater failed to send JSON to client", "err", err)
-						return
-					}
-				}
+			if writeMutex == nil {
+				return
 			}
-		}(conn, stopper, storedName)
 
-		go func(conn *websocket.Conn, stop chan bool, connName string) {
-			defer internal.LogPanic(ctx, "jobqueue websocket bad server updating", true)
+			writeMutex.Lock()
+			err := conn.WriteJSON(msg)
+			writeMutex.Unlock()
 
-			badserverReceiver := s.badServerCaster.Join()
-			defer badserverReceiver.Close()
+			if err != nil {
+				clog.Warn(ctx, name+" failed to send JSON to client", "err", err)
 
-			for {
-				select {
-				case <-stop:
-					return
-				case server := <-badserverReceiver.In:
-					s.wsmutex.RLock()
-					writeMutex := s.wsWriteMutexes[connName]
-					s.wsmutex.RUnlock()
-
-					if writeMutex == nil {
-						return
-					}
-
-					writeMutex.Lock()
-					err := conn.WriteJSON(server)
-					writeMutex.Unlock()
-					if err != nil {
-						clog.Warn(ctx, "bad server caster failed to send JSON to client", "err", err)
-						return
-					}
-				}
+				return
 			}
-		}(conn, stopper, storedName)
-
-		go func(conn *websocket.Conn, stop chan bool, connName string) {
-			defer internal.LogPanic(ctx, "jobqueue websocket scheduler issue updating", true)
-
-			schedIssueReceiver := s.schedCaster.Join()
-			defer schedIssueReceiver.Close()
-
-			for {
-				select {
-				case <-stop:
-					return
-				case si := <-schedIssueReceiver.In:
-					s.wsmutex.RLock()
-					writeMutex := s.wsWriteMutexes[connName]
-					s.wsmutex.RUnlock()
-
-					if writeMutex == nil {
-						return
-					}
-
-					writeMutex.Lock()
-					err := conn.WriteJSON(si)
-					writeMutex.Unlock()
-					if err != nil {
-						clog.Warn(ctx, "scheduler issues caster failed to send JSON to client", "err", err)
-						return
-					}
-				}
-			}
-		}(conn, stopper, storedName)
+		}
 	}
 }
 
