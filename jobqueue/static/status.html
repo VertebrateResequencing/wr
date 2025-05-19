@@ -24,6 +24,17 @@
     <script src="/js/wr/main.js" type="module"></script>
 
     <link rel="stylesheet" href="/css/wr-0.36.0.css">
+
+    <!-- Hide content until Knockout initializes -->
+    <style>
+        #status {
+            visibility: hidden;
+        }
+
+        body.ko-initialized #status {
+            visibility: visible;
+        }
+    </style>
 </head>
 
 <body>

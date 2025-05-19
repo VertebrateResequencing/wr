@@ -16,6 +16,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const svm = new StatusViewModel();
     ko.applyBindings(svm, document.getElementById('status'));
 
+    // Mark as initialized and show content
+    document.body.classList.add('ko-initialized');
+
     // Set up command path truncation/expansion behavior
     setupCommandPathBehavior(svm);
 });
