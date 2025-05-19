@@ -778,20 +778,23 @@ func readUntilStatus(ws *websocket.Conn) (*JStatus, error) {
 			return nil, err
 		}
 
-		if _, hasKey := msg["Key"]; hasKey {
-			if _, hasState := msg["State"]; hasState {
-				statusJSON, err := json.Marshal(msg)
-				if err != nil {
-					return nil, err
-				}
+		_, hasKey := msg["Key"]
+		_, hasState := msg["State"]
 
-				var status JStatus
-
-				err = json.Unmarshal(statusJSON, &status)
-
-				return &status, err
-			}
+		if !hasKey || !hasState {
+			continue
 		}
+
+		statusJSON, err := json.Marshal(msg)
+		if err != nil {
+			return nil, err
+		}
+
+		var status JStatus
+
+		err = json.Unmarshal(statusJSON, &status)
+
+		return &status, err
 	}
 }
 
