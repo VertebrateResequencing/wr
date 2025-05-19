@@ -476,9 +476,23 @@ u.dotted {
     transition: all 0.2s ease;
 }
 
-.state-filter.selected-state {
-    box-shadow: inset 0 0 0 2px #fff, inset 0 0 0 4px #333;
-    z-index: 10;
+.progress-bar.state-filter.selected-state {
+    animation: selected-pulse 2s infinite;
+    text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+    z-index: 5;
+}
+
+/* Define the subtle pulsing animation */
+@keyframes selected-pulse {
+
+    0%,
+    100% {
+        filter: brightness(1.1);
+    }
+
+    50% {
+        filter: brightness(1.2);
+    }
 }
 
 .badge.state-filter {
@@ -493,6 +507,19 @@ u.dotted {
 .badge.state-filter.selected-state {
     background-color: #337ab7;
     box-shadow: 0 0 0 2px rgba(51, 122, 183, 0.5);
+    animation: badge-pulse 2s infinite;
+}
+
+@keyframes badge-pulse {
+
+    0%,
+    100% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.1);
+    }
 }
 
 .progress-bar.clickable {
