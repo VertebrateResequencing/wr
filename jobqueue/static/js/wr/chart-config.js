@@ -294,46 +294,135 @@ export function createCombinedTimeChartConfig(walltimeValues, cputimeValues) {
  */
 export function createExecutionChartConfig(jobsData) {
     // Filter and prepare timeline data
-    const timelineData = jobsData
+    const rawScatterData = jobsData
         .filter(job => job.Started && (job.State === 'complete' || job.State === 'buried' || job.Ended))
-        .map(job => ({
-            x: job.Started,
-            y: job.HostID || job.Host || job.RepGroup,
-            start: job.Started,
-            end: job.Ended || job.Started + job.Walltime,
-            duration: (job.Ended || job.Started + job.Walltime) - job.Started,
-            label: `${job.Cmd.substring(0, 30)}...`,
-            state: job.State,
-            id: job.Key
-        }));
+        .map(job => {
+            const startTime = job.Started;
+            const endTime = job.Ended || (job.Started + job.Walltime);
+            const duration = endTime - startTime;
 
-    if (timelineData.length === 0) {
+            return {
+                x: startTime, // Start time for x-axis
+                y: duration,  // Duration for y-axis (elapsed time)
+                cmd: job.Cmd.substring(0, 30) + "...",
+                state: job.State,
+                hostid: job.HostID || job.Host || job.RepGroup,
+                startDate: startTime,
+                endDate: endTime,
+                duration: duration
+            };
+        });
+
+    if (rawScatterData.length === 0) {
         return null;
     }
 
-    // Sort and deduplicate the y-axis labels
-    const yLabels = [...new Set(timelineData.map(item => item.y))].sort();
+    // Group overlapping points
+    const pointGroups = {};
+    const groupedData = [];
+
+    // Group points based on x,y coordinates (round to the nearest second to account for tiny differences)
+    rawScatterData.forEach(point => {
+        // Create a key that represents this position (rounded to 1 decimal place for grouping)
+        const key = `${Math.round(point.x)},${Math.round(point.y)}`;
+
+        if (!pointGroups[key]) {
+            pointGroups[key] = {
+                points: [point],
+                x: point.x,
+                y: point.y,
+                count: 1,
+                state: point.state,
+                // Store the first command for the tooltip
+                cmd: point.cmd,
+                startDate: point.startDate,
+                endDate: point.endDate,
+                duration: point.duration,
+                hostid: point.hostid
+            };
+            groupedData.push(pointGroups[key]);
+        } else {
+            pointGroups[key].points.push(point);
+            pointGroups[key].count++;
+
+            // If we have commands with different states, prioritize showing buried ones
+            if (point.state === 'buried') {
+                pointGroups[key].state = 'buried';
+            }
+        }
+    });
+
+    // Create scatter data from the grouped points
+    const scatterData = groupedData.map(group => ({
+        x: group.x,
+        y: group.y,
+        count: group.count,
+        cmd: group.count > 1 ? `${group.count} jobs at this point` : group.cmd,
+        state: group.state,
+        hostid: group.hostid,
+        startDate: group.startDate,
+        endDate: group.endDate,
+        duration: group.duration,
+        // Store all points for detailed tooltip
+        allPoints: group.points
+    }));
+
+    // Find min and max values for y-axis (durations) with padding
+    const durations = scatterData.map(item => item.y);
+    const minDurationPadded = Math.max(0, Math.min(...durations) * 0.9); // Add 10% padding below
+    const maxDurationPadded = Math.max(...durations) * 1.1; // Add 10% padding above
+
+    // Calculate x-axis (time) bounds more carefully to prevent absurd ranges
+    const startTimes = scatterData.map(item => item.x);
+    const minTime = Math.min(...startTimes);
+    const maxTime = Math.max(...startTimes);
+    const timeRange = maxTime - minTime;
+
+    // Add padding to the time axis - if range is very small, use at least 60 seconds of padding
+    // This ensures that even jobs occurring within the same minute have reasonable x-axis bounds
+    const timeAxisPadding = Math.max(timeRange * 0.05, 60);
+    const minStartTime = minTime - timeAxisPadding;
+    const maxStartTime = maxTime + timeAxisPadding;
+
+    // Calculate the data range to determine tick formatting
+    const dataRange = maxDurationPadded - minDurationPadded;
+    const useDecimals = dataRange < 5; // Use decimals if range is small (< 5 seconds)
 
     // Create data structure
     const chartData = {
-        labels: yLabels,
         datasets: [{
             type: 'scatter',
             label: 'Jobs',
-            data: timelineData.map(item => ({
-                x: item.start,
-                y: yLabels.indexOf(item.y),
-                job: item
-            })),
-            backgroundColor: timelineData.map(item =>
+            data: scatterData,
+            backgroundColor: scatterData.map(item =>
                 item.state === 'complete' ? 'rgba(40, 167, 69, 0.7)' :
                     item.state === 'buried' ? 'rgba(220, 53, 69, 0.7)' : 'rgba(0, 123, 255, 0.7)'),
-            borderColor: timelineData.map(item =>
+            borderColor: scatterData.map(item =>
                 item.state === 'complete' ? 'rgb(40, 167, 69)' :
                     item.state === 'buried' ? 'rgb(220, 53, 69)' : 'rgb(0, 123, 255)'),
-            pointStyle: 'rect',
-            pointRadius: 8,
-            pointHoverRadius: 10
+            borderWidth: 1,
+            pointStyle: 'circle',
+            // Scale the point radius based on the count (min size 4, max size 15)
+            pointRadius: scatterData.map(item => {
+                const baseSize = 4;
+                const maxSize = 15;
+                const scaleFactor = 1.5;
+                // Use logarithmic scaling for better visualization when there's a big difference in counts
+                return Math.min(baseSize + Math.log(item.count) * scaleFactor, maxSize);
+            }),
+            hoverRadius: scatterData.map(item => {
+                const baseSize = 6;
+                const maxSize = 18;
+                const scaleFactor = 2;
+                return Math.min(baseSize + Math.log(item.count) * scaleFactor, maxSize);
+            }),
+            // Add hover effects to make clusters more visible
+            hoverBorderWidth: scatterData.map(item => item.count > 1 ? 2 : 1),
+            hoverBorderColor: scatterData.map(item =>
+                item.count > 1 ? 'rgba(255, 255, 255, 0.8)' :
+                    (item.state === 'complete' ? 'rgb(40, 167, 69)' :
+                        item.state === 'buried' ? 'rgb(220, 53, 69)' : 'rgb(0, 123, 255)')
+            )
         }]
     };
 
@@ -343,65 +432,156 @@ export function createExecutionChartConfig(jobsData) {
         plugins: {
             title: {
                 display: true,
-                text: 'Job Execution Timeline',
+                text: 'Job Duration vs. Start Time',
                 font: { size: 16 }
             },
             tooltip: {
                 callbacks: {
                     label: function (context) {
-                        const job = context.raw.job;
+                        const item = context.raw;
+
+                        // For single points, show simple information
+                        if (item.count === 1) {
+                            return [
+                                `Command: ${item.cmd}`,
+                                `Start: ${item.startDate.toDate()}`,
+                                `End: ${item.endDate.toDate()}`,
+                                `Duration: ${item.duration.toDuration()}`,
+                                `Host: ${item.hostid}`,
+                                `Status: ${item.state}`
+                            ];
+                        }
+
+                        // For grouped points, show summary
                         return [
-                            `Command: ${job.label}`,
-                            `Started: ${job.start.toDate()}`,
-                            `Duration: ${job.duration.toDuration()}`,
-                            `Status: ${job.state}`
+                            `${item.count} jobs at this point`,
+                            `Start time: ${item.startDate.toDate()}`,
+                            `Duration: ${item.duration.toDuration()}`,
+                            `Status: ${item.count > 1 ? 'Mixed' : item.state}`,
+                            '(Hover longer to see job details)'
                         ];
+                    },
+                    afterLabel: function (context) {
+                        const item = context.raw;
+
+                        // Only show details for groups of jobs when hovering for a while
+                        if (item.count > 1 && context.chart.tooltip._active &&
+                            context.chart.tooltip._active.length > 0 &&
+                            context.chart.tooltip._lastActive &&
+                            context.chart.tooltip._lastActive.length > 0) {
+
+                            // If showing the same tooltip for more than 1 second, show details
+                            if (context.chart.tooltip._active[0].element === context.chart.tooltip._lastActive[0].element &&
+                                context.chart.tooltip._tooltipShowTime &&
+                                Date.now() - context.chart.tooltip._tooltipShowTime > 1000) {
+
+                                // Show details for up to 5 jobs
+                                const maxToShow = Math.min(5, item.allPoints.length);
+                                const details = [];
+
+                                for (let i = 0; i < maxToShow; i++) {
+                                    details.push(`Job ${i + 1}: ${item.allPoints[i].cmd}`);
+                                    details.push(`  Status: ${item.allPoints[i].state}`);
+                                }
+
+                                if (item.count > maxToShow) {
+                                    details.push(`...and ${item.count - maxToShow} more jobs`);
+                                }
+
+                                return details;
+                            }
+                        }
+
+                        return [];
                     }
                 }
+            },
+            legend: {
+                display: false
             }
         },
         scales: {
             x: {
                 type: 'linear',
+                min: minStartTime,
+                max: maxStartTime,
                 title: {
                     display: true,
-                    text: 'Timeline'
+                    text: 'Start Time'
                 },
                 ticks: {
                     callback: function (value) {
                         return value.toDate();
-                    }
+                    },
+                    // Rotate the labels to prevent overlapping
+                    maxRotation: 45,
+                    minRotation: 45,
+                    autoSkip: true,
+                    autoSkipPadding: 15,
+                    padding: 10
                 }
             },
             y: {
-                type: 'category',
-                labels: yLabels,
+                min: minDurationPadded,
+                max: maxDurationPadded,
                 title: {
                     display: true,
-                    text: 'Host/Server'
+                    text: 'Duration (seconds)'
+                },
+                ticks: {
+                    // Configure step size and formatting based on data range
+                    stepSize: useDecimals ? dataRange / 5 : undefined,
+                    // Ensure we don't get repeated values on the axis
+                    count: useDecimals ? 6 : undefined,
+                    callback: function (value) {
+                        if (!value) return '0s';
+
+                        // For small ranges, format with decimal precision
+                        if (useDecimals) {
+                            // Return the raw seconds with decimals for very small ranges
+                            if (dataRange < 1) {
+                                return value.toFixed(2) + 's';
+                            }
+                            // For slightly larger ranges (1-5s), use 1 decimal
+                            return value.toFixed(1) + 's';
+                        }
+
+                        // Use the standard duration formatter for larger ranges
+                        return value.toDuration();
+                    }
                 }
             }
         }
     };
 
-    // Calculate timeline stats for HTML display
-    const startTimes = timelineData.map(j => j.start);
-    const endTimes = timelineData.map(j => j.end);
-    const durations = timelineData.map(j => j.duration);
-    const minStart = Math.min(...startTimes);
-    const maxEnd = Math.max(...endTimes);
+    // Track tooltip show time for detailed hover
+    chartOptions.plugins.tooltip.callbacks.beforeShow = function (context) {
+        context.chart.tooltip._tooltipShowTime = Date.now();
+        return true;
+    };
 
+    // Calculate stats for HTML display - use raw min/max for stats (no padding)
+    const minStart = Math.min(...startTimes);
+    const maxStart = Math.max(...startTimes);
+    const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
+    const minDuration = Math.min(...durations);
+    const maxDuration = Math.max(...durations);
+
+    // Update the stats HTML to include information about grouping
     const statsHtml = `
-    <div class="stat-item"><span class="stat-label">Jobs:</span> ${timelineData.length}</div>
-    <div class="stat-item"><span class="stat-label">Start:</span> ${minStart.toDate()}</div>
-    <div class="stat-item"><span class="stat-label">End:</span> ${maxEnd.toDate()}</div>
-    <div class="stat-item"><span class="stat-label">Span:</span> ${(maxEnd - minStart).toDuration()}</div>
-    <div class="stat-item"><span class="stat-label">Avg Duration:</span> ${(durations.reduce((a, b) => a + b, 0) / durations.length).toDuration()}</div>
-  `;
+    <div class="stat-item"><span class="stat-label">Jobs:</span> ${rawScatterData.length}</div>
+    <div class="stat-item"><span class="stat-label">Unique Points:</span> ${scatterData.length}</div>
+    <div class="stat-item"><span class="stat-label">Grouped Points:</span> ${scatterData.filter(p => p.count > 1).length}</div>
+    <div class="stat-item"><span class="stat-label">First Job:</span> ${minStart.toDate()}</div>
+    <div class="stat-item"><span class="stat-label">Last Job:</span> ${maxStart.toDate()}</div>
+    <div class="stat-item"><span class="stat-label">Min Duration:</span> ${minDuration.toDuration()}</div>
+    <div class="stat-item"><span class="stat-label">Max Duration:</span> ${maxDuration.toDuration()}</div>
+    <div class="stat-item"><span class="stat-label">Avg Duration:</span> ${avgDuration.toDuration()}</div>
+    `;
 
     return {
         type: 'scatter',
-        title: 'Job Execution Timeline',
+        title: 'Job Duration vs. Start Time',
         data: chartData,
         options: chartOptions,
         statsHtml: statsHtml
@@ -464,6 +644,19 @@ export function createTimeChartConfig(timeValues, timeType) {
     const binCount = Math.min(Math.ceil(Math.sqrt(timeValues.length)), 15);
     const bins = createHistogramBins(timeValues, binCount);
 
+    // Calculate min and max for y-axis scaling
+    const counts = bins.map(bin => bin.count);
+    const maxCount = Math.max(...counts) * 1.1; // Add 10% padding above
+    const minCount = 0;
+
+    // Calculate the data range to determine tick formatting
+    const dataRange = maxCount - minCount;
+    const useDecimals = dataRange < 5; // Use decimals if range is very small
+
+    // For the x-axis (timeValues), calculate appropriate min and max with padding
+    const minTime = Math.max(0, Math.min(...timeValues) * 0.9); // Add 10% padding below
+    const maxTime = Math.max(...timeValues) * 1.1; // Add 10% padding above
+
     // Create data structure
     const chartData = {
         labels: bins.map(bin => `${bin.min.toDuration()} - ${bin.max.toDuration()}`),
@@ -498,16 +691,39 @@ export function createTimeChartConfig(timeValues, timeType) {
         },
         scales: {
             y: {
+                min: minCount,
+                max: maxCount,
                 beginAtZero: true,
                 title: {
                     display: true,
                     text: 'Number of Jobs'
+                },
+                ticks: {
+                    // Configure step size and formatting based on data range
+                    stepSize: useDecimals ? dataRange / 5 : undefined,
+                    // Ensure we don't get repeated values on the axis
+                    count: useDecimals ? 6 : undefined,
+                    callback: function (value) {
+                        // For small ranges with decimal values
+                        if (useDecimals && !Number.isInteger(value)) {
+                            return value.toFixed(1);
+                        }
+                        return value;
+                    }
                 }
             },
             x: {
+                // Apply min/max with padding to x-axis for histogram
+                min: minTime,
+                max: maxTime,
                 title: {
                     display: true,
                     text: isWallTime ? 'Wall Time' : 'CPU Time'
+                },
+                ticks: {
+                    callback: function (value) {
+                        return value.toDuration();
+                    }
                 }
             }
         }
