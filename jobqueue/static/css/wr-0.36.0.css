@@ -470,6 +470,40 @@ u.dotted {
     color: #ccc;
 }
 
+/* State filter styling */
+.state-filter {
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+.state-filter.selected-state {
+    box-shadow: inset 0 0 0 2px #fff, inset 0 0 0 4px #333;
+    z-index: 10;
+}
+
+.badge.state-filter {
+    background-color: #777;
+    transition: all 0.2s ease;
+}
+
+.badge.state-filter:hover {
+    background-color: #555;
+}
+
+.badge.state-filter.selected-state {
+    background-color: #337ab7;
+    box-shadow: 0 0 0 2px rgba(51, 122, 183, 0.5);
+}
+
+.progress-bar.clickable {
+    cursor: pointer;
+}
+
+.progress-bar.state-filter:hover {
+    opacity: 0.9;
+    filter: brightness(1.1);
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .command-path {

@@ -170,62 +170,87 @@
                     <div style="width: 100%;" class="well well-sm search-result-repgroup">
                         <h5 style="margin: 0; padding: 0">
                             <span data-bind="text: name"></span>
-                            <span class="badge" data-bind="text: total"></span>
+                            <span class="badge state-filter clickable" data-bind="text: total, 
+                                           css: { 'selected-state': selectedState() === 'total' },
+                                           click: function() { $parent.setSelectedState($data, 'total') }"></span>
 
                             <!-- Show jobs button -->
                             <button type="button" class="btn btn-xs btn-primary pull-right"
                                 data-bind="click: function() { $parent.showGroupJobs($data) }">
-                                <span class="glyphicon glyphicon-list"></span> Show Jobs
+                                <span class="glyphicon glyphicon-list"></span>
+                                <span
+                                    data-bind="text: 'Show ' + (selectedState() === 'total' ? 'All' : selectedState()) + ' Jobs'"></span>
                             </button>
                         </h5>
 
                         <div class="top-margin" data-bind="if: total > 0">
                             <div class="progress" style="margin-bottom: 0">
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning state-filter"
                                     role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                    data-bind="style: { width: (counts.delayed/total*100) + '%' }, attr: { 'aria-valuenow': counts.delayed/total*100 }">
+                                    data-bind="css: { 'clickable': counts.delayed > 0, 'selected-state': selectedState() === 'delayed' }, 
+                                              style: { width: (counts.delayed/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.delayed/total*100 },
+                                              click: function() { if (counts.delayed > 0) $parent.setSelectedState($data, 'delayed') }">
                                     <!-- ko if: counts.delayed > 0 -->
                                     <span data-bind="text: counts.delayed"></span> delayed
                                     <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning state-filter"
                                     role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                    data-bind="style: { width: (counts.dependent/total*100) + '%' }, attr: { 'aria-valuenow': counts.dependent/total*100 }">
+                                    data-bind="css: { 'clickable': counts.dependent > 0, 'selected-state': selectedState() === 'dependent' }, 
+                                              style: { width: (counts.dependent/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.dependent/total*100 },
+                                              click: function() { if (counts.dependent > 0) $parent.setSelectedState($data, 'dependent') }">
                                     <!-- ko if: counts.dependent > 0 -->
                                     <span data-bind="text: counts.dependent"></span> dependent
                                     <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-info"
+                                <div class="progress-bar progress-bar-striped active progress-bar-info state-filter"
                                     role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                    data-bind="style: { width: (counts.ready/total*100) + '%' }, attr: { 'aria-valuenow': counts.ready/total*100 }">
+                                    data-bind="css: { 'clickable': counts.ready > 0, 'selected-state': selectedState() === 'ready' }, 
+                                              style: { width: (counts.ready/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.ready/total*100 },
+                                              click: function() { if (counts.ready > 0) $parent.setSelectedState($data, 'ready') }">
                                     <!-- ko if: counts.ready > 0 -->
                                     <span data-bind="text: counts.ready"></span> pending
                                     <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active" role="progressbar"
+                                <div class="progress-bar progress-bar-striped active state-filter" role="progressbar"
                                     aria-valuemin="0" aria-valuemax="100"
-                                    data-bind="style: { width: (counts.running/total*100) + '%' }, attr: { 'aria-valuenow': counts.running/total*100 }">
+                                    data-bind="css: { 'clickable': counts.running > 0, 'selected-state': selectedState() === 'running' }, 
+                                              style: { width: (counts.running/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.running/total*100 },
+                                              click: function() { if (counts.running > 0) $parent.setSelectedState($data, 'running') }">
                                     <!-- ko if: counts.running > 0 -->
                                     <span data-bind="text: counts.running"></span> running
                                     <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-striped active progress-bar-danger"
+                                <div class="progress-bar progress-bar-striped active progress-bar-danger state-filter"
                                     role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                                    data-bind="style: { width: (counts.lost/total*100) + '%' }, attr: { 'aria-valuenow': counts.lost/total*100 }">
+                                    data-bind="css: { 'clickable': counts.lost > 0, 'selected-state': selectedState() === 'lost' }, 
+                                              style: { width: (counts.lost/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.lost/total*100 },
+                                              click: function() { if (counts.lost > 0) $parent.setSelectedState($data, 'lost') }">
                                     <!-- ko if: counts.lost > 0 -->
                                     <span data-bind="text: counts.lost"></span> lost contact
                                     <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-danger" role="progressbar" aria-valuemin="0"
-                                    aria-valuemax="100"
-                                    data-bind="style: { width: (counts.buried/total*100) + '%' }, attr: { 'aria-valuenow': counts.buried/total*100 }">
+                                <div class="progress-bar progress-bar-danger state-filter" role="progressbar"
+                                    aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="css: { 'clickable': counts.buried > 0, 'selected-state': selectedState() === 'buried' }, 
+                                              style: { width: (counts.buried/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.buried/total*100 },
+                                              click: function() { if (counts.buried > 0) $parent.setSelectedState($data, 'buried') }">
                                     <!-- ko if: counts.buried > 0 -->
                                     <span data-bind="text: counts.buried"></span> buried
                                     <!-- /ko -->
                                 </div>
-                                <div class="progress-bar progress-bar-success" role="progressbar" aria-valuemin="0"
-                                    aria-valuemax="100"
-                                    data-bind="style: { width: (counts.complete/total*100) + '%' }, attr: { 'aria-valuenow': counts.complete/total*100 }">
+                                <div class="progress-bar progress-bar-success state-filter" role="progressbar"
+                                    aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="css: { 'clickable': counts.complete > 0, 'selected-state': selectedState() === 'complete' }, 
+                                              style: { width: (counts.complete/total*100) + '%' }, 
+                                              attr: { 'aria-valuenow': counts.complete/total*100 },
+                                              click: function() { if (counts.complete > 0) $parent.setSelectedState($data, 'complete') }">
                                     <!-- ko if: counts.complete > 0 -->
                                     <span data-bind="text: counts.complete"></span> complete
                                     <!-- /ko -->
@@ -233,7 +258,8 @@
                             </div>
                         </div>
 
-                        <!-- Resources and execution data - using original format -->
+                        <!-- Resources and execution data - using original format but with computed stats -->
+                        <!-- ko with: $parent.getFilteredJobStats($data, selectedState()) -->
                         <div class="panel-body compact-props" data-bind="if: hasData || timeline.started">
                             <table class="prop-table">
                                 <!-- Resources section -->
@@ -302,6 +328,7 @@
                                 </tr>
                             </table>
                         </div>
+                        <!-- /ko -->
                     </div>
                 </div>
             </div>

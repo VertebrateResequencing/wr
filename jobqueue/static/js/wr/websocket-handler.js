@@ -185,6 +185,28 @@ function handleJobDetailsMessage(viewModel, json) {
     }
 
     if (viewModel.detailsOA && rg == viewModel.detailsRepgroup) {
+        // Get the current rep group object 
+        const repgroupId = viewModel.detailsRepgroup;
+        let repgroup = null;
+
+        // Find the repgroup in the array
+        for (let i = 0; i < viewModel.repGroups.length; i++) {
+            if (viewModel.repGroups[i].id === repgroupId) {
+                repgroup = viewModel.repGroups[i];
+                break;
+            }
+        }
+
+        // Check if we're using a custom state filter for this repgroup
+        if (repgroup && repgroup.hasCustomFilter && repgroup.selectedFilter
+            && repgroup.selectedFilter !== 'total') {
+
+            // If the incoming job doesn't match our filter, skip it
+            if (json.State !== repgroup.selectedFilter) {
+                return;
+            }
+        }
+
         // Check if this is a push update for an existing job
         if (json['IsPushUpdate']) {
             const jobs = viewModel.detailsOA();

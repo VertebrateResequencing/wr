@@ -171,9 +171,14 @@ export function StatusViewModel() {
         // Add the jobs to the details
         const jobsToAdd = [];
 
-        // Filter jobs based on the summary name
+        // Filter jobs based on the summary name and selected state
         self.searchResults().forEach(job => {
             if ((summary.name === job.RepGroup) || (summary.name === "all above")) {
+                // Apply state filter if not showing all jobs
+                if (summary.selectedState() !== 'total' && job.State !== summary.selectedState()) {
+                    return; // Skip jobs that don't match the selected state
+                }
+
                 // Clone the job to avoid reference issues
                 const clonedJob = JSON.parse(JSON.stringify(job));
 
@@ -340,8 +345,91 @@ export function StatusViewModel() {
                 ended: latestEnd,
                 elapsed: elapsed
             },
+            hasData: memory.length > 0 || walltime.length > 0,
+            selectedState: ko.observable('total') // Default selection is 'total'
+        };
+    };
+
+    // Calculate statistics for jobs filtered by state
+    self.getFilteredJobStats = function (summary, state) {
+        // If the state is 'total', use all jobs
+        if (state === 'total') {
+            return summary;
+        }
+
+        // Filter jobs by state
+        const filteredJobs = self.searchResults().filter(job =>
+            (job.RepGroup === summary.name || summary.name === "all above") &&
+            job.State === state
+        );
+
+        // No jobs match the filter
+        if (filteredJobs.length === 0) {
+            return {
+                resources: {
+                    memory: { avg: 0, stdDev: 0 }, disk: { avg: 0, stdDev: 0 },
+                    walltime: { avg: 0, stdDev: 0 }, cputime: { avg: 0, stdDev: 0 }
+                },
+                timeline: { started: null, ended: null, elapsed: 0 },
+                hasData: false
+            };
+        }
+
+        // Calculate stats for filtered jobs
+        const calcStats = (values) => {
+            if (values.length === 0) return { avg: 0, stdDev: 0 };
+            const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
+            const variance = values.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / values.length;
+            const stdDev = Math.sqrt(variance);
+            return { avg, stdDev };
+        };
+
+        // Extract resource metrics
+        const memory = filteredJobs.filter(job => job.PeakRAM > 0).map(job => job.PeakRAM);
+        const disk = filteredJobs.filter(job => job.PeakDisk > 0).map(job => job.PeakDisk);
+        const walltime = filteredJobs.filter(job => job.Walltime > 0).map(job => job.Walltime);
+        const cputime = filteredJobs.filter(job => job.CPUtime > 0).map(job => job.CPUtime);
+
+        // Track timeline
+        let earliestStart = null;
+        let latestEnd = null;
+
+        filteredJobs.forEach(job => {
+            if (job.Started && (!earliestStart || job.Started < earliestStart)) {
+                earliestStart = job.Started;
+            }
+            if (job.Ended && (!latestEnd || job.Ended > latestEnd)) {
+                latestEnd = job.Ended;
+            }
+        });
+
+        // Calculate elapsed time
+        let elapsed = 0;
+        if (earliestStart && latestEnd) {
+            elapsed = latestEnd - earliestStart;
+        }
+
+        return {
+            resources: {
+                memory: calcStats(memory),
+                disk: calcStats(disk),
+                walltime: calcStats(walltime),
+                cputime: calcStats(cputime)
+            },
+            timeline: {
+                started: earliestStart,
+                ended: latestEnd,
+                elapsed: elapsed
+            },
             hasData: memory.length > 0 || walltime.length > 0
         };
+    };
+
+    // Set the selected state for a summary and update stats
+    self.setSelectedState = function (summary, state) {
+        // Update the selected state
+        summary.selectedState(state);
+        return false; // Prevent default
     };
 
     self.searchJobs = function () {
