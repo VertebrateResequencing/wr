@@ -333,6 +333,10 @@ export function StatusViewModel() {
             if (values.length === 0) return { avg: 0, stdDev: 0 };
 
             const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
+
+            // Handle the case with only one value
+            if (values.length === 1) return { avg, stdDev: 0 };
+
             const variance = values.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / values.length;
             const stdDev = Math.sqrt(variance);
 
@@ -415,7 +419,12 @@ export function StatusViewModel() {
         // Calculate stats for filtered and completed/buried jobs
         const calcStats = (values) => {
             if (values.length === 0) return { avg: 0, stdDev: 0 };
+
             const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
+
+            // Handle the case with only one value - standard deviation is undefined
+            if (values.length === 1) return { avg, stdDev: 0 };
+
             const variance = values.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / values.length;
             const stdDev = Math.sqrt(variance);
             return { avg, stdDev };
