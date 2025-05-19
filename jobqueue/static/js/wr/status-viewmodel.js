@@ -128,6 +128,9 @@ export function StatusViewModel() {
 
     // Show jobs from a search result as a RepGroup
     self.showGroupJobs = function (summary) {
+        // Store the current selected state
+        const currentSelectedState = summary.selectedState();
+
         // First check if a repgroup already exists with this name
         let existingGroupIndex = -1;
         for (let i = 0; i < self.repGroups.length; i++) {
@@ -158,15 +161,33 @@ export function StatusViewModel() {
         // Mark this as a search group (so we can disable click handlers)
         repgroup.isSearchGroup = true;
 
-        // Update the counts to match our summary
-        repgroup.complete(summary.counts.complete || 0);
-        repgroup.buried(summary.counts.buried || 0);
-        repgroup.delayed(summary.counts.delayed || 0);
-        repgroup.dependent(summary.counts.dependent || 0);
-        repgroup.ready(summary.counts.ready || 0);
-        repgroup.running(summary.counts.running || 0);
-        repgroup.lost(summary.counts.lost || 0);
-        repgroup.deleted(0); // Not tracked in summary
+        // Store the selected filter state
+        repgroup.selectedFilter = currentSelectedState;
+        repgroup.hasCustomFilter = currentSelectedState !== 'total';
+
+        // Update the counts based on the filter
+        if (currentSelectedState === 'total') {
+            // If showing all states, apply all counts
+            repgroup.complete(summary.counts.complete || 0);
+            repgroup.buried(summary.counts.buried || 0);
+            repgroup.delayed(summary.counts.delayed || 0);
+            repgroup.dependent(summary.counts.dependent || 0);
+            repgroup.ready(summary.counts.ready || 0);
+            repgroup.running(summary.counts.running || 0);
+            repgroup.lost(summary.counts.lost || 0);
+        } else {
+            // If a specific state is selected, only set the count for that state
+            repgroup.complete(currentSelectedState === 'complete' ? summary.counts.complete || 0 : 0);
+            repgroup.buried(currentSelectedState === 'buried' ? summary.counts.buried || 0 : 0);
+            repgroup.delayed(currentSelectedState === 'delayed' ? summary.counts.delayed || 0 : 0);
+            repgroup.dependent(currentSelectedState === 'dependent' ? summary.counts.dependent || 0 : 0);
+            repgroup.ready(currentSelectedState === 'ready' ? summary.counts.ready || 0 : 0);
+            repgroup.running(currentSelectedState === 'running' ? summary.counts.running || 0 : 0);
+            repgroup.lost(currentSelectedState === 'lost' ? summary.counts.lost || 0 : 0);
+        }
+
+        // Always set deleted to 0 as it's not tracked in search results
+        repgroup.deleted(0);
 
         // Add the jobs to the details
         const jobsToAdd = [];
@@ -175,7 +196,7 @@ export function StatusViewModel() {
         self.searchResults().forEach(job => {
             if ((summary.name === job.RepGroup) || (summary.name === "all above")) {
                 // Apply state filter if not showing all jobs
-                if (summary.selectedState() !== 'total' && job.State !== summary.selectedState()) {
+                if (currentSelectedState !== 'total' && job.State !== currentSelectedState) {
                     return; // Skip jobs that don't match the selected state
                 }
 
