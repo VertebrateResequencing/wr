@@ -531,6 +531,46 @@ u.dotted {
     filter: brightness(1.1);
 }
 
+/* Resource chart clickable styling */
+.resource-chart-trigger {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-color: #ddd;
+}
+
+.resource-chart-trigger:hover {
+    background-color: #f0f0f0;
+    border-color: #bce8f1;
+    box-shadow: 0 0 3px rgba(0, 123, 255, 0.5);
+}
+
+.resource-chart-trigger .prop-name {
+    background-color: #e8f4f8;
+    color: #31708f;
+}
+
+/* Stats display in chart modal */
+#chartStats {
+    margin-top: 15px;
+    padding: 10px;
+    background-color: #f9f9f9;
+    border-radius: 4px;
+    font-family: monospace;
+    max-height: 100px;
+    overflow-y: auto;
+}
+
+.stat-item {
+    display: inline-block;
+    margin-right: 15px;
+    margin-bottom: 5px;
+}
+
+.stat-label {
+    font-weight: bold;
+    color: #666;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .command-path {

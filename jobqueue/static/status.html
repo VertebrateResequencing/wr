@@ -35,6 +35,9 @@
             visibility: visible;
         }
     </style>
+
+    <!-- Chart.js for resource visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 </head>
 
 <body>
@@ -267,7 +270,8 @@
                                     data-bind="visible: hasData && ($parent.selectedState() === 'total' || $parent.selectedState() === 'buried' || $parent.selectedState() === 'complete')">
                                     <td class="prop-title">Resources:</td>
                                     <td class="prop-content">
-                                        <div class="prop-tag" data-bind="visible: resources.memory.avg > 0">
+                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.memory.avg > 0, 
+                     click: function() { $root.showResourceChart('memory', $parent, $data) }">
                                             <span class="prop-name">Memory</span>
                                             <span class="prop-value">
                                                 <span data-bind="text: resources.memory.avg.mbIEC()"></span>
@@ -275,10 +279,13 @@
                                                 <span class="prop-separator">±</span>
                                                 <span data-bind="text: resources.memory.stdDev.mbIEC()"></span>
                                                 <!-- /ko -->
+                                                <i class="glyphicon glyphicon-stats"
+                                                    style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
                                             </span>
                                         </div>
 
-                                        <div class="prop-tag" data-bind="visible: resources.disk.avg > 0">
+                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.disk.avg > 0,
+                     click: function() { $root.showResourceChart('disk', $parent, $data) }">
                                             <span class="prop-name">Disk</span>
                                             <span class="prop-value">
                                                 <span data-bind="text: resources.disk.avg.mbIEC()"></span>
@@ -286,10 +293,13 @@
                                                 <span class="prop-separator">±</span>
                                                 <span data-bind="text: resources.disk.stdDev.mbIEC()"></span>
                                                 <!-- /ko -->
+                                                <i class="glyphicon glyphicon-stats"
+                                                    style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
                                             </span>
                                         </div>
 
-                                        <div class="prop-tag" data-bind="visible: resources.walltime.avg > 0">
+                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.walltime.avg > 0,
+                     click: function() { $root.showResourceChart('walltime', $parent, $data) }">
                                             <span class="prop-name">Wall Time</span>
                                             <span class="prop-value">
                                                 <span data-bind="text: resources.walltime.avg.toDuration()"></span>
@@ -297,10 +307,13 @@
                                                 <span class="prop-separator">±</span>
                                                 <span data-bind="text: resources.walltime.stdDev.toDuration()"></span>
                                                 <!-- /ko -->
+                                                <i class="glyphicon glyphicon-stats"
+                                                    style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
                                             </span>
                                         </div>
 
-                                        <div class="prop-tag" data-bind="visible: resources.cputime.avg > 0">
+                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.cputime.avg > 0,
+                     click: function() { $root.showResourceChart('cputime', $parent, $data) }">
                                             <span class="prop-name">CPU Time</span>
                                             <span class="prop-value">
                                                 <span data-bind="text: resources.cputime.avg.toDuration()"></span>
@@ -308,17 +321,20 @@
                                                 <span class="prop-separator">±</span>
                                                 <span data-bind="text: resources.cputime.stdDev.toDuration()"></span>
                                                 <!-- /ko -->
+                                                <i class="glyphicon glyphicon-stats"
+                                                    style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
                                             </span>
                                         </div>
                                     </td>
                                 </tr>
 
-                                <!-- Timeline section -->
+                                <!-- Timeline section - also make it clickable -->
                                 <tr class="prop-row"
                                     data-bind="visible: timeline.started && ($parent.selectedState() === 'total' || $parent.selectedState() === 'buried' || $parent.selectedState() === 'complete')">
                                     <td class="prop-title">Execution:</td>
                                     <td class="prop-content">
-                                        <div class="prop-tag" data-bind="visible: timeline.started">
+                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: timeline.started,
+                 click: function() { $root.showResourceChart('execution', $parent, $data) }">
                                             <span class="prop-name">When</span>
                                             <span class="prop-value">
                                                 <span
@@ -327,6 +343,8 @@
                                                 <span class="prop-separator">→</span>
                                                 <span data-bind="text: 'Ended: ' + timeline.ended.toDate()"></span>
                                                 <!-- /ko -->
+                                                <i class="glyphicon glyphicon-stats"
+                                                    style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
                                             </span>
                                         </div>
 
@@ -850,9 +868,38 @@
         <!-- /ko -->
 
         <!-- ko ifnot: $data -->
-        <div class="alert alert-info">No details available for this job.</div>
+        <div class="alert alert-info">No details available for this job.</div> <button type="button" class="close"
+            data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
         <!-- /ko -->
+        <h4 class="modal-title" id="resourceChartModalLabel">Resource Usage Analysis</h4>
         </script>
+
+    </div>
+    <div class="modal-body">
+        <!-- Resource Visualization Modal -->
+        <div class="modal fade" id="resourceChartModal" tabindex="-1" role="dialog"
+            aria-labelledby="resourceChartModalLabel">
+            <div class="modal-dialog modal-lg" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span
+                                aria-hidden="true">&times;</span></button>
+                        <h4 class="modal-title" id="resourceChartModalLabel">Resource Usage Analysis</h4>
+                    </div>
+                    <div class="modal-body">
+                        <!-- Fix: Increase height and add margin-bottom for chart container -->
+                        <div class="chart-container"
+                            style="position: relative; height:420px; width:100%; margin-bottom: 30px">
+                            <canvas id="resourceChart"></canvas>
+                        </div>
+                        <div id="chartStats" class="small text-muted"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <hr>
 

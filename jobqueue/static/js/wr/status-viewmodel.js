@@ -702,4 +702,440 @@ export function StatusViewModel() {
             self.selectedRepGroup(repgroup);
         }
     };
+
+    // Function to show resource visualization charts
+    self.showResourceChart = function (resourceType, summary, statsData) {
+        // Determine which jobs to include based on the summary name and state filter
+        const selectedState = summary.selectedState();
+        const jobsToAnalyze = self.searchResults().filter(job =>
+            (job.RepGroup === summary.name || summary.name === "all above") &&
+            (selectedState === 'total' || job.State === selectedState)
+        );
+
+        // Filter to only completed/buried jobs for resource statistics if in total view
+        const statsJobs = selectedState === 'total'
+            ? jobsToAnalyze.filter(job => job.State === 'complete' || job.State === 'buried')
+            : jobsToAnalyze;
+
+        if (statsJobs.length === 0) {
+            alert('No data available for visualization');
+            return;
+        }
+
+        let chartTitle, chartData, chartType, chartOptions;
+        let statsHtml = '';
+
+        // Create appropriate chart configuration based on resource type
+        switch (resourceType) {
+            case 'memory':
+                chartTitle = 'Memory Usage Distribution';
+                chartType = 'boxplot';
+
+                // Collect memory data points
+                const memoryValues = statsJobs
+                    .filter(job => job.PeakRAM > 0)
+                    .map(job => ({
+                        y: job.PeakRAM,
+                        x: job.State,
+                        label: `${job.Cmd.substring(0, 30)}... (${job.PeakRAM.mbIEC()})`
+                    }));
+
+                // Create box plot data
+                chartData = {
+                    labels: ['Memory Usage'],
+                    datasets: [{
+                        label: 'Memory Usage (MB)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                        borderColor: 'rgb(54, 162, 235)',
+                        borderWidth: 1,
+                        outlierColor: '#999999',
+                        padding: 10,
+                        itemRadius: 0,
+                        data: [memoryValues.map(v => v.y)]
+                    }]
+                };
+
+                // Generate additional statistics
+                const memValues = memoryValues.map(v => v.y);
+                statsHtml = generateStatsHtml(memValues, 'Memory', value => value.mbIEC());
+
+                chartOptions = {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle,
+                            font: { size: 16 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    // Fix: Safely convert to Number and use mbIEC
+                                    const value = Number(context.raw);
+                                    return isNaN(value) ? 'Unknown' : value.mbIEC();
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Memory (MB)'
+                            },
+                            ticks: {
+                                callback: function (value) {
+                                    return value.mbIEC();
+                                }
+                            }
+                        }
+                    }
+                };
+                break;
+
+            case 'disk':
+                chartTitle = 'Disk Usage Distribution';
+                chartType = 'boxplot';
+
+                // Collect disk data points
+                const diskValues = statsJobs
+                    .filter(job => job.PeakDisk > 0)
+                    .map(job => ({
+                        y: job.PeakDisk,
+                        x: job.State,
+                        label: `${job.Cmd.substring(0, 30)}... (${job.PeakDisk.mbIEC()})`
+                    }));
+
+                // Create box plot data
+                chartData = {
+                    labels: ['Disk Usage'],
+                    datasets: [{
+                        label: 'Disk Usage (MB)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                        borderColor: 'rgb(75, 192, 192)',
+                        borderWidth: 1,
+                        outlierColor: '#999999',
+                        padding: 10,
+                        itemRadius: 0,
+                        data: [diskValues.map(v => v.y)]
+                    }]
+                };
+
+                // Generate additional statistics
+                const diskData = diskValues.map(v => v.y);
+                statsHtml = generateStatsHtml(diskData, 'Disk', value => value.mbIEC());
+
+                chartOptions = {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle,
+                            font: { size: 16 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    // Fix: Safely convert to Number and use mbIEC
+                                    const value = Number(context.raw);
+                                    return isNaN(value) ? 'Unknown' : value.mbIEC();
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Disk (MB)'
+                            },
+                            ticks: {
+                                callback: function (value) {
+                                    return value.mbIEC();
+                                }
+                            }
+                        }
+                    }
+                };
+                break;
+
+            case 'walltime':
+            case 'cputime':
+                const isWallTime = resourceType === 'walltime';
+                chartTitle = isWallTime ? 'Wall Time Distribution' : 'CPU Time Distribution';
+                // Fix: Use 'bar' instead of 'histogram' which isn't a built-in chart type
+                chartType = 'bar';
+
+                // Collect time data points
+                const timeValues = statsJobs
+                    .filter(job => isWallTime ? job.Walltime > 0 : job.CPUtime > 0)
+                    .map(job => ({
+                        y: isWallTime ? job.Walltime : job.CPUtime,
+                        x: job.State,
+                        label: `${job.Cmd.substring(0, 30)}... (${(isWallTime ? job.Walltime : job.CPUtime).toDuration()})`
+                    }));
+
+                // Create histogram bins
+                const timeData = timeValues.map(v => v.y);
+                const binCount = Math.min(Math.ceil(Math.sqrt(timeData.length)), 15);
+                const bins = createHistogramBins(timeData, binCount);
+
+                chartData = {
+                    labels: bins.map(bin => `${bin.min.toDuration()} - ${bin.max.toDuration()}`),
+                    datasets: [{
+                        label: isWallTime ? 'Wall Time (seconds)' : 'CPU Time (seconds)',
+                        backgroundColor: isWallTime ? 'rgba(255, 159, 64, 0.5)' : 'rgba(153, 102, 255, 0.5)',
+                        borderColor: isWallTime ? 'rgb(255, 159, 64)' : 'rgb(153, 102, 255)',
+                        borderWidth: 1,
+                        data: bins.map(bin => bin.count)
+                    }]
+                };
+
+                // Generate additional statistics
+                statsHtml = generateStatsHtml(timeData, isWallTime ? 'Wall Time' : 'CPU Time', value => value.toDuration());
+
+                chartOptions = {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle,
+                            font: { size: 16 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: function (context) {
+                                    return context[0].label;
+                                },
+                                label: function (context) {
+                                    return `${context.raw} jobs`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Jobs'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: isWallTime ? 'Wall Time' : 'CPU Time'
+                            }
+                        }
+                    }
+                };
+                break;
+
+            case 'execution':
+                chartTitle = 'Job Execution Timeline';
+                chartType = 'scatter';
+
+                // Prepare timeline data
+                const timelineData = statsJobs
+                    .filter(job => job.Started && (job.State === 'complete' || job.State === 'buried' || job.Ended))
+                    .map(job => ({
+                        x: job.Started,
+                        y: job.HostID || job.Host || job.RepGroup, // Group by host if possible
+                        start: job.Started,
+                        end: job.Ended || job.Started + job.Walltime,
+                        duration: (job.Ended || job.Started + job.Walltime) - job.Started,
+                        label: `${job.Cmd.substring(0, 30)}...`,
+                        state: job.State,
+                        id: job.Key
+                    }));
+
+                // Sort and de-duplicate the y-axis labels
+                const yLabels = [...new Set(timelineData.map(item => item.y))].sort();
+
+                // Create scatter plot with timeline bars
+                chartData = {
+                    labels: yLabels,
+                    datasets: [{
+                        type: 'scatter',
+                        label: 'Jobs',
+                        data: timelineData.map(item => ({
+                            x: item.start,
+                            y: yLabels.indexOf(item.y),
+                            job: item
+                        })),
+                        backgroundColor: timelineData.map(item =>
+                            item.state === 'complete' ? 'rgba(40, 167, 69, 0.7)' :
+                                item.state === 'buried' ? 'rgba(220, 53, 69, 0.7)' : 'rgba(0, 123, 255, 0.7)'),
+                        borderColor: timelineData.map(item =>
+                            item.state === 'complete' ? 'rgb(40, 167, 69)' :
+                                item.state === 'buried' ? 'rgb(220, 53, 69)' : 'rgb(0, 123, 255)'),
+                        pointStyle: 'rect',
+                        pointRadius: 8,
+                        pointHoverRadius: 10
+                    }]
+                };
+
+                // Generate timeline stats
+                const startTimes = timelineData.map(j => j.start);
+                const endTimes = timelineData.map(j => j.end);
+                const durations = timelineData.map(j => j.duration);
+
+                const minStart = Math.min(...startTimes);
+                const maxEnd = Math.max(...endTimes);
+
+                statsHtml = `
+            <div class="stat-item"><span class="stat-label">Jobs:</span> ${timelineData.length}</div>
+            <div class="stat-item"><span class="stat-label">Start:</span> ${minStart.toDate()}</div>
+            <div class="stat-item"><span class="stat-label">End:</span> ${maxEnd.toDate()}</div>
+            <div class="stat-item"><span class="stat-label">Span:</span> ${(maxEnd - minStart).toDuration()}</div>
+            <div class="stat-item"><span class="stat-label">Avg Duration:</span> ${(durations.reduce((a, b) => a + b, 0) / durations.length).toDuration()}</div>
+        `;
+
+                chartOptions = {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle,
+                            font: { size: 16 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    const job = context.raw.job;
+                                    return [
+                                        `Command: ${job.label}`,
+                                        `Started: ${job.start.toDate()}`,
+                                        `Duration: ${job.duration.toDuration()}`,
+                                        `Status: ${job.state}`
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Timeline'
+                            },
+                            ticks: {
+                                callback: function (value) {
+                                    return value.toDate();
+                                }
+                            }
+                        },
+                        y: {
+                            type: 'category',
+                            labels: yLabels,
+                            title: {
+                                display: true,
+                                text: 'Host/Server'
+                            }
+                        }
+                    }
+                };
+                break;
+        }
+
+        // Set the stats HTML
+        document.getElementById('chartStats').innerHTML = statsHtml;
+
+        // Get the canvas and create/update the chart
+        const ctx = document.getElementById('resourceChart').getContext('2d');
+
+        // Clear any existing chart
+        if (window.resourceChart && typeof window.resourceChart.destroy === 'function') {
+            window.resourceChart.destroy();
+        }
+
+        // Create a new chart
+        window.resourceChart = new Chart(ctx, {
+            // Fix: Don't try to use 'boxplot' or 'histogram' types directly
+            type: chartType === 'boxplot' ? 'bar' : chartType,
+            data: chartData,
+            options: chartOptions
+        });
+
+        // Set modal title and show it
+        document.getElementById('resourceChartModalLabel').textContent = chartTitle;
+        $('#resourceChartModal').modal('show');
+    };
+
+    // Helper function to create histogram bins
+    function createHistogramBins(data, binCount) {
+        if (data.length === 0) return [];
+
+        const min = Math.min(...data);
+        const max = Math.max(...data);
+        const range = max - min;
+        const binWidth = range / binCount;
+
+        // Create the bins
+        const bins = [];
+        for (let i = 0; i < binCount; i++) {
+            const binMin = min + (i * binWidth);
+            const binMax = min + ((i + 1) * binWidth);
+            bins.push({
+                min: binMin,
+                max: binMax,
+                count: 0
+            });
+        }
+
+        // Fill the bins
+        data.forEach(value => {
+            // Special case for the maximum value
+            if (value === max) {
+                bins[bins.length - 1].count++;
+            } else {
+                const binIndex = Math.floor((value - min) / binWidth);
+                bins[binIndex].count++;
+            }
+        });
+
+        return bins;
+    }
+
+    // Helper function to generate statistics HTML
+    function generateStatsHtml(data, label, formatter) {
+        if (data.length === 0) return `<div>No data available</div>`;
+
+        // Calculate basic statistics
+        data.sort((a, b) => a - b);
+        const min = data[0];
+        const max = data[data.length - 1];
+        const sum = data.reduce((a, b) => a + b, 0);
+        const mean = sum / data.length;
+
+        // Calculate median
+        const mid = Math.floor(data.length / 2);
+        const median = data.length % 2 === 0
+            ? (data[mid - 1] + data[mid]) / 2
+            : data[mid];
+
+        // Calculate standard deviation
+        const variance = data.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / data.length;
+        const stdDev = Math.sqrt(variance);
+
+        // Calculate quartiles
+        const q1Index = Math.floor(data.length * 0.25);
+        const q3Index = Math.floor(data.length * 0.75);
+        const q1 = data[q1Index];
+        const q3 = data[q3Index];
+
+        return `
+        <div class="stat-item"><span class="stat-label">Count:</span> ${data.length}</div>
+        <div class="stat-item"><span class="stat-label">Min:</span> ${formatter(min)}</div>
+        <div class="stat-item"><span class="stat-label">Max:</span> ${formatter(max)}</div>
+        <div class="stat-item"><span class="stat-label">Mean:</span> ${formatter(mean)}</div>
+        <div class="stat-item"><span class="stat-label">Median:</span> ${formatter(median)}</div>
+        <div class="stat-item"><span class="stat-label">Std Dev:</span> ${formatter(stdDev)}</div>
+        <div class="stat-item"><span class="stat-label">Q1:</span> ${formatter(q1)}</div>
+            <div class="stat-item"><span class="stat-label">Q3:</span> ${formatter(q3)}</div>
+        `;
+    }
 }
