@@ -177,6 +177,13 @@ function jobExists(detailsArray, key) {
 function handleJobDetailsMessage(viewModel, json) {
     var rg = json['RepGroup'];
 
+    // Handle search mode - add to search results instead of details
+    if (viewModel.isSearchMode()) {
+        // Add to search results array
+        viewModel.searchResults.push(json);
+        return;
+    }
+
     if (viewModel.detailsOA && rg == viewModel.detailsRepgroup) {
         // Check if this is a push update for an existing job
         if (json['IsPushUpdate']) {

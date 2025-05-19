@@ -121,6 +121,165 @@
         </div>
         <!-- /ko -->
 
+        <!-- ====================== JOB SEARCH SECTION ====================== -->
+        <div class="well well-sm top-margin">
+            <form data-bind="submit: searchJobs">
+                <div class="input-group">
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-search"></span>
+                    </span>
+                    <input type="text" class="form-control" placeholder="Search for jobs by RepGroup identifier"
+                        data-bind="value: searchRepGroup, valueUpdate: 'afterkeydown'">
+                    <span class="input-group-addon">
+                        <label class="checkbox-inline">
+                            <input type="checkbox" data-bind="checked: searchIsSubstring"> match substrings
+                        </label>
+                    </span>
+                    <span class="input-group-btn">
+                        <button class="btn btn-primary" type="submit">
+                            <span class="glyphicon glyphicon-search"></span> Search
+                        </button>
+                    </span>
+                </div>
+            </form>
+
+            <!-- Search results container -->
+            <div data-bind="if: searchSummaries().length > 0" class="top-margin">
+                <h5><span data-bind="text: searchResults().length"></span> jobs found across <span
+                        data-bind="text: searchSummaries().length - (searchSummaries().length > 1 ? 1 : 0)"></span>
+                    RepGroups
+                </h5>
+
+                <!-- RepGroup Summaries -->
+                <div class="repgroup-summaries">
+                    <!-- ko foreach: searchSummaries -->
+                    <div class="panel"
+                        data-bind="css: { 'panel-primary': name === 'all above', 'panel-default': name !== 'all above' }">
+                        <div class="panel-heading">
+                            <span class="repgroup-name" data-bind="text: name"></span>
+                            <span class="badge pull-right" data-bind="text: total + ' jobs'"></span>
+                        </div>
+                        <div class="panel-body compact-props">
+                            <!-- State counts -->
+                            <table class="prop-table">
+                                <tr class="prop-row">
+                                    <td class="prop-title">States:</td>
+                                    <td class="prop-content">
+                                        <div class="prop-tag" data-bind="visible: counts.complete > 0">
+                                            <span class="prop-name">Complete</span>
+                                            <span class="prop-value" data-bind="text: counts.complete"></span>
+                                        </div>
+                                        <div class="prop-tag" data-bind="visible: counts.running > 0">
+                                            <span class="prop-name">Running</span>
+                                            <span class="prop-value" data-bind="text: counts.running"></span>
+                                        </div>
+                                        <div class="prop-tag" data-bind="visible: counts.ready > 0">
+                                            <span class="prop-name">Ready</span>
+                                            <span class="prop-value" data-bind="text: counts.ready"></span>
+                                        </div>
+                                        <div class="prop-tag" data-bind="visible: counts.dependent > 0">
+                                            <span class="prop-name">Dependent</span>
+                                            <span class="prop-value" data-bind="text: counts.dependent"></span>
+                                        </div>
+                                        <div class="prop-tag" data-bind="visible: counts.lost > 0">
+                                            <span class="prop-name">Lost</span>
+                                            <span class="prop-value" data-bind="text: counts.lost"></span>
+                                        </div>
+                                        <div class="prop-tag" data-bind="visible: counts.delayed > 0">
+                                            <span class="prop-name">Delayed</span>
+                                            <span class="prop-value" data-bind="text: counts.delayed"></span>
+                                        </div>
+                                        <div class="prop-tag" data-bind="visible: counts.buried > 0">
+                                            <span class="prop-name">Buried</span>
+                                            <span class="prop-value" data-bind="text: counts.buried"></span>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <!-- Resources section -->
+                                <tr class="prop-row" data-bind="visible: hasData">
+                                    <td class="prop-title">Resources:</td>
+                                    <td class="prop-content">
+                                        <div class="prop-tag" data-bind="visible: resources.memory.avg > 0">
+                                            <span class="prop-name">Memory</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: resources.memory.avg.mbIEC()"></span>
+                                                <span class="prop-separator">±</span>
+                                                <span data-bind="text: resources.memory.stdDev.mbIEC()"></span>
+                                            </span>
+                                        </div>
+
+                                        <div class="prop-tag" data-bind="visible: resources.disk.avg > 0">
+                                            <span class="prop-name">Disk</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: resources.disk.avg.mbIEC()"></span>
+                                                <span class="prop-separator">±</span>
+                                                <span data-bind="text: resources.disk.stdDev.mbIEC()"></span>
+                                            </span>
+                                        </div>
+
+                                        <div class="prop-tag" data-bind="visible: resources.walltime.avg > 0">
+                                            <span class="prop-name">Wall Time</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: resources.walltime.avg.toDuration()"></span>
+                                                <span class="prop-separator">±</span>
+                                                <span data-bind="text: resources.walltime.stdDev.toDuration()"></span>
+                                            </span>
+                                        </div>
+
+                                        <div class="prop-tag" data-bind="visible: resources.cputime.avg > 0">
+                                            <span class="prop-name">CPU Time</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: resources.cputime.avg.toDuration()"></span>
+                                                <span class="prop-separator">±</span>
+                                                <span data-bind="text: resources.cputime.stdDev.toDuration()"></span>
+                                            </span>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <!-- Timeline section -->
+                                <tr class="prop-row" data-bind="visible: timeline.started">
+                                    <td class="prop-title">Execution:</td>
+                                    <td class="prop-content">
+                                        <div class="prop-tag" data-bind="visible: timeline.started">
+                                            <span class="prop-name">When</span>
+                                            <span class="prop-value">
+                                                <span data-bind="text: 'Started: ' + timeline.started.toDate()"></span>
+                                                <span class="prop-separator"
+                                                    data-bind="visible: timeline.ended">→</span>
+                                                <span
+                                                    data-bind="visible: timeline.ended, text: 'Ended: ' + timeline.ended.toDate()"></span>
+                                            </span>
+                                        </div>
+
+                                        <div class="prop-tag" data-bind="visible: timeline.elapsed > 0">
+                                            <span class="prop-name">Elapsed</span>
+                                            <span class="prop-value elapsed-time"
+                                                data-bind="text: timeline.elapsed.toDuration()"></span>
+                                        </div>
+
+                                        <!-- Show jobs button -->
+                                        <div class="prop-tag clickable details-button"
+                                            data-bind="click: function() { $parent.showGroupJobs($data) }">
+                                            <span class="prop-name">Jobs</span>
+                                            <span class="prop-value"><i class="glyphicon glyphicon-list"></i></span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+                    <!-- /ko -->
+                </div>
+            </div>
+
+            <!-- No results message -->
+            <div data-bind="if: hasSearched() && searchResults().length === 0" class="top-margin">
+                <div class="alert alert-info">No jobs found matching your search criteria.</div>
+            </div>
+        </div>
+
         <!-- ====================== IN-FLIGHT JOBS SUMMARY ====================== -->
         <div style="width: 100%;" class="well well-sm top-margin">
             <div style="margin: 0 auto;">
