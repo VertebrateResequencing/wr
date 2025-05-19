@@ -2411,51 +2411,71 @@ func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 
 // getJobsByRepGroup gets jobs in the given group (current and complete).
 func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (jobs []*Job, srerr string, qerr string) {
-	var rgs []string
-
-	if opts.Search {
-		var errs error
-		rgs, errs = s.searchRepGroups(opts.RepGroup)
-		if errs != nil {
-			return nil, ErrDBError, errs.Error()
-		}
-	} else {
-		rgs = append(rgs, opts.RepGroup)
+	rgs, srerr, qerr := s.getRepGroupsList(opts.RepGroup, opts.Search)
+	if srerr != "" {
+		return nil, srerr, qerr
 	}
 
 	for _, rg := range rgs {
-		// look in the in-memory queue for matching jobs
-		for _, key := range s.rpl.Values(rg) {
-			item, err := s.q.Get(key)
-			if err == nil && item != nil {
-				job := s.itemToJob(ctx, item, false, false)
-				jobs = append(jobs, job)
-			}
-		}
+		queueJobs := s.getQueueJobsByRepGroup(ctx, rg)
+		jobs = append(jobs, queueJobs...)
 
-		// look in the permanent store for matching jobs
-		if opts.State == "" || opts.State == JobStateComplete {
-			var complete []*Job
-			complete, srerr, qerr = s.getCompleteJobsByRepGroup(rg)
-			if len(complete) > 0 {
-				// a job is stored in the db with only the single most recent
-				// RepGroup it had, but we're able to retrieve jobs based on any of
-				// the RepGroups it ever had; set the RepGroup to the one the user
-				// requested *** may want to change RepGroup to store a slice of
-				// RepGroups? But that could be massive...
-				for _, cj := range complete {
-					cj.RepGroup = rg
-				}
-				jobs = append(jobs, complete...)
-			}
+		complete := s.getDBJobsByRepGroup(rg, opts.State, &srerr, &qerr)
+		if len(complete) > 0 {
+			jobs = append(jobs, complete...)
 		}
 	}
 
-	if opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv {
-		jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
-	}
+	jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
 
 	return jobs, srerr, qerr
+}
+
+// getRepGroupsList gets the list of RepGroups based on search criteria.
+func (s *Server) getRepGroupsList(repGroup string, search bool) ([]string, string, string) {
+	if search {
+		rgs, err := s.searchRepGroups(repGroup)
+		if err != nil {
+			return nil, ErrDBError, err.Error()
+		}
+
+		return rgs, "", ""
+	}
+
+	return []string{repGroup}, "", ""
+}
+
+// getQueueJobsByRepGroup gets jobs from the in-memory queue for a given
+// RepGroup.
+func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string) []*Job {
+	var jobs []*Job
+
+	for _, key := range s.rpl.Values(repGroup) {
+		item, err := s.q.Get(key)
+		if err == nil && item != nil {
+			job := s.itemToJob(ctx, item, false, false)
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+// getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup.
+func (s *Server) getDBJobsByRepGroup(rg string, state JobState, srerr *string, qerr *string) []*Job {
+	if state != "" && state != JobStateComplete {
+		return nil
+	}
+
+	var complete []*Job
+
+	complete, *srerr, *qerr = s.getCompleteJobsByRepGroup(rg)
+
+	for _, cj := range complete {
+		cj.RepGroup = rg
+	}
+
+	return complete
 }
 
 // getCompleteJobsByRepGroup gets complete jobs in the given group.
@@ -2476,14 +2496,12 @@ func (s *Server) getJobsCurrent(ctx context.Context, limit int, state JobState, 
 		jobs = append(jobs, s.itemToJob(ctx, item, false, false))
 	}
 
-	if limit > 0 || state != "" || getStd || getEnv {
-		jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
-			Limit:  limit,
-			State:  state,
-			GetStd: getStd,
-			GetEnv: getEnv,
-		})
-	}
+	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
+		Limit:  limit,
+		State:  state,
+		GetStd: getStd,
+		GetEnv: getEnv,
+	})
 
 	return jobs
 }
@@ -2502,6 +2520,10 @@ type limitJobsOptions struct {
 // getJobsCurrent(). States 'reserved' and 'running' are treated as the same
 // state.
 func (s *Server) limitJobs(ctx context.Context, jobs []*Job, opts limitJobsOptions) []*Job {
+	if !(opts.Limit > 0 || opts.State != "" || opts.GetStd || opts.GetEnv) {
+		return jobs
+	}
+
 	if opts.Limit < 0 {
 		opts.Limit = 0
 	}
