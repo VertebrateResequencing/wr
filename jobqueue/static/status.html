@@ -320,29 +320,30 @@
                                             </span>
                                         </div>
 
-                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.walltime.avg > 0,
-                     click: function() { $root.showResourceChart('walltime', $parent, $data) }">
-                                            <span class="prop-name">Wall Time</span>
+                                        <!-- Combined Time property that replaces separate Wall Time and CPU Time -->
+                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.walltime.avg > 0 || resources.cputime.avg > 0,
+                                            click: function() { $root.showResourceChart('time', $parent, $data) }">
+                                            <span class="prop-name">Time</span>
                                             <span class="prop-value">
-                                                <span data-bind="text: resources.walltime.avg.toDuration()"></span>
+                                                <!-- Wall Time section -->
+                                                <span
+                                                    data-bind="text: 'Wall: ' + resources.walltime.avg.toDuration()"></span>
                                                 <!-- ko if: resources.walltime.stdDev > 0 -->
                                                 <span class="prop-separator">±</span>
                                                 <span data-bind="text: resources.walltime.stdDev.toDuration()"></span>
                                                 <!-- /ko -->
-                                                <i class="glyphicon glyphicon-stats"
-                                                    style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
-                                            </span>
-                                        </div>
 
-                                        <div class="prop-tag resource-chart-trigger" data-bind="visible: resources.cputime.avg > 0,
-                     click: function() { $root.showResourceChart('cputime', $parent, $data) }">
-                                            <span class="prop-name">CPU Time</span>
-                                            <span class="prop-value">
-                                                <span data-bind="text: resources.cputime.avg.toDuration()"></span>
+                                                <!-- Separator between Wall and CPU -->
+                                                <span class="prop-separator">•</span>
+
+                                                <!-- CPU Time section -->
+                                                <span
+                                                    data-bind="text: 'CPU: ' + resources.cputime.avg.toDuration()"></span>
                                                 <!-- ko if: resources.cputime.stdDev > 0 -->
                                                 <span class="prop-separator">±</span>
                                                 <span data-bind="text: resources.cputime.stdDev.toDuration()"></span>
                                                 <!-- /ko -->
+
                                                 <i class="glyphicon glyphicon-stats"
                                                     style="margin-left: 4px; font-size: 10px; opacity: 0.6;"></i>
                                             </span>

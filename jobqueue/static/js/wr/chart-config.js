@@ -41,7 +41,7 @@ export function createMemoryChartConfig(memoryValues) {
         plugins: {
             title: {
                 display: true,
-                text: `Memory Usage Distribution (${memoryValues.length} data points)`,
+                text: `Memory Usage Distribution`,
                 font: { size: 16 }
             },
             tooltip: {
@@ -76,7 +76,7 @@ export function createMemoryChartConfig(memoryValues) {
 
     return {
         type: 'boxplot',
-        title: `Memory Usage Distribution (${memoryValues.length} data points)`,
+        title: `Memory Usage Distribution`,
         data: chartData,
         options: chartOptions
     };
@@ -122,7 +122,7 @@ export function createDiskChartConfig(diskValues) {
         plugins: {
             title: {
                 display: true,
-                text: `Disk Usage Distribution (${diskValues.length} data points)`,
+                text: `Disk Usage Distribution`,
                 font: { size: 16 }
             },
             tooltip: {
@@ -156,35 +156,43 @@ export function createDiskChartConfig(diskValues) {
 
     return {
         type: 'boxplot',
-        title: `Disk Usage Distribution (${diskValues.length} data points)`,
+        title: `Disk Usage Distribution`,
         data: chartData,
         options: chartOptions
     };
 }
 
 /**
- * Creates a time-based chart configuration (walltime or cputime)
- * @param {Array} timeValues - Array of time values
- * @param {string} timeType - Type of time ('walltime' or 'cputime')
+ * Creates a combined time chart configuration showing Wall Time and CPU Time side by side
+ * @param {Array} walltimeValues - Array of wall time values in seconds
+ * @param {Array} cputimeValues - Array of CPU time values in seconds
  * @returns {Object} Chart configuration object
  */
-export function createTimeChartConfig(timeValues, timeType) {
-    const isWallTime = timeType === 'walltime';
-    const title = isWallTime ? 'Wall Time Distribution' : 'CPU Time Distribution';
+export function createCombinedTimeChartConfig(walltimeValues, cputimeValues) {
+    // Find min and max values for better y-axis scaling
+    const allTimeValues = [...walltimeValues, ...cputimeValues];
+    const minValue = Math.max(0, Math.min(...allTimeValues) * 0.9); // Add 10% padding below
+    const maxValue = Math.max(...allTimeValues) * 1.1; // Add 10% padding above
 
-    // Create bins for the histogram
-    const binCount = Math.min(Math.ceil(Math.sqrt(timeValues.length)), 15);
-    const bins = createHistogramBins(timeValues, binCount);
-
-    // Create data structure
+    // Format for boxplot - data for boxplot is arrays of values
     const chartData = {
-        labels: bins.map(bin => `${bin.min.toDuration()} - ${bin.max.toDuration()}`),
+        labels: ['Wall Time', 'CPU Time'],
         datasets: [{
-            label: isWallTime ? 'Wall Time (seconds)' : 'CPU Time (seconds)',
-            backgroundColor: isWallTime ? 'rgba(255, 159, 64, 0.5)' : 'rgba(153, 102, 255, 0.5)',
-            borderColor: isWallTime ? 'rgb(255, 159, 64)' : 'rgb(153, 102, 255)',
+            label: 'Time (seconds)',
+            backgroundColor: 'rgba(255, 159, 64, 0.5)',
+            borderColor: 'rgb(255, 159, 64)',
             borderWidth: 1,
-            data: bins.map(bin => bin.count)
+            data: [walltimeValues, cputimeValues],
+            outlierBackgroundColor: 'rgba(255, 159, 64, 0.3)',
+            outlierBorderColor: 'rgb(255, 159, 64)',
+            outlierRadius: 3,
+            // Show all individual data points
+            itemRadius: 3,
+            itemStyle: 'circle',
+            itemBackgroundColor: 'rgba(255, 159, 64, 0.6)',
+            itemBorderColor: 'rgb(255, 159, 64)',
+            // Force display of points
+            itemDisplay: true,
         }]
     };
 
@@ -194,40 +202,42 @@ export function createTimeChartConfig(timeValues, timeType) {
         plugins: {
             title: {
                 display: true,
-                text: title,
+                text: `Time Metrics Comparison`,
                 font: { size: 16 }
             },
             tooltip: {
-                callbacks: {
-                    title: function (context) {
-                        return context[0].label;
-                    },
-                    label: function (context) {
-                        return `${context.raw} jobs`;
-                    }
-                }
+                enabled: false // Disable tooltips
+            },
+            legend: {
+                display: false // Hide legend since we only have one dataset
             }
         },
         scales: {
             y: {
-                beginAtZero: true,
+                min: minValue, // Set min value with padding
+                max: maxValue, // Set max value with padding
                 title: {
                     display: true,
-                    text: 'Number of Jobs'
+                    text: 'Time (seconds)'
+                },
+                ticks: {
+                    callback: function (value) {
+                        return value ? value.toDuration() : '0s';
+                    }
                 }
             },
             x: {
                 title: {
                     display: true,
-                    text: isWallTime ? 'Wall Time' : 'CPU Time'
+                    text: 'Time Metrics'
                 }
             }
         }
     };
 
     return {
-        type: 'bar',
-        title: title,
+        type: 'boxplot',
+        title: `Time Metrics Comparison`,
         data: chartData,
         options: chartOptions
     };
@@ -394,4 +404,75 @@ export function createHistogramBins(data, binCount) {
     });
 
     return bins;
+}
+
+/**
+ * Creates a time-based chart configuration (walltime or cputime)
+ * @param {Array} timeValues - Array of time values
+ * @param {string} timeType - Type of time ('walltime' or 'cputime')
+ * @returns {Object} Chart configuration object
+ */
+export function createTimeChartConfig(timeValues, timeType) {
+    const isWallTime = timeType === 'walltime';
+    const title = isWallTime ? 'Wall Time Distribution' : 'CPU Time Distribution';
+
+    // Create bins for the histogram
+    const binCount = Math.min(Math.ceil(Math.sqrt(timeValues.length)), 15);
+    const bins = createHistogramBins(timeValues, binCount);
+
+    // Create data structure
+    const chartData = {
+        labels: bins.map(bin => `${bin.min.toDuration()} - ${bin.max.toDuration()}`),
+        datasets: [{
+            label: isWallTime ? 'Wall Time (seconds)' : 'CPU Time (seconds)',
+            backgroundColor: isWallTime ? 'rgba(255, 159, 64, 0.5)' : 'rgba(153, 102, 255, 0.5)',
+            borderColor: isWallTime ? 'rgb(255, 159, 64)' : 'rgb(153, 102, 255)',
+            borderWidth: 1,
+            data: bins.map(bin => bin.count)
+        }]
+    };
+
+    // Create chart options
+    const chartOptions = {
+        responsive: true,
+        plugins: {
+            title: {
+                display: true,
+                text: title,
+                font: { size: 16 }
+            },
+            tooltip: {
+                callbacks: {
+                    title: function (context) {
+                        return context[0].label;
+                    },
+                    label: function (context) {
+                        return `${context.raw} jobs`;
+                    }
+                }
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: 'Number of Jobs'
+                }
+            },
+            x: {
+                title: {
+                    display: true,
+                    text: isWallTime ? 'Wall Time' : 'CPU Time'
+                }
+            }
+        }
+    };
+
+    return {
+        type: 'bar',
+        title: title,
+        data: chartData,
+        options: chartOptions
+    };
 }

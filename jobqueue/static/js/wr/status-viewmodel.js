@@ -12,7 +12,7 @@ import {
     createDiskChartConfig,
     createTimeChartConfig,
     createExecutionChartConfig,
-    createHistogramBins
+    createCombinedTimeChartConfig
 } from '/js/wr/chart-config.js';
 
 // viewmodel for displaying status
@@ -764,8 +764,36 @@ export function StatusViewModel() {
                     statsHtml = generateStatsHtml(diskValues, 'Disk', value => value.mbIEC());
                     break;
 
+                case 'time':
+                    // Get walltime and cputime values (must have a value > 0)
+                    const walltimeValues = statsJobs
+                        .filter(job => job.Walltime > 0)
+                        .map(job => job.Walltime);
+
+                    const cputimeValues = statsJobs
+                        .filter(job => job.CPUtime > 0)
+                        .map(job => job.CPUtime);
+
+                    if (walltimeValues.length === 0 && cputimeValues.length === 0) {
+                        alert('No time data available');
+                        return;
+                    }
+
+                    config = createCombinedTimeChartConfig(walltimeValues, cputimeValues);
+
+                    // Create combined stats HTML for both metrics
+                    statsHtml = '<div class="row"><div class="col-md-6">';
+                    statsHtml += '<h5>Wall Time</h5>';
+                    statsHtml += generateStatsHtml(walltimeValues, 'Wall Time', value => value.toDuration());
+                    statsHtml += '</div><div class="col-md-6">';
+                    statsHtml += '<h5>CPU Time</h5>';
+                    statsHtml += generateStatsHtml(cputimeValues, 'CPU Time', value => value.toDuration());
+                    statsHtml += '</div></div>';
+                    break;
+
                 case 'walltime':
                 case 'cputime':
+                    // Keeping these for backward compatibility, but they'll use the bar chart
                     const isWallTime = resourceType === 'walltime';
                     const timeValues = statsJobs
                         .filter(job => isWallTime ? job.Walltime > 0 : job.CPUtime > 0)
