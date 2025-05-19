@@ -35,6 +35,10 @@ export function createMemoryChartConfig(memoryValues) {
     const minValue = Math.max(0, Math.min(...memoryValues) * 0.9); // Add 10% padding below
     const maxValue = Math.max(...memoryValues) * 1.1; // Add 10% padding above
 
+    // Calculate the data range to determine tick formatting
+    const dataRange = maxValue - minValue;
+    const useDecimals = dataRange < 10; // Use decimals if range is small
+
     // Create chart options
     const chartOptions = {
         responsive: true,
@@ -53,16 +57,24 @@ export function createMemoryChartConfig(memoryValues) {
         },
         scales: {
             y: {
-                min: minValue, // Set min value with padding
-                max: maxValue, // Set max value with padding
+                min: minValue,
+                max: maxValue,
                 title: {
                     display: true,
                     text: 'Memory (MB)'
                 },
                 ticks: {
+                    // Configure step size and formatting based on data range
+                    stepSize: useDecimals ? dataRange / 5 : undefined,
                     callback: function (value) {
-                        // Ensure we don't get NaN values
-                        return value ? value.mbIEC() : '0 B';
+                        if (!value) return '0 B';
+
+                        // Use more precision for small ranges
+                        if (useDecimals) {
+                            // Format with 1-2 decimals for small ranges
+                            return Number(value).toFixed(2).mbIEC();
+                        }
+                        return value.mbIEC();
                     }
                 }
             },
@@ -92,29 +104,9 @@ export function createDiskChartConfig(diskValues) {
     const minValue = Math.max(0, Math.min(...diskValues) * 0.9); // Add 10% padding below
     const maxValue = Math.max(...diskValues) * 1.1; // Add 10% padding above
 
-    // Create data structure for boxplot
-    const chartData = {
-        labels: ['Disk Usage'],
-        datasets: [{
-            label: 'Disk Usage (MB)',
-            backgroundColor: 'rgba(75, 192, 192, 0.5)',
-            borderColor: 'rgb(75, 192, 192)',
-            borderWidth: 1,
-            data: [diskValues],
-            outlierBackgroundColor: 'rgba(75, 192, 192, 0.3)',
-            outlierBorderColor: 'rgb(75, 192, 192)',
-            outlierRadius: 3,
-            // Show all individual data points
-            itemRadius: 3,
-            itemStyle: 'circle',
-            itemBackgroundColor: 'rgba(75, 192, 192, 0.6)',
-            itemBorderColor: 'rgb(75, 192, 192)',
-            // Force display of points
-            itemDisplay: true,
-            // Disable violin to show just boxplot with points
-            violin: false
-        }]
-    };
+    // Calculate the data range to determine tick formatting
+    const dataRange = maxValue - minValue;
+    const useDecimals = dataRange < 10; // Use decimals if range is small
 
     // Create chart options
     const chartOptions = {
@@ -134,15 +126,24 @@ export function createDiskChartConfig(diskValues) {
         },
         scales: {
             y: {
-                min: minValue, // Set min value with padding
-                max: maxValue, // Set max value with padding
+                min: minValue,
+                max: maxValue,
                 title: {
                     display: true,
                     text: 'Disk (MB)'
                 },
                 ticks: {
+                    // Configure step size and formatting based on data range
+                    stepSize: useDecimals ? dataRange / 5 : undefined,
                     callback: function (value) {
-                        return value ? value.mbIEC() : '0 B';
+                        if (!value) return '0 B';
+
+                        // Use more precision for small ranges
+                        if (useDecimals) {
+                            // Format with 1-2 decimals for small ranges
+                            return Number(value).toFixed(2).mbIEC();
+                        }
+                        return value.mbIEC();
                     }
                 }
             },
@@ -196,6 +197,10 @@ export function createCombinedTimeChartConfig(walltimeValues, cputimeValues) {
         }]
     };
 
+    // Calculate the data range to determine tick formatting
+    const dataRange = maxValue - minValue;
+    const useDecimals = dataRange < 5; // Use decimals if range is very small for time values
+
     // Create chart options
     const chartOptions = {
         responsive: true,
@@ -214,15 +219,32 @@ export function createCombinedTimeChartConfig(walltimeValues, cputimeValues) {
         },
         scales: {
             y: {
-                min: minValue, // Set min value with padding
-                max: maxValue, // Set max value with padding
+                min: minValue,
+                max: maxValue,
                 title: {
                     display: true,
                     text: 'Time (seconds)'
                 },
                 ticks: {
+                    // Configure step size and formatting based on data range
+                    stepSize: useDecimals ? dataRange / 5 : undefined,
+                    // Ensure we don't get repeated values on the axis
+                    count: useDecimals ? 6 : undefined,
                     callback: function (value) {
-                        return value ? value.toDuration() : '0s';
+                        if (!value) return '0s';
+
+                        // For small ranges, format with decimal precision
+                        if (useDecimals) {
+                            // Return the raw seconds with decimals for very small ranges
+                            if (dataRange < 1) {
+                                return value.toFixed(2) + 's';
+                            }
+                            // For slightly larger ranges (1-5s), use 1 decimal
+                            return value.toFixed(1) + 's';
+                        }
+
+                        // Use the standard duration formatter for larger ranges
+                        return value.toDuration();
                     }
                 }
             },
