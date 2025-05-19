@@ -108,6 +108,28 @@ export function createDiskChartConfig(diskValues) {
     const dataRange = maxValue - minValue;
     const useDecimals = dataRange < 10; // Use decimals if range is small
 
+    // Create data structure for boxplot
+    const chartData = {
+        labels: ['Disk Usage'],
+        datasets: [{
+            label: 'Disk Usage (MB)',
+            backgroundColor: 'rgba(75, 192, 192, 0.5)',
+            borderColor: 'rgb(75, 192, 192)',
+            borderWidth: 1,
+            data: [diskValues],
+            outlierBackgroundColor: 'rgba(75, 192, 192, 0.3)',
+            outlierBorderColor: 'rgb(75, 192, 192)',
+            outlierRadius: 3,
+            // Show all individual data points
+            itemRadius: 3,
+            itemStyle: 'circle',
+            itemBackgroundColor: 'rgba(75, 192, 192, 0.6)',
+            itemBorderColor: 'rgb(75, 192, 192)',
+            // Force display of points
+            itemDisplay: true
+        }]
+    };
+
     // Create chart options
     const chartOptions = {
         responsive: true,
