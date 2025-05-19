@@ -352,15 +352,13 @@ export function StatusViewModel() {
 
     // Calculate statistics for jobs filtered by state
     self.getFilteredJobStats = function (summary, state) {
-        // If the state is 'total', use all jobs
-        if (state === 'total') {
-            return summary;
-        }
+        // For the total view, we still want to only use data from completed/buried jobs for resource statistics
+        const useCompletedOnly = (state === 'total');
 
-        // Filter jobs by state
+        // Get the filtered jobs based on the selected state
         const filteredJobs = self.searchResults().filter(job =>
             (job.RepGroup === summary.name || summary.name === "all above") &&
-            job.State === state
+            (state === 'total' || job.State === state)
         );
 
         // No jobs match the filter
@@ -375,7 +373,25 @@ export function StatusViewModel() {
             };
         }
 
-        // Calculate stats for filtered jobs
+        // For resource stats, we only want to use data from completed or buried jobs
+        // If we're in 'total' view, filter to only completed/buried jobs for stats
+        const statsJobs = useCompletedOnly
+            ? filteredJobs.filter(job => job.State === 'complete' || job.State === 'buried')
+            : filteredJobs;
+
+        // If no complete/buried jobs available for stats, return empty stats
+        if (statsJobs.length === 0) {
+            return {
+                resources: {
+                    memory: { avg: 0, stdDev: 0 }, disk: { avg: 0, stdDev: 0 },
+                    walltime: { avg: 0, stdDev: 0 }, cputime: { avg: 0, stdDev: 0 }
+                },
+                timeline: { started: null, ended: null, elapsed: 0 },
+                hasData: false
+            };
+        }
+
+        // Calculate stats for filtered and completed/buried jobs
         const calcStats = (values) => {
             if (values.length === 0) return { avg: 0, stdDev: 0 };
             const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
@@ -384,17 +400,17 @@ export function StatusViewModel() {
             return { avg, stdDev };
         };
 
-        // Extract resource metrics
-        const memory = filteredJobs.filter(job => job.PeakRAM > 0).map(job => job.PeakRAM);
-        const disk = filteredJobs.filter(job => job.PeakDisk > 0).map(job => job.PeakDisk);
-        const walltime = filteredJobs.filter(job => job.Walltime > 0).map(job => job.Walltime);
-        const cputime = filteredJobs.filter(job => job.CPUtime > 0).map(job => job.CPUtime);
+        // Extract resource metrics from statsJobs (completed/buried only)
+        const memory = statsJobs.filter(job => job.PeakRAM > 0).map(job => job.PeakRAM);
+        const disk = statsJobs.filter(job => job.PeakDisk > 0).map(job => job.PeakDisk);
+        const walltime = statsJobs.filter(job => job.Walltime > 0).map(job => job.Walltime);
+        const cputime = statsJobs.filter(job => job.CPUtime > 0).map(job => job.CPUtime);
 
-        // Track timeline
+        // Track timeline from statsJobs (completed/buried only)
         let earliestStart = null;
         let latestEnd = null;
 
-        filteredJobs.forEach(job => {
+        statsJobs.forEach(job => {
             if (job.Started && (!earliestStart || job.Started < earliestStart)) {
                 earliestStart = job.Started;
             }

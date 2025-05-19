@@ -263,7 +263,8 @@
                         <div class="panel-body compact-props" data-bind="if: hasData || timeline.started">
                             <table class="prop-table">
                                 <!-- Resources section -->
-                                <tr class="prop-row" data-bind="visible: hasData">
+                                <tr class="prop-row"
+                                    data-bind="visible: hasData && ($parent.selectedState() === 'total' || $parent.selectedState() === 'buried' || $parent.selectedState() === 'complete')">
                                     <td class="prop-title">Resources:</td>
                                     <td class="prop-content">
                                         <div class="prop-tag" data-bind="visible: resources.memory.avg > 0">
@@ -305,7 +306,8 @@
                                 </tr>
 
                                 <!-- Timeline section -->
-                                <tr class="prop-row" data-bind="visible: timeline.started">
+                                <tr class="prop-row"
+                                    data-bind="visible: timeline.started && ($parent.selectedState() === 'total' || $parent.selectedState() === 'buried' || $parent.selectedState() === 'complete')">
                                     <td class="prop-title">Execution:</td>
                                     <td class="prop-content">
                                         <div class="prop-tag" data-bind="visible: timeline.started">

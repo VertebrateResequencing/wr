@@ -179,6 +179,11 @@ function handleJobDetailsMessage(viewModel, json) {
 
     // Handle search mode - add to search results instead of details
     if (viewModel.isSearchMode()) {
+        // Skip push updates in search results
+        if (json['IsPushUpdate']) {
+            return;
+        }
+
         // Add to search results array
         viewModel.searchResults.push(json);
         return;
