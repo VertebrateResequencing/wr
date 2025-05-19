@@ -1,6 +1,6 @@
-import { initNumberPrototypes, initStringPrototypes, initKnockoutBindings } from '/js/utility.js';
-import { StatusViewModel } from '/js/status-viewmodel.js';
-import { setupCommandPathBehavior } from '/js/ui-helpers.js';
+import { initNumberPrototypes, initStringPrototypes, initKnockoutBindings } from '/js/wr/utility.js';
+import { StatusViewModel } from '/js/wr/status-viewmodel.js';
+import { setupCommandPathBehavior } from '/js/wr/ui-helpers.js';
 
 // Initialize prototype extensions
 initNumberPrototypes();

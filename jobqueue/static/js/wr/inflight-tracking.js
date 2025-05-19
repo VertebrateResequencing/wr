@@ -1,7 +1,7 @@
 /* In-Flight Job Tracking
  * Handles tracking of in-flight jobs in the WR status page.
  */
-import { percentRounder, percentScaler } from '/js/utility.js';
+import { percentRounder, percentScaler } from '/js/wr/utility.js';
 
 // Define the standard property sets first
 const STANDARD_COUNT_PROPS = ['delayed', 'dependent', 'ready', 'running', 'lost', 'buried'];

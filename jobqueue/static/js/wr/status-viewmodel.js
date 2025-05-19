@@ -1,12 +1,12 @@
 /* Status View Model
  * Main view model for the WR status page.
  */
-import { getParameterByName } from '/js/utility.js';
-import { setupInflightTracking } from '/js/inflight-tracking.js';
-import { setupWebSocket } from '/js/websocket-handler.js';
-import { requestRepGroup, showGroupState, loadMoreJobs } from '/js/repgroup-handler.js';
-import { modalHandlers, jobToActionDetails, commitAction } from '/js/modal-handlers.js';
-import { actionHandlers } from '/js/action-handlers.js';
+import { getParameterByName } from '/js/wr/utility.js';
+import { setupInflightTracking } from '/js/wr/inflight-tracking.js';
+import { setupWebSocket } from '/js/wr/websocket-handler.js';
+import { requestRepGroup, showGroupState, loadMoreJobs } from '/js/wr/repgroup-handler.js';
+import { modalHandlers, jobToActionDetails, commitAction } from '/js/wr/modal-handlers.js';
+import { actionHandlers } from '/js/wr/action-handlers.js';
 
 // viewmodel for displaying status
 export function StatusViewModel() {

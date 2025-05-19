@@ -1,8 +1,8 @@
 /* Action Handlers
  * Handles job actions for the WR status page.
  */
-import { removeBadServer, removeMessage } from '/js/utility.js';
-import { jobToActionDetails } from '/js/modal-handlers.js';
+import { removeBadServer, removeMessage } from '/js/wr/utility.js';
+import { jobToActionDetails } from '/js/wr/modal-handlers.js';
 
 /**
  * Action handler functions for jobs

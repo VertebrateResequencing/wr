@@ -1,8 +1,8 @@
 /* WebSocket Handler
  * Handles WebSocket communication for the WR status page
  */
-import { removeBadServer } from '/js/utility.js';
-import { createRepGroupTracker } from '/js/inflight-tracking.js';
+import { removeBadServer } from '/js/wr/utility.js';
+import { createRepGroupTracker } from '/js/wr/inflight-tracking.js';
 
 /**
  * Sets up the WebSocket connection and message handling
