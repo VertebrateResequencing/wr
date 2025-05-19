@@ -455,6 +455,21 @@ u.dotted {
     font-size: 14px;
 }
 
+/* Search-related styling */
+.search-result-repgroup {
+    margin-bottom: 10px !important;
+}
+
+.search-resource-stats {
+    margin-top: 5px;
+    color: #777;
+}
+
+.resource-separator {
+    margin: 0 5px;
+    color: #ccc;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .command-path {

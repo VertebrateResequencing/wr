@@ -165,52 +165,77 @@
                     RepGroups
                 </h5>
 
-                <!-- RepGroup Summaries -->
-                <div class="repgroup-summaries">
-                    <!-- ko foreach: searchSummaries -->
-                    <div class="panel"
-                        data-bind="css: { 'panel-primary': name === 'all above', 'panel-default': name !== 'all above' }">
-                        <div class="panel-heading">
-                            <span class="repgroup-name" data-bind="text: name"></span>
-                            <span class="badge pull-right" data-bind="text: total + ' jobs'"></span>
-                        </div>
-                        <div class="panel-body compact-props">
-                            <!-- State counts -->
-                            <table class="prop-table">
-                                <tr class="prop-row">
-                                    <td class="prop-title">States:</td>
-                                    <td class="prop-content">
-                                        <div class="prop-tag" data-bind="visible: counts.complete > 0">
-                                            <span class="prop-name">Complete</span>
-                                            <span class="prop-value" data-bind="text: counts.complete"></span>
-                                        </div>
-                                        <div class="prop-tag" data-bind="visible: counts.running > 0">
-                                            <span class="prop-name">Running</span>
-                                            <span class="prop-value" data-bind="text: counts.running"></span>
-                                        </div>
-                                        <div class="prop-tag" data-bind="visible: counts.ready > 0">
-                                            <span class="prop-name">Ready</span>
-                                            <span class="prop-value" data-bind="text: counts.ready"></span>
-                                        </div>
-                                        <div class="prop-tag" data-bind="visible: counts.dependent > 0">
-                                            <span class="prop-name">Dependent</span>
-                                            <span class="prop-value" data-bind="text: counts.dependent"></span>
-                                        </div>
-                                        <div class="prop-tag" data-bind="visible: counts.lost > 0">
-                                            <span class="prop-name">Lost</span>
-                                            <span class="prop-value" data-bind="text: counts.lost"></span>
-                                        </div>
-                                        <div class="prop-tag" data-bind="visible: counts.delayed > 0">
-                                            <span class="prop-name">Delayed</span>
-                                            <span class="prop-value" data-bind="text: counts.delayed"></span>
-                                        </div>
-                                        <div class="prop-tag" data-bind="visible: counts.buried > 0">
-                                            <span class="prop-name">Buried</span>
-                                            <span class="prop-value" data-bind="text: counts.buried"></span>
-                                        </div>
-                                    </td>
-                                </tr>
+                <!-- RepGroup Summaries - Styled like the main REP GROUP SECTION -->
+                <div data-bind="foreach: searchSummaries">
+                    <div style="width: 100%;" class="well well-sm search-result-repgroup">
+                        <h5 style="margin: 0; padding: 0">
+                            <span data-bind="text: name"></span>
+                            <span class="badge" data-bind="text: total"></span>
 
+                            <!-- Show jobs button -->
+                            <button type="button" class="btn btn-xs btn-primary pull-right"
+                                data-bind="click: function() { $parent.showGroupJobs($data) }">
+                                <span class="glyphicon glyphicon-list"></span> Show Jobs
+                            </button>
+                        </h5>
+
+                        <div class="top-margin" data-bind="if: total > 0">
+                            <div class="progress" style="margin-bottom: 0">
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                    role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="style: { width: (counts.delayed/total*100) + '%' }, attr: { 'aria-valuenow': counts.delayed/total*100 }">
+                                    <!-- ko if: counts.delayed > 0 -->
+                                    <span data-bind="text: counts.delayed"></span> delayed
+                                    <!-- /ko -->
+                                </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-warning"
+                                    role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="style: { width: (counts.dependent/total*100) + '%' }, attr: { 'aria-valuenow': counts.dependent/total*100 }">
+                                    <!-- ko if: counts.dependent > 0 -->
+                                    <span data-bind="text: counts.dependent"></span> dependent
+                                    <!-- /ko -->
+                                </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-info"
+                                    role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="style: { width: (counts.ready/total*100) + '%' }, attr: { 'aria-valuenow': counts.ready/total*100 }">
+                                    <!-- ko if: counts.ready > 0 -->
+                                    <span data-bind="text: counts.ready"></span> pending
+                                    <!-- /ko -->
+                                </div>
+                                <div class="progress-bar progress-bar-striped active" role="progressbar"
+                                    aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="style: { width: (counts.running/total*100) + '%' }, attr: { 'aria-valuenow': counts.running/total*100 }">
+                                    <!-- ko if: counts.running > 0 -->
+                                    <span data-bind="text: counts.running"></span> running
+                                    <!-- /ko -->
+                                </div>
+                                <div class="progress-bar progress-bar-striped active progress-bar-danger"
+                                    role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                    data-bind="style: { width: (counts.lost/total*100) + '%' }, attr: { 'aria-valuenow': counts.lost/total*100 }">
+                                    <!-- ko if: counts.lost > 0 -->
+                                    <span data-bind="text: counts.lost"></span> lost contact
+                                    <!-- /ko -->
+                                </div>
+                                <div class="progress-bar progress-bar-danger" role="progressbar" aria-valuemin="0"
+                                    aria-valuemax="100"
+                                    data-bind="style: { width: (counts.buried/total*100) + '%' }, attr: { 'aria-valuenow': counts.buried/total*100 }">
+                                    <!-- ko if: counts.buried > 0 -->
+                                    <span data-bind="text: counts.buried"></span> buried
+                                    <!-- /ko -->
+                                </div>
+                                <div class="progress-bar progress-bar-success" role="progressbar" aria-valuemin="0"
+                                    aria-valuemax="100"
+                                    data-bind="style: { width: (counts.complete/total*100) + '%' }, attr: { 'aria-valuenow': counts.complete/total*100 }">
+                                    <!-- ko if: counts.complete > 0 -->
+                                    <span data-bind="text: counts.complete"></span> complete
+                                    <!-- /ko -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Resources and execution data - using original format -->
+                        <div class="panel-body compact-props" data-bind="if: hasData || timeline.started">
+                            <table class="prop-table">
                                 <!-- Resources section -->
                                 <tr class="prop-row" data-bind="visible: hasData">
                                     <td class="prop-title">Resources:</td>
@@ -273,19 +298,11 @@
                                             <span class="prop-value elapsed-time"
                                                 data-bind="text: timeline.elapsed.toDuration()"></span>
                                         </div>
-
-                                        <!-- Show jobs button -->
-                                        <div class="prop-tag clickable details-button"
-                                            data-bind="click: function() { $parent.showGroupJobs($data) }">
-                                            <span class="prop-name">Jobs</span>
-                                            <span class="prop-value"><i class="glyphicon glyphicon-list"></i></span>
-                                        </div>
                                     </td>
                                 </tr>
                             </table>
                         </div>
                     </div>
-                    <!-- /ko -->
                 </div>
             </div>
 
@@ -350,23 +367,6 @@
                 </div>
             </div>
         </div>
-
-        <!-- ====================== REP GROUP SEARCH ====================== -->
-        <!-- *** not yet implemented
-            <div class="row bottom-margin">
-                <div class="col-xs-5">
-                    <form data-bind="submit: requestRepGroup">
-                        <div class="input-group">
-                            <span class="input-group-addon" data-toggle="tooltip" data-container="body" title="Enter an identifier to also see the status of all commands added with that identifier.">identifier</span>
-                            <input type="text" class="form-control" data-bind="value: repGroup">
-                            <span class="input-group-btn">
-                                <button class="btn btn-default" type="submit"><span class="glyphicon glyphicon-play-circle"></span></button>
-                            </span>
-                        </div>
-                    </form>
-                </div>
-            </div>
-            -->
 
         <!-- ====================== REP GROUPS SECTION ====================== -->
         <!-- ko if: sortableRepGroups().length > 0 -->
